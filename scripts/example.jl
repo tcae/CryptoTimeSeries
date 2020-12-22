@@ -58,7 +58,9 @@ dicts = dict_list(allparams)
 display(dicts)
 for (i, d) in enumerate(dicts)
     f = makesim(d)
-    wsave(datadir("simulations", savename(d, "bson")), f)
+    # wsave(datadir("simulations", savename(d, "bson")), f)
+    @tagsave(datadir("simulations", savename(d, "bson")), f)
 end
 
+println(readdir(datadir("simulations")))
 end  # module
