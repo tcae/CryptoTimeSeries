@@ -63,4 +63,9 @@ for (i, d) in enumerate(dicts)
 end
 
 println(readdir(datadir("simulations")))
+firstsim = readdir(datadir("simulations"))[1]
+
+d = wload(datadir("simulations", firstsim))
+display(d)
+
 end  # module
