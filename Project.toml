@@ -3,7 +3,18 @@ authors = ["tcae"]
 
 [deps]
 BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+Dash = "1b08a953-4be3-4667-9a23-3db579824955"
+DashCoreComponents = "1b08a953-4be3-4667-9a23-9da06441d987"
+DashHtmlComponents = "1b08a953-4be3-4667-9a23-24100242a84a"
+DashTable = "1b08a953-4be3-4667-9a23-f0e2ba4deb9a"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 DrWatson = "634d3b9d-ee7a-5ddf-bec9-22491ea816e1"
+JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
+TimeseriesPrediction = "f218859d-9706-56aa-9ebf-1fa4ed7b8020"
 
 [compat]
 julia = "1.5.3"
