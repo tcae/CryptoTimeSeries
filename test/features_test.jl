@@ -21,12 +21,12 @@ end
 function lastextremes_test()
     p = 3  #arbitrary
     prices =     [p*0.98, p*1.01, p*1.07, p*1.02, p*0.94, p*1.01, p*0.98]
-    regressions = [missing, 0.02,   0.11,  -0.05,  -0.05,   0.02,  -0.01]
+    regressions = [0.0, 0.02,   0.11,  -0.05,  -0.05,   0.02,  -0.01]
     df = Features.lastextremes(prices, regressions)
     refdf = DataFrame(
         pricemax = Float32[0.0, -0.02970297, -0.08411215, 0.04901961, 0.13829787, 0.05940594, 0.030612245],
         timemax = Float32[ 0.0,  1.0,         2.0,        1.0,        2.0,        3.0,        1.0],
-        pricemin = Float32[0.0, 0.02970297, 0.08411215, 0.039215688, -0.04255319, 0.06930693, 0.040816326],
+        pricemin = Float32[0.0, -0.02970297, -0.08411215, -0.039215688, 0.04255319, -0.06930693, -0.040816326],
         timemin = Float32[ 0.0, 1.0,        2.0,        3.0,          4.0,        1.0,        2.0])
     # println(df)
     # println(refdf)
@@ -34,28 +34,46 @@ function lastextremes_test()
     # println(df.timemax)
     # println(df.pricemin)
     # println(df.timemin)
-    return df == refdf
+
+    # dfarr = [df.pricemax, df.timemax, df.pricemin, df.timemin]
+    # display(dfarr)
+    # diff = [df.pricemax - refdf.pricemax, df.timemax - refdf.timemax, df.pricemin - refdf.pricemin, df.timemin - refdf.timemin]
+    # display(diff)
+    return isapprox(df, refdf, atol=10^-5)
 end
 
-function gradientgaphistogram_test()
+function lastgainloss_test()
     p = 3  #arbitrary
     prices =     [p*0.98, p*1.01, p*1.07, p*1.02, p*0.94, p*1.01, p*0.98]
-    regressions = [missing, 0.02,   0.11,  -0.05,  -0.05,   0.02,  -0.01]
-    Features.gradientgaphistogram(prices, regressions, 5)
+    regressions = [0.0, 0.02,   0.11,  -0.05,  -0.05,   0.02,  -0.01]
+    df = Features.lastgainloss(prices, regressions)
+    refdf = DataFrame(
+        lastgain = Float32[0.0, 0.0, 0.0, 0.091836736, 0.091836736, 0.091836736, 0.07446808],
+        lastloss = Float32[0.0, 0.0, 0.0, 0.0, 0.0, -0.13829787, -0.13829787])
+    # println(df)
+    # println(refdf)
+    # println(df.lastgain)
+    # println(df.lastloss)
+    return isapprox(df, refdf, atol=10^-5)
 end
 
 Config.init(test)
 # config_test()
 # Features.executeconfig()
-# gradientgaphistogram_test()
 # display(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))
+# display(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]))
+# lastextremes_test()
+# lastgainloss_test()
+
 @testset "Features tests" begin
 
 @test abs(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)[7] - 0.310714285714285) < 10^-7
-@test isapprox(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)[4:7], Features.normrollingregression2([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)[4:7], atol=10^-8)
+@test isapprox(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4), [0.0, 0.0, 0.0, 0.32, 0.29, 0.17, 0.37], atol=10^-5)
+@test isapprox(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)[4:7], Features.normrollingregression2([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)[4:7], atol=10^-5)
 @test Features.relativevolume([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 3, 5) == [1.0555555555555556; 1.0526315789473684; 1.025]
 @test lastextremes_test()
-@test Features.regressionaccelerationhistory([missing, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]) == [0.0 0.0 1.0 -1.0 -2.0 1.0 -1.0]
+@test lastgainloss_test()
+@test isapprox(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]), [0.0  0.1  0.25  -0.4  -0.55  0.5  -0.1], atol=10^-5)
 
 end
 

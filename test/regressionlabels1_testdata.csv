@@ -1,0 +1,43 @@
+# test data for function regressionlabels1 with result column
+price,regression,expectation
+# start with up and down slopes below threshold to bias the steep slope threshold
+1.0,        0.0,       -2
+1.001,      0.001,      0
+1.002,      0.0015,     0
+1.0021,     0.0001,    -1
+1.0018,    -0.0013,    -2
+1.0015,    -0.0003,    -2
+1.0008,    -0.0007,    -2
+1.0002,    -0.0006,    -2
+0.9998,    -0.0004,    -2
+0.9989,    -0.0009,    -2
+# now slow upward slope that eventually becomes steep enough for strong buy and exceeds gainthreshold of 1%
+0.9994,     0.0005,     1
+0.9998,     0.0004,     1
+1.0009,     0.0009,     1
+1.008,      0.0081,     0
+1.017,      0.009,      0
+1.0172,     0.0002,    -1
+# fall back more than 1% to trigger the stronggainloss condition
+1.017,     -0.0002,    -2
+1.016,     -0.001,     -2
+1.007,     -0.009,     -2
+1.004,     -0.003,     -2
+1.000,     -0.004,     -2
+#rise moderatly to stay below steep slope threshold but strong gain loss condition should signal strong buy
+1.002,      0.002,      2
+1.004,      0.002,      2
+1.006,      0.003,      2
+1.016,      0.010,      0
+1.017,      0.001,      0
+1.018,      0.001,      0
+1.015,     -0.003,     -2
+#rise moderatly to stay below steep slope threshold but now strong gain loss condition should NOT signal strong buy
+1.017,      0.002,      2
+1.019,      0.002,      2
+1.022,      0.003,      2
+1.032,      0.010,      0
+1.033,      0.001,      0
+1.034,      0.001,      0
+1.031,     -0.003,     -2
+

@@ -17,7 +17,8 @@ function rollingregression(price, windowsize)::Array{Union{Missing, Float32}}
     sum_xy = rolling(sum,price,windowsize,collect(1:windowsize))
     sum_y = rolling(sum,price,windowsize)
     b = ((windowsize*sum_xy) - (sum_x*sum_y))/(windowsize*sum_x_squared - sum_x^2)
-    c = [fill(missing,windowsize-1);b]
+    # c = [fill(missing,windowsize-1);b]
+    c = [fill(0.0,windowsize-1);b]  # fill with leading zeros instead of missing
 end
 
 function normrollingregression(price, windowsize)
@@ -46,22 +47,47 @@ function lastextremes(prices, regressions)::DataFrames.DataFrame
     lastminix = 1
     dist = zeros(Float32, 4, size(regressions,1))
     for ix in 2:size(regressions,1)
-        if !isequal(regressions[ix], missing)
-            isequal(lastminix, missing) ? lastminix = ix : 0
-            isequal(lastmaxix, missing) ? lastmaxix = ix : 0
-            if !isequal(regressions[ix-1], missing)
-                (regressions[ix-1] < 0) && (regressions[ix] >= 0) ? lastminix = ix - 1 : 0
-                (regressions[ix-1] > 0) && (regressions[ix] <= 0) ? lastmaxix = ix - 1 : 0
-            end
-            dist[pmax, ix] = (prices[lastmaxix] - prices[ix]) / prices[ix]  # normalized to last price
-            dist[tmax, ix] = ix - lastmaxix
-            dist[pmin, ix] = (prices[ix] - prices[lastminix]) / prices[ix]  # normalized to last price
-            dist[tmin, ix] = ix - lastminix
-        end
+        lastminix = (regressions[ix-1] < 0) && (regressions[ix] >= 0) ? lastminix = ix - 1 : lastminix
+        lastmaxix = (regressions[ix-1] > 0) && (regressions[ix] <= 0) ? ix - 1 : lastmaxix
+        dist[pmax, ix] = (prices[lastmaxix] - prices[ix]) / prices[ix]  # normalized to last price
+        dist[tmax, ix] = ix - lastmaxix
+        dist[pmin, ix] = (prices[lastminix] - prices[ix]) / prices[ix]  # normalized to last price
+        dist[tmin, ix] = ix - lastminix
     end
     df = DataFrame(
         pricemax = dist[pmax, :], timemax = dist[tmax, :],
         pricemin = dist[pmin, :], timemin = dist[tmin, :])
+    return df
+end
+
+"""
+2 rolling features providing the last forward looking gain and the last backward looking loss,
+i.e. normalize to last price minimum
+"""
+function lastgainloss(prices, regressions)::DataFrames.DataFrame
+    gainix = 1
+    lossix = 2
+    lastmaxix = [1, 1]
+    lastminix = [1, 1]
+    gainloss = zeros(Float32, 2, size(regressions,1))
+    for ix in 2:size(regressions,1)
+        if (regressions[ix-1] <= 0) && (regressions[ix] > 0)
+            lastminix[1] = lastminix[2]
+            lastminix[2] = ix - 1
+        end
+        if (regressions[ix-1] >= 0) && (regressions[ix] < 0)
+            lastmaxix[1] = lastmaxix[2]
+            lastmaxix[2] = ix - 1
+        end
+        if lastmaxix[2] > lastminix[2]  # first loss then gain -> same minimum, different maxima
+            gainloss[gainix, ix] = (prices[lastmaxix[2]] - prices[lastminix[2]]) / prices[lastminix[2]]
+            gainloss[lossix, ix] = (prices[lastminix[2]] - prices[lastmaxix[1]]) / prices[lastminix[2]]
+        else  # first gain then loss -> same maximum, different mimima
+            gainloss[gainix, ix] = (prices[lastmaxix[2]] - prices[lastminix[1]]) / prices[lastminix[1]]
+            gainloss[lossix, ix] = (prices[lastminix[2]] - prices[lastmaxix[2]]) / prices[lastminix[2]]
+        end
+    end
+    df = DataFrame(lastgain = gainloss[gainix, :], lastloss = gainloss[lossix, :])
     return df
 end
 
@@ -71,49 +97,24 @@ end
 function regressionaccelerationhistory(regressions)
     acchistory = zeros(Float32, 1, size(regressions,1))
     for ix in 2:size(regressions,1)
-        if !(isequal(regressions[ix], missing) || isequal(regressions[ix-1], missing))
-            if regressions[ix] > regressions[ix-1]
-                if acchistory[ix-1] > 0
-                    acchistory[ix] = acchistory[ix-1] + 1
-                else
-                    acchistory[ix] = 1
-                end
-            elseif regressions[ix] < regressions[ix-1]
-                if acchistory[ix-1] < 0
-                    acchistory[ix] = acchistory[ix-1] - 1
-                else
-                    acchistory[ix] = -1
-                end
-            end  # else regressions[ix] == regressions[ix-1] => stay with acchistory[ix] = 0
-        end  # else stay with acchistory[ix] = 0
+        acceleration = regressions[ix] - regressions[ix-1]
+        if acceleration > 0
+            if acchistory[ix-1] > 0
+                acchistory[ix] = acchistory[ix-1] + acceleration
+            else
+                acchistory[ix] = acceleration
+            end
+        elseif acceleration < 0
+            if acchistory[ix-1] < 0
+                acchistory[ix] = acchistory[ix-1] + acceleration
+            else
+                acchistory[ix] = acceleration
+            end
+        end  # else regressions[ix] == regressions[ix-1] => stay with acchistory[ix] = 0
     end
     return acchistory
 end
 
-"""
-Assumption: the probability for a clear trade signal is higher after an overlapping area but it is unclear where.
-This function shall collect all buy/sell gradients versus all of their potential counter sell/buy gradients versus the gain between them as a histogram.
-To achieve this the gradients as well as the gaps need to be split into quantiles.
-"""
-function gradientgaphistogram(prices, regressions, regbuckets=20)::DataFrames.DataFrame
-    """
-        vector to map quantiles to array index and search function (Base.Sort.searchsortedfirst/searchsortedlast) to search index of a given gradient.
-        3 dim array: dim 1 for start gradient, dim 2 for end gradient, dim 3 for gain
-        always fill all gains of end gradients that have a valid start gradient. vector of start gradient index or missing.
-        for each sample 1st satisfy end gradients then establish new start gradient.
-    """
-    gainrange = 0.1  # 10% = 0.1 considered OK to cover -5% .. +5% gain range
-    gainstep = 0.01
-    gainquantiles = [g for g in (-gainrange/2):gainstep:(gainrange/2)]
-    println("gainquantiles=$gainquantiles")
-    regstep = 1 / (regbuckets - 1)
-    println("regstep=$regstep")
-    regprobs = [rs for rs in (regstep/2):regstep:(1-regstep/2)]
-    println("regprobs=$regprobs")
-    regquantiles = Statistics.quantile(skipmissing(regressions), regprobs)
-    println("regquantiles=$regquantiles")
-    return DataFrames.DataFrame()
-end
 
 """
 self.config = {
