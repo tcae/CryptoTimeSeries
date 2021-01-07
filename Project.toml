@@ -13,6 +13,7 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 DrWatson = "634d3b9d-ee7a-5ddf-bec9-22491ea816e1"
 JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+PlotlyBase = "a03496cd-edff-5a9b-9e67-9cda94a718b5"
 RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
 TimeseriesPrediction = "f218859d-9706-56aa-9ebf-1fa4ed7b8020"
 

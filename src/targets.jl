@@ -103,6 +103,9 @@ function gradientgaphistogram(prices, regressions, regbuckets=20, gainrange = 0.
     return (histo, regquantiles, gainborders)
 end
 
+"""
+derives likehoods per start/end regression gradient pair on basis of collected histogram
+"""
 function gradientthresholdlikelihoods(histo, regquantiles, gainborders, threshold=gainthreshold)
     regbuckets = length(regquantiles) + 1
     gainbuckets = length(gainborders) + 1
@@ -118,6 +121,9 @@ function gradientthresholdlikelihoods(histo, regquantiles, gainborders, threshol
     return likelihoods
 end
 
+"""
+identifies highest likelihood start/end regression gradient pair that reaches 1% gain or more
+"""
 function tradegradientthresholds(prices, regressions, regbuckets=20, threshold=gainthreshold)
     histo, regquantiles, gainborders = Targets.gradientgaphistogram(prices, regressions, regbuckets)
     lh = Targets.gradientthresholdlikelihoods(histo, regquantiles, gainborders, threshold)
@@ -127,6 +133,10 @@ function tradegradientthresholds(prices, regressions, regbuckets=20, threshold=g
     return (startregr, endregr)
 end
 
+"""
+Labels Sell when tradegradientthresholds endregression is reached (does not consider the real ramp down in each case).
+Labels Buy when either previous waves are high enough and minimum reached or tradegradientthresholds startregr is reached.
+"""
 function regressionlabels1(prices, regressions)
     # prepare lookup tables
     @assert size(prices) == size(regressions) "sizes of prices and regressions shall match"
@@ -164,8 +174,7 @@ function regressionlabels1(prices, regressions)
             end
             # falling slope processing
             targets[ix] = strongsell
-        end
-        if regressions[ix] > 0  # rising slope
+        else  # regressions[ix] > 0  # rising slope
             if (ixbuyend == 0)
                 if (regressions[ix] < endregr)
                     # from maximum backward until steep enough slope detected
@@ -179,6 +188,117 @@ function regressionlabels1(prices, regressions)
     end
     return targets
 end
+
+"""
+Labels Buy from the actual price minimum after the regression minimum.
+Label Sell from the actual price maximum before the regression maximum.
+"""
+function regressionlabels2(prices, regressions)
+    # prepare lookup tables
+    @assert size(prices) == size(regressions) "sizes of prices and regressions shall match"
+    targets = zeros(Int8, size(prices))
+    targets .= sell  # identified buy and hold labels will correct sell
+    firstix = 1
+    while isequal(regressions[firstix], missing)
+        firstix += 1
+    end
+    ixbuyend = 0
+    for ix in length(regressions):-1:firstix  # against timeline
+        if regressions[ix] <= 0  # falling slope
+            if ixbuyend != 0  # last index that is a potential buy of rising slope
+                ixbuystart = ix + 1 # valid index of minimum
+                for ix2 in ixbuystart+1:ixbuyend
+                    # from regression minimum forward search for price minimum
+                    if prices[ix2] < prices[ixbuystart]
+                        ixbuystart = ix2
+                    end
+                end
+                while ixbuystart <= ixbuyend  # label slope
+                    if relativegain(prices, ixbuystart, ixbuyend) >= (2*gainthreshold)
+                        targets[ixbuystart] = strongbuy
+                    elseif relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
+                        targets[ixbuystart] = buy
+                    else
+                        targets[ixbuystart] = hold
+                    end
+                    ixbuystart += 1
+                end
+                ixbuyend = 0
+            end
+            # falling slope processing
+            targets[ix] = strongsell
+        else  # regressions[ix] > 0  # rising slope
+            if (ixbuyend == 0)
+                # start at the end of the rising slope at the regression maximum to search backward for the price maximum
+                ixbuyend = ix
+            else
+                if prices[ix] > prices[ixbuyend]
+                    ixbuyend = ix
+                    # ixbuyend is last index that is a potential buy
+                end
+            end
+        end
+    end
+    return targets
+end
+
+"""
+Labels Sell when actual price maximum before regression maximum is reached
+Labels Buy when either previous waves are high enough and minimum reached or tradegradientthresholds startregr is reached.
+"""
+function regressionlabels3(prices, regressions)
+    # prepare lookup tables
+    @assert size(prices) == size(regressions) "sizes of prices and regressions shall match"
+    startregr::Float32, endregr::Float32 = Targets.tradegradientthresholds(prices, regressions)
+    # println("startregr=$startregr  endregr=$endregr")
+    df = Features.lastgainloss(prices, regressions)
+    # println("lastgain=$(df.lastgain)")
+    # println("lastloss=$(df.lastloss)")
+    @assert size(prices) == size(df.lastgain) == size(df.lastloss)
+    targets = zeros(Int8, size(prices))
+    targets .= sell  # identified buy and hold labels will correct sell
+    firstix = 1
+    while isequal(regressions[firstix], missing)
+        firstix += 1
+    end
+    ixbuyend = 0
+    for ix in length(regressions):-1:firstix  # against timeline
+        if regressions[ix] <= 0  # falling slope
+            if ixbuyend != 0  # last index that is a potential buy of rising slope
+                ixbuystart = ix + 1 # valid index of minimum
+                stronglastgainloss = (df.lastgain[ixbuyend] >= gainthreshold) && (df.lastgain[ixbuyend] >= df.lastloss[ixbuyend])
+                while (regressions[ixbuystart] < startregr) && !stronglastgainloss && (ixbuystart < ixbuyend) && (relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold)
+                    # from minimum forward until steep enough slope detected
+                    targets[ixbuystart] = buy
+                    ixbuystart += 1
+                end
+                while ixbuystart <= ixbuyend  # label slope
+                    if relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
+                        targets[ixbuystart] = strongbuy
+                    else
+                        targets[ixbuystart] = hold
+                    end
+                    ixbuystart += 1
+                end
+                ixbuyend = 0
+            end
+            # falling slope processing
+            targets[ix] = strongsell
+        else  # regressions[ix] > 0  # rising slope
+            if (ixbuyend == 0)
+                # start at the end of the rising slope at the regression maximum to search backward for the price maximum
+                ixbuyend = ix
+            else
+                if prices[ix] > prices[ixbuyend]
+                    ixbuyend = ix
+                    # ixbuyend is last index that is a potential buy
+                end
+            end
+        end
+    end
+    return targets
+end
+
 
 """
     Targets are based on regressioin info, i.e. the gain between 2 horizontal regressions with at least 1% gain.

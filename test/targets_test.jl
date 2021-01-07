@@ -101,6 +101,20 @@ function tradegradientthreshold_test2()
     return (startregr == -0.015) && (endregr == -0.015)
 end
 
+function regressionlabelsx_test(targetlabelfunction, testdatafilename)
+    dffile = projectdir("test", testdatafilename)
+    io = CSV.File(dffile, types=Dict(1=>Float32, 2=>Float32, 3=>Int8), comment="#")
+    df = DataFrame(io)
+    # display(describe(df))
+    # println(df.price)
+    # println(df.regression)
+    targetlabels = targetlabelfunction(df.price, df.regression)
+    df.result = targetlabels
+    # show(df, allrows=true)
+    # println("targetlabels=$targetlabels")
+    return targetlabels == df.expectation
+end
+
 function regressionlabels1_test()
     dffile = projectdir("test", "regressionlabels1_testdata.csv")
     io = CSV.File(dffile, types=Dict(1=>Float32, 2=>Float32, 3=>Int8), comment="#")
@@ -125,6 +139,9 @@ end
 # gradientgaphistogram_test2()
 Config.init(test)
 println("\nconfig mode = $(Config.configmode)")
+
+println("""regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")=$(regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv"))""")
+
 @testset "Targets tests" begin
 
 @test gradientgaphistogram_test()
@@ -133,6 +150,9 @@ println("\nconfig mode = $(Config.configmode)")
 @test tradegradientthreshold_test()
 @test tradegradientthreshold_test2()
 @test regressionlabels1_test()
+@test regressionlabelsx_test(Targets.regressionlabels1, "regressionlabels1_testdata.csv")
+@test regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")
+@test regressionlabelsx_test(Targets.regressionlabels3, "regressionlabels3_testdata.csv")
 
 end  # of testset
 

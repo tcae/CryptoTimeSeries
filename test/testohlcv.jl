@@ -9,7 +9,7 @@ Produces test ohlcv data pattern
 """
 module TestOhlcv
 
-using Dates, DataFrames
+using Dates, DataFrames, Plots, PlotlyBase
 using Test
 using ..Config
 using ..Ohlcv
@@ -23,13 +23,13 @@ function sinedata(firstutc::DateTime, lastutc::DateTime)
     lastutc = round(lastutc, Dates.Minute)
     # first is the reference point to reproduce the pattern
     minutes = Int((Dates.Minute(lastutc - firstutc) + Dates.Minute(1)) / Dates.Minute(1))
-    display(minutes)
+    # display(minutes)
     # minutes are used as degrees, i.e. 1 full sinus = 360 degree = 6h
     x = [m * pi / 180 for m in 1:minutes]
     y = sin.(x)
-    display(y)
+    # display(y)
     timestamp = [firstutc + Dates.Minute(m) for m in 1:minutes]
-    display(timestamp)
+    # display(timestamp)
     open =   (y / 4)
     high =   (y / 2)
     low =    (y / 2)
@@ -45,10 +45,21 @@ end
 
 
 Config.init(test)
-df = sinedata(
+
+function sinedata_test()
+    df = sinedata(
+        DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s"),
+        DateTime("2019-01-03 01:11:28:121", "y-m-d H:M:S:s"))
+    display(df)
+end
+
+plotly()
+df = TestOhlcv.sinedata(
     DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s"),
     DateTime("2019-01-03 01:11:28:121", "y-m-d H:M:S:s"))
-display(df)
+# show(df)
+plot(df.timestamp, [df.open, df.high])
+
 
 @testset "Ohlcv tests" begin
 
