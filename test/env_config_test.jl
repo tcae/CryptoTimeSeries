@@ -19,7 +19,7 @@ Config.init(production)
 @testset "Config tests" begin
 
 @test Config.datetimeformat == "%Y-%m-%d_%Hh%Mm"
-@test Config.datafile("btc_OHLCV", Config.python, "csv") == "/home/tor/crypto/Features/btc_OHLCV_df.csv"
+@test Config.datafile("btc_OHLCV", "_df.csv") == "/home/tor/crypto/Features/btc_OHLCV_df.csv"
 @test Config.Authentication().key == "5gchI8bnzXYAimGmv4Wn6yQ2Yp5o6cwDBsyhrRawVDPcqTD43Rd6sOe13Xbbbrpv"
 
 end

@@ -6,184 +6,79 @@ include("../src/features.jl")
 
 module Targets
 
-import Pkg; Pkg.add(["JDF", "RollingFunctions"])
-using DataFrames, Statistics
-using ..Config, ..Features
+# import Pkg; Pkg.add(["JDF", "RollingFunctions"])
+using DataFrames, Statistics, Logging, NamedArrays
+using ..Config, ..Ohlcv, ..Features
 
 strongsell=-2; sell=-1; hold=0; buy=1; strongbuy=2
 gainthreshold = 0.01  # 1% gain threshold
-lossthreshold = 0.005  # loss threshold to signal strong sell
+lossthreshold = -0.005  # loss threshold to signal strong sell
+gainlikelihoodthreshold = 0.7  # 50% probability threshold to meet or exceed gain/loss threshold
+
 
 """
-returns the relative forward/backward looking gain
+Returns a Float32 vector equal in size to prices/regressions that provides for each price the gain to the next extreme of 'regressions'.
 """
-function relativegain(prices, firstix, secondix; forward=true)
-    if forward
-        gain = (prices[secondix] - prices[firstix]) / prices[firstix]
-        # println("forward gain(prices[$firstix]= $(prices[firstix]) prices[$secondix]= $(prices[secondix]))=$gain")
-    else
-        gain = (prices[secondix] - prices[firstix]) / prices[secondix]
-        # println("backward gain(prices[$firstix]= $(prices[firstix]) prices[$secondix]= $(prices[secondix]))=$gain")
-    end
-    return gain
-end
-
-"""
-Assumption: the probability for a successful trade signal is higher at a certain slope threshold but it is unclear where this threshold is.
-This function shall collect all buy/sell gradients versus all of their potential counter sell/buy gradients versus the gain between them as a histogram
-to identify the slope where a majority of gains is above 1% gain.
-To achieve this the gradients as well as the gaps need to be split into buckets.
-"""
-function gradientgaphistogram(prices, regressions, regbuckets=20, gainrange = 0.1)
-
-    # prepare lookup tables
-    @assert size(prices) == size(regressions) "sizes of prices and regressions shall match"
-    # gainrange = 0.1  # 10% = 0.1 considered OK to cover -5% .. +5% gain range
-    # gainrange = 0.02  # 2% = 0.02 considered OK to decided about gradients for target label
-    gainstep = 0.01
-    gainborders = [g for g in (-gainrange/2):gainstep:(gainrange/2)]
-    # println("gainborders=$gainborders  length(gainborders)=$(length(gainborders))")
-    regstep = 1 / (regbuckets - 1)
-    # println("regstep=$regstep")
-    regprobs = [rs for rs in (regstep/2):regstep:(1-regstep/2)]
-    # println("regprobs=$regprobs")
-    regquantiles = Statistics.quantile(skipmissing(regressions), regprobs)  # quantile border considers < vs. >=
-    # println("regquantiles=$regquantiles  length(regquantiles)=$(length(regquantiles))")
-    @assert regbuckets == (length(regquantiles) + 1 )
-
-    histo = zeros(Int32, (regbuckets, regbuckets, length(gainborders)+1))
-    gradpairgains = zeros(Union{Missing, Float32}, (regbuckets, regbuckets))
-    gradpairgains .= missing  # init gradient pair gains
-    endslopeix = 0
-
-
-    #=
-    gainborders and regquantiles are vectors to map value to array index and search function (Base.Sort.searchsortedfirst/searchsortedlast) to search index of a given gain or gradient.
-    histo = 3 dim array: dim 1 for start gradient, dim 2 for end gradient, dim 3 for gain
-    =#
-    for sampleix in 2:length(regressions)
-        if !(isequal(regressions[sampleix], missing) || isequal(regressions[sampleix-1], missing))
-            if (regressions[sampleix] >= 0)
-                sampleregix = searchsortedlast(regquantiles, regressions[sampleix]) + 1  # index of regression
-                # println("sampleregix($sampleix, $(regressions[sampleix]))=$sampleregix")
-                if (regressions[sampleix-1] < 0)  # minimum detected
-                    gradpairgains .= missing  # init gradient pair gains
-                    endslopeix = sampleix+1
-                    while (endslopeix <= length(regressions)) && (regressions[endslopeix] >= 0) # no check required for missing
-                        endslopeix += 1
-                    end
-                    endslopeix > length(regressions) ? break : true # for sampleix loop due to no more maximum
-                    endslopeix -= 1
-                end
-                for ix in endslopeix:-1:(sampleix+1)
-                    endregix = searchsortedlast(regquantiles, regressions[ix]) + 1  # index of regression
-                    if isequal(gradpairgains[sampleregix, endregix], missing)
-                        gain = relativegain(prices, sampleix, ix, forward=true)
-                        gradpairgains[sampleregix, endregix] = gain  # overwrite any previous gain during this ascend
-                        # println("gradpairgains[$sampleregix, $endregix] = $gain")
-                    end
-                end
-            else  # (regressions[sampleix] < 0)
-                if (regressions[sampleix-1] >= 0)  # maximum detected
-                    # display(gradpairgains)
-                    for startix in 1:regbuckets
-                        for endix in 1:regbuckets
-                            if !isequal(gradpairgains[startix, endix], missing)
-                                gain = gradpairgains[startix, endix]
-                                gainix = searchsortedlast(gainborders, gain) + 1
-                                histo[startix, endix, gainix] += 1
-                            end
-                        end
-                    end
-                end
-            end
+function gain2nextextreme(prices, regressions)
+    pricelen = length(prices)
+    @assert pricelen == length(regressions)
+    regressiongains = zeros(Float32, pricelen)
+    runix = startix = 1
+    while startix < pricelen
+        endix = Features.nextextremeindex(regressions, startix)
+        if endix == 0  # no extreme but the array end
+            absmaxix = endix = pricelen
+        else
+            absmaxix = absmaxindex(prices, regressions, startix, endix)
         end
-    end
-
-    return (histo, regquantiles, gainborders)
-end
-
-"""
-derives likehoods per start/end regression gradient pair on basis of collected histogram
-"""
-function gradientthresholdlikelihoods(histo, regquantiles, gainborders, threshold=gainthreshold)
-    regbuckets = length(regquantiles) + 1
-    gainbuckets = length(gainborders) + 1
-    @assert size(histo) == (regbuckets, regbuckets, gainbuckets)
-    likelihoods = zeros(Float32, (regbuckets, regbuckets))
-    gain1pctix = searchsortedlast(gainborders, threshold) + 1  # ix with gain >= threshold
-    allsum = sum(histo)
-    for startix in 1:regbuckets
-        for endix in 1:regbuckets
-            likelihoods[startix, endix] = sum(histo[startix, endix, gain1pctix:end]) / allsum
+        while runix <= absmaxix
+            regressiongains[runix] = relativegain(prices, runix, absmaxix)
+            runix += 1
         end
+        startix = endix
     end
-    return likelihoods
-end
-
-"""
-identifies highest likelihood start/end regression gradient pair that reaches 1% gain or more
-"""
-function tradegradientthresholds(prices, regressions, regbuckets=20, threshold=gainthreshold)
-    histo, regquantiles, gainborders = Targets.gradientgaphistogram(prices, regressions, regbuckets)
-    lh = Targets.gradientthresholdlikelihoods(histo, regquantiles, gainborders, threshold)
-    max, ix = findmax(lh)
-    startregr = ix[1]>1 ? regquantiles[ix[1]-1] : regquantiles[1]
-    endregr = ix[2]>1 ? regquantiles[ix[2]-1] : regquantiles[1]
-    return (startregr, endregr)
+    return regressiongains
 end
 
 """
 Labels Sell when tradegradientthresholds endregression is reached (does not consider the real ramp down in each case).
 Labels Buy when either previous waves are high enough and minimum reached or tradegradientthresholds startregr is reached.
+prices shall be the ohlcv.pivot prices array.
 """
-function regressionlabels1(prices, regressions)
-    # prepare lookup tables
-    @assert size(prices) == size(regressions) "sizes of prices and regressions shall match"
-    startregr::Float32, endregr::Float32 = Targets.tradegradientthresholds(prices, regressions)
+function singleregressionlabels(prices, regressionminutes)  #! UNIT TEST TO BE ADDED
+    regressions = Features.normrollingregression(prices, regressionminutes)
+    startregr, endregr, _, _ = Targets.tradegradientthresholds(prices, regressions)
     # println("startregr=$startregr  endregr=$endregr")
+    endregr = max(endregr, 0)
     df = Features.lastgainloss(prices, regressions)
     # println("lastgain=$(df.lastgain)")
     # println("lastloss=$(df.lastloss)")
-    @assert size(prices) == size(df.lastgain) == size(df.lastloss)
+    regressiongains = gain2nextextreme(prices, regressions)
+    priceslen = size(prices, 1)
+    @assert priceslen == size(df.lastgain, 1) == size(df.lastloss, 1) == size(regressions, 1) == size(regressiongains, 1)
     targets = zeros(Int8, size(prices))
-    firstix = 1
-    while isequal(regressions[firstix], missing)
-        firstix += 1
-    end
-    ixbuyend = 0
-    for ix in length(regressions):-1:firstix  # against timeline
-        if regressions[ix] <= 0  # falling slope
-            if ixbuyend != 0  # last index that is a potential buy of rising slope
-                ixbuystart = ix + 1 # valid index of minimum
-                stronglastgainloss = (df.lastgain[ixbuyend] >= gainthreshold) && (df.lastgain[ixbuyend] >= df.lastloss[ixbuyend])
-                while (regressions[ixbuystart] < startregr) && !stronglastgainloss && (ixbuystart < ixbuyend) && (relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold)
-                    # from minimum forward until steep enough slope detected
-                    targets[ixbuystart] = buy
-                    ixbuystart += 1
-                end
-                while ixbuystart <= ixbuyend  # label slope
-                    if relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
-                        targets[ixbuystart] = strongbuy
-                    else
-                        targets[ixbuystart] = hold
-                    end
-                    ixbuystart += 1
-                end
-                ixbuyend = 0
+    lastgain = lastlastgain = 0.0
+    for ix in 1:size(prices, 1)
+        if regressiongains[ix] >= gainthreshold  # buy
+            stronglastgain = (lastlastgain >= gainthreshold) && (lastlastgain >= -lastgain) && (regressions[ix] > 0)
+            # ! investigate on training data whhether the stronglastgain criteria is valid
+            if (regressions[ix] > startregr) || stronglastgain
+                targets[ix] = strongbuy
+            else
+                targets[ix] = buy
             end
-            # falling slope processing
+        elseif regressiongains[ix] <= lossthreshold
             targets[ix] = strongsell
-        else  # regressions[ix] > 0  # rising slope
-            if (ixbuyend == 0)
-                if (regressions[ix] < endregr)
-                    # from maximum backward until steep enough slope detected
-                    targets[ix] = sell
-                else
-                    # ixbuyend is last index that is a potential buy
-                    ixbuyend = ix
-                end
+        else  # gainthreshold <= regressions[ix] <= lossthreshold
+            if (regressions[ix] < endregr)
+                targets[ix] = sell
+            else
+                targets[ix] = hold
             end
+        end
+        if (ix < priceslen) && (sign(regressiongains[ix]) != sign(regressiongains[ix+1]))
+            lastlastgain = lastgain
+            lastgain = regressiongains[ix+1]
         end
     end
     return targets

@@ -54,13 +54,27 @@ function columnarray_test()
     0.207287  0.204343     0.204343      0.204703      0.213031]
     # display(expected)
     ohlcv2 = Ohlcv.read("test")
+    # display(ohlcv2)
     cols = [:pivot, :volume, :open]
     colarray = Ohlcv.columnarray(ohlcv2, "training", cols)
     return isapprox(expected, colarray)
 end
 
+function pivot_test()
+    expected = [ 0.205815  0.204343     0.204343      0.204522      0.214546;
+    725.0       0.0       3137.0       14150.0       33415.0;
+    0.207287  0.204343     0.204343      0.204703      0.213031]
+    # display(expected)
+    ohlcv2 = Ohlcv.read("test")
+    # rename!(ohlcv2.df,:pivot => :pivot2)
+    ohlcv2 = Ohlcv.addpivot!(ohlcv2)
+    display(ohlcv2)
+    # return isapprox(ohlcv2.df.pivot, ohlcv2.df.pivot2)
+end
+
 # println("ohlcv_test")
 Config.init(test)
+# pivot_test()
 
 @testset "Ohlcv tests" begin
 

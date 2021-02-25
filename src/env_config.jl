@@ -24,7 +24,6 @@ using DataFrames
 using JSON
 
 @enum Mode test production
-@enum DataFrameType python julia
 
 datetimeformat = "%Y-%m-%d_%Hh%Mm"
 quotesymbol = "usdt"
@@ -41,6 +40,7 @@ authpathprefix = ".catalyst/data/exchanges/binance/"
 cachepath = datapathprefix * "cache/"
 datapath = "Features/"
 configmode = production
+authorization = nothing
 # ! file path checks to be added
 
 struct Authentication
@@ -66,6 +66,10 @@ end
 
 function init(mode::Mode)
     global configmode = mode
+    global bases, trainingbases, datapath
+    global authorization
+
+    authorization = Authentication()
     if configmode == production
         bases = [
             "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx", "zrx", "bch",
@@ -78,16 +82,13 @@ function init(mode::Mode)
         trainingbases = ["sinus"]
         bases = ["sinus"]
         datapath = "TestFeatures/"
+        # datapath = "Features/"
     end
 end
 
-function datafile(mnemonic::String, dataframetype::DataFrameType, extension::String)
+function datafile(mnemonic::String, extension=".jdf")
     # no file existence checks here because it may be new file
-    if dataframetype == python
-        return home * datapathprefix * datapath * mnemonic * "_df." * extension
-    else
-        return home * datapathprefix * datapath * mnemonic * "_jl." * extension
-    end
+    return home * datapathprefix * datapath * mnemonic * extension
 end
 
 function setsplitfilename()::String

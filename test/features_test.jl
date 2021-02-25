@@ -49,11 +49,9 @@ function lastgainloss_test()
     df = Features.lastgainloss(prices, regressions)
     refdf = DataFrame(
         lastgain = Float32[0.0, 0.0, 0.0, 0.091836736, 0.091836736, 0.091836736, 0.07446808],
-        lastloss = Float32[0.0, 0.0, 0.0, 0.0, 0.0, -0.13829787, -0.13829787])
+        lastloss = Float32[0.0, 0.0, 0.0, 0.0, 0.0, -0.121495, -0.121495])
     # println(df)
     # println(refdf)
-    # println(df.lastgain)
-    # println(df.lastloss)
     return isapprox(df, refdf, atol=10^-5)
 end
 

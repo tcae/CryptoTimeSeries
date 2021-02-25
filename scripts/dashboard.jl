@@ -14,33 +14,34 @@ include("../src/env_config.jl")
 using Dash, DashHtmlComponents, DashCoreComponents
 envbases = ["btc", "xrp", "eth"]
 
-app = dash()
+app = dash(external_stylesheets=["https://codepen.io/chriddyp/pen/bWLwgP.css"])
 
-app.layout = html_div() do
-    html_h1("Hello Dash"),
-    html_div("Dash: A web application framework for Julia"),
-    dcc_graph(
-        id = "example-graph-1",
-        figure = (
-            data = [
-                (x = ["giraffes", "orangutans", "monkeys"], y = [20, 14, 23], type = "bar", name = "SF"),
-                (x = ["giraffes", "orangutans", "monkeys"], y = [12, 18, 29], type = "bar", name = "Montreal"),
-            ],
-            layout = (title = "Dash Data Visualization", barmode="group")
-        )
-    ),
-    html_div() do
+app.layout = html_div(style = (clear = "both",)) do
+    # html_h1("Hello Dash"),
+    # html_div("Dash: A web application framework for Julia"),
+    # dcc_graph(
+    #     id = "example-graph-1",
+    #     figure = (
+    #         data = [
+    #             (x = ["giraffes", "orangutans", "monkeys"], y = [20, 14, 23], type = "bar", name = "SF"),
+    #             (x = ["giraffes", "orangutans", "monkeys"], y = [12, 18, 29], type = "bar", name = "Montreal"),
+    #         ],
+    #         layout = (title = "Dash Data Visualization", barmode="group"), style = (display = "inline",)
+    #     )
+    # ),
+    html_div([
         dcc_checklist(
             id = "crypto_select",
             options = [(label=i, value=i) for i in envbases],
-            labelStyle = (display = "flow-root")
-        ),
-        html_button(name="all", id="all_button", style=(display = "flow-root")),
-        html_button(name="none", id="none_button", style=(display = "flow-root")),
-        html_button(name="update data", id="update_data", style=(display = "flow-root")),
-        html_button(name="reset selection", id="reset_selection", style=(display = "flow-root")),
-        style=(display = "flow-root")
-    end
+            labelStyle = (:display => "inline-block")
+        )
+    ]),
+    html_div([
+        html_button("all", name="all", id="all_button"),
+        html_button("none", id="none_button"),
+        html_button("update data", id="update_data"),
+        html_button("reset selection", id="reset_selection")
+    ])
 end
 #=
 app.layout = html.Div([
