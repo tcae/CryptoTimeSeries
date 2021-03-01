@@ -58,16 +58,23 @@ end
 Config.init(test)
 # config_test()
 # Features.executeconfig()
-# display(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))
 # display(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]))
 # lastextremes_test()
 # lastgainloss_test()
+# println("rolling regression $(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
+# println("norm rolling regression $(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
 
 @testset "Features tests" begin
 
-@test abs(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)[7] - 0.310714285714285) < 10^-7
-@test isapprox(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4), [0.0, 0.0, 0.0, 0.32, 0.29, 0.17, 0.37], atol=10^-5)
-@test isapprox(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)[4:7], Features.normrollingregression2([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)[4:7], atol=10^-5)
+a,b = Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)
+@test abs(b[7] - 0.31071427) < 10^-7
+@test isapprox(a, [2.8535714, 3.1642857, 3.475, 3.7857144, 4.0964284, 4.4071426, 4.7178574], atol=10^-5)
+a,b = Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
+@test isapprox(a, [2.87, 3.19, 3.51, 3.83, 4.06, 4.13, 4.78], atol=10^-5)
+@test isapprox(b, [0.32, 0.32, 0.32, 0.32, 0.29, 0.17, 0.37], atol=10^-5)
+a,b = Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
+@test isapprox(a, [0.98965514, 1.0290322, 0.975, 1.0078948, 1.015, 1.0073171, 0.95600003], atol=10^-5)
+@test isapprox(b, [0.11034483, 0.103225805, 0.08888888, 0.08421052, 0.0725, 0.041463416, 0.074], atol=10^-5)
 @test Features.relativevolume([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 3, 5) == [1.0555555555555556; 1.0526315789473684; 1.025]
 @test lastextremes_test()
 @test lastgainloss_test()

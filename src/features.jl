@@ -33,19 +33,42 @@ function nextextremeindex(regressions, startindex)
     return extremeindex
 end
 
+ """
+ This implementation ignores index and assumes an equidistant x values.
+ y is a one dimensional array.
 
-function rollingregression(price, windowsize)::Array{Union{Missing, Float32}}
+ - Regression Equation(y) = a + bx
+ - Gradient(b) = (NΣXY - (ΣX)(ΣY)) / (NΣ(X^2) - (ΣX)^2)
+ - Intercept(a) = (ΣY - b(ΣX)) / N
+ - used from https://www.easycalculation.com/statistics/learn-regression.php
+
+ returns 2 one dimensioinal arrays: gradient and regression_y
+ gradient are the gradients per minute (= x equidistant)
+ regression_y are the regression line last points
+
+ k(x) = 0.310714 * x + 2.54286 is the linear regression of [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
+ """
+function rollingregression(y, windowsize)::Tuple{Array{Float32,1},Array{Float32,1}}
     sum_x = sum(1:windowsize)
     sum_x_squared = sum((1:windowsize).^2)
-    sum_xy = rolling(sum,price,windowsize,collect(1:windowsize))
-    sum_y = rolling(sum,price,windowsize)
-    b = ((windowsize*sum_xy) - (sum_x*sum_y))/(windowsize*sum_x_squared - sum_x^2)
-    # c = [fill(missing,windowsize-1);b]
-    c = [fill(0.0,windowsize-1);b]  # fill with leading zeros instead of missing
+    sum_xy = RollingFunctions.rolling(sum, y, windowsize,collect(1:windowsize))
+    sum_y = RollingFunctions.rolling(sum, y, windowsize)
+    gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
+    intercept = (sum_y - gradient*(sum_x)) / windowsize
+    regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
+    gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
+    return regression_y, gradient
 end
 
-function normrollingregression(price, windowsize)
-    return rollingregression(price, windowsize) ./ price
+"""
+Returns the regression y and the regression gradient as a ratio of the y input, i.e. a regression y ratio of 0.95 means that the regression y is at 95% of the corresponding input y.
+The same normalization applies for the gradient.
+"""
+function normrollingregression(y, windowsize)
+    regression_y, gradient = rollingregression(y, windowsize)
+    regression_y_ratio = regression_y ./ y
+    gradient_ratio = gradient ./ y
+    return regression_y_ratio, gradient_ratio
 end
 
 function relativevolume(volumes, shortwindow::Int, largewindow::Int)
@@ -164,16 +187,16 @@ self.config = {
 """
 function f4condagg!(ohlcv::Ohlcv.OhlcvData)
     df::DataFrames.DataFrame = ohlcv.df
-    df.regr5m = normrollingregression(df.pivot, 5)
-    df.regr15m = normrollingregression(df.pivot, 15)
-    df.regr30m = normrollingregression(df.pivot, 30)
-    df.regr1h = normrollingregression(df.pivot, 60)
-    df.regr2h = normrollingregression(df.pivot, 2*60)
-    df.regr4h = normrollingregression(df.pivot, 4*6)
-    df.regr12h = normrollingregression(df.pivot, 12*60)
-    df.regr24h = normrollingregression(df.pivot, 24*60)
-    df.regr3d = normrollingregression(df.pivot, 3*24*60)
-    df.regr9d = normrollingregression(df.pivot, 9*24*60)
+    df.normregrprice5m, df.normregrgrad5m = normrollingregression(df.pivot, 5)
+    df.normregrprice15m, df.normregrgrad15m = normrollingregression(df.pivot, 15)
+    df.normregrprice30m, df.normregrgrad30m = normrollingregression(df.pivot, 30)
+    df.normregrgrad1h = normrollingregression(df.pivot, 60)
+    df.normregrgrad2h = normrollingregression(df.pivot, 2*60)
+    df.normregrgrad4h = normrollingregression(df.pivot, 4*6)
+    df.normregrgrad12h = normrollingregression(df.pivot, 12*60)
+    df.normregrgrad24h = normrollingregression(df.pivot, 24*60)
+    df.normregrgrad3d = normrollingregression(df.pivot, 3*24*60)
+    df.normregrgrad9d = normrollingregression(df.pivot, 9*24*60)
     df.vol5m1h = relativevolume(df.volume, 5, 60)
     df.vol1h1d = relativevolume(df.volume, 60, 24*60)
 end
@@ -190,18 +213,6 @@ function features1(ohlcv::Ohlcv.OhlcvData)
     features[5,:] = normrollingregression(df.pivot, 30)
     features[6,:] = normrollingregression(df.pivot, 60)
     return features
-end
-
-# ============================
-# stuff below are cross checks
-
-function normrollingregression2(price, windowsize)::Array{Union{Missing, Float32}}
-    regressionnorm = zeros(size(price, 1))
-    for ix in windowsize:size(price,1)
-        pricenorm = price / price[ix]
-        regressionnorm[ix] = Features.rollingregression(pricenorm, windowsize)[ix]
-    end
-    return regressionnorm
 end
 
 # =====================

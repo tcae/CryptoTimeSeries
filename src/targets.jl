@@ -194,6 +194,69 @@ function regressionlabels3(prices, regressions)
     return targets
 end
 
+"""
+Returns a Float32 vector equal in size to prices/regressions that provides for each price the gain to the next extreme of 'regressions'.
+The index of the next extreme is also provided as an Int array
+"""
+function rollingnextextreme(prices, regressions)  # ! missing unit test
+    pricelen = length(prices)
+    @assert pricelen == length(regressions)
+    gain = zeros(Float32, pricelen)
+    xix = zeros(Int32, pricelen)
+    ix = xixnext = 1
+    while ix < pricelen
+        xixnext = Features.nextextremeindex(regressions, xixnext)
+        xixnext = xixnext == 0 ? pricelen : xixnext
+        while ix <= xixnext
+            xix[ix] = xixnext
+            gain[ix] = (prices[xixnext] - prices[ix]) / prices[ix]
+            ix += 1
+        end
+    end
+    return gain, xix
+end
+
+"""
+Buy if regression(5) is at start up slope and next extreme or any longer regression has a regression price gain > gainthreshold before having a regression price loss < lossthreshold.
+Sell if regression(5) is at start down slope and next extreme or any longer regression has a regression loss < lossthreshold before having a regression price gain > gainthreshold.
+If there is no regression gainthreshold or lossthreshold exceeded then sell.
+
+- `prices` is an array of not yet normalized pivot prices.
+- `regressionminutes` is an array of regression windows in minutes.
+
+Returns a dict of intermediate and final results consiting of arrays of same length as prices with the following keys:
+- `target` = array of integers denoting the ideal labels, which is the result of this function
+- *regression minutes* = dict of intermediate results belonging to *regression minutes*
+    - `gradient` = array of gradients of *regression minutes*
+    - `price` = array of regression prices (not actual prices) of *regression minutes*
+    - `xix` = index of next regression extreme of *regression minutes*
+    - `gain` = regression price gain as a ratio to current regression price to next extreme of *regression minutes*
+"""
+function targets4(prices, regressionminutes)  # ! missing unit test
+    sort!(regressionminutes)
+    result = Dict()
+    result[:target] = zeros(Int8, length(prices))
+    for rmin in regressionminutes
+        result[rmin] = Dict()
+        result[rmin][:price], result[rmin][:gradient] = Features.rollingregression(prices, rmin)
+        result[rmin][:gain], result[rmin][:xix] = rollingnextextreme(result[rmin][:price], result[rmin][:gradient])
+    end
+    for ix in 1:length(prices)
+        for rmin in regressionminutes
+            result[:target] = sell  # in doubt sell
+            if result[rmin][:gain][ix] > gainthreshold
+                result[:target] = buy
+                break
+            elseif result[rmin][:gain][ix] < lossthreshold
+                result[:target] = sell
+                break
+            elseif result[rmin][:gain][ix] > 0
+                result[:target] = hold
+                # no break because a buy or sell may come with larger regression windows
+            end
+        end
+    end
+end
 
 """
     Targets are based on regressioin info, i.e. the gain between 2 horizontal regressions with at least 1% gain.

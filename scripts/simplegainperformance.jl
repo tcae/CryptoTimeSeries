@@ -33,6 +33,9 @@ This script measures the performace on a trinaing set of cryptocurrencies when b
 
   approach: use the last n=3 predecessor slopes to determine by majority vote how the mnext slope likely works out in terms of gain
 do that for different windows and switch after each sell to the best performing window
+
+Break out handling approach: if smaller regression windows are within x* standard deviation (rollstd) or within a fixed threshold (e.g. 1%) with higher likelihood that the change is significant then follow the shorter outlier.
+    As soon as the shortest outlier is again within the x * standard deviation of a longer then switch back to that one.
 """
 # import Pkg; Pkg.add(["JDF", "RollingFunctions", "StatsBase])
 using Test, DataFrames, Statistics, Logging, NamedArrays, StatsBase
@@ -78,6 +81,83 @@ function singlebasegradientgainhistory(prices, regressions; lastupgainthreshold,
     gains[1] = 1.0  # start: 1 USDT
     lastix = 0
     gldf = Features.lastgainloss(prices, regressions)
+    for ix in 2:size(prices, 1)
+        if regressions[ix] > 0.0
+            if regressions[ix - 1] <= 0.0  # start of upslope
+                if (gldf[ix, :lastgain] > lastupgainthreshold) && ((!upgtdown) || (gldf[ix, :lastgain] > abs(gldf[ix, :lastloss])))
+                    lastix = ix
+                    gains[ix] = gains[ix - 1] * (1 - fee)  # buy
+                else
+                    lastix = 0  # indicating no upslope to consider as gain
+                    gains[ix] = gains[ix - 1]
+                end
+            else
+                gains[ix] = lastix > 0 ? gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix)) : gains[ix - 1]
+            end
+        else  # regressions[ix] <= 0.0
+            if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
+                gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix) - fee)  # sell
+            else
+                gains[ix] = gains[ix - 1]
+            end
+        end
+    end
+    return gains
+end
+
+"""
+This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
+Only buy on upslope if lastgain > lastupgainthreshold.
+If upgtdown == true then only buy if also lastgain > lastloss.
+"""
+function lastregressionamplitudes(regressions::Dict(), nbramplitudes=2)
+    modlimit = nbramplitudes+2
+    xtreme = ones(Int32, (modlimit-1))
+    xix = 1
+
+    function xixoffset(offset)
+        return (xix + offset + modlimit) % modlimit
+    end
+
+    function xtremeoffset(offset)
+        return xtreme[xixoffset(offset)]
+    end
+
+    up = zeros(Float32, size(regressions[:prices], 1))
+    down = zeros(Float32, size(regressions[:prices], 1))
+    lastix = 0
+    for ix in 2:size(regressions,1)
+        down[ix] = down[ix-1]
+        up[ix] = up[ix-1]
+        if (regressions[ix-1] <= 0) && (regressions[ix] > 0)  # start up slope
+            xix = xixoffset(1)
+            xtreme[xix] = ix
+            down[ix] = (regressions[:prices][ix] - regressions[:prices][xtremeoffset(-1)]) / regressions[:prices][xtremeoffset(-1)]
+        end
+        if (regressions[ix-1] >= 0) && (regressions[ix] < 0)  # start down slope
+            xix = xixoffset(1)
+            xtreme[xix] = ix
+            up[ix] = (regressions[:prices][ix] - regressions[:prices][xtremeoffset(-1)]) / regressions[:prices][xtremeoffset(-1)]
+        end
+    end
+    return up, down
+end
+
+"""
+This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
+Only buy on upslope if lastgain > lastupgainthreshold.
+If upgtdown == true then only buy if also lastgain > lastloss.
+"""
+function multibasegradientgainhistory(prices, regressionminutes; lastupgainthreshold)
+    gains = zeros(Float32, size(prices, 1))
+    gains[1] = 1.0  # start: 1 USDT
+    lastix = 0
+    regr = Dict()
+    for regrminutes in regressionminutes
+        regr[regrminutes] = Dict()
+        regr[regrminutes][:prices], regr[regrminutes][:gradient] = Features.normrollingregression(prices, regrminutes)
+    end
+    control = regressionminutes[end]
     for ix in 2:size(prices, 1)
         if regressions[ix] > 0.0
             if regressions[ix - 1] <= 0.0  # start of upslope
@@ -380,7 +460,7 @@ function gainperregressionwindowlastgain2(bases = Config.trainingbases, regressi
             lastbuyix = lastsellix = hix = lix = 1
             low = high = ohlcv.df.pivot[1]
             while sellix != 0
-                if regr[buyix] > 0  # upslope
+                if regr[lastbuyix] > 0  # upslope
                     high, hix = findmax(ohlcv.df.pivot[lastbuyix:lastsellix])
                 else
                     low, lix = findmin(ohlcv.df.pivot[lastbuyix:lastsellix])
@@ -453,7 +533,7 @@ end
 Config.init(Config.production)
 println("\nconfig mode = $(Config.configmode)")
 # gainperregressionwindow()
-gainperregressionwindowlastgain2()
+# gainperregressionwindowlastgain2()
 # gainperregressionwindowlastgain(["btc", "xrp"], [5, 15])
 
 # @info simplegains_test()
