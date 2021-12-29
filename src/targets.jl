@@ -256,6 +256,7 @@ function targets4(prices, regressionminutes)  # ! missing unit test
             end
         end
     end
+    return result
 end
 
 """

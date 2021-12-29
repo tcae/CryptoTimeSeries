@@ -4,7 +4,7 @@ using DrWatson
 include("../src/env_config.jl")
 include("../src/features.jl")
 include("../test/testohlcv.jl")
-# include("../src/targets.jl")
+include("../src/targets.jl")
 include("../src/ohlcv.jl")
 
 """
@@ -36,12 +36,55 @@ do that for different windows and switch after each sell to the best performing 
 
 Break out handling approach: if smaller regression windows are within x* standard deviation (rollstd) or within a fixed threshold (e.g. 1%) with higher likelihood that the change is significant then follow the shorter outlier.
     As soon as the shortest outlier is again within the x * standard deviation of a longer then switch back to that one.
-"""
+
+Consider out of spread deviations down from a reached price level as trade criteria.
+
+    """
 # import Pkg; Pkg.add(["JDF", "RollingFunctions", "StatsBase])
-using Test, DataFrames, Statistics, Logging, NamedArrays, StatsBase
-using .Config, .Features, .TestOhlcv
+using Test, DataFrames, Statistics, Logging, NamedArrays, StatsBase, Dates
+using .Config, .Ohlcv, .TestOhlcv, .Features, .Targets
 
 fee = 0.001  # 0.1%
+
+
+"""
+Returns an array of price gains between a buy at slope begin and sell at slope end.
+"""
+function gradientgains(prices, regressions)
+    # @info "gradientgains" size(prices, 1), size(regressions, 1)
+    @assert size(prices, 1) == size(regressions, 1)
+    gains = zeros(Float32, size(prices, 1))
+    lastix = ix = 1
+    nextix = Features.nextextremeindex(regressions, lastix)
+    while nextix > 0
+        if (lastix < nextix) && (regressions[lastix] > 0)
+            gains[ix] = Ohlcv.relativegain(prices, lastix, nextix) - 2 * fee
+            ix += 1
+        end
+        lastix = nextix
+        nextix = Features.nextextremeindex(regressions, lastix)
+    end
+    return gains[1:ix-1]
+end
+
+"""
+Returns an array of price gains between a buy at slope begin and sell at slope end.
+"""
+function gradientextremesindex(regressions)
+    # @info "gradientgains" size(prices, 1), size(regressions, 1)
+    gains = zeros(Int32, size(prices, 1))
+    lastix = ix = 1
+    nextix = Features.nextextremeindex(regressions, lastix)
+    while nextix > 0
+        if regressions[lastix] > 0
+            gains[ix] = Ohlcv.relativegain(prices, lastix, nextix) - 2 * fee
+            ix += 1
+        end
+        lastix = nextix
+        nextix = Features.nextextremeindex(regressions, lastix)
+    end
+    return gains[1:ix]
+end
 
 """
 This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
@@ -110,7 +153,7 @@ This function uses a fixed regression window with a single base to buy at slope 
 Only buy on upslope if lastgain > lastupgainthreshold.
 If upgtdown == true then only buy if also lastgain > lastloss.
 """
-function lastregressionamplitudes(regressions::Dict(), nbramplitudes=2)
+function lastregressionamplitudes(regressions, nbramplitudes=2)
     modlimit = nbramplitudes+2
     xtreme = ones(Int32, (modlimit-1))
     xix = 1
@@ -310,6 +353,27 @@ function singletrainingbasesgradientgain()
     display(perfs)
 end
 
+function singletrainingbasesgradientgain()
+    regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
+    perfs = NamedArray(zeros(Float32, (size(Config.trainingbases, 1), size(regressionminutesset, 1))), (Config.trainingbases, regressionminutesset), ("base", "regrmin"))
+    for (bix, base) in enumerate(Config.trainingbases)
+        # @info "" bix base
+        # base = "xrp"
+        @info "reading ohlcv $base"
+        ohlcv = Ohlcv.read(base)
+        for (rix, regrminutes) in enumerate(regressionminutesset)
+            # @info "" rix regr
+            regr = Features.normrollingregression(ohlcv.df.pivot, regrminutes)
+            gains = singlebasegradientgain(ohlcv.df.pivot, regr)
+            # @info "simple performance at regression $regrminutes for $base = $(round(gains[end], digits=3))"
+            @info "simple performance at regression $regrminutes for $base = $(gains[end])"
+            # @debug "check" bix rix size(gains, 1)
+            perfs[bix, rix] = gains[end]
+        end
+    end
+    display(perfs)
+end
+
 """
 Measurement of all training data to buy at slope begin and sell at slope end with a fixed regression window if lastgain > 1% and lastgain > lastloss.
 It shows that this shows best results for all currencies with 24h=1440min regression window and that threshold and lastgain>lastloss only in a few cases improved the result above 1.
@@ -367,6 +431,213 @@ function preparegainborders(gainrange=0.1, gainstep=0.01)
 end
 
 """
+Returns the next extreme or the last array index.
+"""
+function nextslope!(slopesix, regressions, startix)
+    reglen = size(regressions, 1)
+    if startix >= reglen
+        return reglen
+    end
+    nextix = Features.nextextremeindex(regressions, startix)
+
+    if nextix == 0
+        nextix = reglen
+    end
+    if (startix < nextix) && (regressions[startix] > 0)
+        laststartix, lastendix = size(slopesix, 1) > 0 ? slopesix[end] : (0,0)
+        if lastendix < startix
+            push!(slopesix, (startix, nextix))
+        else
+            @warn "unexpected slope overlap" laststartix lastendix startix nextix
+            # pop!(slopesix)
+            # push!(slopesix, (laststartix, nextix))
+        end
+    end
+    return nextix
+end
+
+"""
+Returns the sum of gains of slopes identified via an array `slopesix` of non overlapping (startix, endix) tuples. Only tuples / tuple parts are considered than are within fromix - toix.
+"""
+function gainfromix!(slopesix, prices, fromix, toix)
+    @assert toix <= size(prices, 1)
+    @assert fromix < toix
+    gain = 0.0
+
+    if size(slopesix, 1) > 0
+        startix, endix = slopesix[1]
+        while endix < fromix
+            popfirst!(slopesix)  # remove slopes that are no longer needed
+            startix, endix = size(slopesix, 1) > 0 ? slopesix[1] : (toix, toix)
+        end
+    end
+
+    lastendix = 0
+    for (startix, endix) in slopesix
+        startix = startix < fromix ? fromix : startix
+        endix = endix > toix ? toix : endix
+        if startix < endix
+            gain += Ohlcv.relativegain(prices, startix, endix) - 2 * fee
+            if lastendix > startix
+                @warn "lastendix=$lastendix > startix=$startix, endix=$endix"
+                display(slopesix)
+            end
+            lastendix = endix
+        # else  # can happen due to fromix / toix correction
+        #     @error "startix >= endix" startix endix
+        end
+    end
+    return gain
+end
+
+"""
+Returns the price index from which gains of different regression windows are compared
+"""
+function anchorindex(slopesix, anchorrix, bestnextix)
+    anchorsix = 1
+    six = size(slopesix[anchorrix], 1)
+    while six > 0
+        startix, endix = slopesix[anchorrix][six]
+        if endix > bestnextix
+            six -= 1
+        else
+            anchorsix = startix  # anchor index at start of first full slope of longest regression window
+            break
+        end
+    end
+    return anchorsix
+end
+
+function checkgains(prices, regressions, slopesix)
+    ggains = gradientgains(prices, regressions)
+    g = zeros(Float32, (size(slopesix, 1)))
+    for (ix, (startix, endix)) in enumerate(slopesix)
+        g[ix] = Ohlcv.relativegain(prices, startix, endix) - 2 * fee
+    end
+    g2 = gainfromix!(slopesix, prices, 1, size(prices, 1))
+    println("len(ggains)=$(size(ggains, 1)), ggain=$(sum(ggains)), len(slopesix)=$(size(slopesix, 1)), len(g)=$(size(g, 1)), g=$(sum(g)), g2=$g2")
+    # display(ggains[1:3])
+    # display(ggains[end-3:end])
+    # display(g[1:3])
+    # display(g[end-3:end])
+    # display(slopesix[end-1:end])
+end
+
+"""
+Returns gain sum of the slopes of the best regression windows
+"""
+function bestgradientgain(bases, regressionminutesset, gainthresholds)
+    println("gainthreshold=$gainthresholds bases: $bases")
+    display(regressionminutesset)
+    basegrad = [[[] for rix in regressionminutesset] for bix in bases]
+    _, anchorrix = findmax(regressionminutesset)
+    gainsum = NamedArray(zeros(Float32, (size(bases, 1), size(gainthresholds, 1))), (bases, gainthresholds), ("base", "gain threshold"))
+    for (gix, gainthreshold) in enumerate(gainthresholds)
+        for (bix, base) in enumerate(bases)
+            ohlcv = Ohlcv.read(base)
+            prices = ohlcv.df.pivot
+            reglen = size(prices, 1)
+            bestslopesix = []  # array of tuples (startix, endix)
+                gains = zeros(Float32, size(regressionminutesset, 1))
+            # lastix = ones(Int32, size(regressionminutesset, 1))
+            nextix = ones(Int32, size(regressionminutesset, 1))
+            slopesix = [[] for ix in regressionminutesset]
+            for (rix, regrminutes) in enumerate(regressionminutesset)
+                regry, grads = Features.rollingregression(prices, regrminutes)
+                basegrad[bix][rix] = grads
+                nextix[rix] = nextslope!(slopesix[rix], basegrad[bix][rix], nextix[rix])
+            end
+            bestrix = 0  # signals not valid
+            bestlastix = bestanchor = 1
+            bestnextix = minimum(nextix)
+            bestgain = 0.0
+            step = 0
+            while bestnextix <= reglen
+                step += 1
+                if (step % 10000) == 1
+                    println("$(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM")) $base ($gainthreshold) bestnextix=$bestnextix")
+                end
+                bestanchor = anchorindex(slopesix, anchorrix, bestnextix)
+                for (rix, regrminutes) in enumerate(regressionminutesset)
+                    gains[rix] = gainfromix!(slopesix[rix], prices, bestanchor, bestnextix)
+                end
+                bestgain, rix = findmax(gains)
+                if bestrix == 0  # not investigated
+                    if bestgain >= gainthreshold
+                        if basegrad[bix][rix][bestnextix] > 0  # only consider when up slope
+                            bestrix = rix  # only first best and not N best within 10% -> to be improved
+                            bestlastix = bestnextix
+                        end
+                    end
+                else  # invested
+                    if (bestrix != rix) && (bestgain >= gainthreshold) && (bestgain >= (gainthreshold + gains[bestrix]))
+                        bestrix = rix  # on the fly change of regression window without sell and buy
+                    end
+                    if (bestnextix == nextix[bestrix]) && (basegrad[bix][rix][bestnextix] <= 0) && (bestlastix < bestnextix) # end of up slope
+                        push!(bestslopesix, (bestlastix, bestnextix))
+                        # println("$bestlastix, $bestnextix")
+                        bestrix = 0
+                    end
+                end
+                if bestnextix == reglen
+                    break  # exit while loop
+                end
+                for (rix, regrminutes) in enumerate(regressionminutesset)
+                    if bestnextix >= nextix[rix]
+                        nextix[rix] = nextslope!(slopesix[rix], basegrad[bix][rix], nextix[rix])
+                    end
+                end
+                bestnextix = minimum(nextix)
+                # println("bestnextix=$bestnextix")
+            end
+            # for (rix, regrminutes) in enumerate(regressionminutesset)
+            #     println("check $base $regrminutes")
+            #     checkgains(prices, basegrad[bix][rix], slopesix[rix])
+            # end
+            bestgain = gainfromix!(bestslopesix, prices, 1, reglen)
+            # println("best gain slopes=$(size(bestslopesix, 1)), best gain sum = $bestgain")
+            gainsum[bix, gix] = bestgain
+        end
+    end
+    display(gainsum)
+    # return bestgain
+end
+
+
+"""
+Collects all gains and losses per base per regression window in a histogram.
+
+Results see: ../data/gainperregressionwindow
+"""
+function gradientgainhisto(bases, regressionminutesset)
+    gainborders = preparegainborders(0.16)
+    gainsum = NamedArray(zeros(Float32, (size(bases, 1), size(regressionminutesset, 1))), (bases, regressionminutesset), ("base", "window"))
+    histo = NamedArray(zeros(Int32, (size(bases, 1), size(regressionminutesset, 1), size(gainborders, 1))), (bases, regressionminutesset, gainborders), ("base", "window", "gain"))
+    for (bix, base) in enumerate(bases)
+        ohlcv = Ohlcv.read(base)
+        for (rix, regrminutes) in enumerate(regressionminutesset)
+            regry, grads = Features.rollingregression(ohlcv.df.pivot, regrminutes)
+            gains = gradientgains(ohlcv.df.pivot, grads)
+            for gain in gains
+                gainsum[bix, rix] += gain
+                gix = searchsortedlast(gainborders, gain) + 1
+                histo[bix, rix, gix] += 1
+            end
+        end
+    end
+    println("gainborders=$gainborders")
+    for (rix, regrminutes) in enumerate(regressionminutesset)
+        println("window=$regrminutes")
+        display(histo[:,rix,:])
+    end
+    for (bix, base) in enumerate(bases)
+        println("base=$base")
+        display(histo[bix,:,:])
+    end
+    display(gainsum)
+end
+
+"""
 Collects all gainsand losses per base per regression window in a histogram.
 
 Results see: ../data/gainperregressionwindow
@@ -388,6 +659,7 @@ function gainperregressionwindow(bases = Config.trainingbases)
                 histo[bix, rix, gix] += 1
                 buyix = sellix
                 sellix = Features.nextextremeindex(regr, buyix)
+                #! WRONG  2* Features.nextextremeindex(regr, buyix) required
             end
         end
     end
@@ -529,6 +801,7 @@ function steepestbasegain_test()
     return gdf[end, :steepest]
 end
 
+
 # Config.init(Config.test)
 Config.init(Config.production)
 println("\nconfig mode = $(Config.configmode)")
@@ -541,11 +814,20 @@ println("\nconfig mode = $(Config.configmode)")
 # singletrainingbasesgradientgainhistory()
 # steepesttrainingbasesgain()
 
-@testset "simple gain performance" begin
+# regressionminutesset = [18 * 60, 24 * 60, 30 * 60, 36 * 60]
+regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60]
+# regressionminutesset = [60, 24 * 60]
+# regressionminutesset = [24 * 60]
+bases = Config.trainingbases
+# bases = ["bnb"]
+# gradientgainhisto(bases, regressionminutesset)
+println("")
+bestgradientgain(bases, regressionminutesset, [-1000.0, 0.0, 0.01, 0.02])
+# @testset "simple gain performance" begin
 
-    @test isapprox(steepestbasegain_test(), 1.0195855)
-    @test isapprox(singlebasegradientgain_test(), 1.006738275018905)
+#     @test isapprox(steepestbasegain_test(), 1.0195855)
+#     @test isapprox(singlebasegradientgain_test(), 1.006738275018905)
 
-end  # of testset
+# end  # of testset
 
 

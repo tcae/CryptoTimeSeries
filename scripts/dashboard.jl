@@ -17,18 +17,6 @@ envbases = ["btc", "xrp", "eth"]
 app = dash(external_stylesheets=["https://codepen.io/chriddyp/pen/bWLwgP.css"])
 
 app.layout = html_div(style = (clear = "both",)) do
-    # html_h1("Hello Dash"),
-    # html_div("Dash: A web application framework for Julia"),
-    # dcc_graph(
-    #     id = "example-graph-1",
-    #     figure = (
-    #         data = [
-    #             (x = ["giraffes", "orangutans", "monkeys"], y = [20, 14, 23], type = "bar", name = "SF"),
-    #             (x = ["giraffes", "orangutans", "monkeys"], y = [12, 18, 29], type = "bar", name = "Montreal"),
-    #         ],
-    #         layout = (title = "Dash Data Visualization", barmode="group"), style = (display = "inline",)
-    #     )
-    # ),
     html_div([
         dcc_checklist(
             id = "crypto_select",
@@ -41,8 +29,69 @@ app.layout = html_div(style = (clear = "both",)) do
         html_button("none", id="none_button"),
         html_button("update data", id="update_data"),
         html_button("reset selection", id="reset_selection")
-    ])
+    ]),
+    dcc_graph(id = "basic-interactions", figure = (
+        data = [
+            (
+                x = [1,2,3,4],
+                y = [4,1,3,5],
+                text = ["a", "b", "c", "d"],
+                customdata = ["c.a", "c.b", "c.c", "c.d"],
+                name = "Trace 1",
+                mode = "markers",
+                marker = (size = 12,)
+            ),
+            (
+                x = [1,2,3,4],
+                y = [9,4,1,4],
+                text = ["w", "x", "y", "z"],
+                customdata = ["c.w", "c.x", "c.y", "c.z"],
+                name = "Trace 2",
+                mode = "markers",
+                marker = (size = 12,)
+            )
+        ],
+        layout = (clickmode = "event+select",)
+    )),
+    dcc_graph(id = "basic-interactions2", figure = (
+        data = [
+            (
+                x = [1,2,3,4],
+                y = [4,1,3,5],
+                text = ["a", "b", "c", "d"],
+                customdata = ["c.a", "c.b", "c.c", "c.d"],
+                name = "Trace 1",
+                mode = "markers",
+                marker = (size = 12,)
+            ),
+            (
+                x = [1,2,3,4],
+                y = [9,4,1,4],
+                text = ["w", "x", "y", "z"],
+                customdata = ["c.w", "c.x", "c.y", "c.z"],
+                name = "Trace 2",
+                mode = "markers",
+                marker = (size = 12,)
+            )
+        ],
+        layout = (clickmode = "event+select",)
+    ))
+    # dcc_graph(id="graph1day"),
+    # dcc_graph(id="graph10day"),
+    # dcc_graph(id="graph6month"),
+    # dcc_graph(id="graph_all"),
 end
+
+callback!(
+    app,
+    Output("hover-data", "children"),
+    Input("basic-interactions", "hoverData"),
+) do hover_data
+
+    return JSON3.write(hover_data)
+end
+
+
 #=
 app.layout = html.Div([
     html.Div([

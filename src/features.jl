@@ -18,22 +18,22 @@ function nextextremeindex(regressions, startindex)
     extremeindex = 0
     @assert (startindex > 0)
     if regressions[startindex] > 0
-        while (startindex < reglen) && (regressions[startindex+1] > 0)
+        while (startindex <= reglen) && (regressions[startindex] > 0)
             startindex += 1
         end
     else  # regressions[startindex] <= 0
-        while (startindex < reglen) && (regressions[startindex+1] <= 0)
+        while (startindex <= reglen) && (regressions[startindex] <= 0)
             startindex += 1
         end
     end
-    if startindex < reglen  # then extreme detected
-        extremeindex = startindex + 1
+    if startindex <= reglen  # then extreme detected
+        extremeindex = startindex
         # else end of array and no extreme detected, which is signalled by returned index 0
     end
     return extremeindex
 end
 
- """
+"""
  This implementation ignores index and assumes an equidistant x values.
  y is a one dimensional array.
 

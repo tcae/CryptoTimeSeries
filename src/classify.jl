@@ -6,8 +6,8 @@ include("../src/features.jl")
 
 module Classify
 
-import Pkg; Pkg.add(["JDF", "RollingFunctions"])
-using JDF, Dates, CSV, DataFrames
+import Pkg; Pkg.add(["JDF", "RollingFunctions", "MLJ"])
+using JDF, Dates, CSV, DataFrames, MLJ
 using ..Features
 
 

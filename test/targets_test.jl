@@ -47,6 +47,17 @@ function regressionlabels1_test()
     return targetlabels == df.expectation
 end
 
+function targets4_test()
+    x, y = TestOhlcv.sinesamples(120, 200, [(20, 0, 0.9), (40, 30.0, 0.9)])
+    w1 = 6; w2 = 30
+    res = Targets.targets4(y, [w1, w2])
+    df = DataFrame(price=y, target=res[:target],
+                   grad3=res[w1][:gradient], price3=res[w1][:price], gain3=res[w1][:gain], xix3=res[w1][:xix],
+                   grad10=res[w2][:gradient], price10=res[w2][:price], gain10=res[w2][:gain], xix10=res[w2][:xix])
+    show(df, allrows=true)
+end
+
+
 # with_logger(TimestampTransformerLogger(current_logger(), BeginningMessageLocation();
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
     # regressionlabels1_test()
@@ -55,7 +66,7 @@ end
     Config.init(production)
     println("\nconfig mode = $(Config.configmode)")
 
-
+    targets4_test()
     # println("""regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")=$(regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv"))""")
 #=
 @testset "Targets tests" begin

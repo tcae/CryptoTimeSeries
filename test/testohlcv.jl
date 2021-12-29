@@ -3,6 +3,7 @@ using DrWatson
 
 include("../src/ohlcv.jl")
 # include(srcdir("ohlcv.jl"))
+using Plots
 
 """
 Produces test ohlcv data pattern
@@ -13,6 +14,21 @@ using Dates, DataFrames, Plots, PlotlyBase
 using Test
 using ..Config
 using ..Ohlcv
+
+"""
+Returns cumulative sine function samples by adding sines on each other described by parameters given as a tuple (periodsamples, offset, amplitude).
+The parameter samples defines the length of the returned functioni samples and level the zero level of the function.
+"""
+function sinesamples(samples, level, sineparams)
+    y = zeros(samples) .+ level
+    x = collect(1:samples) .- 1
+    for (periodsamples, offset, amplitude) in sineparams
+        println("sinedata: periodsamples=$periodsamples, offset=$offset, level=$level, amplitude=$amplitude")
+        # show(DataFrame(x=x, y=y))
+        @. y += sin((x + offset) * 2 * pi / (periodsamples)) * amplitude
+    end
+    return x, y
+end
 
 function sinedata(periodminutes, periods, offset=0)
     price = 200
@@ -86,24 +102,31 @@ Config.init(test)
 
 function sinedata_test()
     ohlcv = sinedata(20, 3)
-    display(ohlcv.df)
+    # display(ohlcv.df)
 end
 
+
+
 """
-plotly()
-df = TestOhlcv.sinedata(
-    DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s"),
-    DateTime("2019-01-03 01:11:28:121", "y-m-d H:M:S:s"))
-# show(df)
-plot(df.timestamp, [df.open, df.high])
-
-
 @testset "Ohlcv tests" begin
 
 
-# @test Ohlcv.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)[7] == 0.310714285714285
+@test Ohlcv.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)[7] == 0.310714285714285
 
 end  # of testset
 """
 
 end  # TestOhlcv
+
+plotly()
+# x = 1:10; y = rand(10); # These are the plotting data
+# plot(x,y, label="my label")
+show("hallo")
+ohlcv = TestOhlcv.sinedata(120, 3)
+# df = TestOhlcv.sinedata(
+#     DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s"),
+#     DateTime("2019-01-03 01:11:28:121", "y-m-d H:M:S:s"))
+# display(ohlcv.df)
+# show(ohlcv.df)
+plot(ohlcv.df.timestamp, [ohlcv.df.open, ohlcv.df.high])
+
