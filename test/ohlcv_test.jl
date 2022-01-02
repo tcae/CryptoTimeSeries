@@ -1,6 +1,3 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/ohlcv.jl")
 # include(srcdir("ohlcv.jl"))
 
@@ -13,36 +10,46 @@ using ..Config
 using ..Ohlcv
 
 function testohlcvinit(base::String)
-    ohlcv1 = Ohlcv.readcsv("test")
+    ohlcv1 = Ohlcv.defaultcrypto("test")
+    ohlcv1 = Ohlcv.readcsv!(ohlcv1)
     # println("ohlcv1: $ohlcv1")
     Ohlcv.write(ohlcv1)
-    ohlcv2 = Ohlcv.read("test")
-    # println("ohlcv2: $ohlcv2")
-    return ohlcv1.df == ohlcv2.df
-    return isapprox(ohlcv1.df, ohlcv2.df)
+    return ohlcv1
 end
 
-function rollingregression_test()
-    y = [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
-    """
-    65  slope = 0.310714  y_regr = 4.717857
-    """
-    r = Ohlcv.rollingregression(y, size(y, 1))
-    # r2 = Ohlcv.rolling_regression2(y, size(y, 1))
-    # r3 = Ohlcv.rolling_regression2(y, 3)
-    # println("r=$r   r2=$r2  r3(3)=$r3")
-    return r[7] == 0.310714285714285
+function readwrite(ohlcv1)
+    ohlcv2 = Ohlcv.defaultcrypto(Ohlcv.basesymbol(ohlcv1))
+    ohlcv2 = Ohlcv.read!(ohlcv2)
+    # println("ohlcv2: $ohlcv2")
+    return ohlcv2
+    # return ohlcv1.df == ohlcv2.df
+    # return isapprox(ohlcv1.df, ohlcv2.df)
 end
+
+# function rollingregression_test()
+#     y = [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
+#     """
+#     65  slope = 0.310714  y_regr = 4.717857
+#     """
+#     r = Ohlcv.rollingregression(y, size(y, 1))
+#     # r2 = Ohlcv.rolling_regression2(y, size(y, 1))
+#     # r3 = Ohlcv.rolling_regression2(y, 3)
+#     # println("r=$r   r2=$r2  r3(3)=$r3")
+#     return r[7] == 0.310714285714285
+# end
 
 function setsplit_test()
     splitdf = Ohlcv.setsplit()
+    # println("splitdf: $splitdf")
     nrow(splitdf) == 3 || return false
     return true
 end
 
 function setassign_test()
-    ohlcv = Ohlcv.read("test")
-    splitdf = Ohlcv.setassign!(ohlcv)
+    ohlcv = Ohlcv.defaultcrypto("test")
+    ohlcv = Ohlcv.read!(ohlcv)
+    Ohlcv.setassign!(ohlcv)
+    # println("ohlcv after split set: $ohlcv")
     nrow(ohlcv.df) == 9 || return false
     names(ohlcv.df) == ["timestamp", "open", "high", "low", "close", "volume", "pivot", "set"] || return false
     return true
@@ -53,10 +60,11 @@ function columnarray_test()
     725.0       0.0       3137.0       14150.0       33415.0;
     0.207287  0.204343     0.204343      0.204703      0.213031]
     # display(expected)
-    ohlcv2 = Ohlcv.read("test")
+    ohlcv = Ohlcv.defaultcrypto("test")
+    ohlcv = Ohlcv.read!(ohlcv)
     # display(ohlcv2)
     cols = [:pivot, :volume, :open]
-    colarray = Ohlcv.columnarray(ohlcv2, "training", cols)
+    colarray = Ohlcv.columnarray(ohlcv, "training", cols)
     return isapprox(expected, colarray)
 end
 
@@ -65,7 +73,8 @@ function pivot_test()
     725.0       0.0       3137.0       14150.0       33415.0;
     0.207287  0.204343     0.204343      0.204703      0.213031]
     # display(expected)
-    ohlcv2 = Ohlcv.read("test")
+    ohlcv2 = Ohlcv.defaultcrypto("test")
+    ohlcv2 = Ohlcv.read!(ohlcv2)
     # rename!(ohlcv2.df,:pivot => :pivot2)
     ohlcv2 = Ohlcv.addpivot!(ohlcv2)
     display(ohlcv2)
@@ -78,8 +87,18 @@ Config.init(test)
 
 @testset "Ohlcv tests" begin
 
-@test testohlcvinit("test")
-@test Ohlcv.mnemonic(Ohlcv.OhlcvData(DataFrame(), "test")) == "test_OHLCV"
+ohlcv1 = testohlcvinit("test")
+
+@test names(Ohlcv.dataframe(ohlcv1)) == ["timestamp", "open", "high", "low", "close", "volume", "pivot"]
+@test nrow(Ohlcv.dataframe(ohlcv1)) == 9
+@test Ohlcv.mnemonic(ohlcv1) == "test_usdt_binance_1m_OHLCV"
+
+ohlcv2 = readwrite(ohlcv1)
+@test names(Ohlcv.dataframe(ohlcv1)) == ["timestamp", "open", "high", "low", "close", "volume", "pivot"]
+@test nrow(Ohlcv.dataframe(ohlcv1)) == 9
+@test Ohlcv.dataframe(ohlcv1)[1, :open] == Ohlcv.dataframe(ohlcv2)[1, :open]
+@test Ohlcv.dataframe(ohlcv1)[1, :timestamp] == Ohlcv.dataframe(ohlcv2)[1, :timestamp]
+@test Ohlcv.dataframe(ohlcv1)[9, :volume] == Ohlcv.dataframe(ohlcv2)[9, :volume]
 @test setsplit_test()
 @test setassign_test()
 @test columnarray_test()

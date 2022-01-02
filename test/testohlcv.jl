@@ -3,14 +3,14 @@ using DrWatson
 
 include("../src/ohlcv.jl")
 # include(srcdir("ohlcv.jl"))
-using Plots
+# using Plots
 
 """
 Produces test ohlcv data pattern
 """
 module TestOhlcv
 
-using Dates, DataFrames, Plots, PlotlyBase
+using Dates, DataFrames  # Plots, PlotlyBase
 using Test
 using ..Config
 using ..Ohlcv
@@ -59,7 +59,7 @@ function sinedata(periodminutes, periods, offset=0)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
     df = DataFrame(open=open, high=high, low=low, close=close, volume=volume, timestamp=timestamp)
-    ohlcv = Ohlcv.OhlcvData(df, "testsine")
+    ohlcv = Ohlcv.OhlcvData(df, "testsine", "1m")
     ohlcv = Ohlcv.addpivot!(ohlcv)
     return ohlcv
 end
@@ -92,7 +92,7 @@ function doublesinedata(periodminutes, periods)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
     df = DataFrame(open=open, high=high, low=low, close=close, volume=volume, timestamp=timestamp)
-    ohlcv = Ohlcv.OhlcvData(df, "doubletestsine")
+    ohlcv = Ohlcv.OhlcvData(df, "doubletestsine", "1m")
     ohlcv = Ohlcv.addpivot!(ohlcv)
     return ohlcv
 end
@@ -118,7 +118,7 @@ end  # of testset
 
 end  # TestOhlcv
 
-plotly()
+# plotly()
 # x = 1:10; y = rand(10); # These are the plotting data
 # plot(x,y, label="my label")
 show("hallo")
@@ -128,5 +128,5 @@ ohlcv = TestOhlcv.sinedata(120, 3)
 #     DateTime("2019-01-03 01:11:28:121", "y-m-d H:M:S:s"))
 # display(ohlcv.df)
 # show(ohlcv.df)
-plot(ohlcv.df.timestamp, [ohlcv.df.open, ohlcv.df.high])
+# Plots.plot(ohlcv.df.timestamp, [ohlcv.df.open, ohlcv.df.high])
 

@@ -12,7 +12,7 @@ using ..Config, ..Ohlcv, ..Features
 
 
 function config_test()
-    ohlcv = Ohlcv.read("test")
+    ohlcv = Ohlcv.read("test", "1m")
     display(ohlcv)
     Features.f4condagg!(ohlcv)
     display(ohlcv)

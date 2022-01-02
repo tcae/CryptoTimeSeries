@@ -1,5 +1,5 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
+# using Pkg;
+# Pkg.add(["Dates", "DataFrames"])
 
 include("../src/exchange.jl")
 include("../src/env_config.jl")

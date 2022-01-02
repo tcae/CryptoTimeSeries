@@ -1,13 +1,8 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/env_config.jl")
 include("../src/features.jl")
 
 module Targets
 
-# import Pkg; Pkg.add(["JDF", "RollingFunctions"])
-using DataFrames, Statistics, Logging, NamedArrays
 using ..Config, ..Ohlcv, ..Features
 
 strongsell=-2; sell=-1; hold=0; buy=1; strongbuy=2

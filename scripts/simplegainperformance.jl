@@ -40,8 +40,7 @@ Break out handling approach: if smaller regression windows are within x* standar
 Consider out of spread deviations down from a reached price level as trade criteria.
 
     """
-# import Pkg; Pkg.add(["JDF", "RollingFunctions", "StatsBase])
-using Test, DataFrames, Statistics, Logging, NamedArrays, StatsBase, Dates
+using Test, DataFrames, NamedArrays, Dates
 using .Config, .Ohlcv, .TestOhlcv, .Features, .Targets
 
 fee = 0.001  # 0.1%

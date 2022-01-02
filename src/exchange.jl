@@ -1,8 +1,6 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 # using Pkg;
 # Pkg.add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
+# Pkg.add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
 
 include("../src/Binance.jl")
 include("../src/env_config.jl")
@@ -11,6 +9,8 @@ module Exchange
 using Dates, DataFrames, DataAPI
 using JDF, CSV
 using ..MyBinance, ..Config
+
+xchquote = uppercase(quotesymbol)
 
 function klines2jdict(jsonkline)
     Dict(
@@ -56,11 +56,14 @@ end
 
 
 """
-Requests base/USDT from start until end (both including) in minute frequency
+Requests base/USDT from start until end (both including) in interval frequency but maximum 1000 entries
+
+Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> weeks; M -> months):
+1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 """
-function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now())
+function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
     try
-        symbol = uppercase(base) * "USDT"
+        symbol = uppercase(base) * xchquote
         # println("symbol=$symbol start=$startdt end=$enddt")
         arr = MyBinance.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval="1m")
         # println(typeof(r))
@@ -72,7 +75,6 @@ function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates
         println("exception $e detected")
         df = klines2jdf(missing)
     end
-
 end
 
 function getlastminutesdata()
@@ -93,13 +95,19 @@ function getlastminutesdata()
     # display(res[:body][end-3:end, :])
 end
 
-function gethistoryohlcv(symbol, startdt, enddt)
+"""
+Requests base/USDT from start until end (both including) in interval frequency
+
+Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> weeks; M -> months):
+1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
+"""
+function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
     # startdt = DateTime("2020-08-11T22:45:00")
     # enddt = DateTime("2020-08-12T22:49:00")
     notreachedenddate = true
     df = nothing
     while notreachedenddate
-        res = ohlcfromexchange(symbol, startdt, enddt)
+        res = ohlcfromexchange(base, startdt, enddt, interval)
         # display(nrow(res))
         # display(first(res, 3))
         # display(last(res, 3))
@@ -110,6 +118,23 @@ function gethistoryohlcv(symbol, startdt, enddt)
     # display(nrow(df))
     # display(first(df, 3))
     # display(last(df, 3))
+    return df
+end
+
+"""
+Returns a dataframe with 24h values of all USDT quote bases.
+"""
+function getmarket(minquotevolume=10000000)
+    symbols = MyBinance.getAllPrices()
+    len = length(symbols)
+    values = MyBinance.get24HR()
+    basesix = [(ix, parse(Float32, values[ix]["quoteVolume"])) for ix in 1:len if endswith(symbols[ix]["symbol"], xchquote)]
+    minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
+
+    df = DataFrames.DataFrame()
+    quotelen = length(xchquote)
+    df.base = [symbols[ix]["symbol"][1:end-quotelen] for (ix, _) in minvolbasesix]
+    df.quotevolume24h = [qv for (_, qv) in minvolbasesix]
     return df
 end
 

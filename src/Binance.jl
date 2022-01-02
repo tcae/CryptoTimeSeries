@@ -1,5 +1,5 @@
-using Pkg
-Pkg.add(["SHA", "JSON", "Dates", "Printf"])
+# using Pkg
+# Pkg.add(["SHA", "JSON", "Dates", "Printf", "HTTP"])
 module MyBinance
 
 import HTTP, SHA, JSON, Dates, Printf
@@ -70,12 +70,14 @@ end
 
 # Simple test if binance API is online
 function ping()
+    # received response: 200
     r = HTTP.request("GET", string(BINANCE_API_REST, "api/v1/ping"))
     r.status
 end
 
 # Binance servertime
 function serverTime()
+    # at 2022-01-01 17:14 local MET received 2022-01-01T16:14:09.849
     r = HTTP.request("GET", string(BINANCE_API_REST, "api/v1/time"))
     r.status
     result = r2j(r.body)
@@ -84,47 +86,92 @@ function serverTime()
 end
 
 function get24HR()
+    # 1869-element Vector{Any}:
+    # Dict{String, Any}("weightedAvgPrice" => "0.07925733", "askQty" => "1.90000000", "quoteVolume" => "3444.47417461", "priceChangePercent" => "0.077", "count" => 98593, "lastPrice" => "0.07887600", "openPrice" => "0.07881500", "firstId" => 317932287, "lastQty" => "0.06160000", "openTime" => 1640966508178…)
     r = HTTP.request("GET", string(BINANCE_API_TICKER, "24hr"))
     r2j(r.body)
 end
 
 function getDepth(symbol::String; limit=100) # 500(5), 1000(10)
+    # getDepth("BTCUSDT"; limit=5)
+    # Dict{String, Any} with 3 entries:
+    # "lastUpdateId" => 16005065018
+    # "asks"         => Any[Any["47402.00000000", "0.98372000"], Any["47402.28000000", "0.00851000"], Any["47402.29000000", "0.02434000"], Any["47407.71000000", "0.14470000"], Any["47407.72000000", "0.18910000"]]
+    # "bids"         => Any[Any["47401.99000000", "0.05273000"], Any["47401.98000000", "0.10546000"], Any["47401.06000000", "0.00098000"], Any["47400.00000000", "0.00023000"], Any["47399.55000000", "0.01055000"]]
     r = HTTP.request("GET", string(BINANCE_API_DEPTH, "?symbol=", symbol,"&limit=",limit))
     r2j(r.body)
 end
 
 function get24HR(symbol::String)
+    # get24HR("BTCUSDT")
+    # Dict{String, Any} with 21 entries:
+    # "weightedAvgPrice"   => "46722.96286232"
+    # "askQty"             => "0.00026000"
+    # "quoteVolume"        => "1288376709.56153800"
+    # "priceChangePercent" => "-1.376"
+    # "count"              => 864032
+    # "lastPrice"          => "47365.44000000"
+    # "openPrice"          => "48026.13000000"
+    # "firstId"            => 1207290183
+    # "lastQty"            => "0.00074000"
+    # "openTime"           => 1640967722920
+    # "closeTime"          => 1641054122920
+    # "askPrice"           => "47365.44000000"
+    # "symbol"             => "BTCUSDT"
+    # "priceChange"        => "-660.69000000"
+    # "highPrice"          => "48118.45000000"
+    # "prevClosePrice"     => "48026.13000000"
+    # "bidQty"             => "1.08419000"
+    # "volume"             => "27574.80756000"
+    # "bidPrice"           => "47365.43000000"
+    # "lastId"             => 1208154214
+    # "lowPrice"           => "45678.00000000"
     r = HTTP.request("GET", string(BINANCE_API_TICKER, "24hr?symbol=", symbol))
     r2j(r.body)
 end
 
 function getAllPrices()
+    # 1869-element Vector{Any}:
+    # Dict{String, Any}("price" => "0.07885600", "symbol" => "ETHBTC")
     r = HTTP.request("GET", string(BINANCE_API_TICKER, "allPrices"))
     r2j(r.body)
 end
 
 function getAllBookTickers()
+    # 1869-element Vector{Any}:
+    # Dict{String, Any}("bidQty" => "4.22160000", "bidPrice" => "0.07887000", "askPrice" => "0.07887100", "symbol" => "ETHBTC", "askQty" => "8.88420000")
     r = HTTP.request("GET", string(BINANCE_API_TICKER, "allBookTickers"))
     r2j(r.body)
 end
 
 function getExchangeInfo()
+    # Dict{String, Any} with 5 entries:
+    # "symbols"         => Any[Dict{String, Any}("orderTypes"=>Any["LIMIT", "LIMIT_MAKER", "MARKET", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"], "ocoAllowed"=>true, "isSpotTradingAllowed"=>true, "baseAssetPrecision"=>8, "quoteAsset"=>"BTC", "status"=>"TRADING", "icebergAllowed…
+    # "rateLimits"      => Any[Dict{String, Any}("intervalNum"=>1, "interval"=>"MINUTE", "rateLimitType"=>"REQUEST_WEIGHT", "limit"=>1200), Dict{String, Any}("intervalNum"=>10, "interval"=>"SECOND", "rateLimitType"=>"ORDERS", "limit"=>50), Dict{String, Any}("intervalNum"=>1…
+    # "exchangeFilters" => Any[]
+    # "serverTime"      => 1641054370495
+    # "timezone"        => "UTC"
     r = HTTP.request("GET", "https://www.binance.com/api/v1/exchangeInfo")
     r2j(r.body)
 end
 
 function getMarket()
+    # error - not found
     r = HTTP.request("GET", "https://www.binance.com/exchange/public/product")
     r2j(r.body)["data"]
 end
 
 function getMarket(symbol::String)
+    # error - not found
     r = HTTP.request("GET", string("https://www.binance.com/exchange/public/product?symbol=", symbol))
     r2j(r.body)["data"]
 end
 
 # binance get candlesticks/klines data
 function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
+    # getKlines("BTCUSDT")
+    # 500-element Vector{Any}:
+    # Any[1641024600000, "47092.03000000", "47107.42000000", "47085.31000000", "47098.98000000", "7.44682000", 1641024659999, "350714.74503740", 319, "2.75790000", "129875.86140450", "0"]
     query = string("?symbol=", symbol, "&interval=", interval)
 
     if !isnothing(startDateTime) && !isnothing(endDateTime)

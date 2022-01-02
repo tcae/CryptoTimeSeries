@@ -1,10 +1,5 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 # using Pkg;
-# Pkg.resolve()
-# Pkg.add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
-# Pkg.add(["Dates","DataFrames","JSON"])
+# Pkg.add(["JSON"])
 
 """
 Provides
@@ -19,14 +14,11 @@ module Config
 
 export Authentication, test, production
 
-using Dates
-using DataFrames
-using JSON
+import JSON
 
 @enum Mode test production
 
 datetimeformat = "%Y-%m-%d_%Hh%Mm"
-quotesymbol = "usdt"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
 setsplitfname = "sets_split.csv"

@@ -1,13 +1,13 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
+# import Pkg
+# Pkg.add(["RollingFunctions"])
 
 include("../src/ohlcv.jl")
 
-import Pkg; Pkg.add(["RollingFunctions"])
-
 module Features
 
-using Dates, DataFrames, RollingFunctions, Statistics
+# using Dates, DataFrames
+import RollingFunctions: rollmedian, rolling
+import DataFrames: DataFrame
 using ..Config, ..Ohlcv
 
 """
@@ -51,8 +51,8 @@ end
 function rollingregression(y, windowsize)::Tuple{Array{Float32,1},Array{Float32,1}}
     sum_x = sum(1:windowsize)
     sum_x_squared = sum((1:windowsize).^2)
-    sum_xy = RollingFunctions.rolling(sum, y, windowsize,collect(1:windowsize))
-    sum_y = RollingFunctions.rolling(sum, y, windowsize)
+    sum_xy = rolling(sum, y, windowsize,collect(1:windowsize))
+    sum_y = rolling(sum, y, windowsize)
     gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
     intercept = (sum_y - gradient*(sum_x)) / windowsize
     regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
@@ -186,7 +186,7 @@ self.config = {
         {"suffix": "5m1h", "minutes": 5, "norm_minutes": 60}]
 """
 function f4condagg!(ohlcv::Ohlcv.OhlcvData)
-    df::DataFrames.DataFrame = ohlcv.df
+    df = ohlcv.df
     df.normregrprice5m, df.normregrgrad5m = normrollingregression(df.pivot, 5)
     df.normregrprice15m, df.normregrgrad15m = normrollingregression(df.pivot, 15)
     df.normregrprice30m, df.normregrgrad30m = normrollingregression(df.pivot, 30)
@@ -202,7 +202,7 @@ function f4condagg!(ohlcv::Ohlcv.OhlcvData)
 end
 
 function features1(ohlcv::Ohlcv.OhlcvData)
-    df::DataFrames.DataFrame = ohlcv.df
+    df = ohlcv.df
     features = zeros(Float32, (6,size(df.pivot, 1)))
     regr = normrollingregression(df.pivot, 5)
     dfgl = lastgainloss(df.pivot, regr)

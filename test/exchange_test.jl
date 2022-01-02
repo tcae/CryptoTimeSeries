@@ -48,20 +48,26 @@ function gethistoryohlcv_test()
 end
 
 @testset "Exchange tests" begin
-    df = gethistoryohlcv_test()
+    startdt = DateTime("2020-08-11T22:45:00")
+    enddt = DateTime("2020-08-12T22:49:00")
+    df = Exchange.gethistoryohlcv("btc", startdt, enddt, "1m")
     @test names(df) == ["opentime", "open", "high", "low", "close", "volume"]
     @test nrow(df) == 1445
 
-    ohlcv1 = Ohlcv.OhlcvData(df, "btc")
+    ohlcv1 = Ohlcv.OhlcvData(df, "btc", "1m")
+    Ohlcv.addpivot!(ohlcv1)
     Ohlcv.write(ohlcv1)
-    ohlcv2 = Ohlcv.read("btc")
+    ohlcv2 = Ohlcv.read("btc", "1m")
     @test ohlcv1.df == ohlcv2.df
     @test ohlcv1.base == ohlcv2.base
+    # println(first(ohlcv1.df,3))
+    # println(first(ohlcv2.df,3))
 
     df = Exchange.klines2jdf(missing)
     @test names(df) == ["opentime", "open", "high", "low", "close", "volume"]
     @test nrow(df) == 0
 
 end
+println(Exchange.getmarket())
 
 end  # module
