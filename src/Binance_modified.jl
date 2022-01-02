@@ -1,5 +1,3 @@
-using Pkg
-Pkg.add(["SHA", "JSON", "Dates", "Printf"])
 module BinanceModified
 
 import HTTP, SHA, JSON, Dates, Printf, DataFrames

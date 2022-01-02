@@ -1,7 +1,4 @@
 
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/env_config.jl")
 include("../src/ohlcv.jl")
 include("../src/exchange.jl")

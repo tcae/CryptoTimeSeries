@@ -1,8 +1,5 @@
 
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
-include(srcdir("classify.jl"))
+include("../src/classify.jl")
 
 module ClassifyTest
 using Dates, DataFrames

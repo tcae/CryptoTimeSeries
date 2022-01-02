@@ -1,7 +1,3 @@
-import Pkg: activate
-activate("dashtest")
-# Pkg.add(["CSV", "PlotlyJS", "Dash", "DataFrames"])
-
 import Dash: dcc_graph, html_h1, html_div, dash
 import PlotlyJS: Plot, dataset
 

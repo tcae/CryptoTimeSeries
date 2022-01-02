@@ -1,7 +1,4 @@
 
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/features.jl")
 
 module FeaturesTest

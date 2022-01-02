@@ -1,7 +1,5 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-using Pkg
-Pkg.add(["LoggingFacilities", "NamedArrays"])
+# using Pkg
+# Pkg.add(["LoggingFacilities", "NamedArrays"])
 
 include("../test/testohlcv.jl")
 include("../src/targets.jl")
@@ -9,7 +7,7 @@ include("../src/ohlcv.jl")
 
 module TargetsTest
 
-using Dates, DataFrames, Logging, LoggingFacilities, NamedArrays
+using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test, CSV
 
 using ..Config, ..Features, ..Targets, ..TestOhlcv, ..Ohlcv

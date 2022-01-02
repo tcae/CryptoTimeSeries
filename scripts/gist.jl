@@ -1,6 +1,3 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 """
 Async programming is advantegous to deal with Binance because IO is running in different tasks and
 seperating order monitoring from OHLCV updates is a cleaner design as well.

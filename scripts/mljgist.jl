@@ -1,8 +1,3 @@
-using DrWatson
-@quickactivate "dash"
-using Pkg
-Pkg.add(["CSV", "PlotlyJS", "Dash", "DataFrames", "RDatasets", "DashHtmlComponents", "DashCoreComponents"])
-# @quickactivate "CryptoTimeSeries"
 
 # include("../src/env_config.jl")
 # include("../src/features.jl")

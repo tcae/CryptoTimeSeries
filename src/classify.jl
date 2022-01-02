@@ -1,6 +1,3 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/features.jl")
 # include(srcdir("features.jl"))
 

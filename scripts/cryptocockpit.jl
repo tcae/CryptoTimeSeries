@@ -1,20 +1,7 @@
-using DrWatson
-using Pkg
-Pkg.activate("CryptoTimeSeries")
-# using Pkg
-# Pkg.add(["LoggingFacilistties", "NamedArrays"])
-
 include("../test/testohlcv.jl")
 # include("../src/targets.jl")
 include("../src/ohlcv.jl")
 
-# using DrWatson
-# @quickactivate "CryptoTimeSeries"
-
-# import Pkg; Pkg.add(["Dash", "DashTable"])
-# Pkg.status("Dash")
-# Pkg.status("DashHtmlComponents")
-# Pkg.status("DashCoreComponents")
 
 # include("../src/env_config.jl")
 

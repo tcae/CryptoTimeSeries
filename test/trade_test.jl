@@ -1,7 +1,3 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
-
 include(srcdir("env_config.jl"))
 include(srcdir("ohlcv.jl"))
 include(srcdir("trade.jl"))

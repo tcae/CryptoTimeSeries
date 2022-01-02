@@ -1,6 +1,3 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/ohlcv.jl")
 # include(srcdir("ohlcv.jl"))
 # using Plots

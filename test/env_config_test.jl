@@ -1,6 +1,3 @@
-using DrWatson
-@quickactivate "CryptoTimeSeries"
-
 include("../src/env_config.jl")  # in contrast to srcdir() this is used by vscode
 # include(srcdir("env_config.jl"))
 
