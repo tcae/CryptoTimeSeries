@@ -1,6 +1,17 @@
 include("../src/env_config.jl")
 include("../src/features.jl")
 
+"""
+**! predicitions will be merged with targets.jl**
+The asset can receive **predictions** within a given **time period** from algorithms or individuals by:
+
+- assigning *increase*, *neutral*, *decrease*
+- target price
+- target +-% from current price
+
+Prediction algorithms are identified by name. Individuals are identified by name.
+
+"""
 module Targets
 
 using ..Config, ..Ohlcv, ..Features
@@ -10,6 +21,21 @@ gainthreshold = 0.01  # 1% gain threshold
 lossthreshold = -0.005  # loss threshold to signal strong sell
 gainlikelihoodthreshold = 0.7  # 50% probability threshold to meet or exceed gain/loss threshold
 
+"""
+Go back in index look for a more actual price extreme than the one from horizontal regression.
+If regression of buyix is >0 then look back for a maximum else it is a falling slope then look back for a minimum.
+"""
+function absmaxindex(prices, regressions, buyix, sellix)
+    comparison = regressions[buyix] > 0 ? (>) : (<)
+    maxsellix = sellix
+    while (sellix > buyix)
+        sellix -= 1
+        if comparison(prices[sellix], prices[maxsellix])
+            maxsellix = sellix
+        end
+    end
+    return maxsellix
+end
 
 """
 Returns a Float32 vector equal in size to prices/regressions that provides for each price the gain to the next extreme of 'regressions'.
@@ -27,7 +53,7 @@ function gain2nextextreme(prices, regressions)
             absmaxix = absmaxindex(prices, regressions, startix, endix)
         end
         while runix <= absmaxix
-            regressiongains[runix] = relativegain(prices, runix, absmaxix)
+            regressiongains[runix] = Ohlcv.relativegain(prices, runix, absmaxix)
             runix += 1
         end
         startix = endix
@@ -104,9 +130,9 @@ function regressionlabels2(prices, regressions)
                     end
                 end
                 while ixbuystart <= ixbuyend  # label slope
-                    if relativegain(prices, ixbuystart, ixbuyend) >= (2*gainthreshold)
+                    if Ohlcv.relativegain(prices, ixbuystart, ixbuyend) >= (2*gainthreshold)
                         targets[ixbuystart] = strongbuy
-                    elseif relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
+                    elseif Ohlcv.relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
                         targets[ixbuystart] = buy
                     else
                         targets[ixbuystart] = hold
@@ -157,13 +183,13 @@ function regressionlabels3(prices, regressions)
             if ixbuyend != 0  # last index that is a potential buy of rising slope
                 ixbuystart = ix + 1 # valid index of minimum
                 stronglastgainloss = (df.lastgain[ixbuyend] >= gainthreshold) && (df.lastgain[ixbuyend] >= df.lastloss[ixbuyend])
-                while (regressions[ixbuystart] < startregr) && !stronglastgainloss && (ixbuystart < ixbuyend) && (relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold)
+                while (regressions[ixbuystart] < startregr) && !stronglastgainloss && (ixbuystart < ixbuyend) && (Ohlcv.relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold)
                     # from minimum forward until steep enough slope detected
                     targets[ixbuystart] = buy
                     ixbuystart += 1
                 end
                 while ixbuystart <= ixbuyend  # label slope
-                    if relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
+                    if Ohlcv.relativegain(prices, ixbuystart, ixbuyend) >= gainthreshold
                         targets[ixbuystart] = strongbuy
                     else
                         targets[ixbuystart] = hold

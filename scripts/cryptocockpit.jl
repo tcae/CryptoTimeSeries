@@ -1,6 +1,7 @@
 include("../test/testohlcv.jl")
 # include("../src/targets.jl")
 include("../src/ohlcv.jl")
+include("../src/assets.jl")
 
 
 # include("../src/env_config.jl")
@@ -13,8 +14,7 @@ import PlotlyJS: Plot, dataset, Layout, attr, scatter, candlestick, bar
 
 # using Dash, DashTable, PlotlyJS
 using Dates, DataFrames
-using ..Config
-using ..Ohlcv
+using ..Config, ..Ohlcv, ..Assets
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 app = dash(external_stylesheets = ["dashboard.css"], assets_folder=(pwd() * "/scripts/"))
@@ -27,6 +27,8 @@ ohlcv = TestOhlcv.sinedata(120, 3)
 # fig = Plot(
 #     ohlcv.df, x=:timestamp, y=:pivot,
 # )
+
+# assets =
 
 trace1 = scatter(x=ohlcv.df.timestamp, y=ohlcv.df.high, mode="lines", name="lines")
 trace2 = scatter(x=ohlcv.df.timestamp, y=ohlcv.df.low, mode="lines+markers", name="lines+markers")
@@ -91,10 +93,10 @@ app.layout = html_div() do
         dcc_graph(id="graph4h", figure=fig2),
         dcc_graph(id="volume-signals-graph"),
         html_div(id="graph4h_end"),
-        dash_datatable(id="kpi_table", editable=false)
+        dash_datatable(id="kpi_table", editable=false,
+            columns=[Dict("name" =>i, "id" => i) for i in names(df)], data = Dict.(pairs.(eachrow(df)))) #!df undefined
     ])
 end
-
 
 callback!(
     app,

@@ -65,8 +65,8 @@ function appendoverlapbtcdownload()
 end
 
 function addfulloverlapbtcdownload()
-    startdt = DateTime("2022-01-02T22:45:01")
-    enddt = DateTime("2022-01-02T22:49:45")
+    startdt = DateTime("2022-01-02T22:44:01")
+    enddt = DateTime("2022-01-02T22:50:45")
     ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
     return ohlcv
 end
@@ -96,60 +96,43 @@ end
 
 
 @testset "CryptoXch tests" begin
-    startdt = DateTime("2020-08-11T22:45:00")
-    enddt = DateTime("2020-08-12T22:49:00")
-    df = CryptoXch.gethistoryohlcv("btc", startdt, enddt, "1m")
-    @test names(df) == ["opentime", "open", "high", "low", "close", "basevolume"]
-    @test nrow(df) == 1445
-
-    ohlcv1 = Ohlcv.defaultohlcv("btc")
-    Ohlcv.setdataframe!(ohlcv1, df)
-    # println(first(ohlcv1.df,3))
-    Ohlcv.write(ohlcv1)
-    ohlcv2 = Ohlcv.defaultohlcv("btc")
-    ohlcv2 = Ohlcv.read!(ohlcv2)
-    # println(first(ohlcv2.df,3))
-    @test ohlcv1.df == ohlcv2.df
-    @test ohlcv1.base == ohlcv2.base
 
     df = CryptoXch.klines2jdf(missing)
-    @test names(df) == ["opentime", "open", "high", "low", "close", "basevolume"]
     @test nrow(df) == 0
-    mdf = CryptoXch.getmarket()
+    mdf = CryptoXch.getUSDTmarket()
     # println(mdf)
-    @test names(mdf) == ["base", "quotevolume24h"]
+    @test names(mdf) == ["base", "quotevolume24h", "lastprice"]
     @test nrow(mdf) > 10
 
     @test PrepareTest() == "/home/tor/crypto/TestFeatures/btc_usdt_binance_1m_OHLCV.jdf"
-    ohlcv = initialbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:45:03"), DateTime("2022-01-02T22:49:35"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 5
     @test names(Ohlcv.dataframe(ohlcv)) == ["opentime", "open", "high", "low", "close", "basevolume"]
 
-    ohlcv = addfulloverlapbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:45:01"), DateTime("2022-01-02T22:49:55"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 5
 
-    ohlcv = appendoverlapbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:48:01"), DateTime("2022-01-02T22:51:55"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 7
 
-    ohlcv = addstartoverlapbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:46:45"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 9
 
-    ohlcv = appendgapbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:53:03"), DateTime("2022-01-02T22:55:45"))
     # println(Ohlcv.dataframe(ohlcv))
-    @test size(Ohlcv.dataframe(ohlcv), 1) == 9
+    @test size(Ohlcv.dataframe(ohlcv), 1) == 13
 
-    ohlcv = addstartgapbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:40:03"), DateTime("2022-01-02T22:41:45"))
     # println(Ohlcv.dataframe(ohlcv))
-    @test size(Ohlcv.dataframe(ohlcv), 1) == 9
+    @test size(Ohlcv.dataframe(ohlcv), 1) == 16
 
-    ohlcv = addfulloverlapbtcdownload()
+    ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:38:03"), DateTime("2022-01-02T22:57:45"))
     # println(Ohlcv.dataframe(ohlcv))
-    @test size(Ohlcv.dataframe(ohlcv), 1) == 9
+    @test size(Ohlcv.dataframe(ohlcv), 1) == 20
 
 end
-
 end  # module

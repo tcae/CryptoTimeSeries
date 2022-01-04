@@ -20,22 +20,6 @@ using ..Ohlcv, ..Features, ..Targets
 
 
 """
-Go back in index look for a more actual price extreme than the one from horizontal regression.
-If regression of buyix is >0 then look back for a maximum else it is a falling slope then look back for a minimum.
-"""
-function absmaxindex(prices, regressions, buyix, sellix)
-    comparison = regressions[buyix] > 0 ? (>) : (<)
-    maxsellix = sellix
-    while (sellix > buyix)
-        sellix -= 1
-        if comparison(prices[sellix], prices[maxsellix])
-            maxsellix = sellix
-        end
-    end
-    return maxsellix
-end
-
-"""
 gainborders is a vector to map a price gain value to an array index and search function (Base.Sort.searchsortedfirst/searchsortedlast) to search index of a given gain or gradient.
 """
 function preparegainborders(gainrange=0.1, gainstep=0.01)
@@ -99,7 +83,7 @@ function slope2histo!(histo, prices, regressions, buyix)
         return histo, 0
     end
     sellix -= 1
-    maxsellix = absmaxindex(prices, regressions, buyix, sellix)  # works for long and short trades
+    maxsellix = Targets.absmaxindex(prices, regressions, buyix, sellix)  # works for long and short trades
 
     regix = searchsortedlast(histo.regquantiles, regressions[maxsellix]) + 1
     histo.sellhisto[regix] += 1

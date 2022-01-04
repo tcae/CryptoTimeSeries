@@ -42,17 +42,18 @@ function klines2jdf(jsonkline)
             )
     else
         len = length(jsonkline)
-        df.opentime = [Dates.unix2datetime(jsonkline[ix][1]/1000) for ix in 1:len]
-        df.open = [parse(Float32, jsonkline[ix][2]) for ix in 1:len]
-        df.high = [parse(Float32, jsonkline[ix][3]) for ix in 1:len]
-        df.low = [parse(Float32, jsonkline[ix][4]) for ix in 1:len]
-        df.close = [parse(Float32, jsonkline[ix][5]) for ix in 1:len]
-        df.basevolume = [parse(Float32, jsonkline[ix][6]) for ix in 1:len]
+        df[:, :opentime] = [Dates.unix2datetime(jsonkline[ix][1]/1000) for ix in 1:len]
+        df[:, :open] = [parse(Float32, jsonkline[ix][2]) for ix in 1:len]
+        df[:, :high] = [parse(Float32, jsonkline[ix][3]) for ix in 1:len]
+        df[:, :low] = [parse(Float32, jsonkline[ix][4]) for ix in 1:len]
+        df[:, :close] = [parse(Float32, jsonkline[ix][5]) for ix in 1:len]
+        df[:, :basevolume] = [parse(Float32, jsonkline[ix][6]) for ix in 1:len]
         # df.quotevolume = [parse(Float32, jsonkline[ix][8]) for ix in 1:len]
     end
     return df
 end
 
+defaultcryptoexchange = "binance"
 
 """
 Requests base/USDT from start until end (both including) in interval frequency but maximum 1000 entries
@@ -183,47 +184,23 @@ function cryptodownload(base, interval, startdt, enddt)
     Ohlcv.read!(ohlcv)
     olddf = Ohlcv.dataframe(ohlcv)
     if size(olddf, 1) > 0  # there is already data available
-        if enddt < olddf[end, :opentime]
-            if startdt < olddf[begin, :opentime]
-                if enddt < olddf[begin, :opentime]
-                    # don't allow to create timerange gaps
-                    Logging.@warn "Invalid datetime range: end $enddt <= start available data $(olddf[begin, :opentime])"
-                    return ohlcv
+        if startdt < olddf[begin, :opentime]
+            # correct enddt in each case (gap between new and old range or range overlap) to avoid time range gaps
+            tmpdt = olddf[begin, :opentime] - intervalperiod(interval)
+            # get data of a timerange before the already available data
+            newdf = gethistoryohlcv(base, startdt, tmpdt, interval)
+            if size(newdf, 1) > 0
+                if names(olddf) == names(newdf)
+                    olddf = vcat(newdf, olddf)
                 else
-                    enddt = olddf[begin, :opentime] - intervalperiod(interval)
-                    # get data of a timerange before the already available data
-                    newdf = gethistoryohlcv(base, startdt, enddt, interval)
-                    if size(newdf, 1) > 0
-                        if names(olddf) == names(newdf)
-                            olddf = vcat(newdf, olddf)
-                        else
-                            Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
-                        end
-                    end
-                    Ohlcv.setdataframe!(ohlcv, olddf)
+                    Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
                 end
-            else  # enddt < olddf[end, :opentime] && startdt >= olddf[begin, :opentime]
-                return ohlcv  # startdt and enddt within range of  already available data
             end
-        else  # enddt >= olddf[end, :opentime]
-            if startdt < olddf[begin, :opentime]
-                enddt1 = olddf[begin, :opentime] - intervalperiod(interval)
-                # get data of a timerange before the already available data
-                newdf = gethistoryohlcv(base, startdt, enddt1, interval)
-                if size(newdf, 1) > 0
-                    if names(olddf) == names(newdf)
-                        olddf = vcat(newdf, olddf)
-                    else
-                        Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
-                    end
-                end
-        elseif startdt > olddf[end, :opentime]
-                # don't allow to create timerange gaps
-                Logging.@warn "Invalid datetime range: end $startdt > end available data $(olddf[end, :opentime])"
-                return ohlcv
-            end
-            startdt2 = olddf[end, :opentime]  # update last data row
-            newdf = gethistoryohlcv(base, startdt2, enddt, interval)
+            Ohlcv.setdataframe!(ohlcv, olddf)
+        end
+        if enddt > olddf[end, :opentime]
+            tmpdt = olddf[end, :opentime]  # update last data row
+            newdf = gethistoryohlcv(base, tmpdt, enddt, interval)
             if size(newdf, 1) > 0
                 if newdf[begin, :opentime] == olddf[end, :opentime]  # replace last row with updated data
                     deleteat!(olddf, size(olddf, 1))
@@ -234,7 +211,7 @@ function cryptodownload(base, interval, startdt, enddt)
                     Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
                 end
             end
-    Ohlcv.setdataframe!(ohlcv, olddf)
+            Ohlcv.setdataframe!(ohlcv, olddf)
         end
     else
         newdf = gethistoryohlcv(base, startdt, enddt, interval)
@@ -245,20 +222,26 @@ function cryptodownload(base, interval, startdt, enddt)
 end
 
 """
-Returns a dataframe with 24h values of all USDT quote bases.
+Returns a dataframe with 24h values of all USDT quote bases with the following columns:
+
+- base
+- quotevolume24h
+- lastprice
+
 """
-function getmarket(minquotevolume=10000000)
+function getUSDTmarket()
     symbols = MyBinance.getAllPrices()
     len = length(symbols)
     values = MyBinance.get24HR()
     quotesymbol = uppercase(Config.cryptoquote)
-    basesix = [(ix, parse(Float32, values[ix]["quoteVolume"])) for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
-    minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
+    basesix = [(ix, parse(Float32, values[ix]["quoteVolume"]), parse(Float32, values[ix]["lastPrice"])) for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
+    # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
 
     df = DataFrames.DataFrame()
     quotelen = length(quotesymbol)
-    df.base = [symbols[ix]["symbol"][1:end-quotelen] for (ix, _) in minvolbasesix]
-    df.quotevolume24h = [qv for (_, qv) in minvolbasesix]
+    df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _) in basesix]
+    df.quotevolume24h = [qv for (_, qv, _) in basesix]
+    df.lastprice = [lp for (_, _, lp) in basesix]
     return df
 end
 

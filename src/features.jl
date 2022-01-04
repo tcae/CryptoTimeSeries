@@ -187,31 +187,31 @@ self.config = {
 """
 function f4condagg!(ohlcv::Ohlcv.OhlcvData)
     df = ohlcv.df
-    df.normregrprice5m, df.normregrgrad5m = normrollingregression(df.pivot, 5)
-    df.normregrprice15m, df.normregrgrad15m = normrollingregression(df.pivot, 15)
-    df.normregrprice30m, df.normregrgrad30m = normrollingregression(df.pivot, 30)
-    df.normregrgrad1h = normrollingregression(df.pivot, 60)
-    df.normregrgrad2h = normrollingregression(df.pivot, 2*60)
-    df.normregrgrad4h = normrollingregression(df.pivot, 4*6)
-    df.normregrgrad12h = normrollingregression(df.pivot, 12*60)
-    df.normregrgrad24h = normrollingregression(df.pivot, 24*60)
-    df.normregrgrad3d = normrollingregression(df.pivot, 3*24*60)
-    df.normregrgrad9d = normrollingregression(df.pivot, 9*24*60)
-    df.vol5m1h = relativevolume(df.volume, 5, 60)
-    df.vol1h1d = relativevolume(df.volume, 60, 24*60)
+    df[:, :normregrprice5m], df[:, :normregrgrad5m] = normrollingregression(df[!, :pivot], 5)
+    df[:, :normregrprice15m], df[:, :normregrgrad15m] = normrollingregression(df[!, :pivot], 15)
+    df[:, :normregrprice30m], df[:, :normregrgrad30m] = normrollingregression(df[!, :pivot], 30)
+    df[:, :normregrgrad1h] = normrollingregression(df[!, :pivot], 60)
+    df[:, :normregrgrad2h] = normrollingregression(df[!, :pivot], 2*60)
+    df[:, :normregrgrad4h] = normrollingregression(df[!, :pivot], 4*6)
+    df[:, :normregrgrad12h] = normrollingregression(df[!, :pivot], 12*60)
+    df[:, :normregrgrad24h] = normrollingregression(df[!, :pivot], 24*60)
+    df[:, :normregrgrad3d] = normrollingregression(df[!, :pivot], 3*24*60)
+    df[:, :normregrgrad9d] = normrollingregression(df[!, :pivot], 9*24*60)
+    df[:, :vol5m1h] = relativevolume(df[!, :volume], 5, 60)
+    df[:, :vol1h1d] = relativevolume(df[!, :volume], 60, 24*60)
 end
 
 function features1(ohlcv::Ohlcv.OhlcvData)
     df = ohlcv.df
-    features = zeros(Float32, (6,size(df.pivot, 1)))
-    regr = normrollingregression(df.pivot, 5)
-    dfgl = lastgainloss(df.pivot, regr)
+    features = zeros(Float32, (6,size(df[!, :pivot], 1)))
+    regr = normrollingregression(df[!, :pivot], 5)
+    dfgl = lastgainloss(df[!, :pivot], regr)
     features[1,:] = regr
     features[2,:] = dfgl.lastgain
     features[3,:] = dfgl.lastloss
-    features[4,:] = normrollingregression(df.pivot, 15)
-    features[5,:] = normrollingregression(df.pivot, 30)
-    features[6,:] = normrollingregression(df.pivot, 60)
+    features[4,:] = normrollingregression(df[!, :pivot], 15)
+    features[5,:] = normrollingregression(df[!, :pivot], 30)
+    features[6,:] = normrollingregression(df[!, :pivot], 60)
     return features
 end
 

@@ -25,12 +25,13 @@ end
 
 save_cols = [:opentime, :open, :high, :low, :close, :basevolume]
 
-" Returns an empty default crypto OhlcvData with quote=usdt, xch=binance, assettype=crypto, interval=1m"
+"Returns an empty dataframe with all persistent columns"
 function defaultohlcvdataframe()::DataFrames.DataFrame
     df = DataFrame(opentime=DateTime[], open=Float32[], high=Float32[], low=Float32[], close=Float32[], basevolume=Float32[])
     return df
 end
 
+" Returns an empty default crypto OhlcvData with quote=usdt, xch=binance, interval=1m"
 function defaultohlcv(base)::OhlcvData
     ohlcv = OhlcvData(defaultohlcvdataframe(), base, Config.cryptoquote, Config.cryptoexchange, "1m")
     return ohlcv
@@ -75,7 +76,7 @@ end
 function addpivot!(df::DataFrame)
     cols = names(df)
     if all([c in cols for c in ["open", "high", "low", "close"]])
-        df.pivot = (df.open + df.high + df.low + df.close) ./ 4
+        df[:, :pivot] = (df[!, open] + df[!, :high] + df[!, :low] + df[!, :close]) ./ 4
     end
     return df
 end
@@ -155,9 +156,7 @@ function columnarray(ohlcv::OhlcvData, setname::String, cols::Array{Symbol,1})::
     return colarray
 end
 
-function mnemonic(ohlcv::OhlcvData)
-    return ohlcv.base * "_" * ohlcv.qte * "_" * ohlcv.xch * "_" * ohlcv.interval * "_OHLCV"
-end
+mnemonic(ohlcv::OhlcvData) = ohlcv.base * "_" * ohlcv.qte * "_" * ohlcv.xch * "_" * ohlcv.interval * "_OHLCV"
 
 function write(ohlcv::OhlcvData)
     mnm = mnemonic(ohlcv)
