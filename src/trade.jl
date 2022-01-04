@@ -1,7 +1,7 @@
 # using Pkg;
 # Pkg.add(["Dates", "DataFrames"])
 
-include("../src/exchange.jl")
+include("../src/cryptoxch.jl")
 include("../src/env_config.jl")
 include("../src/ohlcv.jl")
 include("../src/classify.jl")
@@ -33,7 +33,7 @@ All history data will be collected but a fixed subset **`historysubset`** will b
 module Trade
 
 using Dates, DataFrames
-using ..Config, ..Ohlcv, ..Classify, ..Exchange
+using ..Config, ..Ohlcv, ..Classify, ..CryptoXch
 
 # using ..Binance
 
@@ -57,9 +57,10 @@ function gettrainingohlcv(trainingbases=Config.trainingbases)
     println("training bases: $(trainingbases)")
     for base in trainingbases
         println("$(Dates.now()): loading $base from exchange from $startdt until $enddt")
-        df = Exchange.gethistoryohlcv(base, startdt, enddt)
+        df = CryptoXch.gethistoryohlcv(base, startdt, enddt)
         println("$(Dates.now()): saving $base")
-        ohlcv = Ohlcv.OhlcvData(df, base)
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setdataframe!(ohlcv, df)
         Ohlcv.write(ohlcv)
         println("$(Dates.now()): saved $base from $(df[1, :opentime]) until $(df[end, :opentime])")
     end

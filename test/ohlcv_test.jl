@@ -10,7 +10,7 @@ using ..Config
 using ..Ohlcv
 
 function testohlcvinit(base::String)
-    ohlcv1 = Ohlcv.defaultcrypto("test")
+    ohlcv1 = Ohlcv.defaultohlcv("test")
     ohlcv1 = Ohlcv.readcsv!(ohlcv1)
     # println("ohlcv1: $ohlcv1")
     Ohlcv.write(ohlcv1)
@@ -18,7 +18,7 @@ function testohlcvinit(base::String)
 end
 
 function readwrite(ohlcv1)
-    ohlcv2 = Ohlcv.defaultcrypto(Ohlcv.basesymbol(ohlcv1))
+    ohlcv2 = Ohlcv.defaultohlcv(Ohlcv.basesymbol(ohlcv1))
     ohlcv2 = Ohlcv.read!(ohlcv2)
     # println("ohlcv2: $ohlcv2")
     return ohlcv2
@@ -46,12 +46,12 @@ function setsplit_test()
 end
 
 function setassign_test()
-    ohlcv = Ohlcv.defaultcrypto("test")
+    ohlcv = Ohlcv.defaultohlcv("test")
     ohlcv = Ohlcv.read!(ohlcv)
     Ohlcv.setassign!(ohlcv)
     # println("ohlcv after split set: $ohlcv")
     nrow(ohlcv.df) == 9 || return false
-    names(ohlcv.df) == ["timestamp", "open", "high", "low", "close", "volume", "pivot", "set"] || return false
+    names(ohlcv.df) == ["opentime", "open", "high", "low", "close", "basevolume", "set"] || return false
     return true
 end
 
@@ -60,10 +60,11 @@ function columnarray_test()
     725.0       0.0       3137.0       14150.0       33415.0;
     0.207287  0.204343     0.204343      0.204703      0.213031]
     # display(expected)
-    ohlcv = Ohlcv.defaultcrypto("test")
+    ohlcv = Ohlcv.defaultohlcv("test")
     ohlcv = Ohlcv.read!(ohlcv)
+    Ohlcv.addpivot!(ohlcv)
     # display(ohlcv2)
-    cols = [:pivot, :volume, :open]
+    cols = [:pivot, :basevolume, :open]
     colarray = Ohlcv.columnarray(ohlcv, "training", cols)
     return isapprox(expected, colarray)
 end
@@ -73,7 +74,7 @@ function pivot_test()
     725.0       0.0       3137.0       14150.0       33415.0;
     0.207287  0.204343     0.204343      0.204703      0.213031]
     # display(expected)
-    ohlcv2 = Ohlcv.defaultcrypto("test")
+    ohlcv2 = Ohlcv.defaultohlcv("test")
     ohlcv2 = Ohlcv.read!(ohlcv2)
     # rename!(ohlcv2.df,:pivot => :pivot2)
     ohlcv2 = Ohlcv.addpivot!(ohlcv2)
@@ -89,16 +90,16 @@ Config.init(test)
 
 ohlcv1 = testohlcvinit("test")
 
-@test names(Ohlcv.dataframe(ohlcv1)) == ["timestamp", "open", "high", "low", "close", "volume", "pivot"]
+@test names(Ohlcv.dataframe(ohlcv1)) == ["opentime", "open", "high", "low", "close", "basevolume"]
 @test nrow(Ohlcv.dataframe(ohlcv1)) == 9
 @test Ohlcv.mnemonic(ohlcv1) == "test_usdt_binance_1m_OHLCV"
 
 ohlcv2 = readwrite(ohlcv1)
-@test names(Ohlcv.dataframe(ohlcv1)) == ["timestamp", "open", "high", "low", "close", "volume", "pivot"]
+@test names(Ohlcv.dataframe(ohlcv1)) == ["opentime", "open", "high", "low", "close", "basevolume"]
 @test nrow(Ohlcv.dataframe(ohlcv1)) == 9
 @test Ohlcv.dataframe(ohlcv1)[1, :open] == Ohlcv.dataframe(ohlcv2)[1, :open]
-@test Ohlcv.dataframe(ohlcv1)[1, :timestamp] == Ohlcv.dataframe(ohlcv2)[1, :timestamp]
-@test Ohlcv.dataframe(ohlcv1)[9, :volume] == Ohlcv.dataframe(ohlcv2)[9, :volume]
+@test Ohlcv.dataframe(ohlcv1)[1, :opentime] == Ohlcv.dataframe(ohlcv2)[1, :opentime]
+@test Ohlcv.dataframe(ohlcv1)[9, :basevolume] == Ohlcv.dataframe(ohlcv2)[9, :basevolume]
 @test setsplit_test()
 @test setassign_test()
 @test columnarray_test()

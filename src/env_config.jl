@@ -17,7 +17,8 @@ export Authentication, test, production
 import JSON
 
 @enum Mode test production
-
+cryptoquote = "usdt"
+cryptoexchange = "binance"
 datetimeformat = "%Y-%m-%d_%Hh%Mm"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
@@ -94,7 +95,7 @@ end
 
 function greet1()
     println("hello from greet1")
-    x = Authentication(test)
+    x = Authentication()
     println(x)
 end
 

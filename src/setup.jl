@@ -10,16 +10,15 @@ add(["JSON"])
 # import HTTP, SHA, JSON, Dates, Printf
 add(["SHA", "JSON", "Dates", "Printf", "HTTP"])
 
-# required packages for Exchange
+# required packages for CryptoExchange
 # add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
-# using Dates, DataFrames, DataAPI
-# using JDF, CSV
+# using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 # using ..MyBinance, ..Config
-add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
+add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV", "Logging"])
 
 # requies packages for ohlcv
-# using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones
-add(["Dates", "DataFrames", "TimeZones", "JDF", "CSV", "CategoricalArrays"])
+# using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones, Logging
+add(["Dates", "DataFrames", "TimeZones", "JDF", "CSV", "CategoricalArrays", "Logging"])
 
 # requies packages for targets
 # noting yet
@@ -34,3 +33,9 @@ add(["RollingFunctions", "DataFrames"])
 # using ..Config, ..Ohlcv, ..Classify, ..Exchange
 add(["Dates", "DataFrames"])
 
+# required packages for gradientgaindistribution
+# using DataFrames, Logging, Statistics
+add(["DataFrames", "Logging", "Statistics"])
+
+# for applications (not yet used)
+# using LoggingExtras

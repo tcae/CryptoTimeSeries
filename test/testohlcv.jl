@@ -7,8 +7,7 @@ Produces test ohlcv data pattern
 """
 module TestOhlcv
 
-using Dates, DataFrames  # Plots, PlotlyBase
-using Test
+using Dates, DataFrames
 using ..Config
 using ..Ohlcv
 
@@ -55,9 +54,9 @@ function sinedata(periodminutes, periods, offset=0)
     low =   price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
-    df = DataFrame(open=open, high=high, low=low, close=close, volume=volume, timestamp=timestamp)
-    ohlcv = Ohlcv.OhlcvData(df, "testsine", "1m")
-    ohlcv = Ohlcv.addpivot!(ohlcv)
+    df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
+    ohlcv = Ohlcv.defaultohlcv("testsine")
+    Ohlcv.setdataframe!(ohlcv, df)
     return ohlcv
 end
 
@@ -88,9 +87,9 @@ function doublesinedata(periodminutes, periods)
     low =   price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
-    df = DataFrame(open=open, high=high, low=low, close=close, volume=volume, timestamp=timestamp)
-    ohlcv = Ohlcv.OhlcvData(df, "doubletestsine", "1m")
-    ohlcv = Ohlcv.addpivot!(ohlcv)
+    df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
+    ohlcv = Ohlcv.defaultohlcv("doubletestsine")
+    Ohlcv.setdataframe!(ohlcv, df)
     return ohlcv
 end
 
@@ -104,14 +103,6 @@ end
 
 
 
-"""
-@testset "Ohlcv tests" begin
-
-
-@test Ohlcv.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)[7] == 0.310714285714285
-
-end  # of testset
-"""
 
 end  # TestOhlcv
 

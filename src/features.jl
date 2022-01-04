@@ -84,7 +84,7 @@ end
 """
 4 rolling features providing the current price distance and the time distance to the last maximum and minimum
 """
-function lastextremes(prices, regressions)::DataFrames.DataFrame
+function lastextremes(prices, regressions)::DataFrame
     tmax = 1
     tmin = 2
     pmax = 3
@@ -110,7 +110,7 @@ end
 2 rolling features providing the last forward looking relative gain and the last forward looking relative loss.
 The returned dataframe contains the columns `lastgain` and `lastloss`
 """
-function lastgainloss(prices, regressions)::DataFrames.DataFrame
+function lastgainloss(prices, regressions)::DataFrame
     gainix = 1  # const
     lossix = 2  # const
     lastmaxix = [1, 1]

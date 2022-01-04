@@ -66,7 +66,7 @@ end
 """
 Returns an array of price gains between a buy at slope begin and sell at slope end.
 """
-function gradientextremesindex(regressions)
+function gradientextremesindex(prices, regressions)
     # @info "gradientgains" size(prices, 1), size(regressions, 1)
     gains = zeros(Int32, size(prices, 1))
     lastix = ix = 1

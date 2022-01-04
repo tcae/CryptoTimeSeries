@@ -17,7 +17,7 @@ using ..Config
 using ..Ohlcv
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
-app = dash(external_stylesheets = ["dashboard.css"], assets_folder=(scriptsdir() * "/"))
+app = dash(external_stylesheets = ["dashboard.css"], assets_folder=(pwd() * "/scripts/"))
 
 env_bases = ["BTC", "ETH"]
 # env_bases = ["Test"]

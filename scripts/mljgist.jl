@@ -9,8 +9,7 @@
 # abc
 # """
 
-using DataFrames, PlotlyJS
-using Dash, DashHtmlComponents, DashCoreComponents
+using DataFrames, PlotlyJS, Dash
 
 year=[i for i in 1995:2012]
 y=[219, 146, 112, 127, 124, 180, 236, 207, 236, 263, 350, 430, 474, 526, 488, 537, 500, 439]

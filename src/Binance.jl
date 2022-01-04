@@ -2,7 +2,7 @@
 # Pkg.add(["SHA", "JSON", "Dates", "Printf", "HTTP"])
 module MyBinance
 
-import HTTP, SHA, JSON, Dates, Printf
+import HTTP, SHA, JSON, Dates, Printf, Logging
 
 # base URL of the Binance API
 BINANCE_API_REST = "https://api.binance.com/"
@@ -180,7 +180,18 @@ function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval=
         query = string(query, "&startTime=", startTime, "&endTime=", endTime)
     end
     r = HTTP.request("GET", string(BINANCE_API_KLINES, query))
-    r2j(r.body)
+
+    # ! TCAE: HTTP response log inserted to understand errors - especially rate limit errors
+    if r.status != 200
+        filename = pwd() * "/$(Dates.now())HTTP-log.json"
+        Logging.@warn "HTTP binanace klines request NOT OK returning status $stat - log file response: $filename"
+        open(filename,"a") do io
+            # JSON.print(io, r2j(r), 4)  # ERROR: LoadError: Unexpected character Line: 0 Around: ...HTTP/1.1 200 OK  Conte...
+            println(io, r)
+        end
+    end
+
+    return r.status, r2j(r.body)
 end
 
 ##################### SECURED CALL's NEEDS apiKey / apiSecret #####################
@@ -406,7 +417,7 @@ function wsUserData(channel::Channel, apiKey, listenKey; reconnect=true)
     error = false;
     while !error
         try
-            HTTP.WebSockets.open(string(Binance.BINANCE_API_WS, listenKey); verbose=false) do io
+            HTTP.WebSockets.open(string(BINANCE_API_WS, listenKey); verbose=false) do io
                 while !eof(io);
                     put!(channel, r2j(readavailable(io)))
                 end

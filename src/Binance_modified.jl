@@ -409,7 +409,7 @@ function wsUserData(channel::Channel, apiKey, listenKey; reconnect=true)
     error = false;
     while !error
         try
-            HTTP.WebSockets.open(string(Binance.BINANCE_API_WS, listenKey); verbose=false) do io
+            HTTP.WebSockets.open(string(BINANCE_API_WS, listenKey); verbose=false) do io
                 while !eof(io);
                     put!(channel, r2j(readavailable(io)))
                 end

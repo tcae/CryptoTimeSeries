@@ -1,7 +1,7 @@
 include("../src/env_config.jl")
 include("../src/features.jl")
 include("../test/testohlcv.jl")
-# include("../src/targets.jl")
+include("../src/targets.jl")
 include("../src/ohlcv.jl")
 
 """
@@ -15,7 +15,7 @@ The actual results show that the maxima are with the steepest
 module GradientGainDistributions
 
 # import Pkg; Pkg.add(["JDF", "RollingFunctions"])
-using DataFrames, Statistics, Logging
+using DataFrames, Logging, Statistics
 using ..Ohlcv, ..Features, ..Targets
 
 
