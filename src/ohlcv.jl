@@ -76,7 +76,7 @@ end
 function addpivot!(df::DataFrame)
     cols = names(df)
     if all([c in cols for c in ["open", "high", "low", "close"]])
-        df[:, :pivot] = (df[!, open] + df[!, :high] + df[!, :low] + df[!, :close]) ./ 4
+        df[:, :pivot] = (df[!, :open] + df[!, :high] + df[!, :low] + df[!, :close]) ./ 4
     end
     return df
 end
