@@ -23,26 +23,29 @@ env_bases = ["BTC", "ETH"]
 # env_bases = ["Test"]
 indicator_opts = ["opt a", "opt b"]
 ohlcv = TestOhlcv.sinedata(120, 3)
+Ohlcv.addpivot!(ohlcv.df)
+assets = Assets.read()
+
 # println(first(ohlcv.df, 3))
 # fig = Plot(
-#     ohlcv.df, x=:timestamp, y=:pivot,
+#     ohlcv.df, x=:opentime, y=:pivot,
 # )
 
 # assets =
 
-trace1 = scatter(x=ohlcv.df.timestamp, y=ohlcv.df.high, mode="lines", name="lines")
-trace2 = scatter(x=ohlcv.df.timestamp, y=ohlcv.df.low, mode="lines+markers", name="lines+markers")
-trace3 = scatter(x=ohlcv.df.timestamp, y=ohlcv.df.pivot, mode="markers", name="markers")
+trace1 = scatter(x=ohlcv.df.opentime, y=ohlcv.df.high, mode="lines", name="lines")
+trace2 = scatter(x=ohlcv.df.opentime, y=ohlcv.df.low, mode="lines+markers", name="lines+markers")
+trace3 = scatter(x=ohlcv.df.opentime, y=ohlcv.df.pivot, mode="markers", name="markers")
 fig1 = Plot([trace1, trace2, trace3])
 
 fig2 = Plot([candlestick(
-        x=ohlcv.df.timestamp,
+        x=ohlcv.df.opentime,
         open=ohlcv.df.open,
         high=ohlcv.df.high,
         low=ohlcv.df.low,
         close=ohlcv.df.close, name="OHLC"
     ),
-    bar(x=ohlcv.df.timestamp, y=ohlcv.df.volume, name="volume", yaxis="y2")
+    bar(x=ohlcv.df.opentime, y=ohlcv.df.basevolume, name="basevolume", yaxis="y2")
     ],
     Layout(title_text="4hOHLCV", xaxis_title_text="time", yaxis_title_text="OHLCV%",
         yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
@@ -94,7 +97,7 @@ app.layout = html_div() do
         dcc_graph(id="volume-signals-graph"),
         html_div(id="graph4h_end"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[Dict("name" =>i, "id" => i) for i in names(df)], data = Dict.(pairs.(eachrow(df)))) #!df undefined
+            columns=[Dict("name" =>i, "id" => i) for i in names(assets.df)], data = Dict.(pairs.(eachrow(assets.df))))
     ])
 end
 
