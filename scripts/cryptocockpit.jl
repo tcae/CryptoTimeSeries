@@ -97,7 +97,8 @@ app.layout = html_div() do
         dcc_graph(id="volume-signals-graph"),
         html_div(id="graph4h_end"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[Dict("name" =>i, "id" => i) for i in names(assets.df)], data = Dict.(pairs.(eachrow(assets.df))))
+            columns=[Dict("name" =>i, "id" => i) for i in names(assets.df)], data = Dict.(pairs.(eachrow(assets.df))),
+            style_table=Dict("height" => "500px", "overflowY" => "auto"))
     ])
 end
 

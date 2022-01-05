@@ -100,7 +100,7 @@ end
 
 function loadassets()::AssetData
     usdtdf = CryptoXch.getUSDTmarket()
-    # println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
+    println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
     ad = AssetData(emptyassetdataframe())
     portfolio = Set(portfolioselect(usdtdf))
     # println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
@@ -131,18 +131,23 @@ function loadassets()::AssetData
     ad.df[:, :portfolio] .= false
     ad.df[in.(ad.df[!,:base], Ref([base for base in portfolio])), :portfolio] .= true
     ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
+    sort!(ad.df, [:base])
+    sort!(usdtdf, [:base])
+    ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
+    ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
+
     return ad
 end
 
 
 mnemonic() = "AssetData_v1"
-save_cols = [:base, :manual, :automatic, :portfolio, :xch]
+savecols = [:base, :manual, :automatic, :portfolio, :xch]
 
 function write(ad::AssetData)
     mnm = mnemonic()
     filename = Config.datafile(mnm)
     # println(filename)
-    JDF.savejdf(filename, ad.df[!, save_cols])  # without :pivot
+    JDF.savejdf(filename, ad.df[!, savecols])  # without :pivot
 end
 
 function read()::AssetData

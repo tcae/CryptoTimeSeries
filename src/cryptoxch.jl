@@ -234,14 +234,19 @@ function getUSDTmarket()
     len = length(symbols)
     values = MyBinance.get24HR()
     quotesymbol = uppercase(Config.cryptoquote)
-    basesix = [(ix, parse(Float32, values[ix]["quoteVolume"]), parse(Float32, values[ix]["lastPrice"])) for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
+    basesix = [(ix,
+        parse(Float32, values[ix]["quoteVolume"]),
+        parse(Float32, values[ix]["lastPrice"]),
+        parse(Float32, values[ix]["priceChangePercent"]))
+        for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
     # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
 
     df = DataFrames.DataFrame()
     quotelen = length(quotesymbol)
-    df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _) in basesix]
-    df.quotevolume24h = [qv for (_, qv, _) in basesix]
-    df.lastprice = [lp for (_, _, lp) in basesix]
+    df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _, _) in basesix]
+    df.quotevolume24h = [qv for (_, qv, _, _) in basesix]
+    df.lastprice = [lp for (_, _, lp, _) in basesix]
+    df.priceChangePercent = [pcp for (_, _, _, pcp) in basesix]
     return df
 end
 

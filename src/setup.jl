@@ -20,6 +20,11 @@ add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV", "Logging"])
 # using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones, Logging
 add(["Dates", "DataFrames", "TimeZones", "JDF", "CSV", "CategoricalArrays", "Logging"])
 
+# requies packages for assets
+# using Dates, DataFrames, Logging, JDF
+add(["Dates", "DataFrames", "Logging", "JDF"])
+
+
 # requies packages for targets
 # noting yet
 
