@@ -79,13 +79,19 @@ function portfolioselect(usdtdf)
     # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
     basevolume = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
     bases = [lowercase(d["asset"]) for d in portfolio]
-    bases = [base for base in bases if !(base in manualignore)]
+    @assert length(basevolume) == length(bases)
     usdtbases = usdtdf.base
     deletebases = fill(true, (size(bases)))  # by default remove all bases that are not found in usdtbases
     for (ix, base) in enumerate(bases)
         ubix = findfirst(x -> x == base, usdtbases)
         if !(ubix === nothing)
             deletebases[ix] = (usdtdf[ubix, :lastprice] * basevolume[ix]) < 10  # remove all base symbols with a USD value <10
+        # else
+        #     Logging.@warn "portfolio base $base not found in USDT market bases"
+        #  there are some: USDT but also currencies not tradable in USDT
+        end
+        if base in manualignore  # independent of portfolio volume, e.g. USDT
+            deletebases[ix] = true
         end
     end
     deleteat!(bases, deletebases)
@@ -101,11 +107,10 @@ end
 function loadassets()::AssetData
     usdtdf = CryptoXch.getUSDTmarket()
     println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
-    ad = AssetData(emptyassetdataframe())
     portfolio = Set(portfolioselect(usdtdf))
-    # println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
+    println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
     manual = Set(manualselect())
-    # println("#=$(length(manual)) loadassets manual: $(manual)")
+    println("#=$(length(manual)) loadassets manual: $(manual)")
     automatic = Set(automaticselect(usdtdf))
     # println("#=$(length(automatic)) loadassets automatic: $(automatic)")
 
@@ -123,13 +128,11 @@ function loadassets()::AssetData
     for base in allbases
         CryptoXch.cryptodownload(base, "1m", startdt, enddt)
     end
+    ad = AssetData(emptyassetdataframe())
     ad.df[:, :base] = [base for base in allbases]
-    ad.df[:, :manual] .= false
-    ad.df[in.(ad.df[!,:base], Ref([base for base in manual])), :manual] .= true
-    ad.df[:, :automatic] .= false
-    ad.df[in.(ad.df[!,:base], Ref([base for base in automatic])), :automatic] .= true
-    ad.df[:, :portfolio] .= false
-    ad.df[in.(ad.df[!,:base], Ref([base for base in portfolio])), :portfolio] .= true
+    ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :automatic] = [ad.df[ix, :base] in automatic ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
     ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
     sort!(ad.df, [:base])
     sort!(usdtdf, [:base])

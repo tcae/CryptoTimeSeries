@@ -61,7 +61,8 @@ function rollingregression(y, windowsize)::Tuple{Array{Float32,1},Array{Float32,
 end
 
 """
-Returns the regression y and the regression gradient as a ratio of the y input, i.e. a regression y ratio of 0.95 means that the regression y is at 95% of the corresponding input y.
+Returns the regression y and the regression gradient as a ratio of the y input,
+i.e. a regression y ratio of 0.95 means that the regression y is at 95% of the corresponding input y.
 The same normalization applies for the gradient.
 """
 function normrollingregression(y, windowsize)

@@ -22,7 +22,7 @@ Config.init(production)
 # ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
 # ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
 
-
+# println(Assets.portfolioselect(CryptoXch.getUSDTmarket()))
 @testset "Assets tests" begin
     # ad1 = Assets.read()
     ad1 = Assets.loadassets()
