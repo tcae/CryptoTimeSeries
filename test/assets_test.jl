@@ -32,8 +32,8 @@ Config.init(production)
     Assets.write(ad1)
     ad2 = Assets.read()
     @test ad1.df==ad2.df
-    println("ad2.df")
-    println(ad2.df)
+    # println("ad2.df")
+    # println(ad2.df)
 
 end
 

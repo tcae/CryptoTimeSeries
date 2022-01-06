@@ -141,7 +141,7 @@ end
 
 
 mnemonic() = "AssetData_v1"
-savecols = [:base, :manual, :automatic, :portfolio, :xch]
+savecols = [:base, :manual, :automatic, :portfolio, :xch, :quotevolume24h, :priceChangePercent]
 
 function write(ad::AssetData)
     mnm = mnemonic()
