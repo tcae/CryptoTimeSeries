@@ -51,13 +51,13 @@ end
 manualignore = ["usdt", "tusd", "busd", "usdc"]
 minimumquotevolume = 10000000
 
-function automaticselect(usdtdf)
+function automaticselect(usdtdf, dayssperiod)
     bases = [usdtdf[ix, :base] for ix in 1:size(usdtdf, 1) if usdtdf[ix, :quotevolume24h] > minimumquotevolume]
     bases = [base for base in bases if !(base in manualignore)]
     # println("#=$(length(bases)) automaticselect check1: $bases")
 
     enddt = Dates.now(Dates.UTC)
-    startdt = enddt - Dates.Year(1)
+    startdt = enddt - dayssperiod
     deletebases = [false for _ in bases]
     for (ix, base) in enumerate(bases)
         ohlcv = CryptoXch.cryptodownload(base, "1d", startdt, enddt)
@@ -104,25 +104,25 @@ function setdataframe!(ad::AssetData, df)
     ad.df = df
 end
 
-function loadassets()::AssetData
+function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::AssetData
     usdtdf = CryptoXch.getUSDTmarket()
-    println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
+    # println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
     portfolio = Set(portfolioselect(usdtdf))
-    println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
+    # println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
     manual = Set(manualselect())
-    println("#=$(length(manual)) loadassets manual: $(manual)")
-    automatic = Set(automaticselect(usdtdf))
+    # println("#=$(length(manual)) loadassets manual: $(manual)")
+    automatic = Set(automaticselect(usdtdf, dayssperiod))
     # println("#=$(length(automatic)) loadassets automatic: $(automatic)")
 
     missingdayklines = setdiff(union(portfolio, manual), automatic)
     # println("#=$(length(missingdayklines)) loadassets missingdayklines: $(missingdayklines)")
     enddt = Dates.now(Dates.UTC)
-    startdt = enddt - Dates.Year(1)
+    startdt = enddt - dayssperiod
     for base in missingdayklines
         ohlcv = CryptoXch.cryptodownload(base, "1d", startdt, enddt)
     end
 
-    startdt = enddt - Dates.Week(4)
+    startdt = enddt - minutesperiod
     allbases = union(portfolio, manual, automatic)
     # println("#=$(length(allbases)) loadassets allbases: $(allbases)")
     for base in allbases

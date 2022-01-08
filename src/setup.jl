@@ -4,7 +4,7 @@ add(["Pkg", "Test"])
 
 # required for env_config
 # import JSON
-add(["JSON"])
+add(["JSON", "JSON3"])
 
 # required packages for Binance
 # import HTTP, SHA, JSON, Dates, Printf
@@ -44,3 +44,6 @@ add(["DataFrames", "Logging", "Statistics"])
 
 # for applications (not yet used)
 # using LoggingExtras
+
+# required packages for quick visualizations, e.g. in regressionsim
+add(["Plots", "WebIO"])

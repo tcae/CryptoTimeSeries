@@ -134,7 +134,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
     # enddt = DateTime("2020-08-12T22:49:00")
     startdt = floor(startdt, intervalperiod(interval))
     enddt = floor(enddt, intervalperiod(interval))
-    println("requesting $(ceil(enddt - startdt, intervalperiod(interval)) + intervalperiod(interval)) x $interval $base OHLCV from binance")
+    println("requesting from $startdt until $enddt $(ceil(enddt - startdt, intervalperiod(interval)) + intervalperiod(interval)) $base OHLCV from binance")
 
     notreachedenddate = true
     df = Ohlcv.defaultohlcvdataframe()
@@ -149,7 +149,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
             break
         end
         if size(res, 1) == 0
-            Logging.@warn "no data returned by last ohlcv read"
+            Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
             break
         end
         notreachedenddate = (res[end, :opentime] < enddt)
@@ -177,6 +177,7 @@ end
 function cryptodownload(base, interval, startdt, enddt)
     ohlcv = Ohlcv.defaultohlcv(base)
     Ohlcv.setinterval!(ohlcv, interval)
+    println("Requesting $base $interval intervals from $startdt until $enddt")
     if enddt <= startdt
         Logging.@warn "Invalid datetime range: end datetime $enddt <= start datetime $startdt"
         return ohlcv

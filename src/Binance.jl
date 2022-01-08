@@ -181,7 +181,17 @@ function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval=
     end
     r = HTTP.request("GET", string(BINANCE_API_KLINES, query))
 
-    # ! TCAE: HTTP response log inserted to understand errors - especially rate limit errors
+    # ! TCAE: HTTP response log inserted to understand errors - especially rate limit errors - headers may be good enough
+    # julia> dump(HTTP.Response)
+    # HTTP.Response <: Any
+    # status::Int32
+    # major::Int16
+    # minor::Int16
+    # cookies::Array{HTTP.Cookies.Cookie,1}
+    # headers::Dict{String,String}
+    # body::HTTP.FIFOBuffers.FIFOBuffer
+    # request::Nullable{HTTP.Request}
+    # history::Array{HTTP.Response,1}
     if r.status != 200
         filename = pwd() * "/$(Dates.now())HTTP-log.json"
         Logging.@warn "HTTP binanace klines request NOT OK returning status $stat - log file response: $filename"

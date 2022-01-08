@@ -57,6 +57,12 @@ struct Authentication
     end
 end
 
+" set project dir as working dir "
+function setprojectdir()
+    cd("$(@__DIR__)/..")
+    return pwd()
+end
+
 function init(mode::Mode)
     global configmode = mode
     global bases, trainingbases, datapath
