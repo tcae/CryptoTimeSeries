@@ -30,8 +30,8 @@ add(["Dates", "DataFrames", "Logging", "JDF"])
 
 # requies packages for features
 # import RollingFunctions: rollmedian, rolling
-# import DataFrames: DataFrame
-add(["RollingFunctions", "DataFrames"])
+# import DataFrames: DataFrame, Statistics
+add(["RollingFunctions", "DataFrames", "Statistics"])
 
 # required packages for trade
 # using Dates, DataFrames

@@ -422,17 +422,17 @@
   #leftside {
     float: left;
     /* display: inline-block; */
-    width: 48%;
+    width: 49%;
     height: 100%;
-    border: solid;
+    /* border: solid; */
     padding: 5px;
   }
 
   #rightside {
     /* float: left; */
     float: right;
-    width: 48%;
+    width: 49%;
     height: 100%;
-    border: double;
+    /* border: double; */
     padding: 5px;
   }

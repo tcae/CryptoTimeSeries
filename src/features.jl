@@ -7,7 +7,7 @@ module Features
 
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, rolling
-import DataFrames: DataFrame
+import DataFrames: DataFrame, Statistics
 using ..Config, ..Ohlcv
 
 """
@@ -70,6 +70,31 @@ function normrollingregression(y, windowsize)
     regression_y_ratio = regression_y ./ y
     gradient_ratio = gradient ./ y
     return regression_y_ratio, gradient_ratio
+end
+
+"""
+
+For each x:
+
+- expand regression to the length of window size
+- subtract regression from y to remove trend within window
+- calculate std and mean on resulting trend free data for just 1 x
+
+"""
+function rollingregressionstd(y, regr_y, grad, window)
+    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) > window > 0
+    normy = zeros(size(y, 1))
+    std = zeros(size(y, 1))
+    mean = zeros(size(y, 1))
+    for ix1 in size(y, 1):-1:1
+        ix2min = max(1, ix1 - window + 1)
+        for ix2 in ix2min:ix1
+            normy[ix2] = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+        end
+        mean[ix1] = Statistics.mean(normy[ix2min:ix1])
+        std[ix1] = Statistics.stdm(normy[ix2min:ix1], mean[ix1])
+    end
+    return std, mean
 end
 
 function relativevolume(volumes, shortwindow::Int, largewindow::Int)

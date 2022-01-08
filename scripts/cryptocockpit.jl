@@ -47,39 +47,24 @@ assets = updateassets!(nothing, false)
 # println(first(assets.df, 2))
 ohlcvcache = Dict()
 
-function updatecache(selectbases, focusbase)
-    selectbases = (selectbases === nothing) ? [] : selectbases
-    selectbases = [base for base in selectbases if length(base) > 0]
-    # println("update start: $([k for k in keys(ohlcvcache)]) select: $selectbases focus: $focusbase")
-    ((focusbase === nothing) || (focusbase == "")) ? bases = Set(selectbases) : bases = union(Set(selectbases), Set([focusbase]))
-    if bases == []
-        return ohlcvcache
+function loadohlcv(base, interval)
+    global ohlcvcache
+    # println("loading $base interval: $interval")
+    k = base * interval
+    if !(k in keys(ohlcvcache))
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setinterval!(ohlcv, interval)
+        Ohlcv.read!(ohlcv)
+        Ohlcv.addpivot!(ohlcv)
+        ohlcvcache[k] = ohlcv.df
     end
-    loadedbases = Set(keys(ohlcvcache))
-    # println("update to be removed: $([k for k in setdiff(loadedbases, bases)])")
-    for base in setdiff(loadedbases, bases)  # to be removed bases
-        delete!(ohlcvcache, base)
-    end
-    # println("update to be added: $([k for k in setdiff(bases, loadedbases)])")
-    for base in setdiff(bases, loadedbases)  # to be added and loaded bases
-        base1m = Ohlcv.defaultohlcv(base)
-        Ohlcv.read!(base1m)
-        Ohlcv.addpivot!(base1m)
-
-        base1d = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(base1d, "1d")
-        Ohlcv.read!(base1d)
-        Ohlcv.addpivot!(base1d)
-        ohlcvcache[base] = Dict("1m" => base1m, "1d" => base1d)
-    end
-    # println("update end: $([k for k in keys(ohlcvcache)])")
-    return ohlcvcache
+    return ohlcvcache[k]
 end
 
-# trace1 = scatter(x=ohlcv.df.opentime, y=ohlcv.df.high, mode="lines", name="lines")
-# trace2 = scatter(x=ohlcv.df.opentime, y=ohlcv.df.low, mode="lines+markers", name="lines+markers")
-# trace3 = scatter(x=ohlcv.df.opentime, y=ohlcv.df.pivot, mode="markers", name="markers")
-# fig1 = Plot([trace1, trace2, trace3])
+function clearohlcvcache()
+    global ohlcvcache
+    ohlcvcache = Dict()
+end
 
 app.layout = html_div() do
     html_div(id="leftside", [
@@ -208,14 +193,14 @@ function regressionline(equiy, normref)
     return normpercent(regrliney, normref)
 end
 
-function linegraph(oc, interval, period)
-    if length(keys(oc)) == 0
+function linegraph(select, interval, period)
+    if length(select) == 0
         return [scatter(x=[], y=[], mode="lines", name="no select")]
     end
     traces = nothing
-    for base in keys(oc)
+    for base in select
         # println("linegraph base $base keys(oc): $(keys(oc))")
-        df = oc[base][interval].df
+        df = loadohlcv(base, interval)
         enddt = df[end, :opentime]
         startdt = enddt - period
         days = Dates.Day(enddt - startdt)
@@ -245,27 +230,24 @@ callback!(
     Output("graph_all", "figure"),
     Input("kpi_table", "selected_row_ids"),
     Input("kpi_table", "data"),
-    Input("crypto_focus", "value"),
     Input("reset_selection", "n_clicks")
     # prevent_initial_call=true
-) do select, tabledata, focus, resetrange
+) do select, tabledata, resetrange
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
-    s = "create linegraphs: select = $select, focus = $focus, button ID: $button_id"
+    s = "create linegraphs: select = $select, trigger: $(ctx.triggered[1].prop_id)"
     println(s)
-    ohlcvcache = updatecache(select, focus)
     # println(keys(ohlcvcache))
-    fig1d = Plot(linegraph(ohlcvcache, "1m", Dates.Hour(24)))
-    fig10d = Plot(linegraph(ohlcvcache, "1m", Dates.Day(10)))
-    fig6M = Plot(linegraph(ohlcvcache, "1d", Dates.Month(6)))
-    figall = Plot(linegraph(ohlcvcache, "1d", Dates.Year(3)))
+    fig1d = Plot(linegraph(select, "1m", Dates.Hour(24)))
+    fig10d = Plot(linegraph(select, "1m", Dates.Day(10)))
+    fig6M = Plot(linegraph(select, "1d", Dates.Month(6)))
+    figall = Plot(linegraph(select, "1d", Dates.Year(3)))
 
     return fig1d, fig10d, fig6M, figall
 end
 
-function candlestickgraph(ohlcv, period)
-    df = ohlcv.df
-    base = ohlcv.base
+function candlestickgraph(base, interval, period)
+    df = loadohlcv(base, interval)
     enddt = df[end, :opentime]
     startdt = enddt - period
     df = df[startdt .< df.opentime .<= enddt, :]
@@ -299,18 +281,16 @@ callback!(
     Input("crypto_focus", "value"),
     Input("kpi_table", "data"),
     Input("reset_selection", "n_clicks"),
-    State("kpi_table", "selected_row_ids")
     # prevent_initial_call=true
-    ) do focus, tabledata, resetrange, select
+    ) do focus, tabledata, resetrange
         ctx = callback_context()
         button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
-        s = "create candlestick graph: select = $select, focus = $focus, button ID: $button_id"
-        # println(s)
-        ohlcvcache = updatecache(select, focus)
-        if (length(keys(ohlcvcache)) == 0) || (focus === nothing) || (length(focus) == 0)
+        s = "create candlestick graph: focus = $focus, trigger: $(ctx.triggered[1].prop_id)"
+        println(s)
+        if focus === nothing
             return Plot([scatter(x=[], y=[], mode="lines", name="no select")])
         else
-            fig4h = Plot(candlestickgraph(ohlcvcache[focus]["1m"], Dates.Hour(4)))
+            fig4h = Plot(candlestickgraph(focus, "1m", Dates.Hour(4)))
             return fig4h
         end
     end
@@ -325,6 +305,7 @@ callback!(
     ) do update, olddata
         global assets
         if !(update === nothing)
+            clearohlcvcache()
             assets = updateassets!(assets, true)
             if !(assets === nothing)
                 return Dict.(pairs.(eachrow(assets.df)))

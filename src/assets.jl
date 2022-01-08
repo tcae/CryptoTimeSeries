@@ -110,8 +110,10 @@ function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::As
     portfolio = Set(portfolioselect(usdtdf))
     # println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
     manual = Set(manualselect())
+    # manual = Set()
     # println("#=$(length(manual)) loadassets manual: $(manual)")
     automatic = Set(automaticselect(usdtdf, dayssperiod))
+    # automatic = Set()
     # println("#=$(length(automatic)) loadassets automatic: $(automatic)")
 
     missingdayklines = setdiff(union(portfolio, manual), automatic)
