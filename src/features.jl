@@ -3,12 +3,27 @@
 
 include("../src/ohlcv.jl")
 
+"""
+Provides features to classify the most price development.
+Currently advertised features are in Feature001Set
+
+"""
 module Features
 
 # using Dates, DataFrames
-import RollingFunctions: rollmedian, rolling
+import RollingFunctions: rollmedian, runmedian, rolling
 import DataFrames: DataFrame, Statistics
+using Logging
 using ..Config, ..Ohlcv
+
+mutable struct Feature001Set
+    df::DataFrame
+    featuremask::Vector{String}
+    base::String
+    qte::String  # instead of quote because *quote* is a Julia keyword
+    xch::String  # exchange - also implies whether the asset type is crypto or stocks
+    interval::String
+end
 
 """
 Returns the index of the next extreme **after** gradient changed sign or after it was zero.
@@ -32,6 +47,12 @@ function nextextremeindex(regressions, startindex)
     end
     return extremeindex
 end
+
+"""
+Calculates `window` y coordinates of a regression line given by the last y of the line `regry` and the gradient `grad`.
+Returns the y coordinates as a vector of size `window` of equidistant x coordinates. The x distances shall match grad.
+"""
+regressiony(regry, grad, window) = [regry - grad * (window - 1), regry]
 
 """
  This implementation ignores index and assumes an equidistant x values.
@@ -60,17 +81,6 @@ function rollingregression(y, windowsize)::Tuple{Array{Float32,1},Array{Float32,
     return regression_y, gradient
 end
 
-"""
-Returns the regression y and the regression gradient as a ratio of the y input,
-i.e. a regression y ratio of 0.95 means that the regression y is at 95% of the corresponding input y.
-The same normalization applies for the gradient.
-"""
-function normrollingregression(y, windowsize)
-    regression_y, gradient = rollingregression(y, windowsize)
-    regression_y_ratio = regression_y ./ y
-    gradient_ratio = gradient ./ y
-    return regression_y_ratio, gradient_ratio
-end
 
 """
 
@@ -80,9 +90,14 @@ For each x:
 - subtract regression from y to remove trend within window
 - calculate std and mean on resulting trend free data for just 1 x
 
+Returns a tuple of vectors for each x calculated calculated back using the last `window` `y` data
+
+- standard deviation of `y` minus rolling regression as given in `regr_y` and `grad`
+- mean of last `window` `y` minus rolling regression as given in `regr_y` and `grad`
+- x distance from regression line of last `window` points
 """
 function rollingregressionstd(y, regr_y, grad, window)
-    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) > window > 0
+    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
     normy = zeros(size(y, 1))
     std = zeros(size(y, 1))
     mean = zeros(size(y, 1))
@@ -93,8 +108,33 @@ function rollingregressionstd(y, regr_y, grad, window)
         end
         mean[ix1] = Statistics.mean(normy[ix2min:ix1])
         std[ix1] = Statistics.stdm(normy[ix2min:ix1], mean[ix1])
+        std[1] = 0  # not avoid NaN
     end
-    return std, mean
+    return std, mean, normy
+end
+
+""" don't use - version for debug reasons """
+function rollingregressionstdxt(y, regr_y, grad, window)
+    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    normy = zeros(size(y, 1), window)
+    std = zeros(size(y, 1))
+    mean = zeros(size(y, 1))
+    for ix1 in size(y, 1):-1:1
+        ix2min = max(1, ix1 - window + 1)
+        for ix2 in ix2min:ix1
+            @assert 0<ix2<=window "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), window: $window"
+            @assert 0<ix1<=size(y, 1) "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), size(y, 1): $(size(y, 1))"
+            ix3 = ix2-ix2min+1
+            ny = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            # Logging.@info "check" ix1 ix2 ix2min ix3 ny
+            normy[ix1, ix3] = ny
+        end
+        mean[ix1] = Statistics.mean(normy[ix1, 1:ix1])
+        std[ix1] = Statistics.stdm(normy[ix1, 1:ix1], mean[ix1])
+        std[1] = 0  # not avoid NaN
+    end
+    Logging.@info "check" normy y regr_y grad std mean
+    return std, mean, normy
 end
 
 function relativevolume(volumes, shortwindow::Int, largewindow::Int)
@@ -103,6 +143,10 @@ function relativevolume(volumes, shortwindow::Int, largewindow::Int)
     short = rollmedian(volumes, shortwindow)
     shortlen = size(short, 1)
     short = @view short[shortlen - largelen + 1: shortlen]
+        # large = runmedian(volumes, largewindow)
+        # largelen = size(large, 1)
+        # short = runmedian(volumes, shortwindow)
+        # shortlen = size(short, 1)
     # println("short=$short, large=$large, short/large=$(short./large)")
     return short ./ large
 end
@@ -187,95 +231,36 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
+regressionwindows001 = Dict("5m" => 5, "15m" => 15, "1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
+
 
 """
-self.config = {
-    "dpiv": [  # dpiv == difference of subsequent pivot prices
-        {"suffix": "5m", "minutes": 5, "periods": 12}],
-    # "range": [
-    #    {"suffix": "5m", "minutes": 5, "periods": 12},  # ! to be checked - does not sem to be a good feature
-    #    # ! better: % high-now and % low-now for aggregations 30min, 1h, 2h, 4h
-    #    {"suffix": "1h", "minutes": 60, "periods": 4}],
-    "regr": [  # regr == regression
-        {"suffix": "5m", "minutes": 5},
-        {"suffix": "15m", "minutes": 15},
-        {"suffix": "30m", "minutes": 30},
-        {"suffix": "1h", "minutes": 60},
-        {"suffix": "2h", "minutes": 2*60},
-        {"suffix": "4h", "minutes": 4*60},
-        {"suffix": "12h", "minutes": 12*60},
-        {"suffix": "24h", "minutes": 24*60},
-        {"suffix": "3d", "minutes": 3*24*60},
-        {"suffix": "9d", "minutes": 9*24*60}],
-    "vol": [
-        # {"suffix": "5m12h", "minutes": 5, "norm_minutes": 12*60},
-        {"suffix": "5m1h", "minutes": 5, "norm_minutes": 60}]
-"""
-function f4condagg!(ohlcv::Ohlcv.OhlcvData)
-    df = ohlcv.df
-    df[:, :normregrprice5m], df[:, :normregrgrad5m] = normrollingregression(df[!, :pivot], 5)
-    df[:, :normregrprice15m], df[:, :normregrgrad15m] = normrollingregression(df[!, :pivot], 15)
-    df[:, :normregrprice30m], df[:, :normregrgrad30m] = normrollingregression(df[!, :pivot], 30)
-    df[:, :normregrgrad1h] = normrollingregression(df[!, :pivot], 60)
-    df[:, :normregrgrad2h] = normrollingregression(df[!, :pivot], 2*60)
-    df[:, :normregrgrad4h] = normrollingregression(df[!, :pivot], 4*6)
-    df[:, :normregrgrad12h] = normrollingregression(df[!, :pivot], 12*60)
-    df[:, :normregrgrad24h] = normrollingregression(df[!, :pivot], 24*60)
-    df[:, :normregrgrad3d] = normrollingregression(df[!, :pivot], 3*24*60)
-    df[:, :normregrgrad9d] = normrollingregression(df[!, :pivot], 9*24*60)
-    df[:, :vol5m1h] = relativevolume(df[!, :volume], 5, 60)
-    df[:, :vol1h1d] = relativevolume(df[!, :volume], 60, 24*60)
-end
+Properties at various rolling windows calculated on 1minute OHLCV data:
 
-function features1(ohlcv::Ohlcv.OhlcvData)
-    df = ohlcv.df
-    features = zeros(Float32, (6,size(df[!, :pivot], 1)))
-    regr = normrollingregression(df[!, :pivot], 5)
-    dfgl = lastgainloss(df[!, :pivot], regr)
-    features[1,:] = regr
-    features[2,:] = dfgl.lastgain
-    features[3,:] = dfgl.lastloss
-    features[4,:] = normrollingregression(df[!, :pivot], 15)
-    features[5,:] = normrollingregression(df[!, :pivot], 30)
-    features[6,:] = normrollingregression(df[!, :pivot], 60)
-    return features
-end
-
-# =====================
-# stuff below is unused
-
-function hellotest(config::Dict{})
-    config["function"] == !hellotest ? println("this is hellotest") : println("this is NOT hellotest")
-    display(config)
-end
+- gradient of pivot regression line
+- standard deviation of regression normalized distribution
+- difference of last pivot price to regression line
+- ration 4hour/9day volume to detect mid term rising volume
+- ration 5minute/4hour volume to detect short term rising volume
 
 """
-config represents the parametized feature generatioin configurations - on hold for now as it seems unnecessary complicated. Instead a functioin per feature configuration is implemented.
-"""
-config = Dict("F4CondAgg" => [Dict("function" => hellotest,
-                                    "column" => :pivot,
-                                    "window" => 3),
-                                Dict("function" => hellotest,
-                                    "column" => :pivot,
-                                    "window" => 5)])
-
-function executeconfig()
-    fct = executeconfig  # dummy assignment to declare function variable
-    for (key, features) in config
-        println(key)
-        println(features)
-        for feat in features
-            println(feat)
-            for (fkey, fvalue) in feat
-                println("$fkey $(typeof(fkey))")
-                println("$fvalue $(typeof(fvalue))")
-                if fkey == "function"
-                    fct = fvalue
-                end
-            end
-            fct(feat)
-        end
+function features001set(ohlcv)
+    featuremask::Vector{String} = []
+    indf = ohlcv.df
+    pivot = (:pivot in names(indf)) ? indf[!, :pivot] : Ohlcv.addpivot!(indf)[!, :pivot]
+    fdf = DataFrame()
+    for wk in keys(regressionwindows001)  # wk = window key
+        ws = regressionwindows001[wk]  # ws = window size in minutes
+        fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
+        stdnotrend, _, fdf[:, "regrdiff$wk"] = Features.rollingregressionstd(pivot, fdf[!, "regry$wk"], fdf[!, "grad$wk"], ws)
+        fdf[:, "2xstd$wk"] = stdnotrend .* 2.0  # also to be used as normalization reference
+        append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
     end
+    fdf[:, "4h/9dvol"] = relativevolume(indf[!, :basevolume], 4*60, 9*24*60)
+    fdf[:, "5m/4hvol"] = relativevolume(indf[!, :basevolume], 5, 4*60)
+    append!(featuremask, ["4h/9dvol", "5m/4hvol"])
+    return Feature001Set(fdf, featuremask, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
 end
+
 
 end  # module

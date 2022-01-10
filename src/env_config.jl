@@ -11,12 +11,12 @@ Provides
 
 """
 module Config
-
-export Authentication, test, production
+using Logging
+export Authentication, test, production, training
 
 import JSON
 
-@enum Mode test production
+@enum Mode test production training
 cryptoquote = "usdt"
 cryptoexchange = "binance"
 datetimeformat = "%Y-%m-%d_%Hh%Mm"
@@ -77,11 +77,21 @@ function init(mode::Mode)
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx"]
         datapath = "Features/"
-    else  # must be test
+    elseif  configmode == training
+        bases = [
+            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx",
+            "link", "ada", "matic", "omg", "zec",
+            "theta", "vet"]
+        trainingbases = [
+            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
+        datapath = "TrainingFeatures/"
+    elseif configmode == test
         trainingbases = ["sinus"]
         bases = ["sinus"]
         datapath = "TestFeatures/"
         # datapath = "Features/"
+    else
+        Logging.@error("invalid Config mode $configmode")
     end
 end
 

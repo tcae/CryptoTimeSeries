@@ -1,4 +1,4 @@
-include("../test/testohlcv.jl")
+# include("../test/testohlcv.jl")
 # include("../src/targets.jl")
 include("../src/ohlcv.jl")
 include("../src/features.jl")
@@ -24,15 +24,44 @@ cssdir = Config.setprojectdir()  * "/scripts/"
 # cssdir = pwd() * "/scripts/"
 println("css dir: $cssdir")
 app = dash(external_stylesheets = ["dashboard.css"], assets_folder=cssdir)
+ohlcvcache = Dict()
+
+function loadohlcv(base, interval)
+    global ohlcvcache
+    # println("loading $base interval: $interval")
+    k = base * interval
+    if !(k in keys(ohlcvcache))
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setinterval!(ohlcv, interval)
+        Ohlcv.read!(ohlcv)
+        Ohlcv.addpivot!(ohlcv)
+        ohlcvcache[k] = ohlcv
+    end
+    return ohlcvcache[k]
+end
 
 function updateassets!(assets, download=false)
+    global ohlcvcache
+
     a = assets
     if download
+        ohlcvcache = Dict()
         a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
     else
         a = Assets.read()
     end
     if !(a === nothing)
+        for (ix, base) in enumerate(a.df.base)
+            ohlcv = loadohlcv(base, "1m")
+            # ! df to be shortend to 10d
+            features = Features.features001set(ohlcv)
+            for col in features.featuremask
+                if !(col in names(a.df))
+                    a.df[:, col] .= 0.0
+                end
+                a.df[ix, col] = features.df[end, col]
+            end
+        end
         sort!(a.df, [:portfolio], rev=true)
         a.df.id = a.df.base
         println("updating table data")
@@ -45,26 +74,6 @@ end
 # Ohlcv.addpivot!(ohlcv.df)
 assets = updateassets!(nothing, false)
 # println(first(assets.df, 2))
-ohlcvcache = Dict()
-
-function loadohlcv(base, interval)
-    global ohlcvcache
-    # println("loading $base interval: $interval")
-    k = base * interval
-    if !(k in keys(ohlcvcache))
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, interval)
-        Ohlcv.read!(ohlcv)
-        Ohlcv.addpivot!(ohlcv)
-        ohlcvcache[k] = ohlcv.df
-    end
-    return ohlcvcache[k]
-end
-
-function clearohlcvcache()
-    global ohlcvcache
-    ohlcvcache = Dict()
-end
 
 app.layout = html_div() do
     html_div(id="leftside", [
@@ -180,7 +189,8 @@ end
 Returns normalized percentage values related to `normref`, if `normref` is not `nothing`.
 Otherwise the ydata input is returned.
 """
-normpercent(ydata, ynormref) = (ynormref === nothing ) ? ydata : (ydata ./ ynormref .- 1) .* 100
+# normpercent(ydata, ynormref) = (ynormref === nothing ) ? ydata : (ydata ./ ynormref .- 1) .* 100
+normpercent(ydata, ynormref) = Ohlcv.normalize(ydata, ynormref=ynormref, percent=true)
 
 """
 Returns start and end y coordinates of an input y coordinate vector or equidistant x coordinates.
@@ -200,7 +210,7 @@ function linegraph(select, interval, period)
     traces = nothing
     for base in select
         # println("linegraph base $base keys(oc): $(keys(oc))")
-        df = loadohlcv(base, interval)
+        df = Ohlcv.dataframe(loadohlcv(base, interval))
         enddt = df[end, :opentime]
         startdt = enddt - period
         days = Dates.Day(enddt - startdt)
@@ -247,7 +257,7 @@ callback!(
 end
 
 function candlestickgraph(base, interval, period)
-    df = loadohlcv(base, interval)
+    df = Ohlcv.dataframe(loadohlcv(base, interval))
     enddt = df[end, :opentime]
     startdt = enddt - period
     df = df[startdt .< df.opentime .<= enddt, :]
@@ -305,7 +315,6 @@ callback!(
     ) do update, olddata
         global assets
         if !(update === nothing)
-            clearohlcvcache()
             assets = updateassets!(assets, true)
             if !(assets === nothing)
                 return Dict.(pairs.(eachrow(assets.df)))

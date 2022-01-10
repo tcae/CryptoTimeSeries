@@ -109,7 +109,7 @@ end  # TestOhlcv
 # plotly()
 # x = 1:10; y = rand(10); # These are the plotting data
 # plot(x,y, label="my label")
-show("hallo")
+# show("TestOhlcv")
 ohlcv = TestOhlcv.sinedata(120, 3)
 # df = TestOhlcv.sinedata(
 #     DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s"),

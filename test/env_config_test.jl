@@ -1,5 +1,5 @@
-include("../src/env_config.jl")  # in contrast to srcdir() this is used by vscode
-# include(srcdir("env_config.jl"))
+# include("../src/env_config.jl")  # in contrast to srcdir() this is used by vscode
+# include("env_config.jl")
 
 module ConfigTest
 using ..Config

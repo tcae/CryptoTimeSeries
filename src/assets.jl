@@ -38,16 +38,7 @@ function emptyassetdataframe()::DataFrames.DataFrame
 end
 
 "manually selected assets"
-function manualselect()
-    if Config.configmode == production
-        return [
-            "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx", "zrx", "bch",
-            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
-            "tfuel", "theta", "ont", "vet", "iost"]
-    else  # Config.configmode == test
-        return ["sinus"]
-    end
-end
+manualselect() = return Config.bases
 manualignore = ["usdt", "tusd", "busd", "usdc"]
 minimumquotevolume = 10000000
 
@@ -66,7 +57,7 @@ function automaticselect(usdtdf, dayssperiod)
         else
             odf = Ohlcv.dataframe(ohlcv)
             quotevolume = odf.basevolume .* odf.close
-            deletebases[ix] = !all([quotevolume[end-ix] > minimumquotevolume for ix in 0:29])
+            deletebases[ix] = !all([quotevolume[end-ix] > minimumquotevolume for ix in 0:29])  # check criteria also for last 30days
         end
     end
     deleteat!(bases, deletebases)

@@ -72,11 +72,27 @@ function relativegain(prices, baseix, gainix)
     return gain
 end
 
+"""
+Divides all elements by the value of the last as reference point - if not otherwise specified - and subtracts 1.
+If ``percent==true`` then the result is multiplied by 100
+"""
+normalize(ydata; ynormref=ydata[end], percent=false) = percent ? (ydata ./ ynormref .- 1) .* 100 : (ydata ./ ynormref .- 1)
+
+function pivot(df::DataFrame)
+    cols = names(df)
+    p::Vector{Float32} = []
+    if all([c in cols for c in ["open", "high", "low", "close"]])
+        p = (df[!, :open] + df[!, :high] + df[!, :low] + df[!, :close]) ./ 4
+    end
+    return p
+end
 
 function addpivot!(df::DataFrame)
-    cols = names(df)
-    if all([c in cols for c in ["open", "high", "low", "close"]])
-        df[:, :pivot] = (df[!, :open] + df[!, :high] + df[!, :low] + df[!, :close]) ./ 4
+    p = pivot(df)
+    if size(p, 1) == size(df,1)
+        df[:, :pivot] = p
+    else
+        @warn "$(@__MODULE__) unexpected difference of length(pivot)=$(size(p, 1)) != length(df)=$(size(df, 1))"
     end
     return df
 end

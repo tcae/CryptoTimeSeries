@@ -30,8 +30,8 @@ add(["Dates", "DataFrames", "Logging", "JDF"])
 
 # requies packages for features
 # import RollingFunctions: rollmedian, rolling
-# import DataFrames: DataFrame, Statistics
-add(["RollingFunctions", "DataFrames", "Statistics"])
+# import DataFrames: DataFrame, Statistics, Logging
+add(["RollingFunctions", "DataFrames", "Statistics", "Logging"])
 
 # required packages for trade
 # using Dates, DataFrames
@@ -46,4 +46,4 @@ add(["DataFrames", "Logging", "Statistics"])
 # using LoggingExtras
 
 # required packages for quick visualizations, e.g. in regressionsim
-add(["Plots", "WebIO"])
+add(["IJulia", "Plots", "WebIO"])
