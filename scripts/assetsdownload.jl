@@ -13,8 +13,8 @@ using Dates, DataFrames
 
 using ..Config, ..Assets, ..CryptoXch
 
-# Config.init(production)
-Config.init(training)
+Config.init(production)
+# Config.init(training)
 if Config.configmode == production
     ad1 = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
 elseif Config.configmode == training

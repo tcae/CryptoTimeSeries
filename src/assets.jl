@@ -32,14 +32,13 @@ end
 
 "Returns an empty dataframe with all persistent columns"
 function emptyassetdataframe()::DataFrames.DataFrame
-    # df = DataFrame(base=String[], xch=String[], manual=Bool[], automatic=Bool[], portfolio=Bool[])
     df = DataFrame()
     return df
 end
 
 "manually selected assets"
 manualselect() = return Config.bases
-manualignore = ["usdt", "tusd", "busd", "usdc"]
+manualignore = ["usdt", "tusd", "busd", "usdc", "eur"]
 minimumquotevolume = 10000000
 
 function automaticselect(usdtdf, dayssperiod)
@@ -95,54 +94,13 @@ function setdataframe!(ad::AssetData, df)
     ad.df = df
 end
 
-function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::AssetData
-    usdtdf = CryptoXch.getUSDTmarket()
-    # println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
-    portfolio = Set(portfolioselect(usdtdf))
-    # println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
-    manual = Set(manualselect())
-    # manual = Set()
-    # println("#=$(length(manual)) loadassets manual: $(manual)")
-    automatic = Set(automaticselect(usdtdf, dayssperiod))
-    # automatic = Set()
-    # println("#=$(length(automatic)) loadassets automatic: $(automatic)")
-
-    missingdayklines = setdiff(union(portfolio, manual), automatic)
-    # println("#=$(length(missingdayklines)) loadassets missingdayklines: $(missingdayklines)")
-    enddt = Dates.now(Dates.UTC)
-    startdt = enddt - dayssperiod
-    for base in missingdayklines
-        ohlcv = CryptoXch.cryptodownload(base, "1d", startdt, enddt)
-    end
-
-    startdt = enddt - minutesperiod
-    allbases = union(portfolio, manual, automatic)
-    # println("#=$(length(allbases)) loadassets allbases: $(allbases)")
-    for base in allbases
-        CryptoXch.cryptodownload(base, "1m", startdt, enddt)
-    end
-    ad = AssetData(emptyassetdataframe())
-    ad.df[:, :base] = [base for base in allbases]
-    ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
-    ad.df[:, :automatic] = [ad.df[ix, :base] in automatic ? true : false for ix in 1:size(ad.df, 1)]
-    ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
-    ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
-    sort!(ad.df, [:base])
-    sort!(usdtdf, [:base])
-    ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
-    ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
-
-    return ad
-end
-
-
 mnemonic() = "AssetData_v1"
-savecols = [:base, :manual, :automatic, :portfolio, :xch, :quotevolume24h, :priceChangePercent]
+savecols = [:base, :manual, :automatic, :portfolio, :xch, :update, :quotevolume24h, :priceChangePercent]
 
 function write(ad::AssetData)
     mnm = mnemonic()
     filename = Config.datafile(mnm)
-    # println(filename)
+    println("writing asset data to $filename")
     JDF.savejdf(filename, ad.df[!, savecols])  # without :pivot
 end
 
@@ -170,6 +128,51 @@ function delete(ad::AssetData)
         rm(filename; force=true, recursive=true)
     end
 end
+
+function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::AssetData
+    usdtdf = CryptoXch.getUSDTmarket()
+    # println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
+    portfolio = Set(portfolioselect(usdtdf))
+    println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
+    manual = Set(manualselect())
+    # manual = Set()
+    # println("#=$(length(manual)) loadassets manual: $(manual)")
+    automatic = Set(automaticselect(usdtdf, dayssperiod))
+    # automatic = Set()
+    # println("#=$(length(automatic)) loadassets automatic: $(automatic)")
+
+    allbases = union(portfolio, manual, automatic)
+    # println("#=$(length(missingdayklines)) loadassets missingdayklines: $(missingdayklines)")
+    enddt = Dates.now(Dates.UTC)
+    startdt = enddt - dayssperiod
+    for base in allbases
+        ohlcv = CryptoXch.cryptodownload(base, "1d", startdt, enddt)
+    end
+
+    startdt = enddt - minutesperiod
+    # println("#=$(length(allbases)) loadassets allbases: $(allbases)")
+    for base in allbases
+        CryptoXch.cryptodownload(base, "1m", startdt, enddt)
+    end
+    ad = AssetData(emptyassetdataframe())
+    ad.df[:, :base] = [base for base in allbases]
+    ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :automatic] = [ad.df[ix, :base] in automatic ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
+    ad.df[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+    sort!(ad.df, [:base])
+    sort!(usdtdf, [:base])
+    ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
+    ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
+
+    check_portfolio = [p for p in ad.df[in.(ad.df[!,:base], Ref(portfolio)), :base]]
+    println("#=$(length(portfolio)) loadassets portfolio: $(portfolio) assets portfolio: $check_portfolio")
+
+    write(ad)
+    return ad
+end
+
 
 
 end

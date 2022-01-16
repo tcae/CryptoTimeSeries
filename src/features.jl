@@ -138,15 +138,15 @@ function rollingregressionstdxt(y, regr_y, grad, window)
 end
 
 function relativevolume(volumes, shortwindow::Int, largewindow::Int)
-    large = rollmedian(volumes, largewindow)
-    largelen = size(large, 1)
-    short = rollmedian(volumes, shortwindow)
-    shortlen = size(short, 1)
-    short = @view short[shortlen - largelen + 1: shortlen]
-        # large = runmedian(volumes, largewindow)
-        # largelen = size(large, 1)
-        # short = runmedian(volumes, shortwindow)
-        # shortlen = size(short, 1)
+    # large = rollmedian(volumes, largewindow)
+    # largelen = size(large, 1)
+    # short = rollmedian(volumes, shortwindow)
+    # shortlen = size(short, 1)
+    # short = @view short[shortlen - largelen + 1: shortlen]
+        large = runmedian(volumes, largewindow)
+        largelen = size(large, 1)
+        short = runmedian(volumes, shortwindow)
+        shortlen = size(short, 1)
     # println("short=$short, large=$large, short/large=$(short./large)")
     return short ./ large
 end

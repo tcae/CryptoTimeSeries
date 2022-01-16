@@ -69,7 +69,8 @@ a,b = Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
 # a,b = Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
 # @test isapprox(a, [0.98965514, 1.0290322, 0.975, 1.0078948, 1.015, 1.0073171, 0.95600003], atol=10^-5)
 # @test isapprox(b, [0.11034483, 0.103225805, 0.08888888, 0.08421052, 0.0725, 0.041463416, 0.074], atol=10^-5)
-#! @test Features.relativevolume([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 3, 5) == [1.0555555555555556; 1.0526315789473684; 1.025]
+# @test Features.relativevolume([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 3, 5) == [1.0555555555555556; 1.0526315789473684; 1.025]
+@test Features.relativevolume([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 3, 5) == [1.0, 1.0, 1.0, 1.0746268656716418, 1.0555555555555556, 1.0526315789473684, 1.025]
 @test lastextremes_test()
 @test lastgainloss_test()
 @test isapprox(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]), [0.0  0.1  0.25  -0.4  -0.55  0.5  -0.1], atol=10^-5)
