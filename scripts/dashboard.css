@@ -436,3 +436,8 @@
     /* border: double; */
     padding: 5px;
   }
+
+  #graph4h_endtime, #graph1day_endtime, #graph10day_endtime, #graph6month_endtime, #graph_all_endtime  {
+    /* float: right; */
+    color: green;
+  }

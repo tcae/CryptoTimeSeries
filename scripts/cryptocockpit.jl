@@ -317,17 +317,23 @@ function linegraph(select, interval, period, enddt, boxperiod, boxenddt)
         startdt = df[begin, :opentime]  # in case there is less data than requested by period
         normref = df[end, :pivot]
         # normref = nothing
+        xarr = df[:, :opentime]
+        append!(xarr, [startdt])
+        yarr = normpercent(df[:, :pivot], normref)
+        append!(yarr, [regressionline(df[!, :pivot], normref)[1]])
         if traces === nothing
-            traces = [scatter(x=df.opentime, y=normpercent(df[!, :pivot], normref), mode="lines", name=base, color=base)]
+            traces = [scatter(x=xarr, y=yarr, mode="lines", name=base)]
+            # traces = [scatter(x=df.opentime, y=normpercent(df[!, :pivot], normref), mode="lines", name=base, color=base)]
         else
-            append!(traces, [scatter(x=df.opentime, y=normpercent(df[!, :pivot], normref), mode="lines", name=base, color=base)])
+            append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base)])
         end
 
-        append!(traces, [scatter(x=[startdt, enddt], y=regressionline(df[!, :pivot], normref), mode="lines", color=base, showlegend=false)])
+        # append!(traces, [scatter(x=[startdt, enddt], y=regressionline(df[!, :pivot], normref), mode="lines", color=base, showlegend=false)])
     end
     boxstartdt = boxenddt - boxperiod
     append!(traces, [
-        scatter(x=[boxstartdt, boxstartdt, boxenddt, boxenddt, boxstartdt], y=[0, 1, 1, 0, 0], mode="lines", color="black", showlegend=false, yaxis="y2")
+        scatter(x=[boxstartdt, boxstartdt, boxenddt, boxenddt, boxstartdt], y=[0, 1, 1, 0, 0],
+            mode="lines", showlegend=false, yaxis="y2", line=attr(color="grey"))
     ])
     return traces
 end
@@ -354,20 +360,20 @@ callback!(
     println(s)
     println("enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
     # println(keys(ohlcvcache))
-    drawselect = [s for s in select]
-    focus in drawselect ? drawselect : append!(drawselect, [focus])
+    drawselect = [focus]
+    append!(drawselect, [s for s in select if s != focus])
     fig1d = Plot(linegraph(drawselect, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
-        Layout(title_text="$(Dates.Hour(24)) OHLCV", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right")))
+        Layout(title_text="$(Dates.Hour(24)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
     fig10d = Plot(linegraph(drawselect, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
-        Layout(title_text="$(Dates.Day(10)) OHLCV", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right")))
+        Layout(title_text="$(Dates.Day(10)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
     fig6M = Plot(linegraph(drawselect, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-        Layout(title_text="$(Dates.Month(6)) OHLCV", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right")))
+        Layout(title_text="$(Dates.Month(6)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
     figall = Plot(linegraph(drawselect, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
-        Layout(title_text="$(Dates.Year(3)) OHLCV", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right")))
+        Layout(title_text="$(Dates.Year(3)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
 
     return fig1d, fig10d, fig6M, figall
 end
@@ -390,14 +396,14 @@ function candlestickgraph(base, interval, period, enddt)
                 high=normpercent(df[!, :high], normref),
                 low=normpercent(df[!, :low], normref),
                 close=normpercent(df[!, :close], normref),
-                name="$base OHLC"),
+                name="OHLC"),
             scatter(
                 x=[startdt, enddt],
                 y=regressionline(df[!, :pivot], normref),
-                mode="lines", name="$base $(size(df, 1)/60) h"),
+                mode="lines", showlegend=false),
             bar(x=df.opentime, y=df.basevolume, name="basevolume", yaxis="y2")
             ],
-            Layout(title_text="4hOHLCV", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
+            Layout(title_text="4h OHLCV $base", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
                 yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
                 yaxis_domain=[0.3, 1.0])
             )
