@@ -265,7 +265,8 @@ callback!(
     if graph_id == "reset_selection"
         updates = assets.df[assets.df[!, :base] .== focus, :update]
         clickdt = updates[1]
-        println("focus update on $updates type $(typeof(updates)) using $clickdt type $(typeof(clickdt))")
+        println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
+        # println("focus update on $updates type $(typeof(updates)) using $clickdt type $(typeof(clickdt))")
     else
         clickdt = clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
     end
@@ -362,17 +363,18 @@ callback!(
     # println(keys(ohlcvcache))
     drawselect = [focus]
     append!(drawselect, [s for s in select if s != focus])
+    # Layout(title_text="$(Dates.Hour(24)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
     fig1d = Plot(linegraph(drawselect, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
-        Layout(title_text="$(Dates.Hour(24)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+        Layout(yaxis_title_text="% of last pivot",
             yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
     fig10d = Plot(linegraph(drawselect, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
-        Layout(title_text="$(Dates.Day(10)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+        Layout(yaxis_title_text="% of last pivot",
             yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
     fig6M = Plot(linegraph(drawselect, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-        Layout(title_text="$(Dates.Month(6)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+        Layout(yaxis_title_text="% of last pivot",
             yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
     figall = Plot(linegraph(drawselect, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
-        Layout(title_text="$(Dates.Year(3)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
+        Layout(yaxis_title_text="% of last pivot",
             yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
 
     return fig1d, fig10d, fig6M, figall
@@ -396,14 +398,14 @@ function candlestickgraph(base, interval, period, enddt)
                 high=normpercent(df[!, :high], normref),
                 low=normpercent(df[!, :low], normref),
                 close=normpercent(df[!, :close], normref),
-                name="OHLC"),
+                name="$base OHLC"),
             scatter(
                 x=[startdt, enddt],
                 y=regressionline(df[!, :pivot], normref),
                 mode="lines", showlegend=false),
             bar(x=df.opentime, y=df.basevolume, name="basevolume", yaxis="y2")
             ],
-            Layout(title_text="4h OHLCV $base", xaxis_title_text="time", yaxis_title_text="OHLCV % of last pivot",
+            Layout(yaxis_title_text="% of last pivot",
                 yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
                 yaxis_domain=[0.3, 1.0])
             )
@@ -434,6 +436,7 @@ callback!(
 
 callback!(
         app,
+        Output("reset_selection", "n_clicks"),
         Output("kpi_table", "data"),
         # Output("click_action", "children"),
         Input("update_data", "n_clicks"),
@@ -444,11 +447,11 @@ callback!(
         if !(update === nothing)
             assets = updateassets!(assets, true)
             if !(assets === nothing)
-                return Dict.(pairs.(eachrow(assets.df)))
+                return 1, Dict.(pairs.(eachrow(assets.df)))
             end
         end
         println("staying with current table data")
-        return olddata
+        return 0, olddata
     end
 
 callback!(

@@ -1,5 +1,4 @@
 /* Table of contents
-––––––––––––––––––––––––––––––––––––––––––––––––––
 - Plotly.js
 - Grid
 - Base Styles
@@ -16,8 +15,7 @@
 - Media Queries
 */
 
-/* PLotly.js
-–––––––––––––––––––––––––––––––––––––––––––––––––– */
+/* PLotly.js  */
 /* plotly.js's modebar's z-index is 1001 by default
  * https://github.com/plotly/plotly.js/blob/7e4d8ab164258f6bd48be56589dacd9bdd7fded2/src/css/_modebar.scss#L5
  * In case a dropdown is above the graph, the dropdown's options
@@ -33,8 +31,7 @@
 }*/
 
 
-/* Grid
-–––––––––––––––––––––––––––––––––––––––––––––––––– */
+/* Grid  */
 .container {
     position: relative;
     width: 100%;
@@ -121,7 +118,7 @@
 
 
   /* Base Styles
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   /* NOTE
   html is set to 62.5% so that all the REM measurements throughout Skeleton
   are based on 10px sizing. So basically 1.5rem = 15px :) */
@@ -136,7 +133,7 @@
 
 
   /* Typography
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   h1, h2, h3, h4, h5, h6 {
     margin-top: 0;
     margin-bottom: 0;
@@ -153,7 +150,7 @@
 
 
   /* Blockquotes
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   blockquote {
     border-left: 4px lightgrey solid;
     padding-left: 1rem;
@@ -164,7 +161,7 @@
 
 
   /* Links
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   a {
     color: #1EAEDB;
     text-decoration: underline;
@@ -174,7 +171,7 @@
 
 
   /* Buttons
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   .button,
   button,
   input[type="submit"],
@@ -234,7 +231,7 @@
 
 
   /* Forms
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   input[type="email"],
   input[type="number"],
   input[type="search"],
@@ -297,7 +294,7 @@
 
 
   /* Lists
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   ul {
     list-style: circle inside; }
   ol {
@@ -316,7 +313,7 @@
 
 
   /* Tables
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   table {
     border-collapse: collapse;
   }
@@ -334,7 +331,7 @@
 
 
   /* Spacing
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   button,
   .button {
     margin-bottom: 0rem; }
@@ -355,7 +352,7 @@
     margin-bottom: 0.75rem; }
 
   /* Utilities
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   .u-full-width {
     width: 100%;
     box-sizing: border-box; }
@@ -369,7 +366,7 @@
 
 
   /* Misc
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   hr {
     margin-top: 3rem;
     margin-bottom: 3.5rem;
@@ -378,7 +375,7 @@
 
 
   /* Clearing
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
 
   /* Self Clearing Goodness */
   .container:after,
@@ -390,7 +387,7 @@
 
 
   /* Media Queries
-  –––––––––––––––––––––––––––––––––––––––––––––––––– */
+   */
   /*
   Note: The best way to structure the use of media queries is to create the queries
   near the relevant code. For example, if you wanted to change the styles for buttons
@@ -438,6 +435,10 @@
   }
 
   #graph4h_endtime, #graph1day_endtime, #graph10day_endtime, #graph6month_endtime, #graph_all_endtime  {
-    /* float: right; */
+    float: right;
     color: green;
+  }
+
+  #graph4h, #graph1day, #graph10day, #graph6month, #graph_all  {
+    clear: both;
   }
