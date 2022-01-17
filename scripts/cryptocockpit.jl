@@ -313,15 +313,17 @@ function linegraph(select, interval, period, enddt, boxperiod, boxenddt)
         startdt = enddt - period
         days = Dates.Day(enddt - startdt)
         enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
+        enddt = enddt > df[end, :opentime] ? df[end, :opentime] : enddt
         startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
+        startdt = startdt < df[begin, :opentime] ? df[begin, :opentime] : startdt
         df = df[startdt .< df.opentime .<= enddt, :]
         startdt = df[begin, :opentime]  # in case there is less data than requested by period
         normref = df[end, :pivot]
         # normref = nothing
         xarr = df[:, :opentime]
-        append!(xarr, [startdt])
+        append!(xarr, [enddt, startdt])
         yarr = normpercent(df[:, :pivot], normref)
-        append!(yarr, [regressionline(df[!, :pivot], normref)[1]])
+        append!(yarr, reverse(regressionline(df[!, :pivot], normref)))
         if traces === nothing
             traces = [scatter(x=xarr, y=yarr, mode="lines", name=base)]
             # traces = [scatter(x=df.opentime, y=normpercent(df[!, :pivot], normref), mode="lines", name=base, color=base)]
