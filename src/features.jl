@@ -25,13 +25,101 @@ mutable struct Feature001Set
     interval::String
 end
 
+indexinrange(index, last) = 0 < index <= last
+nextindex(forward, index) = forward ? index + 1 : index - 1
+up(slope) = slope > 0
+downorflat(slope) = slope <= 0
+
+"""
+- returns index of next regression extreme
+    - in case of uphill **after** slope > 0
+    - in case of downhill **after** slope <= 0
+- **next** index means
+    - in case `forward`: next higher index
+    - in case of NOT `forward`: next lower index
+
+"""
+function extremeregressionindex(regressions, startindex; forward)
+    reglen = length(regressions)
+    extremeindex = 0
+    @assert indexinrange(startindex, reglen) "index: $startindex  len: $reglen"
+    if regressions[startindex] > 0
+        while indexinrange(startindex, reglen) && up(regressions[startindex])
+            startindex = nextindex(forward, startindex)
+        end
+    else  # regressions[startindex] <= 0
+        while indexinrange(startindex, reglen) && downorflat(regressions[startindex])
+            startindex = nextindex(forward, startindex)
+        end
+    end
+    if indexinrange(startindex, reglen)  # then extreme detected
+        extremeindex = startindex
+        # else end of array and no extreme detected, which is signalled by returned index 0
+    end
+    return extremeindex
+end
+
+newisbetter(old, new, maxsearch) = maxsearch ? new > old : new < old
+
+"""
+- returns index of nearest price extreme between `startindex` and `endindex`
+- searches backwards if `startindex` > `endindex` else searches forward
+- search for maximum if `maxsearch` else search for minimum
+
+"""
+function extremepriceindex(prices, startindex, endindex, maxsearch)
+    @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
+    plen = length(prices)
+    extremeindex = startindex
+    @assert indexinrange(startindex, plen)  "index: $startindex  len: $plen"
+    @assert indexinrange(endindex, plen)  "index: $endindex  len: $plen"
+    forward = startindex < endindex
+    while forward ? startindex <= endindex : startindex >= endindex
+        extremeindex = newisbetter(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
+        startindex = nextindex(forward, startindex)
+    end
+    return extremeindex
+end
+
+"""
+- returns distances of current price to next extreme
+- distances will be negative if the next extreme is a minimum and positive if it is a maximum
+- the extreme is determined by slope sign change of the regression gradients given in `regressions`
+- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
+- for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
+
+"""
+function distancesregressionpeak(prices, regressions)
+    @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
+    @assert !(regressions === nothing) && (size(regressions, 1) > 0) "regressions nothing == $(regressions === nothing) or length == 0"
+    @assert size(prices) == size(regressions) "size(prices) $(size(prices)) != size(regressions) $(size(regressions))"
+    @assert length(size(prices)) == 1 "length(size(prices)) $(length(size(prices))) != 1"
+    distances = zeros(Float32, length(prices))
+    regressionix = zeros(Float32, length(prices))
+    priceix = zeros(Float32, length(prices))
+    plen = length(prices)
+    pix = rix = 1
+    for cix in 2:plen
+        if pix < cix
+            maxsearch = regressions[cix] > 0
+            rix = extremeregressionindex(regressions, cix; forward=true)
+            rix = rix == 0 ? plen : rix
+            pix = extremepriceindex(prices, rix, cix, maxsearch)
+        end
+        distances[cix] = prices[pix] - prices[cix]
+        regressionix[cix] = rix
+        priceix[cix] = pix
+    end
+    return distances, regressionix, priceix
+end
+
 """
 Returns the index of the next extreme **after** gradient changed sign or after it was zero.
 """
 function nextextremeindex(regressions, startindex)
     reglen = length(regressions)
     extremeindex = 0
-    @assert (startindex > 0)
+    @assert (startindex > 0) && (startindex <= reglen)
     if regressions[startindex] > 0
         while (startindex <= reglen) && (regressions[startindex] > 0)
             startindex += 1
@@ -42,6 +130,29 @@ function nextextremeindex(regressions, startindex)
         end
     end
     if startindex <= reglen  # then extreme detected
+        extremeindex = startindex
+        # else end of array and no extreme detected, which is signalled by returned index 0
+    end
+    return extremeindex
+end
+
+"""
+Returns the index of the previous extreme **after** gradient changed sign or after it was zero.
+"""
+function prevextremeindex(regressions, startindex)
+    reglen = length(regressions)
+    extremeindex = 0
+    @assert (startindex > 0) && (startindex <= reglen)
+    if regressions[startindex] > 0
+        while (startindex > 0) && (regressions[startindex] > 0)
+            startindex -= 1
+        end
+    else  # regressions[startindex] <= 0
+        while (startindex > 0) && (regressions[startindex] <= 0)
+            startindex -= 1
+        end
+    end
+    if startindex > 0  # then extreme detected
         extremeindex = startindex
         # else end of array and no extreme detected, which is signalled by returned index 0
     end
@@ -237,9 +348,10 @@ regressionwindows001 = Dict("5m" => 5, "15m" => 15, "1h" => 1*60, "4h" => 4*60, 
 """
 Properties at various rolling windows calculated on 1minute OHLCV data:
 
-- gradient of pivot regression line
-- standard deviation of regression normalized distribution
-- difference of last pivot price to regression line
+- per regression window
+    - gradient of pivot regression line
+    - standard deviation of regression normalized distribution
+    - difference of last pivot price to regression line
 - ration 4hour/9day volume to detect mid term rising volume
 - ration 5minute/4hour volume to detect short term rising volume
 

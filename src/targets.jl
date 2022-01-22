@@ -279,18 +279,8 @@ function targets4(prices, regressionminutes)  # ! missing unit test
     return result
 end
 
-"""
-    Targets are based on regressioin info, i.e. the gain between 2 horizontal regressions with at least 1% gain.
-    However the underlining trend can already start before the horizontal regression is reached if the regressioin window is larger to smooth high frequent volatility.
-    Therefore BUY shall be signaled before the minimum is reached as soon as the regression is monotonically increasing through the minimum.
-    Correspondingly SELL shall be signaled before the maximum is reached as soon as the regression is monotonically decreasing through the maximum.
-
-    Another aspect is that a signal label should represent an observable pattern, i.e. not solely based on a future pattern.
-    Either the regression line exceeds a threshold that makes further increases more probable or recent maxima indicate likelihood to reach such level again.
-    These are pre-requisite observables to label an increase as BUY tagrget.
-"""
-function targets(prices, regressions)
-
+function continuousdistancelabels(prices, regressions)
+    return Features.distancesregressionpeak(prices, regressions)
 end
 
 end  # module
