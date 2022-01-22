@@ -17,7 +17,7 @@ include("../src/assets.jl")
 
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
-import PlotlyJS: Plot, dataset, Layout, attr, scatter, candlestick, bar
+import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar
 
 # using Dash, DashTable, PlotlyJS
 using Dates, DataFrames, JSON, JSON3, Logging
@@ -47,10 +47,9 @@ function loadohlcv(base, interval)
     return ohlcvcache[k]
 end
 
-function updateassets!(assets, download=false)
+function updateassets(download=false)
     global ohlcvcache
 
-    a = assets
     if download
         ohlcvcache = Dict()
         a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
@@ -74,15 +73,14 @@ function updateassets!(assets, download=false)
 
         sort!(a.df, [:portfolio], rev=true)
         a.df.id = a.df.base
-        println("updating table data")
-        assets = a
+        println("updating table data of size: $(size(a.df))")
     end
-    return assets
+    return a
 end
 
 # ohlcv = TestOhlcv.sinedata(120, 3)
 # Ohlcv.addpivot!(ohlcv.df)
-assets = updateassets!(nothing, false)
+assets = updateassets(false)
 # println(first(assets.df, 2))
 println("last assets update: $(assets.df[1, :update]) type $(typeof(assets.df[1, :update]))")
 app.layout = html_div() do
@@ -301,22 +299,42 @@ function regressionline(equiy, normref)
     return normpercent(regrliney, normref)
 end
 
-function linegraph(select, interval, period, enddt, boxperiod, boxenddt)
+linegraphlayout() =
+        Layout(yaxis_title_text="% of last pivot",
+            yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
+
+function timebox!(traces, boxperiod, boxenddt)
+    traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
+    boxstartdt = boxenddt - boxperiod
+    append!(traces,
+        [scatter(x=[boxstartdt, boxstartdt, boxenddt, boxenddt, boxstartdt], y=[0, 1, 1, 0, 0],
+            mode="lines", showlegend=false, yaxis="y3", line=attr(color="grey"))])
+    return traces
+end
+
+function linegraph!(traces, select, interval, period, enddt)
+    traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
     if length(select) == 0
-        return [scatter(x=[], y=[], mode="lines", name="no select")]
+        traces = [scatter(x=[], y=[], mode="lines", name="no select")]
     end
-    traces = nothing
+
     for base in select
         # println("linegraph base $base keys(oc): $(keys(oc))")
         df = Ohlcv.dataframe(loadohlcv(base, interval))
         # enddt = df[end, :opentime]
         startdt = enddt - period
         days = Dates.Day(enddt - startdt)
+        if size(df, 1) == 0
+            continue
+        end
         enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
         enddt = enddt > df[end, :opentime] ? df[end, :opentime] : enddt
         startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
         startdt = startdt < df[begin, :opentime] ? df[begin, :opentime] : startdt
         df = df[startdt .< df.opentime .<= enddt, :]
+        if (size(df, 1) == 0) || (startdt == enddt)
+            continue
+        end
         startdt = df[begin, :opentime]  # in case there is less data than requested by period
         normref = df[end, :pivot]
         # normref = nothing
@@ -324,21 +342,44 @@ function linegraph(select, interval, period, enddt, boxperiod, boxenddt)
         append!(xarr, [enddt, startdt])
         yarr = normpercent(df[:, :pivot], normref)
         append!(yarr, reverse(regressionline(df[!, :pivot], normref)))
-        if traces === nothing
-            traces = [scatter(x=xarr, y=yarr, mode="lines", name=base)]
-            # traces = [scatter(x=df.opentime, y=normpercent(df[!, :pivot], normref), mode="lines", name=base, color=base)]
-        else
-            append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base)])
-        end
-
-        # append!(traces, [scatter(x=[startdt, enddt], y=regressionline(df[!, :pivot], normref), mode="lines", color=base, showlegend=false)])
+        append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base)])
     end
-    boxstartdt = boxenddt - boxperiod
-    append!(traces, [
-        scatter(x=[boxstartdt, boxstartdt, boxenddt, boxenddt, boxstartdt], y=[0, 1, 1, 0, 0],
-            mode="lines", showlegend=false, yaxis="y2", line=attr(color="grey"))
-    ])
-    return traces
+    return Plot(traces, linegraphlayout())
+end
+
+function candlestickgraph(traces, base, interval, period, enddt)
+    traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
+    df = Ohlcv.dataframe(loadohlcv(base, interval))
+    # enddt = df[end, :opentime]
+    startdt = enddt - period
+    enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
+    startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
+    df = df[startdt .< df.opentime .<= enddt, :]
+    if size(df,1) == 0
+        fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])
+    else
+        normref = df[end, :pivot]
+        traces = append!([
+            candlestick(
+                x=df[!, :opentime],
+                open=normpercent(df[!, :open], normref),
+                high=normpercent(df[!, :high], normref),
+                low=normpercent(df[!, :low], normref),
+                close=normpercent(df[!, :close], normref),
+                name="$base OHLC"),
+            scatter(
+                x=[startdt, enddt],
+                y=regressionline(df[!, :pivot], normref),
+                mode="lines", showlegend=false),
+            bar(x=df.opentime, y=df.basevolume, name="basevolume", yaxis="y2")], traces)
+        fig = Plot(traces,
+            Layout(yaxis_title_text="% of last pivot",
+                yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
+                yaxis_domain=[0.3, 1.0], yaxis3_domain=[0.0, 1.0], xaxis_rangeslider_visible=false,
+                yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
+            )
+    end
+    return fig
 end
 
 callback!(
@@ -363,56 +404,20 @@ callback!(
     println(s)
     println("enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
     # println(keys(ohlcvcache))
-    drawselect = [focus]
-    append!(drawselect, [s for s in select if s != focus])
-    # Layout(title_text="$(Dates.Hour(24)) pivot", xaxis_title_text="time", yaxis_title_text="% of last pivot",
-    fig1d = Plot(linegraph(drawselect, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
-        Layout(yaxis_title_text="% of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
-    fig10d = Plot(linegraph(drawselect, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
-        Layout(yaxis_title_text="% of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
-    fig6M = Plot(linegraph(drawselect, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-        Layout(yaxis_title_text="% of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
-    figall = Plot(linegraph(drawselect, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
-        Layout(yaxis_title_text="% of last pivot",
-            yaxis2=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
+    drawbases = [focus]
+    append!(drawbases, [s for s in select if s != focus])
+    fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
+        drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf))
+    fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
+        drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf))
+    fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
+        focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf))
+    # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
+    #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf))
+    figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
+        drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf))
 
     return fig1d, fig10d, fig6M, figall
-end
-
-function candlestickgraph(base, interval, period, enddt)
-    df = Ohlcv.dataframe(loadohlcv(base, interval))
-    # enddt = df[end, :opentime]
-    startdt = enddt - period
-    enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
-    startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
-    df = df[startdt .< df.opentime .<= enddt, :]
-    if size(df,1) == 0
-        fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])
-    else
-        normref = df[end, :pivot]
-        fig = Plot([
-            candlestick(
-                x=df[!, :opentime],
-                open=normpercent(df[!, :open], normref),
-                high=normpercent(df[!, :high], normref),
-                low=normpercent(df[!, :low], normref),
-                close=normpercent(df[!, :close], normref),
-                name="$base OHLC"),
-            scatter(
-                x=[startdt, enddt],
-                y=regressionline(df[!, :pivot], normref),
-                mode="lines", showlegend=false),
-            bar(x=df.opentime, y=df.basevolume, name="basevolume", yaxis="y2")
-            ],
-            Layout(yaxis_title_text="% of last pivot",
-                yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
-                yaxis_domain=[0.3, 1.0])
-            )
-    end
-    return fig
 end
 
 callback!(
@@ -431,7 +436,7 @@ callback!(
             return Plot([scatter(x=[], y=[], mode="lines", name="no select")])
         else
             println("enddt4h $enddt4h")
-            fig4h = Plot(candlestickgraph(focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf)))
+            fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf))
             return fig4h
         end
     end
@@ -447,7 +452,7 @@ callback!(
     ) do update, olddata
         global assets
         if !(update === nothing)
-            assets = updateassets!(assets, true)
+            assets = updateassets(true)
             if !(assets === nothing)
                 return 1, Dict.(pairs.(eachrow(assets.df)))
             end
