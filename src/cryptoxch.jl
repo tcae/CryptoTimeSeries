@@ -2,14 +2,13 @@
 # Pkg.add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
 # Pkg.add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
 
-include("../src/Binance.jl")
-include("../src/env_config.jl")
+include("../src/MyBinance.jl")
 include("../src/ohlcv.jl")
 
 
 module CryptoXch
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging
-using ..MyBinance, ..Config, ..Ohlcv
+using ..MyBinance, ..EnvConfig, ..Ohlcv
 
 function klines2jdict(jsonkline)
     Dict(
@@ -61,7 +60,7 @@ Requests base/USDT from start until end (both including) in interval frequency b
 Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> weeks; M -> months):
 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 """
-function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=Config.cryptoquote)
+function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     rstatus = 0
     df = undef
     try
@@ -234,7 +233,7 @@ function getUSDTmarket()
     symbols = MyBinance.getAllPrices()
     len = length(symbols)
     values = MyBinance.get24HR()
-    quotesymbol = uppercase(Config.cryptoquote)
+    quotesymbol = uppercase(EnvConfig.cryptoquote)
     basesix = [(ix,
         parse(Float32, values[ix]["quoteVolume"]),
         parse(Float32, values[ix]["lastPrice"]),
@@ -252,7 +251,7 @@ function getUSDTmarket()
 end
 
 function balances()
-    MyBinance.balances(Config.authorization.key, Config.authorization.secret)
+    MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
 end
 
 end  # of module

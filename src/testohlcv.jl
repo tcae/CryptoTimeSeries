@@ -1,5 +1,4 @@
 include("../src/ohlcv.jl")
-# include(srcdir("ohlcv.jl"))
 # using Plots
 
 """
@@ -8,7 +7,7 @@ Produces test ohlcv data pattern
 module TestOhlcv
 
 using Dates, DataFrames
-using ..Config
+using ..EnvConfig
 using ..Ohlcv
 
 """
@@ -94,7 +93,7 @@ function doublesinedata(periodminutes, periods)
 end
 
 
-Config.init(test)
+EnvConfig.init(test)
 
 function sinedata_test()
     ohlcv = sinedata(20, 3)

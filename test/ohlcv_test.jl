@@ -1,12 +1,11 @@
 include("../src/ohlcv.jl")
-# include(srcdir("ohlcv.jl"))
 
 
 module OhlcvTest
 
 using DataFrames
 using Test
-using ..Config
+using ..EnvConfig
 using ..Ohlcv
 
 function testohlcvinit(base::String)
@@ -83,7 +82,7 @@ function pivot_test()
 end
 
 # println("ohlcv_test")
-Config.init(test)
+EnvConfig.init(test)
 # pivot_test()
 
 @testset "Ohlcv tests" begin

@@ -1,16 +1,15 @@
 # using Pkg
 # Pkg.add(["LoggingFacilities", "NamedArrays"])
 
-include("../test/testohlcv.jl")
+include("../src/testohlcv.jl")
 include("../src/targets.jl")
-include("../src/ohlcv.jl")
 
 module TargetsTest
 
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test, CSV
 
-using ..Config, ..Features, ..Targets, ..TestOhlcv, ..Ohlcv
+using ..EnvConfig, ..Features, ..Targets, ..TestOhlcv, ..Ohlcv
 
 function regressionlabelsx_test(targetlabelfunction, testdatafilename)
     dffile = projectdir("test", testdatafilename)
@@ -60,9 +59,9 @@ end
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
     # regressionlabels1_test()
 
-    Config.init(test)
-    Config.init(production)
-    println("\nconfig mode = $(Config.configmode)")
+    EnvConfig.init(test)
+    EnvConfig.init(production)
+    println("\nconfig mode = $(EnvConfig.configmode)")
 
     targets4_test()
     # println("""regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")=$(regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv"))""")

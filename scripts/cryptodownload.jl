@@ -1,11 +1,11 @@
 include("../src/env_config.jl")
 include("../src/assets.jl")
 
-using ..Assets
+using ..Assets, ..EnvConfig
 
     # Config.init(Config.test)
     # Assets.cryptolistdownload(["btc"])
 
-    Config.init(Config.production)
+    EnvConfig.init(EnvConfig.production)
     Assets.cryptomarketdownload()
 

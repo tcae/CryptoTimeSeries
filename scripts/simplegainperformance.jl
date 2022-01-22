@@ -1,6 +1,6 @@
 include("../src/env_config.jl")
 include("../src/features.jl")
-include("../test/testohlcv.jl")
+include("../src/testohlcv.jl")
 include("../src/targets.jl")
 include("../src/ohlcv.jl")
 
@@ -38,7 +38,7 @@ Consider out of spread deviations down from a reached price level as trade crite
 
     """
 using Test, DataFrames, NamedArrays, Dates
-using .Config, .Ohlcv, .TestOhlcv, .Features, .Targets
+using .EnvConfig, .Ohlcv, .TestOhlcv, .Features, .Targets
 
 fee = 0.001  # 0.1%
 

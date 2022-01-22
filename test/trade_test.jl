@@ -5,7 +5,7 @@ include(srcdir("trade.jl"))
 module TradeTest
 
 using Test, Dates
-using ..Config, ..Ohlcv
+using ..EnvConfig, ..Ohlcv
 using ..Trade
 
 Config.init(production)

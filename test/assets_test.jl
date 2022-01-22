@@ -1,16 +1,16 @@
 
-include("../src/env_config.jl")
-include("../src/ohlcv.jl")
-include("../src/cryptoxch.jl")
+# include("../src/EnvConfig.jl")
+# include("../src/ohlcv.jl")
+# include("../src/cryptoxch.jl")
 include("../src/assets.jl")
 
 module AssetsTest
 using Dates, DataFrames
 using Test
 
-using ..Ohlcv, ..Config, ..Assets, ..CryptoXch
+using ..Ohlcv, ..EnvConfig, ..Assets, ..CryptoXch
 
-Config.init(production)
+EnvConfig.init(production)
 # ad2 = Assets.read()
 # sort!(ad2.df, [:base])
 # usdtdf = CryptoXch.getUSDTmarket()
@@ -24,8 +24,8 @@ Config.init(production)
 
 # println(Assets.portfolioselect(CryptoXch.getUSDTmarket()))
 @testset "Assets tests" begin
-    # ad1 = Assets.read()
-    ad1 = Assets.loadassets()
+    ad1 = Assets.read()
+    # ad1 = Assets.loadassets()
     # @test size(ad1.df, 1) > 0
     nsyms = Symbol.(names(ad1.df))
     @test all([col in nsyms for col in Assets.savecols])

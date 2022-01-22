@@ -1,4 +1,3 @@
-include("../src/env_config.jl")
 include("../src/features.jl")
 
 """
@@ -14,7 +13,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 """
 module Targets
 
-using ..Config, ..Ohlcv, ..Features
+using ..EnvConfig, ..Ohlcv, ..Features
 
 strongsell=-2; sell=-1; hold=0; buy=1; strongbuy=2
 gainthreshold = 0.01  # 1% gain threshold

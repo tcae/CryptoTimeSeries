@@ -1,5 +1,5 @@
 
-include("env_config_test.jl")
+include("EnvConfig_test.jl")
 include("ohlcv_test.jl")
 # include("features_test.jl")
 # include("targets_test.jl")

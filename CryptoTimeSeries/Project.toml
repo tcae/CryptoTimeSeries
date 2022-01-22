@@ -1,0 +1,4 @@
+name = "CryptoTimeSeries"
+uuid = "0c0291c7-7faf-47a4-8449-253e9b2dc3c6"
+authors = ["tcae <tcae@posteo.nl>"]
+version = "0.1.0"

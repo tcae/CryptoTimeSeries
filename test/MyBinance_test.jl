@@ -1,4 +1,4 @@
-include("../src/Binance.jl")
+include("../src/MyBinance.jl")
 using ..MyBinance
 
 # MyBinance.getMarket() - not found

@@ -1,5 +1,5 @@
 
-include("../src/env_config.jl")
+include("../src/EnvConfig.jl")
 include("../src/ohlcv.jl")
 include("../src/cryptoxch.jl")
 
@@ -7,18 +7,18 @@ module CryptoXchTest
 using Dates, DataFrames
 using Test
 
-using ..Ohlcv, ..Config, ..CryptoXch
+using ..Ohlcv, ..EnvConfig, ..CryptoXch
 
 function balances_test()
     result = CryptoXch.balances()
     display(result)
-    display(Config.bases)
-    display(Config.trainingbases)
-    display(Config.datapath)
+    display(EnvConfig.bases)
+    display(EnvConfig.trainingbases)
+    display(EnvConfig.datapath)
 end
 
-# Config.init(test)
-Config.init(production)
+# EnvConfig.init(test)
+EnvConfig.init(production)
 # balances_test()
 
 userdataChannel = Channel(10)
@@ -86,10 +86,10 @@ function initialbtcdownload()
 end
 
 function PrepareTest()
-    Config.init(Config.test)
+    EnvConfig.init(EnvConfig.test)
     ohlcv = Ohlcv.defaultohlcv("btc")
     mnm = Ohlcv.mnemonic(ohlcv)
-    filename = Config.datafile(mnm)
+    filename = EnvConfig.datafile(mnm)
     Ohlcv.delete(ohlcv)
     return filename
 end
@@ -101,7 +101,7 @@ end
     @test nrow(df) == 0
     mdf = CryptoXch.getUSDTmarket()
     # println(mdf)
-    @test names(mdf) == ["base", "quotevolume24h", "lastprice"]
+    @test names(mdf) == ["base", "quotevolume24h", "lastprice", "priceChangePercent"]
     @test nrow(mdf) > 10
 
     @test PrepareTest() == "/home/tor/crypto/TestFeatures/btc_usdt_binance_1m_OHLCV.jdf"

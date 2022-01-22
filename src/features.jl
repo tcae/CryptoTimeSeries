@@ -14,7 +14,7 @@ module Features
 import RollingFunctions: rollmedian, runmedian, rolling
 import DataFrames: DataFrame, Statistics
 using Logging
-using ..Config, ..Ohlcv
+using ..EnvConfig, ..Ohlcv
 
 mutable struct Feature001Set
     df::DataFrame

@@ -4,38 +4,26 @@ println("activated $(pwd())")
 activate(pwd())
 cd(@__DIR__)
 
-# include("../test/testohlcv.jl")
-# include("../src/targets.jl")
-include("../src/ohlcv.jl")
 include("../src/features.jl")
 include("../src/assets.jl")
-
-
-# include("../src/env_config.jl")
-
-# include(srcdir("classify.jl"))
 
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar
-
-# using Dash, DashTable, PlotlyJS
 using Dates, DataFrames, JSON, JSON3, Logging
-using ..Config, ..Ohlcv, ..Features, ..Assets
+using ..EnvConfig, ..Ohlcv, ..Features, ..Assets
 
 dtf = "yyyy-mm-dd HH:MM"
-Config.init(Config.production)
+EnvConfig.init(EnvConfig.production)
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
-cssdir = Config.setprojectdir()  * "/scripts/"
-# cssdir = pwd() * "/scripts/"
+cssdir = EnvConfig.setprojectdir()  * "/scripts/"
 println("css dir: $cssdir")
 app = dash(external_stylesheets = ["dashboard.css"], assets_folder=cssdir)
 ohlcvcache = Dict()
 
 function loadohlcv(base, interval)
     global ohlcvcache
-    # println("loading $base interval: $interval")
     k = base * interval
     if !(k in keys(ohlcvcache))
         ohlcv = Ohlcv.defaultohlcv(base)
@@ -57,20 +45,6 @@ function updateassets(download=false)
         a = Assets.read()
     end
     if !(a === nothing)
-        # for (ix, base) in enumerate(a.df.base)
-        #     ohlcv = loadohlcv(base, "1m")
-        #     df = Ohlcv.dataframe(ohlcv)
-        #     startdt = df[end, :opentime] - Dates.Day(10)
-        #     df = df[startdt .< df.opentime, :]
-        #     features = Features.features001set(ohlcv)
-        #     for col in features.featuremask
-        #         if !(col in names(a.df))
-        #             a.df[:, col] .= 0.0
-        #         end
-        #         a.df[ix, col] = features.df[end, col]
-        #     end
-        # end
-
         sort!(a.df, [:portfolio], rev=true)
         a.df.id = a.df.base
         println("updating table data of size: $(size(a.df))")
@@ -81,7 +55,6 @@ end
 # ohlcv = TestOhlcv.sinedata(120, 3)
 # Ohlcv.addpivot!(ohlcv.df)
 assets = updateassets(false)
-# println(first(assets.df, 2))
 println("last assets update: $(assets.df[1, :update]) type $(typeof(assets.df[1, :update]))")
 app.layout = html_div() do
     html_div(id="leftside", [
@@ -92,7 +65,6 @@ app.layout = html_div() do
             # html_button("reload data", id="reload_data"),
             html_button("reset selection", id="reset_selection")
         ]),
-        # html_h1("Crypto Price"),  # style={"textAlign": "center"},
         html_div(id="graph1day_endtime", children=assets.df[1, :update]),
         dcc_graph(id="graph1day"),
         html_div(id="graph10day_endtime", children=assets.df[1, :update]),
@@ -121,7 +93,6 @@ app.layout = html_div() do
         ),
         html_div(id="graph4h_endtime", children=assets.df[1, :update]),
         dcc_graph(id="graph4h"),
-        # dcc_graph(id="volume-signals-graph"),
         dash_datatable(id="kpi_table", editable=false,
             columns=[
                 Dict("name" =>i, "id" => i) for i in names(assets.df) if i != "id"],  # exclude "id" to not display it
@@ -135,7 +106,7 @@ app.layout = html_div() do
             style_table=Dict("height" => "700px", "overflowY" => "auto")),
         html_div(id="graph_action"),
         html_div(id="click_action")
-            ])
+    ])
 end
 
 function rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
@@ -183,22 +154,6 @@ function rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
     return res
 end
 
-# callback!(
-#     app,
-#     # Output("graph1day", "children"),
-#     Output("graph_action", "children"),
-#     Input("graph1day", "relayoutData"),
-#     Input("graph10day", "relayoutData"),
-#     Input("graph6month", "relayoutData"),
-#     Input("graph_all", "relayoutData"),
-#     Input("graph4h", "relayoutData")
-#     # prevent_initial_call=true
-# ) do rl1d, rl10d, rl6M, rlall, rl4h
-#     res = rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
-#     println(res)
-#     return res
-# end
-
 function clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
     if (graph_id === nothing) || (graph_id == "")
         return ""
@@ -236,7 +191,6 @@ end
 
 callback!(
     app,
-    # Output("graph1day", "children"),
     Output("graph4h_endtime", "children"),
     Output("graph1day_endtime", "children"),
     Output("graph10day_endtime", "children"),
@@ -264,7 +218,6 @@ callback!(
         updates = assets.df[assets.df[!, :base] .== focus, :update]
         clickdt = updates[1]
         println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
-        # println("focus update on $updates type $(typeof(updates)) using $clickdt type $(typeof(clickdt))")
     else
         clickdt = clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
     end
@@ -319,9 +272,7 @@ function linegraph!(traces, select, interval, period, enddt)
     end
 
     for base in select
-        # println("linegraph base $base keys(oc): $(keys(oc))")
         df = Ohlcv.dataframe(loadohlcv(base, interval))
-        # enddt = df[end, :opentime]
         startdt = enddt - period
         days = Dates.Day(enddt - startdt)
         if size(df, 1) == 0
@@ -349,15 +300,16 @@ end
 
 function candlestickgraph(traces, base, interval, period, enddt)
     traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
+    fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])  # return an empty graph on failing asserts
+    if base === nothing
+        return fig
+    end
     df = Ohlcv.dataframe(loadohlcv(base, interval))
-    # enddt = df[end, :opentime]
     startdt = enddt - period
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
     startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
     df = df[startdt .< df.opentime .<= enddt, :]
-    if size(df,1) == 0
-        fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])
-    else
+    if size(df,1) > 0
         normref = df[end, :pivot]
         traces = append!([
             candlestick(
@@ -384,28 +336,28 @@ end
 
 callback!(
     app,
-    # Output("graph1day", "children"),
     Output("graph1day", "figure"),
     Output("graph10day", "figure"),
     Output("graph6month", "figure"),
     Output("graph_all", "figure"),
+    Output("graph4h", "figure"),
     Input("crypto_focus", "value"),
     Input("kpi_table", "selected_row_ids"),
     Input("graph1day_endtime", "children"),
     Input("graph10day_endtime", "children"),
     Input("graph6month_endtime", "children"),
     Input("graph_all_endtime", "children"),
-    State("graph4h_endtime", "children")
+    Input("graph4h_endtime", "children")
     # prevent_initial_call=true
 ) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
     s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id)"
     println(s)
-    println("enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
-    # println(keys(ohlcvcache))
+    println("enddt4h $enddt4h, enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
     drawbases = [focus]
     append!(drawbases, [s for s in select if s != focus])
+    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf))
     fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
         drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf))
     fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
@@ -417,35 +369,13 @@ callback!(
     figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
         drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf))
 
-    return fig1d, fig10d, fig6M, figall
+    return fig1d, fig10d, fig6M, figall, fig4h
 end
-
-callback!(
-    app,
-    # Output("graph1day", "children"),
-    Output("graph4h", "figure"),
-    Input("crypto_focus", "value"),
-    Input("graph4h_endtime", "children")
-    # prevent_initial_call=true
-    ) do focus, enddt4h
-        ctx = callback_context()
-        button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
-        s = "create candlestick graph: focus = $focus, trigger: $(ctx.triggered[1].prop_id)"
-        println(s)
-        if focus === nothing
-            return Plot([scatter(x=[], y=[], mode="lines", name="no select")])
-        else
-            println("enddt4h $enddt4h")
-            fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf))
-            return fig4h
-        end
-    end
 
 callback!(
         app,
         Output("reset_selection", "n_clicks"),
         Output("kpi_table", "data"),
-        # Output("click_action", "children"),
         Input("update_data", "n_clicks"),
         State("kpi_table", "data")
         # prevent_initial_call=true
@@ -467,7 +397,6 @@ callback!(
         Output("kpi_table", "selected_row_ids"),
         Input("all_button", "n_clicks"),
         Input("none_button", "n_clicks"),
-        # Input("kpi_table", "active_cell"),
         State("kpi_table", "selected_rows"),
         State("kpi_table", "selected_row_ids")
         # prevent_initial_call=true
@@ -478,34 +407,14 @@ callback!(
         println(s)
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
-        # if !(active_cell isa Nothing)
-        #     push!(setselectrows, active_cell.row)
-        #     push!(setselectids, active_cell.row_id)
-        # end
         res = Dict(
             "all_button" => (0:(size(assets.df.base, 1)-1), assets.df.base),
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))
-        println("returning: $(res[button_id])")
+        println("select row returning: $(res[button_id])")
         return res[button_id]
     end
-
-    # function baseactivecell(active_cell)
-#     if active_cell === nothing
-#         return ""
-#     else
-#         ractive = String(active_cell)
-#         ractive = replace(ractive, "\""=>"")
-#         m = match(r"row_id: (?<base>\w+)", ractive)
-#         if m === nothing
-#             return ""
-#         else
-#             base = m["base"]
-#             return base
-#         end
-#     end
-# end
 
     callback!(app,
     Output("crypto_focus", "value"),

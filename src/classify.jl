@@ -1,5 +1,4 @@
-include("../src/features.jl")
-# include(srcdir("features.jl"))
+# include("../src/features.jl")
 
 module Classify
 

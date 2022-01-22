@@ -5,7 +5,7 @@ module FeaturesTest
 using Dates, DataFrames
 using Test
 
-using ..Config, ..Ohlcv, ..Features
+using ..EnvConfig, ..Ohlcv, ..Features
 
 
 
@@ -46,7 +46,7 @@ function lastgainloss_test()
     return isapprox(df, refdf, atol=10^-5)
 end
 
-Config.init(test)
+EnvConfig.init(test)
 # config_test()
 # display(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]))
 # lastextremes_test()

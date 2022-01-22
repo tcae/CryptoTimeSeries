@@ -1,5 +1,3 @@
-include("../src/env_config.jl")
-include("../src/ohlcv.jl")
 include("../src/cryptoxch.jl")
 
 """
@@ -13,7 +11,7 @@ Day and minute OHLCV data are updated.
 module Assets
 
 using Dates, DataFrames, Logging, JDF
-using ..Config, ..Ohlcv, ..CryptoXch
+using ..EnvConfig, ..Ohlcv, ..CryptoXch
 
 
 """
@@ -37,7 +35,7 @@ function emptyassetdataframe()::DataFrames.DataFrame
 end
 
 "manually selected assets"
-manualselect() = return Config.bases
+manualselect() = return EnvConfig.bases
 manualignore = ["usdt", "tusd", "busd", "usdc", "eur"]
 minimumquotevolume = 10000000
 
@@ -99,14 +97,14 @@ savecols = [:base, :manual, :automatic, :portfolio, :xch, :update, :quotevolume2
 
 function write(ad::AssetData)
     mnm = mnemonic()
-    filename = Config.datafile(mnm)
+    filename = EnvConfig.datafile(mnm)
     println("writing asset data to $filename")
     JDF.savejdf(filename, ad.df[!, savecols])  # without :pivot
 end
 
 function read()::AssetData
     mnm = mnemonic()
-    filename = Config.datafile(mnm)
+    filename = EnvConfig.datafile(mnm)
     df = emptyassetdataframe()
     # println(filename)
     if isdir(filename)
@@ -122,7 +120,7 @@ end
 
 function delete(ad::AssetData)
     mnm = mnemonic()
-    filename = Config.datafile(mnm)
+    filename = EnvConfig.datafile(mnm)
     # println(filename)
     if isdir(filename)
         rm(filename; force=true, recursive=true)

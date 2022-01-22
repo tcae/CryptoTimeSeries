@@ -2,10 +2,7 @@
 # Pkg.add(["Dates", "DataFrames"])
 
 include("../src/cryptoxch.jl")
-include("../src/env_config.jl")
-include("../src/ohlcv.jl")
 include("../src/classify.jl")
-# include(srcdir("classify.jl"))
 
 """
 ## problem statement
@@ -33,7 +30,7 @@ All history data will be collected but a fixed subset **`historysubset`** will b
 module Trade
 
 using Dates, DataFrames
-using ..Config, ..Ohlcv, ..Classify, ..CryptoXch
+using ..EnvConfig, ..Ohlcv, ..Classify, ..CryptoXch
 
 # using ..Binance
 
@@ -50,7 +47,7 @@ end
 
 """
 """
-function gettrainingohlcv(trainingbases=Config.trainingbases)
+function gettrainingohlcv(trainingbases=EnvConfig.trainingbases)
     splitdf = Ohlcv.setsplit()
     startdt = minimum(splitdf.start)
     enddt = maximum(splitdf.end)

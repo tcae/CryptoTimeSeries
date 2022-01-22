@@ -10,7 +10,7 @@ Provides
 - test and production mode
 
 """
-module Config
+module EnvConfig
 using Logging
 export Authentication, test, production, training
 
