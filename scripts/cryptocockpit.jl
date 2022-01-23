@@ -15,6 +15,7 @@ using ..EnvConfig, ..Ohlcv, ..Features, ..Assets
 
 dtf = "yyyy-mm-dd HH:MM"
 EnvConfig.init(EnvConfig.production)
+# EnvConfig.init(EnvConfig.test)
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 cssdir = EnvConfig.setprojectdir()  * "/scripts/"
@@ -38,16 +39,20 @@ end
 function updateassets(download=false)
     global ohlcvcache
 
-    if download
-        ohlcvcache = Dict()
-        a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
+    if EnvConfig.configmode == EnvConfig.test
+
     else
-        a = Assets.read()
-    end
-    if !(a === nothing)
-        sort!(a.df, [:portfolio], rev=true)
-        a.df.id = a.df.base
-        println("updating table data of size: $(size(a.df))")
+        if download
+            ohlcvcache = Dict()
+            a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
+        else
+            a = Assets.read()
+        end
+        if !(a === nothing)
+            sort!(a.df, [:portfolio], rev=true)
+            a.df.id = a.df.base
+            println("updating table data of size: $(size(a.df))")
+        end
     end
     return a
 end
@@ -84,10 +89,10 @@ app.layout = html_div() do
         dcc_checklist(
             id="indicator_select",
             options=[
-                (label = "regression 1d", value = "regression 1d"),
-                (label = "signals", value = "signals"),
+                (label = "regression 1d", value = "regression1d"),
+                (label = "test", value = "test"),
                 (label = "features", value = "features"),
-                (label = "equal scale", value = "equal scale")],
+                (label = "normalize", value = "normalize")],
             value=["regression 1d"],
             labelStyle=(:display => "inline-block")
         ),
@@ -239,7 +244,8 @@ Returns normalized percentage values related to `normref`, if `normref` is not `
 Otherwise the ydata input is returned.
 """
 # normpercent(ydata, ynormref) = (ynormref === nothing ) ? ydata : (ydata ./ ynormref .- 1) .* 100
-normpercent(ydata, ynormref) = Ohlcv.normalize(ydata, ynormref=ynormref, percent=true)
+normpercent(ydata, ynormref) = donormalize ? Ohlcv.normalize(ydata, ynormref=ynormref, percent=true) : ydata
+donormalize = true
 
 """
 Returns start and end y coordinates of an input y coordinate vector or equidistant x coordinates.
@@ -265,7 +271,7 @@ function timebox!(traces, boxperiod, boxenddt)
     return traces
 end
 
-function linegraph!(traces, select, interval, period, enddt)
+function linegraph!(traces, select, interval, period, enddt, regression)
     traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
     if length(select) == 0
         traces = [scatter(x=[], y=[], mode="lines", name="no select")]
@@ -290,46 +296,75 @@ function linegraph!(traces, select, interval, period, enddt)
         normref = df[end, :pivot]
         # normref = nothing
         xarr = df[:, :opentime]
-        append!(xarr, [enddt, startdt])
         yarr = normpercent(df[:, :pivot], normref)
-        append!(yarr, reverse(regressionline(df[!, :pivot], normref)))
+        # append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base, legendgroup=base)])
+        if regression
+            # xarr = [enddt, startdt]
+            # yarr = reverse(regressionline(df[!, :pivot], normref))
+            # append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base, legendgroup=base)])
+            append!(xarr, [enddt, startdt])
+            append!(yarr, reverse(regressionline(df[!, :pivot], normref)))
+        end
         append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base)])
     end
     return Plot(traces, linegraphlayout())
 end
 
-function candlestickgraph(traces, base, interval, period, enddt)
+function addheatmap!(traces, ohlcv, subdf, normref)
+    #! calculate featues and targets on whole df but only submit timerange as given by subdf
+    traces = append!(traces, [
+#! to be filled
+    ])
+    fig = Plot(traces,
+        Layout(yaxis_title_text="% of last pivot",
+            yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.1, 0.3], yaxis4_domain=[0.0, 0.1],
+            yaxis_domain=[0.3, 1.0], yaxis3_domain=[0.0, 1.0], xaxis_rangeslider_visible=false,
+            yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
+        )
+    return fig
+end
+
+function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap)
     traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
     fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])  # return an empty graph on failing asserts
     if base === nothing
         return fig
     end
-    df = Ohlcv.dataframe(loadohlcv(base, interval))
+    ohlcv = loadohlcv(base, interval)
+    df = Ohlcv.dataframe(ohlcv)
     startdt = enddt - period
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
     startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
-    df = df[startdt .< df.opentime .<= enddt, :]
-    if size(df,1) > 0
-        normref = df[end, :pivot]
+    subdf = df[startdt .< df.opentime .<= enddt, :]
+    if size(subdf,1) > 0
+        normref = subdf[end, :pivot]
         traces = append!([
             candlestick(
-                x=df[!, :opentime],
-                open=normpercent(df[!, :open], normref),
-                high=normpercent(df[!, :high], normref),
-                low=normpercent(df[!, :low], normref),
-                close=normpercent(df[!, :close], normref),
-                name="$base OHLC"),
-            scatter(
-                x=[startdt, enddt],
-                y=regressionline(df[!, :pivot], normref),
-                mode="lines", showlegend=false),
-            bar(x=df.opentime, y=df.basevolume, name="basevolume", yaxis="y2")], traces)
-        fig = Plot(traces,
-            Layout(yaxis_title_text="% of last pivot",
-                yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
-                yaxis_domain=[0.3, 1.0], yaxis3_domain=[0.0, 1.0], xaxis_rangeslider_visible=false,
-                yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
-            )
+                x=subdf[!, :opentime],
+                open=normpercent(subdf[!, :open], normref),
+                high=normpercent(subdf[!, :high], normref),
+                low=normpercent(subdf[!, :low], normref),
+                close=normpercent(subdf[!, :close], normref),
+                name="$base OHLC")], traces)
+        if regression
+            traces = append!([
+                scatter(
+                    x=[startdt, enddt],
+                    y=regressionline(subdf[!, :pivot], normref),
+                    mode="lines", showlegend=false)], traces)
+        end
+        traces = append!([
+            bar(x=subdf.opentime, y=subdf.basevolume, name="basevolume", yaxis="y2")], traces)
+        if heatmap
+            fig = addheatmap!(traces, ohlcv, subdf, normref)
+        else
+            fig = Plot(traces,
+                Layout(yaxis_title_text="% of last pivot",
+                    yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
+                    yaxis_domain=[0.3, 1.0], yaxis3_domain=[0.0, 1.0], xaxis_rangeslider_visible=false,
+                    yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
+                )
+        end
     end
     return fig
 end
@@ -347,9 +382,10 @@ callback!(
     Input("graph10day_endtime", "children"),
     Input("graph6month_endtime", "children"),
     Input("graph_all_endtime", "children"),
-    Input("graph4h_endtime", "children")
+    Input("graph4h_endtime", "children"),
+    State("indicator_select", "value")
     # prevent_initial_call=true
-) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h
+) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, indicator
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
     s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id)"
@@ -357,17 +393,21 @@ callback!(
     println("enddt4h $enddt4h, enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
     drawbases = [focus]
     append!(drawbases, [s for s in select if s != focus])
-    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf))
+    regression = "regression1d" in indicator
+    heatmap = "features" in indicator
+    donormalize = "normalize" in indicator
+
+    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap)
     fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
-        drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf))
+        drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)
     fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
-        drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf))
+        drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression)
     fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-        focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf))
+        focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression, false)
     # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-    #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf))
+    #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression)
     figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
-        drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf))
+        drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
 
     return fig1d, fig10d, fig6M, figall, fig4h
 end
@@ -377,10 +417,12 @@ callback!(
         Output("reset_selection", "n_clicks"),
         Output("kpi_table", "data"),
         Input("update_data", "n_clicks"),
-        State("kpi_table", "data")
+        State("kpi_table", "data"),
+        State("indicator_select", "value")
         # prevent_initial_call=true
-    ) do update, olddata
+    ) do update, olddata, indicator
         global assets
+        "test" in indicator ? EnvConfig.init(EnvConfig.test) : EnvConfig.init(EnvConfig.production)
         if !(update === nothing)
             assets = updateassets(true)
             if !(assets === nothing)

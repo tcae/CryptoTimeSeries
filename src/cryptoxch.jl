@@ -9,6 +9,7 @@ include("../src/ohlcv.jl")
 module CryptoXch
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using ..MyBinance, ..EnvConfig, ..Ohlcv
+import ..Ohlcv: intervalperiod
 
 function klines2jdict(jsonkline)
     Dict(
@@ -99,27 +100,6 @@ function getlastminutesdata()
     # display(res[:body][end-3:end, :])
 end
 
-function intervalperiod(interval)
-    periods = Dict(
-        "1m" => Dates.Minute(1),
-        "3m" => Dates.Minute(3),
-        "5m" => Dates.Minute(5),
-        "15m" => Dates.Minute(15),
-        "30m" => Dates.Minute(30),
-        "1h" => Dates.Hour(1),
-        "2h" => Dates.Hour(2),
-        "4h" => Dates.Hour(4),
-        "6h" => Dates.Hour(6),
-        "8h" => Dates.Hour(8),
-        "12h" => Dates.Hour(12),
-        "1d" => Dates.Day(1),
-        "3d" => Dates.Day(3),
-        "1w" => Dates.Week(1),
-        "1M" => Dates.Month(1)
-    )
-    return periods[interval]
-end
-
 """
 Requests base/USDT from start until end (both including) in interval frequency
 
@@ -144,7 +124,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
         # display(first(res, 3))
         # display(last(res, 3))
         if stat != 200  # == NOT OK
-            Logging.@warn "HTTP binanace klines request NOT OK returning status $stat"
+            Logging.@warn "HTTP binance klines request NOT OK returning status $stat"
             break
         end
         if size(res, 1) == 0
@@ -159,7 +139,10 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
         end
         lastdt = res[end, :opentime]
         # println("$(Dates.now()) read $(nrow(res)) $base from $startdt until $lastdt")
-        startdt = lastdt + Dates.Minute(1)
+        startdt = floor(lastdt, intervalperiod(interval))
+        while (size(df,1) > 0) && (res[begin, :opentime] <= df[end, :opentime])  # replace last row with updated data
+            deleteat!(df, size(df, 1))
+        end
         if (size(res, 1) > 0) && (names(df) == names(res))
             df = vcat(df, res)
         else
@@ -202,7 +185,7 @@ function cryptodownload(base, interval, startdt, enddt)
             tmpdt = olddf[end, :opentime]  # update last data row
             newdf = gethistoryohlcv(base, tmpdt, enddt, interval)
             if size(newdf, 1) > 0
-                if newdf[begin, :opentime] == olddf[end, :opentime]  # replace last row with updated data
+                while newdf[begin, :opentime] <= olddf[end, :opentime]  # replace last row with updated data
                     deleteat!(olddf, size(olddf, 1))
                 end
                 if names(olddf) == names(newdf)

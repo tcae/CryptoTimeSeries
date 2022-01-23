@@ -92,6 +92,38 @@ function doublesinedata(periodminutes, periods)
     return ohlcv
 end
 
+singlesine(periodminutes, amplitude, initialoffset, level, totalminutes) =
+    [sin((ix + initialoffset)/periodminutes*2*pi) * amplitude + level for ix in 1:totalminutes]
+
+function triplesine(period1, period2, period3, amplitude, initialoffset, level, totalminutes)
+    y1 = singlesine(period1, amplitude, initialoffset, 0, totalminutes)
+    y2 = singlesine(period2, amplitude, initialoffset, 0, totalminutes)
+    y3 = singlesine(period3, amplitude, initialoffset, 0, totalminutes)
+    y = y1 + y2 + y3 .+ level
+    return y
+end
+
+function singlesineohlcv(period, amplitude, initialoffset, level, totalminutes)
+    open = singlesine(period, amplitude, initialoffset, level*0.98, totalminutes)
+    close = singlesine(period, amplitude, initialoffset, level*1.02, totalminutes)
+    high = singlesine(period, amplitude+0.1, initialoffset, level*1.05, totalminutes)
+    low = singlesine(period, amplitude-0.1, initialoffset, level*0.95, totalminutes)
+    y = singlesine(period, amplitude, initialoffset, 0, totalminutes)
+
+    volume = (1.1 .+ abs.(y)) .* 1
+    return open, high, low, close, volume
+end
+
+function triplesineohlcv(period1, period2, period3, amplitude, initialoffset, level, totalminutes)
+    open = triplesine(period1, period2, period3, amplitude, initialoffset, level*0.98, totalminutes)
+    close = triplesine(period1, period2, period3, amplitude, initialoffset, level*1.02, totalminutes)
+    high = triplesine(period1, period2, period3, amplitude+0.1, initialoffset, level*1.05, totalminutes)
+    low = triplesine(period1, period2, period3, amplitude-0.1, initialoffset, level*0.95, totalminutes)
+    y = triplesine(period1, period2, period3, amplitude, initialoffset, 0, totalminutes)
+
+    volume = (1.1 .+ abs.(y)) .* 1
+    return open, high, low, close, volume
+end
 
 EnvConfig.init(test)
 
@@ -99,9 +131,6 @@ function sinedata_test()
     ohlcv = sinedata(20, 3)
     # display(ohlcv.df)
 end
-
-
-
 
 end  # TestOhlcv
 

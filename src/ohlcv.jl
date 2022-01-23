@@ -13,7 +13,7 @@ module Ohlcv
 using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones, Logging
 using ..EnvConfig
 
-export readcsv!, write, read!, OhlcvData
+export write, read!, OhlcvData
 
 mutable struct OhlcvData
     df::DataFrames.DataFrame
@@ -24,6 +24,28 @@ mutable struct OhlcvData
 end
 
 save_cols = [:opentime, :open, :high, :low, :close, :basevolume]
+testbases = ["sinus", "triplesinus"]
+
+function intervalperiod(interval)
+    periods = Dict(
+        "1m" => Dates.Minute(1),
+        "3m" => Dates.Minute(3),
+        "5m" => Dates.Minute(5),
+        "15m" => Dates.Minute(15),
+        "30m" => Dates.Minute(30),
+        "1h" => Dates.Hour(1),
+        "2h" => Dates.Hour(2),
+        "4h" => Dates.Hour(4),
+        "6h" => Dates.Hour(6),
+        "8h" => Dates.Hour(8),
+        "12h" => Dates.Hour(12),
+        "1d" => Dates.Day(1),
+        "3d" => Dates.Day(3),
+        "1w" => Dates.Week(1),
+        "1M" => Dates.Week(4)  # better to be able to calculate with this period
+    )
+    return periods[interval]
+end
 
 "Returns an empty dataframe with all persistent columns"
 function defaultohlcvdataframe()::DataFrames.DataFrame
@@ -45,22 +67,109 @@ dataframe(ohlcv::OhlcvData) = ohlcv.df
 
 function setbasesymbol!(ohlcv::OhlcvData, base::String)
     ohlcv.base = base
+    return ohlcv
 end
 
 function setquotesymbol!(ohlcv::OhlcvData, qte::String)
     ohlcv.qte = qte
+    return ohlcv
 end
 
 function setexchange!(ohlcv::OhlcvData, exchange::String)
     ohlcv.xch = exchange
+    return ohlcv
 end
 
 function setinterval!(ohlcv::OhlcvData, interval::String)
     ohlcv.interval = interval
+    return ohlcv
 end
 
 function setdataframe!(ohlcv::OhlcvData, df)
     ohlcv.df = df
+    return ohlcv
+end
+
+function detectgapissues(ohlcv::OhlcvData)
+    df = ohlcv.df
+    ix = 2
+    while ix <= size(df, 1)
+        gap = round(df[ix, :opentime] - df[ix-1, :opentime], Dates.Minute)
+        # gap = df[ix, :opentime] - df[ix-1, :opentime]
+        if gap < intervalperiod(ohlcv.interval)
+            ok = false
+            iix = ix
+            # gap = round(gap, Dates.Minute)
+            while all([df[iix, c] == df[ix, c] for c in names(df) if c != "opentime"])
+                iix += 1
+            end
+            println("ohlvc: interval issue detected $(ohlcv.base) gap between $(df[ix-1, :opentime]) and $(df[iix, :opentime]) of $(gap)")
+            println(df[ix-2:iix+1, :])
+        end
+        ix += 1
+    end
+end
+
+function fillgaps!(ohlcv::OhlcvData)
+    if (ohlcv === nothing) || (ohlcv.df === nothing) || (size(ohlcv.df, 1) <= 1)
+        return
+    end
+    println("$(EnvConfig.now()) starting fillgaps")
+    ok = true
+    df = ohlcv.df
+    newdf = defaultohlcvdataframe()
+    startix = 1
+    for ix in 2:size(df, 1)
+        # if ix % 200000 == 0
+        #     println("working on row $ix")
+        # end
+        # gap = round(df[ix, :opentime] - df[ix-1, :opentime], Dates.Minute)
+        gap = df[ix, :opentime] - df[ix-1, :opentime]
+        if gap > intervalperiod(ohlcv.interval)  # then repair
+            ok = false
+            gap = round(gap, Dates.Minute)
+            # println("ohlvc: detected $(ohlcv.base) gap between $(df[ix-1, :opentime]) and $(df[ix, :opentime]) of $(gap)")
+            # println(df[ix-3:ix+3, :])
+            startdt = floor(df[ix-1, :opentime], Dates.Minute)
+            dffill = DataFrame()
+            dffill[!, :opentime] = [startdt + intervalperiod(ohlcv.interval) * ix for ix in 1:(gap.value - 1)]
+            # println("1 ix: $ix  startix: $startix  dffill size: $(size(dffill))  newdf size: $(size(newdf))")
+            dffill[:, :basevolume] .= 0.0
+            for cix in names(df)
+                if (cix != "opentime") && (cix != "basevolume")
+                    dffill[:, cix] .= df[ix-1, cix]
+                end
+            end
+            append!(newdf, df[startix:ix-1, :])
+            # println("2 ix: $ix  startix: $startix  dffill size: $(size(dffill))  newdf size: $(size(newdf))")
+            append!(newdf, dffill)
+            # println("3 ix: $ix  startix: $startix  dffill size: $(size(dffill))  newdf size: $(size(newdf))")
+            startix = ix
+            # println(dffill[[1,2,end-1,end], :])
+        end
+    end
+
+    if !ok  # aftercare then check 2nd time after repair
+        append!(newdf, df[startix:end, :])
+        setdataframe!(ohlcv, newdf)
+        df = dataframe(ohlcv)
+        println("$(EnvConfig.now())) fillgaps repaired - checking again")
+        ok = true
+        for ix in 2:size(df, 1)
+            gap = round(df[ix, :opentime] - df[ix-1, :opentime], Dates.Minute)
+            # gap = df[ix, :opentime] - df[ix-1, :opentime]
+            if gap > intervalperiod(ohlcv.interval)
+                ok = false
+                # gap = round(gap, Dates.Minute)
+                println("ohlvc: detected $(ohlcv.base) gap between $(df[ix-1, :opentime]) and $(df[ix, :opentime]) of $(gap)")
+            end
+
+        end
+    end
+    println("$(EnvConfig.now()) fillgaps: $ok")
+    detectgapissues(ohlcv)
+    println("$(EnvConfig.now()) fillgaps ready")
+    return ohlcv
 end
 
 """
@@ -209,5 +318,6 @@ function delete(ohlcv::OhlcvData)
         rm(filename; force=true, recursive=true)
     end
 end
+
 
 end  # Ohlcv

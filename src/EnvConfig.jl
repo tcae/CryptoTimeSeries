@@ -11,7 +11,7 @@ Provides
 
 """
 module EnvConfig
-using Logging
+using Logging, Dates
 export Authentication, test, production, training
 
 import JSON
@@ -19,7 +19,7 @@ import JSON
 @enum Mode test production training
 cryptoquote = "usdt"
 cryptoexchange = "binance"
-datetimeformat = "%Y-%m-%d_%Hh%Mm"
+datetimeformat = "yyyy-mm-dd HH:MM"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
 setsplitfname = "sets_split.csv"
@@ -56,6 +56,8 @@ struct Authentication
         new(auth["name"], auth["key"], auth["secret"])
     end
 end
+
+now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 
 " set project dir as working dir "
 function setprojectdir()

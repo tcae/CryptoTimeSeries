@@ -1,4 +1,3 @@
-include("../src/env_config.jl")
 include("../src/assets.jl")
 
 using ..Assets, ..EnvConfig
