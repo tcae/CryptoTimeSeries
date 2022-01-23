@@ -101,8 +101,30 @@ function test5()
         #     name="$base OHLC")
     ]
     plot(traces,
-        Layout(yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
+        Layout(yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.25],
             yaxis_domain=[0.3, 1.0], xaxis_rangeslider_visible=true))
 end
 
-test5()
+function test6()
+
+    x = DateTime(2022, 01, 22, 12, 00):Minute(1):DateTime(2022, 01, 23, 00, 00)
+    ohlcv = TestOhlcv.sinedata(2*60, size(x,1))
+    ohlcv.df.opentime = x
+    # println(df)
+    traces = [
+        candlestick(ohlcv.df, x=:opentime, open=:open, high=:high, low=:low, close=:close),
+        bar(ohlcv.df, x=:opentime, y=:basevolume, name="basevolume", yaxis="y2")
+        # candlestick(
+        #     x=subdf[!, :opentime],
+        #     open=normpercent(subdf[!, :open], normref),
+        #     high=normpercent(subdf[!, :high], normref),
+        #     low=normpercent(subdf[!, :low], normref),
+        #     close=normpercent(subdf[!, :close], normref),
+        #     name="$base OHLC")
+    ]
+    plot(traces,
+        Layout(yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.25],
+            yaxis_domain=[0.3, 1.0], xaxis_rangeslider_visible=true))
+end
+
+test6()

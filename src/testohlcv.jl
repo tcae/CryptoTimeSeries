@@ -25,7 +25,7 @@ function sinesamples(samples, level, sineparams)
     return x, y
 end
 
-function sinedata(periodminutes, periods, offset=0)
+function sinedata(periodminutes, totalminutes, offset=0)
     price = 200
     volumeconst = 100
     amplitude = 0.007  # 0.5% of price
@@ -36,13 +36,12 @@ function sinedata(periodminutes, periods, offset=0)
     # minutes = Int((Dates.Minute(lastutc - firstutc) + Dates.Minute(1)) / Dates.Minute(1))
     # display(minutes)
     # minutes are used as degrees, i.e. 1 full sinus = 360 degree = 6h
-    minutes = periodminutes * periods
-    x = [(m + offset) * pi * 2 / periodminutes for m in 1:minutes]
+    x = [(m + offset) * pi * 2 / periodminutes for m in 1:totalminutes]
     # x = [m * pi / (minutes/2) for m in 1:minutes]
     y = sin.(x)
     variation = -cos.(x) .* 0.01
     # display(y)
-    timestamp = [firstutc + Dates.Minute(m) for m in 1:minutes]
+    timestamp = [firstutc + Dates.Minute(m) for m in 1:totalminutes]
     # display(timestamp)
     # open =   (y / 4)
     # high =   (y / 2)
