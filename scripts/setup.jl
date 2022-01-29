@@ -7,7 +7,7 @@ activate(pwd())
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 
 add(["Pkg", "Test"])
-develop(path="/home/tor/TorProjects/CryptoTimeSeries")
+# develop(path="/home/tor/TorProjects/CryptoTimeSeries")
 
 # required for env_config
 # import JSON
@@ -63,4 +63,4 @@ add(["DataFrames", "Logging", "Statistics"])
 # using LoggingExtras
 
 # required packages for quick visualizations, e.g. in regressionsim
-add(["IJulia", "Plots", "WebIO", "Dash", "PlotlyJS"])
+add(["IJulia", "Plots", "WebIO", "Dash", "PlotlyJS", "Colors"])

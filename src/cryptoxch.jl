@@ -185,7 +185,7 @@ function cryptodownload(base, interval, startdt, enddt)
             tmpdt = olddf[end, :opentime]  # update last data row
             newdf = gethistoryohlcv(base, tmpdt, enddt, interval)
             if size(newdf, 1) > 0
-                while newdf[begin, :opentime] <= olddf[end, :opentime]  # replace last row with updated data
+                while (size(olddf, 1) > 0) && (newdf[begin, :opentime] <= olddf[end, :opentime])  # replace last row with updated data
                     deleteat!(olddf, size(olddf, 1))
                 end
                 if names(olddf) == names(newdf)

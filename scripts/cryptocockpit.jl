@@ -7,11 +7,14 @@ cd(@__DIR__)
 include("../src/features.jl")
 include("../src/assets.jl")
 
+# using Colors
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar
 using Dates, DataFrames, JSON, JSON3, Logging
 using ..EnvConfig, ..Ohlcv, ..Features, ..Assets
+
+include("../scripts/cockpitdatatablecolors.jl")
 
 dtf = "yyyy-mm-dd HH:MM"
 EnvConfig.init(EnvConfig.production)
@@ -93,19 +96,20 @@ app.layout = html_div() do
                 (label = "test", value = "test"),
                 (label = "features", value = "features"),
                 (label = "normalize", value = "normalize")],
-            value=["regression 1d"],
+            value=["regression1d"],
             labelStyle=(:display => "inline-block")
         ),
         html_div(id="graph4h_endtime", children=assets.df[1, :update]),
         dcc_graph(id="graph4h"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[
-                Dict("name" =>i, "id" => i) for i in names(assets.df) if i != "id"],  # exclude "id" to not display it
-                data = Dict.(pairs.(eachrow(assets.df))),
+            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.df) if i != "id"],  # exclude "id" to not display it
+            data = Dict.(pairs.(eachrow(assets.df))),
+            style_data_conditional=discrete_background_color_bins(assets.df, n_bins=31, columns="priceChangePercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
             sort_mode="multi",
+            fixed_rows=Dict("headers" => true),
             # selected_rows = [ix-1 for ix in 1:size(assets.df, 1) if assets.df[ix, :portfolio]],
             # selected_row_ids = [assets.df[ix, :base] for ix in 1:size(assets.df, 1) if assets.df[ix, :portfolio]],
             style_table=Dict("height" => "700px", "overflowY" => "auto")),

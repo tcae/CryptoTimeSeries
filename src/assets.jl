@@ -36,7 +36,7 @@ end
 
 "manually selected assets"
 manualselect() = return EnvConfig.bases
-manualignore = ["usdt", "tusd", "busd", "usdc", "eur"]
+manualignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt"]
 minimumquotevolume = 10000000
 
 function automaticselect(usdtdf, dayssperiod)
