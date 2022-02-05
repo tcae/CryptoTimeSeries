@@ -36,13 +36,12 @@ end
 
 "manually selected assets"
 manualselect() = return EnvConfig.bases
-manualignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt"]
+manualignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "ust"]
 minimumquotevolume = 10000000
 
 function automaticselect(usdtdf, dayssperiod)
     bases = [usdtdf[ix, :base] for ix in 1:size(usdtdf, 1) if usdtdf[ix, :quotevolume24h] > minimumquotevolume]
     bases = [base for base in bases if !(base in manualignore)]
-    # println("#=$(length(bases)) automaticselect check1: $bases")
 
     enddt = Dates.now(Dates.UTC)
     startdt = enddt - dayssperiod
@@ -58,31 +57,33 @@ function automaticselect(usdtdf, dayssperiod)
         end
     end
     deleteat!(bases, deletebases)
-    # println("#=$(length(bases)) automaticselect check2: $bases")
     return [lowercase(base) for base in bases]
 end
 
 function portfolioselect(usdtdf)
-    portfolio = CryptoXch.balances()
-    # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
-    basevolume = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
-    bases = [lowercase(d["asset"]) for d in portfolio]
-    @assert length(basevolume) == length(bases)
-    usdtbases = usdtdf.base
-    deletebases = fill(true, (size(bases)))  # by default remove all bases that are not found in usdtbases
-    for (ix, base) in enumerate(bases)
-        ubix = findfirst(x -> x == base, usdtbases)
-        if !(ubix === nothing)
-            deletebases[ix] = (usdtdf[ubix, :lastprice] * basevolume[ix]) < 10  # remove all base symbols with a USD value <10
-        # else
-        #     Logging.@warn "portfolio base $base not found in USDT market bases"
-        #  there are some: USDT but also currencies not tradable in USDT
+    bases = EnvConfig.bases
+    if EnvConfig.configmode == EnvConfig.production
+        portfolio = CryptoXch.balances()
+        # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
+        basevolume = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
+        bases = [lowercase(d["asset"]) for d in portfolio]
+        @assert length(basevolume) == length(bases)
+        usdtbases = usdtdf.base
+        deletebases = fill(true, (size(bases)))  # by default remove all bases that are not found in usdtbases
+        for (ix, base) in enumerate(bases)
+            ubix = findfirst(x -> x == base, usdtbases)
+            if !(ubix === nothing)
+                deletebases[ix] = (usdtdf[ubix, :lastprice] * basevolume[ix]) < 10  # remove all base symbols with a USD value <10
+            # else
+            #     Logging.@warn "portfolio base $base not found in USDT market bases"
+            #  there are some: USDT but also currencies not tradable in USDT
+            end
+            if base in manualignore  # independent of portfolio volume, e.g. USDT
+                deletebases[ix] = true
+            end
         end
-        if base in manualignore  # independent of portfolio volume, e.g. USDT
-            deletebases[ix] = true
-        end
+        deleteat!(bases, deletebases)
     end
-    deleteat!(bases, deletebases)
     return bases
 end
 
@@ -128,59 +129,36 @@ function delete(ad::AssetData)
 end
 
 function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::AssetData
-    if EnvConfig.configmode == EnvConfig.test
-        allbases = ["sinus2h5pct", "sinus15m2pctsinus2h5pct+sinus12h8pct"]
-        ad = AssetData(emptyassetdataframe())
-        ad.df[:, :base] = [base for base in allbases]
-        ad.df[:, :manual] .= true
-        ad.df[:, :automatic] .= false
-        ad.df[:, :portfolio] .= false
-        ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
-        ad.df[:, :update] .= Dates.format(Dates.now(Dates.UTC),"yyyy-mm-dd HH:MM")
-        ad.df[:, :quotevolume24h] .= 1
-        ad.df[:, :priceChangePercent] .= 1
-    else
-        usdtdf = CryptoXch.getUSDTmarket()
-        # println("#=$(length((usdtdf.base))) loadassets check1")  # : $(usdtdf.bases)
-        portfolio = Set(portfolioselect(usdtdf))
-        println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
-        manual = Set(manualselect())
-        # manual = Set()
-        # println("#=$(length(manual)) loadassets manual: $(manual)")
-        automatic = Set(automaticselect(usdtdf, dayssperiod))
-        # automatic = Set()
-        # println("#=$(length(automatic)) loadassets automatic: $(automatic)")
+    usdtdf = CryptoXch.getUSDTmarket()
+    portfolio = Set(portfolioselect(usdtdf))
+    println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
+    manual = Set(manualselect())
+    automatic = Set(automaticselect(usdtdf, dayssperiod))
 
-        allbases = union(portfolio, manual, automatic)
-        # println("#=$(length(missingdayklines)) loadassets missingdayklines: $(missingdayklines)")
-        enddt = Dates.now(Dates.UTC)
-        startdt = enddt - dayssperiod
-        for base in allbases
-            ohlcv = CryptoXch.cryptodownload(base, "1d", startdt, enddt)
-        end
-
-        startdt = enddt - minutesperiod
-        # println("#=$(length(allbases)) loadassets allbases: $(allbases)")
-        for base in allbases
-            CryptoXch.cryptodownload(base, "1m", startdt, enddt)
-        end
-        ad = AssetData(emptyassetdataframe())
-        ad.df[:, :base] = [base for base in allbases]
-        ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
-        ad.df[:, :automatic] = [ad.df[ix, :base] in automatic ? true : false for ix in 1:size(ad.df, 1)]
-        ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
-        ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
-        ad.df[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
-        sort!(ad.df, [:base])
-        sort!(usdtdf, [:base])
-        ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
-        ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
-
-        check_portfolio = [p for p in ad.df[in.(ad.df[!,:base], Ref(portfolio)), :base]]
-        println("#=$(length(portfolio)) loadassets portfolio: $(portfolio) assets portfolio: $check_portfolio")
-
-        write(ad)
+    allbases = union(portfolio, manual, automatic)
+    enddt = Dates.now(Dates.UTC)
+    startdt = enddt - dayssperiod
+    for base in allbases
+        ohlcv = CryptoXch.cryptodownload(base, "1d", floor(startdt, Dates.Day), ceil(enddt, Dates.Day))
     end
+
+    startdt = enddt - minutesperiod
+    for base in allbases
+        CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), ceil(enddt, Dates.Minute))
+    end
+    ad = AssetData(emptyassetdataframe())
+    ad.df[:, :base] = [base for base in allbases]
+    ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :automatic] = [ad.df[ix, :base] in automatic ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
+    ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
+    ad.df[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+    sort!(ad.df, [:base])
+    sort!(usdtdf, [:base])
+    ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
+    ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
+
+    write(ad)
     return ad
 end
 

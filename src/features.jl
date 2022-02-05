@@ -92,24 +92,32 @@ end
 function distancesregressionpeak(prices, regressions)
     @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
     @assert !(regressions === nothing) && (size(regressions, 1) > 0) "regressions nothing == $(regressions === nothing) or length == 0"
-    @assert size(prices) == size(regressions) "size(prices) $(size(prices)) != size(regressions) $(size(regressions))"
+    @assert size(prices, 1) == size(regressions, 1) "size(prices) $(size(prices, 1)) != size(regressions) $(size(regressions, 1))"
     @assert length(size(prices)) == 1 "length(size(prices)) $(length(size(prices))) != 1"
     distances = zeros(Float32, length(prices))
-    regressionix = zeros(Float32, length(prices))
-    priceix = zeros(Float32, length(prices))
+    regressionix = zeros(Int16, length(prices))
+    priceix = zeros(Int16, length(prices))
     plen = length(prices)
-    pix = rix = 1
-    for cix in 2:plen
+    pix = rix = 0
+    for cix in 1:plen
         if pix < cix
             maxsearch = regressions[cix] > 0
-            rix = extremeregressionindex(regressions, cix; forward=true)
-            rix = rix == 0 ? plen : rix
+            if rix < cix
+                rix = extremeregressionindex(regressions, cix; forward=true)
+                rix = rix == 0 ? plen : rix
+            elseif rix < plen  # rix >= cix
+                maxsearch = regressions[rix] > 0
+                rix = extremeregressionindex(regressions, rix; forward=true)
+                rix = rix == 0 ? plen : rix
+            end
             pix = extremepriceindex(prices, rix, cix, maxsearch)
         end
         distances[cix] = prices[pix] - prices[cix]
         regressionix[cix] = rix
         priceix[cix] = pix
     end
+    @assert all([0<priceix[i]<=plen for i in 1:plen]) priceix
+    @assert all([0<regressionix[i]<=plen for i in 1:plen]) regressionix
     return distances, regressionix, priceix
 end
 
@@ -342,8 +350,49 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
+sortedregressionwindowkeys001 = ["5m", "15m", "1h", "4h", "12h", "1d", "3d", "10d"]
 regressionwindows001 = Dict("5m" => 5, "15m" => 15, "1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
 
+"""
+Properties at various rolling windows calculated on df data with ohlcv + pilot columns:
+
+- per regression window
+    - gradient of pivot regression line
+    - standard deviation of regression normalized distribution
+    - difference of last pivot price to regression line
+
+"""
+function features001set(pivot)
+    featuremask::Vector{String} = []
+    fdf = DataFrame()
+    for wk in sortedregressionwindowkeys001  # wk = window key
+        ws = regressionwindows001[wk]  # ws = window size in minutes
+        fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
+        stdnotrend, _, fdf[:, "regrdiff$wk"] = Features.rollingregressionstd(pivot, fdf[!, "regry$wk"], fdf[!, "grad$wk"], ws)
+        fdf[:, "2xstd$wk"] = stdnotrend .* 2.0  # also to be used as normalization reference
+        append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
+    end
+    return fdf, featuremask
+end
+
+"""
+Properties at various rolling windows calculated on df data with ohlcv + pilot columns:
+
+- per regression window
+    - gradient of pivot regression line
+    - standard deviation of regression normalized distribution
+    - difference of last pivot price to regression line
+- ration 4hour/9day volume to detect mid term rising volume
+- ration 5minute/4hour volume to detect short term rising volume
+
+"""
+function features001set(indf::DataFrame)
+    fdf, featuremask = features001set(indf.pivot)
+    fdf[:, "4h/9dvol"] = relativevolume(indf[!, :basevolume], 4*60, 9*24*60)
+    fdf[:, "5m/4hvol"] = relativevolume(indf[!, :basevolume], 5, 4*60)
+    append!(featuremask, ["4h/9dvol", "5m/4hvol"])
+    return fdf, featuremask
+end
 
 """
 Properties at various rolling windows calculated on 1minute OHLCV data:
@@ -356,21 +405,10 @@ Properties at various rolling windows calculated on 1minute OHLCV data:
 - ration 5minute/4hour volume to detect short term rising volume
 
 """
-function features001set(ohlcv)
-    featuremask::Vector{String} = []
+function features001set(ohlcv::OhlcvData)
     indf = ohlcv.df
     pivot = (:pivot in names(indf)) ? indf[!, :pivot] : Ohlcv.addpivot!(indf)[!, :pivot]
-    fdf = DataFrame()
-    for wk in keys(regressionwindows001)  # wk = window key
-        ws = regressionwindows001[wk]  # ws = window size in minutes
-        fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
-        stdnotrend, _, fdf[:, "regrdiff$wk"] = Features.rollingregressionstd(pivot, fdf[!, "regry$wk"], fdf[!, "grad$wk"], ws)
-        fdf[:, "2xstd$wk"] = stdnotrend .* 2.0  # also to be used as normalization reference
-        append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
-    end
-    fdf[:, "4h/9dvol"] = relativevolume(indf[!, :basevolume], 4*60, 9*24*60)
-    fdf[:, "5m/4hvol"] = relativevolume(indf[!, :basevolume], 5, 4*60)
-    append!(featuremask, ["4h/9dvol", "5m/4hvol"])
+    fdf, featuremask = features001set(indf)
     return Feature001Set(fdf, featuremask, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
 end
 

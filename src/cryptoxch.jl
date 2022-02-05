@@ -3,12 +3,12 @@
 # Pkg.add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
 
 include("../src/MyBinance.jl")
-include("../src/ohlcv.jl")
+include("../src/testohlcv.jl")
 
 
 module CryptoXch
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging
-using ..MyBinance, ..EnvConfig, ..Ohlcv
+using ..MyBinance, ..EnvConfig, ..Ohlcv, ..TestOhlcv
 import ..Ohlcv: intervalperiod
 
 function klines2jdict(jsonkline)
@@ -63,19 +63,30 @@ Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> wee
 """
 function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     rstatus = 0
-    df = undef
-    try
-        symbol = uppercase(base*cryptoquote)
-        # println("symbol=$symbol start=$startdt end=$enddt")
-        rstatus, arr = MyBinance.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
-        # println(typeof(r))
-        # show(r)
-        # arr = MyBinance.r2j(r.body)
-        df = klines2jdf(arr)
-        # return Dict(:status => r.status, :headers => r.headers, :body => df, :version => r.version, :request => r.request)
-    catch e
-        Logging.@warn "exception $e detected"
-        df = klines2jdf(missing)
+    df = nothing
+    if EnvConfig.configmode == EnvConfig.test
+        println("ohlcfromexchange test mode: $base, $startdt, $enddt, $interval, $cryptoquote")
+        if base in EnvConfig.bases
+            rstatus, df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
+        else
+            df = Ohlcv.defaultohlcvdataframe()
+            rstatus = 112
+            @warn "$base is an unknown base for EnvConfig.test mode"
+        end
+    else
+        try
+            symbol = uppercase(base*cryptoquote)
+            # println("symbol=$symbol start=$startdt end=$enddt")
+            rstatus, arr = MyBinance.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
+            # println(typeof(r))
+            # show(r)
+            # arr = MyBinance.r2j(r.body)
+            df = klines2jdf(arr)
+            # return Dict(:status => r.status, :headers => r.headers, :body => df, :version => r.version, :request => r.request)
+        catch e
+            Logging.@warn "exception $e detected"
+            df = klines2jdf(missing)
+        end
     end
     return rstatus, df
 end
@@ -213,28 +224,39 @@ Returns a dataframe with 24h values of all USDT quote bases with the following c
 
 """
 function getUSDTmarket()
-    symbols = MyBinance.getAllPrices()
-    len = length(symbols)
-    values = MyBinance.get24HR()
-    quotesymbol = uppercase(EnvConfig.cryptoquote)
-    basesix = [(ix,
-        parse(Float32, values[ix]["quoteVolume"]),
-        parse(Float32, values[ix]["lastPrice"]),
-        parse(Float32, values[ix]["priceChangePercent"]))
-        for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
-    # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
-
     df = DataFrames.DataFrame()
-    quotelen = length(quotesymbol)
-    df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _, _) in basesix]
-    df.quotevolume24h = [qv for (_, qv, _, _) in basesix]
-    df.lastprice = [lp for (_, _, lp, _) in basesix]
-    df.priceChangePercent = [pcp for (_, _, _, pcp) in basesix]
+    if EnvConfig.configmode == EnvConfig.test
+        df.base = EnvConfig.bases
+        df.quotevolume24h = [15000000 for ix in 1:size(df,1)]
+        df.lastprice = [100 for ix in 1:size(df,1)]
+        df.priceChangePercent = [5.0 for ix in 1:size(df,1)]
+    else
+        symbols = MyBinance.getAllPrices()
+        len = length(symbols)
+        values = MyBinance.get24HR()
+        quotesymbol = uppercase(EnvConfig.cryptoquote)
+        basesix = [(ix,
+            parse(Float32, values[ix]["quoteVolume"]),
+            parse(Float32, values[ix]["lastPrice"]),
+            parse(Float32, values[ix]["priceChangePercent"]))
+            for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
+        # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
+
+        df = DataFrames.DataFrame()
+        quotelen = length(quotesymbol)
+        df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _, _) in basesix]
+        df.quotevolume24h = [qv for (_, qv, _, _) in basesix]
+        df.lastprice = [lp for (_, _, lp, _) in basesix]
+        df.priceChangePercent = [pcp for (_, _, _, pcp) in basesix]
+    end
     return df
 end
 
 function balances()
-    MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    portfolio = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    # println(portfolio)
+    # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])  all: $d") for d in portfolio]
+    return portfolio
 end
 
 end  # of module

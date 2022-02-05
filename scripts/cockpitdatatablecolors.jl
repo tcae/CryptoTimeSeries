@@ -32,7 +32,6 @@ function discrete_background_color_bins(df; n_bins=5, columns="all")
         df_numeric_columns = df[!,[columns]]
     end
     styles = Dict[]
-    legend = Component[]
     ps = ["#" * string(c, base=16, pad=6) for c in palette(n_bins)]
     # for (ix, c) in enumerate(ps)
     #     println("$ix $c")

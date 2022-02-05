@@ -72,6 +72,15 @@ function test3()
     plot(traces)
 end
 
+function test3b()
+    x, y = TestOhlcv.sinesamples(400, 2, [(150, 0, 0.5)])
+    println(y)
+    traces = [
+        scatter(y=y, x=x, mode="lines", name="sin")
+    ]
+    plot(traces)
+end
+
 function test4()
 
     x = DateTime(2022, 01, 17, 00, 00):Minute(1):DateTime(2022, 01, 23, 00, 00)
@@ -107,13 +116,13 @@ end
 
 function test6()
 
-    x = DateTime(2022, 01, 22, 12, 00):Minute(1):DateTime(2022, 01, 23, 00, 00)
-    ohlcv = TestOhlcv.sinedata(2*60, size(x,1))
-    ohlcv.df.opentime = x
+    x = DateTime(2022, 01, 12, 12, 00):Minute(1):DateTime(2022, 01, 23, 00, 00)
+    df = TestOhlcv.sinedata(2*60, size(x,1))
+    df.opentime = x
     # println(df)
     traces = [
-        candlestick(ohlcv.df, x=:opentime, open=:open, high=:high, low=:low, close=:close),
-        bar(ohlcv.df, x=:opentime, y=:basevolume, name="basevolume", yaxis="y2")
+        candlestick(df, x=:opentime, open=:open, high=:high, low=:low, close=:close),
+        bar(df, x=:opentime, y=:basevolume, name="basevolume", yaxis="y2")
         # candlestick(
         #     x=subdf[!, :opentime],
         #     open=normpercent(subdf[!, :open], normref),
@@ -127,4 +136,71 @@ function test6()
             yaxis_domain=[0.3, 1.0], xaxis_rangeslider_visible=true))
 end
 
-test6()
+function test7()
+
+    x = DateTime(2022, 01, 12, 12, 00):Minute(1):DateTime(2022, 01, 13, 00, 00)
+    df = TestOhlcv.sinedata(2*60, size(x,1))
+    z = nothing
+    df.opentime = x
+    println(df)
+    lines = [wk for wk in names(df) if !(wk in ["opentime", "basevolume"])]
+    for wk in lines
+        z = z === nothing ? df[:, wk] : hcat(z, df[:, wk])
+    end
+    z = transpose(z)
+
+    println("$lines x: $(size(x)) y: $(size(lines)) z: $(size(z))")
+    traces = [
+        heatmap(x=df[!, :opentime], y=lines, z=z)
+    ]
+    plot(traces,
+        Layout(yaxis=attr(title="vol", side="right"), xaxis_rangeslider_visible=true))
+end
+
+function test8()
+
+    x = DateTime(2022, 01, 12, 12, 00):Minute(1):DateTime(2022, 01, 13, 00, 00)
+    df = TestOhlcv.sinedata(2*60, size(x,1))
+    df.opentime = x
+    # println(df)
+
+    lines = [wk for wk in names(df) if !(wk in ["opentime", "basevolume"])]
+    # z = nothing
+    # for wk in lines
+    #     z = z === nothing ? df[:, wk] : hcat(z, df[:, wk])
+    # end
+    # z = transpose(z)
+    # z = [df[r, wk] for r in 1:size(df, 1) for wk in lines]
+    z = zeros(Float32, (size(lines,1), size(df,1)))
+
+    for (ix, wk) in enumerate(lines)
+        for r in 1:size(df,1)
+            z[ix, r] = df[r, wk]
+        end
+    end
+
+    println("$lines x: $(size(x)) y: $(size(lines)) z: $(size(z))")
+
+    traces = [
+        heatmap(x=df[!, :opentime], y=lines, z=z, yaxis="y4"),
+        scatter(x=df[[begin, end], :opentime], y=df[[begin, end], :open], mode="lines", showlegend=false),
+        candlestick(df, x=:opentime, open=:open, high=:high, low=:low, close=:close),
+        bar(df, x=:opentime, y=:basevolume, name="basevolume", yaxis="y2")
+        # candlestick(
+        #     x=subdf[!, :opentime],
+        #     open=normpercent(subdf[!, :open], normref),
+        #     high=normpercent(subdf[!, :high], normref),
+        #     low=normpercent(subdf[!, :low], normref),
+        #     close=normpercent(subdf[!, :close], normref),
+        #     name="$base OHLC")
+    ]
+    plot(traces,
+        Layout(
+            xaxis_rangeslider_visible=false,
+            yaxis=attr(title_text="% of last pivot", domain=[0.25, 0.75]),
+            yaxis2=attr(title="vol", side="right", domain=[0.0, 0.2]),
+            yaxis4=attr(visible =true, side="left", domain=[0.8, 1.0]),
+            yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
+end
+
+test3b()

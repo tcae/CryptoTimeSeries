@@ -439,6 +439,11 @@
     color: green;
   }
 
-  #graph4h, #graph1day, #graph10day, #graph6month, #graph_all  {
+  #graph4h  {
+    height: 900px;
+    clear: both;
+  }
+
+  #graph1day, #graph10day, #graph6month, #graph_all  {
     clear: both;
   }

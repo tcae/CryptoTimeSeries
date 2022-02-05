@@ -1,14 +1,10 @@
-include("../src/ohlcv.jl")
-# using Plots
 
-"""
-Produces test ohlcv data pattern
-"""
+include("../src/ohlcv.jl")
+
 module TestOhlcv
 
-using Dates, DataFrames
-using ..EnvConfig
-using ..Ohlcv
+using Dates, DataFrames, Logging
+using ..EnvConfig, ..Ohlcv
 
 """
 Returns cumulative sine function samples by adding sines on each other described by parameters given as a tuple (periodsamples, offset, amplitude).
@@ -25,7 +21,10 @@ function sinesamples(samples, level, sineparams)
     return x, y
 end
 
-function sinedata(periodminutes, totalminutes, offset=0)
+"""
+returns ohlcv data starting 2019-01-02 01:11 for - by default 5.7 years
+"""
+function sinedata(periodminutes, totalminutes=3000000, offset=0)
     price = 200
     volumeconst = 100
     amplitude = 0.007  # 0.5% of price
@@ -53,9 +52,7 @@ function sinedata(periodminutes, totalminutes, offset=0)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
-    ohlcv = Ohlcv.defaultohlcv("testsine")
-    Ohlcv.setdataframe!(ohlcv, df)
-    return ohlcv
+    return df
 end
 
 function doublesinedata(periodminutes, periods)
@@ -86,9 +83,7 @@ function doublesinedata(periodminutes, periods)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
-    ohlcv = Ohlcv.defaultohlcv("doubletestsine")
-    Ohlcv.setdataframe!(ohlcv, df)
-    return ohlcv
+    return df
 end
 
 singlesine(periodminutes, amplitude, initialoffset, level, totalminutes) =
@@ -124,24 +119,69 @@ function triplesineohlcv(period1, period2, period3, amplitude, initialoffset, le
     return open, high, low, close, volume
 end
 
-EnvConfig.init(test)
 
 function sinedata_test()
     ohlcv = sinedata(20, 3)
     # display(ohlcv.df)
 end
 
-end  # TestOhlcv
+function accumulate(df, period)
+    adf = Ohlcv.defaultohlcvdataframe()
+    adf = DataFrame()
+    p = Dates.value(Dates.Minute(period))
+    # println("accumulate df size: $(size(df,1)) names: $(names(df))")
+    dflen = size(df, 1)
+    adf[:, :opentime] = [df[ix+1, :opentime] for ix in 0:(dflen-1) if (ix % p) == 0]
+    adflen = size(adf, 1)
+    adf[:, :open] = [Float32(df[ix+1, :open]) for ix in 0:(dflen-1) if (ix % p) == 0]
+    adf[:, :high] = fill((typemin(Float32)), adflen)
+    adf[:, :low] = fill(typemax(Float32), adflen)
+    adf[:, :close] = [Float32(df[ix+1, :close]) for ix in 0:(dflen-1) if ((ix - 1) % p) == 0]
+    adf[:, :basevolume] = fill(Float32(0.0), adflen)
+    for aix in 1:size(adf, 1)
+        for ix in 1:p
+            eix = (aix - 1) * p
+            if eix + ix <= dflen
+                if adf[aix, :high] < df[eix + ix, :high]
+                    adf[aix, :high] = df[eix + ix, :high]
+                end
+                if adf[aix, :low] > df[eix + ix, :low]
+                    adf[aix, :low] = df[eix + ix, :low]
+                end
+                adf[aix, :basevolume] += df[eix + ix, :basevolume]
+            end
+        end
+    end
+    return adf
+end
 
-# plotly()
-# x = 1:10; y = rand(10); # These are the plotting data
-# plot(x,y, label="my label")
-# show("TestOhlcv")
-ohlcv = TestOhlcv.sinedata(120, 3)
-# df = TestOhlcv.sinedata(
-#     DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s"),
-#     DateTime("2019-01-03 01:11:28:121", "y-m-d H:M:S:s"))
-# display(ohlcv.df)
-# show(ohlcv.df)
-# Plots.plot(ohlcv.df.timestamp, [ohlcv.df.open, ohlcv.df.high])
+function testsinus(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
+    # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
+    df = sinedata(2*60)
+    # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
+    df = df[startdt .< df.opentime .<= enddt, :]
+    println("testsinus $(size(df))")
+    df = accumulate(df, Ohlcv.intervalperiod(interval))
+    return df
+end
 
+function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
+    dispatch = Dict(
+        "sinus" => testsinus
+
+    )
+    if base in keys(dispatch)
+        df = dispatch[base](startdt, enddt, interval)
+        if df === nothing
+            @warn "unexpected missing df" base startdt enddt interval
+        else
+            println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
+        end
+        return 200, df
+    else
+        @warn "unknown testohlcv test base: $base"
+        return 111, Ohlcv.defaultohlcvdataframe()
+    end
+end
+
+end

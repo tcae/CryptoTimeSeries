@@ -1,11 +1,12 @@
 
 include("../src/features.jl")
+include("../src/testohlcv.jl")
 
 module FeaturesTest
 using Dates, DataFrames
 using Test
 
-using ..EnvConfig, ..Ohlcv, ..Features
+using ..EnvConfig, ..Ohlcv, ..Features, ..TestOhlcv
 
 
 
@@ -46,6 +47,20 @@ function lastgainloss_test()
     return isapprox(df, refdf, atol=10^-5)
 end
 
+function distancepeaktest()
+    x, y = TestOhlcv.sinesamples(400, 2, [(150, 0, 0.5)])
+    _, grad = Features.rollingregression(y, 50)
+    distances, regressionix, priceix = Features.distancesregressionpeak(y, grad)
+    df = DataFrame()
+    df.x = x
+    df.y = y
+    df.grad = grad
+    df.dist = distances
+    df.pp = priceix
+    df.rp = regressionix
+    println(df)
+end
+
 EnvConfig.init(test)
 # config_test()
 # display(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]))
@@ -76,5 +91,7 @@ a,b = Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
 @test isapprox(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]), [0.0  0.1  0.25  -0.4  -0.55  0.5  -0.1], atol=10^-5)
 
 end
+
+# distancepeaktest()
 
 end  # module

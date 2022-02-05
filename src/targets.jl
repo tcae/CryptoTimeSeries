@@ -263,15 +263,15 @@ function targets4(prices, regressionminutes)  # ! missing unit test
     end
     for ix in 1:length(prices)
         for rmin in regressionminutes
-            result[:target] = sell  # in doubt sell
+            result[:target][ix] = sell  # in doubt sell #! result[:target] is overridden with each new rmin
             if result[rmin][:gain][ix] > gainthreshold
-                result[:target] = buy
+                result[:target][ix] = buy
                 break
             elseif result[rmin][:gain][ix] < lossthreshold
-                result[:target] = sell
+                result[:target][ix] = sell
                 break
             elseif result[rmin][:gain][ix] > 0
-                result[:target] = hold
+                result[:target][ix] = hold
                 # no break because a buy or sell may come with larger regression windows
             end
         end

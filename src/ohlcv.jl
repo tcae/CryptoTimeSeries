@@ -44,7 +44,12 @@ function intervalperiod(interval)
         "1w" => Dates.Week(1),
         "1M" => Dates.Week(4)  # better to be able to calculate with this period
     )
-    return periods[interval]
+    if interval in keys(periods)
+        return periods[interval]
+    else
+        @warn "unknown $interval"
+        return Dates.Minute(1)
+    end
 end
 
 "Returns an empty dataframe with all persistent columns"

@@ -4,15 +4,15 @@ println("activated $(pwd())")
 activate(pwd())
 cd(@__DIR__)
 
-include("../src/features.jl")
+include("../src/targets.jl")
 include("../src/assets.jl")
 
 # using Colors
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
-import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar
-using Dates, DataFrames, JSON, JSON3, Logging
-using ..EnvConfig, ..Ohlcv, ..Features, ..Assets
+import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
+using Dates, DataFrames, Logging
+using ..EnvConfig, ..Ohlcv, ..Features, ..Targets, ..Assets
 
 include("../scripts/cockpitdatatablecolors.jl")
 
@@ -42,20 +42,20 @@ end
 function updateassets(download=false)
     global ohlcvcache
 
-    if EnvConfig.configmode == EnvConfig.test
-
+    if !download
+        a = Assets.read()
+    end
+    if download || (size(a.df, 1) == 0)
+        ohlcvcache = Dict()
+        a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
+        println(a)
     else
-        if download
-            ohlcvcache = Dict()
-            a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
-        else
-            a = Assets.read()
-        end
-        if !(a === nothing)
-            sort!(a.df, [:portfolio], rev=true)
-            a.df.id = a.df.base
-            println("updating table data of size: $(size(a.df))")
-        end
+        a = Assets.read()
+    end
+    if !(a === nothing) && (size(a.df, 1) > 0)
+        sort!(a.df, [:portfolio], rev=true)
+        a.df.id = a.df.base
+        println("updating table data of size: $(size(a.df))")
     end
     return a
 end
@@ -95,11 +95,14 @@ app.layout = html_div() do
                 (label = "regression 1d", value = "regression1d"),
                 (label = "test", value = "test"),
                 (label = "features", value = "features"),
+                (label = "targets", value = "targets"),
                 (label = "normalize", value = "normalize")],
-            value=["regression1d"],
-            labelStyle=(:display => "inline-block")
+                # value=["test"],
+                value=["regression1d", "normalize"],
+                labelStyle=(:display => "inline-block")
         ),
         html_div(id="graph4h_endtime", children=assets.df[1, :update]),
+        html_div(id="targets4h"),
         dcc_graph(id="graph4h"),
         dash_datatable(id="kpi_table", editable=false,
             columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.df) if i != "id"],  # exclude "id" to not display it
@@ -118,50 +121,50 @@ app.layout = html_div() do
     ])
 end
 
-function rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
-    ctx = callback_context()
-    graph_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
-    res = (graph_id === nothing) ? "no range selection" : "$graph_id: "
-    relayoutData = Dict(
-        "graph1day" => rl1d,
-        "graph10day" => rl10d,
-        "graph6month" => rl6M,
-        "graph_all" => rlall,
-        "graph4h" => rl4h,
-        "" => ""
-    )
-    if length(relayoutData[graph_id]) > 0
-        range = relayoutData[graph_id]
-        if !(range === nothing)
-            if (try range.autosize catch end === nothing)
-                if (try range[Symbol("xaxis.range[0]")]  catch end === nothing)
-                    if (try range[Symbol("xaxis.autorange")]  catch end === nothing)
-                        JSON3.pretty(JSON3.write(range))
-                        res = res * "unexpected JSON - expecting xaxis.autorange"
-                    else
-                        res = res * "xaxis.autorange = $(range[Symbol("xaxis.autorange")])"
-                    end
-                else
-                    xmin = range[Symbol("xaxis.range[0]")]
-                    res = res * "xmin = $(range[Symbol("xaxis.range[0]")])"
-                    if (try range[Symbol("xaxis.range[1]")]  catch end === nothing)
-                        JSON3.pretty(JSON3.write(range))
-                        res = res * ", unexpected JSON - expecting xaxis.range[1]"
-                    else
-                        xmax = range[Symbol("xaxis.range[1]")]
-                        res = res * ", xmax = $(range[Symbol("xaxis.range[1]")])"
-                    end
-                end
-            else
-                # JSON3.pretty(JSON3.write(range))
-                res = res * "relayout data: autosize = $(range[:autosize])"
-            end
-        end
-    else
-        res = res * "no relayout"
-    end
-    return res
-end
+# function rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
+#     ctx = callback_context()
+#     graph_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
+#     res = (graph_id === nothing) ? "no range selection" : "$graph_id: "
+#     relayoutData = Dict(
+#         "graph1day" => rl1d,
+#         "graph10day" => rl10d,
+#         "graph6month" => rl6M,
+#         "graph_all" => rlall,
+#         "graph4h" => rl4h,
+#         "" => ""
+#     )
+#     if length(relayoutData[graph_id]) > 0
+#         range = relayoutData[graph_id]
+#         if !(range === nothing)
+#             if (try range.autosize catch end === nothing)
+#                 if (try range[Symbol("xaxis.range[0]")]  catch end === nothing)
+#                     if (try range[Symbol("xaxis.autorange")]  catch end === nothing)
+#                         JSON3.pretty(JSON3.write(range))
+#                         res = res * "unexpected JSON - expecting xaxis.autorange"
+#                     else
+#                         res = res * "xaxis.autorange = $(range[Symbol("xaxis.autorange")])"
+#                     end
+#                 else
+#                     xmin = range[Symbol("xaxis.range[0]")]
+#                     res = res * "xmin = $(range[Symbol("xaxis.range[0]")])"
+#                     if (try range[Symbol("xaxis.range[1]")]  catch end === nothing)
+#                         JSON3.pretty(JSON3.write(range))
+#                         res = res * ", unexpected JSON - expecting xaxis.range[1]"
+#                     else
+#                         xmax = range[Symbol("xaxis.range[1]")]
+#                         res = res * ", xmax = $(range[Symbol("xaxis.range[1]")])"
+#                     end
+#                 end
+#             else
+#                 # JSON3.pretty(JSON3.write(range))
+#                 res = res * "relayout data: autosize = $(range[:autosize])"
+#             end
+#         end
+#     else
+#         res = res * "no relayout"
+#     end
+#     return res
+# end
 
 function clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
     if (graph_id === nothing) || (graph_id == "")
@@ -189,7 +192,7 @@ function clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
                         println("no click points[1].x")
                     else
                         clickdt = clk.points[1].x
-                        # println("type of clickdata: $(typeof(clickdt)) clickdata: $(clickdt)")  # String with DateTime
+                        println("$graph_id clickdata: $(clk.points[1]) clickdata.x: $(clickdt)")  # String with DateTime
                     end
                 end
             end
@@ -314,15 +317,72 @@ function linegraph!(traces, select, interval, period, enddt, regression)
     return Plot(traces, linegraphlayout())
 end
 
+function targetfigure(base, period, enddt)
+    fig = nothing
+    if base === nothing
+        return fig
+    end
+    ohlcv = loadohlcv(base, "1m")
+    df = Ohlcv.dataframe(ohlcv)
+    startdt = enddt - period
+    enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
+    startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
+    subdf = df[startdt .< df.opentime .<= enddt, :]
+    normref = subdf[end, :pivot]
+    if size(subdf,1) > 0
+        pivot = (:pivot in names(subdf)) ? subdf[!, :pivot] : Ohlcv.addpivot!(subdf)[!, :pivot]
+        pivot = normpercent(pivot, normref)
+        _, grad = Features.rollingregression(pivot, Features.regressionwindows001["1h"])
+        distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad)
+        x = subdf[!, :opentime]
+        y = ["distpeak4h"]
+        z = distances
+        t = [["p: $(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) r: $(Dates.format(x[regressionix[ix]], "mm-dd HH:MM"))"] for ix in 1:size(x, 1)]
+        z = [[distances[r, c] for c in 1:size(y,1)] for r in 1:size(x,1)]
+        # println("z=$z")
+        # println("txt=$t")
+
+        # ddf = DataFrame()
+        # ddf.x = x
+        # ddf.z = z
+        # ddf.txt = t
+        # println(ddf)
+        # println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z))")
+        println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z)) txt size = $(size(t))")
+        fig = Plot(
+            # [heatmap(x=x, y=y, z=[z], text=t)],
+            [heatmap(x=x, y=y, z=z, text=t)],
+            Layout(xaxis_rangeslider_visible=false)
+            )
+    end
+    return dcc_graph(figure=fig)
+end
+
 function addheatmap!(traces, ohlcv, subdf, normref)
-    #! calculate featues and targets on whole df but only submit timerange as given by subdf
+    @assert size(subdf, 1) >= 1
+    firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(values(Features.regressionwindows001)))
+    calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
+    pivot = (:pivot in names(calcdf)) ? calcdf[!, :pivot] : Ohlcv.addpivot!(calcdf)[!, :pivot]
+    pivot = normpercent(pivot, normref)
+    fdf, featuremask = Features.features001set(pivot)
+    fdf = fdf[(end-size(subdf,1)+1):end, :]  # resize fdf to meet size of subdf
+    x = subdf[!, :opentime]
+    y = featuremask
+    z = [[fdf[r, c] for c in y] for r in 1:size(x,1)]
+    t = [["txt: $(fdf[r, c])" for c in y] for r in 1:size(x,1)]
+    # println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z))")
+    # println("=$y")
+    # println("z[1:2]=$(z[1:2][1:2])")
+    # println("fdf[1:2]=$(fdf[1:2, y[1:2]])")
+
     traces = append!(traces, [
-#! to be filled
+        heatmap(x=x, y=y, z=z, text=t, yaxis="y4")
     ])
     fig = Plot(traces,
-        Layout(yaxis_title_text="% of last pivot",
-            yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.1, 0.3], yaxis4_domain=[0.0, 0.1],
-            yaxis_domain=[0.3, 1.0], yaxis3_domain=[0.0, 1.0], xaxis_rangeslider_visible=false,
+        Layout(xaxis_rangeslider_visible=false,
+            yaxis=attr(title_text="% of last pivot", domain=[0.15, 0.65]),
+            yaxis2=attr(title="vol", side="right", domain=[0.0, 0.1]),
+            yaxis4=attr(visible =true, side="left", domain=[0.66, 1.0]),
             yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
         )
     return fig
@@ -363,9 +423,9 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
             fig = addheatmap!(traces, ohlcv, subdf, normref)
         else
             fig = Plot(traces,
-                Layout(yaxis_title_text="% of last pivot",
-                    yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.2],
-                    yaxis_domain=[0.3, 1.0], yaxis3_domain=[0.0, 1.0], xaxis_rangeslider_visible=false,
+                Layout(xaxis_rangeslider_visible=false,
+                    yaxis=attr(title_text="% of last pivot", domain=[0.3, 1.0]),
+                    yaxis2=attr(title="vol", side="right", domain=[0.0, 0.2]),
                     yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
                 )
         end
@@ -380,6 +440,7 @@ callback!(
     Output("graph6month", "figure"),
     Output("graph_all", "figure"),
     Output("graph4h", "figure"),
+    Output("targets4h", "children"),
     Input("crypto_focus", "value"),
     Input("kpi_table", "selected_row_ids"),
     Input("graph1day_endtime", "children"),
@@ -399,9 +460,9 @@ callback!(
     append!(drawbases, [s for s in select if s != focus])
     regression = "regression1d" in indicator
     heatmap = "features" in indicator
-    donormalize = "normalize" in indicator
 
     fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap)
+    targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)) : nothing
     fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
         drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)
     fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
@@ -413,28 +474,57 @@ callback!(
     figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
         drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
 
-    return fig1d, fig10d, fig6M, figall, fig4h
+    return fig1d, fig10d, fig6M, figall, fig4h, targets4h
 end
 
 callback!(
         app,
         Output("reset_selection", "n_clicks"),
         Output("kpi_table", "data"),
+        Output("crypto_focus", "value"),
+        Output("crypto_focus", "options"),
+        Input("kpi_table", "active_cell"),
         Input("update_data", "n_clicks"),
+        Input("indicator_select", "value"),
         State("kpi_table", "data"),
-        State("indicator_select", "value")
+        State("crypto_focus", "value"),
+        State("crypto_focus", "options")
         # prevent_initial_call=true
-    ) do update, olddata, indicator
-        global assets
-        "test" in indicator ? EnvConfig.init(EnvConfig.test) : EnvConfig.init(EnvConfig.production)
-        if !(update === nothing)
-            assets = updateassets(true)
-            if !(assets === nothing)
-                return 1, Dict.(pairs.(eachrow(assets.df)))
-            end
+    ) do active_cell, update, indicator, olddata, currentfocus, options
+        global assets, donormalize
+
+        ctx = callback_context()
+        button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : "nothing"
+        # println("trigger: $(button_id)  currentfocus $currentfocus  #options: $options")
+        if active_cell isa Nothing
+            active_row_id = currentfocus
+        else
+            active_row_id = active_cell.row_id
         end
-        println("staying with current table data")
-        return 0, olddata
+        donormalize = "normalize" in indicator
+        if button_id == "indicator_select"
+            if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
+                EnvConfig.init(EnvConfig.test)
+                assets = updateassets(false)
+                active_row_id = assets.df[1, :base]
+            elseif (EnvConfig.configmode == EnvConfig.test) && !("test" in indicator)  # switch from test to prodcution data
+                EnvConfig.init(EnvConfig.production)
+                assets = updateassets(false)
+                active_row_id = assets.df[1, :base]
+            end
+
+        elseif button_id == "update_data"
+            assets = updateassets(true)
+        else
+            return 0, olddata, active_row_id, options
+        end
+        if !(assets === nothing)
+            println("data update assets.df.size: $(size(assets.df))")
+            return 1, Dict.(pairs.(eachrow(assets.df))), active_row_id, [(label = i, value = i) for i in assets.df.base]
+        else
+            @warn "found no assets"
+            return 0, olddata, active_row_id, options
+        end
     end
 
 callback!(
@@ -462,18 +552,18 @@ callback!(
         return res[button_id]
     end
 
-    callback!(app,
-    Output("crypto_focus", "value"),
-    Input("kpi_table", "active_cell"),
-    State("crypto_focus", "value"),
-    ) do active_cell, currentfocus
-        if active_cell isa Nothing
-            active_row_id = currentfocus
-        else
-            active_row_id = active_cell.row_id
-        end
-        return active_row_id
-    end
+    # callback!(app,
+    # Output("crypto_focus", "value"),
+    # Input("kpi_table", "active_cell"),
+    # State("crypto_focus", "value"),
+    # ) do active_cell, currentfocus
+    #     if active_cell isa Nothing
+    #         active_row_id = currentfocus
+    #     else
+    #         active_row_id = active_cell.row_id
+    #     end
+    #     return active_row_id
+    # end
 
 
 run_server(app, "0.0.0.0", debug=true)
