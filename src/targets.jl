@@ -280,7 +280,12 @@ function targets4(prices, regressionminutes)  # ! missing unit test
 end
 
 function continuousdistancelabels(prices, regressions)
-    return Features.distancesregressionpeak(prices, regressions)
+    buythreshold = 0.05  # at least 5% distance to buy
+    sellthreshold = 0.0  # sell on negative distance
+    distances, regressionix, priceix = Features.distancesregressionpeak(prices, regressions)
+    pctdist = distances ./ prices
+    labels = [d > buythreshold ? "buy" : d < sellthreshold ? "sell" : "hold" for d in pctdist]
+    return labels, pctdist, distances, regressionix, priceix
 end
 
 end  # module
