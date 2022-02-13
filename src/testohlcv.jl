@@ -18,6 +18,7 @@ function sinesamples(samples, level, sineparams)
         # show(DataFrame(x=x, y=y))
         @. y += sin((x + offset) * 2 * pi / (periodsamples)) * amplitude
     end
+    x .+= 1
     return x, y
 end
 

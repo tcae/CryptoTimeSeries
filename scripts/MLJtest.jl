@@ -8,7 +8,6 @@ include("../src/testohlcv.jl")
 
 using MLJ, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using ..Targets, ..TestOhlcv
-import DataFrames
 using RDatasets
 using PlotlyJS, WebIO, Dates, DataFrames
 
@@ -114,33 +113,34 @@ function mlfeatures_test()
     return all(v->(v==2.0), df[2, 1:4]) && all(v->(v==4.0), df[2, 5:10]) && all(v->(v==8.0), df[2, 11:14])
 end
 
-function prepare()
+function prepare(labelthresholds)
     x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
     _, grad = Features.rollingregression(y, 50)
     fdf, featuremask = Features.features001set(y)
     # fdf = mlfeatures(fdf, featuremask, 2)
     # fdf = mlfeatures(fdf, featuremask, 3)
 
-    labels, pctdist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad)
+    labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
+    # labels, relativedist, distances, priceix = Targets.continuousdistancelabels(y)
     # df = DataFrames.DataFrame()
     # df.x = x
     # df.y = y
     # df.grad = grad
-    # df.dist = pctdist
+    # df.dist = relativedist
     # df.pp = priceix
     # df.rp = regressionix
     mlfeatures(fdf, featuremask, 1)
-    println("size(features): $(size(fdf)) size(pctdist): $(size(pctdist)) names(features): $(names(fdf))")
+    println("size(features): $(size(fdf)) size(relativedist): $(size(relativedist)) names(features): $(names(fdf))")
     # println(features[1:3,:])
-    # println(pctdist[1:3])
+    # println(relativedist[1:3])
     labels = CategoricalArray(labels, ordered=true)
     println(get_probs(labels))
-    levels!(labels, ["sell", "hold", "buy"])
+    levels!(labels, ["sell", "close", "hold", "buy"])
     # println(levels(labels))
-    return labels, pctdist, fdf, x, y
+    return labels, relativedist, fdf, x, y
 end
 
-function plsdetail(pctdist, features, train, test)
+function plsdetail(relativedist, features, train, test)
     featuressrc = source(features)
     stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
     fit!(stdfeaturesnode, rows=train)
@@ -149,20 +149,20 @@ function plsdetail(pctdist, features, train, test)
     stdftest = stdfeaturesnode(rows=test)
     # println(stdftest[1:10, :])
 
-    pctdistsrc = source(pctdist)
-    stdlabelsmachine = machine(Standardizer(), pctdistsrc)
-    stdlabelsnode = MLJ.transform(stdlabelsmachine, pctdistsrc)
+    relativedistsrc = source(relativedist)
+    stdlabelsmachine = machine(Standardizer(), relativedistsrc)
+    stdlabelsnode = MLJ.transform(stdlabelsmachine, relativedistsrc)
     # fit!(stdlabelsnode, rows=train)
 
-    plsnode = predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=8), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
+    plsnode = predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
     yhat = inverse_transform(stdlabelsmachine, plsnode)
     fit!(yhat, rows=train)
     return yhat(rows=test), stdftest
 end
 
-# function plssimple(pctdist, features, train, test)
+# function plssimple(relativedist, features, train, test)
 #     pls_model = @pipeline Standardizer PartialLeastSquaresRegressor.PLSRegressor(n_factors=8) target=Standardizer
-#     pls_machine = machine(pls_model, features, pctdist)
+#     pls_machine = machine(pls_model, features, relativedist)
 #     fit!(pls_machine, rows=train)
 #     yhat = predict(pls_machine, rows=test)
 #     return yhat
@@ -183,25 +183,31 @@ function printresult(target, yhat)
 end
 
 function regression1()
-    labels, pctdist, features, x, y = prepare()
-    train, test = partition(eachindex(pctdist), 0.7, stratify=labels) # 70:30 split
+    lt = Targets.defaultlabelthresholds
+    labels, relativedist, features, x, y = prepare(lt)
+    train, test = partition(eachindex(relativedist), 0.7, stratify=labels) # 70:30 split
     println("training: $(size(train,1))  test: $(size(test,1))")
 
-    # models(matching(features, pctdist))
+    # models(matching(features, relativedist))
     # Regr = @load BayesianRidgeRegressor pkg=ScikitLearn  #load model class
     # regr = Regr()  #instatiate model
 
     # building a pipeline with scaling on data
     println("hello")
     # println("typeof(regressor) $(typeof(regressor))")
-    yhat1, stdfeatures = plsdetail(pctdist, features, train, test)
-    printresult(pctdist[test], yhat1)
-    # yhat2 = plssimple(pctdist, features, train, test)
-    # printresult(pctdist[test], yhat2)
+    yhat1, stdfeatures = plsdetail(relativedist, features, train, test)
+    predictlabels = Targets.getlabels(yhat1, lt)
+    predictlabels = CategoricalArray(predictlabels, ordered=true)
+    levels!(predictlabels, ["sell", "close", "hold", "buy"])
+
+    confusion_matrix(predictlabels, labels[test])
+    printresult(relativedist[test], yhat1)
+    # yhat2 = plssimple(relativedist, features, train, test)
+    # printresult(relativedist[test], yhat2)
     traces = [
         scatter(y=y[test], x=x[test], mode="lines", name="input"),
         # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
-        scatter(y=pctdist[test], x=x[test], mode="lines", name="target"),
+        scatter(y=relativedist[test], x=x[test], mode="lines", name="target"),
         scatter(y=yhat1, x=x[test], mode="lines", name="predict")
     ]
     plot(traces)

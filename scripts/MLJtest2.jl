@@ -1,25 +1,21 @@
-using MLJ, RDatasets
-using PartialLeastSquaresRegressor
+using Blink, TableView
 
-# loading data and selecting some features
-data = dataset("datasets", "longley")[:, 2:5]
+function update_cell(arr, msg)
+    row = msg["row"] + 1
+    col = parse(Int, match(r"Column(\d+)", msg["col"])[1])
+    arr[row, col] = parse(eltype(arr), msg["new"])
+end
 
-# unpacking the target
-y, X = unpack(data, ==(:GNP), colname -> true)
+x = rand(10,10)
 
-# loading the model
-regressor = PartialLeastSquaresRegressor.PLSRegressor(n_factors=2)
-
-# building a pipeline with scaling on data
-pls_model = @pipeline Standardizer regressor target=Standardizer
-
-# a simple hould out
-train, test = partition(eachindex(y), 0.7, shuffle=true)
-
-pls_machine = machine(pls_model, X, y)
-
-fit!(pls_machine, rows=train)
-
-yhat = predict(pls_machine, rows=test)
-
-mae(yhat, y[test]) |> mean
+# mock-up loop of Julia program not terminating to the REPL until user decides so
+leave = false
+while !leave
+    w = Blink.Window();
+    body!(w, TableView.showtable(x, cell_changed = msg -> update_cell(x, msg)))
+    println("Enter to continue or Y to leave: ")
+    str = readline()
+    if str == "y" || str == "Y"
+       leave = true
+    end
+end

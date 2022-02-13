@@ -8,6 +8,7 @@ module TargetsTest
 
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test, CSV
+using PlotlyJS, WebIO
 
 using ..EnvConfig, ..Features, ..Targets, ..TestOhlcv, ..Ohlcv
 
@@ -55,28 +56,155 @@ function targets4_test()
 end
 
 
+function prepare1(totalsamples, periodsamples, yconst)
+    x, y = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
+    labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(y, Targets.defaultlabelthresholds)
+    # df = DataFrames.DataFrame()
+    # df.x = x
+    # df.y = y
+    # df.relativedist = pctdist
+    # df.realdist = realdist
+    # df.priceix = priceix
+    # println(df)
+    # println("size(relativedist): $(size(relativedist))")
+    return labels, realdist, x, y, priceix
+end
+
+function prepare2(totalsamples, periodsamples, yconst)
+    x, y = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
+    _, grad = Features.rollingregression(y, Int64(round(periodsamples/2)))
+
+    labels, relativedist, realdist, regressionix, priceix = Targets.continuousdistancelabels(y, grad, Targets.defaultlabelthresholds)
+    df = DataFrames.DataFrame()
+    # df.x = x
+    # df.y = y
+    # df.relativedist = relativedist
+    # df.realdist = realdist
+    # df.regrix = regressionix
+    # df.priceix = priceix
+    # println(df)
+    # println("size(relativedist): $(size(relativedist))")
+    return labels, realdist, x, y, priceix, regressionix
+end
+
+function continuousdistancelabels_test()
+    # periodsamples = 150  # minutes per  period
+    # totalsamples = 20 * 24 * 60  # 20 days in minute frequency
+    totalsamples = 20
+    periodsamples = 10  # values per  period
+    # periodsamples = 10  # minutes per  period
+    # totalsamples = 60  # 1 hour in minute frequency
+    yconst = 2.0
+    x, y = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
+    _, grad = Features.rollingregression(y, Int64(round(periodsamples/2)))
+
+    labels1, relativedist1, realdist1, priceix1 = Targets.continuousdistancelabels(y, Targets.defaultlabelthresholds)
+    labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, grad, Targets.defaultlabelthresholds)
+
+    # labels1, realdist1, x, y, priceix1 = prepare1(totalsamples, periodsamples, yconst)
+    # labels2, realdist2, _, _, priceix2, regressionix2 = prepare2(totalsamples, periodsamples, yconst)
+    df = DataFrame()
+    df.x = x
+    df.y = y
+    df.realdist1 = realdist1
+    df.priceix1 = priceix1
+    df.relativedist1 = relativedist1
+    df.labels1 = labels1
+    df.realdist2 = realdist2
+    df.priceix2 = priceix2
+    df.relativedist2 = relativedist2
+    df.labels2 = labels2
+    df.regressionix2 = regressionix2
+    # println(df)
+    # traces = [
+    #     scatter(y=y, x=x, mode="lines", name="input"),
+    #     # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
+    #     scatter(y=realdist1, x=x, mode="lines", name="realdist1", line_dash="dot"),
+    #     scatter(y=realdist2, x=x, mode="lines", name="realdist2")
+    # ]
+    # p = plot(traces)
+    # display(p)
+    # println(priceix2)
+    return priceix2 == [3, 3, 8, 8, 8, 8, 8, 13, 13, 13, 13, 13, 18, 18, 18, 18, 18, 18, 19, 20]
+end
+
+function distancetest2()
+    # periodsamples = 150  # minutes per  period
+    # totalsamples = 20 * 24 * 60  # 20 days in minute frequency
+    totalsamples = 20
+    periodsamples = 10  # values per  period
+    # periodsamples = 10  # minutes per  period
+    # totalsamples = 60  # 1 hour in minute frequency
+    yconst = 2.0
+    labels1, realdist1, x, y, priceix1 = prepare1(totalsamples, periodsamples, yconst)
+    labels2, realdist2, _, _, priceix2, regressionix2 = prepare2(totalsamples, periodsamples, yconst)
+    df = DataFrame()
+    df.x = x
+    df.y = y
+    df.realdist1 = realdist1
+    df.priceix1 = priceix1
+    df.realdist2 = realdist2
+    df.priceix2 = priceix2
+    df.regressionix2 = regressionix2
+    # println(df)
+    # traces = [
+    #     scatter(y=y, x=x, mode="lines", name="input"),
+    #     # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
+    #     scatter(y=realdist1, x=x, mode="lines", name="realdist1", line_dash="dot"),
+    #     scatter(y=realdist2, x=x, mode="lines", name="realdist2")
+    # ]
+    # p = plot(traces)
+    # display(p)
+    # println(priceix2)
+end
+
+function distancetest1()
+    # periodsamples = 150  # minutes per  period
+    # totalsamples = 20 * 24 * 60  # 20 days in minute frequency
+    periodsamples = 10  # minutes per  period
+    totalsamples = 60  # 1 hour in minute frequency
+    yconst = 0.0
+    labels1, realdist1, x, y = prepare1(totalsamples, periodsamples, yconst)
+    df = DataFrame()
+    df.x = x
+    df.y = y
+    df.realdist1 = realdist1
+    println(df)
+    traces = [
+        scatter(y=y, x=x, mode="lines", name="input"),
+        # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
+        scatter(y=realdist1, x=x, mode="lines", name="target")
+    ]
+    p = plot(traces)
+    display(p)
+end
+
+
+
 # with_logger(TimestampTransformerLogger(current_logger(), BeginningMessageLocation();
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
     # regressionlabels1_test()
 
     EnvConfig.init(test)
-    EnvConfig.init(production)
+    # EnvConfig.init(production)
     println("\nconfig mode = $(EnvConfig.configmode)")
+    distancetest2()
 
-    targets4_test()
+    # targets4_test()
+
     # println("""regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")=$(regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv"))""")
-#=
+
 @testset "Targets tests" begin
 
-    ohlcv = TestOhlcv.doublesinedata(40, 2)
-    regressions = Features.normrollingregression(ohlcv.df.pivot, 5)
+    # ohlcv = TestOhlcv.doublesinedata(40, 2)
+    # regressions = Features.normrollingregression(ohlcv.df.pivot, 5)
 
     # @test regressionlabels1_test()
     # @test regressionlabelsx_test(Targets.regressionlabels1, "regressionlabels1_testdata.csv")
     # @test regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")
     # @test regressionlabelsx_test(Targets.regressionlabels3, "regressionlabels3_testdata.csv")
-
+    @test continuousdistancelabels_test()
 end  # of testset
-=#
+
 # end  # of with logger
 end  # module

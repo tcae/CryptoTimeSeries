@@ -3,7 +3,7 @@
 General thoughts:
 
 - Problem: what to label as a trade signal, i.e. what is a noteworthy deviation from a trend that is worth to signal a trade?
-  - An option is to label everything that has a future gain or loss above a threshold. This will result in relatively poor classifers because it takes some time before a trend is established as such and distinguidhed from noise. Hm, that can be mitigated by setting the threshold high enough (e.g. 5% while 1% should be already profitable)- the advantage that labelling remains straightforward.
+  - An option is to label everything that has a future gain or loss above a threshold. This will result in relatively poor classifers because it takes some time before a trend is established as such and distinguished from noise. Hm, that can be mitigated by setting the threshold high enough (e.g. 5% while 1% should be already profitable)- the advantage that labelling remains straightforward.
   - To address noise, signals labels may only be sent after a number of samples in the same direction and then still exceeding a gain/loss threshold. That can be achieved by using a regression window of x minutes.
 - Follow trends: when is a trend broken? One may consider trend stability a criteria (less volatility but reliability in direction) versus a trend with high volatilty to catch extrema for trading and assume that the trend repairs a missed extreme. Trend reversal detection is crucial.
   - a trend is considered broken when the regression gradient changes sign but this should be detected earlier.
@@ -15,20 +15,19 @@ General thoughts:
 ## Target labels
 
 Target labels are crucial as learning and evaluation reference of success (= performance).
-The ideal target is the most performant, i.e. one that signals buy at a minimum with a gain more than 2*fee. However, that can not be reached with only a historical view. That means as a consequence that a target shall reflect, which has a chance to be recognized with only historical data at hand.
+With a perfect classifier at hand a maximum performant target signals buy at a minimum with a gain more than 2*fee, leveraging the high frequent volatility. However, classifiers are not perfect, which means that an appraoch is needed that ignores local extremes with too lees gain in between.
 
 The following heuristics may help here:
 
 - select a regression window and calculate the linear regression line
   - a local minimum as **buy** signal is detected if the regression gradient becomes >= 0 after a downslope
   - a local maximum as **sell** signal is detected if the regression gradient becomes <>= 0 after an upslope
-  - use only regression windows that show a minimum difference of X% (e.g. 1%) in recent N slopes
-  - use only regression windows with a supporting trend regression line of X*(regression window), e.g. X = 6
-  - ignore local minima above and local maxima below the supporting tend regression line, which should prevent local disturbances (to be investigated because it bears the risk of missing extremes)
-- use a set of different regression windows for above apprach
+  - once a local regression maximum is reached search back for the price maximum between regression minimum and regression maximum
+  - vice versa to search for the price maximum between a regression maximum and a regression minimum
+  - perform this approach with various regression windows
+  - use only those results that satisfy a certain gain/loss threshold
+    - to be considered as risk for later refinements: short whale spikes may fool the approach
   - select the shortest regression window that meets above criteria because a short regression window has a higher chance of higher frequent gains
-  - fall back to a shorter (or the shortest?) regression window in case of extraordinary deviation from the regression (e.g. 3 \* $\sigma$) to cover outbreaks
-- open challenge: when to switch between regression windows?
 
 ## Straight forward
 

@@ -61,6 +61,46 @@ function distancepeaktest()
     println(df)
 end
 
+function nextpeakindices_test(prices, target)
+    df = DataFrame()
+    df.prices = prices
+    df[:, :targetdist] = [(target[ix] == 0 ? 0.0 : prices[target[ix]] - prices[ix]) for ix in 1:length(prices)]
+    df.targetgain = [(target[ix] == 0) ? 0.0 : Features.gain(prices, ix, target[ix]) for ix in 1:length(prices)]
+    df.target = target
+    df[:, :dist], df[:, :distix] = Features.nextpeakindices(prices, 0.05, -0.05)
+    df[:, :distgain] = [(df[ix, :distix] == 0 ? 0.0 : Features.gain(prices, ix, df[ix, :distix])) for ix in 1:length(prices)]
+    res = sum(df.distgain .- df.targetgain)
+    # println(df)
+    # println(res)
+    return res == 0.0
+end
+
+function nextpeakdistance_test()
+    res = true
+
+    # start and end without significant changes but have some in between
+    prices = [100, 97, 99, 98, 103, 100, 104, 98, 99, 100]
+    target = [  0,  7,  7,  7,   7,   7,   8,  0,  0,   0]
+    res = nextpeakindices_test(prices, target) && res
+
+    # start and end with significant changes
+    prices = [103, 97, 99, 98, 103, 100, 104, 98, 99, 104]
+    target = [  2,  7,  7,  7,   7,   7,   8, 10, 10,   0]
+    res = nextpeakindices_test(prices, target) && res
+
+    # only significant changes at start
+    prices = [103, 97, 99, 96, 103, 100, 104, 98, 99, 104]
+    target = [  4,  4,  4,  7,   7,   7,   8, 10, 10,   0]
+    res = nextpeakindices_test(prices, target) && res
+
+    # no significant changes at all
+    prices = [100, 97, 99, 98, 100, 99, 101, 98, 99, 100]
+    target = [  0,  0,  0,  0,   0,   0,   0,  0,  0,   0]
+    res = nextpeakindices_test(prices, target) && res
+    return res
+end
+
+
 EnvConfig.init(test)
 # config_test()
 # display(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]))
@@ -89,7 +129,7 @@ a,b = Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
 @test lastextremes_test()
 @test lastgainloss_test()
 @test isapprox(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]), [0.0  0.1  0.25  -0.4  -0.55  0.5  -0.1], atol=10^-5)
-
+@test nextpeakdistance_test()
 end
 
 # distancepeaktest()

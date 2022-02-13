@@ -279,13 +279,53 @@ function targets4(prices, regressionminutes)  # ! missing unit test
     return result
 end
 
-function continuousdistancelabels(prices, regressions)
-    buythreshold = 0.05  # at least 5% distance to buy
-    sellthreshold = 0.0  # sell on negative distance
+struct LabelThresholds
+    buy
+    sellbought
+    sell
+    buysold
+end
+
+defaultlabelthresholds = LabelThresholds(0.05, 0.005, -0.5, -0.05)
+
+"""
+Because the trade signals are not independent classes but an ordered set of actions, this function returns the abels that correspond to specific thresholds:
+
+- The folllowing invariant is assumed: `buythreshold > sellboughtthreshold >= 0 >= buysoldthreshold > sellthreshold`
+- a gain shall exceed `buythreshold` for a buy (long buy) signal
+- bought assets shall be closed if the remaining gain falls below `sellboughtthreshold`
+- a loss shall exceed `sellthreshold` for a sell (short buy) signal
+- sold (short buy) assets shall be closed if the remaining loss falls below `buysoldthreshold`
+- all thresholds are relative gain values: if backwardrelative then the relative gain is calculated with the target price otherwise with the current price
+
+"""
+function getlabels(relativedist, labelthresholds)
+    lt = labelthresholds
+    rd = relativedist
+    labels = [(rd > lt.buy ? "buy" : (rd < lt.sell ? "sell" : ((lt.buysold < rd < lt.sellbought) ? "close" :  "hold"))) for rd in relativedist]
+    return labels
+end
+
+function relativedistances(prices, distances, priceix, backwardrelative=true)
+    if backwardrelative
+        relativedist = [(priceix[ix] == 0 ? 0.0 : distances[ix] / prices[priceix[ix]]) for ix in 1:size(prices, 1)]
+    else
+        relativedist = distances ./ prices
+    end
+end
+
+function continuousdistancelabels(prices, labelthresholds)
+    distances, priceix = Features.nextpeakindices(prices, labelthresholds.buy, labelthresholds.sell)
+    relativedist = relativedistances(prices, distances, priceix, true)
+    labels = getlabels(relativedist, labelthresholds)
+    return labels, relativedist, distances, priceix
+end
+
+function continuousdistancelabels(prices, regressions, labelthresholds)
     distances, regressionix, priceix = Features.distancesregressionpeak(prices, regressions)
-    pctdist = distances ./ prices
-    labels = [d > buythreshold ? "buy" : d < sellthreshold ? "sell" : "hold" for d in pctdist]
-    return labels, pctdist, distances, regressionix, priceix
+    relativedist = relativedistances(prices, distances, priceix, true)
+    labels = getlabels(relativedist, labelthresholds)
+    return labels, relativedist, distances, regressionix, priceix
 end
 
 end  # module

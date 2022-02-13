@@ -59,6 +59,7 @@ function extremeregressionindex(regressions, startindex; forward)
     return extremeindex
 end
 
+newifbetterequal(old, new, maxsearch) = maxsearch ? new >= old : new <= old
 newifbetter(old, new, maxsearch) = maxsearch ? new > old : new < old
 
 """
@@ -75,7 +76,7 @@ function extremepriceindex(prices, startindex, endindex, maxsearch)
     @assert indexinrange(endindex, plen)  "index: $endindex  len: $plen"
     forward = startindex < endindex
     while forward ? startindex <= endindex : startindex >= endindex
-        extremeindex = newifbetter(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
+        extremeindex = newifbetterequal(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
         startindex = nextindex(forward, startindex)
     end
     return extremeindex
@@ -96,7 +97,7 @@ function nextlocalextremepriceindex(prices, startindex, endindex, maxsearch)
     forward = startindex < endindex
     startindex = nextindex(forward, startindex)
     while forward ? startindex <= endindex : startindex >= endindex
-        if newifbetter(prices[extremeindex], prices[startindex], maxsearch)
+        if newifbetterequal(prices[extremeindex], prices[startindex], maxsearch)
             extremeindex =  startindex
             startindex = nextindex(forward, startindex)
         else  # extreme passed
@@ -106,7 +107,7 @@ function nextlocalextremepriceindex(prices, startindex, endindex, maxsearch)
     return extremeindex
 end
 
-gain(prices, baseix, testix) = (prices[testix] - prices[baseix]) / prices[baseix] * 100
+gain(prices, baseix, testix) = (baseix > testix ? prices[baseix] - prices[testix] : prices[testix] - prices[baseix]) / abs(prices[baseix])
 
 function fillwithextremeix(distancesix, startix, endix)
     while startix < endix
@@ -121,7 +122,7 @@ Returns the index vector to the next significant extreme.
 
 - A maximum is considered *significant* if the gain between the last significant minimum and the next maximum >= `mingainpct`.
 - A minimum is considered *significant* if the loss between the last significant maximum and the next minimum <= `minlosspct`.
-- mingainpct and minlosspct are percentage values related to the last significant extreme (extreme-last_extreme)/last_extreme*100
+- mingainpct and minlosspct are relative values related to the last significant extreme (extreme-last_extreme)/last_extreme
 - If there is no next significant maximum or minimum then the distanceix == 0
 
 maxix[2], minix[2] are updated with the latest improvement. They are reset after the counterslope is closed as significant
@@ -166,10 +167,6 @@ function nextpeakindices(prices, mingainpct, minlosspct)
                 pix = maxix[3] = maxix[2]  # no maximum improvement anymore possible
                 maxix[2] = minix[2]  # reset to follow new maxix[1] improvements
             end
-        else  # maxix[2] == minix[2]
-            if maxix[2] == minix[2]
-                @warn "unexpected maxix[2] == minix[2]" maxix[2] minix[2] plen pix
-            end
         end
         if (maxix[1] == plen) || (minix[1] == plen)  # finish
             if (maxix[2] > minix[3]) && (gain(prices, minix[3], maxix[2]) >= mingainpct)
@@ -181,19 +178,8 @@ function nextpeakindices(prices, mingainpct, minlosspct)
             break
         end
     end
-    return distancesix
-end
-
-function nextpeakindices_test()
-    prices = [100, 97, 99, 98, 103, 100, 104, 98, 99, 100]
-    distances = nextpeakindices(prices, 5, -5)
-    expect = [  0,  7,  7,  7,   7,   7,   8,  0,  0,   0]
-    df = DataFrame()
-    df.prices = prices
-    df.expectgain = [ (expect[ix] == 0) ? 0.0 : gain(prices, ix, expect[ix]) for ix in 1:length(prices)]
-    df.expect = expect
-    df.distix = distances
-    println(df)
+    distances = [ (distancesix[ix] == 0 ? 0.0 : prices[distancesix[ix]] - prices[ix] ) for ix in 1:length(prices)]
+    return distances, distancesix
 end
 
 """
@@ -215,7 +201,7 @@ function distancesregressionpeak(prices, regressions)
     plen = length(prices)
     pix = rix = 0
     for cix in 1:plen
-        if pix < cix
+        if pix <= cix
             maxsearch = regressions[cix] > 0
             if rix < cix
                 rix = extremeregressionindex(regressions, cix; forward=true)
@@ -527,7 +513,4 @@ function features001set(ohlcv::OhlcvData)
     return Feature001Set(fdf, featuremask, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
 end
 
-
 end  # module
-
-Features.nextpeakindices_test()
