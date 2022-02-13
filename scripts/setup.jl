@@ -19,7 +19,7 @@ add([
     "TimeZones", "CategoricalArrays",  # Ohlcv
     "Logging",  # CryptoExchange, Ohlcv, Assets, Features
     "RollingFunctions", "Statistics",  # Features
-    "MLJ", "PartialLeastSquaresRegressor", "MLJFlux", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",  # MLJtest -
+    "MLJ", "PartialLeastSquaresRegressor", "MLJFlux", "MLJDecisionTreeInterface", "MLJScikitLearnInterface", "Combinatorics", # MLJtest -
     "IJulia", "Plots", "WebIO", "Dash", "PlotlyJS", "Colors"  # Regressionsim, CryptoCockpit, Notebooks
     ])
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")

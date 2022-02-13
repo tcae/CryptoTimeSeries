@@ -59,10 +59,10 @@ function extremeregressionindex(regressions, startindex; forward)
     return extremeindex
 end
 
-newisbetter(old, new, maxsearch) = maxsearch ? new > old : new < old
+newifbetter(old, new, maxsearch) = maxsearch ? new > old : new < old
 
 """
-- returns index of nearest price extreme between `startindex` and `endindex`
+- returns index of nearest overall price extreme between `startindex` and `endindex`
 - searches backwards if `startindex` > `endindex` else searches forward
 - search for maximum if `maxsearch` else search for minimum
 
@@ -75,10 +75,125 @@ function extremepriceindex(prices, startindex, endindex, maxsearch)
     @assert indexinrange(endindex, plen)  "index: $endindex  len: $plen"
     forward = startindex < endindex
     while forward ? startindex <= endindex : startindex >= endindex
-        extremeindex = newisbetter(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
+        extremeindex = newifbetter(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
         startindex = nextindex(forward, startindex)
     end
     return extremeindex
+end
+
+"""
+- returns index of nearest local price extreme between `startindex` and `endindex`
+- searches backwards if `startindex` > `endindex` else searches forward
+- search for maximum if `maxsearch` else search for minimum
+
+"""
+function nextlocalextremepriceindex(prices, startindex, endindex, maxsearch)
+    @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
+    plen = length(prices)
+    extremeindex = startindex
+    @assert indexinrange(startindex, plen)  "index: $startindex  len: $plen"
+    @assert indexinrange(endindex, plen)  "index: $endindex  len: $plen"
+    forward = startindex < endindex
+    startindex = nextindex(forward, startindex)
+    while forward ? startindex <= endindex : startindex >= endindex
+        if newifbetter(prices[extremeindex], prices[startindex], maxsearch)
+            extremeindex =  startindex
+            startindex = nextindex(forward, startindex)
+        else  # extreme passed
+            return extremeindex
+        end
+    end
+    return extremeindex
+end
+
+gain(prices, baseix, testix) = (prices[testix] - prices[baseix]) / prices[baseix] * 100
+
+function fillwithextremeix(distancesix, startix, endix)
+    while startix < endix
+        distancesix[startix] = endix
+        startix += 1
+    end
+    return endix
+end
+
+"""
+Returns the index vector to the next significant extreme.
+
+- A maximum is considered *significant* if the gain between the last significant minimum and the next maximum >= `mingainpct`.
+- A minimum is considered *significant* if the loss between the last significant maximum and the next minimum <= `minlosspct`.
+- mingainpct and minlosspct are percentage values related to the last significant extreme (extreme-last_extreme)/last_extreme*100
+- If there is no next significant maximum or minimum then the distanceix == 0
+
+maxix[2], minix[2] are updated with the latest improvement. They are reset after the counterslope is closed as significant
+"""
+function nextpeakindices(prices, mingainpct, minlosspct)
+    distancesix = zeros(Int32, length(prices))  # 0 indicates as default no significant extremum
+    minix = [1, 1, 1]
+    maxix = [1, 1, 1]
+    pix = 1
+    plen = length(prices)
+    maxix[1] = nextlocalextremepriceindex(prices, 1, plen, true)
+    maxix[2] = prices[maxix[2]] < prices[maxix[1]] ? maxix[1] : maxix[2]
+    minix[1] = nextlocalextremepriceindex(prices, 1, plen, false)
+    minix[2] = prices[minix[2]] > prices[minix[1]] ? minix[1] : minix[2]
+    while pix <= plen
+        if minix[1] > maxix[1]  # last time minimum fund -> now find maximum
+            maxix[1] = nextlocalextremepriceindex(prices, minix[1], plen, true)
+            maxix[2] = prices[maxix[2]] < prices[maxix[1]] ? maxix[1] : maxix[2]
+        elseif minix[1] < maxix[1]  # last time maximum fund -> now find minimum
+            minix[1] = nextlocalextremepriceindex(prices, maxix[1], plen, false)
+            minix[2] = prices[minix[2]] > prices[minix[1]] ? minix[1] : minix[2]
+        else  # no further extreme should be end of prices array
+            if !(minix[1] == maxix[1] == plen)
+                @warn "unexpected !(minix[1] == maxix[1] == plen)" minix[1] maxix[1] plen pix
+            end
+        end
+        if maxix[2] > minix[2]  # gain
+            if gain(prices, minix[2], maxix[2]) >= mingainpct
+                # as soon as gain exceeds threshold, no minimum improvement anymore possible
+                if gain(prices, maxix[3], minix[2]) <= minlosspct
+                    pix = fillwithextremeix(distancesix, maxix[3], minix[2])  # write loss indices
+                end
+                pix = minix[3] = minix[2]  # no minimum improvement anymore possible
+                minix[2] = maxix[2]  # reset to follow new minix[1] improvements
+            end
+        elseif maxix[2] < minix[2]  # loss
+            if gain(prices, maxix[2], minix[2]) <= minlosspct
+                # as soon as loss exceeds threshold, no maximum improvement anymore possible
+                if gain(prices, minix[3], maxix[2]) >= mingainpct
+                    pix = fillwithextremeix(distancesix, minix[3], maxix[2])  # write gain indices
+                end
+                pix = maxix[3] = maxix[2]  # no maximum improvement anymore possible
+                maxix[2] = minix[2]  # reset to follow new maxix[1] improvements
+            end
+        else  # maxix[2] == minix[2]
+            if maxix[2] == minix[2]
+                @warn "unexpected maxix[2] == minix[2]" maxix[2] minix[2] plen pix
+            end
+        end
+        if (maxix[1] == plen) || (minix[1] == plen)  # finish
+            if (maxix[2] > minix[3]) && (gain(prices, minix[3], maxix[2]) >= mingainpct)
+                pix = fillwithextremeix(distancesix, minix[3], maxix[2])  # write loss indices
+            end
+            if (maxix[3] < minix[2]) && (gain(prices, maxix[3], minix[2]) <= minlosspct)
+                pix = fillwithextremeix(distancesix, maxix[3], minix[2])  # write gain indices
+            end
+            break
+        end
+    end
+    return distancesix
+end
+
+function nextpeakindices_test()
+    prices = [100, 97, 99, 98, 103, 100, 104, 98, 99, 100]
+    distances = nextpeakindices(prices, 5, -5)
+    expect = [  0,  7,  7,  7,   7,   7,   8,  0,  0,   0]
+    df = DataFrame()
+    df.prices = prices
+    df.expectgain = [ (expect[ix] == 0) ? 0.0 : gain(prices, ix, expect[ix]) for ix in 1:length(prices)]
+    df.expect = expect
+    df.distix = distances
+    println(df)
 end
 
 """
@@ -232,7 +347,7 @@ function rollingregressionstd(y, regr_y, grad, window)
     return std, mean, normy
 end
 
-""" don't use - version for debug reasons """
+""" don't use - this is a version for debug reasons """
 function rollingregressionstdxt(y, regr_y, grad, window)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
     normy = zeros(size(y, 1), window)
@@ -414,3 +529,5 @@ end
 
 
 end  # module
+
+Features.nextpeakindices_test()
