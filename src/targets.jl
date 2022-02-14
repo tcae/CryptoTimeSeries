@@ -15,6 +15,8 @@ module Targets
 
 using ..EnvConfig, ..Ohlcv, ..Features
 
+labellevels = ["short", "close", "hold", "long"]
+
 strongsell=-2; sell=-1; hold=0; buy=1; strongbuy=2
 gainthreshold = 0.01  # 1% gain threshold
 lossthreshold = -0.005  # loss threshold to signal strong sell
@@ -302,7 +304,7 @@ Because the trade signals are not independent classes but an ordered set of acti
 function getlabels(relativedist, labelthresholds)
     lt = labelthresholds
     rd = relativedist
-    labels = [(rd > lt.buy ? "buy" : (rd < lt.sell ? "sell" : ((lt.buysold < rd < lt.sellbought) ? "close" :  "hold"))) for rd in relativedist]
+    labels = [(rd > lt.buy ? "long" : (rd < lt.sell ? "short" : ((lt.buysold < rd < lt.sellbought) ? "close" :  "hold"))) for rd in relativedist]
     return labels
 end
 
