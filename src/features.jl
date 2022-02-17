@@ -13,6 +13,7 @@ module Features
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, runmedian, rolling
 import DataFrames: DataFrame, Statistics
+using Combinatorics
 using Logging
 using ..EnvConfig, ..Ohlcv
 
@@ -196,8 +197,8 @@ function distancesregressionpeak(prices, regressions)
     @assert size(prices, 1) == size(regressions, 1) "size(prices) $(size(prices, 1)) != size(regressions) $(size(regressions, 1))"
     @assert length(size(prices)) == 1 "length(size(prices)) $(length(size(prices))) != 1"
     distances = zeros(Float32, length(prices))
-    regressionix = zeros(Int16, length(prices))
-    priceix = zeros(Int16, length(prices))
+    regressionix = zeros(Int32, length(prices))
+    priceix = zeros(Int32, length(prices))
     plen = length(prices)
     pix = rix = 0
     for cix in 1:plen
@@ -428,6 +429,60 @@ function lastgainloss(prices, regressions)::DataFrame
 end
 
 """
+Reduces the column of the fullfeatures dataframe to the machine learning relevant columns that are part of mlfeaturenames.
+"""
+function mlfeatures(fullfeatures, mlfeaturenames)
+    features = DataFrame()
+    for feature in mlfeaturenames
+        features[:, feature] = fullfeatures[!, feature]
+    end
+    return features
+end
+
+"""
+Returns a dataframe of linear and combined features used for machine learning (ml)
+
+- features are the linear features for machine learning
+- polynomialconnect is the polynomial degree of feature combination via multiplication (usually 1, 2 or 3)
+
+polynomialconnect example 3rd degree 4 features
+a b c d
+ab ac ad bc bd cd
+abc abd acd bcd
+
+"""
+function polynomialfeatures!(features, polynomialconnect)
+    featurenames = names(features)  # copy or ref to names? - copy is required
+    for poly in 2:polynomialconnect
+        for pcf in Combinatorics.combinations(featurenames, poly)
+            combiname = ""
+            combifeature = fill(1.0f0, (size(features, 1)))
+            for feature in pcf
+                combiname = combiname == "" ? feature : combiname * "*" * feature
+                combifeature .*= features[:, feature]
+            end
+            features[:, combiname] = combifeature
+        end
+    end
+    return features
+end
+
+function mlfeatures_test()
+    fnames = ["a", "b", "c", "x", "d"]
+    fnamesselect = ["a", "b", "c", "d"]
+    df = DataFrame()
+    for f in fnames
+        df[:, f] = [1.0f0, 2.0f0]
+    end
+    # println("input: $df")
+    df = mlfeatures(df, fnamesselect)
+    df = polynomialfeatures!(df, 3)
+    # println("mlfeatures output: $df")
+    return all(v->(v==2.0), df[2, 1:4]) && all(v->(v==4.0), df[2, 5:10]) && all(v->(v==8.0), df[2, 11:14])
+end
+
+
+"""
 1 rolling feature providing the regression acceleration history, i.e. >1 (<-1) if the regression gradient is montonically increasing (decreasing)
 """
 function regressionaccelerationhistory(regressions)
@@ -463,7 +518,7 @@ Properties at various rolling windows calculated on df data with ohlcv + pilot c
     - difference of last pivot price to regression line
 
 """
-function features001set(pivot)
+function features001set(pivot::Vector{Float32})
     featuremask::Vector{String} = []
     fdf = DataFrame()
     for wk in sortedregressionwindowkeys001  # wk = window key
@@ -508,7 +563,7 @@ Properties at various rolling windows calculated on 1minute OHLCV data:
 """
 function features001set(ohlcv::OhlcvData)
     indf = ohlcv.df
-    pivot = (:pivot in names(indf)) ? indf[!, :pivot] : Ohlcv.addpivot!(indf)[!, :pivot]
+    pivot = Ohlcv.pivot!(indf)
     fdf, featuremask = features001set(indf)
     return Feature001Set(fdf, featuremask, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
 end

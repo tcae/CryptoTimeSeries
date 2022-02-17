@@ -91,7 +91,7 @@ end
 """
 **`tradeloop`** has to
 + get new exchange data (preferably non blocking)
-+ evaluate new exchange data and derive trade signals using all cores available
++ evaluate new exchange data and derive trade signals
 + place new orders (preferably non blocking)
 + follow up on open orders (preferably non blocking)
 

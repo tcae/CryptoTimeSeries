@@ -130,6 +130,7 @@ a,b = Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4)
 @test lastgainloss_test()
 @test isapprox(Features.regressionaccelerationhistory([0, 0.1, 0.25, -0.15, -0.3, 0.2, 0.1]), [0.0  0.1  0.25  -0.4  -0.55  0.5  -0.1], atol=10^-5)
 @test nextpeakdistance_test()
+@test Features.mlfeatures_test()
 end
 
 # distancepeaktest()

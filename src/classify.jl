@@ -1,12 +1,16 @@
 include("../src/targets.jl")
 include("../src/testohlcv.jl")
 
+
+"""
+Train and evaluate the trading signal classifiers
+"""
 module Classify
 
 using DataFrames, Logging  # , MLJ
-using MLJ, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
+using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using PlotlyJS, WebIO, Dates, DataFrames
-using ..Features, ..Targets, ..TestOhlcv
+using ..Ohlcv, ..Features, ..Targets, ..TestOhlcv
 
 
 """
@@ -63,59 +67,23 @@ function get_probs(y::AbstractArray)
     return counts
 end
 
-"""
-Returns a dataframe of features used for machien learning (ml)
-
-- fullfeatures is a superset of features used for machine learning
-- mlfeaturenames is a string array with column names of fullfeatures that shall be used for mlfeaturenames
-- polynomialconnect is teh polynomial degree of feature combination via multiplication (usually 1 or 2)
-
-polynomialconnect example 3rd degree 4 features
-a b c d
-ab ac ad bc bd cd
-abc abd acd bcd
-
-"""
-function mlfeatures(fullfeatures, mlfeaturenames, polynomialconnect)
-    features = DataFrames.DataFrame()
-    for feature in mlfeaturenames
-        features[:, feature] = fullfeatures[!, feature]
-    end
-    featurenames = names(features)  # copy or ref to names? - copy is required
-    for poly in 2:polynomialconnect
-        for pcf in Combinatorics.combinations(featurenames, poly)
-            combiname = ""
-            combifeature = fill(1.0f0, (size(features, 1)))
-            for feature in pcf
-                combiname = combiname == "" ? feature : combiname * "*" * feature
-                combifeature .*= features[:, feature]
-            end
-            features[:, combiname] = combifeature
-        end
-    end
-    return features
-end
-
-function mlfeatures_test()
-    fnames = ["a", "b", "c", "x", "d"]
-    fnamesselect = ["a", "b", "c", "d"]
-    df = DataFrames.DataFrame()
-    for f in fnames
-        df[:, f] = [1.0f0, 2.0f0]
-    end
-    # println("input: $df")
-    df = mlfeatures(df, fnamesselect, 3)
-    # println("mlfeatures output: $df")
-    return all(v->(v==2.0), df[2, 1:4]) && all(v->(v==4.0), df[2, 5:10]) && all(v->(v==8.0), df[2, 11:14])
-end
-
 function prepare(labelthresholds)
-    x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
-    _, grad = Features.rollingregression(y, 50)
-    fdf, featuremask = Features.features001set(y)
-    fdf = mlfeatures(fdf, featuremask, 2)
-    # fdf = mlfeatures(fdf, featuremask, 3)
+    # x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
 
+    ohlcv = Ohlcv.defaultohlcv("btc")
+    Ohlcv.setinterval!(ohlcv, "1m")
+    Ohlcv.read!(ohlcv)
+    y = Ohlcv.pivot!(ohlcv)
+    println("pivot: $(typeof(y)) $(length(y))")
+
+    fdf, featuremask = Features.features001set(ohlcv.df)
+    fdf = Features.mlfeatures(fdf, featuremask)
+    fdf = Features.polynomialfeatures!(fdf, 2)
+    fdf = Features.polynomialfeatures!(fdf, 3)
+    # fdf = mlfeatures(fdf, featuremask, 2)
+    fdf = mlfeatures(fdf, featuremask, 3)
+
+    _, grad = Features.rollingregression(y, 12*60)
     labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
     # labels, relativedist, distances, priceix = Targets.continuousdistancelabels(y)
     # df = DataFrames.DataFrame()
@@ -125,7 +93,6 @@ function prepare(labelthresholds)
     # df.dist = relativedist
     # df.pp = priceix
     # df.rp = regressionix
-    mlfeatures(fdf, featuremask, 1)
     println("size(features): $(size(fdf)) size(relativedist): $(size(relativedist))")
     # println(features[1:3,:])
     # println(relativedist[1:3])
@@ -133,7 +100,7 @@ function prepare(labelthresholds)
     println(get_probs(labels))
     levels!(labels, Targets.labellevels)
     # println(levels(labels))
-    return labels, relativedist, fdf, x, y
+    return labels, relativedist, fdf, y
 end
 
 function plsdetail(relativedist, features, train, test)
@@ -147,10 +114,10 @@ function plsdetail(relativedist, features, train, test)
 
     relativedistsrc = source(relativedist)
     stdlabelsmachine = machine(Standardizer(), relativedistsrc)
-    stdlabelsnode = MLJ.transform(stdlabelsmachine, relativedistsrc)
+    stdlabelsnode = MLJBase.transform(stdlabelsmachine, relativedistsrc)
     # fit!(stdlabelsnode, rows=train)
 
-    plsnode = predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
+    plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
     yhat = inverse_transform(stdlabelsmachine, plsnode)
     fit!(yhat, rows=train)
     return yhat(rows=test), stdftest
@@ -180,8 +147,9 @@ end
 
 function regression1()
     lt = Targets.defaultlabelthresholds
-    labels, relativedist, features, x, y = prepare(lt)
-    train, test = partition(eachindex(relativedist), 0.7, stratify=labels) # 70:30 split
+    labels, relativedist, features, y = prepare(lt)
+    train, test = partition(eachindex(relativedist), 0.8) # 70:30 split
+    # train, test = partition(eachindex(relativedist), 0.7, stratify=labels) # 70:30 split
     println("training: $(size(train,1))  test: $(size(test,1))")
 
     # models(matching(features, relativedist))
@@ -196,7 +164,7 @@ function regression1()
     predictlabels = CategoricalArray(predictlabels, ordered=true)
     levels!(predictlabels, Targets.labellevels)
 
-    confusion_matrix(predictlabels, labels[test])
+    # confusion_matrix(predictlabels, labels[test])
     printresult(relativedist[test], yhat1)
     # yhat2 = plssimple(relativedist, features, train, test)
     # printresult(relativedist[test], yhat2)
@@ -204,13 +172,15 @@ function regression1()
     println("trade performance $(round(tradeperformance(y[test], predictlabels); digits=1))%")
     # tay = ["$((labels[test])[ix])" for ix in 1:size(y, 1)]
     # tayhat = ["$(predictlabels[ix])" for ix in 1:size(y, 1)]
-    traces = [
-        scatter(y=y[test], x=x[test], mode="lines", name="input"),
-        # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
-        scatter(y=relativedist[test], x=x[test], text=labels[test], mode="lines", name="target"),
-        scatter(y=yhat1, x=x[test], text=predictlabels, mode="lines", name="predict")
-    ]
-    plot(traces)
+    # traces = [
+    #     scatter(y=y[test], x=x[test], mode="lines", name="input"),
+    #     # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
+    #     scatter(y=relativedist[test], x=x[test], text=labels[test], mode="lines", name="target"),
+    #     scatter(y=yhat1, x=x[test], text=predictlabels, mode="lines", name="predict")
+    # ]
+    # plot(traces)
 end
+
+regression1()
 
 end  # module

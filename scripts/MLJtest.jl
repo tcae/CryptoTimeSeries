@@ -3,11 +3,13 @@ cd("$(@__DIR__)/..")
 using Pkg
 Pkg.activate(pwd())
 cd(@__DIR__)
-include("../src/classify.jl")
+include("../src/targets.jl")
+include("../src/testohlcv.jl")
 
 using MLJ, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
-using ..Targets, ..TestOhlcv, ..Classify
-using RDatasets
+using MLJBase, RDatasets, MLJTuning, MLJModels
+using ..Targets, ..TestOhlcv
+# using RDatasets
 using PlotlyJS, WebIO, Dates, DataFrames
 
 
@@ -66,6 +68,41 @@ function regression2()
 
 end
 
+# labels = CategoricalArray(["a", "a", "a", "a", "a", "a", "b", "b", "b", "b"], ordered=true)
+# MLJBase.train_test_pairs(StratifiedCV(nfolds=5), 1:10, labels)
+# MLJBase.train_test_pairs(TimeSeriesCV(nfolds=8), 1:10)
+# MLJBase.train_test_pairs(CV(nfolds=5), 1:10)
+
 # researchmodels()
-Classify.regression1()
+# Classify.regression1()
 # mlfeatures_test()
+
+@load KPLSRegressor pkg=PartialLeastSquaresRegressor
+
+# loading data and selecting some features
+data = RDatasets.dataset("datasets", "longley")[:, 2:5]
+
+# unpacking the target
+y, X = unpack(data, ==(:GNP), colname -> true)
+
+# loading the model
+pls_model = PartialLeastSquaresRegressor.KPLSRegressor()
+
+# defining hyperparams for tunning
+r1 = range(pls_model, :width, lower=0.001, upper=100.0, scale=:log)
+
+# attaching tune
+self_tuning_pls_model = TunedModel(model =          pls_model,
+                                   resampling = CV(nfolds = 10),
+                                   tuning = Grid(resolution = 100),
+                                   range = [r1],
+                                   measure = mae)
+
+# putting into the machine
+self_tuning_pls = machine(self_tuning_pls_model, X, y)
+
+# fitting with tunning
+fit!(self_tuning_pls, verbosity=0)
+
+# getting the report
+report(self_tuning_pls)

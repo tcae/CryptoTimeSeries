@@ -202,18 +202,41 @@ function pivot(df::DataFrame)
 end
 
 function addpivot!(df::DataFrame)
-    p = pivot(df)
-    if size(p, 1) == size(df,1)
-        df[:, :pivot] = p
+    if "pivot" in names(df)
+        return df[:, :pivot]
     else
-        @warn "$(@__MODULE__) unexpected difference of length(pivot)=$(size(p, 1)) != length(df)=$(size(df, 1))"
+        p = pivot(df)
+        if size(p, 1) == size(df,1)
+            df[:, :pivot] = p
+        else
+            @warn "$(@__MODULE__) unexpected difference of length(pivot)=$(size(p, 1)) != length(df)=$(size(df, 1))"
+        end
+        return df
     end
-    return df
 end
+
+pivot!(df::DataFrame) = addpivot!(df)[:, :pivot]
 
 function addpivot!(ohlcv::OhlcvData)
     addpivot!(ohlcv.df)
     return ohlcv
+end
+
+pivot!(ohlcv::OhlcvData) = addpivot!(ohlcv.df)[:, :pivot]
+
+function pivot_test()
+    ohlcv = defaultohlcv("test")
+    df = dataframe(ohlcv)
+    push!(df, [Dates.now(), 1.0, 2.0, 3.0, 4.0, 5.0])
+    push!(df, [Dates.now(), 1.0, 2.0, 3.0, 4.0, 5.0])
+    push!(df, [Dates.now(), 1.0, 2.0, 3.0, 4.0, 5.0])
+    p1 = pivot(df)
+    println("$(typeof(p1)) $p1")
+    println("$(typeof(ohlcv)) $ohlcv")
+    p2 = pivot!(ohlcv)
+    println("$(typeof(p2)) $p2")
+    println("$(typeof(ohlcv)) $ohlcv")
+
 end
 
 """
@@ -324,5 +347,6 @@ function delete(ohlcv::OhlcvData)
     end
 end
 
+# pivot_test()
 
 end  # Ohlcv

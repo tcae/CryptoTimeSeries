@@ -288,10 +288,10 @@ struct LabelThresholds
     buysold
 end
 
-defaultlabelthresholds = LabelThresholds(0.05, 0.005, -0.5, -0.05)
+defaultlabelthresholds = LabelThresholds(0.03, 0.00, -0.05, -0.000)
 
 """
-Because the trade signals are not independent classes but an ordered set of actions, this function returns the abels that correspond to specific thresholds:
+Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
 
 - The folllowing invariant is assumed: `buythreshold > sellboughtthreshold >= 0 >= buysoldthreshold > sellthreshold`
 - a gain shall exceed `buythreshold` for a buy (long buy) signal
