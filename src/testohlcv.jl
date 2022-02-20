@@ -11,7 +11,7 @@ Returns cumulative sine function samples by adding sines on each other described
 The parameter samples defines the length of the returned functioni samples and level the zero level of the function.
 """
 function sinesamples(samples, level, sineparams)
-    y = zeros(samples) .+ level
+    y = zeros(Float32, samples) .+ level
     x = collect(1:samples) .- 1
     for (periodsamples, offset, amplitude) in sineparams
         println("sinedata: periodsamples=$periodsamples, offset=$offset, level=$level, amplitude=$amplitude")

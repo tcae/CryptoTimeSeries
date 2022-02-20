@@ -29,6 +29,27 @@ The following heuristics may help here:
     - to be considered as risk for later refinements: short whale spikes may fool the approach
   - select the shortest regression window that meets above criteria because a short regression window has a higher chance of higher frequent gains
 
+## Adaptive regression
+
+- calculate potential slope gain by *regression slope with price extremes anchors* as follows
+  - look for next minimum of regression slope
+  - then look back for global minimum between last regression maximum and the just identified regression minimum, which estbalishes the price minimum anchor
+    - ceveat: spikes may confuse the approach -> risk reduction: further limit the price minimum search range back to the last gradient inflection point
+  - look for next maximum of regression slope
+  - then look back for global maximum between last regression minimum and the just identified regression minimum, which estbalishes the price maximum anchor
+    - ceveat: spieks may confuse the approach -> risk reduction: further limit the price maximum search range back to the last gradient inflection point
+  - as target function connect the price extreme anchors with straights lines, which comes close to the regression line (but the regression line does does hit the extremes in most cases)
+    - use the distance to the extremes from the straight lines as target function (resulting in jumps at extremes)
+  - start the training window when the regression is still going down but regression is constantly improving, which also creates a smooth target function
+    - as long as price minimum anchor is not yet reached it should be classified *close*
+    - as soon as price minimum anchor is passed and price difference to price maximum anchor is below minimum threshold it should be classified *buy*
+    - as soon as price minimum anchor is passed and price difference to price maximum anchor is above minimum threshold it should be classified *hold*
+    - as soon as price maximum anchor is passed it should be classified *close*
+- select most performant *regression slope with price extremes anchors* via selection classification as follows
+  - calculate *regression slope with price extremes anchors* from a set of defined regressions
+  - for training: use the shortest regression that meets or exceeds the minimum amplitude threshold by leveraging knowledge about the actual amplitude of the current slope at the point under consideration
+  - for production: use the nearest regression result of the selection classifier predict, which can be a prediction between valid regressions
+
 ## Straight forward
 
 Common part:

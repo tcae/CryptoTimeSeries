@@ -10,7 +10,7 @@ module Classify
 using DataFrames, Logging  # , MLJ
 using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using PlotlyJS, WebIO, Dates, DataFrames
-using ..Ohlcv, ..Features, ..Targets, ..TestOhlcv
+using ..EnvConfig, ..Ohlcv, ..Features, ..Targets, ..TestOhlcv
 
 
 """
@@ -68,22 +68,23 @@ function get_probs(y::AbstractArray)
 end
 
 function prepare(labelthresholds)
-    # x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
-
-    ohlcv = Ohlcv.defaultohlcv("btc")
-    Ohlcv.setinterval!(ohlcv, "1m")
-    Ohlcv.read!(ohlcv)
-    y = Ohlcv.pivot!(ohlcv)
-    println("pivot: $(typeof(y)) $(length(y))")
-
-    fdf, featuremask = Features.features001set(ohlcv.df)
+    if EnvConfig.configmode == test
+        x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
+        fdf, featuremask = Features.features001set(y)
+        _, grad = Features.rollingregression(y, 50)
+    else
+        ohlcv = Ohlcv.defaultohlcv("btc")
+        Ohlcv.setinterval!(ohlcv, "1m")
+        Ohlcv.read!(ohlcv)
+        y = Ohlcv.pivot!(ohlcv)
+        println("pivot: $(typeof(y)) $(length(y))")
+        fdf, featuremask = Features.features001set(ohlcv.df)
+        _, grad = Features.rollingregression(y, 12*60)
+    end
     fdf = Features.mlfeatures(fdf, featuremask)
     fdf = Features.polynomialfeatures!(fdf, 2)
-    fdf = Features.polynomialfeatures!(fdf, 3)
-    # fdf = mlfeatures(fdf, featuremask, 2)
-    fdf = mlfeatures(fdf, featuremask, 3)
+    # fdf = Features.polynomialfeatures!(fdf, 3)
 
-    _, grad = Features.rollingregression(y, 12*60)
     labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
     # labels, relativedist, distances, priceix = Targets.continuousdistancelabels(y)
     # df = DataFrames.DataFrame()
@@ -103,7 +104,7 @@ function prepare(labelthresholds)
     return labels, relativedist, fdf, y
 end
 
-function plsdetail(relativedist, features, train, test)
+function pls1(relativedist, features, train, test)
     featuressrc = source(features)
     stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
     fit!(stdfeaturesnode, rows=train)
@@ -120,6 +121,52 @@ function plsdetail(relativedist, features, train, test)
     plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
     yhat = inverse_transform(stdlabelsmachine, plsnode)
     fit!(yhat, rows=train)
+    return yhat(rows=test), stdftest
+end
+
+function pls2(relativedist, features, train, test)
+    featuressrc = source(features)
+    stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
+    fit!(stdfeaturesnode, rows=train)
+    ftest = features[test, :]
+    # println(ftest[1:10, :])
+    stdftest = stdfeaturesnode(rows=test)
+    # println(stdftest[1:10, :])
+
+    relativedistsrc = source(relativedist)
+    stdlabelsmachine = machine(Standardizer(), relativedistsrc)
+    stdlabelsnode = MLJBase.transform(stdlabelsmachine, relativedistsrc)
+    fit!(stdlabelsnode, rows=train)
+
+    # plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
+    plsmodel = TunedModel(models=[PartialLeastSquaresRegressor.PLSRegressor(n_factors=20)], resampling=CV(nfolds=3), measure=rms)
+    plsnode =  predict(machine(plsmodel, stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
+    yhat = inverse_transform(stdlabelsmachine, plsnode)
+    fit!(yhat, rows=train)
+    return yhat(rows=test), stdftest
+end
+
+function pls3(relativedist, features, train, test)
+    featuressrc = source(features)
+    stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
+    fit!(stdfeaturesnode, rows=train)
+    ftest = features[test, :]
+    # println(ftest[1:10, :])
+    stdftest = stdfeaturesnode(rows=test)
+    # println(stdftest[1:10, :])
+
+    relativedistsrc = source(relativedist)
+    stdlabelsmachine = machine(Standardizer(), relativedistsrc)
+    stdlabelsnode = MLJBase.transform(stdlabelsmachine, relativedistsrc)
+    fit!(stdlabelsnode, rows=train)
+
+    # plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
+    plsmodel = PartialLeastSquaresRegressor.PLSRegressor(n_factors=20)
+    plsmachine =  machine(plsmodel, stdfeaturesnode, stdlabelsnode)
+    e = evaluate!(plsmachine, resampling=CV(nfolds=3), measure=[rms, mae], verbosity=1)
+    println(e)
+    plsnode =  predict(plsmachine, stdfeaturesnode)
+    yhat = inverse_transform(stdlabelsmachine, plsnode)
     return yhat(rows=test), stdftest
 end
 
@@ -159,7 +206,7 @@ function regression1()
     # building a pipeline with scaling on data
     println("hello")
     # println("typeof(regressor) $(typeof(regressor))")
-    yhat1, stdfeatures = plsdetail(relativedist, features, train, test)
+    yhat1, stdfeatures = pls1(relativedist, features, train, test)
     predictlabels = Targets.getlabels(yhat1, lt)
     predictlabels = CategoricalArray(predictlabels, ordered=true)
     levels!(predictlabels, Targets.labellevels)
@@ -181,6 +228,8 @@ function regression1()
     # plot(traces)
 end
 
+EnvConfig.init(production)
+# EnvConfig.init(test)
 regression1()
 
 end  # module

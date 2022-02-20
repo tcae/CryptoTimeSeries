@@ -32,24 +32,27 @@ up(slope) = slope > 0
 downorflat(slope) = slope <= 0
 
 """
-- returns index of next regression extreme
-    - in case of uphill **after** slope > 0
-    - in case of downhill **after** slope <= 0
+- returns index of next regression extreme and index of gradient inflection index
+    - regression extreme index: in case of uphill **after** slope > 0
+    - regression extreme index: in case of downhill **after** slope <= 0
 - **next** index means
     - in case `forward`: next higher index
     - in case of NOT `forward`: next lower index
-
+- it is expected that the relevant actual price maximum is between gradient inflection index and regression extreme
 """
 function extremeregressionindex(regressions, startindex; forward)
     reglen = length(regressions)
     extremeindex = 0
+    maxabsgradix = startindex
     @assert indexinrange(startindex, reglen) "index: $startindex  len: $reglen"
     if regressions[startindex] > 0
         while indexinrange(startindex, reglen) && up(regressions[startindex])
+            maxabsgradix = regressions[maxabsgradix] > regressions[startindex] ? maxabsgradix : startindex
             startindex = nextindex(forward, startindex)
         end
     else  # regressions[startindex] <= 0
         while indexinrange(startindex, reglen) && downorflat(regressions[startindex])
+            maxabsgradix = regressions[maxabsgradix] < regressions[startindex] ? maxabsgradix : startindex
             startindex = nextindex(forward, startindex)
         end
     end
@@ -57,7 +60,7 @@ function extremeregressionindex(regressions, startindex; forward)
         extremeindex = startindex
         # else end of array and no extreme detected, which is signalled by returned index 0
     end
-    return extremeindex
+    return extremeindex, maxabsgradix
 end
 
 newifbetterequal(old, new, maxsearch) = maxsearch ? new >= old : new <= old
@@ -183,8 +186,17 @@ function nextpeakindices(prices, mingainpct, minlosspct)
     return distances, distancesix
 end
 
+function smoothdistance(prices, lastpeakix, currentix, nextpeakix)
+    # if !(0 < lastpeakix <= currentix <= nextpeakix)
+    #     @warn "unexpected distancesregressionpeak index sequence" lastpeakix currentix nextpeakix
+    # end
+    grad = nextpeakix > lastpeakix ? (prices[nextpeakix]  - prices[lastpeakix]) / (nextpeakix  - lastpeakix) : 0.0
+    smoothprice = prices[lastpeakix] + grad * (currentix - lastpeakix)
+    return prices[nextpeakix] - smoothprice
+end
+
 """
-- returns distances of current price to next extreme
+- returns distances of a smoothed price (straight price line between extremes) to next extreme
 - distances will be negative if the next extreme is a minimum and positive if it is a maximum
 - the extreme is determined by slope sign change of the regression gradients given in `regressions`
 - from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
@@ -200,21 +212,24 @@ function distancesregressionpeak(prices, regressions)
     regressionix = zeros(Int32, length(prices))
     priceix = zeros(Int32, length(prices))
     plen = length(prices)
-    pix = rix = 0
+    gix = pix = rix = 0
+    lastpix = 1
     for cix in 1:plen
         if pix <= cix
             maxsearch = regressions[cix] > 0
             if rix < cix
-                rix = extremeregressionindex(regressions, cix; forward=true)
+                rix, gix = extremeregressionindex(regressions, cix; forward=true)
                 rix = rix == 0 ? plen : rix
             elseif rix < plen  # rix >= cix
                 maxsearch = regressions[rix] > 0
-                rix = extremeregressionindex(regressions, rix; forward=true)
+                rix, gix = extremeregressionindex(regressions, rix; forward=true)
                 rix = rix == 0 ? plen : rix
             end
-            pix = extremepriceindex(prices, rix, cix, maxsearch)
+            lastpix = pix > lastpix ? pix : lastpix
+            pix = extremepriceindex(prices, rix, gix, maxsearch)
         end
-        distances[cix] = prices[pix] - prices[cix]
+        distances[cix] = smoothdistance(prices, lastpix, cix, pix)  # use staright line between extremes to calculate distance
+        # distances[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable
         regressionix[cix] = rix
         priceix[cix] = pix
     end

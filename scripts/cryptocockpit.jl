@@ -330,17 +330,22 @@ function targetfigure(base, period, enddt)
     subdf = df[startdt .< df.opentime .<= enddt, :]
     normref = subdf[end, :pivot]
     if size(subdf,1) > 0
-        pivot = (:pivot in names(subdf)) ? subdf[!, :pivot] : Ohlcv.addpivot!(subdf)[!, :pivot]
+        pivot = ("pivot" in names(subdf)) ? subdf[!, "pivot"] : Ohlcv.addpivot!(subdf)[:, "pivot"]
         pivot = normpercent(pivot, normref)
         _, grad = Features.rollingregression(pivot, Features.regressionwindows001["1h"])
-        distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad)
+        labels, relativedistances, distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad, Targets.defaultlabelthresholds)
         x = subdf[!, :opentime]
         y = ["distpeak4h"]
         z = distances
         t = [["p: $(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) r: $(Dates.format(x[regressionix[ix]], "mm-dd HH:MM"))"] for ix in 1:size(x, 1)]
         z = [[distances[r, c] for c in 1:size(y,1)] for r in 1:size(x,1)]
-        # println("z=$z")
-        # println("txt=$t")
+        for r in 1:size(x,1)
+            if isnan(z[r][1])
+                @warn "NaN in z[$r][1]"
+            end
+        end
+        # println("z=$(z[1:3])")
+        # println("txt=$(t[1:3])")
 
         # ddf = DataFrame()
         # ddf.x = x
@@ -348,7 +353,7 @@ function targetfigure(base, period, enddt)
         # ddf.txt = t
         # println(ddf)
         # println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z))")
-        println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z)) txt size = $(size(t))")
+        println("x size = $(size(x)) y size = $(size(y))  z size = $(size(z)) txt size = $(size(t))")
         fig = Plot(
             # [heatmap(x=x, y=y, z=[z], text=t)],
             [heatmap(x=x, y=y, z=z, text=t)],
@@ -362,7 +367,7 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     @assert size(subdf, 1) >= 1
     firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(values(Features.regressionwindows001)))
     calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
-    pivot = (:pivot in names(calcdf)) ? calcdf[!, :pivot] : Ohlcv.addpivot!(calcdf)[!, :pivot]
+    pivot = ("pivot" in names(calcdf)) ? calcdf[!, "pivot"] : Ohlcv.addpivot!(calcdf)[!, "pivot"]
     pivot = normpercent(pivot, normref)
     fdf, featuremask = Features.features001set(pivot)
     fdf = fdf[(end-size(subdf,1)+1):end, :]  # resize fdf to meet size of subdf
