@@ -332,4 +332,37 @@ function continuousdistancelabels(prices, regressions, labelthresholds)
     return labels, relativedist, distances, regressionix, priceix
 end
 
+"""
+- Returns the index within `relativedistarray` of the best regression.
+    + an entry of 0 means that none of the regressions meets the required amplitude requirement specified in `requiredrelativeamplitude`
+- `relativedistarray` is a sorted array of relativedist arrays as provided by `continuousdistancelabels`
+    + the arrays are sorted according to regressionwindow starting with the shortest regressionwindow and ending with the longest
+    + each array entry contains an array of relative distances of the price extremes
+    + each array has the same length
+"""
+function bestregression(relativedistarray, requiredrelativeamplitude)
+    requiredrelativeamplitude = abs(requiredrelativeamplitude)
+    plen = 0
+    if (size(relativedistarray, 1) > 0) && (size(relativedistarray[1], 1) > 0)
+        plen = size(relativedistarray[1], 1)
+    else
+        @warn "empty relativedistarray"
+        return []
+    end
+    bestregr = zeros(Int32, plen)
+    for xpix in 1:size(relativedistarray, 1)
+        @assert plen == size(relativedistarray[xpix])
+        dist = relativedistarray[xpix][1]
+        for ix in 1:plen
+            if (dist * relativedistarray[xpix][ix]) <= 0  # distance sign change --> new distance between extremes
+                dist = relativedistarray[xpix][ix]
+            end
+            if (bestregr[ix] == 0) && (abs(dist) >= requiredrelativeamplitude)
+                bestregr[ix] = xpix
+            end
+        end
+    end
+    return bestregr
+end
+
 end  # module

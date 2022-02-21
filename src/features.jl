@@ -521,8 +521,9 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
-sortedregressionwindowkeys001 = ["5m", "15m", "1h", "4h", "12h", "1d", "3d", "10d"]
 regressionwindows001 = Dict("5m" => 5, "15m" => 15, "1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
+
+sortedregressionwindowkeys001 = [d[1] for d in sort(collect(regressionwindows001), by = x -> x[2])]
 
 """
 Properties at various rolling windows calculated on df data with ohlcv + pilot columns:
