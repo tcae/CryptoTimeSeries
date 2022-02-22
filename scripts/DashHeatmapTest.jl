@@ -36,14 +36,15 @@ app.layout = html_div() do
         value="a"
     ),
     html_div(id="targets4h"),
+    html_div(id="hm2"),
     dcc_graph(
         id = "example-graph",
         figure = (
             data = [
-                (x=[d for d in x], z = z, text=t, type = "heatmap", name = "SF1"),
+                (x=x, z = z, text=t, type = "heatmap", name = "SF1"),
             ],
-            layout = (title = "Dash Data Visualization",),
-        ),
+            layout = (title = "SF1 title",),
+        )
     )
 end
 
@@ -56,10 +57,27 @@ callback!(
     fig = nothing
     fig = Plot(
         # [heatmap(x=x, y=y, z=[z], text=t)],
-        [heatmap(x=[d for d in x], z = z, text=t, name = "SF2")],
+        [heatmap(x = x, z = z, text=t, name = "SF2")],
         Layout(xaxis_rangeslider_visible=false)
         )
     return dcc_graph(figure=fig)
+end
+
+callback!(
+    app,
+    Output("hm2", "children"),
+    Input("crypto_focus", "value")
+    # prevent_initial_call=true
+) do focus
+    dcg = dcc_graph(
+        figure = (
+            data = [
+                (x=x, z = z, text=t, type = "heatmap", name = "SF3"),
+            ],
+            layout = (title = "SF3 title",),
+        )
+    )
+    return dcg
 end
 
 run_server(app, "127.0.0.1", 8050, debug = true)

@@ -226,7 +226,8 @@ function distancesregressionpeak(prices, regressions)
                 rix = rix == 0 ? plen : rix
             end
             lastpix = pix > lastpix ? pix : lastpix
-            pix = extremepriceindex(prices, rix, gix, maxsearch)
+            # pix = extremepriceindex(prices, rix, gix, maxsearch)
+            pix = extremepriceindex(prices, rix, cix, maxsearch)
         end
         distances[cix] = smoothdistance(prices, lastpix, cix, pix)  # use staright line between extremes to calculate distance
         # distances[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable

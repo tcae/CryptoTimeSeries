@@ -336,14 +336,15 @@ function targetfigure(base, period, enddt)
         labels, relativedistances, distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad, Targets.defaultlabelthresholds)
         x = subdf[!, :opentime]
         y = ["distpeak4h"]
-        z = distances
-        t = [["p: $(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) r: $(Dates.format(x[regressionix[ix]], "mm-dd HH:MM"))"] for ix in 1:size(x, 1)]
-        z = [[distances[r, c] for c in 1:size(y,1)] for r in 1:size(x,1)]
-        for r in 1:size(x,1)
-            if isnan(z[r][1])
-                @warn "NaN in z[$r][1]"
-            end
-        end
+        z = [distances]
+        t = [["p: $(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) r: $(Dates.format(x[regressionix[ix]], "mm-dd HH:MM"))" for ix in 1:size(x, 1)]]
+        # t = [["ix = $ix"] for ix in 1:size(x, 1)]
+        # z = [[distances[r, c] for c in 1:size(y,1)] for r in 1:size(x,1)]
+        # for r in 1:size(x,1)
+        #     if isnan(z[r][1])
+        #         @warn "NaN in z[$r][1]"
+        #     end
+        # end
         # println("z=$(z[1:3])")
         # println("txt=$(t[1:3])")
 
@@ -353,14 +354,22 @@ function targetfigure(base, period, enddt)
         # ddf.txt = t
         # println(ddf)
         # println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z))")
-        println("x size = $(size(x)) y size = $(size(y))  z size = $(size(z)) txt size = $(size(t))")
-        fig = Plot(
-            # [heatmap(x=x, y=y, z=[z], text=t)],
-            [heatmap(x=x, y=y, z=z, text=t)],
-            Layout(xaxis_rangeslider_visible=false)
+        # println("x size = $(size(x)) y size = $(size(y))  z size = $(size(z)) txt size = $(size(t))")
+        # fig = Plot(
+        #     # [heatmap(x=x, y=y, z=[z], text=t)],
+        #     [heatmap(x = x, y = y, z = z, text = t, name = "name")],
+        #     Layout(xaxis_rangeslider_visible=false)
+        #     )
+        dcg = dcc_graph(
+            figure = (
+                data = [
+                    (x=x, z = z, text=t, type = "heatmap", name = "target distances"),
+                ],
+                layout = (title = "SF3 title",),
             )
+        )
     end
-    return dcc_graph(figure=fig)
+    return dcg  # dcc_graph(figure=fig)
 end
 
 function addheatmap!(traces, ohlcv, subdf, normref)
@@ -374,14 +383,14 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     x = subdf[!, :opentime]
     y = featuremask
     z = [[fdf[r, c] for c in y] for r in 1:size(x,1)]
-    t = [["txt: $(fdf[r, c])" for c in y] for r in 1:size(x,1)]
+    t = [["txt: $(fdf[r, c])" for r in 1:size(x,1)] for c in y]  # different z and text format -> Julia Dash heatmap() bug
     # println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z))")
     # println("=$y")
     # println("z[1:2]=$(z[1:2][1:2])")
     # println("fdf[1:2]=$(fdf[1:2, y[1:2]])")
 
     traces = append!(traces, [
-        heatmap(x=x, y=y, z=z, text=t, yaxis="y4")
+        heatmap(x=x, y=y, z=z, text=permutedims(t), yaxis="y4")
     ])
     fig = Plot(traces,
         Layout(xaxis_rangeslider_visible=false,
