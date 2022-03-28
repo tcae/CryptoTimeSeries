@@ -39,6 +39,8 @@ downorflat(slope) = slope <= 0
     - in case `forward`: next higher index
     - in case of NOT `forward`: next lower index
 - it is expected that the relevant actual price maximum is between gradient inflection index and regression extreme
+>> it turned out that the inflection is not reliable
+>> search from regression extreme back to last price extreme for global extreme yields better results
 """
 function extremeregressionindex(regressions, startindex; forward)
     reglen = length(regressions)

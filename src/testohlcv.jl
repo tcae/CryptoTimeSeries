@@ -25,10 +25,10 @@ end
 """
 returns ohlcv data starting 2019-01-02 01:11 for - by default 5.7 years
 """
-function sinedata(periodminutes, totalminutes=3000000, offset=0)
+function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmultiple = 1)
     price = 200
     volumeconst = 100
-    amplitude = 0.007  # 0.5% of price
+    amplitude = 0.007  # 0.7% of price
     firstutc = DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s")
     firstutc = round(firstutc, Dates.Minute)
     # lastutc = round(lastutc, Dates.Minute)
@@ -36,12 +36,15 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0)
     # minutes = Int((Dates.Minute(lastutc - firstutc) + Dates.Minute(1)) / Dates.Minute(1))
     # display(minutes)
     # minutes are used as degrees, i.e. 1 full sinus = 360 degree = 6h
-    x = [(m + offset) * pi * 2 / periodminutes for m in 1:totalminutes]
+    x1 = [(m + offset) * pi * 2 / periodminutes for m in 1:totalminutes]
     # x = [m * pi / (minutes/2) for m in 1:minutes]
-    y = sin.(x)
-    variation = -cos.(x) .* 0.01
+    y1 = sin.(x1)
+    variation = -cos.(x1) .* 0.01
     # display(y)
     timestamp = [firstutc + Dates.Minute(m) for m in 1:totalminutes]
+    x2 = [(m + offset) * pi * 2 / (periodminutes * overlayperiodmultiple) for m in 1:totalminutes]
+    y2 = sin.(x2)
+    y = y1 .* y2 + y2
     # display(timestamp)
     # open =   (y / 4)
     # high =   (y / 2)
@@ -51,12 +54,12 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0)
     high =  price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
     low =   price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
-    volume = (1.1 .- abs.(y)) .* volumeconst
+    volume = (1.1 .- abs.(y1)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
     return df
 end
 
-function doublesinedata(periodminutes, periods)
+function oldsinedata(periodminutes, periods)
     price = 200
     volumeconst = 100
     amplitude = 0.007  # 0.5% of price
@@ -156,19 +159,30 @@ function accumulate(df, period)
     return adf
 end
 
-function testsinus(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
+function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
     # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
-    df = sinedata(2*60)
+    df = sinedata(2*60, 3000000)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
-    println("testsinus $(size(df))")
+    println("test single sinus $(size(df))")
+    df = accumulate(df, Ohlcv.intervalperiod(interval))
+    return df
+end
+
+function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
+    # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
+    df = sinedata(2*60, 3000000, 0, 10.5)
+    # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
+    df = df[startdt .< df.opentime .<= enddt, :]
+    println("test double sinus $(size(df))")
     df = accumulate(df, Ohlcv.intervalperiod(interval))
     return df
 end
 
 function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     dispatch = Dict(
-        "sinus" => testsinus
+        "sine" => singlesine,
+        "doublesine" => doublesine
 
     )
     if base in keys(dispatch)
