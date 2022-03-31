@@ -1,7 +1,6 @@
 # using Pkg
 # Pkg.add(["LoggingFacilities", "NamedArrays"])
 
-include("../src/testohlcv.jl")
 include("../src/targets.jl")
 
 module TargetsTest

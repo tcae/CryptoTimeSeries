@@ -1,4 +1,5 @@
 include("../src/cryptoxch.jl")
+include("../src/ohlcv.jl")
 
 """
 This module maintains promising or tagged assets to monitor. Promising means that the asset matches promising criteria.
@@ -139,7 +140,7 @@ function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::As
     enddt = Dates.now(Dates.UTC)
     startdt = enddt - dayssperiod
     for base in allbases
-        ohlcv = CryptoXch.cryptodownload(base, "1d", floor(startdt, Dates.Day), ceil(enddt, Dates.Day))
+        CryptoXch.cryptodownload(base, "1d", floor(startdt, Dates.Day), ceil(enddt, Dates.Day))
     end
 
     startdt = enddt - minutesperiod

@@ -350,3 +350,5 @@ end
 # pivot_test()
 
 end  # Ohlcv
+
+include("../src/testohlcv.jl")

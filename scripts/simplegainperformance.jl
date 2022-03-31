@@ -1,8 +1,4 @@
-include("../src/env_config.jl")
-include("../src/features.jl")
-include("../src/testohlcv.jl")
 include("../src/targets.jl")
-include("../src/ohlcv.jl")
 
 """
 This script measures the performace on a trinaing set of cryptocurrencies when buying at the begin of an up slope and selling at the end of an up slope at various regression time window lenghts.
@@ -287,14 +283,14 @@ steepest       │    2.35f-43     1.36f-43     1.14f-43  3.31587f-34  2.32478f-
 function steepesttrainingbasesgain()
     regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
     pdf = DataFrame()
-    for (bix, base) in enumerate(Config.trainingbases)
+    for (bix, base) in enumerate(EnvConfig.trainingbases)
         # @info "" bix base
         # base = "xrp"
         @info "reading ohlcv $base"
         ohlcv = Ohlcv.read(base)
         pdf[!, base] = ohlcv.df.pivot
     end
-    bases = copy(Config.trainingbases)
+    bases = copy(EnvConfig.trainingbases)
     bases = push!(bases, "steepest")
     perfs = NamedArray(zeros(Float32, (size(bases, 1), size(regressionminutesset, 1))), (bases, regressionminutesset), ("base", "regrmin"))
     for (rix, regrminutes) in enumerate(regressionminutesset)
@@ -305,7 +301,7 @@ function steepesttrainingbasesgain()
                 rdf[!, base] = Features.normrollingregression(pdf[!, base], regrminutes)
                 gdf[!, base] = singlebasegradientgain(pdf[!, base], rdf[!, base])
             else
-                gdf[!, base] = steepestbasegain(pdf, rdf, Config.trainingbases)
+                gdf[!, base] = steepestbasegain(pdf, rdf, EnvConfig.trainingbases)
             end
             perfs[bix, rix] = gdf[end, base]
             @info "simple performance at regression $regrminutes for $base = $(perfs[bix, rix])"
@@ -330,8 +326,8 @@ Measurement of all training data to always buy at slope begin and sell at slope 
 #! TODO: use train, eval,test split to cross check consistency of results in subsets.
 function singletrainingbasesgradientgain()
     regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
-    perfs = NamedArray(zeros(Float32, (size(Config.trainingbases, 1), size(regressionminutesset, 1))), (Config.trainingbases, regressionminutesset), ("base", "regrmin"))
-    for (bix, base) in enumerate(Config.trainingbases)
+    perfs = NamedArray(zeros(Float32, (size(EnvConfig.trainingbases, 1), size(regressionminutesset, 1))), (EnvConfig.trainingbases, regressionminutesset), ("base", "regrmin"))
+    for (bix, base) in enumerate(EnvConfig.trainingbases)
         # @info "" bix base
         # base = "xrp"
         @info "reading ohlcv $base"
@@ -351,8 +347,8 @@ end
 
 function singletrainingbasesgradientgain()
     regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
-    perfs = NamedArray(zeros(Float32, (size(Config.trainingbases, 1), size(regressionminutesset, 1))), (Config.trainingbases, regressionminutesset), ("base", "regrmin"))
-    for (bix, base) in enumerate(Config.trainingbases)
+    perfs = NamedArray(zeros(Float32, (size(EnvConfig.trainingbases, 1), size(regressionminutesset, 1))), (EnvConfig.trainingbases, regressionminutesset), ("base", "regrmin"))
+    for (bix, base) in enumerate(EnvConfig.trainingbases)
         # @info "" bix base
         # base = "xrp"
         @info "reading ohlcv $base"
@@ -382,8 +378,8 @@ function singletrainingbasesgradientgainhistory()
     regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
     thresholds = [-1000, 0.0, 0.005, 0.01]
     gainlosstest = [false, true]
-    perfs = NamedArray(zeros(Float32, (size(Config.trainingbases, 1), size(regressionminutesset, 1), size(thresholds, 1), size(gainlosstest, 1))), (Config.trainingbases, regressionminutesset, thresholds, gainlosstest), ("base", "regrmin", "threshold", "gain>loss"))
-    for (bix, base) in enumerate(Config.trainingbases)
+    perfs = NamedArray(zeros(Float32, (size(EnvConfig.trainingbases, 1), size(regressionminutesset, 1), size(thresholds, 1), size(gainlosstest, 1))), (EnvConfig.trainingbases, regressionminutesset, thresholds, gainlosstest), ("base", "regrmin", "threshold", "gain>loss"))
+    for (bix, base) in enumerate(EnvConfig.trainingbases)
         # @info "" bix base
         # base = "xrp"
         @info "reading ohlcv $base"
@@ -402,7 +398,7 @@ function singletrainingbasesgradientgainhistory()
             end
         end
     end
-    for (bix, base) in enumerate(Config.trainingbases)
+    for (bix, base) in enumerate(EnvConfig.trainingbases)
         for (switchix, switch) in enumerate(gainlosstest)
         # for (thresholdix, threshold) in enumerate(thresholds)
             # println("threshold=$threshold  switch=$switch")
@@ -638,7 +634,7 @@ Collects all gainsand losses per base per regression window in a histogram.
 
 Results see: ../data/gainperregressionwindow
 """
-function gainperregressionwindow(bases = Config.trainingbases)
+function gainperregressionwindow(bases = EnvConfig.trainingbases)
     # regressionminutesset = [5, 15]  # , 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
     regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
     gainborders = preparegainborders()
@@ -677,7 +673,7 @@ Result: very low if any correlation with predecessor gain. That may be related t
 
 Results see: ../data/gainperregressionwindowlastgain
 """
-function gainperregressionwindowlastgain(bases = Config.trainingbases, regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60])
+function gainperregressionwindowlastgain(bases = EnvConfig.trainingbases, regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60])
     gainborders = preparegainborders(0.02, 0.01)
     histo = NamedArray(zeros(Float64, (size(regressionminutesset, 1), size(gainborders, 1), size(gainborders, 1))), (regressionminutesset, gainborders, gainborders), ("window", "gain", "lastgain"))
     for (bix, base) in enumerate(bases)
@@ -714,7 +710,7 @@ Result: very low if any correlation with predecessor gain. That may be related t
 
 Results see: ../data/gainperregressionwindowlastgain
 """
-function gainperregressionwindowlastgain2(bases = Config.trainingbases, regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60])
+function gainperregressionwindowlastgain2(bases = EnvConfig.trainingbases, regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60])
     #! TODO why are there negative predecessor gains for upslopes and vice versa?
     gainborders = preparegainborders(0.02, 0.01)
     println("gainborders=$gainborders")
@@ -799,7 +795,7 @@ end
 
 
 # Config.init(Config.test)
-Config.init(Config.production)
+EnvConfig.init(EnvConfig.production)
 println("\nconfig mode = $(Config.configmode)")
 # gainperregressionwindow()
 # gainperregressionwindowlastgain2()

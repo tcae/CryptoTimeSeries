@@ -1,7 +1,7 @@
 # using Pkg;
 # Pkg.add(["Dates", "DataFrames"])
 
-include("../src/cryptoxch.jl")
+include("../src/assets.jl")
 include("../src/classify.jl")
 
 """
@@ -30,7 +30,7 @@ All history data will be collected but a fixed subset **`historysubset`** will b
 module Trade
 
 using Dates, DataFrames
-using ..EnvConfig, ..Ohlcv, ..Classify, ..CryptoXch
+using ..EnvConfig, ..Ohlcv, ..Classify, ..CryptoXch, ..Assets
 
 # using ..Binance
 
@@ -89,6 +89,13 @@ function trainstrategy()
 end
 
 """
+read the recent ohlcv history to calculate the longest regressions required
+"""
+function readrecentohlcv(base)
+    # the read ohlcv data shall be fomr time to time appended to the historic data
+end
+
+"""
 **`tradeloop`** has to
 + get new exchange data (preferably non blocking)
 + evaluate new exchange data and derive trade signals
@@ -97,6 +104,9 @@ end
 
 """
 function tradeloop()
+    assets = Assets.loadassets(minutesperiod=Dates.Week(4))
+    # the read ohlcv data shall be fomr time to time appended to the historic data
+    readrecentohlcv(base)
 end
 
 

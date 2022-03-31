@@ -1,8 +1,4 @@
-include("../src/env_config.jl")
-include("../src/features.jl")
-include("../src/testohlcv.jl")
 include("../src/targets.jl")
-include("../src/ohlcv.jl")
 
 """
 This module investiagtes the relation of gradient and gains. The assumption was that a steeper gradient correlates with on average higher gains.
@@ -233,11 +229,11 @@ module GradientGainDistributionsTest
 
 # import Pkg; Pkg.add(["JDF", "RollingFunctions"])
 using Test, DataFrames, Logging, NamedArrays
-using ..Config, ..Ohlcv, ..Features, ..TestOhlcv, ..Targets, ..GradientGainDistributions
+using ..EnvConfig, ..Ohlcv, ..TestOhlcv, ..Features, ..Targets, ..GradientGainDistributions
 
-Config.init(test)
-Config.init(production)
-println("\nconfig mode = $(Config.configmode)")
+EnvConfig.init(test)
+EnvConfig.init(production)
+println("\nconfig mode = $(EnvConfig.configmode)")
 
 #=
 This file is part of target_test.jl =#
@@ -272,7 +268,7 @@ function tradegradienthisto_test()
 end
 
 function gradientdistributions()
-    for base in Config.trainingbases
+    for base in EnvConfig.trainingbases
     # base = "xrp"
         @info "reading ohlcv" base
         ohlcv = Ohlcv.read(base)

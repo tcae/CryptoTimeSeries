@@ -4,7 +4,6 @@ using Pkg
 Pkg.activate(pwd())
 cd(@__DIR__)
 include("../src/targets.jl")
-include("../src/testohlcv.jl")
 
 using MLJ, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using MLJBase, RDatasets, MLJTuning, MLJModels

@@ -50,3 +50,9 @@ Scripts for investigations as well as the GUI are located in the scripts folder 
 1. [simplegainperformance](scripts/simplegainperformance.jl) nbestgradientgain
 2. [targets](src/targets.jl)
 3. [notes](notes.md)
+
+## to do
+
+- don't cache day ohlcv in files but aggregate them from miute data : is probaly faster, reduces code and storage
+  - change in assets.jl and cryptocockpit.jl
+

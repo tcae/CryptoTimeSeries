@@ -1,6 +1,5 @@
 
 include("../src/features.jl")
-include("../src/testohlcv.jl")
 
 module FeaturesTest
 using Dates, DataFrames
