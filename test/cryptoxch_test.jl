@@ -1,13 +1,9 @@
 
-include("../src/EnvConfig.jl")
-include("../src/ohlcv.jl")
-include("../src/cryptoxch.jl")
-
 module CryptoXchTest
 using Dates, DataFrames
 using Test
 
-using ..Ohlcv, ..EnvConfig, ..CryptoXch
+using Ohlcv, EnvConfig, CryptoXch
 
 function balances_test()
     result = CryptoXch.balances()

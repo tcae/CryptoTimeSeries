@@ -4,11 +4,9 @@ Pkg.activate(".")
 # cd("/home/tor/TorProjects/CryptoTimeSeries/notebooks")
 
 # include(pwd() * "/" * "../src/features.jl")
-include("../src/features.jl")
-include("../src/testohlcv.jl")
 
 using PlotlyJS, WebIO, Dates, DataFrames
-using ..Features, ..TestOhlcv
+using Features, TestOhlcv
 
 function test1()
     normpercent(ydata, ynormref) = (ydata ./ ynormref .- 1) .* 100

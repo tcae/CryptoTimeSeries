@@ -1,5 +1,3 @@
-include("../src/features.jl")
-
 """
 **! predicitions will be merged with targets.jl**
 The asset can receive **predictions** within a given **time period** from algorithms or individuals by:
@@ -13,7 +11,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 """
 module Targets
 
-using ..EnvConfig, ..Ohlcv, ..Features
+using EnvConfig, Ohlcv, Features
 
 # labellevels = ["short", "close", "hold", "long"]
 labellevels = ["close", "hold", "long"]

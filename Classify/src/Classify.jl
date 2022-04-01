@@ -1,6 +1,3 @@
-include("../src/targets.jl")
-
-
 """
 Train and evaluate the trading signal classifiers
 """
@@ -9,7 +6,7 @@ module Classify
 using DataFrames, Logging  # , MLJ
 using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using PlotlyJS, WebIO, Dates, DataFrames
-using ..EnvConfig, ..Ohlcv, ..Features, ..Targets, ..TestOhlcv
+using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 
 
 """

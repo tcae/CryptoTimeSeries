@@ -1,10 +1,8 @@
 
-# include("../src/ohlcv.jl")
-
 module TestOhlcv
 
 using Dates, DataFrames, Logging
-using ..EnvConfig, ..Ohlcv
+using EnvConfig, Ohlcv
 
 """
 Returns cumulative sine function samples by adding sines on each other described by parameters given as a tuple (periodsamples, offset, amplitude).

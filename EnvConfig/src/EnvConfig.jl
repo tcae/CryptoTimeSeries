@@ -12,7 +12,7 @@ Provides
 """
 module EnvConfig
 using Logging, Dates
-export Authentication, test, production, training
+export authorization, test, production, training
 
 import JSON
 

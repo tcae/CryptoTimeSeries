@@ -1,11 +1,8 @@
-
-include("../src/features.jl")
-
 module FeaturesTest
 using Dates, DataFrames
 using Test
 
-using ..EnvConfig, ..Ohlcv, ..Features, ..TestOhlcv
+using EnvConfig, Ohlcv, Features, TestOhlcv
 
 
 

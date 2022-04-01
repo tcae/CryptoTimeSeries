@@ -3,11 +3,10 @@ cd("$(@__DIR__)/..")
 using Pkg
 Pkg.activate(pwd())
 cd(@__DIR__)
-include("../src/targets.jl")
 
 using MLJ, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using MLJBase, RDatasets, MLJTuning, MLJModels
-using ..Targets, ..TestOhlcv
+using Targets, TestOhlcv
 # using RDatasets
 using PlotlyJS, WebIO, Dates, DataFrames
 

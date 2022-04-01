@@ -1,7 +1,5 @@
-include("../src/features.jl")
-
 using IJulia, PlotlyJS, WebIO
-using ..Features
+using Features
 
 # ! TCAE: doesn't work in vscode --> use a IJulia notebook instead
 

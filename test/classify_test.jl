@@ -1,11 +1,9 @@
 
-include("../src/classify.jl")
-
 module ClassifyTest
 using Dates, DataFrames
 using Test
 
-using ..Classify
+using Classify
 
 @testset "Classify tests" begin
 

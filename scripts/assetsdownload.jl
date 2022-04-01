@@ -3,12 +3,10 @@ cd("$(@__DIR__)/..")
 println("activated $(pwd())")
 activate(pwd())
 
-include("../src/assets.jl")
-
 module AssetsTest
 using Dates
 
-using ..EnvConfig, ..Assets
+using EnvConfig, Assets
 
 EnvConfig.init(production)
 if EnvConfig.configmode == production

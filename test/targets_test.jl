@@ -1,15 +1,10 @@
-# using Pkg
-# Pkg.add(["LoggingFacilities", "NamedArrays"])
-
-include("../src/targets.jl")
-
 module TargetsTest
 
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test, CSV
 using PlotlyJS, WebIO
 
-using ..EnvConfig, ..Features, ..Targets, ..TestOhlcv, ..Ohlcv
+using EnvConfig, Features, Targets, TestOhlcv, Ohlcv
 
 function regressionlabelsx_test(targetlabelfunction, testdatafilename)
     dffile = projectdir("test", testdatafilename)

@@ -1,12 +1,9 @@
-include("../src/ohlcv.jl")
-
-
 module OhlcvTest
 
 using DataFrames
 using Test
-using ..EnvConfig
-using ..Ohlcv
+using EnvConfig
+using Ohlcv
 
 function testohlcvinit(base::String)
     ohlcv1 = Ohlcv.defaultohlcv("test")

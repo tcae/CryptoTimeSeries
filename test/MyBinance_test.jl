@@ -1,5 +1,4 @@
-include("../src/MyBinance.jl")
-using ..MyBinance
+using MyBinance
 
 # MyBinance.getMarket() - not found
 # MyBinance.getMarket("BTCUSDT") - not found

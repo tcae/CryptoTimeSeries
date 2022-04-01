@@ -1,7 +1,5 @@
-include("../src/EnvConfig.jl")
-
 module ConfigTest
-using ..EnvConfig
+using EnvConfig
 using Test
 
 # greet2()
@@ -14,7 +12,7 @@ EnvConfig.init(production)
 
 @testset "Config tests" begin
 
-@test EnvConfig.datetimeformat == "%Y-%m-%d_%Hh%Mm"
+@test EnvConfig.datetimeformat == "yyyy-mm-dd HH:MM"
 @test EnvConfig.datafile("btc_OHLCV", "_df.csv") == "/home/tor/crypto/Features/btc_OHLCV_df.csv"
 @test EnvConfig.Authentication().key == "5gchI8bnzXYAimGmv4Wn6yQ2Yp5o6cwDBsyhrRawVDPcqTD43Rd6sOe13Xbbbrpv"
 

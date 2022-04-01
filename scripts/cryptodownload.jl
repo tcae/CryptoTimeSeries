@@ -1,6 +1,4 @@
-include("../src/assets.jl")
-
-using ..Assets, ..EnvConfig
+using Assets, EnvConfig
 
     # Config.init(Config.test)
     # Assets.cryptolistdownload(["btc"])

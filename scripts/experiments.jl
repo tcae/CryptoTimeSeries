@@ -1,5 +1,4 @@
-include("../src/ohlcv.jl")
-using ..Ohlcv, ..EnvConfig
+using Ohlcv, EnvConfig
 using Dates
 
 EnvConfig.init(EnvConfig.training)

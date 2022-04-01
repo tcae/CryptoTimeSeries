@@ -1,6 +1,3 @@
-include("../src/cryptoxch.jl")
-include("../src/ohlcv.jl")
-
 """
 This module maintains promising or tagged assets to monitor. Promising means that the asset matches promising criteria.
 Tagged means that it is monitored for other reasons, e.g. because the asset is part of a portfolio.
@@ -12,7 +9,7 @@ Day and minute OHLCV data are updated.
 module Assets
 
 using Dates, DataFrames, Logging, JDF
-using ..EnvConfig, ..Ohlcv, ..CryptoXch
+using EnvConfig, Ohlcv, CryptoXch
 
 
 """

@@ -2,14 +2,11 @@
 # Pkg.add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
 # Pkg.add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
 
-include("../src/MyBinance.jl")
-include("../src/testohlcv.jl")
-
 
 module CryptoXch
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging
-using ..MyBinance, ..EnvConfig, ..Ohlcv, ..TestOhlcv
-import ..Ohlcv: intervalperiod
+using MyBinance, EnvConfig, Ohlcv, TestOhlcv
+import Ohlcv: intervalperiod
 
 function klines2jdict(jsonkline)
     Dict(

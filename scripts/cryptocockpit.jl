@@ -4,15 +4,13 @@ println("activated $(pwd())")
 activate(pwd())
 cd(@__DIR__)
 
-include("../src/targets.jl")
-include("../src/assets.jl")
 
 # using Colors
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using ..EnvConfig, ..Ohlcv, ..Features, ..Targets, ..Assets
+using EnvConfig, Ohlcv, Features, Targets, Assets
 
 include("../scripts/cockpitdatatablecolors.jl")
 

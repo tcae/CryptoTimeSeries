@@ -1,5 +1,3 @@
-include("../src/targets.jl")
-
 using Ohlcv, Features
 
 """
@@ -16,7 +14,7 @@ Problems:
 
 module RandomGain
 
-using ..Ohlcv, ..Features
+using Ohlcv, Features
 
 "provides Ohlcv data and corresoonding regressions"
 struct OhlcvRegr

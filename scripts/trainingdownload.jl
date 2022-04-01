@@ -4,12 +4,10 @@ cd("$(@__DIR__)/..")
 println("activated $(pwd())")
 activate(pwd())
 
-include("../src/assets.jl")
-
 module AssetsTest
 using Dates, DataFrames
 
-using ..EnvConfig, ..Assets, ..CryptoXch
+using EnvConfig, Assets, CryptoXch
 
 EnvConfig.init(training)
 bases = EnvConfig.trainingbases

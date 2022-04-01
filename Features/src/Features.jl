@@ -1,8 +1,3 @@
-# import Pkg
-# Pkg.add(["RollingFunctions"])
-
-include("../src/ohlcv.jl")
-
 """
 Provides features to classify the most price development.
 Currently advertised features are in Feature001Set
@@ -15,7 +10,7 @@ import RollingFunctions: rollmedian, runmedian, rolling
 import DataFrames: DataFrame, Statistics
 using Combinatorics
 using Logging
-using ..EnvConfig, ..Ohlcv
+using EnvConfig, Ohlcv
 
 mutable struct Feature001Set
     df::DataFrame

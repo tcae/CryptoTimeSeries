@@ -1,5 +1,3 @@
-include("../src/targets.jl")
-
 """
 This script measures the performace on a trinaing set of cryptocurrencies when buying at the begin of an up slope and selling at the end of an up slope at various regression time window lenghts.
 

@@ -37,11 +37,11 @@ Following the DrWatson approach, each module is located in the src folder and ha
 
 - Main module is [Trade](src/trade.jl)
 - Machine learning is made available by [Classify](src/classify.jl).
-- [Targets](src/targets.jl) provides target labels to train, evaluate and test machine learning approaches.
-- [Features](src/features.jl) provides features as input for machine learning.
-- [Ohlcv](src/ohlcv.jl) provides means to get locally stored historic Open High Low Close Volume data.
+- [Targets](Targets/src/Targets.jl) provides target labels to train, evaluate and test machine learning approaches.
+- [Features](Features/src/Features.jl) provides features as input for machine learning.
+- [Ohlcv](Ohlcv/src/Ohlcv.jl) provides means to get locally stored historic Open High Low Close Volume data.
 - [Exchange](src/exchange.jl) is the abstract layer to [MyBinance](src/Binance.jl)
-- [Config](src/env_config.jl) provides common configuratioin items, like the set of cryptos to use or common folders
+- [Config](EnvConfig/src/EnvConfig.jl) provides common configuratioin items, like the set of cryptos to use or common folders
 
 Scripts for investigations as well as the GUI are located in the scripts folder without a unit test
 

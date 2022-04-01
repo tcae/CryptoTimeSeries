@@ -1,8 +1,6 @@
 # using Pkg;
 # Pkg.add(["Dates", "DataFrames", "CategoricalArrays", "JDF", "CSV", "TimeZones"])
 
-include("../src/EnvConfig.jl")
-
 """
 Use 'Config' to get canned train, eval, test data.
 
@@ -11,7 +9,7 @@ In future to add new OHLCV data from Binance.
 module Ohlcv
 
 using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones, Logging
-using ..EnvConfig
+using EnvConfig
 
 export write, read!, OhlcvData
 
@@ -351,4 +349,3 @@ end
 
 end  # Ohlcv
 
-include("../src/testohlcv.jl")

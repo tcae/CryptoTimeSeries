@@ -1,0 +1,11 @@
+name = "TestOhlcv"
+uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
+authors = ["tcae <tcae@posteo.nl>"]
+version = "0.1.0"
+
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"

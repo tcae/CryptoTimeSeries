@@ -1,14 +1,9 @@
 
-# include("../src/EnvConfig.jl")
-# include("../src/ohlcv.jl")
-# include("../src/cryptoxch.jl")
-include("../src/assets.jl")
-
 module AssetsTest
 using Dates, DataFrames
 using Test
 
-using ..Ohlcv, ..EnvConfig, ..Assets, ..CryptoXch
+using Ohlcv, EnvConfig, Assets, CryptoXch
 
 EnvConfig.init(production)
 # ad2 = Assets.read()

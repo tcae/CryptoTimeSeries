@@ -1,7 +1,7 @@
 
-include("../src/Binance.jl")
+# include("../src/Binance.jl")
 using JSON, HTTP, DataFrames
-using ..MyBinance
+using MyBinance
 
 # println(@__FILE__)
 # println(dirname(@__FILE__))

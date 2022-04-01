@@ -1,9 +1,6 @@
 # using Pkg;
 # Pkg.add(["Dates", "DataFrames"])
 
-include("../src/assets.jl")
-include("../src/classify.jl")
-
 """
 ## problem statement
 
@@ -29,12 +26,9 @@ All history data will be collected but a fixed subset **`historysubset`** will b
 """
 module Trade
 
-using Dates, DataFrames
-using ..EnvConfig, ..Ohlcv, ..Classify, ..CryptoXch, ..Assets
+using Dates, DataFrames, JSON
+using EnvConfig, Ohlcv, Classify, CryptoXch, Assets
 
-# using ..Binance
-
-import JSON
 counter = 0
 
 function cb(data)
