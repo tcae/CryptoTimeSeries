@@ -1,8 +1,8 @@
 
-import Pkg: activate
-cd("$(@__DIR__)/..")
-println("activated $(pwd())")
-activate(pwd())
+# import Pkg: activate
+# cd("$(@__DIR__)/..")
+# println("activated $(pwd())")
+# activate(pwd())
 
 module AssetsTest
 using Dates, DataFrames

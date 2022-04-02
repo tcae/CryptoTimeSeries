@@ -138,3 +138,22 @@ Break out handling approach: if smaller regression windows are within x \* stand
     As soon as the shortest outlier is again within the x * standard deviation of a longer then switch back to that one.
 
 Consider out of spread deviations down from a reached price level as trade criteria.
+
+
+## Notes backup from Trade.jl
+
+Challenges:
+- what is an uptrend, considering that we have more or less significant distortions during an uptrend? Once determined, history data need to get corresponding **`targetlabels`**
+- when does a profitable uptrend starts?
+- when does an uptrend ends? Independent whether or not it is a profitable uptrend we have to limit losses
+- are there uptrends per granularity, e.g. regression window?
+- are there cluster patterns (may be per granularity), e.g. fast rising peak, slow crawling increase, ..
+- what are the most profitable currencies and how to split asset allocation?
+- how to adapt the parameters of the trading strategy based on history data? **`trainstrategy`**
+- how to evaluate the success of the trading strategy? **`assessstrategy`**
+- how to learn from history concerning patterns and learning strategies?
+    + visualize / report an overall status
+    + in situations that need to be changed
+        - understand what happened
+        - how probable are comparable situations
+- what is an efficient SW design for the **`tradeloop`**

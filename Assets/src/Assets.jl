@@ -9,7 +9,7 @@ Day and minute OHLCV data are updated.
 module Assets
 
 using Dates, DataFrames, Logging, JDF
-using EnvConfig, Ohlcv, CryptoXch
+using EnvConfig, Ohlcv, CryptoXch, Features
 
 
 """
@@ -22,7 +22,7 @@ AssetData.df holds the following persistent columns:
 - portfolio = base is part of current portfolio
 
 """
-mutable struct AssetData
+struct AssetData
     df::DataFrames.DataFrame
 end
 

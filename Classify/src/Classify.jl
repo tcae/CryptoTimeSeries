@@ -8,6 +8,23 @@ using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatori
 using PlotlyJS, WebIO, Dates, DataFrames
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 
+struct TradeChance
+    base::String
+    pricecurrent::Float32
+    pricetarget::Float32
+    probability::Float32
+end
+
+"""
+returns the chance expressed in gain between currentprice and future targetprice * probability
+"""
+function tradechance(features, currentix)::TradeChance
+    pricecurrent = Ohlcv.dataframe(features.ohlcv)[currentix, :pivot]
+    pricetarget = pricecurrent * 1.01
+    prob = 0.5  #! TODO  implementation
+    tc = TradeChance(features.base, pricecurrent, pricetarget, prob)
+    return tc
+end
 
 """
 Returns the trade performance percentage of trade sigals given in `signals` applied to `prices`.
@@ -66,7 +83,7 @@ end
 function prepare(labelthresholds)
     if EnvConfig.configmode == test
         x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
-        fdf, featuremask = Features.features001set(y)
+        fdf, featuremask = Features.features001(y)
         _, grad = Features.rollingregression(y, 50)
     else
         ohlcv = Ohlcv.defaultohlcv("btc")
@@ -74,7 +91,7 @@ function prepare(labelthresholds)
         Ohlcv.read!(ohlcv)
         y = Ohlcv.pivot!(ohlcv)
         println("pivot: $(typeof(y)) $(length(y))")
-        fdf, featuremask = Features.features001set(ohlcv.df)
+        fdf, featuremask = Features.features001(ohlcv.df)
         _, grad = Features.rollingregression(y, 12*60)
     end
     fdf = Features.mlfeatures(fdf, featuremask)
@@ -224,8 +241,8 @@ function regression1()
     # plot(traces)
 end
 
-EnvConfig.init(production)
+# EnvConfig.init(production)
 # EnvConfig.init(test)
-regression1()
+# regression1()
 
 end  # module

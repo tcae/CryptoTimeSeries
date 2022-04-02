@@ -172,9 +172,7 @@ function cryptodownload(base, interval, startdt, enddt)
         Logging.@warn "Invalid datetime range: end datetime $enddt <= start datetime $startdt"
         return ohlcv
     end
-    # if EnvConfig.configmode != EnvConfig.test
-        Ohlcv.read!(ohlcv)
-    # end
+    Ohlcv.read!(ohlcv)
     olddf = Ohlcv.dataframe(ohlcv)
     if size(olddf, 1) > 0  # there is already data available
         if startdt < olddf[begin, :opentime]

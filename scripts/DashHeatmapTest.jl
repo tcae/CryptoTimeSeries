@@ -1,7 +1,7 @@
-cd("$(@__DIR__)/..")
-println("activated $(pwd())")
-activate(pwd())
-cd(@__DIR__)
+# cd("$(@__DIR__)/..")
+# println("activated $(pwd())")
+# activate(pwd())
+# cd(@__DIR__)
 using Dash, Dates
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable

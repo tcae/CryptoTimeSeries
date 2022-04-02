@@ -1,6 +1,6 @@
-using Pkg
-cd("/home/tor/TorProjects/CryptoTimeSeries")
-Pkg.activate(".")
+# using Pkg
+# cd("/home/tor/TorProjects/CryptoTimeSeries")
+# Pkg.activate(".")
 # cd("/home/tor/TorProjects/CryptoTimeSeries/notebooks")
 
 # include(pwd() * "/" * "../src/features.jl")

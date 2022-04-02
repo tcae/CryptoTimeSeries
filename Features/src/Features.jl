@@ -11,14 +11,11 @@ import DataFrames: DataFrame, Statistics
 using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
-
-mutable struct Feature001Set
-    df::DataFrame
+export Feature001Set
+struct Feature001Set
+    fdf::DataFrame
     featuremask::Vector{String}
-    base::String
-    qte::String  # instead of quote because *quote* is a Julia keyword
-    xch::String  # exchange - also implies whether the asset type is crypto or stocks
-    interval::String
+    ohlcv::OhlcvData
 end
 
 indexinrange(index, last) = 0 < index <= last
@@ -532,7 +529,7 @@ Properties at various rolling windows calculated on df data with ohlcv + pilot c
     - difference of last pivot price to regression line
 
 """
-function features001set(pivot::Vector{Float32})
+function features001(pivot::Vector{Float32})
     featuremask::Vector{String} = []
     fdf = DataFrame()
     for wk in sortedregressionwindowkeys001  # wk = window key
@@ -556,8 +553,8 @@ Properties at various rolling windows calculated on df data with ohlcv + pilot c
 - ration 5minute/4hour volume to detect short term rising volume
 
 """
-function features001set(indf::DataFrame)
-    fdf, featuremask = features001set(indf.pivot)
+function features001(indf::DataFrame)
+    fdf, featuremask = features001(indf.pivot)
     fdf[:, "4h/9dvol"] = relativevolume(indf[!, :basevolume], 4*60, 9*24*60)
     fdf[:, "5m/4hvol"] = relativevolume(indf[!, :basevolume], 5, 4*60)
     append!(featuremask, ["4h/9dvol", "5m/4hvol"])
@@ -575,11 +572,22 @@ Properties at various rolling windows calculated on 1minute OHLCV data:
 - ration 5minute/4hour volume to detect short term rising volume
 
 """
-function features001set(ohlcv::OhlcvData)
+function features001(ohlcv::OhlcvData)
     indf = ohlcv.df
     pivot = Ohlcv.pivot!(indf)
-    fdf, featuremask = features001set(indf)
-    return Feature001Set(fdf, featuremask, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
+    fdf, featuremask = features001(indf)
+    return Feature001Set(fdf, featuremask, ohlcv)
+end
+
+
+"""
+ Update featureset001 to match ohlcv.
+ constraint: either featureset001 is nothing or empty or it has to be appended
+ but no need to add before an existing start
+"""
+function features001!(fs001::Feature001Set, ohlcv::OhlcvData)
+    # ! to be done
+    return fs001
 end
 
 end  # module

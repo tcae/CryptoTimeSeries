@@ -1,8 +1,8 @@
-import Pkg: activate
-cd("$(@__DIR__)/..")
-println("activated $(pwd())")
-activate(pwd())
-cd(@__DIR__)
+# import Pkg: activate
+# cd("$(@__DIR__)/..")
+# println("activated $(pwd())")
+# activate(pwd())
+# cd(@__DIR__)
 
 
 # using Colors
@@ -376,7 +376,7 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
     pivot = ("pivot" in names(calcdf)) ? calcdf[!, "pivot"] : Ohlcv.addpivot!(calcdf)[!, "pivot"]
     pivot = normpercent(pivot, normref)
-    fdf, featuremask = Features.features001set(pivot)
+    fdf, featuremask = Features.features001(pivot)
     fdf = fdf[(end-size(subdf,1)+1):end, :]  # resize fdf to meet size of subdf
     x = subdf[!, :opentime]
     y = featuremask

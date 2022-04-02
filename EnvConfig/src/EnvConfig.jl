@@ -11,7 +11,7 @@ Provides
 
 """
 module EnvConfig
-using Logging, Dates
+using Logging, Dates, Pkg
 export authorization, test, production, training
 
 import JSON
@@ -61,7 +61,9 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 
 " set project dir as working dir "
 function setprojectdir()
-    cd("$(@__DIR__)/..")
+    cd("$(@__DIR__)/../..")  # ! assumes a fixed folder structure with EnvConfig as a package with the proejct folder
+    Pkg.activate(pwd())
+    # println("activated $(pwd())")
     return pwd()
 end
 

@@ -1,8 +1,8 @@
-cd("$(@__DIR__)/..")
+# cd("$(@__DIR__)/..")
 # println("activated $(pwd())")
-using Pkg
-Pkg.activate(pwd())
-cd(@__DIR__)
+# using Pkg
+# Pkg.activate(pwd())
+# cd(@__DIR__)
 
 using MLJ, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using MLJBase, RDatasets, MLJTuning, MLJModels
