@@ -83,7 +83,7 @@ end
 function prepare(labelthresholds)
     if EnvConfig.configmode == test
         x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
-        fdf, featuremask = Features.features001(y)
+        fdf, featuremask = Features.getfeatures(y)
         _, grad = Features.rollingregression(y, 50)
     else
         ohlcv = Ohlcv.defaultohlcv("btc")
@@ -91,7 +91,7 @@ function prepare(labelthresholds)
         Ohlcv.read!(ohlcv)
         y = Ohlcv.pivot!(ohlcv)
         println("pivot: $(typeof(y)) $(length(y))")
-        fdf, featuremask = Features.features001(ohlcv.df)
+        fdf, featuremask = Features.getfeatures(ohlcv.df)
         _, grad = Features.rollingregression(y, 12*60)
     end
     fdf = Features.mlfeatures(fdf, featuremask)
@@ -239,6 +239,14 @@ function regression1()
     #     scatter(y=yhat1, x=x[test], text=predictlabels, mode="lines", name="predict")
     # ]
     # plot(traces)
+end
+
+function loadclassifierhardwired(base, features::Features.Features002)
+    return
+end
+
+function loadclassifier(base, features::Features.Features001)
+    return loadclassifierhardwired(base, features)
 end
 
 # EnvConfig.init(production)

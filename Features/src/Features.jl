@@ -1,6 +1,6 @@
 """
 Provides features to classify the most price development.
-Currently advertised features are in Feature001Set
+Currently advertised features are in Features001
 
 """
 module Features
@@ -11,8 +11,14 @@ import DataFrames: DataFrame, Statistics
 using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
-export Feature001Set
-struct Feature001Set
+export Features001
+struct Features001
+    fdf::DataFrame
+    featuremask::Vector{String}
+    ohlcv::OhlcvData
+end
+
+struct Features002
     fdf::DataFrame
     featuremask::Vector{String}
     ohlcv::OhlcvData
@@ -300,7 +306,7 @@ regressiony(regry, grad, window) = [regry - grad * (window - 1), regry]
 
  k(x) = 0.310714 * x + 2.54286 is the linear regression of [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
  """
-function rollingregression(y, windowsize)::Tuple{Array{Float32,1},Array{Float32,1}}
+function rollingregression(y, windowsize)
     sum_x = sum(1:windowsize)
     sum_x_squared = sum((1:windowsize).^2)
     sum_xy = rolling(sum, y, windowsize,collect(1:windowsize))
@@ -329,9 +335,9 @@ Returns a tuple of vectors for each x calculated calculated back using the last 
 """
 function rollingregressionstd(y, regr_y, grad, window)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
-    normy = zeros(size(y, 1))
-    std = zeros(size(y, 1))
-    mean = zeros(size(y, 1))
+    normy = similar(y)
+    std = similar(y)
+    mean = similar(y)
     for ix1 in size(y, 1):-1:1
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
@@ -347,9 +353,9 @@ end
 """ don't use - this is a version for debug reasons """
 function rollingregressionstdxt(y, regr_y, grad, window)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
-    normy = zeros(size(y, 1), window)
-    std = zeros(size(y, 1))
-    mean = zeros(size(y, 1))
+    normy = similar(y, (size(y, 1), window))
+    std = similar(y)
+    mean = similar(y)
     for ix1 in size(y, 1):-1:1
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
@@ -368,7 +374,7 @@ function rollingregressionstdxt(y, regr_y, grad, window)
     return std, mean, normy
 end
 
-function relativevolume(volumes, shortwindow::Int, largewindow::Int)
+function relativevolume(volumes, shortwindow, largewindow)
     # large = rollmedian(volumes, largewindow)
     # largelen = size(large, 1)
     # short = rollmedian(volumes, shortwindow)
@@ -529,13 +535,13 @@ Properties at various rolling windows calculated on df data with ohlcv + pilot c
     - difference of last pivot price to regression line
 
 """
-function features001(pivot::Vector{Float32})
+function getfeatures001(pivot::Vector{Float32})
     featuremask::Vector{String} = []
     fdf = DataFrame()
     for wk in sortedregressionwindowkeys001  # wk = window key
         ws = regressionwindows001[wk]  # ws = window size in minutes
         fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
-        stdnotrend, _, fdf[:, "regrdiff$wk"] = Features.rollingregressionstd(pivot, fdf[!, "regry$wk"], fdf[!, "grad$wk"], ws)
+        stdnotrend, _, fdf[:, "regrdiff$wk"] = rollingregressionstd(pivot, fdf[!, "regry$wk"], fdf[!, "grad$wk"], ws)
         fdf[:, "2xstd$wk"] = stdnotrend .* 2.0  # also to be used as normalization reference
         append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
     end
@@ -543,40 +549,52 @@ function features001(pivot::Vector{Float32})
 end
 
 """
-Properties at various rolling windows calculated on df data with ohlcv + pilot columns:
-
-- per regression window
-    - gradient of pivot regression line
-    - standard deviation of regression normalized distribution
-    - difference of last pivot price to regression line
+- getfeatures001(pivot::Vector{Float32})
 - ration 4hour/9day volume to detect mid term rising volume
 - ration 5minute/4hour volume to detect short term rising volume
-
 """
-function features001(indf::DataFrame)
-    fdf, featuremask = features001(indf.pivot)
-    fdf[:, "4h/9dvol"] = relativevolume(indf[!, :basevolume], 4*60, 9*24*60)
-    fdf[:, "5m/4hvol"] = relativevolume(indf[!, :basevolume], 5, 4*60)
+function getfeatures001(ohlcvdf::DataFrame)
+    Ohlcv.addpivot!(ohlcvdf)
+    fdf, featuremask = getfeatures(ohlcvdf.pivot)
+    fdf[:, "4h/9dvol"] = relativevolume(ohlcvdf[!, :basevolume], 4*60, 9*24*60)
+    fdf[:, "5m/4hvol"] = relativevolume(ohlcvdf[!, :basevolume], 5, 4*60)
     append!(featuremask, ["4h/9dvol", "5m/4hvol"])
     return fdf, featuremask
 end
 
-"""
-Properties at various rolling windows calculated on 1minute OHLCV data:
+function getfeatures001(ohlcv::OhlcvData)
+    ohlcvdf = ohlcv.df
+    fdf, featuremask = getfeatures001(ohlcvdf)
+    return Features001(fdf, featuremask, ohlcv)
+end
 
-- per regression window
-    - gradient of pivot regression line
-    - standard deviation of regression normalized distribution
-    - difference of last pivot price to regression line
-- ration 4hour/9day volume to detect mid term rising volume
-- ration 5minute/4hour volume to detect short term rising volume
+function last3extremes(pivot, regrgrad)
+    l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
+    regressiongains = zeros(Float32, pricelen)
 
-"""
-function features001(ohlcv::OhlcvData)
-    indf = ohlcv.df
-    pivot = Ohlcv.pivot!(indf)
-    fdf, featuremask = features001(indf)
-    return Feature001Set(fdf, featuremask, ohlcv)
+    # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
+    # work consistently backward to treat initial fill and incremental fill alike
+    return l1xtrm, l2xtrm, l3xtrm
+end
+
+function getfeatures002(ohlcv::OhlcvData)
+    Ohlcv.addpivot!(ohlcv.df)
+    pivot = ohlcv.df[!, :pivot]
+    featuremask::Vector{String} = []
+    fdf = DataFrame()
+    for wk in sortedregressionwindowkeys001  # wk = window key
+        ws = regressionwindows001[wk]  # ws = window size in minutes
+        fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
+        fdf[:, "l1xtrm$wk"], fdf[:, "l2xtrm$wk"], fdf[:, "l3xtrm$wk"] = last3extremes(pivot, fdf[!, "grad$wk"])
+        #! TODO add price of last 3 regression extreme to get a completemaximum and last regression minimum
+        append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
+    end
+    return Features002(fdf, featuremask, ohlcv)
+end
+
+function getfeatures(ohlcv::OhlcvData)
+    # return getfeatures001(ohlcv)
+    return getfeatures002(ohlcv)
 end
 
 
@@ -585,9 +603,9 @@ end
  constraint: either featureset001 is nothing or empty or it has to be appended
  but no need to add before an existing start
 """
-function features001!(fs001::Feature001Set, ohlcv::OhlcvData)
+function getfeatures!(features::Features001, ohlcv::OhlcvData)
     # ! to be done
-    return fs001
+    return features
 end
 
 end  # module

@@ -15,7 +15,8 @@ using Dates, DataFrames, JSON
 using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 
 mutable struct TradeCache
-    fs001::Feature001Set
+    features
+    classifier
     chance::Classify.TradeChance
 end
 
@@ -46,8 +47,10 @@ function preparetradecache(backtest)
             @warn "unexpected empty ohlcv data returned for" base
             continue
         end
-        fs001 = Features.features001(ohlcv)
-        push!(tradecache, TradeCache(fs001))
+        features = Features.getfeatures(ohlcv)
+        emptytc = Classify.TradeChance(base, 0.0, 0.0, 0.0)
+        classifier = Classify.loadclassifier(base, features)
+        push!(tradecache, TradeCache(features, emptytc))
     end
     return tradecache
 end
@@ -88,9 +91,9 @@ function tradeloop(backtest=true)
                     lastix += 1
                 else
                     appendmostrecent!(tc)
-                    lastix = size(tc.fs001.fdf, 1)
+                    lastix = size(tc.features.fdf, 1)
                 end
-                tc.chance = Classify.tradechance(tc.fs001, lastix)
+                tc.chance = Classify.tradechance(tc.features, lastix)
             end
             trade!(tradecache)
         end

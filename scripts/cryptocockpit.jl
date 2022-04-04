@@ -376,7 +376,7 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
     pivot = ("pivot" in names(calcdf)) ? calcdf[!, "pivot"] : Ohlcv.addpivot!(calcdf)[!, "pivot"]
     pivot = normpercent(pivot, normref)
-    fdf, featuremask = Features.features001(pivot)
+    fdf, featuremask = Features.getfeatures(pivot)
     fdf = fdf[(end-size(subdf,1)+1):end, :]  # resize fdf to meet size of subdf
     x = subdf[!, :opentime]
     y = featuremask

@@ -164,7 +164,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
     return df
 end
 
-function cryptodownload(base, interval, startdt, enddt)
+function cryptodownload(base, interval, startdt, enddt)::OhlcvData
     ohlcv = Ohlcv.defaultohlcv(base)
     Ohlcv.setinterval!(ohlcv, interval)
     println("Requesting $base $interval intervals from $startdt until $enddt")
