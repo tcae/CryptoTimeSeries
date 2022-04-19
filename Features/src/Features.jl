@@ -30,15 +30,10 @@ up(slope) = slope > 0
 downorflat(slope) = slope <= 0
 
 """
-- returns index of next regression extreme and index of gradient inflection index
+- returns index of next regression extreme (or 0 if no extreme) and index of gradient inflection index
     - regression extreme index: in case of uphill **after** slope > 0
     - regression extreme index: in case of downhill **after** slope <= 0
-- **next** index means
-    - in case `forward`: next higher index
-    - in case of NOT `forward`: next lower index
-- it is expected that the relevant actual price maximum is between gradient inflection index and regression extreme
->> it turned out that the inflection is not reliable
->> search from regression extreme back to last price extreme for global extreme yields better results
+
 """
 function extremeregressionindex(regressions, startindex; forward)
     reglen = length(regressions)
@@ -57,7 +52,11 @@ function extremeregressionindex(regressions, startindex; forward)
         end
     end
     if indexinrange(startindex, reglen)  # then extreme detected
-        extremeindex = startindex
+        if forward
+            extremeindex = startindex
+        elseif startindex < reglen
+            extremeindex = startindex + 1
+        end
         # else end of array and no extreme detected, which is signalled by returned index 0
     end
     return extremeindex, maxabsgradix
@@ -221,13 +220,18 @@ function distancesregressionpeak(prices, regressions)
                 rix, gix = extremeregressionindex(regressions, cix; forward=true)
                 rix = rix == 0 ? plen : rix
             elseif rix < plen  # rix >= cix
+                # extreme price index pix between cix and last regression extreme rix was found and distances filled
+                # look for next regression extreme starting from last regression extreme
                 maxsearch = regressions[rix] > 0
                 rix, gix = extremeregressionindex(regressions, rix; forward=true)
                 rix = rix == 0 ? plen : rix
             end
             lastpix = pix > lastpix ? pix : lastpix
-            # pix = extremepriceindex(prices, rix, gix, maxsearch)
-            pix = extremepriceindex(prices, rix, cix, maxsearch)
+            # - it was expected that the relevant actual price maximum is between gradient inflection index and regression extreme
+            # >> it turned out that the inflection is not reliable
+            # >> search from regression extreme back to last price extreme for global extreme yields better results
+            # pix = extremepriceindex(prices, rix, gix, maxsearch)  # search back from extreme rix to inflection (=maxgrad) index gix
+            pix = extremepriceindex(prices, rix, cix, maxsearch)  # search back from extreme rix to current index cix
         end
         distances[cix] = smoothdistance(prices, lastpix, cix, pix)  # use staright line between extremes to calculate distance
         # distances[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable
@@ -300,13 +304,13 @@ regressiony(regry, grad, window) = [regry - grad * (window - 1), regry]
  - Intercept(a) = (ΣY - b(ΣX)) / N
  - used from https://www.easycalculation.com/statistics/learn-regression.php
 
- returns 2 one dimensioinal arrays: gradient and regression_y
+ returns 2 one dimensioinal arrays: gradient and regression_y that start at max(1, startindex-windowsize)
  gradient are the gradients per minute (= x equidistant)
  regression_y are the regression line last points
 
  k(x) = 0.310714 * x + 2.54286 is the linear regression of [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
  """
-function rollingregression(y, windowsize)
+ function rollingregression(y, windowsize)
     sum_x = sum(1:windowsize)
     sum_x_squared = sum((1:windowsize).^2)
     sum_xy = rolling(sum, y, windowsize,collect(1:windowsize))
@@ -316,6 +320,41 @@ function rollingregression(y, windowsize)
     regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
     gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
     return regression_y, gradient
+end
+
+"""
+Acts like rollingregression(y, windowsize) but starts calculation at *startindex-windowsize+1*.
+In order to get only the regression_y, gradient without padding use the subvectors *[windowsize:end]*
+"""
+function rollingregression(y, windowsize, startindex)
+    startindex = max(1, startindex-windowsize+1)
+    suby = y[startindex:end]
+    sum_x = sum(1:windowsize)
+    sum_x_squared = sum((1:windowsize).^2)
+    sum_xy = rolling(sum, suby, windowsize,collect(1:windowsize))
+    sum_y = rolling(sum, suby, windowsize)
+    gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
+    intercept = (sum_y - gradient*(sum_x)) / windowsize
+    regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
+    gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
+    return regression_y, gradient
+end
+
+"""
+calculates appends missing `length(y) - length(regressions)` *regression_y, gradient* elements that correpond to the last elements of *y*
+"""
+function rollingregression!(regression_y, gradient, y, windowsize)
+    @assert size(regression_y) == size(gradient)
+    if (length(y) > 0) && (length(regression_y) < length(y))
+        regnew, gradnew = rollingregression(y, windowsize, length(regression_y)+1)
+        regression_y = append!(regression_y, regnew[windowsize:end])
+        gradient = append!(gradient, gradnew[windowsize:end])
+    end
+    return regression_y, gradient
+end
+
+function normrollingregression(price, windowsize)
+    return rollingregression(price, windowsize) ./ price
 end
 
 
@@ -535,7 +574,7 @@ Properties at various rolling windows calculated on df data with ohlcv + pilot c
     - difference of last pivot price to regression line
 
 """
-function getfeatures001(pivot::Vector{Float32})
+function getfeatures001(pivot::Vector{<:AbstractFloat})
     featuremask::Vector{String} = []
     fdf = DataFrame()
     for wk in sortedregressionwindowkeys001  # wk = window key
@@ -571,7 +610,7 @@ end
 function last3extremes(pivot, regrgrad)
     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
     regressiongains = zeros(Float32, pricelen)
-
+    #! TODO implementation
     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
     # work consistently backward to treat initial fill and incremental fill alike
     return l1xtrm, l2xtrm, l3xtrm
