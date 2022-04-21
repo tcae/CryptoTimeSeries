@@ -107,27 +107,26 @@ EnvConfig.init(test)
 
 
 # ! getfeatures test to be added
-# ! rollingregressionstd test to be added
 
 
 @testset "Features tests" begin
 
 yvec = [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
-a,b = Features.rollingregression(yvec, 7)
-@test abs(b[7] - 0.31071427) < 10^-7
-@test isapprox(a, [2.8535714, 3.1642857, 3.475, 3.7857144, 4.0964284, 4.4071426, 4.7178574], atol=10^-5)
-a2,b2 = Features.rollingregression(yvec, 7, 1)
-@test a == a2
-@test b == b2
-a,b = Features.rollingregression(yvec, 4)
-@test isapprox(a, [2.87, 3.19, 3.51, 3.83, 4.06, 4.13, 4.78], atol=10^-5)
-@test isapprox(b, [0.32, 0.32, 0.32, 0.32, 0.29, 0.17, 0.37], atol=10^-5)
-a2,b2 = Features.rollingregression(yvec, 4, 1)
-@test a == a2
-@test b == b2
-# a,b = Features.normrollingregression(yvec, 4)
-# @test isapprox(a, [0.98965514, 1.0290322, 0.975, 1.0078948, 1.015, 1.0073171, 0.95600003], atol=10^-5)
-# @test isapprox(b, [0.11034483, 0.103225805, 0.08888888, 0.08421052, 0.0725, 0.041463416, 0.074], atol=10^-5)
+regr,grad = Features.rollingregression(yvec, 7)
+@test abs(grad[7] - 0.31071427) < 10^-7
+@test isapprox(regr, [2.8535714, 3.1642857, 3.475, 3.7857144, 4.0964284, 4.4071426, 4.7178574], atol=10^-5)
+regr2,grad2 = Features.rollingregression(yvec, 7, 1)
+@test regr == regr2
+@test grad == grad2
+regr,grad = Features.rollingregression(yvec, 4)
+@test isapprox(regr, [2.87, 3.19, 3.51, 3.83, 4.06, 4.13, 4.78], atol=10^-5)
+@test isapprox(grad, [0.32, 0.32, 0.32, 0.32, 0.29, 0.17, 0.37], atol=10^-5)
+regr2,grad2 = Features.rollingregression(yvec, 4, 1)
+@test regr == regr2
+@test grad == grad2
+# regr,grad = Features.normrollingregression(yvec, 4)
+# @test isapprox(regr, [0.98965514, 1.0290322, 0.975, 1.0078948, 1.015, 1.0073171, 0.95600003], atol=10^-5)
+# @test isapprox(grad, [0.11034483, 0.103225805, 0.08888888, 0.08421052, 0.0725, 0.041463416, 0.074], atol=10^-5)
 # @test Features.relativevolume(yvec, 3, 5) == [1.0555555555555556; 1.0526315789473684; 1.025]
 @test Features.relativevolume(yvec, 3, 5) == [1.0, 1.0, 1.0, 1.0746268656716418, 1.0555555555555556, 1.0526315789473684, 1.025]
 @test lastextremes_test()
@@ -136,24 +135,55 @@ a2,b2 = Features.rollingregression(yvec, 4, 1)
 @test nextpeakdistance_test()
 @test Features.mlfeatures_test()
 
-a,b = Features.rollingregression(yvec, 2)
-a2,b2 = Features.rollingregression(yvec, 2, 4)
-@test length(a) - 4 + 2 == length(a2)
-@test length(b) - 4 + 2 == length(b2)
-@test a[4:end] == a2[2:end]
-@test b[4:end] == b2[2:end]
-# @test b == b2
+regr,grad = Features.rollingregression(yvec, 2)
+regr2,grad2 = Features.rollingregression(yvec, 2, 4)
+@test length(regr) - 4 + 2 == length(regr2)
+@test length(grad) - 4 + 2 == length(grad2)
+@test regr[4:end] == regr2[2:end]
+@test grad[4:end] == grad2[2:end]
+# @test grad == grad2
 
-a2,b2 = Features.rollingregression(yvec[1:4], 2)
-@test a[1:4] == a2
-@test b[1:4] == b2
-a2,b2 = Features.rollingregression!(a2, b2, yvec[1:5], 2)
-@test a[1:5] == a2
-@test b[1:5] == b2
-a2,b2 = Features.rollingregression!(a2, b2, yvec, 2)
-@test a == a2
-@test b == b2
+regr2,grad2 = Features.rollingregression!(nothing, nothing, yvec[1:4], 2)
+@test regr[1:4] == regr2
+@test grad[1:4] == grad2
+regr2,grad2 = Features.rollingregression!(Float64[], Float64[], yvec[1:4], 2)
+@test regr[1:4] == regr2
+@test grad[1:4] == grad2
+regr2,grad2 = Features.rollingregression(yvec[1:4], 2)
+@test regr[1:4] == regr2
+@test grad[1:4] == grad2
+regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec[1:5], 2)
+@test regr[1:5] == regr2
+@test grad[1:5] == grad2
+regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec, 2)
+@test regr == regr2
+@test grad == grad2
 
+regr,grad = Features.rollingregression(yvec, 5)
+regr2,grad2 = Features.rollingregression(yvec[1:5], 5)
+@test regr[1:5] == regr2
+@test grad[1:5] == grad2
+regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec, 5)
+@test regr == regr2
+@test grad == grad2
+
+s1, m1, n1 = Features.rollingregressionstd(yvec, regr, grad, 5)
+s2, m2, n2 = Features.rollingregressionstdxt(yvec, regr, grad, 5)
+@test s1 == s2
+@test m1 == m2
+
+regr,grad = Features.rollingregression(yvec, 2)
+s1, m1, n1 = Features.rollingregressionstd(yvec, regr, grad, 2)
+# s2, m2, n2 = Features.rollingregressionstd!(nothing, nothing, nothing, yvec[1:4], regr[1:4], grad[1:4], 2)
+s2, m2, n2 = Features.rollingregressionstd(yvec[1:4], regr[1:4], grad[1:4], 2)
+@test s1[1:4] == s2
+@test m1[1:4] == m2
+@test n1[1:4] == n2
+
+s2, m2, n2 = Features.rollingregressionstd!(s2, m2, n2, yvec, regr, grad, 2)
+@test s1 == s2
+@test m1 == m2
+@test n1 == n2
 
 end
 

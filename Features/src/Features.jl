@@ -341,14 +341,23 @@ function rollingregression(y, windowsize, startindex)
 end
 
 """
-calculates appends missing `length(y) - length(regressions)` *regression_y, gradient* elements that correpond to the last elements of *y*
+calculates and appends missing `length(y) - length(regressions)` *regression_y, gradient* elements that correpond to the last elements of *y*
 """
 function rollingregression!(regression_y, gradient, y, windowsize)
-    @assert size(regression_y) == size(gradient)
-    if (length(y) > 0) && (length(regression_y) < length(y))
-        regnew, gradnew = rollingregression(y, windowsize, length(regression_y)+1)
-        regression_y = append!(regression_y, regnew[windowsize:end])
-        gradient = append!(gradient, gradnew[windowsize:end])
+    if (length(y) > 0)
+        startindex = isnothing(regression_y) ? 1 : (length(regression_y) < length(y)) ? length(regression_y)+1 : length(y)
+        regnew, gradnew = rollingregression(y, windowsize, startindex)
+        if isnothing(regression_y) || isnothing(gradient)
+            regression_y = regnew
+            gradient = gradnew
+        elseif length(regression_y) < length(y)  # only change regression_y and gradient if it makes sense
+            @assert size(regression_y, 1) == size(gradient, 1)
+            startindex = min(startindex, windowsize)
+            regression_y = append!(regression_y, regnew[startindex:end])
+            gradient = append!(gradient, gradnew[startindex:end])
+        else
+            @warn "nothing to append when length(regression_y) >= length(y)" length(regression_y) length(y)
+        end
     end
     return regression_y, gradient
 end
@@ -377,6 +386,9 @@ function rollingregressionstd(y, regr_y, grad, window)
     normy = similar(y)
     std = similar(y)
     mean = similar(y)
+    normy .= 0
+    std .= 0
+    mean .= 0
     for ix1 in size(y, 1):-1:1
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
@@ -389,7 +401,56 @@ function rollingregressionstd(y, regr_y, grad, window)
     return std, mean, normy
 end
 
-""" don't use - this is a version for debug reasons """
+"""
+Acts like rollingregressionstd(y, regr_y, grad, window) but starts calculation at *startindex-windowsize+1*.
+In order to get only the std, mean, normy without padding use the subvectors *[windowsize:end]*
+"""
+function rollingregressionstd(y, regr_y, grad, window, startindex)
+    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    normy = similar(y[max(1, startindex-window+1):end])
+    std = similar(normy)
+    mean = similar(normy)
+    normy .= 0
+    std .= 0
+    mean .= 0
+    for ix1 in size(y, 1):-1:startindex
+        ix2min = max(1, ix1 - window + 1)
+        for ix2 in ix2min:ix1
+            normy[ix2-startindex+window] = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+        end
+        mean[ix1-startindex+window] = Statistics.mean(normy[ix1-startindex+1:ix1-startindex+window])
+        std[ix1-startindex+window] = Statistics.stdm(normy[ix1-startindex+1:ix1-startindex+window], mean[ix1-startindex+window])
+    end
+    std[1] = 0  # not avoid NaN
+    return std, mean, normy
+end
+
+"""
+calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *y*
+"""
+function rollingregressionstd!(std, mean, normy, y, regr_y, grad, window)
+    @assert size(y) == size(regr_y) == size(grad) "$(size(y)) == $(size(regr_y)) == $(size(grad))"
+    if (length(y) > 0)
+        startindex = isnothing(std) ? 1 : (length(std) < length(y)) ? length(std)+1 : length(y)
+        stdnew, meannew, normynew = rollingregressionstd(y, regr_y, grad, window, startindex)
+        if isnothing(std) || isnothing(mean) || isnothing(normy)
+            std = stdnew
+            mean = meannew
+            normy = normynew
+        elseif length(std) < length(y)  # only change regression_y and gradient if it makes sense
+            @assert size(std, 1) == size(mean, 1) == size(normy, 1) "$(size(std, 1)) == $(size(mean, 1)) == $(size(normy, 1))"
+            startindex = min(startindex, window)
+            std = append!(std, stdnew[startindex:end])
+            mean = append!(mean, meannew[startindex:end])
+            normy = append!(normy, normynew[startindex:end])
+        else
+            @warn "nothing to append when length(std) >= length(y)" length(std) length(y)
+        end
+    end
+    return std, mean, normy
+end
+
+    """ don't use - this is a version for debug reasons """
 function rollingregressionstdxt(y, regr_y, grad, window)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
     normy = similar(y, (size(y, 1), window))
@@ -398,15 +459,15 @@ function rollingregressionstdxt(y, regr_y, grad, window)
     for ix1 in size(y, 1):-1:1
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
-            @assert 0<ix2<=window "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), window: $window"
-            @assert 0<ix1<=size(y, 1) "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), size(y, 1): $(size(y, 1))"
+            # @assert 0<ix2<=window "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), window: $window"
+            # @assert 0<ix1<=size(y, 1) "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), size(y, 1): $(size(y, 1))"
             ix3 = ix2-ix2min+1
             ny = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
             # Logging.@info "check" ix1 ix2 ix2min ix3 ny
             normy[ix1, ix3] = ny
         end
-        mean[ix1] = Statistics.mean(normy[ix1, 1:ix1])
-        std[ix1] = Statistics.stdm(normy[ix1, 1:ix1], mean[ix1])
+        mean[ix1] = Statistics.mean(normy[ix1, 1:min(window, ix1)])
+        std[ix1] = Statistics.stdm(normy[ix1, 1:min(window, ix1)], mean[ix1])
         std[1] = 0  # not avoid NaN
     end
     Logging.@info "check" normy y regr_y grad std mean
