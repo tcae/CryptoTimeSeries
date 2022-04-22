@@ -30,7 +30,7 @@ up(slope) = slope > 0
 downorflat(slope) = slope <= 0
 
 """
-- returns index of next regression extreme (or 0 if no extreme) and index of gradient inflection index
+- returns index of next regression extreme (or 0 if no extreme)
     - regression extreme index: in case of uphill **after** slope > 0
     - regression extreme index: in case of downhill **after** slope <= 0
 
@@ -38,16 +38,13 @@ downorflat(slope) = slope <= 0
 function extremeregressionindex(regressions, startindex; forward)
     reglen = length(regressions)
     extremeindex = 0
-    maxabsgradix = startindex
     @assert indexinrange(startindex, reglen) "index: $startindex  len: $reglen"
     if regressions[startindex] > 0
         while indexinrange(startindex, reglen) && up(regressions[startindex])
-            maxabsgradix = regressions[maxabsgradix] > regressions[startindex] ? maxabsgradix : startindex
             startindex = nextindex(forward, startindex)
         end
     else  # regressions[startindex] <= 0
         while indexinrange(startindex, reglen) && downorflat(regressions[startindex])
-            maxabsgradix = regressions[maxabsgradix] < regressions[startindex] ? maxabsgradix : startindex
             startindex = nextindex(forward, startindex)
         end
     end
@@ -55,11 +52,50 @@ function extremeregressionindex(regressions, startindex; forward)
         if forward
             extremeindex = startindex
         elseif startindex < reglen
-            extremeindex = startindex + 1
+            extremeindex = startindex
         end
         # else end of array and no extreme detected, which is signalled by returned index 0
     end
-    return extremeindex, maxabsgradix
+    return extremeindex
+end
+
+"""
+Returns an index array of regression extremes.
+The index is >0 in case of a maximum and <0 in case of a minimum. The index is the absolute number.
+The index array is either created if not present or is extended.
+
+    - extremeix will be amended or created and will also be returned
+    - regressiongradients are the gradients of the regression lines calculated for each price
+    - startindex is the index within regressiongradients where the search for extremes shall start
+    - if forward (default) the extremeix ix will be appended otherwise added to the start
+
+"""
+function regressionextremesix!(extremeix, regressiongradients, startindex; forward=true)
+    @assert startindex > 0
+    @assert !isnothing(regressiongradients)
+    if startindex > length(regressiongradients)
+        @warn "unepected startindex beyond length of search vector *regressiongradients*" startindex length(regressiongradients)
+        return extremeix
+    end
+    if isnothing(extremeix)
+        extremeix = Int32[]
+    end
+    xix = extremeregressionindex(regressiongradients, startindex; forward)
+    while xix != 0
+        if forward
+            if (length(extremeix) > 0) && (abs(extremeix[end]) >= xix)
+                @warn "inconsistency: extremeix[end] >= next xtreme ix" abs(extremeix[end]) xix
+            end
+            extremeix = regressiongradients[xix] > 0 ? push!(extremeix, -xix) : push!(extremeix, xix)
+        else
+            if (length(extremeix) > 0) && (abs(extremeix[1]) <= xix)
+                @warn "inconsistency: extremeix[end] <= next xtreme ix" abs(extremeix[end]) xix
+            end
+            extremeix = regressiongradients[xix] > 0 ? pushfirst!(extremeix, xix) : pushfirst!(extremeix, -xix)
+        end
+        xix = extremeregressionindex(regressiongradients, xix; forward)
+    end
+    return extremeix
 end
 
 newifbetterequal(old, new, maxsearch) = maxsearch ? new >= old : new <= old
@@ -217,20 +253,19 @@ function distancesregressionpeak(prices, regressions)
         if pix <= cix
             maxsearch = regressions[cix] > 0
             if rix < cix
-                rix, gix = extremeregressionindex(regressions, cix; forward=true)
+                rix = extremeregressionindex(regressions, cix; forward=true)
                 rix = rix == 0 ? plen : rix
             elseif rix < plen  # rix >= cix
                 # extreme price index pix between cix and last regression extreme rix was found and distances filled
                 # look for next regression extreme starting from last regression extreme
                 maxsearch = regressions[rix] > 0
-                rix, gix = extremeregressionindex(regressions, rix; forward=true)
+                rix = extremeregressionindex(regressions, rix; forward=true)
                 rix = rix == 0 ? plen : rix
             end
             lastpix = pix > lastpix ? pix : lastpix
             # - it was expected that the relevant actual price maximum is between gradient inflection index and regression extreme
             # >> it turned out that the inflection is not reliable
             # >> search from regression extreme back to last price extreme for global extreme yields better results
-            # pix = extremepriceindex(prices, rix, gix, maxsearch)  # search back from extreme rix to inflection (=maxgrad) index gix
             pix = extremepriceindex(prices, rix, cix, maxsearch)  # search back from extreme rix to current index cix
         end
         distances[cix] = smoothdistance(prices, lastpix, cix, pix)  # use staright line between extremes to calculate distance
@@ -396,8 +431,8 @@ function rollingregressionstd(y, regr_y, grad, window)
         end
         mean[ix1] = Statistics.mean(normy[ix2min:ix1])
         std[ix1] = Statistics.stdm(normy[ix2min:ix1], mean[ix1])
-        std[1] = 0  # not avoid NaN
     end
+    std[1] = 0  # not avoid NaN
     return std, mean, normy
 end
 
@@ -407,7 +442,9 @@ In order to get only the std, mean, normy without padding use the subvectors *[w
 """
 function rollingregressionstd(y, regr_y, grad, window, startindex)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
-    normy = similar(y[max(1, startindex-window+1):end])
+    starty = max(1, startindex-window+1)
+    offset = starty - 1
+    normy = similar(y[starty:end])
     std = similar(normy)
     mean = similar(normy)
     normy .= 0
@@ -416,10 +453,12 @@ function rollingregressionstd(y, regr_y, grad, window, startindex)
     for ix1 in size(y, 1):-1:startindex
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
-            normy[ix2-startindex+window] = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            normy[ix2-offset] = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
         end
-        mean[ix1-startindex+window] = Statistics.mean(normy[ix1-startindex+1:ix1-startindex+window])
-        std[ix1-startindex+window] = Statistics.stdm(normy[ix1-startindex+1:ix1-startindex+window], mean[ix1-startindex+window])
+        ix3 = ix2min-offset
+        ix4 = ix1-offset
+        mean[ix4] = Statistics.mean(normy[ix3:ix4])
+        std[ix4] = Statistics.stdm(normy[ix3:ix4], mean[ix4])
     end
     std[1] = 0  # not avoid NaN
     return std, mean, normy
