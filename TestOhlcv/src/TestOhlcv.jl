@@ -192,7 +192,7 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
         end
         return 200, df
     else
-        @warn "unknown testohlcv test base: $base"
+        # @warn "unknown testohlcv test base: $base"
         return 111, Ohlcv.defaultohlcvdataframe()
     end
 end

@@ -68,6 +68,43 @@ exchange(ohlcv::OhlcvData) = ohlcv.xch
 interval(ohlcv::OhlcvData) = ohlcv.interval
 dataframe(ohlcv::OhlcvData) = ohlcv.df
 
+function copy(ohlcv::OhlcvData)
+    ohlcvcopy = OhlcvData(DataFrames.copy(ohlcv.df), ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
+    return ohlcvcopy
+end
+
+"""
+if ohlcv overlaps with addohlcv thenadd ohlcv replaces content of ohlcv.
+if there is a time gap between the two then ohlcv will not be modofied and an error is issued.
+removes the pivot column. currently limited to *1m* interval
+
+"""
+function merge!(ohlcv::OhlcvData, addohlcv::OhlcvData)
+    df1 = Ohlcv.dataframe(ohlcv)
+    df2 = Ohlcv.dataframe(addohlcv)
+    @assert ohlcv.interval == addohlcv.interval == "1m"
+    startgap = Int(Dates.Minute(df1[begin, :opentime] - df2[end, :opentime])/Dates.Minute(1))
+    endgap = Int(Dates.Minute(df2[begin, :opentime] - df1[end, :opentime])/Dates.Minute(1))
+    endoverlap = -startgap +1
+    if (startgap > 1) || (endgap > 1)
+        @error "cannot merge ohlcv data due to time gap" startgap endgap
+        return
+    end
+    if (df2[begin, :opentime] <= df1[begin, :opentime]) && (df1[end, :opentime] <= df2[end, :opentime])
+        # ohlcv is complete subset of addohlcv
+        ohlcv.df = DataFrames.copy(addohlcv.df)
+    elseif (df1[begin, :opentime] < df2[begin, :opentime]) && (df2[end, :opentime] < df1[end, :opentime])
+        @warn "addohlcv is full subset of ohlcv - no action"
+    elseif df2[begin, :opentime] <= df1[begin, :opentime] <= (df2[end, :opentime] + Dates.Minute(1)) <= df1[end, :opentime]
+        startoverlap = Int(Dates.Minute(df2[end, :opentime] - df1[begin, :opentime])/Dates.Minute(1)) + 1
+        ohlcv.df = vcat(df2[!, save_cols], df1[begin+startoverlap:end, save_cols])  # without :pivot
+    elseif df1[begin, :opentime] <= df2[begin, :opentime] <= (df1[end, :opentime] + Dates.Minute(1)) <= df2[end, :opentime]
+        endoverlap = Int(Dates.Minute(df1[end, :opentime] - df2[begin, :opentime])/Dates.Minute(1)) + 1
+        ohlcv.df = vcat(df1[begin:end-endoverlap, save_cols], df2[!, save_cols])  # without :pivot
+    end
+    return ohlcv
+end
+
 function setbasesymbol!(ohlcv::OhlcvData, base::String)
     ohlcv.base = base
     return ohlcv

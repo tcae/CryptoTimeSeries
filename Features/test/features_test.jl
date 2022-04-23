@@ -172,16 +172,16 @@ s2, m2, n2 = Features.rollingregressionstdxt(yvec, regr, grad, 5)
 
 regr,grad = Features.rollingregression(yvec, 2)
 s1, m1, n1 = Features.rollingregressionstd(yvec, regr, grad, 3)
-s2, m2, n2 = Features.rollingregressionstd!(nothing, nothing, nothing, yvec[1:4], regr[1:4], grad[1:4], 3)
+s2, m2, n2 = Features.rollingregressionstd!(nothing, yvec[1:4], regr[1:4], grad[1:4], 3)
 # s2, m2, n2 = Features.rollingregressionstd(yvec[1:4], regr[1:4], grad[1:4], 3)
 @test s1[1:4] == s2
 @test m1[1:4] == m2
 @test n1[1:4] == n2
 
-s2, m2, n2 = Features.rollingregressionstd!(s2, m2, n2, yvec, regr, grad, 3)
+s2, m2, n2 = Features.rollingregressionstd!(s2, yvec, regr, grad, 3)
 @test s1 == s2
-@test m1 == m2
-@test n1 == n2
+@test m1[5:7] == m2
+@test n1[5:7] == n2
 
 reggrad = [1, 2, 0, 0, -1, 0, 1, -3, 1, 1, 0]
 xix = Int32[]
@@ -197,6 +197,9 @@ xix = Features.regressionextremesix!(nothing, reggrad, length(reggrad); forward=
 xix = Features.regressionextremesix!(xix[3:5], reggrad, 7; forward=false)
 @test xix == [2, -6, 7, -8, 10]
 
+@test "121m" == Features.periodlabels(2*60+1)
+@test "2h" == Features.periodlabels(2*60)
+@test "2d" == Features.periodlabels(2*24*60)
 
 end
 

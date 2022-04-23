@@ -91,7 +91,7 @@ function init(mode::Mode)
         datapath = "TrainingFeatures/"
     elseif configmode == test
         trainingbases = ["sine", "doublesine"]
-        bases = ["sine", "doublesine"]
+        bases = ["sine", "doublesine", "btc"]
         datapath = "TestFeatures/"
         # datapath = "Features/"
     else

@@ -70,7 +70,8 @@ function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates
             rstatus = 112
             @warn "$base is an unknown base for EnvConfig.test mode"
         end
-    else
+    end
+    if (EnvConfig.configmode != EnvConfig.test) || (rstatus == 111)
         try
             symbol = uppercase(base*cryptoquote)
             # println("symbol=$symbol start=$startdt end=$enddt")
@@ -162,6 +163,62 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
     # display(first(df, 3))
     # display(last(df, 3))
     return df
+end
+
+function cryptoupdate!(ohlcv, startdt, enddt)
+    base = ohlcv.base
+    interval = ohlcv.interval
+    # println("Requesting $base $interval intervals from $startdt until $enddt")
+    if enddt <= startdt
+        Logging.@warn "Invalid datetime range: end datetime $enddt <= start datetime $startdt"
+        return ohlcv
+    end
+    olddf = Ohlcv.dataframe(ohlcv)
+    loadall = false
+    if size(olddf, 1) > 0  # there is already data available
+        if (startdt < olddf[begin, :opentime]) && (enddt >= olddf[begin, :opentime])
+            # correct enddt in each case (gap between new and old range or range overlap) to avoid time range gaps
+            tmpdt = olddf[begin, :opentime] - intervalperiod(interval)
+            # get data of a timerange before the already available data
+            newdf = gethistoryohlcv(base, startdt, tmpdt, interval)
+            if size(newdf, 1) > 0
+                if names(olddf) == names(newdf)
+                    olddf = vcat(newdf, olddf)
+                else
+                    Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
+                end
+            end
+            Ohlcv.setdataframe!(ohlcv, olddf)
+            subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
+        else
+            loadall = true
+        end
+        if (startdt <= olddf[end, :opentime]) && (enddt > olddf[end, :opentime])
+            tmpdt = olddf[end, :opentime]  # update last data row
+            newdf = gethistoryohlcv(base, tmpdt, enddt, interval)
+            if size(newdf, 1) > 0
+                while (size(olddf, 1) > 0) && (newdf[begin, :opentime] <= olddf[end, :opentime])  # replace last row with updated data
+                    deleteat!(olddf, size(olddf, 1))
+                end
+                if names(olddf) == names(newdf)
+                    olddf = vcat(olddf, newdf)
+                else
+                    Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
+                end
+            end
+            Ohlcv.setdataframe!(ohlcv, olddf)
+            subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
+        else
+            loadall = true
+        end
+    else
+        loadall = true
+    end
+    if loadall
+        newdf = gethistoryohlcv(base, startdt, enddt, interval)
+        Ohlcv.setdataframe!(ohlcv, newdf)
+    end
+    return ohlcv
 end
 
 function cryptodownload(base, interval, startdt, enddt)::OhlcvData

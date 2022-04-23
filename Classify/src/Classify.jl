@@ -18,6 +18,17 @@ end
 """
 returns the chance expressed in gain between currentprice and future targetprice * probability
 """
+function traderules001(features::Features.Features002, currentix)::TradeChance
+    pricecurrent = Ohlcv.dataframe(features.ohlcv)[currentix, :pivot]
+    pricetarget = pricecurrent * 1.01
+    prob = 0.5  #! TODO  implementation
+    tc = TradeChance(features.base, pricecurrent, pricetarget, prob)
+    return tc
+end
+
+"""
+returns the chance expressed in gain between currentprice and future targetprice * probability
+"""
 function tradechance(features, currentix)::TradeChance
     pricecurrent = Ohlcv.dataframe(features.ohlcv)[currentix, :pivot]
     pricetarget = pricecurrent * 1.01

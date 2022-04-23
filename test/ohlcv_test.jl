@@ -1,6 +1,6 @@
 module OhlcvTest
 
-using DataFrames
+using DataFrames, Dates
 using Test
 using EnvConfig
 using Ohlcv
@@ -78,6 +78,31 @@ function pivot_test()
     # return isapprox(ohlcv2.df.pivot, ohlcv2.df.pivot2)
 end
 
+function ohlcvab(offset)
+    dfa = DataFrame(
+        opentime=[DateTime("2022-01-02T22:55:00")+Dates.Minute(i) for i in 1:3],
+        open=[1.3+i for i in 1:3],
+        high=[1.3+i for i in 1:3],
+        low=[1.3+i for i in 1:3],
+        close=[1.3+i for i in 1:3],
+        basevolume=[1.3+i for i in 1:3]
+        )
+    dfb = DataFrame(
+        opentime=[DateTime("2022-01-02T22:55:00")+Dates.Minute(i+offset) for i in 1:5],
+        open=[1.5+i for i in 1:5],
+        high=[1.5+i for i in 1:5],
+        low=[1.5+i for i in 1:5],
+        close=[1.5+i for i in 1:5],
+        basevolume=[1.5+i for i in 1:5]
+        )
+    ohlcva = Ohlcv.defaultohlcv("test")
+    Ohlcv.setdataframe!(ohlcva, dfa)
+    ohlcvb = Ohlcv.defaultohlcv("test")
+    Ohlcv.setdataframe!(ohlcvb, dfb)
+
+    return ohlcva,ohlcvb
+end
+
 # println("ohlcv_test")
 EnvConfig.init(test)
 # pivot_test()
@@ -100,7 +125,40 @@ ohlcv2 = readwrite(ohlcv1)
 @test setassign_test()
 @test columnarray_test()
 
+ohlcva, ohlcvb = ohlcvab(-3)  # add ohlcvb at start ohlcba
+# println(ohlcva.df)
+# println(ohlcvb.df)
+ohlcva = Ohlcv.merge!(ohlcva, ohlcvb)
+# println(ohlcva.df)
+@test size(Ohlcv.dataframe(ohlcva), 1) == 6  # last line ohlcva stays
+
+ohlcva, ohlcvb = ohlcvab(-4)  # add ohlcvb at start ohlcba with 1 line overlap
+ohlcva = Ohlcv.merge!(ohlcva, ohlcvb)
+# println(ohlcva.df)
+@test size(Ohlcv.dataframe(ohlcva), 1) == 7  # last line ohlcva stays
+
+ohlcva, ohlcvb = ohlcvab(-5)  # add ohlcvb at start ohlcba without overlap
+ohlcva = Ohlcv.merge!(ohlcva, ohlcvb)
+# println(ohlcva.df)
+@test size(Ohlcv.dataframe(ohlcva), 1) == 8  # last line ohlcva stays
+
+ohlcva, ohlcvb = ohlcvab(2)  # add ohlcvb at end ohlcba with 1 line overlap
+ohlcva = Ohlcv.merge!(ohlcva, ohlcvb)
+# println(ohlcva.df)
+@test size(Ohlcv.dataframe(ohlcva), 1) == 7
+
+ohlcva, ohlcvb = ohlcvab(3)  # add ohlcvb at end ohlcba without overlap
+ohlcva = Ohlcv.merge!(ohlcva, ohlcvb)
+# println(ohlcva.df)
+@test size(Ohlcv.dataframe(ohlcva), 1) == 8
+
+ohlcva, ohlcvb = ohlcvab(-1)  # ohclvb fully covers ohlcv
+ohlcva = Ohlcv.merge!(ohlcva, ohlcvb)
+# println(ohlcva.df)
+@test size(Ohlcv.dataframe(ohlcva), 1) == 5
+
 # @test Ohlcv.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 7)[7] == 0.310714285714285
 end
+
 
 end  # OhlcvTest

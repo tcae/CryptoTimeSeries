@@ -12,16 +12,29 @@ using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
 export Features001
+
 struct Features001
     fdf::DataFrame
     featuremask::Vector{String}
     ohlcv::OhlcvData
 end
 
+regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
+requiredminutes = maximum(regressionwindows002)+1
+
+periodlabels(p) = p%(24*60) == 0 ? "$(round(Int, p/(24*60)))d" : p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m"
+
+struct Features002Regr
+    grad::Vector{Float32} # rolling regression gradients - length == ohlcv
+    regry::Vector{Float32}  # rolling regression price - length == ohlcv
+    std::Vector{Float32}  # standard deviation of regression window - length == ohlcv
+    xtrmix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
+end
+
 struct Features002
-    fdf::DataFrame
-    featuremask::Vector{String}
     ohlcv::OhlcvData
+    regr::Dict  # dict with regression minutes as key -> value is Features002Regr
+    # fdf::DataFrame  # cache of features
 end
 
 indexinrange(index, last) = 0 < index <= last
@@ -421,9 +434,9 @@ function rollingregressionstd(y, regr_y, grad, window)
     normy = similar(y)
     std = similar(y)
     mean = similar(y)
-    normy .= 0
-    std .= 0
-    mean .= 0
+    # normy .= 0
+    # std .= 0
+    # mean .= 0
     for ix1 in size(y, 1):-1:1
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
@@ -447,9 +460,9 @@ function rollingregressionstd(y, regr_y, grad, window, startindex)
     normy = similar(y[starty:end])
     std = similar(normy)
     mean = similar(normy)
-    normy .= 0
-    std .= 0
-    mean .= 0
+    # normy .= 0
+    # std .= 0
+    # mean .= 0
     for ix1 in size(y, 1):-1:startindex
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
@@ -467,26 +480,21 @@ end
 """
 calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *y*
 """
-function rollingregressionstd!(std, mean, normy, y, regr_y, grad, window)
+function rollingregressionstd!(std, y, regr_y, grad, window)
     @assert size(y) == size(regr_y) == size(grad) "$(size(y)) == $(size(regr_y)) == $(size(grad))"
     if (length(y) > 0)
         startindex = isnothing(std) ? 1 : (length(std) < length(y)) ? length(std)+1 : length(y)
-        stdnew, meannew, normynew = rollingregressionstd(y, regr_y, grad, window, startindex)
+        stdnew, mean, normy = rollingregressionstd(y, regr_y, grad, window, startindex)
         if isnothing(std) || isnothing(mean) || isnothing(normy)
             std = stdnew
-            mean = meannew
-            normy = normynew
         elseif length(std) < length(y)  # only change regression_y and gradient if it makes sense
-            @assert size(std, 1) == size(mean, 1) == size(normy, 1) "$(size(std, 1)) == $(size(mean, 1)) == $(size(normy, 1))"
             startindex = min(startindex, window)
             std = append!(std, stdnew[startindex:end])
-            mean = append!(mean, meannew[startindex:end])
-            normy = append!(normy, normynew[startindex:end])
         else
             @warn "nothing to append when length(std) >= length(y)" length(std) length(y)
         end
     end
-    return std, mean, normy
+    return std, mean[startindex:end], normy[startindex:end]
 end
 
     """ don't use - this is a version for debug reasons """
@@ -509,7 +517,7 @@ function rollingregressionstdxt(y, regr_y, grad, window)
         std[ix1] = Statistics.stdm(normy[ix1, 1:min(window, ix1)], mean[ix1])
         std[1] = 0  # not avoid NaN
     end
-    Logging.@info "check" normy y regr_y grad std mean
+    # Logging.@info "check" normy y regr_y grad std mean
     return std, mean, normy
 end
 
@@ -707,28 +715,43 @@ function getfeatures001(ohlcv::OhlcvData)
     return Features001(fdf, featuremask, ohlcv)
 end
 
-function last3extremes(pivot, regrgrad)
-    l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
-    regressiongains = zeros(Float32, pricelen)
-    #! TODO implementation
-    # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
-    # work consistently backward to treat initial fill and incremental fill alike
-    return l1xtrm, l2xtrm, l3xtrm
-end
+# function last3extremes(pivot, regrgrad)
+#     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
+#     regressiongains = zeros(Float32, pricelen)
+#     #! TODO implementation
+#     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
+#     # work consistently backward to treat initial fill and incremental fill alike
+#     return l1xtrm, l2xtrm, l3xtrm
+# end
 
 function getfeatures002(ohlcv::OhlcvData)
     Ohlcv.addpivot!(ohlcv.df)
     pivot = ohlcv.df[!, :pivot]
-    featuremask::Vector{String} = []
-    fdf = DataFrame()
-    for wk in sortedregressionwindowkeys001  # wk = window key
-        ws = regressionwindows001[wk]  # ws = window size in minutes
-        fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
-        fdf[:, "l1xtrm$wk"], fdf[:, "l2xtrm$wk"], fdf[:, "l3xtrm$wk"] = last3extremes(pivot, fdf[!, "grad$wk"])
-        #! TODO add price of last 3 regression extreme to get a completemaximum and last regression minimum
-        append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
+    regr = Dict()
+    for window in regressionwindows002
+        regry, grad = rollingregression(pivot, window)
+        std, _, _ = rollingregressionstd(pivot, regry, grad, window)
+        xtrmix = regressionextremesix!(nothing, grad, 1)
+        regr[window] = Features002Regr(grad, regry, std, xtrmix)
     end
-    return Features002(fdf, featuremask, ohlcv)
+    return Features002(ohlcv, regr)
+end
+
+"""
+Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
+"""
+function getfeatures!(f2::Features002)
+    for window in regressionwindows002
+        pivot = f2[window].ohlcv.df[!, :pivot]
+        if length(pivot) > length(f2[window].grad)
+            regry, grad = rollingregression!(f2[window].regry, f2[window].grad, pivot, window)
+            rollingregressionstd!(f2[window].std, pivot, regry, grad, window)
+            regressionextremesix!(f2[window].xtrmix, grad, 1)
+            @assert length(pivot) == length(f2[window].grad) == length(f2[window].regry) == length(f2[window].std)
+        else
+            @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(f2[window].grad)
+        end
+    end
 end
 
 function getfeatures(ohlcv::OhlcvData)

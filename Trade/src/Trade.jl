@@ -14,6 +14,10 @@ module Trade
 using Dates, DataFrames, JSON
 using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 
+getfeatures = Features.getfeatures002
+getclassifier = Classify.traderules001
+
+
 mutable struct TradeCache
     features
     classifier
@@ -30,27 +34,27 @@ function preparetradecache(backtest)
     else
         assets = Assets.loadassets(minutesperiod=Dates.Week(4))
         bases = assets.df.base
-        minrequiredminutes = maximum(values(Features.regressionwindows001))
-        initialperiod = Dates.Minute(minrequiredminutes+1)
+        minrequiredminutes = Features.requiredminutes
+        initialperiod = Dates.Minute(Features.requiredminutes)
         enddt = Dates.now(Dates.UTC)
         enddt = floor(enddt, Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
     end
     startdt = enddt - initialperiod
     @assert startdt < enddt
     startdt = floor(startdt, Dates.Minute)
-    tradecache = TradeCache[]
+    tradecache = Dict()
     for base in bases
-        ohlcv = CryptoXch.cryptodownload(base, "1m", startdt, enddt)
-        df = Ohlcv.dataframe(ohlcv)
-        df = df[startdt .< df.opentime .<= enddt, :]
-        if size(df, 1) == 0
-            @warn "unexpected empty ohlcv data returned for" base
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.read!(ohlcv)
+        CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)
+        if size(Ohlcv.dataframe(ohlcv), 1) < Features.requiredminutes
+            @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Features.requiredminutes
             continue
         end
-        features = Features.getfeatures(ohlcv)
+        features = getfeatures(ohlcv)
         emptytc = Classify.TradeChance(base, 0.0, 0.0, 0.0)
-        classifier = Classify.loadclassifier(base, features)
-        push!(tradecache, TradeCache(features, emptytc))
+        classifier = getclassifier(base, features)
+        tradecache[base] = TradeCache(features, classifier, emptytc)
     end
     return tradecache
 end
@@ -60,6 +64,7 @@ append most recent ohlcv data as well as corresponding features
 """
 function appendmostrecent!(tc::TradeCache)
     #  ! TODO implementation
+
 end
 
 """
@@ -81,9 +86,10 @@ end
 
 """
 function tradeloop(backtest=true)
-    while true  # endless loop to refresh assets from time
+    while true  # endless loop to refresh assets from time to time
         tradecache = preparetradecache(backtest)
         noassetrefresh = true
+        refreshtimestamp = Dates.now(Dates.UTC)
         lastix = maximum(values(Features.regressionwindows001))
         while noassetrefresh
             for tc in tradecache
@@ -97,7 +103,9 @@ function tradeloop(backtest=true)
             end
             trade!(tradecache)
         end
-        # ! TODO the read ohlcv data shall be from time to time appended to the historic data
+        if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
+            # ! TODO the read ohlcv data shall be from time to time appended to the historic data
+        end
     end
 end
 

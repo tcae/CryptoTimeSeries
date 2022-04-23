@@ -86,6 +86,7 @@ function PrepareTest()
     ohlcv = Ohlcv.defaultohlcv("btc")
     mnm = Ohlcv.mnemonic(ohlcv)
     filename = EnvConfig.datafile(mnm)
+    @assert filename == "/home/tor/crypto/TestFeatures/btc_usdt_binance_1m_OHLCV.jdf"
     Ohlcv.delete(ohlcv)
     return filename
 end
@@ -129,6 +130,24 @@ end
     ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:38:03"), DateTime("2022-01-02T22:57:45"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 20
+
+    ohlcv1 = Ohlcv.copy(ohlcv)
+    CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:46:45"))
+    @test size(Ohlcv.dataframe(ohlcv1), 1) == 4
+
+    CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:47:45"))
+    @test size(Ohlcv.dataframe(ohlcv1), 1) == 5
+
+    CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:49:45"))
+    @test size(Ohlcv.dataframe(ohlcv1), 1) == 7
+
+    CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:42:00"), DateTime("2022-01-02T22:49:45"))
+    # does not add anything for DateTime("2022-01-02T22:42:03")
+    # println(Ohlcv.dataframe(ohlcv1))
+    @test size(Ohlcv.dataframe(ohlcv1), 1) == 8
+
+    CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:50:03"), DateTime("2022-01-02T22:55:45"))
+    @test size(Ohlcv.dataframe(ohlcv1), 1) == 6
 
 end
 end  # module
