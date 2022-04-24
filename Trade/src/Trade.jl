@@ -91,12 +91,12 @@ function tradeloop(backtest=true)
         refreshtimestamp = Dates.now(Dates.UTC)
         lastix = maximum(values(Features.regressionwindows001))
         while noassetrefresh
-            for tc in tradecache
+            for base in keys(tradecache)
                 if backtest
                     lastix += 1
                 else
-                    appendmostrecent!(tc)
-                    lastix = size(tc.features.fdf, 1)
+                    appendmostrecent!(tradecache[base])
+                    lastix = Features.mostrecentix(tradecache[base].features)
                 end
                 tc.chance = Classify.tradechance(tc.features, lastix)
             end

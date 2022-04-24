@@ -31,7 +31,6 @@ function loadohlcv(base, interval)
         ohlcv = Ohlcv.defaultohlcv(base)
         Ohlcv.setinterval!(ohlcv, interval)
         Ohlcv.read!(ohlcv)
-        Ohlcv.addpivot!(ohlcv)
         ohlcvcache[k] = ohlcv
     end
     return ohlcvcache[k]
@@ -58,8 +57,6 @@ function updateassets(download=false)
     return a
 end
 
-# ohlcv = TestOhlcv.sinedata(120, 3)
-# Ohlcv.addpivot!(ohlcv.df)
 assets = updateassets(false)
 println("last assets update: $(assets.df[1, :update]) type $(typeof(assets.df[1, :update]))")
 app.layout = html_div() do
@@ -328,7 +325,7 @@ function targetfigure(base, period, enddt)
     subdf = df[startdt .< df.opentime .<= enddt, :]
     normref = subdf[end, :pivot]
     if size(subdf,1) > 0
-        pivot = ("pivot" in names(subdf)) ? subdf[!, "pivot"] : Ohlcv.addpivot!(subdf)[:, "pivot"]
+        pivot = Ohlcv.pivot!(subdf)
         pivot = normpercent(pivot, normref)
         _, grad = Features.rollingregression(pivot, Features.regressionwindows001["1h"])
         labels, relativedistances, distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad, Targets.defaultlabelthresholds)
@@ -374,7 +371,7 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     @assert size(subdf, 1) >= 1
     firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(values(Features.regressionwindows001)))
     calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
-    pivot = ("pivot" in names(calcdf)) ? calcdf[!, "pivot"] : Ohlcv.addpivot!(calcdf)[!, "pivot"]
+    pivot = Ohlcv.pivot!(calcdf)
     pivot = normpercent(pivot, normref)
     fdf, featuremask = Features.getfeatures001(pivot)
     fdf = fdf[(end-size(subdf,1)+1):end, :]  # resize fdf to meet size of subdf

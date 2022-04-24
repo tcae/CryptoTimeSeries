@@ -76,12 +76,15 @@ end
 """
 if ohlcv overlaps with addohlcv thenadd ohlcv replaces content of ohlcv.
 if there is a time gap between the two then ohlcv will not be modofied and an error is issued.
-removes the pivot column. currently limited to *1m* interval
+adds the pivot column to addohlcv if one is present in ohlcv. currently limited to *1m* interval
 
 """
 function merge!(ohlcv::OhlcvData, addohlcv::OhlcvData)
-    df1 = Ohlcv.dataframe(ohlcv)
-    df2 = Ohlcv.dataframe(addohlcv)
+    df1 = dataframe(ohlcv)
+    df2 = dataframe(addohlcv)
+    if haspivot(df1)
+        addpivot!(df2)
+    end
     @assert ohlcv.interval == addohlcv.interval == "1m"
     startgap = Int(Dates.Minute(df1[begin, :opentime] - df2[end, :opentime])/Dates.Minute(1))
     endgap = Int(Dates.Minute(df2[begin, :opentime] - df1[end, :opentime])/Dates.Minute(1))
@@ -236,9 +239,12 @@ function pivot(df::DataFrame)
     return p
 end
 
+haspivot(df::DataFrame) = "pivot" in names(df)
+haspivot(ohlcv::OhlcvData) = haspivot(ohlcv.df)
+
 function addpivot!(df::DataFrame)
-    if "pivot" in names(df)
-        return df[:, :pivot]
+    if haspivot(df)
+        return df
     else
         p = pivot(df)
         if size(p, 1) == size(df,1)
@@ -250,14 +256,14 @@ function addpivot!(df::DataFrame)
     end
 end
 
-pivot!(df::DataFrame) = addpivot!(df)[:, :pivot]
+pivot!(df::DataFrame) = addpivot!(df)[!, :pivot]
 
 function addpivot!(ohlcv::OhlcvData)
     addpivot!(ohlcv.df)
     return ohlcv
 end
 
-pivot!(ohlcv::OhlcvData) = addpivot!(ohlcv.df)[:, :pivot]
+pivot!(ohlcv::OhlcvData) = pivot!(ohlcv.df)
 
 function pivot_test()
     ohlcv = defaultohlcv("test")
@@ -285,6 +291,7 @@ function readcsv!(ohlcv::OhlcvData)::OhlcvData
     df = df[!, Cols(:opentime, :)]
     df = df[!, save_cols]
     # df = df[!, Not(:opentime)]
+    addpivot!(df)
     setdataframe!(ohlcv::OhlcvData, df)
     return ohlcv
 
@@ -369,6 +376,7 @@ function read!(ohlcv::OhlcvData)::OhlcvData
         end
     end
     # display(first(df, 1))
+    addpivot!(df)
     setdataframe!(ohlcv, df)
     return ohlcv
 end

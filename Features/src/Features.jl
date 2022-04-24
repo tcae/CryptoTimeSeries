@@ -701,7 +701,6 @@ end
 - ration 5minute/4hour volume to detect short term rising volume
 """
 function getfeatures001(ohlcvdf::DataFrame)
-    Ohlcv.addpivot!(ohlcvdf)
     fdf, featuremask = getfeatures(ohlcvdf.pivot)
     fdf[:, "4h/9dvol"] = relativevolume(ohlcvdf[!, :basevolume], 4*60, 9*24*60)
     fdf[:, "5m/4hvol"] = relativevolume(ohlcvdf[!, :basevolume], 5, 4*60)
@@ -725,8 +724,7 @@ end
 # end
 
 function getfeatures002(ohlcv::OhlcvData)
-    Ohlcv.addpivot!(ohlcv.df)
-    pivot = ohlcv.df[!, :pivot]
+    pivot = Ohlcv.pilot!(ohlcv)
     regr = Dict()
     for window in regressionwindows002
         regry, grad = rollingregression(pivot, window)
@@ -752,6 +750,10 @@ function getfeatures!(f2::Features002)
             @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(f2[window].grad)
         end
     end
+end
+
+function mostrecentix(f2::Features002)
+    ix = size(f2.ohlcv.df, 1)
 end
 
 function getfeatures(ohlcv::OhlcvData)

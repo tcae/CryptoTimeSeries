@@ -190,6 +190,7 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
         else
             println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
         end
+        Ohlcv.addpivot!(df)
         return 200, df
     else
         # @warn "unknown testohlcv test base: $base"

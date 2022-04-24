@@ -49,6 +49,7 @@ function klines2jdf(jsonkline)
         df[:, :low] = [parse(Float32, jsonkline[ix][4]) for ix in 1:len]
         df[:, :close] = [parse(Float32, jsonkline[ix][5]) for ix in 1:len]
         df[:, :basevolume] = [parse(Float32, jsonkline[ix][6]) for ix in 1:len]
+        Ohlcv.addpivot!(df)
         # df.quotevolume = [parse(Float32, jsonkline[ix][8]) for ix in 1:len]
     end
     return df
