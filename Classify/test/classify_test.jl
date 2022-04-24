@@ -7,7 +7,7 @@ using Classify
 
 @testset "Classify tests" begin
 
-# @test true
+@test true
 
 end
 

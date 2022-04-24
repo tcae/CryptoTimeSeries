@@ -149,5 +149,10 @@ end
     CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:50:03"), DateTime("2022-01-02T22:55:45"))
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 6
 
+    @test CryptoXch.onlyconfiguredsymbols("BTCUSDT")
+    @test !CryptoXch.onlyconfiguredsymbols("BTCBNB")
+    @test !CryptoXch.onlyconfiguredsymbols("EURUSDT")
 end
+
+
 end  # module

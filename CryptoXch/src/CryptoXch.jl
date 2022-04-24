@@ -8,7 +8,9 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using MyBinance, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
-baseignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "ust"]
+baseignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "bcc"]
+# don't load stable coins as base
+# don't load discontinued coins btt, bcc
 
 function klines2jdict(jsonkline)
     Dict(
@@ -275,14 +277,6 @@ onlyconfiguredsymbols(symbol) =
     endswith(symbol, uppercase(EnvConfig.cryptoquote)) &&
     !(lowercase(symbol[1:end-length(EnvConfig.cryptoquote)]) in baseignore)
 
-function onlyconfiguredsymbols_test()
-    testsym = ["BTCUSDT", "BTCBNB", "EURUSDT"]
-    println(testsym)
-    testsym2 = [s for s in testsym if onlyconfiguredsymbols(s)]
-    println(testsym2)
-
-end
-
 """
 Returns a dataframe with 24h values of all USDT quote bases with the following columns:
 
@@ -335,8 +329,5 @@ function downloadallUSDT(enddt=Dates.now(Dates.UTC), period=Dates.Year(4))
     end
 
 end
-
-# onlyconfiguredsymbols_test()
-downloadallUSDT()
 
 end  # of module
