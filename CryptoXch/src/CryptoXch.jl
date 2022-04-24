@@ -8,6 +8,8 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using MyBinance, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
+baseignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "ust"]
+
 function klines2jdict(jsonkline)
     Dict(
         :opentime => Dates.unix2datetime(jsonkline[1]/1000),
@@ -269,6 +271,18 @@ function cryptodownload(base, interval, startdt, enddt)::OhlcvData
     return ohlcv
 end
 
+onlyconfiguredsymbols(symbol) =
+    endswith(symbol, uppercase(EnvConfig.cryptoquote)) &&
+    !(lowercase(symbol[1:end-length(EnvConfig.cryptoquote)]) in baseignore)
+
+function onlyconfiguredsymbols_test()
+    testsym = ["BTCUSDT", "BTCBNB", "EURUSDT"]
+    println(testsym)
+    testsym2 = [s for s in testsym if onlyconfiguredsymbols(s)]
+    println(testsym2)
+
+end
+
 """
 Returns a dataframe with 24h values of all USDT quote bases with the following columns:
 
@@ -293,7 +307,7 @@ function getUSDTmarket()
             parse(Float32, values[ix]["quoteVolume"]),
             parse(Float32, values[ix]["lastPrice"]),
             parse(Float32, values[ix]["priceChangePercent"]))
-            for ix in 1:len if endswith(symbols[ix]["symbol"], quotesymbol)]
+            for ix in 1:len if onlyconfiguredsymbols(symbols[ix]["symbol"])]
         # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
 
         df = DataFrames.DataFrame()
@@ -312,5 +326,17 @@ function balances()
     # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])  all: $d") for d in portfolio]
     return portfolio
 end
+
+function downloadallUSDT(enddt=Dates.now(Dates.UTC), period=Dates.Year(4))
+    df = getUSDTmarket()
+    startdt = enddt - period
+    for base in df[!, :base]
+        CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+    end
+
+end
+
+# onlyconfiguredsymbols_test()
+downloadallUSDT()
 
 end  # of module

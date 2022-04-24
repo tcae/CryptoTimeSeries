@@ -34,12 +34,10 @@ end
 
 "manually selected assets"
 manualselect() = return EnvConfig.bases
-manualignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "ust"]
 minimumquotevolume = 10000000
 
 function automaticselect(usdtdf, dayssperiod)
     bases = [usdtdf[ix, :base] for ix in 1:size(usdtdf, 1) if usdtdf[ix, :quotevolume24h] > minimumquotevolume]
-    bases = [base for base in bases if !(base in manualignore)]
 
     enddt = Dates.now(Dates.UTC)
     startdt = enddt - dayssperiod
@@ -75,9 +73,6 @@ function portfolioselect(usdtdf)
             # else
             #     Logging.@warn "portfolio base $base not found in USDT market bases"
             #  there are some: USDT but also currencies not tradable in USDT
-            end
-            if base in manualignore  # independent of portfolio volume, e.g. USDT
-                deletebases[ix] = true
             end
         end
         deleteat!(bases, deletebases)
