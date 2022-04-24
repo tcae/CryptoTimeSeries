@@ -23,6 +23,7 @@ function traderules001(features::Features.Features002, currentix)::TradeChance
     pricetarget = pricecurrent * 1.01
     prob = 0.5  #! TODO  implementation
     tc = TradeChance(features.base, pricecurrent, pricetarget, prob)
+    println("this is traderules001")
     return tc
 end
 
