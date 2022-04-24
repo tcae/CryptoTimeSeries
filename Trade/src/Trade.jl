@@ -15,7 +15,7 @@ using Dates, DataFrames, JSON
 using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 
 getfeatures = Features.getfeatures002
-getclassifier = Classify.traderules001
+classifier = Classify.traderules001
 
 
 mutable struct TradeCache
@@ -53,7 +53,6 @@ function preparetradecache(backtest)
         end
         features = getfeatures(ohlcv)
         emptytc = Classify.TradeChance(base, 0.0, 0.0, 0.0)
-        classifier = getclassifier(base, features)
         tradecache[base] = TradeCache(features, classifier, emptytc)
     end
     return tradecache
