@@ -29,8 +29,9 @@ function loadohlcv(base, interval)
     k = base * interval
     if !(k in keys(ohlcvcache))
         ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, interval)
+        Ohlcv.setinterval!(ohlcv, "1m")
         Ohlcv.read!(ohlcv)
+        Ohlcv.accumulate!(ohlcv, interval)
         ohlcvcache[k] = ohlcv
     end
     return ohlcvcache[k]
@@ -44,7 +45,7 @@ function updateassets(download=false)
     end
     if download || (size(a.df, 1) == 0)
         ohlcvcache = Dict()
-        a = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
+        a = Assets.loadassets()
         println(a)
     else
         a = Assets.read()

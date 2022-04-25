@@ -34,22 +34,35 @@ end
 
 "manually selected assets"
 manualselect() = return EnvConfig.bases
-minimumquotevolume = 10000000
+minimumquotevolume = 10000000  # per day
 
-function automaticselect(usdtdf, dayssperiod)
+function automaticselect(usdtdf, volumecheckdays, enddt)
     bases = [usdtdf[ix, :base] for ix in 1:size(usdtdf, 1) if usdtdf[ix, :quotevolume24h] > minimumquotevolume]
-
-    enddt = Dates.now(Dates.UTC)
-    startdt = enddt - dayssperiod
+    # volumecheckdays = 30+1
+    # enddt = Dates.now(Dates.UTC)
+    startdt = enddt - volumecheckdays
     deletebases = [false for _ in bases]
     for (ix, base) in enumerate(bases)
-        ohlcv = CryptoXch.cryptodownload(base, "1d", startdt, enddt)
-        if (size(Ohlcv.dataframe(ohlcv), 1) < 30)  # no data for the last 30 days
-            deletebases[ix] = true
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setinterval!(ohlcv, "1m")
+        Ohlcv.read!(ohlcv)
+        olddf = Ohlcv.dataframe(ohlcv)
+        if size(olddf, 1) > 0
+            startdt = olddf[end, :opentime]
+            CryptoXch.cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+            Ohlcv.write(ohlcv)
+            # ohlcv = CryptoXch.cryptodownload(base, "1m", startdt, enddt)
+            Ohlcv.accumulate!(ohlcv, "1d")
+            if (size(Ohlcv.dataframe(ohlcv), 1) < volumecheckdays)  # no data for the last volumecheckdays
+                deletebases[ix] = true
+            else
+                odf = Ohlcv.dataframe(ohlcv)
+                quotevolume = odf.basevolume .* odf.close
+                deletebases[ix] = !all([quotevolume[end-ix] > minimumquotevolume for ix in 0:volumecheckdays-1])  # check criteria also for last 30days
+            end
         else
-            odf = Ohlcv.dataframe(ohlcv)
-            quotevolume = odf.basevolume .* odf.close
-            deletebases[ix] = !all([quotevolume[end-ix] > minimumquotevolume for ix in 0:29])  # check criteria also for last 30days
+            @warn "found no stored data for $base - cannot append data -> skipping $base"
+            deletebases[ix] = true
         end
     end
     deleteat!(bases, deletebases)
@@ -121,24 +134,16 @@ function delete(ad::AssetData)
     end
 end
 
-function loadassets(;dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))::AssetData
+function loadassets()::AssetData
     usdtdf = CryptoXch.getUSDTmarket()
+    enddt = Dates.now(Dates.UTC)
+    volumecheckdays = 31  # days
     portfolio = Set(portfolioselect(usdtdf))
     println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
     manual = Set(manualselect())
-    automatic = Set(automaticselect(usdtdf, dayssperiod))
+    automatic = Set(automaticselect(usdtdf, volumecheckdays, enddt))
 
     allbases = union(portfolio, manual, automatic)
-    enddt = Dates.now(Dates.UTC)
-    startdt = enddt - dayssperiod
-    for base in allbases
-        CryptoXch.cryptodownload(base, "1d", floor(startdt, Dates.Day), ceil(enddt, Dates.Day))
-    end
-
-    startdt = enddt - minutesperiod
-    for base in allbases
-        CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), ceil(enddt, Dates.Minute))
-    end
     ad = AssetData(emptyassetdataframe())
     ad.df[:, :base] = [base for base in allbases]
     ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]

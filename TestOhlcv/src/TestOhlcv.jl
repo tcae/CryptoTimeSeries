@@ -127,43 +127,13 @@ function sinedata_test()
     # display(ohlcv.df)
 end
 
-function accumulate(df, period)
-    adf = Ohlcv.defaultohlcvdataframe()
-    adf = DataFrame()
-    p = Dates.value(Dates.Minute(period))
-    # println("accumulate df size: $(size(df,1)) names: $(names(df))")
-    dflen = size(df, 1)
-    adf[:, :opentime] = [df[ix+1, :opentime] for ix in 0:(dflen-1) if (ix % p) == 0]
-    adflen = size(adf, 1)
-    adf[:, :open] = [Float32(df[ix+1, :open]) for ix in 0:(dflen-1) if (ix % p) == 0]
-    adf[:, :high] = fill((typemin(Float32)), adflen)
-    adf[:, :low] = fill(typemax(Float32), adflen)
-    adf[:, :close] = [Float32(df[ix+1, :close]) for ix in 0:(dflen-1) if ((ix - 1) % p) == 0]
-    adf[:, :basevolume] = fill(Float32(0.0), adflen)
-    for aix in 1:size(adf, 1)
-        for ix in 1:p
-            eix = (aix - 1) * p
-            if eix + ix <= dflen
-                if adf[aix, :high] < df[eix + ix, :high]
-                    adf[aix, :high] = df[eix + ix, :high]
-                end
-                if adf[aix, :low] > df[eix + ix, :low]
-                    adf[aix, :low] = df[eix + ix, :low]
-                end
-                adf[aix, :basevolume] += df[eix + ix, :basevolume]
-            end
-        end
-    end
-    return adf
-end
-
 function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
     # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
     df = sinedata(2*60, 3000000)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
     println("test single sinus $(size(df))")
-    df = accumulate(df, Ohlcv.intervalperiod(interval))
+    df = Ohlcv.accumulate(df, Ohlcv.intervalperiod(interval))
     return df
 end
 
@@ -173,7 +143,7 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
     println("test double sinus $(size(df))")
-    df = accumulate(df, Ohlcv.intervalperiod(interval))
+    df = Ohlcv.accumulate(df, Ohlcv.intervalperiod(interval))
     return df
 end
 

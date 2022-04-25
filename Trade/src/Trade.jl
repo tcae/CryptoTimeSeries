@@ -32,12 +32,10 @@ function preparetradecache(backtest)
         initialperiod = Dates.Year(4)
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
     else
-        assets = Assets.loadassets(minutesperiod=Dates.Week(4))
+        assets = Assets.loadassets()
         bases = assets.df.base
-        minrequiredminutes = Features.requiredminutes
         initialperiod = Dates.Minute(Features.requiredminutes)
-        enddt = Dates.now(Dates.UTC)
-        enddt = floor(enddt, Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
+        enddt = floor(Dates.now(Dates.UTC), Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
     end
     startdt = enddt - initialperiod
     @assert startdt < enddt

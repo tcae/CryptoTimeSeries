@@ -8,7 +8,7 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using MyBinance, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
-baseignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "bcc"]
+baseignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm"]
 # don't load stable coins as base
 # don't load discontinued coins btt, bcc
 
@@ -322,13 +322,33 @@ function balances()
     return portfolio
 end
 
-function downloadallUSDT(enddt=Dates.now(Dates.UTC), period=Dates.Year(4))
+function downloadallUSDT(enddt, period)
     df = getUSDTmarket()
     startdt = enddt - period
-    for base in df[!, :base]
+    count = size(df, 1)
+    for (ix, base) in enumerate(df[!, :base])
+        println("$(EnvConfig.now()) updating $base ($ix of $count)")
         CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
     end
+end
 
+function downloadallUSDT(enddt=Dates.now(Dates.UTC))
+    df = getUSDTmarket()
+    count = size(df, 1)
+    for (ix, base) in enumerate(df[!, :base])
+        println("$(EnvConfig.now()) updating $base ($ix of $count)")
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setinterval!(ohlcv, "1m")
+        Ohlcv.read!(ohlcv)
+        olddf = Ohlcv.dataframe(ohlcv)
+        if size(olddf, 1) > 0
+            startdt = olddf[end, :opentime]
+            cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+            Ohlcv.write(ohlcv)
+        else
+            @warn "found no stored data for $base - cannot append data -> skipping $base"
+        end
+    end
 end
 
 end  # of module

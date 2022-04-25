@@ -10,7 +10,7 @@ using EnvConfig, Assets
 
 EnvConfig.init(production)
 if EnvConfig.configmode == production
-    ad1 = Assets.loadassets(dayssperiod=Dates.Year(4), minutesperiod=Dates.Week(4))
+    ad1 = Assets.loadassets()
 else
     println("no operation for config mode $(EnvConfig.configmode)")
 end
