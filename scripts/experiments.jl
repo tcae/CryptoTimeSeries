@@ -9,7 +9,7 @@ for base in bases
     # println("$(EnvConfig.now()): Loading $base from $startdt until $enddt as training data")
     ohlcv = Ohlcv.defaultohlcv(base)
     ohlcv = Ohlcv.setinterval!(ohlcv, "1m")
-    Ohlcv.read!(ohlcv)
-    Ohlcv.fillgaps!(ohlcv)
-    Ohlcv.write(ohlcv)
+    # Ohlcv.read!(ohlcv)
+    # Ohlcv.fillgaps!(ohlcv)
+    # Ohlcv.write(ohlcv)
 end

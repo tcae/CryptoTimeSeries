@@ -288,7 +288,7 @@ function accumulate(df::DataFrame, interval)
     # e.g. 2022-04-25T21:51:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(3))
     # e.g. 2022-04-25T00:00:00 == floor(2022-04-25T21:52:38.109, Dates.Day(1))
     adf = DataFrame()
-    p = Dates.value(Dates.Minute(interval))
+    p = Dates.value(Dates.Minute(Ohlcv.intervalperiod(interval)))
     # println("accumulate df size: $(size(df,1)) names: $(names(df))")
     dflen = size(df, 1)
     adf[:, :opentime] = [df[ix+1, :opentime] for ix in 0:(dflen-1) if (ix % p) == 0]

@@ -8,9 +8,12 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using MyBinance, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
-baseignore = ["usdt", "tusd", "busd", "usdc", "eur", "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm"]
+baseignore = ["usdt", "tusd", "busd", "usdc", "eur",
+    "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm", "hc", "mco",
+    "bull", "bear", "ethbull", "ethbear", "eosbull", "eosbear", "xrpbull", "xrpbear", "strat", "bnbbull", "bnbbear",
+    "xzc", "gxs", "lend", "bkrw", "dai", "xtzup", "xtzdown"]
 # don't load stable coins as base
-# don't load discontinued coins btt, bcc
+# don't load discontinued coins, e.g. btt, bcc
 
 function klines2jdict(jsonkline)
     Dict(

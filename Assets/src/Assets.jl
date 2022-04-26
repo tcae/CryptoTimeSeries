@@ -40,7 +40,7 @@ function automaticselect(usdtdf, volumecheckdays, enddt)
     bases = [usdtdf[ix, :base] for ix in 1:size(usdtdf, 1) if usdtdf[ix, :quotevolume24h] > minimumquotevolume]
     # volumecheckdays = 30+1
     # enddt = Dates.now(Dates.UTC)
-    startdt = enddt - volumecheckdays
+    startdt = enddt - Dates.Day(volumecheckdays)
     deletebases = [false for _ in bases]
     for (ix, base) in enumerate(bases)
         ohlcv = Ohlcv.defaultohlcv(base)
@@ -50,7 +50,7 @@ function automaticselect(usdtdf, volumecheckdays, enddt)
         if size(olddf, 1) > 0
             startdt = olddf[end, :opentime]
             CryptoXch.cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-            Ohlcv.write(ohlcv)
+            # Ohlcv.write(ohlcv)
             # ohlcv = CryptoXch.cryptodownload(base, "1m", startdt, enddt)
             Ohlcv.accumulate!(ohlcv, "1d")
             if (size(Ohlcv.dataframe(ohlcv), 1) < volumecheckdays)  # no data for the last volumecheckdays
