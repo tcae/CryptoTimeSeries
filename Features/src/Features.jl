@@ -11,7 +11,7 @@ import DataFrames: DataFrame, Statistics
 using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
-export Features001
+export Features001, Features002, Features002Regr, show
 
 struct Features001
     fdf::DataFrame
@@ -41,6 +41,7 @@ indexinrange(index, last) = 0 < index <= last
 nextindex(forward, index) = forward ? index + 1 : index - 1
 up(slope) = slope > 0
 downorflat(slope) = slope <= 0
+
 
 """
 - returns index of next regression extreme (or 0 if no extreme)
@@ -724,9 +725,10 @@ end
 # end
 
 function getfeatures002(ohlcv::OhlcvData)
-    pivot = Ohlcv.pilot!(ohlcv)
+    pivot = Ohlcv.pivot!(ohlcv)
     regr = Dict()
     for window in regressionwindows002
+        println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")
         regry, grad = rollingregression(pivot, window)
         std, _, _ = rollingregressionstd(pivot, regry, grad, window)
         xtrmix = regressionextremesix!(nothing, grad, 1)
@@ -773,3 +775,24 @@ function getfeatures!(features::Features001, ohlcv::OhlcvData)
 end
 
 end  # module
+
+using Statistics
+import Base: print
+
+# function myprint(features::Features002Regr)
+function Base.show(io::IO, features::Features.Features002Regr)
+    print(io::IO, "gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
+    print(io::IO, "regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
+    print(io::IO, "std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
+    print(io::IO, "extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
+end
+
+# function myprint(features::Features002)
+function Base.show(io::IO, features::Features.Features002)
+    print(io::IO, "ohlcv: base=$(features.ohlcv.base) base=$(features.ohlcv.interval) size=$(size(features.ohlcv.df)) pivot: max=$(maximum(features.ohlcv.df.pivot)) median=$(Statistics.median(features.ohlcv.df.pivot)) min=$(minimum(features.ohlcv.df.pivot))")
+    for (key, value) in features.regr
+        print(io::IO, "regr key: $key")
+        print(io::IO, value)
+    end
+end
+

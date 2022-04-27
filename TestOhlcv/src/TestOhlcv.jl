@@ -54,6 +54,7 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmu
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y1)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
+    df[:, :pivot] = Ohlcv.pivot(df)
     return df
 end
 
@@ -85,6 +86,7 @@ function oldsinedata(periodminutes, periods)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
+    df[:, :pivot] = Ohlcv.pivot(df)
     return df
 end
 
@@ -133,7 +135,7 @@ function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
     println("test single sinus $(size(df))")
-    df = Ohlcv.accumulate(df, Ohlcv.intervalperiod(interval))
+    df = Ohlcv.accumulate(df, interval)
     return df
 end
 
@@ -143,7 +145,7 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
     println("test double sinus $(size(df))")
-    df = Ohlcv.accumulate(df, Ohlcv.intervalperiod(interval))
+    df = Ohlcv.accumulate(df, interval)
     return df
 end
 

@@ -44,7 +44,12 @@ function preparetradecache(backtest)
     for base in bases
         ohlcv = Ohlcv.defaultohlcv(base)
         Ohlcv.read!(ohlcv)
-        CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)
+        if !backtest
+            origlen = size(ohlcv.df, 1)
+            ohlcv.df = ohlcv.df[ohlcv.df.opentime .>= startdt, :]
+            println("cutting ohlcv from $origlen to $(size(ohlcv.df)) minutes")
+        end
+        # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
         if size(Ohlcv.dataframe(ohlcv), 1) < Features.requiredminutes
             @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Features.requiredminutes
             continue

@@ -29,9 +29,9 @@ function loadohlcv(base, interval)
     k = base * interval
     if !(k in keys(ohlcvcache))
         ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, "1m")
+        Ohlcv.setinterval!(ohlcv, interval)
         Ohlcv.read!(ohlcv)
-        Ohlcv.accumulate!(ohlcv, interval)
+        # Ohlcv.accumulate!(ohlcv, interval)
         ohlcvcache[k] = ohlcv
     end
     return ohlcvcache[k]

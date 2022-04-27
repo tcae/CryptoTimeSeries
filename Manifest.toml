@@ -101,7 +101,7 @@ uuid = "bf4720bc-e11a-5d0c-854e-bdca1663c893"
 version = "0.1.0"
 
 [[Assets]]
-deps = ["CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv"]
+deps = ["CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Statistics"]
 path = "Assets"
 uuid = "e4c5a7f8-51b3-4a40-8507-79544143629b"
 version = "0.1.0"

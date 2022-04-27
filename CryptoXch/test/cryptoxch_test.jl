@@ -81,15 +81,6 @@ function initialbtcdownload()
     return ohlcv
 end
 
-function PrepareTest()
-    EnvConfig.init(EnvConfig.test)
-    ohlcv = Ohlcv.defaultohlcv("btc")
-    mnm = Ohlcv.mnemonic(ohlcv)
-    filename = EnvConfig.datafile(mnm)
-    @assert filename == "/home/tor/crypto/TestFeatures/btc_usdt_binance_1m_OHLCV.jdf"
-    Ohlcv.delete(ohlcv)
-    return filename
-end
 
 
 @testset "CryptoXch tests" begin
@@ -101,7 +92,8 @@ end
     @test names(mdf) == ["base", "quotevolume24h", "lastprice", "priceChangePercent"]
     @test nrow(mdf) > 10
 
-    @test PrepareTest() == "/home/tor/crypto/TestFeatures/btc_usdt_binance_1m_OHLCV.jdf"
+    EnvConfig.init(EnvConfig.test)
+    ohlcv = Ohlcv.defaultohlcv("btc")
     ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:45:03"), DateTime("2022-01-02T22:49:35"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 5

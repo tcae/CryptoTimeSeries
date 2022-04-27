@@ -11,7 +11,7 @@ import Ohlcv: intervalperiod
 baseignore = ["usdt", "tusd", "busd", "usdc", "eur",
     "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm", "hc", "mco",
     "bull", "bear", "ethbull", "ethbear", "eosbull", "eosbear", "xrpbull", "xrpbear", "strat", "bnbbull", "bnbbear",
-    "xzc", "gxs", "lend", "bkrw", "dai", "xtzup", "xtzdown"]
+    "xzc", "gxs", "lend", "bkrw", "dai", "xtzup", "xtzdown", "bzrx", "eosup", "eosdown", "ltcup", "ltcdown"]
 # don't load stable coins as base
 # don't load discontinued coins, e.g. btt, bcc
 
@@ -130,7 +130,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
     # enddt = DateTime("2020-08-12T22:49:00")
     startdt = floor(startdt, intervalperiod(interval))
     enddt = floor(enddt, intervalperiod(interval))
-    println("requesting from $startdt until $enddt $(ceil(enddt - startdt, intervalperiod(interval)) + intervalperiod(interval)) $base OHLCV from binance")
+    # println("requesting from $startdt until $enddt $(ceil(enddt - startdt, intervalperiod(interval)) + intervalperiod(interval)) $base OHLCV from binance")
 
     notreachedenddate = true
     df = Ohlcv.defaultohlcvdataframe()
@@ -145,7 +145,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
             break
         end
         if size(res, 1) == 0
-            Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
+            # Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
             break
         end
         notreachedenddate = (res[end, :opentime] < enddt)
@@ -173,10 +173,20 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
     return df
 end
 
-function cryptoupdate!(ohlcv, startdt, enddt)
+"""
+Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from Binance.
+
+- ohlcv containes the requested base identifier and interval - the result will be stored in teh data frame of this structure
+- startdt and enddt are DateTime stamps that specify the requested time range
+- if closecachegap==true then any gap to chached data will be closed when asking for missing data from Binance
+
+Tis function reduces the returned ohlcv to the requested time range (different to cryptodownload).
+Therefore, don't use the ohlcv to write to stored cache because the stored history will be overridden and is lost.
+"""
+function cryptoupdate!(ohlcv, startdt, enddt, closecachegap=false)
     base = ohlcv.base
     interval = ohlcv.interval
-    # println("Requesting $base $interval intervals from $startdt until $enddt")
+    println("Requesting $base $interval intervals from $startdt until $enddt")
     if enddt <= startdt
         Logging.@warn "Invalid datetime range: end datetime $enddt <= start datetime $startdt"
         return ohlcv
@@ -184,40 +194,44 @@ function cryptoupdate!(ohlcv, startdt, enddt)
     olddf = Ohlcv.dataframe(ohlcv)
     loadall = false
     if size(olddf, 1) > 0  # there is already data available
-        if (startdt < olddf[begin, :opentime]) && (enddt >= olddf[begin, :opentime])
-            # correct enddt in each case (gap between new and old range or range overlap) to avoid time range gaps
-            tmpdt = olddf[begin, :opentime] - intervalperiod(interval)
-            # get data of a timerange before the already available data
-            newdf = gethistoryohlcv(base, startdt, tmpdt, interval)
-            if size(newdf, 1) > 0
-                if names(olddf) == names(newdf)
-                    olddf = vcat(newdf, olddf)
-                else
-                    Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
+        if (startdt < olddf[begin, :opentime])
+            if (enddt >= olddf[begin, :opentime]) || closecachegap
+                # correct enddt in each case (gap between new and old range or range overlap) to avoid time range gaps
+                tmpdt = olddf[begin, :opentime] - intervalperiod(interval)
+                # get data of a timerange before the already available data
+                newdf = gethistoryohlcv(base, startdt, tmpdt, interval)
+                if size(newdf, 1) > 0
+                    if names(olddf) == names(newdf)
+                        olddf = vcat(newdf, olddf)
+                    else
+                        Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
+                    end
                 end
+                Ohlcv.setdataframe!(ohlcv, olddf)
+                subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
+            else  # requested time range is before available olddf data
+                loadall = true
             end
-            Ohlcv.setdataframe!(ohlcv, olddf)
-            subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
-        else
-            loadall = true
         end
-        if (startdt <= olddf[end, :opentime]) && (enddt > olddf[end, :opentime])
-            tmpdt = olddf[end, :opentime]  # update last data row
-            newdf = gethistoryohlcv(base, tmpdt, enddt, interval)
-            if size(newdf, 1) > 0
-                while (size(olddf, 1) > 0) && (newdf[begin, :opentime] <= olddf[end, :opentime])  # replace last row with updated data
-                    deleteat!(olddf, size(olddf, 1))
+        if (enddt > olddf[end, :opentime])
+            if (startdt <= olddf[end, :opentime]) || closecachegap
+                tmpdt = olddf[end, :opentime]  # update last data row
+                newdf = gethistoryohlcv(base, tmpdt, enddt, interval)
+                if size(newdf, 1) > 0
+                    while (size(olddf, 1) > 0) && (newdf[begin, :opentime] <= olddf[end, :opentime])  # replace last row with updated data
+                        deleteat!(olddf, size(olddf, 1))
+                    end
+                    if names(olddf) == names(newdf)
+                        olddf = vcat(olddf, newdf)
+                    else
+                        Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
+                    end
                 end
-                if names(olddf) == names(newdf)
-                    olddf = vcat(olddf, newdf)
-                else
-                    Logging.@error "vcat data frames names not matching df: $(names(olddf)) - res: $(names(newdf))"
-                end
+                Ohlcv.setdataframe!(ohlcv, olddf)
+                subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
+            else  # requested time range is after available olddf data
+                loadall = true
             end
-            Ohlcv.setdataframe!(ohlcv, olddf)
-            subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
-        else
-            loadall = true
         end
     else
         loadall = true
@@ -229,6 +243,14 @@ function cryptoupdate!(ohlcv, startdt, enddt)
     return ohlcv
 end
 
+"""
+Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from Binance.
+
+    - *base* identifier and interval specify what data is requested - the result will be returned as OhlcvData structure
+    - startdt and enddt are DateTime stamps that specify the requested time range
+    - any gap to chached data will be closed when asking for missing data from Binance
+    - beside returning the ohlcv data to the caller, it is also written to stored cache to reduce slow data request to Binance
+"""
 function cryptodownload(base, interval, startdt, enddt)::OhlcvData
     ohlcv = Ohlcv.defaultohlcv(base)
     Ohlcv.setinterval!(ohlcv, interval)
@@ -325,33 +347,43 @@ function balances()
     return portfolio
 end
 
-function downloadallUSDT(enddt, period)
-    df = getUSDTmarket()
-    startdt = enddt - period
-    count = size(df, 1)
-    for (ix, base) in enumerate(df[!, :base])
+function downloadupdate!(bases, enddt, period=Dates.Year(4))
+    count = length(bases)
+    for (ix, base) in enumerate(bases)
+        # break
+        println()
         println("$(EnvConfig.now()) updating $base ($ix of $count)")
-        CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        startdt = enddt - period
+        ohlcv = CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        ohlcv = Ohlcv.accumulate!(ohlcv, "1d")
+        Ohlcv.write(ohlcv)
     end
 end
 
-function downloadallUSDT(enddt=Dates.now(Dates.UTC))
+function downloadallUSDT(enddt, period=Dates.Year(4), minimumdayquotevolume = 10000000)
     df = getUSDTmarket()
+    df = df[df.quotevolume24h .> minimumdayquotevolume , :]
     count = size(df, 1)
     for (ix, base) in enumerate(df[!, :base])
+        break
+        println()
         println("$(EnvConfig.now()) updating $base ($ix of $count)")
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, "1m")
-        Ohlcv.read!(ohlcv)
-        olddf = Ohlcv.dataframe(ohlcv)
-        if size(olddf, 1) > 0
-            startdt = olddf[end, :opentime]
-            cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-            Ohlcv.write(ohlcv)
-        else
-            @warn "found no stored data for $base - cannot append data -> skipping $base"
-        end
+        startdt = enddt - period
+        CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        # ohlcv = Ohlcv.defaultohlcv(base)
+        # Ohlcv.setinterval!(ohlcv, "1m")
+        # Ohlcv.read!(ohlcv)
+        # olddf = Ohlcv.dataframe(ohlcv)
+        # if size(olddf, 1) > 0
+        #     startdt = olddf[end, :opentime]
+        #     cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        #     Ohlcv.write(ohlcv)
+        # else
+        #     startdt = enddt - period
+        #     CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        # end
     end
+    return df
 end
 
 end  # of module

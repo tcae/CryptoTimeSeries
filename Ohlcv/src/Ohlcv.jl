@@ -52,6 +52,7 @@ end
 
 "Returns an empty dataframe with all persistent columns"
 function defaultohlcvdataframe()::DataFrames.DataFrame
+    # df = DataFrame(opentime=DateTime[], open=Float32[], high=Float32[], low=Float32[], close=Float32[], basevolume=Float32[])
     df = DataFrame(opentime=DateTime[], open=Float32[], high=Float32[], low=Float32[], close=Float32[], basevolume=Float32[], pivot=Float32[])
     return df
 end
@@ -282,37 +283,46 @@ end
 
 "accumulates minute interval ohlcv dataframe into larger interval dataframe"
 function accumulate(df::DataFrame, interval)
-    # should accumulate to day/hour/5min borders, which is not yet implemented
-    # ! TODO proposal to use time rounding and downcount to next border,
+    # accumulates to day/hour/5min borders
     # e.g. 2022-04-25T21:50:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(5))
     # e.g. 2022-04-25T21:51:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(3))
     # e.g. 2022-04-25T00:00:00 == floor(2022-04-25T21:52:38.109, Dates.Day(1))
-    adf = DataFrame()
-    p = Dates.value(Dates.Minute(Ohlcv.intervalperiod(interval)))
-    # println("accumulate df size: $(size(df,1)) names: $(names(df))")
-    dflen = size(df, 1)
-    adf[:, :opentime] = [df[ix+1, :opentime] for ix in 0:(dflen-1) if (ix % p) == 0]
-    adflen = size(adf, 1)
-    adf[:, :open] = [Float32(df[ix+1, :open]) for ix in 0:(dflen-1) if (ix % p) == 0]
-    adf[:, :high] = fill((typemin(Float32)), adflen)
-    adf[:, :low] = fill(typemax(Float32), adflen)
-    adf[:, :close] = [Float32(df[ix+1, :close]) for ix in 0:(dflen-1) if ((ix - 1) % p) == 0]
-    adf[:, :basevolume] = fill(Float32(0.0), adflen)
-    for aix in 1:size(adf, 1)
-        for ix in 1:p
-            eix = (aix - 1) * p
-            if eix + ix <= dflen
-                if adf[aix, :high] < df[eix + ix, :high]
-                    adf[aix, :high] = df[eix + ix, :high]
+    if lowercase(interval) == "1m"
+        return df  # no accumulation required because this is the smallest supported period
+    end
+    period = Ohlcv.intervalperiod(interval)
+    # adf = defaultohlcvdataframe()
+    if size(df, 1) > 0
+        adf = DataFrame(df[1, :])
+        delete!(adf, 1)
+        opentime, open, high, low, close, basevolume = df[1, [:opentime, :open, :high, :low, :close, :basevolume]]  # initialze with equal type
+        for ix in 1:size(df, 1)
+            ts = floor(df[ix, :opentime], period)
+            if (ts > opentime) || (ix == 1)
+                if ix > 1
+                    # push!(adf, Dict(:opentime => opentime, :open => open, :high => high, :low => low, :close => close, :basevolume => basevolume))
+                    push!(adf, Dict(:opentime => opentime, :open => open, :high => high, :low => low, :close => close, :basevolume => basevolume, :pivot => 0.0))
                 end
-                if adf[aix, :low] > df[eix + ix, :low]
-                    adf[aix, :low] = df[eix + ix, :low]
-                end
-                adf[aix, :basevolume] += df[eix + ix, :basevolume]
+                # init next accumulation period
+                open = df[ix, :open]
+                high = df[ix, :high]
+                low = df[ix, :low]
+                basevolume = df[ix, :basevolume]
+                opentime = ts
+            else
+                high = max(high, df[ix, :high])
+                low = min(low, df[ix, :low])
+                basevolume += df[ix, :basevolume]
             end
+            close = df[ix, :close]
+        end
+        push!(adf, Dict(:opentime => opentime, :open => open, :high => high, :low => low, :close => close, :basevolume => basevolume, :pivot => 0.0))
+        if haspivot(df)
+            adf[:, :pivot] = pivot(adf)
+        else
+            adf = adf[:, save_cols]
         end
     end
-    adf = haspivot(df) ? addpivot!(adf) : adf
     return adf
 end
 

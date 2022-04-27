@@ -26,7 +26,6 @@ setsplitfname = "sets_split.csv"
 testsetsplitfname = "test_sets_split.csv"
 bases = String[]
 trainingbases = String[]
-home = "/home/tor/"
 datapathprefix = "crypto/"
 otherpathprefix = "crypto/"
 authpathprefix = ".catalyst/data/exchanges/binance/"
@@ -44,9 +43,9 @@ struct Authentication
     function Authentication()
         auth = Dict()
         if configmode == production
-            filename = home * authpathprefix * "auth.json"
+            filename = normpath(joinpath(homedir(), authpathprefix, "auth.json"))
         else  # must be test
-            filename = "/home/tor/.catalyst/data/exchanges/binance/auth_Tst1.json"
+            filename = normpath(joinpath(homedir(), authpathprefix, "auth_Tst1.json"))
         end
         dicttxt = open(filename, "r") do f
             read(f, String)  # file information to string
@@ -61,7 +60,7 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 
 " set project dir as working dir "
 function setprojectdir()
-    cd("$(@__DIR__)/../..")  # ! assumes a fixed folder structure with EnvConfig as a package with the proejct folder
+    cd("$(@__DIR__)/../..")  # ! assumes a fixed folder structure with EnvConfig as a package within the project folder
     Pkg.activate(pwd())
     # println("activated $(pwd())")
     return pwd()
@@ -101,43 +100,18 @@ end
 
 function datafile(mnemonic::String, extension=".jdf")
     # no file existence checks here because it may be new file
-    return home * datapathprefix * datapath * mnemonic * extension
+    return normpath(joinpath(homedir(), datapathprefix, datapath, mnemonic * extension))
 end
 
 function setsplitfilename()::String
     # println(configmode)
     if configmode == production
-        return home * datapathprefix * datapath * setsplitfname
+        return normpath(joinpath(homedir(), datapathprefix, datapath, setsplitfname))
     else
-        return home * datapathprefix * datapath * testsetsplitfname
+        return normpath(joinpath(homedir(), datapathprefix, datapath, testsetsplitfname))
     end
 end
 
-function greet1()
-    println("hello from greet1")
-    x = Authentication()
-    println(x)
-end
-
-
-function greet2()
-
-    function greet3()
-        println("greet3 start")
-        greet1()
-        println("hello from greet3")
-    end
-
-    a = 3
-    println("hello from greet2")
-    greet3()
-end
-
-# greet() = print("Hello World!")
-
-
-# println("greetings from module env_config")
 end # module
 
-# println("greetings from top level env_config")
 

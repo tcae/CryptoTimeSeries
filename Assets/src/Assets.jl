@@ -8,7 +8,7 @@ Day and minute OHLCV data are updated.
 """
 module Assets
 
-using Dates, DataFrames, Logging, JDF
+using Dates, DataFrames, Logging, JDF, Statistics
 using EnvConfig, Ohlcv, CryptoXch, Features
 
 
@@ -32,36 +32,26 @@ function emptyassetdataframe()::DataFrames.DataFrame
     return df
 end
 
-"manually selected assets"
-manualselect() = return EnvConfig.bases
-minimumquotevolume = 10000000  # per day
+manualselect() = EnvConfig.bases
+minimumdayquotevolume = 10000000  # per day = 6944 per minute
 
-function automaticselect(usdtdf, volumecheckdays, enddt)
-    bases = [usdtdf[ix, :base] for ix in 1:size(usdtdf, 1) if usdtdf[ix, :quotevolume24h] > minimumquotevolume]
-    # volumecheckdays = 30+1
-    # enddt = Dates.now(Dates.UTC)
-    startdt = enddt - Dates.Day(volumecheckdays)
+function automaticselect(usdtdf, volumecheckdays, minimumdayquotevolume)
+    bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
+    volumecheckminutes = volumecheckdays * 24 * 60
     deletebases = [false for _ in bases]
     for (ix, base) in enumerate(bases)
         ohlcv = Ohlcv.defaultohlcv(base)
         Ohlcv.setinterval!(ohlcv, "1m")
         Ohlcv.read!(ohlcv)
         olddf = Ohlcv.dataframe(ohlcv)
-        if size(olddf, 1) > 0
-            startdt = olddf[end, :opentime]
-            CryptoXch.cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-            # Ohlcv.write(ohlcv)
-            # ohlcv = CryptoXch.cryptodownload(base, "1m", startdt, enddt)
-            Ohlcv.accumulate!(ohlcv, "1d")
-            if (size(Ohlcv.dataframe(ohlcv), 1) < volumecheckdays)  # no data for the last volumecheckdays
-                deletebases[ix] = true
-            else
-                odf = Ohlcv.dataframe(ohlcv)
-                quotevolume = odf.basevolume .* odf.close
-                deletebases[ix] = !all([quotevolume[end-ix] > minimumquotevolume for ix in 0:volumecheckdays-1])  # check criteria also for last 30days
-            end
+        if size(olddf, 1) >= volumecheckminutes
+            odf = Ohlcv.dataframe(ohlcv)
+            quotevolume = odf.basevolume .* odf.close
+            minimumminutequotevolume = minimumdayquotevolume / 24 / 60
+            medianminutequotevolume = median(quotevolume)
+            deletebases[ix] = medianminutequotevolume < minimumminutequotevolume
         else
-            @warn "found no stored data for $base - cannot append data -> skipping $base"
+            # insufficient data for base
             deletebases[ix] = true
         end
     end
@@ -70,27 +60,27 @@ function automaticselect(usdtdf, volumecheckdays, enddt)
 end
 
 function portfolioselect(usdtdf)
-    bases = EnvConfig.bases
     if EnvConfig.configmode == EnvConfig.production
         portfolio = CryptoXch.balances()
         # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
-        basevolume = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
-        bases = [lowercase(d["asset"]) for d in portfolio]
-        @assert length(basevolume) == length(bases)
-        usdtbases = usdtdf.base
-        deletebases = fill(true, (size(bases)))  # by default remove all bases that are not found in usdtbases
-        for (ix, base) in enumerate(bases)
-            ubix = findfirst(x -> x == base, usdtbases)
-            if !(ubix === nothing)
-                deletebases[ix] = (usdtdf[ubix, :lastprice] * basevolume[ix]) < 10  # remove all base symbols with a USD value <10
-            # else
-            #     Logging.@warn "portfolio base $base not found in USDT market bases"
-            #  there are some: USDT but also currencies not tradable in USDT
-            end
+        pdf = DataFrame()
+        pdf[:, :basevolume] = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
+        pdf[:, :base] = [lowercase(d["asset"]) for d in portfolio]
+        pdf = filter(r -> r.base in usdtdf.base, pdf)
+        pdf[:, :usdt] .= 0.0
+        pusdtdf = filter(r -> r.base in pdf.base, usdtdf)
+        sort!(pdf, [:base])
+        sort!(pusdtdf, [:base])
+        @assert length(pdf.base) == length(pusdtdf.base)
+        for ix in 1:length(pdf.base)
+            @assert pdf[ix, :base] == pusdtdf[ix, :base]
+            pdf[ix, :usdt] = pusdtdf[ix, :lastprice] * pdf[ix, :basevolume]
         end
-        deleteat!(bases, deletebases)
+        pdf = pdf[pdf.usdt .>= 10, :]
+        return pdf.base
+    else
+        return []
     end
-    return bases
 end
 
 dataframe(ad::AssetData) = ad.df
@@ -135,15 +125,25 @@ function delete(ad::AssetData)
 end
 
 function loadassets()::AssetData
-    usdtdf = CryptoXch.getUSDTmarket()
     enddt = Dates.now(Dates.UTC)
-    volumecheckdays = 31  # days
-    portfolio = Set(portfolioselect(usdtdf))
-    println("#=$(length(portfolio)) loadassets portfolio: $(portfolio)")
+    usdtdf = CryptoXch.getUSDTmarket()
     manual = Set(manualselect())
-    automatic = Set(automaticselect(usdtdf, volumecheckdays, enddt))
-
+    portfolio = Set(portfolioselect(usdtdf))
+    # println("portfolio len=$(length(portfolio)) - $portfolio")
+    bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
+    # println("lastdayvolume OK USDT len=$(length(bases)) - $bases")
+    bases = union(Set(bases), manual, portfolio)
+    # println("union1 len=$(length(bases)) - $bases")
+    CryptoXch.downloadupdate!(bases, enddt, Dates.Year(4))
+    automatic = Set(automaticselect(usdtdf, 30, minimumdayquotevolume))  # will use just downloaded updates
     allbases = union(portfolio, manual, automatic)
+    # println("allbases len=$(length(allbases)) - $allbases")
+    usdtdf = filter(r -> r.base in allbases, usdtdf)
+    checkbases = filter(!(el -> el in usdtdf.base), allbases)
+    if length(checkbases) > 0
+        @warn "unexpected bases missing in USDT bases" checkbases
+    end
+    allbases = filter(el -> el in usdtdf.base, allbases)
     ad = AssetData(emptyassetdataframe())
     ad.df[:, :base] = [base for base in allbases]
     ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
@@ -151,7 +151,11 @@ function loadassets()::AssetData
     ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
     ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
     ad.df[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+    # println("ad.df")
+    # println(ad.df)
     sort!(ad.df, [:base])
+    # println("usdtdf")
+    # println(usdtdf)
     sort!(usdtdf, [:base])
     ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
     ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]

@@ -48,7 +48,7 @@ uuid = "bf4720bc-e11a-5d0c-854e-bdca1663c893"
 version = "0.1.0"
 
 [[Assets]]
-deps = ["CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv"]
+deps = ["CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Statistics"]
 path = "../Assets"
 uuid = "e4c5a7f8-51b3-4a40-8507-79544143629b"
 version = "0.1.0"
@@ -430,7 +430,7 @@ uuid = "b9860ae5-e623-471e-878b-f6a53c775ea6"
 version = "0.1.1"
 
 [[Features]]
-deps = ["Combinatorics", "DataFrames", "EnvConfig", "Logging", "Ohlcv", "RollingFunctions"]
+deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "RollingFunctions"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
 version = "0.1.0"
