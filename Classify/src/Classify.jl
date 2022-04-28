@@ -7,12 +7,17 @@ using DataFrames, Logging  # , MLJ
 using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using PlotlyJS, WebIO, Dates, DataFrames
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
+export TradeChance, traderules001, tradechance, tradeperformance
 
 struct TradeChance
     base::String
     pricecurrent::Float32
     pricetarget::Float32
     probability::Float32
+end
+
+function Base.show(io::IO, tc::TradeChance)
+    print(io::IO, "trade chance: base=$(tc.base) current=$(tc.pricecurrent) target=$(tc.pricetarget) probability=$(tc.probability)")
 end
 
 """

@@ -8,7 +8,7 @@ In future to add new OHLCV data from Binance.
 """
 module Ohlcv
 
-using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones, Logging
+using Dates, DataFrames, CategoricalArrays, JDF, CSV, TimeZones, Logging, Statistics
 using EnvConfig
 
 export write, read!, OhlcvData
@@ -20,6 +20,11 @@ mutable struct OhlcvData
     xch::String  # exchange - also implies whether the asset type is crypto or stocks
     interval::String
 end
+
+function Base.show(io::IO, ohlcv::OhlcvData)
+    print(io::IO, "ohlcv: base=$(ohlcv.base) base=$(ohlcv.interval) size=$(size(ohlcv.df)) pivot: max=$(maximum(ohlcv.df.pivot)) median=$(Statistics.median(ohlcv.df.pivot)) min=$(minimum(ohlcv.df.pivot))")
+end
+
 
 save_cols = [:opentime, :open, :high, :low, :close, :basevolume]
 testbases = ["sinus", "triplesinus"]

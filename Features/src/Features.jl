@@ -11,7 +11,7 @@ import DataFrames: DataFrame, Statistics
 using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
-export Features001, Features002, Features002Regr, show
+export getfeatures, getfeatures!, Features001, Features002, Features002Regr, getfeatures002, requiredminutes, mostrecentix
 
 struct Features001
     fdf::DataFrame
@@ -36,6 +36,23 @@ struct Features002
     regr::Dict  # dict with regression minutes as key -> value is Features002Regr
     # fdf::DataFrame  # cache of features
 end
+
+
+function Base.show(io::IO, features::Features002Regr)
+    println(io::IO, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
+    println(io::IO, "- regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
+    println(io::IO, "- std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
+    print(io::IO, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
+end
+
+function Base.show(io::IO, features::Features002)
+    println(io::IO, features.ohlcv)
+    for (key, value) in features.regr
+        println(io::IO, "regr key: $key")
+        println(io::IO, value)
+    end
+end
+
 
 indexinrange(index, last) = 0 < index <= last
 nextindex(forward, index) = forward ? index + 1 : index - 1
@@ -775,24 +792,4 @@ function getfeatures!(features::Features001, ohlcv::OhlcvData)
 end
 
 end  # module
-
-using Statistics
-import Base: print
-
-# function myprint(features::Features002Regr)
-function Base.show(io::IO, features::Features.Features002Regr)
-    print(io::IO, "gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
-    print(io::IO, "regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
-    print(io::IO, "std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
-    print(io::IO, "extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
-end
-
-# function myprint(features::Features002)
-function Base.show(io::IO, features::Features.Features002)
-    print(io::IO, "ohlcv: base=$(features.ohlcv.base) base=$(features.ohlcv.interval) size=$(size(features.ohlcv.df)) pivot: max=$(maximum(features.ohlcv.df.pivot)) median=$(Statistics.median(features.ohlcv.df.pivot)) min=$(minimum(features.ohlcv.df.pivot))")
-    for (key, value) in features.regr
-        print(io::IO, "regr key: $key")
-        print(io::IO, value)
-    end
-end
 

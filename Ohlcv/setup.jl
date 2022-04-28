@@ -6,7 +6,7 @@ activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 
-add([ "Dates", "Logging", "DataFrames", "CategoricalArrays", "JDF", "CSV", "TimeZones" ])
+add([ "Dates", "Logging", "DataFrames", "CategoricalArrays", "JDF", "CSV", "TimeZones", "Statistics" ])
 
 # resolve()
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")

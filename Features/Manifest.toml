@@ -265,7 +265,7 @@ uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
 
 [[Ohlcv]]
-deps = ["CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "TimeZones"]
+deps = ["CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Statistics", "TimeZones"]
 path = "../Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
 version = "0.1.0"
