@@ -31,10 +31,12 @@ struct Features002Regr
     xtrmix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
 end
 
-struct Features002
+mutable struct Features002
     ohlcv::OhlcvData
     regr::Dict  # dict with regression minutes as key -> value is Features002Regr
     # fdf::DataFrame  # cache of features
+    update  # function to update features due to extended ohlcv
+    Features002(ohlcv) = new(ohlcv, getfeatures002(ohlcv), getfeatures002!)
 end
 
 
@@ -53,7 +55,7 @@ function Base.show(io::IO, features::Features002)
     end
 end
 
-
+ohlcv(features::Features002) = features.ohlcv
 indexinrange(index, last) = 0 < index <= last
 nextindex(forward, index) = forward ? index + 1 : index - 1
 up(slope) = slope > 0
@@ -742,6 +744,7 @@ end
 # end
 
 function getfeatures002(ohlcv::OhlcvData)
+    println("getfeatures002 init")
     pivot = Ohlcv.pivot!(ohlcv)
     regr = Dict()
     for window in regressionwindows002
@@ -751,22 +754,23 @@ function getfeatures002(ohlcv::OhlcvData)
         xtrmix = regressionextremesix!(nothing, grad, 1)
         regr[window] = Features002Regr(grad, regry, std, xtrmix)
     end
-    return Features002(ohlcv, regr)
+    return regr
 end
 
 """
 Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
 """
-function getfeatures!(f2::Features002)
-    for window in regressionwindows002
-        pivot = f2[window].ohlcv.df[!, :pivot]
-        if length(pivot) > length(f2[window].grad)
-            regry, grad = rollingregression!(f2[window].regry, f2[window].grad, pivot, window)
-            rollingregressionstd!(f2[window].std, pivot, regry, grad, window)
-            regressionextremesix!(f2[window].xtrmix, grad, 1)
-            @assert length(pivot) == length(f2[window].grad) == length(f2[window].regry) == length(f2[window].std)
+function getfeatures002!(f2::Features002)
+    println("getfeatures002!")
+    pivot = f2.ohlcv.df[!, :pivot]
+    for window in keys(f2.regr)
+        if length(pivot) > length(f2.regr[window].grad)
+            regry, grad = rollingregression!(f2.regr[window].regry, f2.regr[window].grad, pivot, window)
+            rollingregressionstd!(f2.regr[window].std, pivot, regry, grad, window)
+            regressionextremesix!(f2.regr[window].xtrmix, grad, 1)  #! check if 1 is best
+            @assert length(pivot) == length(f2.regr[window].grad) == length(f2.regr[window].regry) == length(f2.regr[window].std)
         else
-            @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(f2[window].grad)
+            @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(f2.regr[window].grad)
         end
     end
 end

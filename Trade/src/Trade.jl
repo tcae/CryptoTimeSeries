@@ -14,17 +14,31 @@ module Trade
 using Dates, DataFrames, JSON
 using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 
-getfeatures = Features.getfeatures002
-classifier = Classify.traderules001
+@enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
 
+# cancelled by trader, rejected by exchange, order change = cancelled+new order opened
+@enum OrderStatus opened cancelled rejected closed
 
-mutable struct TradeCache
-    features
-    classifier
-    chance::Classify.TradeChance
+struct TradeLog
+    orderid::String
+    ordertype::OrderType
+    orderstatus::OrderStatus
+    price  # opened = limit price | nothing, closed = average price, cancelled/rejected = nothing
+    basevolume  # opened = base volume, closed = actual (partial) base volume, cancelled/rejected = nothing
+    timestamp::Dates.DateTime
 end
 
+"""
+trade cache contains all required data to support the tarde loop
+"""
+mutable struct Cache
+    classify
+    features::Features.Features002
+    lastix
+    Cache(features, lastix) = new(Classify.traderules001, features, lastix)
+end
 
+ohlcvdf(cache) = Ohlcv.dataframe(Features.ohlcv(cache.features))
 
 function preparetradecache(backtest)
     if backtest
@@ -40,7 +54,7 @@ function preparetradecache(backtest)
     startdt = enddt - initialperiod
     @assert startdt < enddt
     startdt = floor(startdt, Dates.Minute)
-    tradecache = Dict()
+    cache = Dict()
     for base in bases
         ohlcv = Ohlcv.defaultohlcv(base)
         Ohlcv.read!(ohlcv)
@@ -54,19 +68,44 @@ function preparetradecache(backtest)
             @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Features.requiredminutes
             continue
         end
-        features = getfeatures(ohlcv)
-        emptytc = Classify.TradeChance(base, 0.0, 0.0, 0.0)
-        tradecache[base] = TradeCache(features, classifier, emptytc)
+        lastix = backtest ? Features.requiredminutes : size(Ohlcv.dataframe(ohlcv), 1)
+        cache[base] = Cache(Features.Features002(ohlcv), lastix)
     end
-    return tradecache
+    return cache
 end
 
 """
 append most recent ohlcv data as well as corresponding features
+returns `true` if successful appended else `false`
 """
-function appendmostrecent!(tc::TradeCache)
-    #  ! TODO implementation
-
+function appendmostrecent!(cache::Cache, backtest)
+    if backtest
+        cache.lastix += 1
+        return cache.lastix <= size(ohlcvdf(cache), 1)
+    else  # production
+        df = ohlcvdf(cache)
+        lastdt = df.opentime[end]
+        enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
+        if lastdt == enddt
+            nowdt = Dates.now(Dates.UTC)
+            nextdt = lastdt + Dates.Minute(1)
+            period = Dates.Millisecond(nextdt - floor(nowdt, Dates.Millisecond))
+            sleepseconds = floor(period, Dates.Second)
+            sleepseconds = Dates.value(sleepseconds) + 1
+            @info "trade loop sleep seconds" sleepseconds nextdt nowdt
+            sleep(sleepseconds)
+            enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
+            println("extended to $enddt")
+        end
+        startdt = enddt - Dates.Minute(Features.requiredminutes)
+        lastix = size(df, 1)
+        CryptoXch.cryptoupdate!(Features.ohlcv(cache.features), startdt, enddt)
+        # ! TODO impleement error handling
+        @assert lastdt == df.opentime[lastix]  # make sure begin wasn't cut
+        cache.lastix = size(df, 1)
+        cache.features.update(cache.features)
+        return cache.lastix  > lastix
+    end
 end
 
 """
@@ -74,10 +113,15 @@ end
 - corrects orders that are not yet executed
 - cancels orders that are not yet executed and where sufficient gain seems unlikely
 """
-function trade!(tradecache)
+function trade!(tradechances, caches)
+    println("$(length(tradechances)) trade chances")
     #  ! TODO implementation
-
+    # TODO update TradeLog -> append to csv
 end
+
+# function performancecheck()
+
+# end
 
 """
 **`tradeloop`** has to
@@ -88,28 +132,25 @@ end
 
 """
 function tradeloop(backtest=true)
-    while true  # endless loop to refresh assets from time to time
-        tradecache = preparetradecache(backtest)
+    continuetrading = true
+    while continuetrading
+        caches = preparetradecache(backtest)
         noassetrefresh = true
         refreshtimestamp = Dates.now(Dates.UTC)
-        lastix = maximum(values(Features.regressionwindows001))
+        tc = Classify.TradeChance[]
         while noassetrefresh
-            for base in keys(tradecache)
-                if backtest
-                    lastix += 1
-                else
-                    appendmostrecent!(tradecache[base])
-                    lastix = Features.mostrecentix(tradecache[base].features)
+            for base in keys(caches)
+                if appendmostrecent!(caches[base], backtest)
+                    push!(tc, caches[base].classify(caches[base].features, caches[base].lastix))
                 end
-                tc.chance = Classify.tradechance(tc.features, lastix)
             end
-            trade!(tradecache)
+            trade!(tc, caches)
         end
-        if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
-            # ! TODO the read ohlcv data shall be from time to time appended to the historic data
-        end
+        continuetrading : backtest ? caches[base].lastix < size(ohlcvdf(caches[base]), 1) : true
+        # if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
+        #     # ! TODO the read ohlcv data shall be from time to time appended to the historic data
+        # end
     end
 end
-
 
 end  # module

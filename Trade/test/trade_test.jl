@@ -6,15 +6,16 @@ using Trade
 
 EnvConfig.init(test)
 println(EnvConfig.trainingbases)
-tradecaches = Trade.preparetradecache(false)
-for (key, tc) in tradecaches
-    println("tradecache base=$key")
-    print(tc.features)
-end
-@testset "Trade tests" begin
+Trade.tradeloop(false)
+# tradecaches = Trade.preparetradecache(false)
+# for (key, tc) in tradecaches
+#     println("tradecache base=$key")
+#     print(tc.features)
+# end
+# @testset "Trade tests" begin
 
-@test true
+# @test true
 
-end
+# end
 
 end  # module

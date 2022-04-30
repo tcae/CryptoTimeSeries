@@ -1,8 +1,10 @@
-using Ohlcv, EnvConfig, CryptoXch, Assets
+using Ohlcv, EnvConfig, CryptoXch, Assets, Features
 using Dates
 
 function test()
     EnvConfig.init(EnvConfig.training)
+    m1 = Features.regressionwindows001
+    m2 = Features.regressionwindows002
     bases = EnvConfig.trainingbases
     # bases = ["btc"]
 

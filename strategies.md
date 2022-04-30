@@ -3,8 +3,8 @@
 General thoughts:
 
 - Problem: what to label as a trade signal, i.e. what is a noteworthy deviation from a trend that is worth to signal a trade?
-  - An option is to label everything that has a future gain or loss above a threshold. This will result in relatively poor classifers because it takes some time before a trend is established as such and distinguished from noise. Hm, that can be mitigated by setting the threshold high enough (e.g. 5% while 1% should be already profitable)- the advantage that labelling remains straightforward.
-  - To address noise, signals labels may only be sent after a number of samples in the same direction and then still exceeding a gain/loss threshold. That can be achieved by using a regression window of x minutes.
+  - An option is to label everything that has a future gain or loss above a threshold. This will result in relatively poor classifers because it takes some time before a trend is established as such and distinguished from noise. Hm, that can be mitigated by setting the threshold high enough (e.g. 5% while 1% should be already profitable)- the advantage is that labelling remains straightforward.
+  - To address noise, signal labels may only be sent after a number of samples in the same direction and then still exceeding a gain/loss threshold. That can be achieved by using a regression window of x minutes.
 - Follow trends: when is a trend broken? One may consider trend stability a criteria (less volatility but reliability in direction) versus a trend with high volatilty to catch extrema for trading and assume that the trend repairs a missed extreme. Trend reversal detection is crucial.
   - a trend is considered broken when the regression gradient changes sign but this should be detected earlier.
   - measure deviations of intact trends and accept  up to x sigma deviations before declared broken. This also enables break outs of a e.g. positive trend and to switch monitoring to a shorter regression window. Having a cascade of regression windows (e.g. 5m, 30m, 3h, 18h, 36h) the signal shall be bound to one of those windows with buy in a minimum and sell in a maximum. [Straight forward evaluations](data/gradientgainhisto.data) showed that a 24h showed good results while shorter windows returned losses. This can be explained with the observation that short windows also have more low amplitude noise signals. On the other hand in volatile times a long range window misses the fall back. Therefore a short range regression window is preferred in volatile times with high frequent, high amplitude prices changes while longer regression windows are preferred in low volatile times. In both cases a minimum gain is needed to avoid losses.
@@ -15,7 +15,7 @@ General thoughts:
 ## Target labels
 
 Target labels are crucial as learning and evaluation reference of success (= performance).
-With a perfect classifier at hand a maximum performant target signals buy at a minimum with a gain more than 2*fee, leveraging the high frequent volatility. However, classifiers are not perfect, which means that an appraoch is needed that ignores local extremes with too lees gain in between.
+With a perfect classifier at hand a maximum performant target signals buy at a minimum with a gain more than 2*fee, leveraging the high frequent volatility. However, classifiers are not perfect, which means that an appraoch is needed that ignores local extremes with too less gain in between.
 
 The following heuristics may help here:
 
@@ -157,3 +157,35 @@ Challenges:
         - understand what happened
         - how probable are comparable situations
 - what is an efficient SW design for the **`tradeloop`**
+
+## Notes for using volatility and trend tracker in combination
+- General thoughts
+  - less volatility = more stable direction -> tracking preferred
+  - high volatility = instable direction -> catch statistic outliers for yield
+  - stabilze direction by longer regression window
+- use regressionlines of different regression time windows as basis
+- select the shortest window with a median standard deviation 2 sigma over 24h that is sufficient to satisfy the minimum profit requirement == anchor window
+  - only buy if anchor gradient is positive
+- buy
+  - if prices decrease below regression line - 2 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
+  - if price increases break out of the tracker window line + 3 sigma or tracker gradient becomes positive then "buy"
+  - if after a "buy" prices fall then "sell" if prices fall below anchor regression line - 3 sigma and (prices fall below tracker line - 2 sigma or tracker trend becomes negative)
+- sell
+  - if prices increase above regression line + 2 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
+  - if price decreases fall out of the tracker window line - 3 sigma or tracker gradient becomes negative then "sell"
+  - if after a "sell" prices rise then "buy" if prices rise above anchor regression line + 3 sigma and (prices rise above tracker line + 2 sigma or tracker trend becomes positive)
+- anchor window change
+  - in general anchor window is
+    - the shortest regression window that satisfies profitabilityrequirements with deviation catching
+    - has positive trend
+    - has the most catches * 4 sigma = gain wihtin 24h among anchor window candidates
+    - anchor sigma calculation = median of this window over the last 24h
+  - in order to change anchor windows the new candidate has to have 10% higher gain than the incumbent, which creates a stabilizing hysteresis
+  - if anchor 2 sigma falls below 10% of required 2 sigma and no other window satisfies the required 2 sigma then switch off "buy" trading until a window satisfies required 2 sigma but use anchor and required 2 sigma criteria to close "sell"
+- tracker window change
+  - always has to be shorter than anchor window
+  - should be long enough to suppress irrelevant regression xtremes
+  - option 1: whenever another window is closer with its last regression xtreme to the last trade, i.e. no irrelevant xtremes in between
+  - option 2: shortest window with least in between extremes since last trade
+- tracker sigma calculation = median of this window since last trade signal
+

@@ -1,13 +1,13 @@
 # push!(LOAD_PATH, "/home/tor/TorProjects/CryptoTimeSeries/src")
 # push!(DEPOT_PATH, "/home/tor/TorProjects", "/home/tor/TorProjects/CryptoTimeSeries", "/home/tor/TorProjects/CryptoTimeSeries/src")
 
-import Pkg: activate, add, status, resolve
+import Pkg: activate, add, status, resolve, build
 activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 
 add([ "Dates", "Logging", "DataFrames", "RollingFunctions", "Combinatorics" ])
-
+# build()
 # resolve()
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")
 

@@ -13,3 +13,10 @@ module ParallelGist
 
 end  # ParallelGist
 
+struct A
+    a
+    b
+    A(b) = new(2, b)
+end
+
+a1 = A(5)

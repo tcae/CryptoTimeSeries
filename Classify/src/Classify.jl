@@ -9,11 +9,16 @@ using PlotlyJS, WebIO, Dates, DataFrames
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 export TradeChance, traderules001, tradechance, tradeperformance
 
-struct TradeChance
+mutable struct TradeChance
     base::String
     pricecurrent::Float32
     pricetarget::Float32
     probability::Float32
+end
+
+function emptytradechance()
+    println("this is emptytradechance")
+    TradeChance("", 0.0, 0.0, 0.0)
 end
 
 function Base.show(io::IO, tc::TradeChance)
