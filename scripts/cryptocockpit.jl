@@ -4,7 +4,10 @@
 # activate(pwd())
 # cd(@__DIR__)
 
-
+# TODO deviation catcher and tracker visualization
+# TODO deviation catcher and tracker window clear color other regression windows opaque
+# TODO yellow within x sigma range, green break out, red plunge
+# TODO green marker = buy, black marker sell, red marker emergency sell in 4h Candlestick
 # using Colors
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
