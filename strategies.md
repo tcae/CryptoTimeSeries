@@ -164,28 +164,36 @@ Challenges:
   - high volatility = instable direction -> catch statistic outliers for yield
   - stabilze direction by longer regression window
 - use regressionlines of different regression time windows as basis
-- select the shortest window with a median standard deviation 2 sigma over 24h that is sufficient to satisfy the minimum profit requirement == anchor window
-  - only buy if anchor gradient is positive
+- select the shortest window with a median standard deviation 2 * 1 sigma over longest considered regression window that is sufficient to satisfy the minimum profit requirement == anchor window
 - buy
-  - if prices decrease below regression line - 2 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
-  - if price increases break out of the tracker window line + 3 sigma or tracker gradient becomes positive then "buy"
-  - if after a "buy" prices fall then "sell" if prices fall below anchor regression line - 3 sigma and (prices fall below tracker line - 2 sigma or tracker trend becomes negative)
+  - only buy if anchor gradient is positive
+  - if prices decrease below regression line - 1 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
+  - if price increases and tracker gradient becomes positive then "buy"
+  - if after a "buy" prices fall then "sell" if prices fall below anchor regression line - 3 sigma
 - sell
-  - if prices increase above regression line + 2 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
-  - if price decreases fall out of the tracker window line - 3 sigma or tracker gradient becomes negative then "sell"
-  - if after a "sell" prices rise then "buy" if prices rise above anchor regression line + 3 sigma and (prices rise above tracker line + 2 sigma or tracker trend becomes positive)
+  - sell independent of anchor gradient
+  - if prices increase above regression line + 1 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
+  - if price decreases and tracker gradient becomes negative then "sell"
+  - *(if after a "sell" prices rise then "buy" if prices rise above anchor regression line + 3 sigma and (prices rise above tracker line + 2 sigma or tracker trend becomes positive))*
 - anchor window change
   - in general anchor window is
     - the shortest regression window that satisfies profitabilityrequirements with deviation catching
     - has positive trend
-    - has the most catches * 4 sigma = gain wihtin 24h among anchor window candidates
+    - has the most catches * normal deviation range (e.g. 2 * 1 sigma) = gain wihtin 24h among anchor window candidates
     - anchor sigma calculation = median of this window over the last 24h
-  - in order to change anchor windows the new candidate has to have 10% higher gain than the incumbent, which creates a stabilizing hysteresis
-  - if anchor 2 sigma falls below 10% of required 2 sigma and no other window satisfies the required 2 sigma then switch off "buy" trading until a window satisfies required 2 sigma but use anchor and required 2 sigma criteria to close "sell"
+  - for every buy the anchor is newly calculated and stays with the trade
 - tracker window change
   - always has to be shorter than anchor window
   - should be long enough to suppress irrelevant regression xtremes
   - option 1: whenever another window is closer with its last regression xtreme to the last trade, i.e. no irrelevant xtremes in between
   - option 2: shortest window with least in between extremes since last trade
 - tracker sigma calculation = median of this window since last trade signal
+- parameters:
+  - minimum profit = minimum profitability requirement a normal deviation range has to exceed to consider trading
+  - anchor minutes of regression window --> dynamically adapted
+  - tracker minutes of regression window --> dynamically adapted
+  - anchor breakout sigma = factor * sigma to consider breakout of normal deviations, e.g. 2.0
+  - anchor minimum gradient to do any buy, e.g. 0.0
+  - anchor surprise sigma = factor * sigma to signal surprise plunge (sell) or raise (buy)
+  - anchor sigma minutes = longest considered regression window = minutes used to calculate the median of all regression window sigmas
 

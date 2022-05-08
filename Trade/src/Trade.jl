@@ -20,7 +20,8 @@ using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 @enum OrderStatus opened cancelled rejected closed
 
 struct TradeLog
-    orderid::String
+    orderid::Int64  # Dates.datetime2epochms(Dates.now(Dates.UTC))
+    base::String
     ordertype::OrderType
     orderstatus::OrderStatus
     price  # opened = limit price | nothing, closed = average price, cancelled/rejected = nothing
@@ -35,7 +36,7 @@ mutable struct Cache
     classify
     features::Features.Features002
     lastix
-    Cache(features, lastix) = new(Classify.traderules001, features, lastix)
+    Cache(features, lastix) = new(Classify.traderules001!, features, lastix)
 end
 
 ohlcvdf(cache) = Ohlcv.dataframe(Features.ohlcv(cache.features))
@@ -69,7 +70,7 @@ function preparetradecache(backtest)
             continue
         end
         lastix = backtest ? Features.requiredminutes : size(Ohlcv.dataframe(ohlcv), 1)
-        cache[base] = Cache(Features.Features002(ohlcv), lastix)
+        cache[base] = Cache(Features.Features002(ohlcv, Classify.tr001default.anchorbreakoutsigma), lastix)
     end
     return cache
 end
@@ -92,14 +93,16 @@ function appendmostrecent!(cache::Cache, backtest)
             period = Dates.Millisecond(nextdt - floor(nowdt, Dates.Millisecond))
             sleepseconds = floor(period, Dates.Second)
             sleepseconds = Dates.value(sleepseconds) + 1
-            @info "trade loop sleep seconds" sleepseconds nextdt nowdt
+            @info "trade loop sleep seconds: $sleepseconds"
             sleep(sleepseconds)
             enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
-            println("extended to $enddt")
         end
-        startdt = enddt - Dates.Minute(Features.requiredminutes)
+        # startdt = enddt - Dates.Minute(Features.requiredminutes)
+        startdt = df.opentime[begin]  # stay with start to prevent invalidating extremeix
         lastix = size(df, 1)
         CryptoXch.cryptoupdate!(Features.ohlcv(cache.features), startdt, enddt)
+        df = ohlcvdf(cache)
+        println("extended from $lastdt to $enddt -> check df: $(df.opentime[begin]) - $(df.opentime[end]) size=$(size(df,1))")
         # ! TODO impleement error handling
         @assert lastdt == df.opentime[lastix]  # make sure begin wasn't cut
         cache.lastix = size(df, 1)
@@ -141,7 +144,7 @@ function tradeloop(backtest=true)
         while noassetrefresh
             for base in keys(caches)
                 if appendmostrecent!(caches[base], backtest)
-                    push!(tc, caches[base].classify(caches[base].features, caches[base].lastix))
+                    caches[base].classify(tc, caches[base].features, caches[base].lastix)
                 end
             end
             trade!(tc, caches)

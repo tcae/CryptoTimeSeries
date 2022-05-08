@@ -7,46 +7,111 @@ using DataFrames, Logging  # , MLJ
 using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
 using PlotlyJS, WebIO, Dates, DataFrames
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
-export TradeChance, traderules001, tradechance, tradeperformance
+export TradeChance, traderules001!, tradeperformance
+
+mutable struct TradeRules001
+    minimumprofit
+    anchorbreakoutsigma
+    anchorminimumgradient
+    anchorsurprisesigma
+end
+
+shortestwindow = minimum(Features.regressionwindows002)
+tr001default = TradeRules001(0.02, 1.0, 0.0, 3.0)
 
 mutable struct TradeChance
     base::String
-    pricecurrent::Float32
-    pricetarget::Float32
-    probability::Float32
+    pricecurrent
+    pricetarget
+    probability
+    chanceix
+    anchorminutes
+    trackerminutes
 end
 
 function emptytradechance()
     println("this is emptytradechance")
-    TradeChance("", 0.0, 0.0, 0.0)
+    TradeChance("", 0.0, 0.0, 0.0, 0, 0, 0)
 end
 
 function Base.show(io::IO, tc::TradeChance)
     print(io::IO, "trade chance: base=$(tc.base) current=$(tc.pricecurrent) target=$(tc.pricetarget) probability=$(tc.probability)")
 end
 
-"""
-returns the chance expressed in gain between currentprice and future targetprice * probability
-"""
-function traderules001(features::Features.Features002, currentix)::TradeChance
-    pricecurrent = Ohlcv.dataframe(features.ohlcv)[currentix, :pivot]
-    pricetarget = pricecurrent * 1.01
-    prob = 0.5  #! TODO  implementation
-    tc = TradeChance(features.base, pricecurrent, pricetarget, prob)
-    println("this is traderules001")
-    return tc
-end
 
 """
 returns the chance expressed in gain between currentprice and future targetprice * probability
+
+Trading strategy:
+- buy if price is below normal deviation range of anchor regression window, anchor gradient is OK and tracker gradient becomes positive
+- sell if price is above normal deviation range of anchor regression window and tracker gradient becomes negative
+- emergency sell after buy if price plunges below extended deviation range of anchor regression window
+- anchor regression window = std * 2 * anchorbreakoutsigma > minimumprofit
+- anchor gradient is OK = anchor gradient > `anchorminimumgradient`
+- normal deviation range = regry +- anchorbreakoutsigma * std
+- extended deviation range  = regry +- anchorsurprisesigma * std
+
 """
-function tradechance(features, currentix)::TradeChance
-    pricecurrent = Ohlcv.dataframe(features.ohlcv)[currentix, :pivot]
-    pricetarget = pricecurrent * 1.01
-    prob = 0.5  #! TODO  implementation
-    tc = TradeChance(features.base, pricecurrent, pricetarget, prob)
-    return tc
+function traderules001!(tradechances::Vector{TradeChance}, features::Features.Features002, currentix)
+    pivot = Ohlcv.dataframe(features.ohlcv)[!, :pivot]
+    base = Ohlcv.basesymbol(features.ohlcv)
+    checked = Set()
+    println("tradechances $tradechances")
+    for tc in tradechances
+        if tc.base == base
+            # only check exit criteria for existing orders
+            if !(tc.anchorminutes in checked)
+                println("test: found TC")
+                afr = features.regr[tc.anchorminutes]
+                if pivot[currentix] > (afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix])  # above normal deviations
+                    if tc.trackerminutes == 0
+                        tc.trackerminutes = Features.besttrackerwindow(features, tc.anchorminutes, currentix, true)
+                    end
+                end
+                if (((tc.trackerminutes == 1) && (pivot[currentix] < pivot[currentix-1])) ||
+                    ((tc.trackerminutes == 1) && (features.regr[tc.trackerminutes].grad[currentix] < 0)))
+                    @info "sell signal tracker window " tc.anchorminutes tc.trackerminutes currentix
+                    pricetarget = afr.regry[currentix] - tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+                    prob = 0.8
+                    push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, tc.trackerminutes))
+                end
+                if pivot[currentix] < (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])
+                    # emrgency exit due to surprising plunge
+                    @info "emergency sell signal due toplunge out of anchor window" tc.anchorminutes currentix
+                    pricetarget = afr.regry[currentix] - 2 * tr001default.anchorsurprisesigma * afr.medianstd[currentix]
+                    prob = 0.9
+                    push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 1))
+                end
+            end
+        end
+    end
+
+    anchorminutes = Features.bestanchorwindow(features, currentix, tr001default.minimumprofit, tr001default.anchorbreakoutsigma)
+    afr = features.regr[anchorminutes]
+    if ((pivot[currentix] < (afr.regry[currentix] - tr001default.anchorbreakoutsigma * afr.medianstd[currentix])) &&
+        (afr.grad[currentix] > tr001default.anchorminimumgradient))
+        trackerminutes = Features.besttrackerwindow(features, anchorminutes, currentix, false)
+        if (((trackerminutes == 1) && (pivot[currentix] > pivot[currentix-1])) ||
+            ((trackerminutes > 1) && (features.regr[trackerminutes].grad[currentix] > 0)))
+            @info "buy signal tracker window " anchorminutes trackerminutes currentix
+            pricetarget = afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+            prob = 0.8
+            push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, anchorminutes, trackerminutes))
+        end
+    end
+    # TODO use case of breakout rise after sell above deviation range is not yet covered
 end
+
+# """
+# returns the chance expressed in gain between currentprice and future targetprice * probability
+# """
+# function tradechance(tradechances, features, currentix)::TradeChance
+#     pricecurrent = Ohlcv.dataframe(features.ohlcv)[currentix, :pivot]
+#     pricetarget = pricecurrent * 1.01
+#     prob = 0.5  #! TODO  implementation
+#     tc = TradeChance(features.base, pricecurrent, pricetarget, prob)
+#     return tc
+# end
 
 """
 Returns the trade performance percentage of trade sigals given in `signals` applied to `prices`.
