@@ -89,8 +89,9 @@ function init(mode::Mode)
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
         datapath = "TrainingFeatures/"
     elseif configmode == test
-        trainingbases = ["sine", "doublesine"]
-        bases = ["sine", "doublesine"]
+        trainingbases = bases = ["sine"]
+        # trainingbases = ["sine", "doublesine"]
+        # bases = ["sine", "doublesine"]
         datapath = "TestFeatures/"
         # datapath = "Features/"
     else

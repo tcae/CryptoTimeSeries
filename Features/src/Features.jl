@@ -770,7 +770,7 @@ end
 
 """
 Returns the regression window with the least number of regressionextremes
-between the last (opposite of deviation range) breakout and the current inex.
+between the last (opposite of deviation range) breakout and the current index.
 """
 function besttrackerwindow(f2::Features002, anchorminutes, currentix, upwards)
     pivot = Ohlcv.dataframe(f2.ohlcv)[!, :pivot]
@@ -778,24 +778,38 @@ function besttrackerwindow(f2::Features002, anchorminutes, currentix, upwards)
     bestwindow = 1
 
     afr = f2.regr[anchorminutes]
-    startix = length(afr.breakoutix)
-    while (startix > 0) && (upwards ? afr.breakoutix[startix] >= 0 : afr.breakoutix[startix] <= 0)
-        startix -= 1
+    bix = length(afr.breakoutix)
+    while (bix > 0) && (upwards ? afr.breakoutix[bix] >= 0 : afr.breakoutix[bix] <= 0)
+        bix -= 1
     end
-    startix = startix > 0 ? startix = abs(afr.breakoutix[startix]) : 1
+    boix = bix > 0 ? abs(afr.breakoutix[bix]) : 1
+    check =  upwards ? pivot[boix] <= (afr.regry[boix] - f2.breakoutstd * afr.medianstd[boix]) : pivot[boix] >= (afr.regry[boix] + f2.breakoutstd * afr.medianstd[boix])
+    if !check
+        lowerbound = (afr.regry[boix] - f2.breakoutstd * afr.medianstd[boix])
+        upperbound = (afr.regry[boix] + f2.breakoutstd * afr.medianstd[boix])
+        @warn "anchor breakout not out of deviation" upwards boix pivot[boix] lowerbound upperbound afr.regry[boix] f2.breakoutstd afr.medianstd[boix]
+    end
 
     for win in regressionwindows002
         if win < anchorminutes
             tfr = f2.regr[win]
             extremes = 0
+            oppositeside = false
             ix = length(tfr.xtrmix)
-            while (ix > 0) && (tfr.xtrmix[ix] > startix)
-                if tfr.xtrmix[ix] <= currentix
+            while (ix > 0) && (abs(tfr.xtrmix[ix]) > boix)
+                xtrmix = abs(tfr.xtrmix[ix])
+                if xtrmix <= currentix
                     extremes += 1
+                    tolerance = 0.9
+                    if upwards # then we look for last breakout minimum
+                        oppositeside = (pivot[xtrmix] <= (afr.regry[xtrmix] - tolerance * f2.breakoutstd * afr.medianstd[xtrmix]))
+                    else # then we look for last breakout maximum
+                        oppositeside = (pivot[xtrmix] >= (afr.regry[xtrmix] + tolerance * f2.breakoutstd * afr.medianstd[xtrmix]))
+                    end
                 end
                 ix -= 1
             end
-            if minextremes > extremes
+            if (minextremes > extremes) && oppositeside
                 minextremes = extremes
                 bestwindow = win
             end
@@ -847,7 +861,7 @@ function calcanchor(fr::Features002Regr, pivot, currentix, minimumprofit, anchor
     return trades, gain
 end
 
-function breakoutextremesix!(extremeix, pivot, std, regry, breakoutstd, startindex)
+function breakoutextremesix!(extremeix, pivot, medianstd, regry, breakoutstd, startindex)
     @assert startindex > 0
     @assert !isnothing(pivot)
     if startindex > length(pivot)
@@ -859,12 +873,12 @@ function breakoutextremesix!(extremeix, pivot, std, regry, breakoutstd, startind
     end
     breakoutix = 0  # negative index for minima, positive index for maxima, else 0
     for ix in startindex:length(pivot)
-        if pivot[ix] > regry[ix] + breakoutstd * std[ix]
+        if pivot[ix] > regry[ix] + breakoutstd * medianstd[ix]
             if breakoutix < 0
                 push!(extremeix, breakoutix)
             end
             breakoutix = breakoutix > 0 ? (pivot[breakoutix] < pivot[ix] ? ix : breakoutix) : ix
-        elseif pivot[ix] < regry[ix] - breakoutstd * std[ix]
+        elseif pivot[ix] < regry[ix] - breakoutstd * medianstd[ix]
             if breakoutix > 0
                 push!(extremeix, breakoutix)
             end
@@ -888,13 +902,13 @@ function getfeatures002(ohlcv::OhlcvData, breakoutstd)
     @assert length(pivot) >= requiredminutes
     regr = Dict()
     for window in regressionwindows002
-        println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")
+        # println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")
         regry, grad = rollingregression(pivot, window)
         std, _, _ = rollingregressionstd(pivot, regry, grad, window)
         # medianstd = Statistics.median(std[end-requiredminutes+window:end])
         medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1)
         xtrmix = regressionextremesix!(nothing, grad, 1, forward=true)
-        breakoutix = breakoutextremesix!(nothing, pivot, std, regry, breakoutstd, 1)
+        breakoutix = breakoutextremesix!(nothing, pivot, medianstd, regry, breakoutstd, 1)
         regr[window] = Features002Regr(grad, regry, std, xtrmix, breakoutix, medianstd)
     end
     return regr
@@ -915,7 +929,7 @@ function getfeatures002!(f2::Features002)
             lastxtrmix = length(fr.xtrmix) > 0 ? abs(fr.xtrmix[end]) : 1
             regressionextremesix!(fr.xtrmix, grad, lastxtrmix, forward=true)
             lastbreakoutix = length(fr.breakoutix) > 0 ? abs(fr.breakoutix[end]) : 1
-            breakoutextremesix!(fr.breakoutix, pivot, fr.std, fr.regry, f2.breakoutstd, lastbreakoutix)
+            breakoutextremesix!(fr.breakoutix, pivot, fr.medianstd, fr.regry, f2.breakoutstd, lastbreakoutix)
             @assert length(pivot) == length(fr.grad) == length(fr.regry) == length(fr.std)
         else
             @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(fr.grad)

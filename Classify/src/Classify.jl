@@ -17,7 +17,8 @@ mutable struct TradeRules001
 end
 
 shortestwindow = minimum(Features.regressionwindows002)
-tr001default = TradeRules001(0.02, 1.0, 0.0, 3.0)
+# tr001default = TradeRules001(0.02, 1.0, 0.0, 3.0)
+tr001default = TradeRules001(0.01, 1.0, -0.9, 4.0)  # for test purposes
 
 mutable struct TradeChance
     base::String
@@ -56,12 +57,12 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
     pivot = Ohlcv.dataframe(features.ohlcv)[!, :pivot]
     base = Ohlcv.basesymbol(features.ohlcv)
     checked = Set()
-    println("tradechances $tradechances")
+    cachetc = TradeChance[]
     for tc in tradechances
         if tc.base == base
             # only check exit criteria for existing orders
             if !(tc.anchorminutes in checked)
-                println("test: found TC")
+                union!(checked, tc.anchorminutes)
                 afr = features.regr[tc.anchorminutes]
                 if pivot[currentix] > (afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix])  # above normal deviations
                     if tc.trackerminutes == 0
@@ -69,22 +70,23 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
                     end
                 end
                 if (((tc.trackerminutes == 1) && (pivot[currentix] < pivot[currentix-1])) ||
-                    ((tc.trackerminutes == 1) && (features.regr[tc.trackerminutes].grad[currentix] < 0)))
-                    @info "sell signal tracker window " tc.anchorminutes tc.trackerminutes currentix
+                    ((tc.trackerminutes > 1) && (features.regr[tc.trackerminutes].grad[currentix] < 0)))
+                    @info "sell signal tracker window $(base) $(pivot[currentix]) $(tc.anchorminutes) $(tc.trackerminutes) $currentix"
                     pricetarget = afr.regry[currentix] - tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
                     prob = 0.8
-                    push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, tc.trackerminutes))
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, tc.trackerminutes))
                 end
                 if pivot[currentix] < (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])
                     # emrgency exit due to surprising plunge
-                    @info "emergency sell signal due toplunge out of anchor window" tc.anchorminutes currentix
+                    @info "emergency sell signal due toplunge out of anchor window" base tc.anchorminutes currentix
                     pricetarget = afr.regry[currentix] - 2 * tr001default.anchorsurprisesigma * afr.medianstd[currentix]
                     prob = 0.9
-                    push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 1))
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 1))
                 end
             end
         end
     end
+    append!(tradechances, cachetc)
 
     anchorminutes = Features.bestanchorwindow(features, currentix, tr001default.minimumprofit, tr001default.anchorbreakoutsigma)
     afr = features.regr[anchorminutes]
@@ -93,7 +95,7 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
         trackerminutes = Features.besttrackerwindow(features, anchorminutes, currentix, false)
         if (((trackerminutes == 1) && (pivot[currentix] > pivot[currentix-1])) ||
             ((trackerminutes > 1) && (features.regr[trackerminutes].grad[currentix] > 0)))
-            @info "buy signal tracker window " anchorminutes trackerminutes currentix
+            @info "buy signal tracker window $base $(pivot[currentix]) $anchorminutes $trackerminutes $currentix"
             pricetarget = afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
             prob = 0.8
             push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, anchorminutes, trackerminutes))

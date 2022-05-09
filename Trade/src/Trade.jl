@@ -44,7 +44,11 @@ ohlcvdf(cache) = Ohlcv.dataframe(Features.ohlcv(cache.features))
 function preparetradecache(backtest)
     if backtest
         bases = EnvConfig.trainingbases
-        initialperiod = Dates.Year(4)
+        if EnvConfig.configmode == EnvConfig.test
+            initialperiod = Dates.Minute(100 + Features.requiredminutes)
+        else
+            initialperiod = Dates.Year(4)
+        end
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
     else
         assets = Assets.loadassets()
@@ -59,11 +63,9 @@ function preparetradecache(backtest)
     for base in bases
         ohlcv = Ohlcv.defaultohlcv(base)
         Ohlcv.read!(ohlcv)
-        if !backtest
-            origlen = size(ohlcv.df, 1)
-            ohlcv.df = ohlcv.df[ohlcv.df.opentime .>= startdt, :]
-            println("cutting ohlcv from $origlen to $(size(ohlcv.df)) minutes")
-        end
+        origlen = size(ohlcv.df, 1)
+        ohlcv.df = ohlcv.df[enddt .>= ohlcv.df.opentime .>= startdt, :]
+        println("cutting ohlcv from $origlen to $(size(ohlcv.df)) minutes")
         # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
         if size(Ohlcv.dataframe(ohlcv), 1) < Features.requiredminutes
             @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Features.requiredminutes
@@ -143,13 +145,16 @@ function tradeloop(backtest=true)
         tc = Classify.TradeChance[]
         while noassetrefresh
             for base in keys(caches)
-                if appendmostrecent!(caches[base], backtest)
+                continuetrading = appendmostrecent!(caches[base], backtest)
+                if continuetrading
                     caches[base].classify(tc, caches[base].features, caches[base].lastix)
+                else
+                    noassetrefresh = false
+                    break
                 end
             end
             trade!(tc, caches)
         end
-        continuetrading : backtest ? caches[base].lastix < size(ohlcvdf(caches[base]), 1) : true
         # if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
         #     # ! TODO the read ohlcv data shall be from time to time appended to the historic data
         # end
