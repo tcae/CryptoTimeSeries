@@ -41,7 +41,7 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmu
     # display(y)
     timestamp = [firstutc + Dates.Minute(m) for m in 1:totalminutes]
     x2 = [(m + offset) * pi * 2 / (periodminutes * overlayperiodmultiple) for m in 1:totalminutes]
-    y2 = sin.(x2)
+    y2 = overlayperiodmultiple > 0 ? sin.(x2) : 0
     y = y1 .* y2 + y2
     # display(timestamp)
     # open =   (y / 4)

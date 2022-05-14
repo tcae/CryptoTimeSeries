@@ -33,7 +33,7 @@ end
 trade cache contains all required data to support the tarde loop
 """
 mutable struct Cache
-    classify
+    classify!
     features::Features.Features002
     lastix
     Cache(features, lastix) = new(Classify.traderules001!, features, lastix)
@@ -147,7 +147,7 @@ function tradeloop(backtest=true)
             for base in keys(caches)
                 continuetrading = appendmostrecent!(caches[base], backtest)
                 if continuetrading
-                    caches[base].classify(tc, caches[base].features, caches[base].lastix)
+                    caches[base].classify!(tc, caches[base].features, caches[base].lastix)
                 else
                     noassetrefresh = false
                     break

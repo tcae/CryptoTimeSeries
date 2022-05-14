@@ -13,17 +13,20 @@ using EnvConfig, Ohlcv, CryptoXch, Features
 
 
 """
-AssetData.df holds the following persistent columns:
+AssetData.basedf holds the following persistent columns:
 
 - base = symbol of traded asset
 - xch = name of exchange, e.g. for crypto binance or for stocks and options nasdaq or aex
 - manual = manually selected
 - automatic = automatic (algorithmic) selected
 - portfolio = base is part of current portfolio
+- basevolume
 
 """
 struct AssetData
-    df::DataFrames.DataFrame
+    basedf::DataFrames.DataFrame
+    usdtvolume
+    backtest
 end
 
 "Returns an empty dataframe with all persistent columns"
@@ -77,16 +80,16 @@ function portfolioselect(usdtdf)
             pdf[ix, :usdt] = pusdtdf[ix, :lastprice] * pdf[ix, :basevolume]
         end
         pdf = pdf[pdf.usdt .>= 10, :]
-        return pdf.base
+        return pdf
     else
         return []
     end
 end
 
-dataframe(ad::AssetData) = ad.df
+dataframe(ad::AssetData) = ad.basedf
 
 function setdataframe!(ad::AssetData, df)
-    ad.df = df
+    ad.basedf = df
 end
 
 mnemonic() = "AssetData_v1"
@@ -96,7 +99,7 @@ function write(ad::AssetData)
     mnm = mnemonic()
     filename = EnvConfig.datafile(mnm)
     println("writing asset data to $filename")
-    JDF.savejdf(filename, ad.df[!, savecols])  # without :pivot
+    JDF.savejdf(filename, ad.basedf[!, savecols])  # without :pivot
 end
 
 function read()::AssetData
@@ -124,11 +127,12 @@ function delete(ad::AssetData)
     end
 end
 
-function loadassets()::AssetData
+function loadassets(backtest=false)::AssetData
     enddt = Dates.now(Dates.UTC)
     usdtdf = CryptoXch.getUSDTmarket()
     manual = Set(manualselect())
-    portfolio = Set(portfolioselect(usdtdf))
+    portfoliodf = Set(portfolioselect(usdtdf))
+    portfolio = portfoliodf[!, :portfolio]
     # println("portfolio len=$(length(portfolio)) - $portfolio")
     bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
     # println("lastdayvolume OK USDT len=$(length(bases)) - $bases")
@@ -144,21 +148,23 @@ function loadassets()::AssetData
         @warn "unexpected bases missing in USDT bases" checkbases
     end
     allbases = filter(el -> el in usdtdf.base, allbases)
-    ad = AssetData(emptyassetdataframe())
-    ad.df[:, :base] = [base for base in allbases]
-    ad.df[:, :manual] = [ad.df[ix, :base] in manual ? true : false for ix in 1:size(ad.df, 1)]
-    ad.df[:, :automatic] = [ad.df[ix, :base] in automatic ? true : false for ix in 1:size(ad.df, 1)]
-    ad.df[:, :portfolio] = [ad.df[ix, :base] in portfolio ? true : false for ix in 1:size(ad.df, 1)]
-    ad.df[:, :xch] .= CryptoXch.defaultcryptoexchange
-    ad.df[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
-    # println("ad.df")
-    # println(ad.df)
-    sort!(ad.df, [:base])
+    ad = AssetData(emptyassetdataframe(), backtest)
+    ad.basedf[:, :base] = [base for base in allbases]
+    ad.basedf[:, :manual] = [ad.basedf[ix, :base] in manual ? true : false for ix in 1:size(ad.basedf, 1)]
+    ad.basedf[:, :automatic] = [ad.basedf[ix, :base] in automatic ? true : false for ix in 1:size(ad.basedf, 1)]
+    ad.basedf[:, :portfolio] = [ad.basedf[ix, :base] in portfolio ? true : false for ix in 1:size(ad.basedf, 1)]
+    ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
+    ad.basedf[:, :basevolume] .= 0.0
+    # !TODO add portfolio basevolume
+    ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+    # println("ad.basedf")
+    # println(ad.basedf)
+    sort!(ad.basedf, [:base])
     # println("usdtdf")
     # println(usdtdf)
     sort!(usdtdf, [:base])
-    ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
-    ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
+    ad.basedf[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.basedf[!, :base]])), :quotevolume24h]
+    ad.basedf[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.basedf[!, :base]])), :priceChangePercent]
 
     write(ad)
     return ad

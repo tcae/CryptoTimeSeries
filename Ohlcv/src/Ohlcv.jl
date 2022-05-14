@@ -21,6 +21,10 @@ mutable struct OhlcvData
     interval::String
 end
 
+function copy(ohlcv::OhlcvData)
+    return OhlcvData(ohlcv.df, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
+end
+
 function Base.show(io::IO, ohlcv::OhlcvData)
     print(io::IO, "ohlcv: base=$(ohlcv.base) base=$(ohlcv.interval) size=$(size(ohlcv.df)) pivot: max=$(maximum(ohlcv.df.pivot)) median=$(Statistics.median(ohlcv.df.pivot)) min=$(minimum(ohlcv.df.pivot))")
 end

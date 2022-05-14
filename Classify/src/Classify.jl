@@ -18,7 +18,7 @@ end
 
 shortestwindow = minimum(Features.regressionwindows002)
 # tr001default = TradeRules001(0.02, 1.0, 0.0, 3.0)
-tr001default = TradeRules001(0.01, 1.0, -0.9, 4.0)  # for test purposes
+tr001default = TradeRules001(0.02, 1.0, 0.0001, 3.0)  # for test purposes
 
 mutable struct TradeChance
     base::String
@@ -44,6 +44,65 @@ end
 returns the chance expressed in gain between currentprice and future targetprice * probability
 
 Trading strategy:
+- buy if price is below normal deviation range of anchor regression window, anchor gradient is OK
+- sell if price is above normal deviation range of anchor regression window
+- emergency sell after buy if price plunges below extended deviation range of anchor regression window
+- anchor regression window = std * 2 * anchorbreakoutsigma > minimumprofit
+- anchor gradient is OK = anchor gradient > `anchorminimumgradient`
+- normal deviation range = regry +- anchorbreakoutsigma * std
+- extended deviation range  = regry +- anchorsurprisesigma * std
+
+"""
+function traderules001!(tradechances::Vector{TradeChance}, features::Features.Features002, currentix)
+    opentime = Ohlcv.dataframe(features.ohlcv)[!, :opentime]
+    pivot = Ohlcv.dataframe(features.ohlcv)[!, :pivot]
+    base = Ohlcv.basesymbol(features.ohlcv)
+    checked = Set()
+    cachetc = TradeChance[]
+    for tc in tradechances
+        if tc.base == base
+            # only check exit criteria for existing orders
+            if !(tc.anchorminutes in checked)
+                union!(checked, tc.anchorminutes)
+                afr = features.regr[tc.anchorminutes]
+                band = tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+                if pivot[currentix] > afr.regry[currentix]  # above normal deviations
+                    @info "sell signal for $(base) price=$(pivot[currentix]) anchor=$(tc.anchorminutes) at ix=$currentix  time=$(opentime[currentix])"
+                    pricetarget = afr.regry[currentix] + band
+                    prob = max(min((2 * band - (pricetarget - pivot[currentix])) / 2 * band, 1.0), 0.0)
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 0))
+                end
+                if pivot[currentix] < (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])
+                    # emergency exit due to surprising plunge
+                    @info "emergency sell signal for $base due toplunge out of anchor window $(tc.anchorminutes) ix=$currentix time=$(opentime[currentix])"
+                    pricetarget = afr.regry[currentix] - 2 * tr001default.anchorsurprisesigma * afr.medianstd[currentix]
+                    prob = 1.0
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 0))
+                end
+            end
+        end
+    end
+    append!(tradechances, cachetc)
+
+    anchorminutes = Features.bestanchorwindow(features, currentix, tr001default.minimumprofit, tr001default.anchorbreakoutsigma)
+    afr = features.regr[anchorminutes]
+    band = tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+    if ((pivot[currentix] < afr.regry[currentix]) &&
+        (pivot[currentix] > (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])) &&
+        (afr.grad[currentix] > tr001default.anchorminimumgradient))
+        @info "buy signal $base price=$(pivot[currentix]) anchor=$anchorminutes ix=$currentix time=$(opentime[currentix])"
+        pricetarget = afr.regry[currentix] - band
+        prob = max(min((2 * band - (pivot[currentix] - pricetarget)) / 2 * band, 1.0), 0.0)
+        push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, anchorminutes, 0))
+    end
+    # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!
+    # TODO use case of breakout rise after sell above deviation range is not yet covered
+end
+
+"""
+returns the chance expressed in gain between currentprice and future targetprice * probability
+
+Trading strategy:
 - buy if price is below normal deviation range of anchor regression window, anchor gradient is OK and tracker gradient becomes positive
 - sell if price is above normal deviation range of anchor regression window and tracker gradient becomes negative
 - emergency sell after buy if price plunges below extended deviation range of anchor regression window
@@ -53,7 +112,7 @@ Trading strategy:
 - extended deviation range  = regry +- anchorsurprisesigma * std
 
 """
-function traderules001!(tradechances::Vector{TradeChance}, features::Features.Features002, currentix)
+function traderules002!(tradechances::Vector{TradeChance}, features::Features.Features002, currentix)
     pivot = Ohlcv.dataframe(features.ohlcv)[!, :pivot]
     base = Ohlcv.basesymbol(features.ohlcv)
     checked = Set()
@@ -66,7 +125,7 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
                 afr = features.regr[tc.anchorminutes]
                 if pivot[currentix] > (afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix])  # above normal deviations
                     if tc.trackerminutes == 0
-                        tc.trackerminutes = Features.besttrackerwindow(features, tc.anchorminutes, currentix, true)
+                        tc.trackerminutes = Features.besttrackerwindow(features, tc.anchorminutes, currentix)
                     end
                 end
                 if (((tc.trackerminutes == 1) && (pivot[currentix] < pivot[currentix-1])) ||
@@ -77,7 +136,7 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
                     push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, tc.trackerminutes))
                 end
                 if pivot[currentix] < (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])
-                    # emrgency exit due to surprising plunge
+                    # emergency exit due to surprising plunge
                     @info "emergency sell signal due toplunge out of anchor window" base tc.anchorminutes currentix
                     pricetarget = afr.regry[currentix] - 2 * tr001default.anchorsurprisesigma * afr.medianstd[currentix]
                     prob = 0.9
@@ -92,7 +151,7 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
     afr = features.regr[anchorminutes]
     if ((pivot[currentix] < (afr.regry[currentix] - tr001default.anchorbreakoutsigma * afr.medianstd[currentix])) &&
         (afr.grad[currentix] > tr001default.anchorminimumgradient))
-        trackerminutes = Features.besttrackerwindow(features, anchorminutes, currentix, false)
+        trackerminutes = Features.besttrackerwindow(features, anchorminutes, currentix)
         if (((trackerminutes == 1) && (pivot[currentix] > pivot[currentix-1])) ||
             ((trackerminutes > 1) && (features.regr[trackerminutes].grad[currentix] > 0)))
             @info "buy signal tracker window $base $(pivot[currentix]) $anchorminutes $trackerminutes $currentix"

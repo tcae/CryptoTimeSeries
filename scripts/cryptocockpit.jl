@@ -13,7 +13,7 @@ import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Assets
+using EnvConfig, Ohlcv, Features, Targets, Assets, Classify
 
 include("../scripts/cockpitdatatablecolors.jl")
 
@@ -98,6 +98,13 @@ app.layout = html_div() do
                 (label = "normalize", value = "normalize")],
                 # value=["test"],
                 value=["regression1d", "normalize"],
+                labelStyle=(:display => "inline-block")
+        ),
+        dcc_checklist(
+            id="anchor_select",
+            options=[(label = Features.periodlabels(window), value = window) for window in Features.regressionwindows002],
+                # value=["test"],
+                value=[60],
                 labelStyle=(:display => "inline-block")
         ),
         html_div(id="graph4h_endtime", children=assets.df[1, :update]),
@@ -337,28 +344,6 @@ function targetfigure(base, period, enddt)
         y = ["distpeak4h"]
         z = [distances]
         t = [["p: $(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) r: $(Dates.format(x[regressionix[ix]], "mm-dd HH:MM"))" for ix in 1:size(x, 1)]]
-        # t = [["ix = $ix"] for ix in 1:size(x, 1)]
-        # z = [[distances[r, c] for c in 1:size(y,1)] for r in 1:size(x,1)]
-        # for r in 1:size(x,1)
-        #     if isnan(z[r][1])
-        #         @warn "NaN in z[$r][1]"
-        #     end
-        # end
-        # println("z=$(z[1:3])")
-        # println("txt=$(t[1:3])")
-
-        # ddf = DataFrame()
-        # ddf.x = x
-        # ddf.z = z
-        # ddf.txt = t
-        # println(ddf)
-        # println("x size = $(size(x)) y size = $(size(y)) z size = $(size(z))")
-        # println("x size = $(size(x)) y size = $(size(y))  z size = $(size(z)) txt size = $(size(t))")
-        # fig = Plot(
-        #     # [heatmap(x=x, y=y, z=[z], text=t)],
-        #     [heatmap(x = x, y = y, z = z, text = t, name = "name")],
-        #     Layout(xaxis_rangeslider_visible=false)
-        #     )
         dcg = dcc_graph(
             figure = (
                 data = [
@@ -401,7 +386,61 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     return fig
 end
 
-function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap)
+function featureset002(ohlcv, period, enddt)
+    df = Ohlcv.dataframe(ohlcv)
+    startdt = enddt - period - Dates.Minute(Features.requiredminutes)
+    subdf = copy(df[startdt .< df.opentime .<= enddt, :], copycols=true)
+    subohlcv = Ohlcv.copy(ohlcv)
+    # println("subohlcv===ohlcv?$(subohlcv===ohlcv) subdf===df?$(subdf===df)")
+    subohlcv.df = subdf
+    @assert size(subdf,1) > 0
+    # pivot = Ohlcv.pivot!(calcdf)
+    # pivot = normpercent(pivot, normref)
+    f2 = Features.Features002(subohlcv, Classify.tr001default.anchorbreakoutsigma)
+    # println("F2=$f2")
+    return f2
+end
+
+function anchortraces(f2, window, normref, period, enddt)
+    startdt = enddt - period
+    ohlcv = Features.ohlcv(f2)
+    df = Ohlcv.dataframe(ohlcv)
+    pivot = Ohlcv.pivot!(ohlcv)
+    ftr = f2.regr[window]
+    startix = endix = 0
+    for ix in length(df.opentime):-1:1
+        if (startix == 0) && (startdt > df[ix, :opentime])
+            startix = ix
+        end
+        if (endix == 0) && (enddt > df[ix, :opentime])
+            endix = ix
+        end
+    end
+    # println("anchortraces window=$window")
+    @assert (startix > 0) && (endix > 0) && (startix <= endix)
+    # println("startdt: $startdt, startix:$startix, enddt:$enddt, endix:$endix")
+    x = [df[ix, :opentime] for ix in startix:endix]
+    xarea = vcat(x, reverse(x))
+    yarea = vcat([ftr.regry[ix] + ftr.medianstd[ix] for ix in startix:endix], [ftr.regry[ix] - ftr.medianstd[ix] for ix in endix:-1:startix])
+    # println("regry x: size=$(size(xarea)) max=$(maximum(xarea)) min=$(minimum(xarea)) y: size=$(size(yarea)) max=$(maximum(yarea)) min=$(minimum(yarea)) ")
+    s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
+    # x = [df[ix, :opentime] for ix in startix:endix]
+
+    # yarea = vcat([ftr.regry[ix] + ftr.std[ix] for ix in startix:endix], [ftr.regry[ix] - ftr.std[ix] for ix in endix:-1:startix])
+    # s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(20,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
+
+    y = [ftr.regry[ix] for ix in startix:endix]
+    # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
+    s1 = scatter(name="regry", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(31, 119, 180)", width=0))
+
+    xix = [abs(ix) for ix in ftr.breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
+    y = [pivot[ix] for ix in xix]
+    x = [df[ix, :opentime] for ix in xix]
+    s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2))
+    return [s2, s1, s3]
+end
+
+function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, anchor)
     traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
     fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])  # return an empty graph on failing asserts
     if base === nothing
@@ -430,9 +469,20 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
                     y=regressionline(subdf[!, :pivot], normref),
                     mode="lines", showlegend=false)], traces)
         end
+
+        # println("typeof(anchor): $(typeof(anchor)) = $anchor")
+        f2 = featureset002(ohlcv, period, enddt)
+        # println("priod=$period, enddt=$enddt")
+        for win in anchor
+            # win = parse(Int64, window)
+            #  visualization anchors
+            traces = append!(anchortraces(f2, win, normref, period, enddt), traces)
+        end
+        # println("length(traces)=$(length(traces))")
+
         traces = append!([
             bar(x=subdf.opentime, y=subdf.basevolume, name="basevolume", yaxis="y2")], traces)
-        if heatmap
+        if false  # disable featureSet001 `heatmap`
             fig = addheatmap!(traces, ohlcv, subdf, normref)
         else
             fig = Plot(traces,
@@ -461,9 +511,10 @@ callback!(
     Input("graph6month_endtime", "children"),
     Input("graph_all_endtime", "children"),
     Input("graph4h_endtime", "children"),
+    Input("anchor_select", "value"),
     State("indicator_select", "value")
     # prevent_initial_call=true
-) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, indicator
+) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, anchor, indicator
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
     s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id)"
@@ -474,7 +525,7 @@ callback!(
     regression = "regression1d" in indicator
     heatmap = "features" in indicator
 
-    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap)
+    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap, anchor)
     targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)) : nothing
     fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
         drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)
