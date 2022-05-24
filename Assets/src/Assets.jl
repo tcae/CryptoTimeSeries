@@ -27,6 +27,7 @@ struct AssetData
     basedf::DataFrames.DataFrame
     usdtvolume
     backtest
+    AssetData(basedf, usdtvolume=100.0, backtest=true) = new(basedf, usdtvolume, backtest)
 end
 
 "Returns an empty dataframe with all persistent columns"
@@ -131,8 +132,8 @@ function loadassets(backtest=false)::AssetData
     enddt = Dates.now(Dates.UTC)
     usdtdf = CryptoXch.getUSDTmarket()
     manual = Set(manualselect())
-    portfoliodf = Set(portfolioselect(usdtdf))
-    portfolio = portfoliodf[!, :portfolio]
+    portfoliodf = portfolioselect(usdtdf)
+    portfolio = Set(portfoliodf[!, :base])
     # println("portfolio len=$(length(portfolio)) - $portfolio")
     bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
     # println("lastdayvolume OK USDT len=$(length(bases)) - $bases")
@@ -148,7 +149,8 @@ function loadassets(backtest=false)::AssetData
         @warn "unexpected bases missing in USDT bases" checkbases
     end
     allbases = filter(el -> el in usdtdf.base, allbases)
-    ad = AssetData(emptyassetdataframe(), backtest)
+    usdtvolume = 100.0  # dummy 100 USDT
+    ad = AssetData(emptyassetdataframe(), usdtvolume, backtest)
     ad.basedf[:, :base] = [base for base in allbases]
     ad.basedf[:, :manual] = [ad.basedf[ix, :base] in manual ? true : false for ix in 1:size(ad.basedf, 1)]
     ad.basedf[:, :automatic] = [ad.basedf[ix, :base] in automatic ? true : false for ix in 1:size(ad.basedf, 1)]

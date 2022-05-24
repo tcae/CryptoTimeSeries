@@ -197,3 +197,31 @@ Challenges:
   - anchor surprise sigma = factor * sigma to signal surprise plunge (sell) or raise (buy)
   - anchor sigma minutes = longest considered regression window = minutes used to calculate the median of all regression window sigmas
 
+
+## Notes for using volatility and trend tracker side by side
+- General thoughts
+  - less volatility = more stable direction -> tracking preferred
+  - high volatility = instable direction -> catch statistic outliers for yield
+  - stabilze direction by longer regression window with disadvantage that they follow less agile
+- use regressionlines of different regression time windows as basis
+- for each of the regression lines use different standard deviation factors to define a band around the rolling regression line
+- the best gain over the minimum timespan wins as combi of (regression window, standard deviation factor)
+- 2 strategy flavors:
+- tracker:
+  - buy at regression minimum + hysteresis (gradient | gain | period of positive gradient)
+  - sell at regression maximum
+- catcher:
+  - buy at lower breakout of `factor * standard deviation`
+  - sell at upper breakout of `factor * standard deviation`
+  - emergency sell at buy price - `emergency_factor * standard deviation`
+- in either case only buy if window gradient is positive
+-
+- parameters:
+  - minimum profit = minimum profitability requirement a normal deviation range has to exceed to consider trading
+  - gain backtest minutes to determine best tracker | catcher regression window and standard deviation factor that spans the tracker | catcher band
+  - set of regression windows to choose from
+  - set of standard deviation factors to choose from
+  - emergency standard deviation factor for emergency catcher sell
+  - hysteresis criteria to start tracker
+  - anchor minimum gradient to do any buy, e.g. 0.0
+

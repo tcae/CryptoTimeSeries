@@ -810,10 +810,12 @@ In case that minimumprofit requirements are not met, `bestwindow` returns 0.
 """
 function bestanchorwindow(f2::Features002, currentix, minimumprofit, anchorbreakoutsigma)
     maxtrades = 0
+    maxgain = minimumprofit
     bestwindow = 0
     for window in keys(f2.regr)
         trades, gain = calcanchor(f2.regr[window], Ohlcv.pivot!(f2.ohlcv), currentix, minimumprofit, anchorbreakoutsigma)
-        if trades > maxtrades
+        if gain > maxgain  # trades > maxtrades
+            maxgain = gain
             maxtrades = trades
             bestwindow = window
         end
@@ -849,7 +851,7 @@ function calcanchor(fr::Features002Regr, pivot, currentix, minimumprofit, anchor
     return trades, gain
 end
 
-function breakoutextremesix!(extremeix, ohlcv, medianstd, regry, breakoutstd, startindex)
+function breakoutextremesix!(extremeix, ohlcv, medianstd, regry, breakoutstd, startindex, firstbreakout=true)
     @assert startindex > 0
     @assert !isnothing(ohlcv)
     df = ohlcv.df
@@ -866,12 +868,20 @@ function breakoutextremesix!(extremeix, ohlcv, medianstd, regry, breakoutstd, st
             if breakoutix < 0
                 push!(extremeix, breakoutix)
             end
-            breakoutix = breakoutix > 0 ? (df[breakoutix, :high] < df[ix, :high] ? ix : breakoutix) : ix
+            if firstbreakout
+                breakoutix = breakoutix > 0 ? breakoutix : ix  # first breakout
+            else
+                breakoutix = breakoutix > 0 ? (df[breakoutix, :high] < df[ix, :high] ? ix : breakoutix) : ix  # maximum breakout
+            end
         elseif df[ix, :low] < regry[ix] - breakoutstd * medianstd[ix]
             if breakoutix > 0
                 push!(extremeix, breakoutix)
             end
-            breakoutix = breakoutix < 0 ? (df[abs(breakoutix), :low] > df[ix, :low] ? -ix : breakoutix) : -ix
+            if firstbreakout
+                breakoutix = breakoutix < 0 ? breakoutix : -ix  # first breakout
+            else
+                breakoutix = breakoutix < 0 ? (df[abs(breakoutix), :low] > df[ix, :low] ? -ix : breakoutix) : -ix  # minimum breakout
+            end
         else
             if breakoutix != 0
                 push!(extremeix, breakoutix)
@@ -891,7 +901,7 @@ In general don't call this function directly but via Feature002 contructor `Feat
 function getfeatures002(ohlcv::OhlcvData, breakoutstd)
     println("getfeatures002 init")
     pivot = Ohlcv.pivot!(ohlcv)
-    @assert length(pivot) >= requiredminutes
+    @assert length(pivot) >= requiredminutes "length(pivot): $(length(pivot)) >= $requiredminutes"
     regr = Dict()
     for window in regressionwindows002
         # println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")

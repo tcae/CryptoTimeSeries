@@ -46,23 +46,23 @@ function updateassets(download=false)
     if !download
         a = Assets.read()
     end
-    if download || (size(a.df, 1) == 0)
+    if download || (size(a.basedf, 1) == 0)
         ohlcvcache = Dict()
         a = Assets.loadassets()
         println(a)
     else
         a = Assets.read()
     end
-    if !(a === nothing) && (size(a.df, 1) > 0)
-        sort!(a.df, [:portfolio], rev=true)
-        a.df.id = a.df.base
-        println("updating table data of size: $(size(a.df))")
+    if !(a === nothing) && (size(a.basedf, 1) > 0)
+        sort!(a.basedf, [:portfolio], rev=true)
+        a.basedf.id = a.basedf.base
+        println("updating table data of size: $(size(a.basedf))")
     end
     return a
 end
 
 assets = updateassets(false)
-println("last assets update: $(assets.df[1, :update]) type $(typeof(assets.df[1, :update]))")
+println("last assets update: $(assets.basedf[1, :update]) type $(typeof(assets.basedf[1, :update]))")
 app.layout = html_div() do
     html_div(id="leftside", [
         html_div(id="select_buttons", [
@@ -72,21 +72,21 @@ app.layout = html_div() do
             # html_button("reload data", id="reload_data"),
             html_button("reset selection", id="reset_selection")
         ]),
-        html_div(id="graph1day_endtime", children=assets.df[1, :update]),
+        html_div(id="graph1day_endtime", children=assets.basedf[1, :update]),
         dcc_graph(id="graph1day"),
-        html_div(id="graph10day_endtime", children=assets.df[1, :update]),
+        html_div(id="graph10day_endtime", children=assets.basedf[1, :update]),
         dcc_graph(id="graph10day"),
-        html_div(id="graph6month_endtime", children=assets.df[1, :update]),
+        html_div(id="graph6month_endtime", children=assets.basedf[1, :update]),
         dcc_graph(id="graph6month"),
-        html_div(id="graph_all_endtime", children=assets.df[1, :update]),
+        html_div(id="graph_all_endtime", children=assets.basedf[1, :update]),
         dcc_graph(id="graph_all"),
     ]),
 
     html_div(id="rightside", [
         dcc_dropdown(
             id="crypto_focus",
-            options=[(label = i, value = i) for i in assets.df.base],
-            value=assets.df[1, :base]
+            options=[(label = i, value = i) for i in assets.basedf.base],
+            value=assets.basedf[1, :base]
         ),
         dcc_checklist(
             id="indicator_select",
@@ -107,20 +107,20 @@ app.layout = html_div() do
                 value=[60],
                 labelStyle=(:display => "inline-block")
         ),
-        html_div(id="graph4h_endtime", children=assets.df[1, :update]),
+        html_div(id="graph4h_endtime", children=assets.basedf[1, :update]),
         html_div(id="targets4h"),
         dcc_graph(id="graph4h"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.df) if i != "id"],  # exclude "id" to not display it
-            data = Dict.(pairs.(eachrow(assets.df))),
-            style_data_conditional=discrete_background_color_bins(assets.df, n_bins=31, columns="priceChangePercent"),
+            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.basedf) if i != "id"],  # exclude "id" to not display it
+            data = Dict.(pairs.(eachrow(assets.basedf))),
+            style_data_conditional=discrete_background_color_bins(assets.basedf, n_bins=31, columns="priceChangePercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
             sort_mode="multi",
             fixed_rows=Dict("headers" => true),
-            # selected_rows = [ix-1 for ix in 1:size(assets.df, 1) if assets.df[ix, :portfolio]],
-            # selected_row_ids = [assets.df[ix, :base] for ix in 1:size(assets.df, 1) if assets.df[ix, :portfolio]],
+            # selected_rows = [ix-1 for ix in 1:size(assets.basedf, 1) if assets.basedf[ix, :portfolio]],
+            # selected_row_ids = [assets.basedf[ix, :base] for ix in 1:size(assets.basedf, 1) if assets.basedf[ix, :portfolio]],
             style_table=Dict("height" => "700px", "overflowY" => "auto")),
         html_div(id="graph_action"),
         html_div(id="click_action")
@@ -233,7 +233,7 @@ callback!(
     graph_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : nothing
     res = (graph_id === nothing) ? "no click selection" : "$graph_id: "
     if graph_id == "reset_selection"
-        updates = assets.df[assets.df[!, :base] .== focus, :update]
+        updates = assets.basedf[assets.basedf[!, :base] .== focus, :update]
         clickdt = updates[1]
         println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
     else
@@ -391,6 +391,7 @@ function featureset002(ohlcv, period, enddt)
     startdt = enddt - period - Dates.Minute(Features.requiredminutes)
     subdf = copy(df[startdt .< df.opentime .<= enddt, :], copycols=true)
     subohlcv = Ohlcv.copy(ohlcv)
+    println("len(subohlcv): $(size(subdf, 1)) len(ohlcv): $(size(df, 1))")
     # println("subohlcv===ohlcv?$(subohlcv===ohlcv) subdf===df?$(subdf===df)")
     subohlcv.df = subdf
     @assert size(subdf,1) > 0
@@ -433,11 +434,14 @@ function anchortraces(f2, window, normref, period, enddt)
     # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
     s1 = scatter(name="regry", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(31, 119, 180)", width=0))
 
-    xix = [abs(ix) for ix in ftr.breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
-    y = [pivot[ix] for ix in xix]
-    x = [df[ix, :opentime] for ix in xix]
-    s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2))
-    return [s2, s1, s3]
+    xix = [ix for ix in ftr.breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
+    y = [pivot[ix] for ix in xix if ix > 0]
+    x = [df[ix, :opentime] for ix in xix if ix > 0]
+    s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-down"))
+    y = [pivot[abs(ix)] for ix in xix if ix < 0]
+    x = [df[abs(ix), :opentime] for ix in xix if ix < 0]
+    s4 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-up"))
+    return [s2, s1, s3, s4]
 end
 
 function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, anchor)
@@ -470,16 +474,17 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
                     mode="lines", showlegend=false)], traces)
         end
 
-        # println("typeof(anchor): $(typeof(anchor)) = $anchor")
-        f2 = featureset002(ohlcv, period, enddt)
-        # println("priod=$period, enddt=$enddt")
-        for win in anchor
-            # win = parse(Int64, window)
-            #  visualization anchors
-            traces = append!(anchortraces(f2, win, normref, period, enddt), traces)
+        println("typeof(anchor): $(typeof(anchor)) = $anchor isempty(anchor)=$(isempty(anchor)); period=$period ")
+        if !isempty(anchor)
+            f2 = featureset002(ohlcv, period, enddt)
+            # println("priod=$period, enddt=$enddt")
+            for win in anchor
+                # win = parse(Int64, window)
+                #  visualization anchors
+                traces = append!(anchortraces(f2, win, normref, period, enddt), traces)
+            end
+            # println("length(traces)=$(length(traces))")
         end
-        # println("length(traces)=$(length(traces))")
-
         traces = append!([
             bar(x=subdf.opentime, y=subdf.basevolume, name="basevolume", yaxis="y2")], traces)
         if false  # disable featureSet001 `heatmap`
@@ -532,7 +537,7 @@ callback!(
     fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
         drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression)
     fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-        focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression, false)
+        focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression, false, [])
     # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
     #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression)
     figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
@@ -570,11 +575,11 @@ callback!(
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
                 assets = updateassets(false)
-                active_row_id = assets.df[1, :base]
+                active_row_id = assets.basedf[1, :base]
             elseif (EnvConfig.configmode == EnvConfig.test) && !("test" in indicator)  # switch from test to prodcution data
                 EnvConfig.init(EnvConfig.production)
                 assets = updateassets(false)
-                active_row_id = assets.df[1, :base]
+                active_row_id = assets.basedf[1, :base]
             end
 
         elseif button_id == "update_data"
@@ -583,8 +588,8 @@ callback!(
             return 0, olddata, active_row_id, options
         end
         if !(assets === nothing)
-            println("data update assets.df.size: $(size(assets.df))")
-            return 1, Dict.(pairs.(eachrow(assets.df))), active_row_id, [(label = i, value = i) for i in assets.df.base]
+            println("data update assets.basedf.size: $(size(assets.basedf))")
+            return 1, Dict.(pairs.(eachrow(assets.basedf))), active_row_id, [(label = i, value = i) for i in assets.basedf.base]
         else
             @warn "found no assets"
             return 0, olddata, active_row_id, options
@@ -608,7 +613,7 @@ callback!(
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
         res = Dict(
-            "all_button" => (0:(size(assets.df.base, 1)-1), assets.df.base),
+            "all_button" => (0:(size(assets.basedf.base, 1)-1), assets.basedf.base),
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))
