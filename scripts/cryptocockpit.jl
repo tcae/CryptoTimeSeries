@@ -96,15 +96,15 @@ app.layout = html_div() do
                 (label = "features", value = "features"),
                 (label = "targets", value = "targets"),
                 (label = "normalize", value = "normalize")],
-                # value=["test"],
-                value=["regression1d", "normalize"],
+                value=["test"],
+                # value=["regression1d", "normalize"],
                 labelStyle=(:display => "inline-block")
         ),
         dcc_checklist(
             id="anchor_select",
             options=[(label = Features.periodlabels(window), value = window) for window in Features.regressionwindows002],
                 # value=["test"],
-                value=[60],
+                # value=[60],
                 labelStyle=(:display => "inline-block")
         ),
         html_div(id="graph4h_endtime", children=assets.basedf[1, :update]),
@@ -402,6 +402,13 @@ function featureset002(ohlcv, period, enddt)
     return f2
 end
 
+function logbreakix(df, brix)
+    dflen = size(df,1)
+    println()
+    println("df len=$dflen all in: $(all([1<=abs(bix)<=dflen  for bix in brix]))")
+    println([(bix, df[abs(bix), :opentime]) for bix in brix])
+end
+
 function anchortraces(f2, window, normref, period, enddt)
     startdt = enddt - period
     ohlcv = Features.ohlcv(f2)
@@ -432,8 +439,13 @@ function anchortraces(f2, window, normref, period, enddt)
 
     y = [ftr.regry[ix] for ix in startix:endix]
     # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
-    s1 = scatter(name="regry", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(31, 119, 180)", width=0))
+    s1 = scatter(name="regry", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(31, 119, 180)", width=1))
 
+    y = [pivot[ix] for ix in startix:endix]
+    # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
+    s5 = scatter(name="pivot", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
+
+    logbreakix(df, ftr.breakoutix)
     xix = [ix for ix in ftr.breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
     y = [pivot[ix] for ix in xix if ix > 0]
     x = [df[ix, :opentime] for ix in xix if ix > 0]
@@ -441,7 +453,7 @@ function anchortraces(f2, window, normref, period, enddt)
     y = [pivot[abs(ix)] for ix in xix if ix < 0]
     x = [df[abs(ix), :opentime] for ix in xix if ix < 0]
     s4 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-up"))
-    return [s2, s1, s3, s4]
+    return [s2, s1, s5, s3, s4]
 end
 
 function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, anchor)
@@ -474,6 +486,7 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
                     mode="lines", showlegend=false)], traces)
         end
 
+        anchor = isnothing(anchor) ? [] : anchor
         println("typeof(anchor): $(typeof(anchor)) = $anchor isempty(anchor)=$(isempty(anchor)); period=$period ")
         if !isempty(anchor)
             f2 = featureset002(ohlcv, period, enddt)
@@ -571,7 +584,7 @@ callback!(
             active_row_id = active_cell.row_id
         end
         donormalize = "normalize" in indicator
-        if button_id == "indicator_select"
+        # if button_id == "indicator_select"
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
                 assets = updateassets(false)
@@ -582,7 +595,7 @@ callback!(
                 active_row_id = assets.basedf[1, :base]
             end
 
-        elseif button_id == "update_data"
+        if button_id == "update_data"
             assets = updateassets(true)
         else
             return 0, olddata, active_row_id, options

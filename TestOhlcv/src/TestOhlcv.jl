@@ -49,9 +49,11 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmu
     # low =    (y / 2)
     # close =  (y / 4)
     open =  price .* (y .* amplitude .+ 1 .+ variation ./ 4)
-    high =  price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
-    low =   price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
+    high =  price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
+    low =   price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
+    @assert low <= open <= high "low $(low) <= open $(open) <= high $(high)"
+    @assert low <= close <= high "low $(low) <= close $(close) <= high $(high)"
     volume = (1.1 .- abs.(y1)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
     df[:, :pivot] = Ohlcv.pivot(df)
@@ -81,8 +83,8 @@ function oldsinedata(periodminutes, periods)
     # low =    (y / 2)
     # close =  (y / 4)
     open =  price .* (y .* amplitude .+ 1 .+ variation ./ 4)
-    high =  price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
-    low =   price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
+    high =  price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
+    low =   price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
     close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     volume = (1.1 .- abs.(y)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)

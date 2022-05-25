@@ -64,10 +64,10 @@ function automaticselect(usdtdf, volumecheckdays, minimumdayquotevolume)
 end
 
 function portfolioselect(usdtdf)
+    pdf = DataFrame()
     if EnvConfig.configmode == EnvConfig.production
         portfolio = CryptoXch.balances()
         # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
-        pdf = DataFrame()
         pdf[:, :basevolume] = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
         pdf[:, :base] = [lowercase(d["asset"]) for d in portfolio]
         pdf = filter(r -> r.base in usdtdf.base, pdf)
@@ -81,10 +81,12 @@ function portfolioselect(usdtdf)
             pdf[ix, :usdt] = pusdtdf[ix, :lastprice] * pdf[ix, :basevolume]
         end
         pdf = pdf[pdf.usdt .>= 10, :]
-        return pdf
     else
-        return []
+        pdf[:, :basevolume] = [1.0 for base in EnvConfig.bases]
+        pdf[:, :base] = [base for base in EnvConfig.bases]
+        pdf[:, :usdt] .= 0.0
     end
+    return pdf
 end
 
 dataframe(ad::AssetData) = ad.basedf

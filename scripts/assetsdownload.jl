@@ -9,10 +9,7 @@ using Dates
 using EnvConfig, Assets
 
 EnvConfig.init(production)
-if EnvConfig.configmode == production
-    ad1 = Assets.loadassets()
-else
-    println("no operation for config mode $(EnvConfig.configmode)")
-end
+# EnvConfig.init(test)
+ad1 = Assets.loadassets()
 
 end  # module
