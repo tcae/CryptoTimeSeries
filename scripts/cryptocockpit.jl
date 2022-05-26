@@ -8,6 +8,8 @@
 # TODO deviation catcher and tracker window clear color other regression windows opaque
 # TODO yellow within x sigma range, green break out, red plunge
 # TODO green marker = buy, black marker sell, red marker emergency sell in 4h Candlestick
+# TODO load TestOhlcv dynamically instead of using a file cache to be able to adapt testdata
+# TODO load test Assets dynamically instead of using a file cache to be able to add/remove testdata bases
 # using Colors
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
@@ -18,8 +20,8 @@ using EnvConfig, Ohlcv, Features, Targets, Assets, Classify
 include("../scripts/cockpitdatatablecolors.jl")
 
 dtf = "yyyy-mm-dd HH:MM"
-EnvConfig.init(EnvConfig.production)
-# EnvConfig.init(EnvConfig.test)
+# EnvConfig.init(EnvConfig.production)
+EnvConfig.init(EnvConfig.test)
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 cssdir = EnvConfig.setprojectdir()  * "/scripts/"
@@ -96,7 +98,7 @@ app.layout = html_div() do
                 (label = "features", value = "features"),
                 (label = "targets", value = "targets"),
                 (label = "normalize", value = "normalize")],
-                value=["test"],
+                value=[EnvConfig.configmode == EnvConfig.test ? "test" : "normalize"],
                 # value=["regression1d", "normalize"],
                 labelStyle=(:display => "inline-block")
         ),
@@ -198,7 +200,7 @@ function clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
                         println("no click points[1].x")
                     else
                         clickdt = clk.points[1].x
-                        println("$graph_id clickdata: $(clk.points[1]) clickdata.x: $(clickdt)")  # String with DateTime
+                        # println("$graph_id clickdata: $(clk.points[1]) clickdata.x: $(clickdt)")  # String with DateTime
                     end
                 end
             end
@@ -234,8 +236,8 @@ callback!(
     res = (graph_id === nothing) ? "no click selection" : "$graph_id: "
     if graph_id == "reset_selection"
         updates = assets.basedf[assets.basedf[!, :base] .== focus, :update]
-        clickdt = updates[1]
-        println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
+        clickdt = length(updates) > 0 ? updates[1] : ""
+        # println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
     else
         clickdt = clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
     end
@@ -391,7 +393,7 @@ function featureset002(ohlcv, period, enddt)
     startdt = enddt - period - Dates.Minute(Features.requiredminutes)
     subdf = copy(df[startdt .< df.opentime .<= enddt, :], copycols=true)
     subohlcv = Ohlcv.copy(ohlcv)
-    println("len(subohlcv): $(size(subdf, 1)) len(ohlcv): $(size(df, 1))")
+    # println("len(subohlcv): $(size(subdf, 1)) len(ohlcv): $(size(df, 1))")
     # println("subohlcv===ohlcv?$(subohlcv===ohlcv) subdf===df?$(subdf===df)")
     subohlcv.df = subdf
     @assert size(subdf,1) > 0
@@ -403,6 +405,7 @@ function featureset002(ohlcv, period, enddt)
 end
 
 function logbreakix(df, brix)
+    return
     dflen = size(df,1)
     println()
     println("df len=$dflen all in: $(all([1<=abs(bix)<=dflen  for bix in brix]))")
@@ -429,7 +432,7 @@ function anchortraces(f2, window, normref, period, enddt)
     # println("startdt: $startdt, startix:$startix, enddt:$enddt, endix:$endix")
     x = [df[ix, :opentime] for ix in startix:endix]
     xarea = vcat(x, reverse(x))
-    yarea = vcat([ftr.regry[ix] + ftr.medianstd[ix] for ix in startix:endix], [ftr.regry[ix] - ftr.medianstd[ix] for ix in endix:-1:startix])
+    yarea = vcat([ftr.regry[ix] + f2.breakoutstd * ftr.medianstd[ix] for ix in startix:endix], [ftr.regry[ix] - f2.breakoutstd * ftr.medianstd[ix] for ix in endix:-1:startix])
     # println("regry x: size=$(size(xarea)) max=$(maximum(xarea)) min=$(minimum(xarea)) y: size=$(size(yarea)) max=$(maximum(yarea)) min=$(minimum(yarea)) ")
     s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
     # x = [df[ix, :opentime] for ix in startix:endix]
@@ -447,10 +450,10 @@ function anchortraces(f2, window, normref, period, enddt)
 
     logbreakix(df, ftr.breakoutix)
     xix = [ix for ix in ftr.breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
-    y = [pivot[ix] for ix in xix if ix > 0]
+    y = [df.high[ix] for ix in xix if ix > 0]
     x = [df[ix, :opentime] for ix in xix if ix > 0]
     s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-down"))
-    y = [pivot[abs(ix)] for ix in xix if ix < 0]
+    y = [df.low[abs(ix)] for ix in xix if ix < 0]
     x = [df[abs(ix), :opentime] for ix in xix if ix < 0]
     s4 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-up"))
     return [s2, s1, s5, s3, s4]
@@ -464,6 +467,9 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
     end
     ohlcv = loadohlcv(base, interval)
     df = Ohlcv.dataframe(ohlcv)
+    if !("opentime" in names(df))
+        println("candlestickgraph $base len(df): $(size(df,1)) names: $(names(df))")
+    end
     startdt = enddt - period
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
     startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
@@ -487,7 +493,7 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
         end
 
         anchor = isnothing(anchor) ? [] : anchor
-        println("typeof(anchor): $(typeof(anchor)) = $anchor isempty(anchor)=$(isempty(anchor)); period=$period ")
+        # println("typeof(anchor): $(typeof(anchor)) = $anchor isempty(anchor)=$(isempty(anchor)); period=$period ")
         if !isempty(anchor)
             f2 = featureset002(ohlcv, period, enddt)
             # println("priod=$period, enddt=$enddt")
@@ -536,8 +542,8 @@ callback!(
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
     s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id)"
-    println(s)
-    println("enddt4h $enddt4h, enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
+    # println(s)
+    # println("enddt4h $enddt4h, enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
     drawbases = [focus]
     append!(drawbases, [s for s in select if s != focus])
     regression = "regression1d" in indicator
@@ -597,8 +603,8 @@ callback!(
 
         if button_id == "update_data"
             assets = updateassets(true)
-        else
-            return 0, olddata, active_row_id, options
+        # else
+        #     return 0, olddata, active_row_id, options
         end
         if !(assets === nothing)
             println("data update assets.basedf.size: $(size(assets.basedf))")
@@ -622,7 +628,7 @@ callback!(
         ctx = callback_context()
         button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : "kpi_table"
         s = "all = $all, none = $none, select = $selectids, button ID: $button_id"
-        println(s)
+        # println(s)
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
         res = Dict(
@@ -630,7 +636,7 @@ callback!(
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))
-        println("select row returning: $(res[button_id])")
+        # println("select row returning: $(res[button_id])")
         return res[button_id]
     end
 

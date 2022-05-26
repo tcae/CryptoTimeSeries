@@ -866,47 +866,69 @@ function breakoutextremesix!(extremeix, ohlcv, medianstd, regry, breakoutstd, st
         extremeix = Int32[]
     end
     breakoutix = 0  # negative index for minima, positive index for maxima, else 0
-    println()
-    println("breakoutextremesix: [$startindex]: $(df[startindex, :opentime]) - [$(size(df, 1))]: $(df[size(df, 1), :opentime]) $(size(df, 1)-startindex+1)")
+    # println()
+    # println("breakoutextremesix: [$startindex]: $(df[startindex, :opentime]) - [$(size(df, 1))]: $(df[size(df, 1), :opentime]) $(size(df, 1)-startindex+1)")
     for ix in startindex:size(df, 1)
-        if df[ix, :pivot] > regry[ix] + breakoutstd * medianstd[ix]
-            if breakoutix < 0
-                push!(extremeix, breakoutix)
+        if breakoutix <= 0
+            if df[ix, :high] > regry[ix] + breakoutstd * medianstd[ix]
+                push!(extremeix, ix)
                 logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push max")
-            else
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush max")
             end
-            if firstbreakout
-                breakoutix = breakoutix > 0 ? breakoutix : ix  # first breakout
-            else
-                breakoutix = breakoutix > 0 ? (df[breakoutix, :pivot] < df[ix, :pivot] ? ix : breakoutix) : ix  # maximum breakout
-            end
-        elseif df[ix, :pivot] < regry[ix] - breakoutstd * medianstd[ix]
-            if breakoutix > 0
-                push!(extremeix, breakoutix)
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push min")
-            else
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush min")
-            end
-            if firstbreakout
-                breakoutix = breakoutix < 0 ? breakoutix : -ix  # first breakout
-            else
-                breakoutix = breakoutix < 0 ? (df[abs(breakoutix), :pivot] > df[ix, :pivot] ? -ix : breakoutix) : -ix  # minimum breakout
-            end
-        else
-            if breakoutix != 0
-                push!(extremeix, breakoutix)
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push between")
-            else
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush between")
-            end
-            breakoutix = 0
         end
+        if breakoutix >= 0
+            if df[ix, :low] < regry[ix] - breakoutstd * medianstd[ix]
+                push!(extremeix, -ix)
+                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push min")
+            end
+        end
+        if (length(extremeix) > 0) && (sign(breakoutix) != sign(extremeix[end]))
+            breakoutix = extremeix[end]
+        end
+        if breakoutix != 0
+            if (regry[ix] - breakoutstd * medianstd[ix] <= df[ix, :low]) && (df[ix, :high] <= regry[ix] + breakoutstd * medianstd[ix])
+                breakoutix = 0
+                # push!(extremeix, breakoutix)
+                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push between")
+            end
+        end
+        # if df[ix, :pivot] > regry[ix] + breakoutstd * medianstd[ix]
+        #     if breakoutix < 0
+        #         push!(extremeix, breakoutix)
+        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push max")
+        #     else
+        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush max")
+        #     end
+        #     if firstbreakout
+        #         breakoutix = breakoutix > 0 ? breakoutix : ix  # first breakout
+        #     else
+        #         breakoutix = breakoutix > 0 ? (df[breakoutix, :pivot] < df[ix, :pivot] ? ix : breakoutix) : ix  # maximum breakout
+        #     end
+        # elseif df[ix, :pivot] < regry[ix] - breakoutstd * medianstd[ix]
+        #     if breakoutix > 0
+        #         push!(extremeix, breakoutix)
+        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push min")
+        #     else
+        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush min")
+        #     end
+        #     if firstbreakout
+        #         breakoutix = breakoutix < 0 ? breakoutix : -ix  # first breakout
+        #     else
+        #         breakoutix = breakoutix < 0 ? (df[abs(breakoutix), :pivot] > df[ix, :pivot] ? -ix : breakoutix) : -ix  # minimum breakout
+        #     end
+        # else
+        #     if breakoutix != 0
+        #         push!(extremeix, breakoutix)
+        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push between")
+        #     else
+        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush between")
+        #     end
+        #     breakoutix = 0
+        # end
     end
     if breakoutix != 0
         push!(extremeix, breakoutix)
     end
-    println([(bix, df[abs(bix), :opentime]) for bix in extremeix])
+    # println([(bix, df[abs(bix), :opentime]) for bix in extremeix])
     return extremeix
 end
 
@@ -914,7 +936,7 @@ end
 In general don't call this function directly but via Feature002 contructor `Features.Features002(ohlcv, breakoutstd)`
 """
 function getfeatures002(ohlcv::OhlcvData, breakoutstd)
-    println("getfeatures002 init")
+    # println("getfeatures002 init")
     pivot = Ohlcv.pivot!(ohlcv)
     @assert length(pivot) >= requiredminutes "length(pivot): $(length(pivot)) >= $requiredminutes"
     regr = Dict()
@@ -935,7 +957,7 @@ end
 Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
 """
 function getfeatures002!(f2::Features002)
-    println("getfeatures002!")
+    # println("getfeatures002!")
     pivot = f2.ohlcv.df[!, :pivot]
     for window in keys(f2.regr)
         fr = f2.regr[window]
