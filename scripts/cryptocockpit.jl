@@ -399,7 +399,7 @@ function featureset002(ohlcv, period, enddt)
     @assert size(subdf,1) > 0
     # pivot = Ohlcv.pivot!(calcdf)
     # pivot = normpercent(pivot, normref)
-    f2 = Features.Features002(subohlcv, Classify.tr001default.spreadbreakoutsigma)
+    f2 = Features.Features002(subohlcv)
     # println("F2=$f2")
     return f2
 end
@@ -448,8 +448,9 @@ function spreadtraces(f2, window, normref, period, enddt)
     # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
     s5 = scatter(name="pivot", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
 
-    logbreakix(df, ftr.breakoutix)
-    xix = [ix for ix in ftr.breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
+    breakoutix = Classify.breakoutextremesix!(nothing, f2.ohlcv, ftr.medianstd, ftr.regry, f2.breakoutstd, startix)
+    logbreakix(df, breakoutix)
+    xix = [ix for ix in breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
     y = [df.high[ix] for ix in xix if ix > 0]
     x = [df[ix, :opentime] for ix in xix if ix > 0]
     s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-down"))

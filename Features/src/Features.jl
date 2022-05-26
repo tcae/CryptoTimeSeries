@@ -28,8 +28,8 @@ struct Features002Regr
     grad::Vector{Float32} # rolling regression gradients - length == ohlcv
     regry::Vector{Float32}  # rolling regression price - length == ohlcv
     std::Vector{Float32}  # standard deviation of regression window - length == ohlcv
-    xtrmix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
-    breakoutix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
+    # xtrmix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
+    # breakoutix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
     medianstd::Vector{Float32}  # median standard deviation over requiredminutes
 end
 
@@ -38,8 +38,7 @@ mutable struct Features002
     regr::Dict  # dict with regression minutes as key -> value is Features002Regr
     # fdf::DataFrame  # cache of features
     update  # function to update features due to extended ohlcv
-    breakoutstd
-    Features002(ohlcv, breakoutstd) = new(ohlcv, getfeatures002(ohlcv, breakoutstd), getfeatures002!, breakoutstd)
+    Features002(ohlcv) = new(ohlcv, getfeatures002(ohlcv), getfeatures002!)
 end
 
 
@@ -47,9 +46,9 @@ function Base.show(io::IO, features::Features002Regr)
     println(io::IO, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
     println(io::IO, "- regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
     println(io::IO, "- std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
-    println(io::IO, "- median std deviation: size=$(size(features.medianstd)) max=$(maximum(features.medianstd)) median=$(Statistics.median(features.medianstd)) min=$(minimum(features.medianstd))")
-    println(io::IO, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
-    print(io::IO, "- breakoutix indices: size=$(size(features.breakoutix)) #maxima=$(length(filter(r -> r > 0, features.breakoutix))) #minima=$(length(filter(r -> r < 0, features.breakoutix)))")
+    print(io::IO, "- median std deviation: size=$(size(features.medianstd)) max=$(maximum(features.medianstd)) median=$(Statistics.median(features.medianstd)) min=$(minimum(features.medianstd))")
+    # println(io::IO, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
+    # print(io::IO, "- breakoutix indices: size=$(size(features.breakoutix)) #maxima=$(length(filter(r -> r > 0, features.breakoutix))) #minima=$(length(filter(r -> r < 0, features.breakoutix)))")
 end
 
 function Base.show(io::IO, features::Features002)
@@ -769,173 +768,9 @@ end
 
 
 """
-Returns the regression window with the least number of regressionextremes
-between the last (opposite of deviation range) breakout and the current index.
+In general don't call this function directly but via Feature002 contructor `Features.Features002(ohlcv)`
 """
-function besttrackerwindow(f2::Features002, spreadminutes, currentix)
-    pivot = Ohlcv.dataframe(f2.ohlcv)[!, :pivot]
-    minextremes = currentix  # init with impossible high nbr of extremes
-    bestwindow = 1
-    boix = max(currentix - spreadminutes, 1)  # in case there is no opposite spread extreme
-
-    afr = f2.regr[spreadminutes]
-    upwards = pivot[currentix] > afr.regry[currentix]
-    for xix in length(afr.xtrmix):-1:1
-        ix = afr.xtrmix[xix]
-        if (abs(ix) < currentix) && (upwards ? ix < 0 : ix > 0)
-            boix = ix  # == index of opposite spread window extreme
-            break
-        end
-    end
-
-    for win in regressionwindows002
-        tfr = f2.regr[win]
-        if (win < spreadminutes) && (upwards ? tfr.regry[currentix] > afr.regry[currentix] : tfr.regry[currentix] < afr.regry[currentix])
-            xix = [abs(ix) for ix in tfr.xtrmix if boix <= abs(ix) <= currentix]
-            if (length(xix) == 0) ||
-               ((length(xix) > 0) &&
-                (upwards ? tfr.regry[xix[1]] < afr.regry[currentix] : tfr.regry[xix[1]] > afr.regry[currentix]) &&
-                (length(xix) < minextremes))
-                minextremes = length(xix)
-                bestwindow = win
-            end
-        end
-    end
-    return bestwindow
-end
-
-"""
-Returns the best performing spread window.
-In case that minimumprofit requirements are not met, `bestwindow` returns 0.
-"""
-function bestspreadwindow(f2::Features002, currentix, minimumprofit, spreadbreakoutsigma)
-    maxtrades = 0
-    maxgain = minimumprofit
-    bestwindow = 0
-    for window in keys(f2.regr)
-        trades, gain = calcspread(f2.regr[window], Ohlcv.pivot!(f2.ohlcv), currentix, minimumprofit, spreadbreakoutsigma)
-        if gain > maxgain  # trades > maxtrades
-            maxgain = gain
-            maxtrades = trades
-            bestwindow = window
-        end
-    end
-    return bestwindow
-end
-
-"""
-Returns the number of trades within the last `requiredminutes` and the gain achived.
-In case that minimumprofit requirements are not met by fr.medianstd, `trades` and `gain` return 0.
-"""
-function calcspread(fr::Features002Regr, pivot, currentix, minimumprofit, spreadbreakoutsigma)
-    gain = 0.0
-    trades = 0
-    @assert 1 <= currentix <= length(pivot)
-    medianstd = fr.medianstd[currentix]
-    if minimumprofit <= (2 * spreadbreakoutsigma * medianstd)
-        startix = max(1, currentix-requiredminutes+1)
-        xix = [ix for ix in fr.breakoutix if startix <= abs(ix)  <= currentix]
-        buyix = sellix = 0
-        for ix in xix
-            # first minimum as buy if sell is closed
-            buyix = (buyix == 0) && (sellix == 0) && (ix < 0) ? ix : buyix
-            # first maximum as sell if buy was done
-            sellix = (buyix < 0) && (sellix == 0) && (ix > 0) ? ix : sellix
-            if buyix < 0 < sellix
-                trades += 1
-                gain += (pivot[sellix] - pivot[abs(buyix)]) / pivot[abs(buyix)]
-                buyix = sellix = 0
-            end
-        end
-    end
-    return trades, gain
-end
-
-# logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, suffix) = println("ix: $ix $(df[ix, :opentime]), $breakoutix, lower: $(round(regry[ix] - breakoutstd * medianstd[ix]; digits=2)), pivot: $(round(df[ix, :pivot]; digits=2)), upper: $(round(regry[ix] + breakoutstd * medianstd[ix]; digits=2)) - $suffix")
-logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, suffix) = 0
-
-function breakoutextremesix!(extremeix, ohlcv, medianstd, regry, breakoutstd, startindex, firstbreakout=true)
-    @assert startindex > 0
-    @assert !isnothing(ohlcv)
-    df = ohlcv.df
-    if startindex > size(df, 1)
-        @warn "unepected startindex beyond length of search vector *ohlcv*" startindex size(df, 1)
-        return extremeix
-    end
-    if isnothing(extremeix)
-        extremeix = Int32[]
-    end
-    breakoutix = 0  # negative index for minima, positive index for maxima, else 0
-    # println()
-    # println("breakoutextremesix: [$startindex]: $(df[startindex, :opentime]) - [$(size(df, 1))]: $(df[size(df, 1), :opentime]) $(size(df, 1)-startindex+1)")
-    for ix in startindex:size(df, 1)
-        if breakoutix <= 0
-            if df[ix, :high] > regry[ix] + breakoutstd * medianstd[ix]
-                push!(extremeix, ix)
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push max")
-            end
-        end
-        if breakoutix >= 0
-            if df[ix, :low] < regry[ix] - breakoutstd * medianstd[ix]
-                push!(extremeix, -ix)
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push min")
-            end
-        end
-        if (length(extremeix) > 0) && (sign(breakoutix) != sign(extremeix[end]))
-            breakoutix = extremeix[end]
-        end
-        if breakoutix != 0
-            if (regry[ix] - breakoutstd * medianstd[ix] <= df[ix, :low]) && (df[ix, :high] <= regry[ix] + breakoutstd * medianstd[ix])
-                breakoutix = 0
-                # push!(extremeix, breakoutix)
-                logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push between")
-            end
-        end
-        # if df[ix, :pivot] > regry[ix] + breakoutstd * medianstd[ix]
-        #     if breakoutix < 0
-        #         push!(extremeix, breakoutix)
-        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push max")
-        #     else
-        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush max")
-        #     end
-        #     if firstbreakout
-        #         breakoutix = breakoutix > 0 ? breakoutix : ix  # first breakout
-        #     else
-        #         breakoutix = breakoutix > 0 ? (df[breakoutix, :pivot] < df[ix, :pivot] ? ix : breakoutix) : ix  # maximum breakout
-        #     end
-        # elseif df[ix, :pivot] < regry[ix] - breakoutstd * medianstd[ix]
-        #     if breakoutix > 0
-        #         push!(extremeix, breakoutix)
-        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push min")
-        #     else
-        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush min")
-        #     end
-        #     if firstbreakout
-        #         breakoutix = breakoutix < 0 ? breakoutix : -ix  # first breakout
-        #     else
-        #         breakoutix = breakoutix < 0 ? (df[abs(breakoutix), :pivot] > df[ix, :pivot] ? -ix : breakoutix) : -ix  # minimum breakout
-        #     end
-        # else
-        #     if breakoutix != 0
-        #         push!(extremeix, breakoutix)
-        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "push between")
-        #     else
-        #         logstring(df, ix, breakoutix, regry, breakoutstd, medianstd, "nopush between")
-        #     end
-        #     breakoutix = 0
-        # end
-    end
-    if breakoutix != 0
-        push!(extremeix, breakoutix)
-    end
-    # println([(bix, df[abs(bix), :opentime]) for bix in extremeix])
-    return extremeix
-end
-
-"""
-In general don't call this function directly but via Feature002 contructor `Features.Features002(ohlcv, breakoutstd)`
-"""
-function getfeatures002(ohlcv::OhlcvData, breakoutstd)
+function getfeatures002(ohlcv::OhlcvData)
     # println("getfeatures002 init")
     pivot = Ohlcv.pivot!(ohlcv)
     @assert length(pivot) >= requiredminutes "length(pivot): $(length(pivot)) >= $requiredminutes"
@@ -946,9 +781,10 @@ function getfeatures002(ohlcv::OhlcvData, breakoutstd)
         std, _, _ = rollingregressionstd(pivot, regry, grad, window)
         # medianstd = Statistics.median(std[end-requiredminutes+window:end])
         medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1)
-        xtrmix = regressionextremesix!(nothing, grad, 1, forward=true)
-        breakoutix = breakoutextremesix!(nothing, ohlcv, medianstd, regry, breakoutstd, 1)
-        regr[window] = Features002Regr(grad, regry, std, xtrmix, breakoutix, medianstd)
+        # xtrmix = regressionextremesix!(nothing, grad, 1, forward=true)
+        # breakoutix = breakoutextremesix!(nothing, ohlcv, medianstd, regry, breakoutstd, 1)
+        # regr[window] = Features002Regr(grad, regry, std, xtrmix, breakoutix, medianstd)
+        regr[window] = Features002Regr(grad, regry, std, medianstd)
     end
     return regr
 end
@@ -965,15 +801,16 @@ function getfeatures002!(f2::Features002)
             regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
             rollingregressionstd!(fr.std, pivot, regry, grad, window)
             rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1)
-            lastxtrmix = length(fr.xtrmix) > 0 ? abs(fr.xtrmix[end]) : 1
-            regressionextremesix!(fr.xtrmix, grad, lastxtrmix, forward=true)
-            lastbreakoutix = length(fr.breakoutix) > 0 ? abs(fr.breakoutix[end]) : 1
-            breakoutextremesix!(fr.breakoutix, f2.ohlcv, fr.medianstd, fr.regry, f2.breakoutstd, lastbreakoutix)
+            # lastxtrmix = length(fr.xtrmix) > 0 ? abs(fr.xtrmix[end]) : 1
+            # regressionextremesix!(fr.xtrmix, grad, lastxtrmix, forward=true)
+            # lastbreakoutix = length(fr.breakoutix) > 0 ? abs(fr.breakoutix[end]) : 1
+            # breakoutextremesix!(fr.breakoutix, f2.ohlcv, fr.medianstd, fr.regry, f2.breakoutstd, lastbreakoutix)
             @assert length(pivot) == length(fr.grad) == length(fr.regry) == length(fr.std)
         else
             @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(fr.grad)
         end
     end
+    return f2
 end
 
 function mostrecentix(f2::Features002)
