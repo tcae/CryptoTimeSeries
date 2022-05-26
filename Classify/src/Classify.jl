@@ -11,9 +11,9 @@ export TradeChance, traderules001!, tradeperformance
 
 mutable struct TradeRules001
     minimumprofit
-    anchorbreakoutsigma
-    anchorminimumgradient
-    anchorsurprisesigma
+    spreadbreakoutsigma
+    spreadminimumgradient
+    spreadsurprisesigma
 end
 
 shortestwindow = minimum(Features.regressionwindows002)
@@ -26,7 +26,7 @@ mutable struct TradeChance
     pricetarget
     probability
     chanceix
-    anchorminutes
+    spreadminutes
     trackerminutes
 end
 
@@ -44,13 +44,13 @@ end
 returns the chance expressed in gain between currentprice and future targetprice * probability
 
 Trading strategy:
-- buy if price is below normal deviation range of anchor regression window, anchor gradient is OK
-- sell if price is above normal deviation range of anchor regression window
-- emergency sell after buy if price plunges below extended deviation range of anchor regression window
-- anchor regression window = std * 2 * anchorbreakoutsigma > minimumprofit
-- anchor gradient is OK = anchor gradient > `anchorminimumgradient`
-- normal deviation range = regry +- anchorbreakoutsigma * std
-- extended deviation range  = regry +- anchorsurprisesigma * std
+- buy if price is below normal deviation range of spread regression window, spread gradient is OK
+- sell if price is above normal deviation range of spread regression window
+- emergency sell after buy if price plunges below extended deviation range of spread regression window
+- spread regression window = std * 2 * spreadbreakoutsigma > minimumprofit
+- spread gradient is OK = spread gradient > `spreadminimumgradient`
+- normal deviation range = regry +- spreadbreakoutsigma * std
+- extended deviation range  = regry +- spreadsurprisesigma * std
 
 """
 function traderules001!(tradechances::Vector{TradeChance}, features::Features.Features002, currentix)
@@ -62,38 +62,38 @@ function traderules001!(tradechances::Vector{TradeChance}, features::Features.Fe
     for tc in tradechances
         if tc.base == base
             # only check exit criteria for existing orders
-            if !(tc.anchorminutes in checked)
-                union!(checked, tc.anchorminutes)
-                afr = features.regr[tc.anchorminutes]
-                band = tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+            if !(tc.spreadminutes in checked)
+                union!(checked, tc.spreadminutes)
+                afr = features.regr[tc.spreadminutes]
+                band = tr001default.spreadbreakoutsigma * afr.medianstd[currentix]
                 if pivot[currentix] > afr.regry[currentix]  # above normal deviations
-                    @info "sell signal for $(base) price=$(pivot[currentix]) anchor=$(tc.anchorminutes) at ix=$currentix  time=$(opentime[currentix])"
+                    @info "sell signal for $(base) price=$(pivot[currentix]) spread=$(tc.spreadminutes) at ix=$currentix  time=$(opentime[currentix])"
                     pricetarget = afr.regry[currentix] + band
                     prob = max(min((2 * band - (pricetarget - pivot[currentix])) / 2 * band, 1.0), 0.0)
-                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 0))
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.spreadminutes, 0))
                 end
-                if pivot[currentix] < (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])
+                if pivot[currentix] < (afr.regry[currentix] - tr001default.spreadsurprisesigma * afr.medianstd[currentix])
                     # emergency exit due to surprising plunge
-                    @info "emergency sell signal for $base due toplunge out of anchor window $(tc.anchorminutes) ix=$currentix time=$(opentime[currentix])"
-                    pricetarget = afr.regry[currentix] - 2 * tr001default.anchorsurprisesigma * afr.medianstd[currentix]
+                    @info "emergency sell signal for $base due toplunge out of spread window $(tc.spreadminutes) ix=$currentix time=$(opentime[currentix])"
+                    pricetarget = afr.regry[currentix] - 2 * tr001default.spreadsurprisesigma * afr.medianstd[currentix]
                     prob = 1.0
-                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 0))
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.spreadminutes, 0))
                 end
             end
         end
     end
     append!(tradechances, cachetc)
 
-    anchorminutes = Features.bestanchorwindow(features, currentix, tr001default.minimumprofit, tr001default.anchorbreakoutsigma)
-    afr = features.regr[anchorminutes]
-    band = tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+    spreadminutes = Features.bestspreadwindow(features, currentix, tr001default.minimumprofit, tr001default.spreadbreakoutsigma)
+    afr = features.regr[spreadminutes]
+    band = tr001default.spreadbreakoutsigma * afr.medianstd[currentix]
     if ((pivot[currentix] < afr.regry[currentix]) &&
-        (pivot[currentix] > (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])) &&
-        (afr.grad[currentix] > tr001default.anchorminimumgradient))
-        @info "buy signal $base price=$(pivot[currentix]) anchor=$anchorminutes ix=$currentix time=$(opentime[currentix])"
+        (pivot[currentix] > (afr.regry[currentix] - tr001default.spreadsurprisesigma * afr.medianstd[currentix])) &&
+        (afr.grad[currentix] > tr001default.spreadminimumgradient))
+        @info "buy signal $base price=$(pivot[currentix]) spread=$spreadminutes ix=$currentix time=$(opentime[currentix])"
         pricetarget = afr.regry[currentix] - band
         prob = max(min((2 * band - (pivot[currentix] - pricetarget)) / 2 * band, 1.0), 0.0)
-        push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, anchorminutes, 0))
+        push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, spreadminutes, 0))
     end
     # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!
     # TODO use case of breakout rise after sell above deviation range is not yet covered
@@ -103,13 +103,13 @@ end
 returns the chance expressed in gain between currentprice and future targetprice * probability
 
 Trading strategy:
-- buy if price is below normal deviation range of anchor regression window, anchor gradient is OK and tracker gradient becomes positive
-- sell if price is above normal deviation range of anchor regression window and tracker gradient becomes negative
-- emergency sell after buy if price plunges below extended deviation range of anchor regression window
-- anchor regression window = std * 2 * anchorbreakoutsigma > minimumprofit
-- anchor gradient is OK = anchor gradient > `anchorminimumgradient`
-- normal deviation range = regry +- anchorbreakoutsigma * std
-- extended deviation range  = regry +- anchorsurprisesigma * std
+- buy if price is below normal deviation range of spread regression window, spread gradient is OK and tracker gradient becomes positive
+- sell if price is above normal deviation range of spread regression window and tracker gradient becomes negative
+- emergency sell after buy if price plunges below extended deviation range of spread regression window
+- spread regression window = std * 2 * spreadbreakoutsigma > minimumprofit
+- spread gradient is OK = spread gradient > `spreadminimumgradient`
+- normal deviation range = regry +- spreadbreakoutsigma * std
+- extended deviation range  = regry +- spreadsurprisesigma * std
 
 """
 function traderules002!(tradechances::Vector{TradeChance}, features::Features.Features002, currentix)
@@ -120,44 +120,44 @@ function traderules002!(tradechances::Vector{TradeChance}, features::Features.Fe
     for tc in tradechances
         if tc.base == base
             # only check exit criteria for existing orders
-            if !(tc.anchorminutes in checked)
-                union!(checked, tc.anchorminutes)
-                afr = features.regr[tc.anchorminutes]
-                if pivot[currentix] > (afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix])  # above normal deviations
+            if !(tc.spreadminutes in checked)
+                union!(checked, tc.spreadminutes)
+                afr = features.regr[tc.spreadminutes]
+                if pivot[currentix] > (afr.regry[currentix] + tr001default.spreadbreakoutsigma * afr.medianstd[currentix])  # above normal deviations
                     if tc.trackerminutes == 0
-                        tc.trackerminutes = Features.besttrackerwindow(features, tc.anchorminutes, currentix)
+                        tc.trackerminutes = Features.besttrackerwindow(features, tc.spreadminutes, currentix)
                     end
                 end
                 if (((tc.trackerminutes == 1) && (pivot[currentix] < pivot[currentix-1])) ||
                     ((tc.trackerminutes > 1) && (features.regr[tc.trackerminutes].grad[currentix] < 0)))
-                    @info "sell signal tracker window $(base) $(pivot[currentix]) $(tc.anchorminutes) $(tc.trackerminutes) $currentix"
-                    pricetarget = afr.regry[currentix] - tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+                    @info "sell signal tracker window $(base) $(pivot[currentix]) $(tc.spreadminutes) $(tc.trackerminutes) $currentix"
+                    pricetarget = afr.regry[currentix] - tr001default.spreadbreakoutsigma * afr.medianstd[currentix]
                     prob = 0.8
-                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, tc.trackerminutes))
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.spreadminutes, tc.trackerminutes))
                 end
-                if pivot[currentix] < (afr.regry[currentix] - tr001default.anchorsurprisesigma * afr.medianstd[currentix])
+                if pivot[currentix] < (afr.regry[currentix] - tr001default.spreadsurprisesigma * afr.medianstd[currentix])
                     # emergency exit due to surprising plunge
-                    @info "emergency sell signal due toplunge out of anchor window" base tc.anchorminutes currentix
-                    pricetarget = afr.regry[currentix] - 2 * tr001default.anchorsurprisesigma * afr.medianstd[currentix]
+                    @info "emergency sell signal due toplunge out of spread window" base tc.spreadminutes currentix
+                    pricetarget = afr.regry[currentix] - 2 * tr001default.spreadsurprisesigma * afr.medianstd[currentix]
                     prob = 0.9
-                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.anchorminutes, 1))
+                    push!(cachetc, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, tc.spreadminutes, 1))
                 end
             end
         end
     end
     append!(tradechances, cachetc)
 
-    anchorminutes = Features.bestanchorwindow(features, currentix, tr001default.minimumprofit, tr001default.anchorbreakoutsigma)
-    afr = features.regr[anchorminutes]
-    if ((pivot[currentix] < (afr.regry[currentix] - tr001default.anchorbreakoutsigma * afr.medianstd[currentix])) &&
-        (afr.grad[currentix] > tr001default.anchorminimumgradient))
-        trackerminutes = Features.besttrackerwindow(features, anchorminutes, currentix)
+    spreadminutes = Features.bestspreadwindow(features, currentix, tr001default.minimumprofit, tr001default.spreadbreakoutsigma)
+    afr = features.regr[spreadminutes]
+    if ((pivot[currentix] < (afr.regry[currentix] - tr001default.spreadbreakoutsigma * afr.medianstd[currentix])) &&
+        (afr.grad[currentix] > tr001default.spreadminimumgradient))
+        trackerminutes = Features.besttrackerwindow(features, spreadminutes, currentix)
         if (((trackerminutes == 1) && (pivot[currentix] > pivot[currentix-1])) ||
             ((trackerminutes > 1) && (features.regr[trackerminutes].grad[currentix] > 0)))
-            @info "buy signal tracker window $base $(pivot[currentix]) $anchorminutes $trackerminutes $currentix"
-            pricetarget = afr.regry[currentix] + tr001default.anchorbreakoutsigma * afr.medianstd[currentix]
+            @info "buy signal tracker window $base $(pivot[currentix]) $spreadminutes $trackerminutes $currentix"
+            pricetarget = afr.regry[currentix] + tr001default.spreadbreakoutsigma * afr.medianstd[currentix]
             prob = 0.8
-            push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, anchorminutes, trackerminutes))
+            push!(tradechances, TradeChance(base, pivot[currentix], pricetarget, prob, currentix, spreadminutes, trackerminutes))
         end
     end
     # TODO use case of breakout rise after sell above deviation range is not yet covered

@@ -72,7 +72,7 @@ function preparetradecache(backtest)
             continue
         end
         lastix = backtest ? Features.requiredminutes : size(Ohlcv.dataframe(ohlcv), 1)
-        cache[base] = Cache(Features.Features002(ohlcv, Classify.tr001default.anchorbreakoutsigma), lastix)
+        cache[base] = Cache(Features.Features002(ohlcv, Classify.tr001default.spreadbreakoutsigma), lastix)
     end
     return cache
 end

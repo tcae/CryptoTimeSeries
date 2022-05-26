@@ -4,8 +4,8 @@
 # activate(pwd())
 # cd(@__DIR__)
 
-# TODO deviation catcher and tracker visualization
-# TODO deviation catcher and tracker window clear color other regression windows opaque
+# TODO deviation spread and tracker visualization
+# TODO deviation spread and tracker window clear color other regression windows opaque
 # TODO yellow within x sigma range, green break out, red plunge
 # TODO green marker = buy, black marker sell, red marker emergency sell in 4h Candlestick
 # TODO load TestOhlcv dynamically instead of using a file cache to be able to adapt testdata
@@ -103,7 +103,7 @@ app.layout = html_div() do
                 labelStyle=(:display => "inline-block")
         ),
         dcc_checklist(
-            id="anchor_select",
+            id="spread_select",
             options=[(label = Features.periodlabels(window), value = window) for window in Features.regressionwindows002],
                 # value=["test"],
                 # value=[60],
@@ -399,7 +399,7 @@ function featureset002(ohlcv, period, enddt)
     @assert size(subdf,1) > 0
     # pivot = Ohlcv.pivot!(calcdf)
     # pivot = normpercent(pivot, normref)
-    f2 = Features.Features002(subohlcv, Classify.tr001default.anchorbreakoutsigma)
+    f2 = Features.Features002(subohlcv, Classify.tr001default.spreadbreakoutsigma)
     # println("F2=$f2")
     return f2
 end
@@ -412,7 +412,7 @@ function logbreakix(df, brix)
     println([(bix, df[abs(bix), :opentime]) for bix in brix])
 end
 
-function anchortraces(f2, window, normref, period, enddt)
+function spreadtraces(f2, window, normref, period, enddt)
     startdt = enddt - period
     ohlcv = Features.ohlcv(f2)
     df = Ohlcv.dataframe(ohlcv)
@@ -427,7 +427,7 @@ function anchortraces(f2, window, normref, period, enddt)
             endix = ix
         end
     end
-    # println("anchortraces window=$window")
+    # println("spreadtraces window=$window")
     @assert (startix > 0) && (endix > 0) && (startix <= endix)
     # println("startdt: $startdt, startix:$startix, enddt:$enddt, endix:$endix")
     x = [df[ix, :opentime] for ix in startix:endix]
@@ -459,7 +459,7 @@ function anchortraces(f2, window, normref, period, enddt)
     return [s2, s1, s5, s3, s4]
 end
 
-function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, anchor)
+function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, spread)
     traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
     fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])  # return an empty graph on failing asserts
     if base === nothing
@@ -492,15 +492,15 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
                     mode="lines", showlegend=false)], traces)
         end
 
-        anchor = isnothing(anchor) ? [] : anchor
-        # println("typeof(anchor): $(typeof(anchor)) = $anchor isempty(anchor)=$(isempty(anchor)); period=$period ")
-        if !isempty(anchor)
+        spread = isnothing(spread) ? [] : spread
+        # println("typeof(spread): $(typeof(spread)) = $spread isempty(spread)=$(isempty(spread)); period=$period ")
+        if !isempty(spread)
             f2 = featureset002(ohlcv, period, enddt)
             # println("priod=$period, enddt=$enddt")
-            for win in anchor
+            for win in spread
                 # win = parse(Int64, window)
-                #  visualization anchors
-                traces = append!(anchortraces(f2, win, normref, period, enddt), traces)
+                #  visualization spreads
+                traces = append!(spreadtraces(f2, win, normref, period, enddt), traces)
             end
             # println("length(traces)=$(length(traces))")
         end
@@ -535,10 +535,10 @@ callback!(
     Input("graph6month_endtime", "children"),
     Input("graph_all_endtime", "children"),
     Input("graph4h_endtime", "children"),
-    Input("anchor_select", "value"),
+    Input("spread_select", "value"),
     State("indicator_select", "value")
     # prevent_initial_call=true
-) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, anchor, indicator
+) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, spread, indicator
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
     s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id)"
@@ -549,7 +549,7 @@ callback!(
     regression = "regression1d" in indicator
     heatmap = "features" in indicator
 
-    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap, anchor)
+    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap, spread)
     targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)) : nothing
     fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
         drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)

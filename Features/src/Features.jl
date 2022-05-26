@@ -772,25 +772,25 @@ end
 Returns the regression window with the least number of regressionextremes
 between the last (opposite of deviation range) breakout and the current index.
 """
-function besttrackerwindow(f2::Features002, anchorminutes, currentix)
+function besttrackerwindow(f2::Features002, spreadminutes, currentix)
     pivot = Ohlcv.dataframe(f2.ohlcv)[!, :pivot]
     minextremes = currentix  # init with impossible high nbr of extremes
     bestwindow = 1
-    boix = max(currentix - anchorminutes, 1)  # in case there is no opposite anchor extreme
+    boix = max(currentix - spreadminutes, 1)  # in case there is no opposite spread extreme
 
-    afr = f2.regr[anchorminutes]
+    afr = f2.regr[spreadminutes]
     upwards = pivot[currentix] > afr.regry[currentix]
     for xix in length(afr.xtrmix):-1:1
         ix = afr.xtrmix[xix]
         if (abs(ix) < currentix) && (upwards ? ix < 0 : ix > 0)
-            boix = ix  # == index of opposite anchor window extreme
+            boix = ix  # == index of opposite spread window extreme
             break
         end
     end
 
     for win in regressionwindows002
         tfr = f2.regr[win]
-        if (win < anchorminutes) && (upwards ? tfr.regry[currentix] > afr.regry[currentix] : tfr.regry[currentix] < afr.regry[currentix])
+        if (win < spreadminutes) && (upwards ? tfr.regry[currentix] > afr.regry[currentix] : tfr.regry[currentix] < afr.regry[currentix])
             xix = [abs(ix) for ix in tfr.xtrmix if boix <= abs(ix) <= currentix]
             if (length(xix) == 0) ||
                ((length(xix) > 0) &&
@@ -805,15 +805,15 @@ function besttrackerwindow(f2::Features002, anchorminutes, currentix)
 end
 
 """
-Returns the best performing anchor window.
+Returns the best performing spread window.
 In case that minimumprofit requirements are not met, `bestwindow` returns 0.
 """
-function bestanchorwindow(f2::Features002, currentix, minimumprofit, anchorbreakoutsigma)
+function bestspreadwindow(f2::Features002, currentix, minimumprofit, spreadbreakoutsigma)
     maxtrades = 0
     maxgain = minimumprofit
     bestwindow = 0
     for window in keys(f2.regr)
-        trades, gain = calcanchor(f2.regr[window], Ohlcv.pivot!(f2.ohlcv), currentix, minimumprofit, anchorbreakoutsigma)
+        trades, gain = calcspread(f2.regr[window], Ohlcv.pivot!(f2.ohlcv), currentix, minimumprofit, spreadbreakoutsigma)
         if gain > maxgain  # trades > maxtrades
             maxgain = gain
             maxtrades = trades
@@ -827,12 +827,12 @@ end
 Returns the number of trades within the last `requiredminutes` and the gain achived.
 In case that minimumprofit requirements are not met by fr.medianstd, `trades` and `gain` return 0.
 """
-function calcanchor(fr::Features002Regr, pivot, currentix, minimumprofit, anchorbreakoutsigma)
+function calcspread(fr::Features002Regr, pivot, currentix, minimumprofit, spreadbreakoutsigma)
     gain = 0.0
     trades = 0
     @assert 1 <= currentix <= length(pivot)
     medianstd = fr.medianstd[currentix]
-    if minimumprofit <= (2 * anchorbreakoutsigma * medianstd)
+    if minimumprofit <= (2 * spreadbreakoutsigma * medianstd)
         startix = max(1, currentix-requiredminutes+1)
         xix = [ix for ix in fr.breakoutix if startix <= abs(ix)  <= currentix]
         buyix = sellix = 0

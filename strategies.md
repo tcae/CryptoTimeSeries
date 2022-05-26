@@ -31,22 +31,22 @@ The following heuristics may help here:
 
 ## Adaptive regression
 
-- calculate potential slope gain by *regression slope with price extremes anchors* as follows
+- calculate potential slope gain by *regression slope with price extremes spreads* as follows
   - look for next minimum of regression slope
-  - then look back for global minimum between last regression maximum and the just identified regression minimum, which estbalishes the price minimum anchor
+  - then look back for global minimum between last regression maximum and the just identified regression minimum, which estbalishes the price minimum spread
     - ceveat: spikes may confuse the approach -> risk reduction: further limit the price minimum search range back to the last gradient inflection point
   - look for next maximum of regression slope
-  - then look back for global maximum between last regression minimum and the just identified regression minimum, which estbalishes the price maximum anchor
+  - then look back for global maximum between last regression minimum and the just identified regression minimum, which estbalishes the price maximum spread
     - ceveat: spieks may confuse the approach -> risk reduction: further limit the price maximum search range back to the last gradient inflection point
-  - as target function connect the price extreme anchors with straights lines, which comes close to the regression line (but the regression line does does hit the extremes in most cases)
+  - as target function connect the price extreme spreads with straights lines, which comes close to the regression line (but the regression line does does hit the extremes in most cases)
     - use the distance to the extremes from the straight lines as target function (resulting in jumps at extremes)
   - start the training window when the regression is still going down but regression is constantly improving, which also creates a smooth target function
-    - as long as price minimum anchor is not yet reached it should be classified *close*
-    - as soon as price minimum anchor is passed and price difference to price maximum anchor is below minimum threshold it should be classified *buy*
-    - as soon as price minimum anchor is passed and price difference to price maximum anchor is above minimum threshold it should be classified *hold*
-    - as soon as price maximum anchor is passed it should be classified *close*
-- select most performant *regression slope with price extremes anchors* via selection classification as follows
-  - calculate *regression slope with price extremes anchors* from a set of defined regressions
+    - as long as price minimum spread is not yet reached it should be classified *close*
+    - as soon as price minimum spread is passed and price difference to price maximum spread is below minimum threshold it should be classified *buy*
+    - as soon as price minimum spread is passed and price difference to price maximum spread is above minimum threshold it should be classified *hold*
+    - as soon as price maximum spread is passed it should be classified *close*
+- select most performant *regression slope with price extremes spreads* via selection classification as follows
+  - calculate *regression slope with price extremes spreads* from a set of defined regressions
   - for training: use the shortest regression that meets or exceeds the minimum amplitude threshold by leveraging knowledge about the actual amplitude of the current slope at the point under consideration
   - for production: use the nearest regression result of the selection classifier predict, which can be a prediction between valid regressions
 
@@ -69,7 +69,7 @@ Results:
 ### Single crypto, multiple regression windows
 
 - per crypto on each maximum and minimum of the shortest regression window calculate the gain of all regression windows and select the regression window with the best gain
-- compare since last longest complete slope start anchor timestamp
+- compare since last longest complete slope start spread timestamp
 
 Results:
 
@@ -164,38 +164,38 @@ Challenges:
   - high volatility = instable direction -> catch statistic outliers for yield
   - stabilze direction by longer regression window
 - use regressionlines of different regression time windows as basis
-- select the shortest window with a median standard deviation 2 * 1 sigma over longest considered regression window that is sufficient to satisfy the minimum profit requirement == anchor window
+- select the shortest window with a median standard deviation 2 * 1 sigma over longest considered regression window that is sufficient to satisfy the minimum profit requirement == spread window
 - buy
-  - only buy if anchor gradient is positive
-  - if prices decrease below regression line - 1 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
+  - only buy if spread gradient is positive
+  - if prices decrease below regression line - 1 sigma then track with a tracker window that is shorter than spread window but has the longest history for the last direction change to filter out irrelevant small volatility
   - if price increases and tracker gradient becomes positive then "buy"
-  - if after a "buy" prices fall then "sell" if prices fall below anchor regression line - 3 sigma
+  - if after a "buy" prices fall then "sell" if prices fall below spread regression line - 3 sigma
 - sell
-  - sell independent of anchor gradient
-  - if prices increase above regression line + 1 sigma then track with a tracker window that is shorter than anchor window but has the longest history for the last direction change to filter out irrelevant small volatility
+  - sell independent of spread gradient
+  - if prices increase above regression line + 1 sigma then track with a tracker window that is shorter than spread window but has the longest history for the last direction change to filter out irrelevant small volatility
   - if price decreases and tracker gradient becomes negative then "sell"
-  - *(if after a "sell" prices rise then "buy" if prices rise above anchor regression line + 3 sigma and (prices rise above tracker line + 2 sigma or tracker trend becomes positive))*
-- anchor window change
-  - in general anchor window is
+  - *(if after a "sell" prices rise then "buy" if prices rise above spread regression line + 3 sigma and (prices rise above tracker line + 2 sigma or tracker trend becomes positive))*
+- spread window change
+  - in general spread window is
     - the shortest regression window that satisfies profitabilityrequirements with deviation catching
     - has positive trend
-    - has the most catches * normal deviation range (e.g. 2 * 1 sigma) = gain wihtin 24h among anchor window candidates
-    - anchor sigma calculation = median of this window over the last 24h
-  - for every buy the anchor is newly calculated and stays with the trade
+    - has the most catches * normal deviation range (e.g. 2 * 1 sigma) = gain wihtin 24h among spread window candidates
+    - spread sigma calculation = median of this window over the last 24h
+  - for every buy the spread is newly calculated and stays with the trade
 - tracker window change
-  - always has to be shorter than anchor window
+  - always has to be shorter than spread window
   - should be long enough to suppress irrelevant regression xtremes
   - option 1: whenever another window is closer with its last regression xtreme to the last trade, i.e. no irrelevant xtremes in between
   - option 2: shortest window with least in between extremes since last trade
 - tracker sigma calculation = median of this window since last trade signal
 - parameters:
   - minimum profit = minimum profitability requirement a normal deviation range has to exceed to consider trading
-  - anchor minutes of regression window --> dynamically adapted
+  - spread minutes of regression window --> dynamically adapted
   - tracker minutes of regression window --> dynamically adapted
-  - anchor breakout sigma = factor * sigma to consider breakout of normal deviations, e.g. 2.0
-  - anchor minimum gradient to do any buy, e.g. 0.0
-  - anchor surprise sigma = factor * sigma to signal surprise plunge (sell) or raise (buy)
-  - anchor sigma minutes = longest considered regression window = minutes used to calculate the median of all regression window sigmas
+  - spread breakout sigma = factor * sigma to consider breakout of normal deviations, e.g. 2.0
+  - spread minimum gradient to do any buy, e.g. 0.0
+  - spread surprise sigma = factor * sigma to signal surprise plunge (sell) or raise (buy)
+  - spread sigma minutes = longest considered regression window = minutes used to calculate the median of all regression window sigmas
 
 
 ## Notes for using volatility and trend tracker side by side
@@ -210,7 +210,7 @@ Challenges:
 - tracker:
   - buy at regression minimum + hysteresis (gradient | gain | period of positive gradient)
   - sell at regression maximum
-- catcher:
+- spread:
   - buy at lower breakout of `factor * standard deviation`
   - sell at upper breakout of `factor * standard deviation`
   - emergency sell at buy price - `emergency_factor * standard deviation`
@@ -218,10 +218,10 @@ Challenges:
 -
 - parameters:
   - minimum profit = minimum profitability requirement a normal deviation range has to exceed to consider trading
-  - gain backtest minutes to determine best tracker | catcher regression window and standard deviation factor that spans the tracker | catcher band
+  - gain backtest minutes to determine best tracker | spread regression window and standard deviation factor that spans the tracker | spread band
   - set of regression windows to choose from
   - set of standard deviation factors to choose from
-  - emergency standard deviation factor for emergency catcher sell
+  - emergency standard deviation factor for emergency spread sell
   - hysteresis criteria to start tracker
-  - anchor minimum gradient to do any buy, e.g. 0.0
+  - spread minimum gradient to do any buy, e.g. 0.0
 

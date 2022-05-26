@@ -483,19 +483,19 @@ end
 """
 Returns the price index from which gains of different regression windows are compared
 """
-function anchorindex(slopesix, anchorrix, bestnextix)
-    anchorsix = 1
-    six = size(slopesix[anchorrix], 1)
+function spreadindex(slopesix, spreadrix, bestnextix)
+    spreadsix = 1
+    six = size(slopesix[spreadrix], 1)
     while six > 0
-        startix, endix = slopesix[anchorrix][six]
+        startix, endix = slopesix[spreadrix][six]
         if endix > bestnextix
             six -= 1
         else
-            anchorsix = startix  # anchor index at start of first full slope of longest regression window
+            spreadsix = startix  # spread index at start of first full slope of longest regression window
             break
         end
     end
-    return anchorsix
+    return spreadsix
 end
 
 function checkgains(prices, regressions, slopesix)
@@ -520,7 +520,7 @@ function bestgradientgain(bases, regressionminutesset, gainthresholds)
     println("gainthreshold=$gainthresholds bases: $bases")
     display(regressionminutesset)
     basegrad = [[[] for rix in regressionminutesset] for bix in bases]
-    _, anchorrix = findmax(regressionminutesset)
+    _, spreadrix = findmax(regressionminutesset)
     gainsum = NamedArray(zeros(Float32, (size(bases, 1), size(gainthresholds, 1))), (bases, gainthresholds), ("base", "gain threshold"))
     for (gix, gainthreshold) in enumerate(gainthresholds)
         for (bix, base) in enumerate(bases)
@@ -538,7 +538,7 @@ function bestgradientgain(bases, regressionminutesset, gainthresholds)
                 nextix[rix] = nextslope!(slopesix[rix], basegrad[bix][rix], nextix[rix])
             end
             bestrix = 0  # signals not valid
-            bestlastix = bestanchor = 1
+            bestlastix = bestspread = 1
             bestnextix = minimum(nextix)
             bestgain = 0.0
             step = 0
@@ -547,9 +547,9 @@ function bestgradientgain(bases, regressionminutesset, gainthresholds)
                 if (step % 10000) == 1
                     println("$(Dates.format(Dates.now(), "yyyy-mm-dd HH:MM")) $base ($gainthreshold) bestnextix=$bestnextix")
                 end
-                bestanchor = anchorindex(slopesix, anchorrix, bestnextix)
+                bestspread = spreadindex(slopesix, spreadrix, bestnextix)
                 for (rix, regrminutes) in enumerate(regressionminutesset)
-                    gains[rix] = gainfromix!(slopesix[rix], prices, bestanchor, bestnextix)
+                    gains[rix] = gainfromix!(slopesix[rix], prices, bestspread, bestnextix)
                 end
                 bestgain, rix = findmax(gains)
                 if bestrix == 0  # not investigated
