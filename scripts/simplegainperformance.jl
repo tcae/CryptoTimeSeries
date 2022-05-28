@@ -32,7 +32,7 @@ Consider out of spread deviations down from a reached price level as trade crite
 
     """
 using Test, DataFrames, NamedArrays, Dates
-using .EnvConfig, .Ohlcv, .TestOhlcv, .Features, .Targets
+using EnvConfig, Ohlcv, TestOhlcv, Features, Targets
 
 fee = 0.001  # 0.1%
 
@@ -176,44 +176,44 @@ function lastregressionamplitudes(regressions, nbramplitudes=2)
     return up, down
 end
 
-"""
-This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
-Only buy on upslope if lastgain > lastupgainthreshold.
-If upgtdown == true then only buy if also lastgain > lastloss.
-"""
-function multibasegradientgainhistory(prices, regressionminutes; lastupgainthreshold)
-    gains = zeros(Float32, size(prices, 1))
-    gains[1] = 1.0  # start: 1 USDT
-    lastix = 0
-    regr = Dict()
-    for regrminutes in regressionminutes
-        regr[regrminutes] = Dict()
-        regr[regrminutes][:prices], regr[regrminutes][:gradient] = Features.normrollingregression(prices, regrminutes)
-    end
-    control = regressionminutes[end]
-    for ix in 2:size(prices, 1)
-        if regressions[ix] > 0.0
-            if regressions[ix - 1] <= 0.0  # start of upslope
-                if (gldf[ix, :lastgain] > lastupgainthreshold) && ((!upgtdown) || (gldf[ix, :lastgain] > abs(gldf[ix, :lastloss])))
-                    lastix = ix
-                    gains[ix] = gains[ix - 1] * (1 - fee)  # buy
-                else
-                    lastix = 0  # indicating no upslope to consider as gain
-                    gains[ix] = gains[ix - 1]
-                end
-            else
-                gains[ix] = lastix > 0 ? gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix)) : gains[ix - 1]
-            end
-        else  # regressions[ix] <= 0.0
-            if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
-                gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix) - fee)  # sell
-            else
-                gains[ix] = gains[ix - 1]
-            end
-        end
-    end
-    return gains
-end
+# """
+# This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
+# Only buy on upslope if lastgain > lastupgainthreshold.
+# If upgtdown == true then only buy if also lastgain > lastloss.
+# """
+# function multibasegradientgainhistory(prices, regressionminutes; lastupgainthreshold)
+#     gains = zeros(Float32, size(prices, 1))
+#     gains[1] = 1.0  # start: 1 USDT
+#     lastix = 0
+#     regr = Dict()
+#     for regrminutes in regressionminutes
+#         regr[regrminutes] = Dict()
+#         regr[regrminutes][:prices], regr[regrminutes][:gradient] = Features.normrollingregression(prices, regrminutes)
+#     end
+#     control = regressionminutes[end]
+#     for ix in 2:size(prices, 1)
+#         if regressions[ix] > 0.0
+#             if regressions[ix - 1] <= 0.0  # start of upslope
+#                 if (gldf[ix, :lastgain] > lastupgainthreshold) && ((!upgtdown) || (gldf[ix, :lastgain] > abs(gldf[ix, :lastloss])))
+#                     lastix = ix
+#                     gains[ix] = gains[ix - 1] * (1 - fee)  # buy
+#                 else
+#                     lastix = 0  # indicating no upslope to consider as gain
+#                     gains[ix] = gains[ix - 1]
+#                 end
+#             else
+#                 gains[ix] = lastix > 0 ? gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix)) : gains[ix - 1]
+#             end
+#         else  # regressions[ix] <= 0.0
+#             if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
+#                 gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix) - fee)  # sell
+#             else
+#                 gains[ix] = gains[ix - 1]
+#             end
+#         end
+#     end
+#     return gains
+# end
 
 function maxgradient(regressions::DataFrame, bases, rowix)
     maxgrad = 0.0

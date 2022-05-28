@@ -126,6 +126,8 @@ to be considered:
     - start with 2% granuality of portfolio value per trade
     - start with max 1 active trade per base
     - start accepting all buy chances as long as USDT is available
+
+-
 """
 function trade!(tradechances, caches)
     println("$(length(tradechances)) trade chances")
@@ -134,18 +136,17 @@ function trade!(tradechances, caches)
     for key in keys(caches)
         println("key: $key lastix=$(caches[key].lastix)")
     end
-    for (tix, tc) in enumerate(tradechances)
+    for tc in tradechances
         ix = caches[tc.base].lastix
         f2 = caches[tc.base].features
         ixinrange = ix <= size(f2.ohlcv.df, 1)
         println("trade: $tc")
-        del = []
         if ixinrange
             if (tc.buyix > 0) && (f2.ohlcv.df.high[ix] > tc.sellprice)
-                push!(del, tix)
+                Classify.delete!(tradechances, tc)
             end
-            deleteat!(tradechances, del)
-            Classify.registerbuy!(tradechances, tc.base, ix, f2.ohlcv.df.low[ix], f2)
+            orderid = 1
+            Classify.registerbuy!(tradechances, tc.base, ix, f2.ohlcv.df.low[ix], orderid, f2)
             # tc.buyix = caches[tc.base].lastix
         end
     end

@@ -27,13 +27,19 @@ mutable struct TradeChance001
     buyprice
     buytime  # to be updated by
     buyregrprice
+    buyorderid  # remains 0 until order issued
     sellprice
+    sellix  # remains 0 until actually sold
+    sellorderid  # remains 0 until order issued
     probability
     regrminutes
     emergencysellprice
     breakoutstd
 end
 
+mutable struct TradeChances001
+    basedict::Dict  # hierachy of dict() tradechances[base][regrminutes][breakoutstd]
+end
 mutable struct TradeChance002
     base::String
     pricecurrent
@@ -45,11 +51,46 @@ mutable struct TradeChance002
 end
 
 function Base.show(io::IO, tc::TradeChance001)
-    print(io::IO, "tc: base=$(tc.base), buyix=$(tc.buyix), buytime=$(tc.buytime), buy=$(round(tc.buyprice; digits=2)), buyregr=$(round(tc.buyregrprice; digits=2)), sell=$(round(tc.sellprice; digits=2)), prob=$(round(tc.probability*100; digits=2)), window=$(tc.regrminutes), emergencysell=$(round(tc.emergencysellprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
+    print(io::IO, "tc: base=$(tc.base), buyix=$(tc.buyix), buytime=$(tc.buytime), buy=$(round(tc.buyprice; digits=2)), buyregr=$(round(tc.buyregrprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), prob=$(round(tc.probability*100; digits=2)), window=$(tc.regrminutes), emergencysell=$(round(tc.emergencysellprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
+end
+
+function Base.show(io::IO, tcs::TradeChances001)
+    for tc in tcs
+        println(tc)
+    end
 end
 
 function Base.show(io::IO, tc::TradeChance002)
     print(io::IO, "trade chance: base=$(tc.base) current=$(tc.pricecurrent) target=$(tc.pricetarget) probability=$(tc.probability)")
+end
+
+function Base.iterate(tradechances::TradeChances001)
+    for (base, rmdict) in tradechances.basedict
+        for (rm, bodict) in rmdict
+            for (bo, tc) in bodict
+                println("initial: $e / $e1")
+                return (tc, (base, rm, bo))
+            end
+        end
+    end
+    return nothing
+end
+
+function Base.iterate(tradechances::TradeChances001, state)
+    found = false
+    for (base, rmdict) in tradechances.basedict
+        for (rm, bodict) in rmdict
+            for (bo, tc) in bodict
+                if found
+                    return (tc, (base, rm, bo))
+                end
+                if state == (base, rm, bo)
+                    found = true
+                end
+            end
+        end
+    end
+    return nothing
 end
 
 function buycompliant(f2, window, breakoutstd, ix, approx)
@@ -158,31 +199,56 @@ function breakoutextremesix!(extremeix, ohlcv, medianstd, regry, breakoutstd, st
     return extremeix
 end
 
-function registerbuy!(tradechances::Vector{TradeChance001}, base::String, buyix, buyprice, features::Features.Features002)
+function registerbuy!(tc::TradeChance001, buyix, buyprice, buyorderid, features::Features.Features002)
     @assert buyix > 0
     @assert buyprice > 0
-    for tc in tradechances
-        if (tc.base == base) && (tc.buyix == 0)
-            afr = features.regr[tc.regrminutes]
-            tc.buyix = buyix
-            opentime = Ohlcv.dataframe(features.ohlcv)[!, :opentime]
-            if 0 < buyix <= size(opentime, 1)
-                tc.buytime = opentime[buyix]
+    afr = features.regr[tc.regrminutes]
+    tc.buyix = buyix
+    opentime = Ohlcv.dataframe(features.ohlcv)[!, :opentime]
+    if 0 < buyix <= size(opentime, 1)
+        tc.buytime = opentime[buyix]
+    else
+        @warn "cannot find buyix $buyix in opentime of len=$(size(opentime, 1))"
+    end
+    tc.buyprice = buyprice
+    tc.buyregrprice = afr.regry[buyix]
+    tc.buyorderid = buyorderid
+    tc.emergencysellprice = lowerbandprice(afr, buyix, tr001default.emergencystd)
+    # tc.emergencysellprice = afr.regry[buyix] - tr001default.emergencystd * afr.medianstd[buyix]
+    spread = banddeltaprice(afr, buyix, tc.breakoutstd)
+    tc.sellprice = upperbandprice(afr, buyix, tc.breakoutstd)
+    # tc.sellprice = afr.regry[buyix] + halfband
+    # probability to reach sell price
+    tc.probability = max(min((1.5 * spread - (tc.sellprice - buyprice)) / spread, 1.0), 0.0)
+    return tc
+end
+
+function delete!(tradechances::TradeChances001, tc::TradeChance001)
+    if tc.base in keys(tradechances.basedict)
+        rmdict = tradechances.basedict[tc.base]
+        if tc.regrminutes in keys(rmdict)
+            bodict = rmdict[tc.regrminutes]
+            if tc.breakoutstd in keys(bodict)
+                delete!(bodict, tc.breakoutstd)
             else
-                @warn "cannot find buyix $buyix in opentime of len=$(size(opentime, 1))"
+                @warn "cannot find breakout $(tc.breakoutstd) in tradechances[$(tc.base)][$(tc.regrminutes)]"
             end
-            tc.buyprice = buyprice
-            tc.buyregrprice = afr.regry[buyix]
-            tc.emergencysellprice = lowerbandprice(afr, buyix, tr001default.emergencystd)
-            # tc.emergencysellprice = afr.regry[buyix] - tr001default.emergencystd * afr.medianstd[buyix]
-            spread = banddeltaprice(afr, buyix, tc.breakoutstd)
-            tc.sellprice = upperbandprice(afr, buyix, tc.breakoutstd)
-            # tc.sellprice = afr.regry[buyix] + halfband
-            # probability to reach sell price
-            tc.probability = max(min((1.5 * spread - (tc.sellprice - buyprice)) / spread, 1.0), 0.0)
+        else
+            @warn "cannot find regrminutes $(tc.regrminutes) in tradechances[$(tc.base)]"
         end
+    else
+        @warn "cannot find base $(tc.base) in tradechances"
     end
     return tradechances
+end
+
+function tradechance(tradechances, orderid)
+    for tc in tradechances
+        if (tc.buyorderid == orderid) || (tc.sellorderid == orderid)
+            return tc
+        end
+    end
+    return nothing
 end
 
 """
@@ -202,36 +268,14 @@ Trading strategy:
 
 """
 function traderules001!(tradechances, features::Features.Features002, currentix)
-    tradechances = isnothing(tradechances) ? TradeChance001[] : tradechances
+    tradechances = isnothing(tradechances) ? TradeChances001(Dict()) : tradechances
+    # hierachy of dict() tradechances[base][regrminutes][breakoutstd]
     if isnothing(features); return tradechances; end
     df = Ohlcv.dataframe(features.ohlcv)
     opentime = Ohlcv.dataframe(features.ohlcv)[!, :opentime]
     pivot = df[!, :pivot]
     base = Ohlcv.basesymbol(features.ohlcv)
-    checked = Set()
-    for tc in tradechances
-        if (tc.base == base) && (tc.buyix > 0)
-            # only check exit criteria for already bought base
-            if !(tc.regrminutes in checked)
-                union!(checked, tc.regrminutes)
-                afr = features.regr[tc.regrminutes]
-                spread = banddeltaprice(afr, currentix, tc.breakoutstd)
-                if afr.regry[currentix] < tc.emergencysellprice  # (afr.regry[currentix] - tr001default.emergencystd * afr.medianstd[currentix])
-                    # emergency exit due to surprising plunge
-                    @info "emergency sell signal for $base due to plunge out of spread window $(tc.regrminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and pivot price of $(pivot[currentix])"
-                    println(tc)
-                    tc.sellprice = pivot[currentix]
-                    tc.probability = 1.0
-                else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
-                    @info "sell signal for $(base) price=$(pivot[currentix]) spread=$(tc.regrminutes) at ix=$currentix  time=$(opentime[currentix])"
-                    tc.sellprice = upperbandprice(afr, currentix, tc.breakoutstd)
-                    # probability to reach sell price
-                    tc.probability = max(min((spread - (tc.sellprice - pivot[currentix])) / spread, 1.0), 0.0)
-                end
-            end
-        end
-    end
-
+    temptc = nothing
     regrminutes, breakoutstd = bestspreadwindow(features, currentix, tr001default.minimumgain, tr001default.breakoutstd)
     if (regrminutes > 0) && buycompliant(features, regrminutes, breakoutstd, currentix, 0.75)
         # with 0.75*breakoutstd df.low is close enough to lower buy price to issue buy order
@@ -243,22 +287,51 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
         # probability to reach buy price
         probability = max(min((spread - (df.low[currentix] - buyprice)) / spread, 1.0), 0.0)
         emergencysellprice = afr.regry[currentix] - tr001default.emergencystd * afr.medianstd[currentix]
-        newtradechancerequired = true
-        for tc in tradechances
-            if (tc.base == base) && (tc.buyix == 0)
-                newtradechancerequired = false
-                tc.buyprice = buyprice
-                tc.buyregrprice = afr.regry[currentix]
-                tc.sellprice = sellprice
-                tc.probability = probability
-                tc.regrminutes = regrminutes
-                tc.emergencysellprice = emergencysellprice
-                tc.breakoutstd = breakoutstd
+        temptc = TradeChance001(base, 0, buyprice, opentime[currentix], afr.regry[currentix], 0, sellprice, 0, probability, regrminutes, emergencysellprice, breakoutstd)
+    end
+    checked = Set()
+    newtradechance = !isnothing(temptc)
+    if base in keys(tradechances.basedict)
+        rmdict = tradechances.basedict[base]
+        for (regrminutes, bodict) in rmdict
+            for (breakoutstd, tc) in bodict
+                if tc.buyix == 0
+                    if newtradechance && (regrminutes == temptc.regrminutes) && (breakoutstd == temptc.breakoutstd)
+                        # not yet bought -> adapt with latest insights
+                        tc.buyprice = temptc.buyprice
+                        tc.buyregrprice = temptc.buyregrprice
+                        tc.probability = temptc.probability
+                        tc.emergencysellprice = temptc.emergencysellprice
+                        tc.sellprice = temptc.sellprice
+                        newtradechance = false
+                    elseif tc.buyorderid == 0
+                        # outdated buy chance and no buy order issued
+                        delete!(bodict, breakoutstd)
+                    end
+                else
+                    if tc.sellorderid == 0
+                        @warn "tradechance bought without sell order" tc
+                    end
+                    afr = features.regr[tc.regrminutes]
+                    spread = banddeltaprice(afr, currentix, tc.breakoutstd)
+                    if afr.regry[currentix] < tc.emergencysellprice  # (afr.regry[currentix] - tr001default.emergencystd * afr.medianstd[currentix])
+                        # emergency exit due to plunge of regression line
+                        println(tc)
+                        tc.sellprice = df.low[currentix]
+                        tc.probability = 1.0
+                        @info "emergency sell for $base due to plunge out of spread regrminutes=$(tc.regrminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and sell price of $(tc.sellprice)"
+                    else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
+                        tc.sellprice = upperbandprice(afr, currentix, tc.breakoutstd)
+                        # probability to reach sell price
+                        tc.probability = max(min((spread - (tc.sellprice - pivot[currentix])) / spread, 1.0), 0.0)
+                        @info "sell signal for $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(tc.sellprice) ix=$currentix  time=$(opentime[currentix])"
+                    end
+                end
             end
+
         end
-        if newtradechancerequired
-            push!(tradechances, TradeChance001(base, 0, buyprice, Dates.now(UTC), afr.regry[currentix], sellprice, probability, regrminutes, emergencysellprice, breakoutstd))
-        end
+    elseif newtradechance
+        tradechances.basedict[base] = Dict(regrminutes => Dict(breakoutstd => temptc))
     end
     # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!
     # TODO use case of breakout rise after sell above deviation range is not yet covered

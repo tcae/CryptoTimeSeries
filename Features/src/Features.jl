@@ -11,7 +11,6 @@ import DataFrames: DataFrame, Statistics
 using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
-export getfeatures, getfeatures!, Features001, Features002, Features002Regr, getfeatures002, requiredminutes, mostrecentix
 
 struct Features001
     fdf::DataFrame
@@ -53,7 +52,6 @@ end
 
 function Base.show(io::IO, features::Features002)
     println(io::IO, features.ohlcv)
-    println(io::IO, "breakoutstd = $(features.breakoutstd)")
     for (key, value) in features.regr
         println(io::IO, "regr key: $key")
         println(io::IO, value)

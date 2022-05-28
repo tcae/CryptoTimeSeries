@@ -225,3 +225,6 @@ Challenges:
   - hysteresis criteria to start tracker
   - spread minimum gradient to do any buy, e.g. 0.0
 
+## Safety net stable coin
+
+While a start solely on USDT basis is OK for the start, the stable coin basis needs to be monitored and reshuffeled to another stable coin, if one plunges.
