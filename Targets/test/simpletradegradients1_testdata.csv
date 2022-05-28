@@ -1,6 +1,6 @@
 # test data for function simpletradegradientthresholds with prices, regressions, result column
 price,regression,expectation
-# ! everything below not yet ready
+#! everything below not yet ready
 
 
 # start with up and down slopes below threshold to bias the steep slope threshold

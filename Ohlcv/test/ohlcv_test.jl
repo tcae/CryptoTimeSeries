@@ -153,7 +153,7 @@ ohlcv2 = readwrite(ohlcv1)
 @test Ohlcv.dataframe(ohlcv1)[1, :opentime] == Ohlcv.dataframe(ohlcv2)[1, :opentime]
 @test Ohlcv.dataframe(ohlcv1)[9, :basevolume] == Ohlcv.dataframe(ohlcv2)[9, :basevolume]
 @test setsplit_test()
-# @test setassign_test()  # ! fails but setassign currently not relevant
+# @test setassign_test()  #! fails but setassign currently not relevant
 @test columnarray_test()
 
 ohlcva, ohlcvb = ohlcvab(-3)  # add ohlcvb at start ohlcba

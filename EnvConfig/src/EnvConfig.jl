@@ -19,7 +19,7 @@ import JSON
 @enum Mode test production training
 cryptoquote = "usdt"
 cryptoexchange = "binance"
-datetimeformat = "yyyy-mm-dd HH:MM"
+datetimeformat = "yymmdd HH:MM"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
 setsplitfname = "sets_split.csv"
@@ -33,7 +33,7 @@ cachepath = datapathprefix * "cache/"
 datapath = "Features/"
 configmode = production
 authorization = nothing
-# ! file path checks to be added
+# TODO file path checks to be added
 
 struct Authentication
     name::String
@@ -60,7 +60,7 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 
 " set project dir as working dir "
 function setprojectdir()
-    cd("$(@__DIR__)/../..")  # ! assumes a fixed folder structure with EnvConfig as a package within the project folder
+    cd("$(@__DIR__)/../..")  #! assumes a fixed folder structure with EnvConfig as a package within the project folder
     Pkg.activate(pwd())
     # println("activated $(pwd())")
     return pwd()

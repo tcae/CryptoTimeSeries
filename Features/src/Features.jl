@@ -760,7 +760,7 @@ end
 # function last3extremes(pivot, regrgrad)
 #     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
 #     regressiongains = zeros(Float32, pricelen)
-#     #! TODO implementation
+#     # TODO implementation
 #     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
 #     # work consistently backward to treat initial fill and incremental fill alike
 #     return l1xtrm, l2xtrm, l3xtrm
@@ -829,7 +829,7 @@ end
  but no need to add before an existing start
 """
 function getfeatures!(features::Features001, ohlcv::OhlcvData)
-    # ! to be done
+    # TODO to be done
     return features
 end
 

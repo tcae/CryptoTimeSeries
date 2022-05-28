@@ -119,7 +119,7 @@ using Dash, PlotlyJS, JSON3
     Input("Heatmap","relayoutData"),
     State("Heatmap","figure"))  do   range,figure
 
-        #! TCAE sample code to get JSON symbols
+        #* TCAE sample code to get JSON symbols
         if !(range === nothing)
             if (try range[:autosize]  catch end === nothing)
                 # myrange = JSON3.read(range, MyRelayoutData)
@@ -130,7 +130,7 @@ using Dash, PlotlyJS, JSON3
                 println("relayout data: autosize = $(range[:autosize])")
             end
         end
-        # ! ^^^
+        #* ^^^
 
         # Set ranges of RangedSliders
         ## if relayoutData is at default

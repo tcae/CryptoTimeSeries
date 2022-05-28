@@ -106,7 +106,7 @@ EnvConfig.init(test)
 # println("norm rolling regression $(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
 
 
-# ! getfeatures test to be added
+# TODO getfeatures test to be added
 @testset "Features tests" begin
 
 yvec = [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]

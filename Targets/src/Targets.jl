@@ -66,7 +66,7 @@ Labels Sell when tradegradientthresholds endregression is reached (does not cons
 Labels Buy when either previous waves are high enough and minimum reached or tradegradientthresholds startregr is reached.
 prices shall be the ohlcv.pivot prices array.
 """
-function singleregressionlabels(prices, regressionminutes)  #! UNIT TEST TO BE ADDED
+function singleregressionlabels(prices, regressionminutes)  # TODO UNIT TEST TO BE ADDED
     regressions = Features.normrollingregression(prices, regressionminutes)
     startregr, endregr, _, _ = Targets.tradegradientthresholds(prices, regressions)
     # println("startregr=$startregr  endregr=$endregr")
@@ -82,7 +82,7 @@ function singleregressionlabels(prices, regressionminutes)  #! UNIT TEST TO BE A
     for ix in 1:size(prices, 1)
         if regressiongains[ix] >= gainthreshold  # buy
             stronglastgain = (lastlastgain >= gainthreshold) && (lastlastgain >= -lastgain) && (regressions[ix] > 0)
-            # ! investigate on training data whhether the stronglastgain criteria is valid
+            # TODO investigate on training data whhether the stronglastgain criteria is valid
             if (regressions[ix] > startregr) || stronglastgain
                 targets[ix] = strongbuy
             else
@@ -219,7 +219,7 @@ end
 Returns a Float32 vector equal in size to prices/regressions that provides for each price the gain to the next extreme of 'regressions'.
 The index of the next extreme is also provided as an Int array
 """
-function rollingnextextreme(prices, regressions)  # ! missing unit test
+function rollingnextextreme(prices, regressions)  # TODO missing unit test
     pricelen = length(prices)
     @assert pricelen == length(regressions)
     gain = zeros(Float32, pricelen)
@@ -253,7 +253,7 @@ Returns a dict of intermediate and final results consiting of arrays of same len
     - `xix` = index of next regression extreme of *regression minutes*
     - `gain` = regression price gain as a ratio to current regression price to next extreme of *regression minutes*
 """
-function targets4(prices, regressionminutes)  # ! missing unit test
+function targets4(prices, regressionminutes)  # TODO missing unit test
     sort!(regressionminutes)
     result = Dict()
     result[:target] = zeros(Int8, length(prices))

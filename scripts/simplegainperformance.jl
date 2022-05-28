@@ -321,7 +321,7 @@ Measurement of all training data to always buy at slope begin and sell at slope 
 # neo            │    3.08f-43  3.41745f-28  2.94916f-14   7.26838f-8    0.0197463     0.275406      1.30217      1.29236      1.00782
 # ltc            │    2.96f-43  7.93366f-27  2.43653f-13   2.18716f-7   0.00656795     0.212881     0.725985     0.519932      1.57691
 # trx            │     2.8f-43  6.64184f-24   2.3627f-12   5.58659f-7    0.0362146     0.106338      5.55083      1.36395      1.13959
-#! TODO: use train, eval,test split to cross check consistency of results in subsets.
+# TODO: use train, eval,test split to cross check consistency of results in subsets.
 function singletrainingbasesgradientgain()
     regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 9 * 24 * 60]
     perfs = NamedArray(zeros(Float32, (size(EnvConfig.trainingbases, 1), size(regressionminutesset, 1))), (EnvConfig.trainingbases, regressionminutesset), ("base", "regrmin"))

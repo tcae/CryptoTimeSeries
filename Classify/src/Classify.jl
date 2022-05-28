@@ -29,7 +29,7 @@ mutable struct TradeChance001
     buyregrprice
     sellprice
     probability
-    spreadminutes
+    regrminutes
     emergencysellprice
     breakoutstd
 end
@@ -40,12 +40,12 @@ mutable struct TradeChance002
     pricetarget
     probability
     chanceix
-    spreadminutes
+    regrminutes
     trackerminutes
 end
 
 function Base.show(io::IO, tc::TradeChance001)
-    print(io::IO, "tc: base=$(tc.base), buyix=$(tc.buyix), buytime=$(tc.buytime), buy=$(round(tc.buyprice; digits=2)), buyregr=$(round(tc.buyregrprice; digits=2)), sell=$(round(tc.sellprice; digits=2)), prob=$(round(tc.probability*100; digits=2)), window=$(tc.spreadminutes), emergencysell=$(round(tc.emergencysellprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
+    print(io::IO, "tc: base=$(tc.base), buyix=$(tc.buyix), buytime=$(tc.buytime), buy=$(round(tc.buyprice; digits=2)), buyregr=$(round(tc.buyregrprice; digits=2)), sell=$(round(tc.sellprice; digits=2)), prob=$(round(tc.probability*100; digits=2)), window=$(tc.regrminutes), emergencysell=$(round(tc.emergencysellprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
 end
 
 function Base.show(io::IO, tc::TradeChance002)
@@ -96,7 +96,6 @@ Returns the number of trades within the last `requiredminutes` and the gain achi
 In case that minimumgain requirements are not met by fr.medianstd, `trades` and `gain` return 0.
 """
 function calcspread(f2::Features.Features002, window, currentix, breakoutstd)
-    #! requires redesign because fr.breakoutix is removed
     fr = f2.regr[window]
     gain = 0.0
     trades = 0
@@ -164,7 +163,7 @@ function registerbuy!(tradechances::Vector{TradeChance001}, base::String, buyix,
     @assert buyprice > 0
     for tc in tradechances
         if (tc.base == base) && (tc.buyix == 0)
-            afr = features.regr[tc.spreadminutes]
+            afr = features.regr[tc.regrminutes]
             tc.buyix = buyix
             opentime = Ohlcv.dataframe(features.ohlcv)[!, :opentime]
             if 0 < buyix <= size(opentime, 1)
@@ -213,18 +212,18 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
     for tc in tradechances
         if (tc.base == base) && (tc.buyix > 0)
             # only check exit criteria for already bought base
-            if !(tc.spreadminutes in checked)
-                union!(checked, tc.spreadminutes)
-                afr = features.regr[tc.spreadminutes]
+            if !(tc.regrminutes in checked)
+                union!(checked, tc.regrminutes)
+                afr = features.regr[tc.regrminutes]
                 spread = banddeltaprice(afr, currentix, tc.breakoutstd)
                 if afr.regry[currentix] < tc.emergencysellprice  # (afr.regry[currentix] - tr001default.emergencystd * afr.medianstd[currentix])
                     # emergency exit due to surprising plunge
-                    @info "emergency sell signal for $base due to plunge out of spread window $(tc.spreadminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and pivot price of $(pivot[currentix])"
+                    @info "emergency sell signal for $base due to plunge out of spread window $(tc.regrminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and pivot price of $(pivot[currentix])"
                     println(tc)
                     tc.sellprice = pivot[currentix]
                     tc.probability = 1.0
                 else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
-                    @info "sell signal for $(base) price=$(pivot[currentix]) spread=$(tc.spreadminutes) at ix=$currentix  time=$(opentime[currentix])"
+                    @info "sell signal for $(base) price=$(pivot[currentix]) spread=$(tc.regrminutes) at ix=$currentix  time=$(opentime[currentix])"
                     tc.sellprice = upperbandprice(afr, currentix, tc.breakoutstd)
                     # probability to reach sell price
                     tc.probability = max(min((spread - (tc.sellprice - pivot[currentix])) / spread, 1.0), 0.0)
@@ -233,11 +232,11 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
         end
     end
 
-    spreadminutes, breakoutstd = bestspreadwindow(features, currentix, tr001default.minimumgain, tr001default.breakoutstd)
-    if (spreadminutes > 0) && buycompliant(features, spreadminutes, breakoutstd, currentix, 0.75)
+    regrminutes, breakoutstd = bestspreadwindow(features, currentix, tr001default.minimumgain, tr001default.breakoutstd)
+    if (regrminutes > 0) && buycompliant(features, regrminutes, breakoutstd, currentix, 0.75)
         # with 0.75*breakoutstd df.low is close enough to lower buy price to issue buy order
-        @info "buy signal $base price=$(df.low[currentix]) window=$spreadminutes ix=$currentix time=$(opentime[currentix])"
-        afr = features.regr[spreadminutes]
+        @info "buy signal $base price=$(df.low[currentix]) window=$regrminutes ix=$currentix time=$(opentime[currentix])"
+        afr = features.regr[regrminutes]
         spread = banddeltaprice(afr, currentix, breakoutstd)
         buyprice = lowerbandprice(afr, currentix, breakoutstd)
         sellprice = upperbandprice(afr, currentix, breakoutstd)
@@ -252,13 +251,13 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
                 tc.buyregrprice = afr.regry[currentix]
                 tc.sellprice = sellprice
                 tc.probability = probability
-                tc.spreadminutes = spreadminutes
+                tc.regrminutes = regrminutes
                 tc.emergencysellprice = emergencysellprice
                 tc.breakoutstd = breakoutstd
             end
         end
         if newtradechancerequired
-            push!(tradechances, TradeChance001(base, 0, buyprice, Dates.now(UTC), afr.regry[currentix], sellprice, probability, spreadminutes, emergencysellprice, breakoutstd))
+            push!(tradechances, TradeChance001(base, 0, buyprice, Dates.now(UTC), afr.regry[currentix], sellprice, probability, regrminutes, emergencysellprice, breakoutstd))
         end
     end
     # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!
@@ -270,14 +269,14 @@ end
 Returns the regression window with the least number of regressionextremes
 between the last (opposite of deviation range) breakout and the current index.
 """
-function besttrackerwindow(f2::Features.Features002, spreadminutes, currentix)
+function besttrackerwindow(f2::Features.Features002, regrminutes, currentix)
     #! requires redesign because afr.xtrmix is removed
     pivot = Ohlcv.dataframe(f2.ohlcv)[!, :pivot]
     minextremes = currentix  # init with impossible high nbr of extremes
     bestwindow = 1
-    boix = max(currentix - spreadminutes, 1)  # in case there is no opposite spread extreme
+    boix = max(currentix - regrminutes, 1)  # in case there is no opposite spread extreme
 
-    afr = f2.regr[spreadminutes]
+    afr = f2.regr[regrminutes]
     upwards = pivot[currentix] > afr.regry[currentix]
     for xix in length(afr.xtrmix):-1:1
         ix = afr.xtrmix[xix]
@@ -289,7 +288,7 @@ function besttrackerwindow(f2::Features.Features002, spreadminutes, currentix)
 
     for win in Features.regressionwindows002
         tfr = f2.regr[win]
-        if (win < spreadminutes) && (upwards ? tfr.regry[currentix] > afr.regry[currentix] : tfr.regry[currentix] < afr.regry[currentix])
+        if (win < regrminutes) && (upwards ? tfr.regry[currentix] > afr.regry[currentix] : tfr.regry[currentix] < afr.regry[currentix])
             xix = [abs(ix) for ix in tfr.xtrmix if boix <= abs(ix) <= currentix]
             if (length(xix) == 0) ||
                ((length(xix) > 0) &&
@@ -324,44 +323,44 @@ function traderules002!(tradechances::Vector{TradeChance002}, features::Features
     for tc in tradechances
         if tc.base == base
             # only check exit criteria for existing orders
-            if !(tc.spreadminutes in checked)
-                union!(checked, tc.spreadminutes)
-                afr = features.regr[tc.spreadminutes]
+            if !(tc.regrminutes in checked)
+                union!(checked, tc.regrminutes)
+                afr = features.regr[tc.regrminutes]
                 if pivot[currentix] > (afr.regry[currentix] + tr001default.breakoutstd * afr.medianstd[currentix])  # above normal deviations
                     if tc.trackerminutes == 0
-                        tc.trackerminutes = besttrackerwindow(features, tc.spreadminutes, currentix)
+                        tc.trackerminutes = besttrackerwindow(features, tc.regrminutes, currentix)
                     end
                 end
                 if (((tc.trackerminutes == 1) && (pivot[currentix] < pivot[currentix-1])) ||
                     ((tc.trackerminutes > 1) && (features.regr[tc.trackerminutes].grad[currentix] < 0)))
-                    @info "sell signal tracker window $(base) $(pivot[currentix]) $(tc.spreadminutes) $(tc.trackerminutes) $currentix"
+                    @info "sell signal tracker window $(base) $(pivot[currentix]) $(tc.regrminutes) $(tc.trackerminutes) $currentix"
                     pricetarget = afr.regry[currentix] - tr001default.breakoutstd * afr.medianstd[currentix]
                     prob = 0.8
-                    push!(cachetc, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, tc.spreadminutes, tc.trackerminutes))
+                    push!(cachetc, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, tc.regrminutes, tc.trackerminutes))
                 end
                 if pivot[currentix] < (afr.regry[currentix] - tr001default.emergencystd * afr.medianstd[currentix])
                     # emergency exit due to surprising plunge
-                    @info "emergency sell signal due toplunge out of spread window" base tc.spreadminutes currentix
+                    @info "emergency sell signal due toplunge out of spread window" base tc.regrminutes currentix
                     pricetarget = afr.regry[currentix] - 2 * tr001default.emergencystd * afr.medianstd[currentix]
                     prob = 0.9
-                    push!(cachetc, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, tc.spreadminutes, 1))
+                    push!(cachetc, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, tc.regrminutes, 1))
                 end
             end
         end
     end
     append!(tradechances, cachetc)
 
-    spreadminutes = bestspreadwindow(features, currentix, tr001default.minimumgain, tr001default.breakoutstd)
-    afr = features.regr[spreadminutes]
+    regrminutes = bestspreadwindow(features, currentix, tr001default.minimumgain, tr001default.breakoutstd)
+    afr = features.regr[regrminutes]
     if ((pivot[currentix] < (afr.regry[currentix] - tr001default.breakoutstd * afr.medianstd[currentix])) &&
         (afr.grad[currentix] > tr001default.minimumgradient))
-        trackerminutes = besttrackerwindow(features, spreadminutes, currentix)
+        trackerminutes = besttrackerwindow(features, regrminutes, currentix)
         if (((trackerminutes == 1) && (pivot[currentix] > pivot[currentix-1])) ||
             ((trackerminutes > 1) && (features.regr[trackerminutes].grad[currentix] > 0)))
-            @info "buy signal tracker window $base $(pivot[currentix]) $spreadminutes $trackerminutes $currentix"
+            @info "buy signal tracker window $base $(pivot[currentix]) $regrminutes $trackerminutes $currentix"
             pricetarget = afr.regry[currentix] + tr001default.breakoutstd * afr.medianstd[currentix]
             prob = 0.8
-            push!(tradechances, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, spreadminutes, trackerminutes))
+            push!(tradechances, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, regrminutes, trackerminutes))
         end
     end
     # TODO use case of breakout rise after sell above deviation range is not yet covered

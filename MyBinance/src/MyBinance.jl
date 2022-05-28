@@ -181,7 +181,7 @@ function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval=
     end
     r = HTTP.request("GET", string(BINANCE_API_KLINES, query))
 
-    # ! TCAE: HTTP response log inserted to understand errors - especially rate limit errors - headers may be good enough
+    #! TCAE: HTTP response log inserted to understand errors - especially rate limit errors - headers may be good enough
     # julia> dump(HTTP.Response)
     # HTTP.Response <: Any
     # status::Int32

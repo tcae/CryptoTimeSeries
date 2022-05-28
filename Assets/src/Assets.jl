@@ -159,7 +159,7 @@ function loadassets(backtest=false)::AssetData
     ad.basedf[:, :portfolio] = [ad.basedf[ix, :base] in portfolio ? true : false for ix in 1:size(ad.basedf, 1)]
     ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
     ad.basedf[:, :basevolume] .= 0.0
-    # !TODO add portfolio basevolume
+    # TODO add portfolio basevolume
     ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
     # println("ad.basedf")
     # println(ad.basedf)

@@ -51,9 +51,10 @@ function preparetradecache(backtest)
         end
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
     else
+        # TODO read not only assets but also open orders and assign them to cache to be considered in the trade loop
         assets = Assets.loadassets()
         bases = assets.df.base
-        initialperiod = Dates.Minute(Features.requiredminutes + 100)
+        initialperiod = Dates.Minute(Features.requiredminutes)
         enddt = floor(Dates.now(Dates.UTC), Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
     end
     startdt = enddt - initialperiod
@@ -123,7 +124,8 @@ to be considered:
 - new buy chances but consider the already traded bases and multiple buy chances of the same base
 - log how many chances are offered on average to determine an appropriate trade granularity
     - start with 2% granuality of portfolio value per trade
-    - start with max 2 active trades per base
+    - start with max 1 active trade per base
+    - start accepting all buy chances as long as USDT is available
 """
 function trade!(tradechances, caches)
     println("$(length(tradechances)) trade chances")
@@ -182,7 +184,7 @@ function tradeloop(backtest=true)
             trade!(tc, caches)
         end
         # if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
-        #     # ! TODO the read ohlcv data shall be from time to time appended to the historic data
+        #     # TODO the read ohlcv data shall be from time to time appended to the historic data
         # end
     end
 end
