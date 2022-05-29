@@ -89,7 +89,7 @@ end
     @test nrow(df) == 0
     mdf = CryptoXch.getUSDTmarket()
     # println(mdf)
-    @test names(mdf) == ["base", "quotevolume24h", "lastprice", "priceChangePercent"]
+    @test names(mdf) == ["base", "quotevolume24h", "lastprice", "pricechangepercent"]
     @test nrow(mdf) > 10
 
     EnvConfig.init(EnvConfig.test)

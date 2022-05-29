@@ -15,7 +15,7 @@ EnvConfig.init(production)
 # ad = ad2
 # # ad2.df.quotevolume24h = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad2.df.base])), :quotevolume24h]
 # ad.df[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :quotevolume24h]
-# ad.df[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :priceChangePercent]
+# ad.df[:, :pricechangepercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.df[!, :base]])), :pricechangepercent]
 
 # println(Assets.portfolioselect(CryptoXch.getUSDTmarket()))
 @testset "Assets tests" begin

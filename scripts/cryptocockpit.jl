@@ -115,7 +115,7 @@ app.layout = html_div() do
         dash_datatable(id="kpi_table", editable=false,
             columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.basedf) if i != "id"],  # exclude "id" to not display it
             data = Dict.(pairs.(eachrow(assets.basedf))),
-            style_data_conditional=discrete_background_color_bins(assets.basedf, n_bins=31, columns="priceChangePercent"),
+            style_data_conditional=discrete_background_color_bins(assets.basedf, n_bins=31, columns="pricechangepercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",

@@ -221,6 +221,34 @@ function openOrders(symbol, apiKey::String, apiSecret::String)
     r2j(r.body)
 end
 
+function order(symbol, orderid, apiKey::String, apiSecret::String)
+    headers = Dict("X-MBX-APIKEY" => apiKey)
+    if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
+        query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
+    end
+    r = HTTP.request("GET", string(BINANCE_API_REST, "api/v3/order?", query, "&signature=", doSign(query, apiSecret)), headers)
+    if r.status != 200
+        println(r)
+        return r.status
+    end
+
+    r2j(r.body)
+end
+
+function cancelOrder(symbol, orderid, apiKey::String, apiSecret::String)
+    headers = Dict("X-MBX-APIKEY" => apiKey)
+    if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
+        query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
+    end
+    r = HTTP.request("DELETE", string(BINANCE_API_REST, "api/v3/order?", query, "&signature=", doSign(query, apiSecret)), headers)
+    if r.status != 200
+        println(r)
+        return r.status
+    end
+
+    r2j(r.body)
+end
+
 # function cancelOrder(symbol,origClientOrderId)
 #     query = string("recvWindow=5000&timestamp=", timestamp(),"&symbol=", symbol,"&origClientOrderId=", origClientOrderId)
 #     r = HTTP.request("DELETE", string(BINANCE_API_REST, "api/v3/order?", query, "&signature=", doSign(query)), headers)

@@ -8,12 +8,15 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using MyBinance, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
-baseignore = ["usdt", "tusd", "busd", "usdc", "eur",
+
+basenottradable = ["boba",
     "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm", "hc", "mco",
     "bull", "bear", "ethbull", "ethbear", "eosbull", "eosbear", "xrpbull", "xrpbear", "strat", "bnbbull", "bnbbear",
     "xzc", "gxs", "lend", "bkrw", "dai", "xtzup", "xtzdown", "bzrx", "eosup", "eosdown", "ltcup", "ltcdown"]
-# don't load stable coins as base
-# don't load discontinued coins, e.g. btt, bcc
+basestablecoin = ["usdt", "tusd", "busd", "usdc", "eur"]
+baseignore = []
+baseignore = append!(baseignore, basestablecoin, basenottradable)
+minimumquotevolume = 10  # USDT
 
 function klines2jdict(jsonkline)
     Dict(
@@ -322,48 +325,20 @@ Returns a dataframe with 24h values of all USDT quote bases with the following c
 
 - base
 - quotevolume24h
+- pricechangepercent
 - lastprice
 
 """
 function getUSDTmarket()
-    df = DataFrames.DataFrame()
-    if EnvConfig.configmode == EnvConfig.test
-        df.base = EnvConfig.bases
-        df.quotevolume24h = [15000000 for ix in 1:size(df,1)]
-        df.lastprice = [100 for ix in 1:size(df,1)]
-        df.priceChangePercent = [5.0 for ix in 1:size(df,1)]
-    else
-        symbols = MyBinance.getAllPrices()
-        len = length(symbols)
-        values = MyBinance.get24HR()
-        quotesymbol = uppercase(EnvConfig.cryptoquote)
-        basesix = [(ix,
-            parse(Float32, values[ix]["quoteVolume"]),
-            parse(Float32, values[ix]["lastPrice"]),
-            parse(Float32, values[ix]["priceChangePercent"]))
-            for ix in 1:len if onlyconfiguredsymbols(symbols[ix]["symbol"])]
-        # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
-
-        df = DataFrames.DataFrame()
-        quotelen = length(quotesymbol)
-        df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _, _) in basesix]
-        df.quotevolume24h = [qv for (_, qv, _, _) in basesix]
-        df.lastprice = [lp for (_, _, lp, _) in basesix]
-        df.priceChangePercent = [pcp for (_, _, _, pcp) in basesix]
-    end
-    return df
-end
-
-function newgetUSDTmarket()
     df = DataFrame(
         base=String[],
         qte=String[],
         # weightedAvgPrice=Float32[],
         # askQty=Float32[],
-        quoteVolume=Float32[],
-        priceChangePercent=Float32[],
+        quotevolume24h=Float32[],
+        pricechangepercent=Float32[],
         # count=Int64[],
-        lastPrice=Float32[],
+        lastprice=Float32[],
         # openPrice=Float32[],
         # firstId=Int64[],
         # lastQty=Float32[],
@@ -371,13 +346,13 @@ function newgetUSDTmarket()
         # closeTime=Dates.DateTime[],
         # askPrice=Float32[],
         # priceChange=Float32[],
-        highPrice=Float32[],
+        # highprice=Float32[],
         # prevClosePrice=Float32[],
         # bidQty=Float32[],
         # volume=Float32[],
         # bidPrice=Float32[],
         # lastId=Int64[],
-        lowPrice=Float32[]
+        # lowprice=Float32[]
     )
     if EnvConfig.configmode == EnvConfig.test
         for base in EnvConfig.bases
@@ -397,13 +372,13 @@ function newgetUSDTmarket()
                 # DateTime("2019-01-02 01:12:59:121", "y-m-d H:M:S:s"),  # "closeTime"
                 # 100.0,      # "askPrice"
                 # 0.0,        # "priceChange"
-                100.0,      # "highPrice"
+                # 100.0,      # "highPrice"
                 # 100.0,      # "prevClosePrice"
                 # 4.0,        # "bidQty"
                 # 2.0,        # "volume"
                 # 99.0,       # "bidPrice"
                 # 21,         # "lastId"
-                99.5        # "lowPrice"
+                # 99.5        # "lowPrice"
             ))
 
         end
@@ -428,13 +403,13 @@ function newgetUSDTmarket()
                     # Dates.unix2datetime(p24dict["closeTime"] / 1000),
                     # parse(Float32, p24dict["askPrice"]),
                     # parse(Float32, p24dict["priceChange"]),
-                    parse(Float32, p24dict["highPrice"]),
+                    # parse(Float32, p24dict["highPrice"]),
                     # parse(Float32, p24dict["prevClosePrice"]),
                     # parse(Float32, p24dict["bidQty"]),
                     # parse(Float32, p24dict["volume"]),
                     # parse(Float32, p24dict["bidPrice"]),
                     # p24dict["lastId"],
-                    parse(Float32, p24dict["lowPrice"])
+                    # parse(Float32, p24dict["lowPrice"])
                 ))
             end
         end
@@ -442,32 +417,65 @@ function newgetUSDTmarket()
     return df
 end
 
+# function getUSDTmarket()
+#     df = DataFrames.DataFrame()
+#     if EnvConfig.configmode == EnvConfig.test
+#         df.base = EnvConfig.bases
+#         df.quotevolume24h = [15000000 for ix in 1:size(df,1)]
+#         df.lastprice = [100 for ix in 1:size(df,1)]
+#         df.pricechangepercent = [5.0 for ix in 1:size(df,1)]
+#     else
+#         symbols = MyBinance.getAllPrices()
+#         len = length(symbols)
+#         values = MyBinance.get24HR()
+#         quotesymbol = uppercase(EnvConfig.cryptoquote)
+#         basesix = [(ix,
+#             parse(Float32, values[ix]["quoteVolume"]),
+#             parse(Float32, values[ix]["lastPrice"]),
+#             parse(Float32, values[ix]["priceChangePercent"]))
+#             for ix in 1:len if onlyconfiguredsymbols(symbols[ix]["symbol"])]
+#         # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
+
+#         df = DataFrames.DataFrame()
+#         quotelen = length(quotesymbol)
+#         df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _, _) in basesix]
+#         df.quotevolume24h = [qv for (_, qv, _, _) in basesix]
+#         df.lastprice = [lp for (_, _, lp, _) in basesix]
+#         df.pricechangepercent = [pcp for (_, _, _, pcp) in basesix]
+#     end
+#     return df
+# end
+
+
 function balances()
     portfolio = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
     # println(portfolio)
     return portfolio
 end
 
-function getbalances()
-    portfolio = balances()
+function portfolio(usdtdf)
+    portfolioarray = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
     df = DataFrame(
         base=String[],
+        locked=Float32[],
         free=Float32[],
-        locked=Float32[]
-    )
-    for (index, pelem) in enumerate(portfolio)
-        push!(df, (
-            pelem["asset"],
-            parse(Float32, pelem["free"]),
-            parse(Float32, pelem["locked"])
-        ))
-        # println("asset#$index")
-        # for (key, value) in asset
-        #     println("key: $key  value: $value  type(value): $(typeof(value))")
-        # end
+        usdt=Float32[]
+        )
+
+    for pdict in portfolioarray
+        base = lowercase(pdict["asset"])
+        freebase = parse(Float32, pdict["free"])
+        lockedbase = parse(Float32, pdict["locked"])
+        if (base in usdtdf.base) && !(base in basenottradable)
+            lastprices = usdtdf[usdtdf.base .== base, :lastprice]
+            usdtvolumebase = (freebase + lockedbase) * lastprices[begin]
+            if usdtvolumebase >= minimumquotevolume
+                push!(df, (base, lockedbase, freebase, usdtvolumebase))
+            end
+        elseif base in basestablecoin
+            push!(df, (base, lockedbase, freebase, 1.0))
+        end
     end
-    println("Binance balances with $(size(portfolio, 1)) assets")
-    println(df)
     return df
 end
 
@@ -512,55 +520,59 @@ function printorderinfo(orderix, oodict)
     end
 end
 
-function orderdictarraytodataframe(orderdictarray)
+"""
+Returns a data frame with filled with the binance response as provided in `orderdictarray` with a `logtimeutc` timestamp per row.
+If `orderdictarray` is empty then an empty dataframe is returned.
+"""
+function orderdataframe(orderdictarray, logtimeutc)
     df = DataFrame(
         base=String[],
         orderId=Int64[],
-        clientOrderId=String[],
+        # clientOrderId=String[],
         price=Float32[],
         origQty=Float32[],
         executedQty=Float32[],
-        cummulativeQuoteQty=Float32[],
+        # cummulativeQuoteQty=Float32[],
         status=String[],
         timeInForce=String[],
         type=String[],
         side=String[],
-        stopPrice=Float32[],
-        icebergQty=Float32[],
-        time=Dates.DateTime[],
-        updateTime=Dates.DateTime[],
-        isWorking=Bool[],
-        origQuoteOrderQty=Float32[]
+        # stopPrice=Float32[],
+        # icebergQty=Float32[],
+        # time=Dates.DateTime[],
+        # updateTime=Dates.DateTime[],
+        # isWorking=Bool[],
+        # origQuoteOrderQty=Float32[],
+        logtime=Dates.DateTime[]
         )
 
-    for (index, oodict) in enumerate(orderdictarray)
+    for oodict in orderdictarray
         if onlyconfiguredsymbols(oodict["symbol"])
-            # printorderinfo(index, oodict)
             push!(df, (
                 lowercase(replace(oodict["symbol"], uppercase(EnvConfig.cryptoquote) => "")),
                 oodict["orderId"],
-                oodict["clientOrderId"],
+                # oodict["clientOrderId"],
                 parse(Float32, oodict["price"]),
                 parse(Float32, oodict["origQty"]),
                 parse(Float32, oodict["executedQty"]),
-                parse(Float32, oodict["cummulativeQuoteQty"]),
+                # parse(Float32, oodict["cummulativeQuoteQty"]),
                 oodict["status"],
                 oodict["timeInForce"],
                 oodict["type"],
                 oodict["side"],
-                parse(Float32, oodict["stopPrice"]),
-                parse(Float32, oodict["icebergQty"]),
-                Dates.unix2datetime(oodict["time"] / 1000),
-                Dates.unix2datetime(oodict["updateTime"] / 1000),
-                oodict["isWorking"],
-                parse(Float32, oodict["origQuoteOrderQty"]),
+                # parse(Float32, oodict["stopPrice"]),
+                # parse(Float32, oodict["icebergQty"]),
+                # Dates.unix2datetime(oodict["time"] / 1000),
+                # Dates.unix2datetime(oodict["updateTime"] / 1000),
+                # oodict["isWorking"],
+                # parse(Float32, oodict["origQuoteOrderQty"]),
+                logtimeutc
                 ))
-                println(df)
+                # println(df)
         else
             @warn "$(EnvConfig.now()) getopenorders: ignoring $(oodict["symbol"]) as not configured symbol"
-            printorderinfo(index, oodict)
+            # printorderinfo(index, oodict)
         end
-
     end
     # "symbol": "LTCBTC",
     # "orderId": 1,
@@ -580,22 +592,86 @@ function orderdictarraytodataframe(orderdictarray)
     # "updateTime": 1499827319559,
     # "isWorking": true,
     # "origQuoteOrderQty": "0.000000"
-
+    return df
 end
 
-function getopenorders(symbol)
+function getopenorders(base)
+    symbol = isnothing(base) ? nothing : uppercase(base * EnvConfig.cryptoquote)
     if EnvConfig.configmode == EnvConfig.production
         ooarray = MyBinance.openOrders(symbol, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdictarraytodataframe(ooarray)
+        df = orderdataframe(ooarray, Dates.now(UTC))
+        return df
     else
     end
 end
 
+function getorder(base, orderid)
+    symbol = uppercase(base * EnvConfig.cryptoquote)
+    if EnvConfig.configmode == EnvConfig.production
+        oo = MyBinance.order(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+        df = orderdataframe([oo], Dates.now(UTC))
+        return df
+    else
+    end
+end
+
+function cancelorder(base, orderid)
+    symbol = uppercase(base * EnvConfig.cryptoquote)
+    if EnvConfig.configmode == EnvConfig.production
+        oo = MyBinance.cancelOrder(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+        df = orderdataframe([oo], Dates.now(UTC))
+        return df
+        # "symbol": "LTCBTC",
+        # "origClientOrderId": "myOrder1",
+        # "orderId": 4,
+        # "orderListId": -1, //Unless part of an OCO, the value will always be -1.
+        # "clientOrderId": "cancelMyOrder1",
+        # "price": "2.00000000",
+        # "origQty": "1.00000000",
+        # "executedQty": "0.00000000",
+        # "cummulativeQuoteQty": "0.00000000",
+        # "status": "CANCELED",
+        # "timeInForce": "GTC",
+        # "type": "LIMIT",
+        # "side": "BUY"
+    else
+    end
+end
+
+function createorder(base::String, orderside::String, limitprice, usdtquantity)
+    symbol = uppercase(base * EnvConfig.cryptoquote)
+    qty = floor(usdtquantity / limitprice; digits=4)  #* round due to LOT_FILTER minimum granularity constraint
+    order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
+    oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
+    println(oo)
+    df = orderdataframe([oo], Dates.now(UTC))
+    return df
+    # "symbol": "BTCUSDT",
+    # "orderId": 28,
+    # "orderListId": -1, //Unless OCO, value will be -1
+    # "clientOrderId": "6gCrw2kRUAF9CvJDGP16IP",
+    # "transactTime": 1507725176595,
+    # "price": "0.00000000",
+    # "origQty": "10.00000000",
+    # "executedQty": "10.00000000",
+    # "cummulativeQuoteQty": "10.00000000",
+    # "status": "FILLED",
+    # "timeInForce": "GTC",
+    # "type": "MARKET",
+    # "side": "SELL",
+    # "fills": [...
+
+end
+
 EnvConfig.init(EnvConfig.production)
 # EnvConfig.init(EnvConfig.test)
-
-oo = getopenorders(nothing)
-println(oo)
+# oo = createorder("btc", "BUY", 18850.0, 90.0)
+# oo = getopenorders(nothing)
+# oo = getopenorders("btc")
+# println(oo)
+# oo = getorder("btc", 10759633755)
+# oo = cancelorder("btc", 10767791414)
+# println(oo)
 # getbalances()
 # println(getUSDTmarket())
 
@@ -610,7 +686,11 @@ println(oo)
 #     println(p)
 # end
 
-# df = newgetUSDTmarket()
-# df = df[df.quoteVolume .>= 10000000, :]
+# usdtdf = getUSDTmarket()
+# println("getUSDTmarket #$(size(usdtdf,1)) rows cols: $(names(usdtdf))")
+# pdf = portfolio(usdtdf)
+# println(pdf)
+# usdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :]
+# println("getUSDTmarket #$(size(usdtdf,1)) rows cols: $(names(usdtdf))")
 # println(df)
 end  # of module

@@ -96,7 +96,7 @@ function setdataframe!(ad::AssetData, df)
 end
 
 mnemonic() = "AssetData_v1"
-savecols = [:base, :manual, :automatic, :portfolio, :xch, :update, :quotevolume24h, :priceChangePercent]
+savecols = [:base, :manual, :automatic, :portfolio, :xch, :update, :quotevolume24h, :pricechangepercent]
 
 function write(ad::AssetData)
     mnm = mnemonic()
@@ -131,46 +131,59 @@ function delete(ad::AssetData)
 end
 
 function loadassets(backtest=false)::AssetData
-    enddt = Dates.now(Dates.UTC)
-    usdtdf = CryptoXch.getUSDTmarket()
-    manual = Set(manualselect())
-    portfoliodf = portfolioselect(usdtdf)
-    portfolio = Set(portfoliodf[!, :base])
-    # println("portfolio len=$(length(portfolio)) - $portfolio")
-    bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
-    # println("lastdayvolume OK USDT len=$(length(bases)) - $bases")
-    bases = union(Set(bases), manual, portfolio)
-    # println("union1 len=$(length(bases)) - $bases")
-    CryptoXch.downloadupdate!(bases, enddt, Dates.Year(4))
-    automatic = Set(automaticselect(usdtdf, 30, minimumdayquotevolume))  # will use just downloaded updates
-    allbases = union(portfolio, manual, automatic)
-    # println("allbases len=$(length(allbases)) - $allbases")
-    usdtdf = filter(r -> r.base in allbases, usdtdf)
-    checkbases = filter(!(el -> el in usdtdf.base), allbases)
-    if length(checkbases) > 0
-        @warn "unexpected bases missing in USDT bases" checkbases
-    end
-    allbases = filter(el -> el in usdtdf.base, allbases)
-    usdtvolume = 100.0  # dummy 100 USDT
-    ad = AssetData(emptyassetdataframe(), usdtvolume, backtest)
-    ad.basedf[:, :base] = [base for base in allbases]
-    ad.basedf[:, :manual] = [ad.basedf[ix, :base] in manual ? true : false for ix in 1:size(ad.basedf, 1)]
-    ad.basedf[:, :automatic] = [ad.basedf[ix, :base] in automatic ? true : false for ix in 1:size(ad.basedf, 1)]
-    ad.basedf[:, :portfolio] = [ad.basedf[ix, :base] in portfolio ? true : false for ix in 1:size(ad.basedf, 1)]
-    ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
-    ad.basedf[:, :basevolume] .= 0.0
-    # TODO add portfolio basevolume
-    ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
-    # println("ad.basedf")
-    # println(ad.basedf)
-    sort!(ad.basedf, [:base])
-    # println("usdtdf")
-    # println(usdtdf)
-    sort!(usdtdf, [:base])
-    ad.basedf[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.basedf[!, :base]])), :quotevolume24h]
-    ad.basedf[:, :priceChangePercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.basedf[!, :base]])), :priceChangePercent]
+    if backtest
+        ad = AssetData(emptyassetdataframe(), usdtvolume, backtest)
+        ad.basedf[:, :base] = EnvConfig.trainingbases
+        ad.basedf[:, :manual] .= true
+        ad.basedf[:, :automatic] .= false
+        ad.basedf[:, :portfolio] .= false
+        ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
+        ad.basedf[:, :basevolume] .= 0.0
+        ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+        ad.basedf[:, :quotevolume24h] .= 10000000.0
+        ad.basedf[:, :pricechangepercent] .= 0.0
+    else
+        enddt = Dates.now(Dates.UTC)
+        usdtdf = CryptoXch.getUSDTmarket()
+        manual = Set(manualselect())
+        portfoliodf = portfolioselect(usdtdf)
+        portfolio = Set(portfoliodf[!, :base])
+        # println("portfolio len=$(length(portfolio)) - $portfolio")
+        bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
+        # println("lastdayvolume OK USDT len=$(length(bases)) - $bases")
+        bases = union(Set(bases), manual, portfolio)
+        # println("union1 len=$(length(bases)) - $bases")
+        CryptoXch.downloadupdate!(bases, enddt, Dates.Year(4))
+        automatic = Set(automaticselect(usdtdf, 30, minimumdayquotevolume))  # will use just downloaded updates
+        allbases = union(portfolio, manual, automatic)
+        # println("allbases len=$(length(allbases)) - $allbases")
+        usdtdf = filter(r -> r.base in allbases, usdtdf)
+        checkbases = filter(!(el -> el in usdtdf.base), allbases)
+        if length(checkbases) > 0
+            @warn "unexpected bases missing in USDT bases" checkbases
+        end
+        allbases = filter(el -> el in usdtdf.base, allbases)
+        usdtvolume = 100.0  # dummy 100 USDT
+        ad = AssetData(emptyassetdataframe(), usdtvolume, backtest)
+        ad.basedf[:, :base] = [base for base in allbases]
+        ad.basedf[:, :manual] = [ad.basedf[ix, :base] in manual ? true : false for ix in 1:size(ad.basedf, 1)]
+        ad.basedf[:, :automatic] = [ad.basedf[ix, :base] in automatic ? true : false for ix in 1:size(ad.basedf, 1)]
+        ad.basedf[:, :portfolio] = [ad.basedf[ix, :base] in portfolio ? true : false for ix in 1:size(ad.basedf, 1)]
+        ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
+        ad.basedf[:, :basevolume] .= 0.0
+        # TODO add portfolio basevolume
+        ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+        # println("ad.basedf")
+        # println(ad.basedf)
+        sort!(ad.basedf, [:base])
+        # println("usdtdf")
+        # println(usdtdf)
+        sort!(usdtdf, [:base])
+        ad.basedf[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.basedf[!, :base]])), :quotevolume24h]
+        ad.basedf[:, :pricechangepercent] = usdtdf[in.(usdtdf[!,:base], Ref([base for base in ad.basedf[!, :base]])), :pricechangepercent]
 
-    write(ad)
+        write(ad)
+    end
     return ad
 end
 
