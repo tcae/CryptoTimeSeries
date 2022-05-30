@@ -354,35 +354,7 @@ function getUSDTmarket()
         # lastId=Int64[],
         # lowprice=Float32[]
     )
-    if EnvConfig.configmode == EnvConfig.test
-        for base in EnvConfig.bases
-            push!(df, (
-                base,
-                lowercase(EnvConfig.cryptoquote),
-                # 0.0,        # "weightedAvgPrice"
-                # 0.0,        # "askQty"
-                15000000.0, # "quoteVolume"
-                5.0,        # "priceChangePercent"
-                # 2,          # "count"
-                100.0,      # "lastPrice"
-                # 100.0,      # "openPrice"
-                # 20,         # "firstId"
-                # 3,          # "lastQty"
-                # DateTime("2019-01-02 01:11:58:121", "y-m-d H:M:S:s"),  # "openTime"
-                # DateTime("2019-01-02 01:12:59:121", "y-m-d H:M:S:s"),  # "closeTime"
-                # 100.0,      # "askPrice"
-                # 0.0,        # "priceChange"
-                # 100.0,      # "highPrice"
-                # 100.0,      # "prevClosePrice"
-                # 4.0,        # "bidQty"
-                # 2.0,        # "volume"
-                # 99.0,       # "bidPrice"
-                # 21,         # "lastId"
-                # 99.5        # "lowPrice"
-            ))
-
-        end
-    else
+    if EnvConfig.configmode == EnvConfig.production
         p24dictarray = MyBinance.get24HR()
         for (index, p24dict) in enumerate(p24dictarray)
             if onlyconfiguredsymbols(p24dict["symbol"])
@@ -413,39 +385,37 @@ function getUSDTmarket()
                 ))
             end
         end
+    else  # test or training
+        for base in EnvConfig.bases
+            push!(df, (
+                base,
+                lowercase(EnvConfig.cryptoquote),
+                # 0.0,        # "weightedAvgPrice"
+                # 0.0,        # "askQty"
+                15000000.0, # "quoteVolume"
+                5.0,        # "priceChangePercent"
+                # 2,          # "count"
+                100.0,      # "lastPrice"
+                # 100.0,      # "openPrice"
+                # 20,         # "firstId"
+                # 3,          # "lastQty"
+                # DateTime("2019-01-02 01:11:58:121", "y-m-d H:M:S:s"),  # "openTime"
+                # DateTime("2019-01-02 01:12:59:121", "y-m-d H:M:S:s"),  # "closeTime"
+                # 100.0,      # "askPrice"
+                # 0.0,        # "priceChange"
+                # 100.0,      # "highPrice"
+                # 100.0,      # "prevClosePrice"
+                # 4.0,        # "bidQty"
+                # 2.0,        # "volume"
+                # 99.0,       # "bidPrice"
+                # 21,         # "lastId"
+                # 99.5        # "lowPrice"
+            ))
+
+        end
     end
     return df
 end
-
-# function getUSDTmarket()
-#     df = DataFrames.DataFrame()
-#     if EnvConfig.configmode == EnvConfig.test
-#         df.base = EnvConfig.bases
-#         df.quotevolume24h = [15000000 for ix in 1:size(df,1)]
-#         df.lastprice = [100 for ix in 1:size(df,1)]
-#         df.pricechangepercent = [5.0 for ix in 1:size(df,1)]
-#     else
-#         symbols = MyBinance.getAllPrices()
-#         len = length(symbols)
-#         values = MyBinance.get24HR()
-#         quotesymbol = uppercase(EnvConfig.cryptoquote)
-#         basesix = [(ix,
-#             parse(Float32, values[ix]["quoteVolume"]),
-#             parse(Float32, values[ix]["lastPrice"]),
-#             parse(Float32, values[ix]["priceChangePercent"]))
-#             for ix in 1:len if onlyconfiguredsymbols(symbols[ix]["symbol"])]
-#         # minvolbasesix = [(ix, quotevol) for (ix, quotevol) in basesix if quotevol > minquotevolume]
-
-#         df = DataFrames.DataFrame()
-#         quotelen = length(quotesymbol)
-#         df.base = [lowercase(symbols[ix]["symbol"][1:end-quotelen]) for (ix, _, _, _) in basesix]
-#         df.quotevolume24h = [qv for (_, qv, _, _) in basesix]
-#         df.lastprice = [lp for (_, _, lp, _) in basesix]
-#         df.pricechangepercent = [pcp for (_, _, _, pcp) in basesix]
-#     end
-#     return df
-# end
-
 
 function balances()
     portfolio = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
@@ -454,7 +424,6 @@ function balances()
 end
 
 function portfolio(usdtdf)
-    portfolioarray = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
     df = DataFrame(
         base=String[],
         locked=Float32[],
@@ -462,19 +431,25 @@ function portfolio(usdtdf)
         usdt=Float32[]
         )
 
-    for pdict in portfolioarray
-        base = lowercase(pdict["asset"])
-        freebase = parse(Float32, pdict["free"])
-        lockedbase = parse(Float32, pdict["locked"])
-        if (base in usdtdf.base) && !(base in basenottradable)
-            lastprices = usdtdf[usdtdf.base .== base, :lastprice]
-            usdtvolumebase = (freebase + lockedbase) * lastprices[begin]
-            if usdtvolumebase >= minimumquotevolume
-                push!(df, (base, lockedbase, freebase, usdtvolumebase))
+    if EnvConfig.configmode == EnvConfig.production
+        portfolioarray = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
+        for pdict in portfolioarray
+            base = lowercase(pdict["asset"])
+            freebase = parse(Float32, pdict["free"])
+            lockedbase = parse(Float32, pdict["locked"])
+            if (base in usdtdf.base) && !(base in basenottradable)
+                lastprices = usdtdf[usdtdf.base .== base, :lastprice]
+                usdtvolumebase = (freebase + lockedbase) * lastprices[begin]
+                if usdtvolumebase >= minimumquotevolume
+                    push!(df, (base, lockedbase, freebase, usdtvolumebase))
+                end
+            elseif base in basestablecoin
+                push!(df, (base, lockedbase, freebase, 1.0))
             end
-        elseif base in basestablecoin
-            push!(df, (base, lockedbase, freebase, 1.0))
         end
+    else  # test or training
+        initialusdt = 10000.0
+        push!(df, ("usdt", 0.0, initialusdt, initialusdt))
     end
     return df
 end

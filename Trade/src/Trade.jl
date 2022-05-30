@@ -32,17 +32,21 @@ end
 trade cache contains all required data to support the tarde loop
 """
 mutable struct Cache
-    backtest
+    backtest::Bool
     usdtfree
     usdtlocked
-    classify!
-    bd
+    classify!  # function to classsify trade chances
+    bd  # dict[base] of BaseInfo
     tradechances  # ::Classify.TradeChances001
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, logtime
     orderlog  # DataFrame with cols like openorders
     # transactionlog  # DataFrame
     Cache(backtest, free, locked) = new(backtest, free, locked, Classify.traderules001!, Dict(), nothing, CryptoXch.orderdataframe([], Dates.now(UTC)), CryptoXch.orderdataframe([], Dates.now(UTC)))
 end
+
+makerfee = 0.075 / 100
+takerfee = 0.075 / 100
+tradingfee = max(makerfee, takerfee)
 
 ohlcvdf(cache, base) = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
 
@@ -60,7 +64,7 @@ function preparetradecache(backtest)
     usdtdf = CryptoXch.getUSDTmarket()
     pdf = CryptoXch.portfolio(usdtdf)
     usdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :]
-    focusbases = usdt.base
+    focusbases = usdtdf.base
     if backtest
         if EnvConfig.configmode == EnvConfig.test
             initialperiod = Dates.Minute(100 + Features.requiredminutes)
@@ -135,41 +139,90 @@ end
 significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
 significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
 
+"Returns the cumulated portfolio liquidity in USDT as (total, free, locked)"
+function totalliquidity(cache)
+    usdtfree = cache.usdtfree
+    usdtlocked = cache.usdtlocked
+    for (b, binfo) in cache.bd
+        df = Ohlcv.dataframe(Features.ohlcv(binfo.features))
+        usdtfree += binfo.assetfree * df.close[binfo.lastix]
+        usdtlocked += binfo.assetlocked * df.close[binfo.lastix]
+    end
+    usdttotal = usdtfree + usdtlocked
+    return usdttotal, usdtfree, usdtlocked
+end
+
+"Returns the asset liquidity in USDT as (total, free, locked)"
+function assetliquidity(cache, base)
+    if base == "usdt"
+        free = cache.usdtfree
+        locked = cache.usdtlocked
+    else
+        df = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
+        lastprice = df.close[cache.bd[base].lastix]
+        free = cache.bd[base].assetfree * lastprice
+        locked = cache.bd[base].assetlocked * lastprice
+    end
+    total = free + locked
+    return total, free, locked
+end
+
+function reportliquidity(cache, base)
+    usdttotal, _, _ = totalliquidity(cache)
+    @info "liquidity: $(cache.bd[base].assetlocked) $(base), $(cache.usdtfree + cache.usdtlocked) USDT, portfolio: $usdttotal USDT"
+end
+
 function closeorder!(cache, order, orderix, side, status)
     if cache.backtest
+        if status == "FILLED"
+            order = (;order..., executedQty=order.origQty)
+            # order.executedQty = order.origQty
+        end
     else
+        order = (;order..., executedQty=order.origQty)
+        # order.executedQty = order.origQty
         # TODO implement production
         # TODO read order and fill executedQty and confirm FILLED (if not CANCELED) and read order fills (=transactions) to get the right fee
     end
     deleteat!(cache.openorders, orderix)
-    order.status = status
-    if status == "FILLED"
-        order.executedQty = order.origQty
+    order = (;order..., status = status)
+    # order.status = status
+    if order.executedQty > 0.0
         if (side == "BUY")
-            if (cache.usdtlocked < order.origQty * order.price)
-                @warn " locked $(cache.usdtlocked) USDT insufficient to fill buy order $(order.origQty * order.price) $(order.base)"
+            if (cache.usdtlocked < order.executedQty * order.price)
+                @warn " locked $(cache.usdtlocked) USDT insufficient to fill buy order $(order.executedQty * order.price) $(order.base)"
                 cache.usdtlocked = 0.0
             else
-                cache.usdtlocked -= order.origQty * order.price
+                cache.usdtlocked -= order.executedQty * order.price
             end
-            cache.bd[order.base].assetfree += order.origQty #! TODO minus fee or fee is deducted from BNB
+            cache.bd[order.base].assetfree += order.executedQty * (1 - tradingfee) #! TODO minus fee or fee is deducted from BNB
         elseif (side == "SELL")
-            if cache.bd[order.base].assetlocked < order.origQty
-                @warn " locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order $(order.origQty) $(order.base)"
+            if cache.bd[order.base].assetlocked < order.executedQty
+                @warn " locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order $(order.executedQty) $(order.base)"
                 cache.bd[order.base].assetlocked = 0.0
             else
-                cache.bd[order.base].assetlocked -= order.origQty
+                cache.bd[order.base].assetlocked -= order.executedQty
             end
-            cache.usdtfree += order.origQty * order.price #! TODO minus fee or fee is deducted from BNB
+            cache.usdtfree += order.executedQty * order.price * (1 - tradingfee) #! TODO minus fee or fee is deducted from BNB
         end
     end
+    @info "close $side order $(order.executedQty) $(order.base) because $status at $(round(order.price;digits=3))USDT "
     push!(cache.orderlog, order)
     Classify.deletetradechanceoforder!(cache.tradechances, order.orderId)
 end
 
+function buyqty(cache, base)
+    usdttotal, usdtfree, _ = totalliquidity(cache)
+    usdtmin = 20.0
+    orderportfoliopercentage = 2.0 / 100
+    usdtqty = max((usdttotal * orderportfoliopercentage), usdtmin)
+    df = ohlcvdf(cache, base)
+    baseqty = usdtqty / df.close[cache.bd[base].lastix]
+    return baseqty
+end
+
 function neworder!(cache, base, price, qty, side, status, tc)
-    # TODO check free liquidity before creating order
-    # TODO check qty granularity before creating order
+    qty = round(qty; digits=3)  # see also minimum order granularity of xchange
     if cache.backtest
         orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
         order = (
@@ -190,11 +243,20 @@ function neworder!(cache, base, price, qty, side, status, tc)
         # use create order response to fill order record
         # check balances and whether it matches with fills of transactions including fees
     end
+    @info "open $(order.side) order $(order.origQty) $(order.base) because $(order.status) at $(round(order.price;digits=3))USDT "
     push!(cache.openorders, order)
     if side == "BUY"
-        Classify.registerbuyorder!(cache.tradechances, orderid, tc)
+        if (order.origQty * order.price) > cache.usdtfree
+            @warn "BUY order $(order.origQty) $(order.base)=$(round(order.origQty * order.price;digits=3)) USDT has insufficient free coverage $(cache.usdtfree) USDT - order is not executed"
+        else
+            Classify.registerbuyorder!(cache.tradechances, orderid, tc)
+        end
     elseif side == "SELL"
-        Classify.registersellorder!(cache.tradechances, orderid, tc)
+        if order.origQty > cache.bd[order.base].assetfree
+            @warn "SELL order $(order.origQty) $(order.base) has insufficient free coverage $(cache.bd[order.base].assetfree) $(order.base) - order is not executed"
+        else
+            Classify.registersellorder!(cache.tradechances, orderid, tc)
+        end
     end
 end
 
@@ -227,7 +289,7 @@ to be considered:
     - adapt buy chance with orderid
 """
 function trade!(cache)
-    println("$(length(tradechances)) trade chances")
+    println("$(length(cache.tradechances)) trade chances")
     # TODO update TradeLog -> append to csv
     for (orderix, order) in enumerate(copy.(eachrow(cache.openorders)))
         tc = Classify.tradechanceoforder(cache.tradechances, order.orderId)
@@ -242,7 +304,7 @@ function trade!(cache)
             elseif significantsellpricechange(tc, order.price)  # including emergency sells
                 closeorder!(cache, order, orderix, "SELL", "CANCELED")
                 # buy order is closed, now issue a sell order
-                neworder!(cache, order.base, tc.sellprice, order.qty, "SELL", "NEW", tc)
+                neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", "NEW", tc)
                 #? order.origQty remains unchanged?
             end
         end
@@ -251,7 +313,7 @@ function trade!(cache)
             if df.low[cache.bd[order.base].lastix] < order.price
                 closeorder!(cache, order, orderix, "BUY", "FILLED")
                 # buy order is closed, now issue a sell order
-                qty = cache.bd[order.base].assetfree  #! requirs correction because only a fraction of free should be used
+                qty = cache.bd[order.base].assetfree
                 neworder!(cache, order.base, tc.sellprice, qty, "SELL", "NEW", tc)
                 # getorder and check that it is filled
             else
@@ -259,23 +321,24 @@ function trade!(cache)
                     newtc = cache.tradechances.basedict[order.base]
                     closeorder!(cache, order, orderix, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
-                    qty = cache.usdtfree / order.price  #! requirs correction because only a fraction of free should be used
-                    neworder!(cache, order.base, tc.buyprice, qty, "BUY", "NEW", tc)
+                    neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
                     Classify.deletenewbuychanceofbase!(cache.tradechances, order.base)
                 elseif significantbuypricechange(tc, order.price) || (tc.probability < 0.5)
                     closeorder!(cache, order, orderix, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
-                    qty = cache.usdtfree / order.price  #! requirs correction because only a fraction of free should be used
-                    neworder!(cache, order.base, tc.buyprice, qty, "BUY", "NEW", tc)
+                    neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
                 end
             end
         end
     end
     # check remaining new base buy chances
     for (base, tc) in cache.tradechances.basedict
-        qty = cache.usdtfree / order.price  #! requirs correction because only a fraction of free should be used
-        neworder!(cache, base, tc.buyprice, qty, "BUY", "NEW", tc)
-        Classify.deletenewbuychanceofbase!(cache.tradechances, base)
+        usdttotal, _, _ = assetliquidity(cache, base)
+        if usdttotal < CryptoXch.minimumquotevolume
+            # no new order if asset is already in possession
+            neworder!(cache, base, tc.buyprice, buyqty(cache, base), "BUY", "NEW", tc)
+            Classify.deletenewbuychanceofbase!(cache.tradechances, base)
+        end
     end
 end
 
@@ -300,7 +363,7 @@ function tradeloop(backtest=true)
         refreshtimestamp = Dates.now(Dates.UTC)
         while noassetrefresh
             for base in keys(cache.bd)
-                continuetrading = appendmostrecent!(cache, base, backtest)
+                continuetrading = appendmostrecent!(cache, base)
                 if continuetrading
                     cache.tradechances = cache.classify!(cache.tradechances, cache.bd[base].features, cache.bd[base].lastix)
                 else

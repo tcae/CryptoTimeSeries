@@ -35,8 +35,8 @@ mutable struct TradeChance001
 end
 
 mutable struct TradeChances001
-    basedict::Dict  # of new buy orders
-    orderdict::Dict  # of open orders
+    basedict  # Dict of new buy orders
+    orderdict  # Dict of open orders
 end
 mutable struct TradeChance002
     base::String
@@ -67,6 +67,7 @@ function Base.show(io::IO, tc::TradeChance002)
     print(io::IO, "trade chance: base=$(tc.base) current=$(tc.pricecurrent) target=$(tc.pricetarget) probability=$(tc.probability)")
 end
 
+Base.length(tcs::TradeChances001) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
 
 function buycompliant(f2, window, breakoutstd, ix, approx)
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -229,21 +230,14 @@ function registersellorder!(tradechances::TradeChances001, orderid, tc::TradeCha
     tradechances.orderdict[orderid] = tc
 end
 
-function delete!(tradechances::TradeChances001, tc::TradeChance001)
-    deletenewbuychanceofbase!(tradechances, tc.base)
-    deletetradechanceoforder!(tradechances, tc.buyorderid)
-    deletetradechanceoforder!(tradechances, tc.sellorderid)
-    return tradechances
-end
-
 function cleanupnewbuychance!(tradechances::TradeChances001, base)
-    if (base in tradechances.basedict)
+    if (base in keys(tradechances.basedict))
         tc = tradechances.basedict[base]
         delete!(tradechances.basedict, base)
         if (tc.buyorderid > 0)
             tradechances.orderdict[tc.buyorderid] = tc
         end
-        if (tradechances.basedict[base].sellorderid > 0)
+        if (tc.sellorderid > 0)
             # it is possible that a buy order is partially executed and buy and sell orders are open
             tradechances.orderdict[tc.sellorderid] = tc
         end
@@ -304,7 +298,7 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
     end
     for tc in values(tradechances.orderdict)
         if (tc.buyix == 0)
-            if !isnothing(newtc) && (tc.regrminutes = newtc.regrminutes) && (tc.breakoutstd = newtc.breakoutstd)
+            if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) && (tc.breakoutstd == newtc.breakoutstd)
                 # not yet bought -> adapt with latest insights
                 tc.buyprice = newtc.buyprice
                 tc.probability = newtc.probability
@@ -387,7 +381,8 @@ Trading strategy:
 
 """
 function traderules002!(tradechances::Vector{TradeChance002}, features::Features.Features002, currentix)
-    pivot = Ohlcv.dataframe(features.ohlcv)[!, :pivot]
+    df = Ohlcv.dataframe(features.ohlcv)
+    pivot = df[!, :pivot]
     base = Ohlcv.basesymbol(features.ohlcv)
     checked = Set()
     cachetc = TradeChance002[]
@@ -428,7 +423,7 @@ function traderules002!(tradechances::Vector{TradeChance002}, features::Features
         trackerminutes = besttrackerwindow(features, regrminutes, currentix)
         if (((trackerminutes == 1) && (pivot[currentix] > pivot[currentix-1])) ||
             ((trackerminutes > 1) && (features.regr[trackerminutes].grad[currentix] > 0)))
-            @info "buy signal tracker window $base $(pivot[currentix]) $regrminutes $trackerminutes $currentix"
+            @info "buy signal tracker window $base $(df.Low[currentix]) $regrminutes $trackerminutes $currentix"
             pricetarget = afr.regry[currentix] + tr001default.breakoutstd * afr.medianstd[currentix]
             prob = 0.8
             push!(tradechances, TradeChance002(base, pivot[currentix], pricetarget, prob, currentix, regrminutes, trackerminutes))
