@@ -64,6 +64,7 @@ function updateassets(download=false)
 end
 
 assets = updateassets(false)
+# println(assets)
 println("last assets update: $(assets.basedf[1, :update]) type $(typeof(assets.basedf[1, :update]))")
 app.layout = html_div() do
     html_div(id="leftside", [
@@ -432,7 +433,7 @@ function spreadtraces(f2, window, normref, period, enddt)
     # println("startdt: $startdt, startix:$startix, enddt:$enddt, endix:$endix")
     x = [df[ix, :opentime] for ix in startix:endix]
     xarea = vcat(x, reverse(x))
-    yarea = vcat([ftr.regry[ix] + f2.breakoutstd * ftr.medianstd[ix] for ix in startix:endix], [ftr.regry[ix] - f2.breakoutstd * ftr.medianstd[ix] for ix in endix:-1:startix])
+    yarea = vcat([ftr.regry[ix] + ftr.medianstd[ix] for ix in startix:endix], [ftr.regry[ix] - ftr.medianstd[ix] for ix in endix:-1:startix])
     # println("regry x: size=$(size(xarea)) max=$(maximum(xarea)) min=$(minimum(xarea)) y: size=$(size(yarea)) max=$(maximum(yarea)) min=$(minimum(yarea)) ")
     s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
     # x = [df[ix, :opentime] for ix in startix:endix]
@@ -448,7 +449,8 @@ function spreadtraces(f2, window, normref, period, enddt)
     # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
     s5 = scatter(name="pivot", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
 
-    breakoutix = Classify.breakoutextremesix!(nothing, f2.ohlcv, ftr.medianstd, ftr.regry, f2.breakoutstd, startix)
+    breakoutix = Classify.breakoutextremesix!(nothing, f2.ohlcv, ftr.medianstd, ftr.regry, 1.0, startix)  #! containment
+    # breakoutix = Classify.breakoutextremesix!(nothing, f2.ohlcv, ftr.medianstd, ftr.regry, f2.breakoutstd, startix)
     logbreakix(df, breakoutix)
     xix = [ix for ix in breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
     y = [df.high[ix] for ix in xix if ix > 0]

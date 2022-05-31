@@ -253,7 +253,7 @@ function newbuychance(tradechances::TradeChances001, features::Features.Features
     regrminutes, breakoutstd = bestspreadwindow(features, currentix, tr001default.minimumgain, tr001default.breakoutstd)
     if (regrminutes > 0) && buycompliant(features, regrminutes, breakoutstd, currentix, 0.75)
         # with 0.75*breakoutstd df.low is close enough to lower buy price to issue buy order
-        @info "buy signal $base price=$(df.low[currentix]) window=$regrminutes ix=$currentix time=$(opentime[currentix])"
+        @info "buy signal $base price=$(round(df.low[currentix];digits=3)) window=$regrminutes ix=$currentix time=$(opentime[currentix])"
         afr = features.regr[regrminutes]
         # spread = banddeltaprice(afr, currentix, breakoutstd)
         buyprice = lowerbandprice(afr, currentix, breakoutstd)
@@ -316,12 +316,12 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
             # emergency exit due to plunge of price and negative regression line
             tc.sellprice = df.low[currentix]
             tc.probability = 1.0
-            @info "emergency sell for $base due to plunge out of spread regrminutes=$(tc.regrminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and sell price of $(tc.sellprice)"
+            @info "emergency sell for $base due to plunge out of spread regrminutes=$(tc.regrminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and sell price of $(round(tc.sellprice;digits=3))"
         else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
             tc.sellprice = upperbandprice(afr, currentix, tc.breakoutstd)
             # probability to reach sell price
             tc.probability = 0.8 * (1 - min((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.emergencysellprice), 0.0))
-            @info "sell signal for $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(tc.sellprice) ix=$currentix  time=$(opentime[currentix])"
+            @info "sell signal for $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
         end
     end
 

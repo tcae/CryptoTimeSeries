@@ -30,6 +30,10 @@ struct AssetData
     AssetData(basedf, usdtvolume=100.0, backtest=true) = new(basedf, usdtvolume, backtest)
 end
 
+function Base.show(io::IO, assets::AssetData)
+    println("assets basedf len = $(size(assets.basedf)) columns: $(names(assets.basedf)) - usdtvolume=$(assets.usdtvolume), backtest=$(assets.backtest)")
+end
+
 "Returns an empty dataframe with all persistent columns"
 function emptyassetdataframe()::DataFrames.DataFrame
     df = DataFrame()

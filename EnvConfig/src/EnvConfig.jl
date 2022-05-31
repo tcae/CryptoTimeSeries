@@ -12,7 +12,7 @@ Provides
 """
 module EnvConfig
 using Logging, Dates, Pkg
-export authorization, test, production, training
+export authorization, test, production, training, now, timestr
 
 import JSON
 
@@ -56,6 +56,7 @@ struct Authentication
     end
 end
 
+timestr(dt) = Dates.format(dt, EnvConfig.datetimeformat)
 now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 
 " set project dir as working dir "
