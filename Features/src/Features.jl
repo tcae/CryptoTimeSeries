@@ -478,6 +478,7 @@ In order to get only the std, mean, normy without padding use the subvectors *[w
 """
 function rollingregressionstd(y, regr_y, grad, window, startindex)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    # TODO impleemnt std with OHLC instead of only pivot
     starty = max(1, startindex-window+1)
     offset = starty - 1
     normy = similar(y[starty:end])
@@ -758,7 +759,6 @@ end
 # function last3extremes(pivot, regrgrad)
 #     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
 #     regressiongains = zeros(Float32, pricelen)
-#     # TODO implementation
 #     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
 #     # work consistently backward to treat initial fill and incremental fill alike
 #     return l1xtrm, l2xtrm, l3xtrm
@@ -776,6 +776,7 @@ function getfeatures002(ohlcv::OhlcvData)
     for window in regressionwindows002
         # println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")
         regry, grad = rollingregression(pivot, window)
+        # TODO impleemnt std with OHLC instead of only pivot
         std, _, _ = rollingregressionstd(pivot, regry, grad, window)
         # medianstd = Statistics.median(std[end-requiredminutes+window:end])
         medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1)

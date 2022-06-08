@@ -315,6 +315,9 @@ function downloadupdate!(bases, enddt, period=Dates.Year(4))
     end
 end
 
+floorbase(base, qty) = base == "usdt" ? floor(qty, digits=3) : floor(qty, digits=5)
+roundbase(base, qty) = base == "usdt" ? round(qty, digits=3) : round(qty, digits=5)
+# TODO read base specific digits from binance and use them base specific
 
 onlyconfiguredsymbols(symbol) =
     endswith(symbol, uppercase(EnvConfig.cryptoquote)) &&

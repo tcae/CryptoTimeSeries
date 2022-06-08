@@ -67,13 +67,15 @@ function preparetradecache(backtest)
     focusbases = usdtdf.base
     if backtest
         if EnvConfig.configmode == EnvConfig.test
-            initialperiod = Dates.Minute(100 + Features.requiredminutes)
+            initialperiod = Dates.Minute(100 + 2 * Features.requiredminutes)
+            # 2* because 1* for collecting breakouts to compare and 1* to build up std of largest window
         else
             initialperiod = Dates.Year(4)
         end
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
     else
-        initialperiod = Dates.Minute(Features.requiredminutes)
+        initialperiod = Dates.Minute(2 * Features.requiredminutes)
+        # 2* because 1* for collecting breakouts to compare and 1* to build up std of largest window
         enddt = floor(Dates.now(Dates.UTC), Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
     end
     startdt = enddt - initialperiod
@@ -196,30 +198,38 @@ function closeorder!(cache, order, orderix, side, status)
         # TODO implement production
         # TODO read order and fill executedQty and confirm FILLED (if not CANCELED) and read order fills (=transactions) to get the right fee
     end
+    df = Ohlcv.dataframe(cache.bd[order.base].features.ohlcv)
+    opentime = df[!, :opentime]
+    timeix = cache.bd[order.base].lastix
+    @info "close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))"
     reportliquidity(cache, order.base)
-    deleteat!(cache.openorders, orderix)
     order = (;order..., status = status)
     # order.status = status
+    executedusdt = CryptoXch.floorbase("usdt", order.executedQty * order.price)
     if (side == "BUY")
-        if (cache.usdtlocked < order.origQty * order.price)
-            @warn " locked $(cache.usdtlocked) USDT insufficient to fill buy order #$(order.orderId) of $(order.executedQty * order.price) $(order.base)"
+        orderusdt = CryptoXch.floorbase("usdt", order.origQty * order.price)
+        if order.executedQty > 0
+            Classify.registerbuy!(cache.tradechances, timeix, order.price, order.orderId, cache.bd[order.base].features)
+        end
+        if (cache.usdtlocked < orderusdt)
+            @warn " locked $(cache.usdtlocked) USDT insufficient to fill buy order #$(order.orderId) of $(order.origQty) $(order.base) (== $orderusdt USDT)"
             cache.usdtlocked = 0.0
         else
-            cache.usdtlocked -= order.origQty * order.price
-            cache.usdtfree += (order.origQty - order.executedQty) * order.price
+            cache.usdtlocked -= orderusdt
+            cache.usdtfree += (orderusdt - executedusdt)
         end
-        cache.bd[order.base].assetfree += order.executedQty * (1 - tradingfee) #! TODO minus fee or fee is deducted from BNB
+        cache.bd[order.base].assetfree += CryptoXch.floorbase(order.base, order.executedQty * (1 - tradingfee)) #! TODO minus fee or fee is deducted from BNB
     elseif (side == "SELL")
         if cache.bd[order.base].assetlocked < order.origQty
-            @warn " locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order #$(order.orderId) of $(order.executedQty) $(order.base)"
+            @warn " locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order #$(order.orderId) of $(order.origQty) $(order.base)"
             cache.bd[order.base].assetlocked = 0.0
         else
             cache.bd[order.base].assetlocked -= order.origQty
             cache.bd[order.base].assetfree += order.origQty - order.executedQty
         end
-        cache.usdtfree += order.executedQty * order.price * (1 - tradingfee) #! TODO minus fee or fee is deducted from BNB
+        cache.usdtfree += CryptoXch.floorbase("usdt", executedusdt * (1 - tradingfee)) #! TODO minus fee or fee is deducted from BNB
     end
-    @info "close $side order #$(order.orderId) of $(order.executedQty) $(order.base) because $status at $(round(order.price;digits=3))USDT "
+    deleteat!(cache.openorders, orderix)
     push!(cache.orderlog, order)
     Classify.deletetradechanceoforder!(cache.tradechances, order.orderId)
 end
@@ -235,7 +245,7 @@ function buyqty(cache, base)
 end
 
 function neworder!(cache, base, price, qty, side, status, tc)
-    qty = floor(qty; digits=3)  # see also minimum order granularity of xchange
+    qty = CryptoXch.floorbase(base, qty)  # see also minimum order granularity of xchange
     if cache.backtest
         orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
         order = (
@@ -257,11 +267,12 @@ function neworder!(cache, base, price, qty, side, status, tc)
         # check balances and whether it matches with fills of transactions including fees
     end
     reportliquidity(cache, base)
-    @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $(round(order.price;digits=3))USDT "
+    priceusdt = CryptoXch.roundbase("usdt", order.price)
+    @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
     if side == "BUY"
-        orderusdt = order.origQty * order.price
+        orderusdt = CryptoXch.roundbase("usdt", order.origQty * order.price)
         if orderusdt > cache.usdtfree
-            @warn "BUY order $(order.origQty) $(order.base)=$(round(order.origQty * order.price;digits=3)) USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
+            @warn "BUY order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
         else
             cache.usdtfree -= orderusdt
             cache.usdtlocked += orderusdt
@@ -309,7 +320,6 @@ to be considered:
     - adapt buy chance with orderid
 """
 function trade!(cache)
-    println("$(length(cache.tradechances)) trade chances")
     # TODO update TradeLog -> append to csv
     for (orderix, order) in enumerate(copy.(eachrow(cache.openorders)))
         tc = Classify.tradechanceoforder(cache.tradechances, order.orderId)
@@ -337,15 +347,19 @@ function trade!(cache)
                 neworder!(cache, order.base, tc.sellprice, qty, "SELL", "NEW", tc)
                 # getorder and check that it is filled
             else
-                if order.base in cache.tradechances.basedict
+                if order.base in keys(cache.tradechances.basedict)
+                    # buy price not reached but other new buy chance available - hence, cancel old buy order and use new chance
                     newtc = cache.tradechances.basedict[order.base]
                     closeorder!(cache, order, orderix, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
-                    neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
+                    neworder!(cache, order.base, newtc.buyprice, buyqty(cache, order.base), "BUY", "NEW", newtc)
                     Classify.deletenewbuychanceofbase!(cache.tradechances, order.base)
-                elseif significantbuypricechange(tc, order.price) || (tc.probability < 0.5)
+                elseif tc.probability < 0.5
                     closeorder!(cache, order, orderix, "BUY", "CANCELED")
-                    # buy order is closed, now issue a new buy order
+                    # buy order is closed because of low chance of buy success
+                elseif significantbuypricechange(tc, order.price)
+                    closeorder!(cache, order, orderix, "BUY", "CANCELED")
+                    # buy order is closed, now issue a new buy order with adapted price
                     neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
                 end
             end
