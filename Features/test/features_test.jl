@@ -170,6 +170,10 @@ s2, m2, n2 = Features.rollingregressionstdxt(yvec, regr, grad, 5)
 @test s1 == s2
 @test m1 == m2
 
+ymv = [yvec]
+smv = Features.rollingregressionstdmv(ymv, regr, grad, 5, 1)
+@test s1 == smv
+
 regr,grad = Features.rollingregression(yvec, 2)
 s1, m1, n1 = Features.rollingregressionstd(yvec, regr, grad, 3)
 s2, m2, n2 = Features.rollingregressionstd!(nothing, yvec[1:4], regr[1:4], grad[1:4], 3)
@@ -182,6 +186,28 @@ s2, m2, n2 = Features.rollingregressionstd!(s2, yvec, regr, grad, 3)
 @test s1 == s2
 @test m1[5:7] == m2
 @test n1[5:7] == n2
+
+ymv = [yvec]
+smv1 = Features.rollingregressionstdmv(ymv, regr, grad, 3, 1)
+@test s1 == smv1
+ymv = [yvec[1:4]]
+smv2 = Features.rollingregressionstdmv!(nothing, ymv, regr[1:4], grad[1:4], 3)
+@test smv1[1:4] == smv2
+ymv = [yvec]
+smv2 = Features.rollingregressionstdmv!(smv2, ymv, regr, grad, 3)
+@test smv1 == smv2
+
+ymv = [yvec, yvec]
+smv1 = Features.rollingregressionstdmv(ymv, regr, grad, 3, 1)
+@test all(s1[2:end] .> smv1[2:end])
+@test length(s1) == length(smv1)
+ymv = [yvec[1:4], yvec[1:4]]
+smv2 = Features.rollingregressionstdmv!(nothing, ymv, regr[1:4], grad[1:4], 3)
+@test smv1[1:4] == smv2
+ymv = [yvec, yvec]
+smv2 = Features.rollingregressionstdmv!(smv2, ymv, regr, grad, 3)
+@test smv1 == smv2
+
 
 reggrad = [1, 2, 0, 0, -1, 0, 1, -3, 1, 1, 0]
 xix = Int32[]

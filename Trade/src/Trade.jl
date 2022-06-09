@@ -67,9 +67,9 @@ function preparetradecache(backtest)
     focusbases = usdtdf.base
     if backtest
         if EnvConfig.configmode == EnvConfig.test
-            initialperiod = Dates.Minute(100 + 2 * Features.requiredminutes)
-            # 2* because 1* for collecting breakouts to compare and 1* to build up std of largest window
-        else
+            initialperiod = Dates.Minute(3 * Features.requiredminutes)
+            # 3*requiredminutes for 1*  to calc features, 1* to build trade history, 1* to check Trade loop
+    else
             initialperiod = Dates.Year(4)
         end
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
@@ -211,22 +211,22 @@ function closeorder!(cache, order, orderix, side, status)
         if order.executedQty > 0
             Classify.registerbuy!(cache.tradechances, timeix, order.price, order.orderId, cache.bd[order.base].features)
         end
-        if (cache.usdtlocked < orderusdt)
-            @warn " locked $(cache.usdtlocked) USDT insufficient to fill buy order #$(order.orderId) of $(order.origQty) $(order.base) (== $orderusdt USDT)"
-            cache.usdtlocked = 0.0
-        else
-            cache.usdtlocked -= orderusdt
-            cache.usdtfree += (orderusdt - executedusdt)
+        if !isapprox(cache.usdtlocked, orderusdt)
+            if (cache.usdtlocked < orderusdt)
+                @warn "locked $(cache.usdtlocked) USDT insufficient to fill buy order #$(order.orderId) of $(order.origQty) $(order.base) (== $orderusdt USDT)"
+            end
         end
+        cache.usdtlocked = cache.usdtlocked < orderusdt ? 0.0 : cache.usdtlocked - orderusdt
+        cache.usdtfree += (orderusdt - executedusdt)
         cache.bd[order.base].assetfree += CryptoXch.floorbase(order.base, order.executedQty * (1 - tradingfee)) #! TODO minus fee or fee is deducted from BNB
     elseif (side == "SELL")
-        if cache.bd[order.base].assetlocked < order.origQty
-            @warn " locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order #$(order.orderId) of $(order.origQty) $(order.base)"
-            cache.bd[order.base].assetlocked = 0.0
-        else
-            cache.bd[order.base].assetlocked -= order.origQty
-            cache.bd[order.base].assetfree += order.origQty - order.executedQty
+        if !isapprox(cache.bd[order.base].assetlocked, order.origQty)
+            if cache.bd[order.base].assetlocked < order.origQty
+                @warn "locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order #$(order.orderId) of $(order.origQty) $(order.base)"
+            end
         end
+        cache.bd[order.base].assetlocked = cache.bd[order.base].assetlocked < order.origQty ? 0.0 : cache.bd[order.base].assetlocked - order.origQty
+        cache.bd[order.base].assetfree += order.origQty - order.executedQty
         cache.usdtfree += CryptoXch.floorbase("usdt", executedusdt * (1 - tradingfee)) #! TODO minus fee or fee is deducted from BNB
     end
     deleteat!(cache.openorders, orderix)

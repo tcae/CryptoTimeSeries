@@ -450,7 +450,7 @@ Returns a tuple of vectors for each x calculated calculated back using the last 
 
 - standard deviation of `y` minus rolling regression as given in `regr_y` and `grad`
 - mean of last `window` `y` minus rolling regression as given in `regr_y` and `grad`
-- x distance from regression line of last `window` points
+- y distance from regression line of last `window` points
 """
 function rollingregressionstd(y, regr_y, grad, window)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
@@ -545,18 +545,87 @@ function rollingregressionstdxt(y, regr_y, grad, window)
     return std, mean, normy
 end
 
-function rollingmedianstd!(medianstd, std, requiredminutes, startindex)
-    if startindex > 1
-        @assert !isnothing(medianstd)
-        calcstart = max(1, startindex-requiredminutes)
-        tmpstd = runmedian(std[calcstart:end], requiredminutes)
-        endoffset = length(std) - startindex
-        # @info "rollingmedianstd!" startindex calcstart length(tmpstd) length(medianstd) length(std) requiredminutes endoffset
-        append!(medianstd, tmpstd[end-endoffset:end])
-        @assert length(std) == length(medianstd)
-    else
-        medianstd = runmedian(std, requiredminutes)
+"""
+
+For each x starting at *startindex-windowsize+1*:
+
+- expand regression to the length of window size
+- subtract regression from y to remove trend within window
+- calculate std and mean on resulting trend free data for just 1 x
+
+Returns a std vector of length `length(regr_y) - startindex + 1` for each x calculated back using the last `window` `ymv[*]` data
+
+In multiple vectors *mv* version, ymv is an array of ymv vectors all of the same length like regr_y and grad
+
+- standard deviation of `ymv` vectors minus rolling regression as given in `regr_y` and `grad`
+
+In order to get only the std without padding use the subvector *[windowsize:end]*
+"""
+function rollingregressionstdmv(ymv, regr_y, grad, window, startindex)
+    @assert size(ymv, 1) > 0
+    @assert size(ymv[1], 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(ymv[1], 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    ymvlen = size(ymv, 1)
+    normy = repeat(similar([ymv[1][1]], window * ymvlen))
+    std = similar(regr_y[startindex:end])
+    for ix1 in startindex:size(regr_y, 1)
+        ix2min = max(1, ix1 - window + 1)
+        thiswindow = ix1 - ix2min + 1
+        for ymvix in 1:ymvlen
+            for ix2 in ix2min:ix1
+                normy[ix2-ix2min+1 + (ymvix-1)*thiswindow] = ymv[ymvix][ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            end
+        end
+        normylen = ymvlen*thiswindow
+        ymvmean = Statistics.mean(normy[1:normylen])
+        std[ix1-startindex+1] = Statistics.stdm(normy[1:normylen], ymvmean)
     end
+    std[1] = isnan(std[1]) ? 0 : std[1]
+    return std
+end
+
+"""
+calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *y*
+"""
+function rollingregressionstdmv!(std, ymv, regr_y, grad, window)
+    @assert size(ymv, 1) > 0
+    @assert size(ymv[1]) == size(regr_y) == size(grad) "$(size(ymv)) == $(size(regr_y)) == $(size(grad))"
+    ymvlen = size(ymv, 1)
+    if (length(regr_y) > 0)
+        startindex = isnothing(std) ? 1 : (length(std) < length(regr_y)) ? length(std)+1 : length(regr_y)
+        stdnew = rollingregressionstdmv(ymv, regr_y, grad, window, startindex)
+        if isnothing(std)
+            std = stdnew
+        elseif length(std) < length(regr_y)  # only change regression_y and gradient if it makes sense
+            # std = append!(std, stdnew[startindex:end])
+            std = append!(std, stdnew)
+            @assert length(std) == length(regr_y)
+        else
+            @warn "nothing to append when length(std) >= length(y)" length(std) length(y)
+        end
+    end
+    return std
+end
+
+"""
+Returns the rolling median of std over requiredminutes starting at startindex.
+If window > 0 then the window length is subtracted from requiredminutes because it is considered in the first std
+"""
+function rollingmedianstd!(medianstd, std, requiredminutes, startindex, window=1)
+    if window > requiredminutes
+        @warn "rollingmedianstd! window=$window > requiredminutes=$requiredminutes"
+        window = requiredminutes
+    end
+    if isnothing(medianstd) || (startindex <= 1)
+        # @info "rollingmedianstd! startindex=$startindex length(std)=$(length(std)) requiredminutes=$requiredminutes window=$window"
+        medianstd = runmedian(std, requiredminutes-window+1)
+    else
+        # @info "rollingmedianstd! startindex=$startindex length(medianstd)=$(length(medianstd)) length(std)=$(length(std)) requiredminutes=$requiredminutes window=$window"
+        calcstart = max(1, startindex-requiredminutes+window)
+        tmpstd = runmedian(std[calcstart:end], requiredminutes-window+1)
+        endoffset = length(std) - startindex
+        append!(medianstd, tmpstd[end-endoffset:end])
+    end
+    @assert length(std) == length(medianstd)
     return medianstd
 end
 
@@ -771,15 +840,16 @@ In general don't call this function directly but via Feature002 contructor `Feat
 function getfeatures002(ohlcv::OhlcvData)
     # println("getfeatures002 init")
     pivot = Ohlcv.pivot!(ohlcv)
+    df = Ohlcv.dataframe(ohlcv)
     @assert length(pivot) >= requiredminutes "length(pivot): $(length(pivot)) >= $requiredminutes"
     regr = Dict()
     for window in regressionwindows002
         # println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")
         regry, grad = rollingregression(pivot, window)
-        # TODO impleemnt std with OHLC instead of only pivot
-        std, _, _ = rollingregressionstd(pivot, regry, grad, window)
+        ymv = [df.open, df.high, df.low, df.close]
+        std = rollingregressionstdmv(ymv, regry, grad, window, 1)
         # medianstd = Statistics.median(std[end-requiredminutes+window:end])
-        medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1)
+        medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1, window)
         # xtrmix = regressionextremesix!(nothing, grad, 1, forward=true)
         # breakoutix = breakoutextremesix!(nothing, ohlcv, medianstd, regry, breakoutstd, 1)
         # regr[window] = Features002Regr(grad, regry, std, xtrmix, breakoutix, medianstd)
@@ -794,12 +864,14 @@ Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
 function getfeatures002!(f2::Features002)
     # println("getfeatures002!")
     pivot = f2.ohlcv.df[!, :pivot]
+    df = Ohlcv.dataframe(ohlcv)
     for window in keys(f2.regr)
         fr = f2.regr[window]
         if length(pivot) > length(fr.grad)
             regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
-            rollingregressionstd!(fr.std, pivot, regry, grad, window)
-            rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1)
+            ymv = [df.open, df.high, df.low, df.close]
+            rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
+            rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1, window)
             # lastxtrmix = length(fr.xtrmix) > 0 ? abs(fr.xtrmix[end]) : 1
             # regressionextremesix!(fr.xtrmix, grad, lastxtrmix, forward=true)
             # lastbreakoutix = length(fr.breakoutix) > 0 ? abs(fr.breakoutix[end]) : 1
