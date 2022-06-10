@@ -121,7 +121,6 @@ function calcspread(f2::Features.Features002, window, currentix, breakoutstd)
         xix = [ix for ix in breakoutix if startix <= abs(ix)  <= currentix]
         # println("breakoutextremesix @ window $window breakoutstd $breakoutstd : $xix")
         buyix = sellix = 0
-        contributors = []
         for ix in xix
             # first minimum as buy if sell is closed
             buyix = (buyix == 0) && (sellix == 0) && (ix < 0) && buycompliant(f2, window, breakoutstd, abs(ix)) ? ix : buyix
@@ -131,11 +130,9 @@ function calcspread(f2::Features.Features002, window, currentix, breakoutstd)
                 trades += 1
                 thisgain = (upperbandprice(fr, sellix, breakoutstd) - lowerbandprice(fr, abs(buyix), breakoutstd)) / lowerbandprice(fr, abs(buyix), breakoutstd)
                 gain += thisgain
-                push!(contributors, (buyix, sellix, thisgain))
                 buyix = sellix = 0
             end
         end
-        # println("contributors @ window $window breakoutstd $breakoutstd gain $gain: $contributors")
     end
     return trades, gain
 end
@@ -297,36 +294,38 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
     base = Ohlcv.basesymbol(features.ohlcv)
     cleanupnewbuychance!(tradechances, base)
     newtc = newbuychance(tradechances, features, currentix)
-    if !isnothing(newtc)
-        tradechances.basedict[base] = newtc
-    end
     for tc in values(tradechances.orderdict)
-        if (tc.buyix == 0)
-            if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) && (tc.breakoutstd == newtc.breakoutstd)
-                # not yet bought -> adapt with latest insights
-                tc.buyprice = newtc.buyprice
-                tc.probability = newtc.probability
-                tc.stoplossprice = newtc.stoplossprice
-                tc.sellprice = newtc.sellprice
-                delete!(tradechances.basedict, base)
-            else
-                # outdated buy chance
-                tc.probability = 0.1
+        if tc.base == Ohlcv.basesymbol(Features.ohlcv(features))
+            if (tc.buyix == 0)
+                if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) && (tc.breakoutstd == newtc.breakoutstd)
+                    # not yet bought -> adapt with latest insights
+                    tc.buyprice = newtc.buyprice
+                    tc.probability = newtc.probability
+                    tc.stoplossprice = newtc.stoplossprice
+                    tc.sellprice = newtc.sellprice
+                    newtc = nothing
+                else
+                    # outdated buy chance
+                    tc.probability = 0.1
+                end
+            end
+            afr = features.regr[tc.regrminutes]
+            spread = banddeltaprice(afr, currentix, tc.breakoutstd)
+            if (pivot[currentix] < tc.stoplossprice) && (afr.grad[currentix] < 0)
+                # stop loss exit due to plunge of price and negative regression line
+                tc.sellprice = df.low[currentix]
+                tc.probability = 1.0
+                @info "stop loss sell for $base due to plunge out of spread ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) tc: $tc"
+            else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
+                tc.sellprice = upperbandprice(afr, currentix, tc.breakoutstd)
+                # probability to reach sell price
+                tc.probability = 0.8 * (1 - min((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.stoplossprice), 0.0))
+                # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
             end
         end
-        afr = features.regr[tc.regrminutes]
-        spread = banddeltaprice(afr, currentix, tc.breakoutstd)
-        if (pivot[currentix] < tc.stoplossprice) && (afr.grad[currentix] < 0)
-            # stop loss exit due to plunge of price and negative regression line
-            tc.sellprice = df.low[currentix]
-            tc.probability = 1.0
-            @info "stop loss sell for $base due to plunge out of spread regrminutes=$(tc.regrminutes) ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[currentix]) and sell price of $(round(tc.sellprice;digits=3))"
-        else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
-            tc.sellprice = upperbandprice(afr, currentix, tc.breakoutstd)
-            # probability to reach sell price
-            tc.probability = 0.8 * (1 - min((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.stoplossprice), 0.0))
-            # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
-        end
+    end
+    if !isnothing(newtc)
+        tradechances.basedict[base] = newtc
     end
 
     # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!

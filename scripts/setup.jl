@@ -23,7 +23,8 @@ add([
     "MLJGLMInterface", "GLM",
     "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
-    "IJulia", "Plots", "WebIO", "Dash", "PlotlyJS", "Colors"  # Regressionsim, CryptoCockpit, Notebooks
+    "IJulia", "Plots", "WebIO", "Dash", "PlotlyJS", "Colors",  # Regressionsim, CryptoCockpit, Notebooks
+    "Profile"  # Trade
     ])
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")
 

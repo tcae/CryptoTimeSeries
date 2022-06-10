@@ -4,7 +4,8 @@ using Test, Dates
 using EnvConfig, Ohlcv, Features
 using Trade
 
-EnvConfig.init(test)
+# EnvConfig.init(test)
+EnvConfig.init(training)
 println(EnvConfig.trainingbases)
 Trade.tradeloop(true)
 # tradecaches = Trade.preparetradecache(false)

@@ -478,7 +478,6 @@ In order to get only the std, mean, normy without padding use the subvectors *[w
 """
 function rollingregressionstd(y, regr_y, grad, window, startindex)
     @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
-    # TODO impleemnt std with OHLC instead of only pivot
     starty = max(1, startindex-window+1)
     offset = starty - 1
     normy = similar(y[starty:end])
