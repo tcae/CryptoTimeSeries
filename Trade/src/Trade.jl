@@ -110,9 +110,10 @@ append most recent ohlcv data as well as corresponding features
 returns `true` if successful appended else `false`
 """
 function appendmostrecent!(cache::Cache, base)
+    continuetrading = false
     if cache.backtest
         cache.bd[base].lastix += 1
-        return cache.bd[base].lastix <= size(ohlcvdf(cache, base), 1)
+        continuetrading = cache.bd[base].lastix <= size(ohlcvdf(cache, base), 1)
     else  # production
         df = ohlcvdf(cache, base)
         lastdt = df.opentime[end]
@@ -137,8 +138,14 @@ function appendmostrecent!(cache::Cache, base)
         @assert lastdt == df.opentime[lastix]  # make sure begin wasn't cut
         cache.bd[base].lastix = size(df, 1)
         cache.bd[base].features.update(cache.bd[base].features)
-        return cache.bd[base].lastix  > lastix
+        continuetrading = cache.bd[base].lastix  > lastix
     end
+    if !continuetrading
+        @info "stop continue at ix=$(cache.bd[base].lastix) while size=$(size(ohlcvdf(cache, base), 1)) backtest=$(cache.backtest) continue=$continuetrading"
+    elseif  (cache.bd[base].lastix % 1000) == 0
+        @info "continue at ix=$(cache.bd[base].lastix) < size=$(size(ohlcvdf(cache, base), 1)) backtest=$(cache.backtest) continue=$continuetrading"
+    end
+    return continuetrading
 end
 
 significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
@@ -234,7 +241,7 @@ function closeorder!(cache, order, side, status)
     push!(cache.orderlog, order)
     Classify.deletetradechanceoforder!(cache.tradechances, order.orderId)
     totalusdt, _, _ = totalusdtliquidity(cache)
-    @info "close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))  new total USDT = $totalusdt"
+    @info "close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))  new total USDT = $(round(totalusdt;digits=3))"
 end
 
 function buyqty(cache, base)
@@ -274,7 +281,7 @@ function neworder!(cache, base, price, qty, side, status, tc)
     end
     # reportliquidity(cache, base)
     priceusdt = CryptoXch.roundbase("usdt", order.price)
-    @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
+    # @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
     if side == "BUY"
         orderusdt = CryptoXch.roundbase("usdt", order.origQty * order.price)
         if orderusdt > cache.usdtfree
@@ -387,7 +394,8 @@ end
 # end
 
 function coretradeloop(cache)
-    continuetrading = true
+    global count = 1
+    continuetrading = false
     for base in keys(cache.bd)
         continuetrading = appendmostrecent!(cache, base)
         if continuetrading
@@ -414,18 +422,19 @@ end
 function tradeloop(backtest=true)
     # TODO add hooks to enable coupling to the cockpit visualization
     profileinit = false
-    Profile.clear()
+    # Profile.clear()
     continuetrading = true
     while continuetrading
         cache = preparetradecache(backtest)
         assetrefresh = false
         refreshtimestamp = Dates.now(Dates.UTC)
-        println("start trading core loop")
-        while !assetrefresh
+        println("strting trading core loop")
+        while !assetrefresh && continuetrading
             if profileinit
                 @profile continuetrading = coretradeloop(cache)
             else
                 continuetrading = coretradeloop(cache)
+                # profileinit = true
             end
         end
         # if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
@@ -434,7 +443,7 @@ function tradeloop(backtest=true)
         reportliquidity(cache, nothing)
     end
     println("finished trading core loop")
-    Profile.print()
+    # Profile.print()
 end
 
 end  # module

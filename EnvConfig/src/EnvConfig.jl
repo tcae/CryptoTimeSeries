@@ -56,7 +56,7 @@ struct Authentication
     end
 end
 
-timestr(dt) = Dates.format(dt, EnvConfig.datetimeformat)
+timestr(dt) = isnothing(dt) ? "nodatetime" : Dates.format(dt, EnvConfig.datetimeformat)
 now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 
 " set project dir as working dir "

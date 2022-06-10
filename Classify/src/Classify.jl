@@ -23,7 +23,7 @@ clreported = false
 
 mutable struct TradeChance001
     base::String
-    buyix  # remains 0 until completely bought
+    buydt  # buy datetime remains nothing until completely bought
     buyprice
     buyorderid  # remains 0 until order issued
     sellprice
@@ -40,7 +40,7 @@ mutable struct TradeChances001
 end
 
 function Base.show(io::IO, tc::TradeChance001)
-    print(io::IO, "tc: base=$(tc.base), buyix=$(tc.buyix), buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), prob=$(round(tc.probability*100; digits=2))%, window=$(tc.regrminutes), stop loss sell=$(round(tc.stoplossprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
+    print(io::IO, "tc: base=$(tc.base), buydt=$(EnvConfig.timestr(tc.buydt)), buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), prob=$(round(tc.probability*100; digits=2))%, window=$(tc.regrminutes), stop loss sell=$(round(tc.stoplossprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
 end
 
 function Base.show(io::IO, tcs::TradeChances001)
@@ -176,8 +176,10 @@ function registerbuy!(tradechances::TradeChances001, buyix, buyprice, buyorderid
     if isnothing(tc)
         @warn "missing order #$buyorderid in tradechances"
     else
+        df = Ohlcv.dataframe(features.ohlcv)
+        opentime = df[!, :opentime]
         afr = features.regr[tc.regrminutes]
-        tc.buyix = buyix
+        tc.buydt = opentime[buyix]
         tc.buyprice = buyprice
         tc.buyorderid = buyorderid
         tc.stoplossprice = stoplossprice(afr, buyix, tr001default.stoplossstd)
@@ -260,7 +262,7 @@ function newbuychance(tradechances::TradeChances001, features::Features.Features
             # probability = max(min((spread - (df.low[currentix] - buyprice)) / spread, 1.0), 0.0)
             probability = 0.8
             tcstoplossprice = stoplossprice(afr, currentix, tr001default.stoplossstd)
-            tc = TradeChance001(base, 0, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, breakoutstd)
+            tc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, breakoutstd)
         else
             # best window found but buy conditions currently not met
         end
@@ -296,7 +298,7 @@ function traderules001!(tradechances, features::Features.Features002, currentix)
     newtc = newbuychance(tradechances, features, currentix)
     for tc in values(tradechances.orderdict)
         if tc.base == Ohlcv.basesymbol(Features.ohlcv(features))
-            if (tc.buyix == 0)
+            if isnothing(tc.buydt)
                 if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) && (tc.breakoutstd == newtc.breakoutstd)
                     # not yet bought -> adapt with latest insights
                     tc.buyprice = newtc.buyprice

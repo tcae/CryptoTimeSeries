@@ -66,9 +66,9 @@ Scripts for investigations as well as the GUI are located in the scripts folder 
 - list files in tar file ohlcv.tar.gz:
   - tar -ztvf ohlcv.tgz
 - extract files from ohlcv.tar.gz to ~/crypto/Features:
-  - tar -xzvf projects.tar.gz -C ~/crypto/Features
+  - tar -xzvf ohlcv.tar.gz -C ~/crypto/Features
 - split a big file into 1.5GB chunks
-  - split -b 700m <#file_to_split#> parts_
+  - split -b 700m ohlcv.tar.gz ohlcv.tar.gz.parts_
   - creates:
     - -rw-rw-r--   1 tor tor 2955474895 jun 10 17:40  ohlcv.tar.gz
     - -rw-rw-r--   1 tor tor 1572864000 jun 10 17:43  ohlcv.tar.gz.parts_aa
