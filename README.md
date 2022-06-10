@@ -56,3 +56,22 @@ Scripts for investigations as well as the GUI are located in the scripts folder 
 - don't cache day ohlcv in files but aggregate them from miute data : is probaly faster, reduces code and storage
   - change in assets.jl and cryptocockpit.jl
 
+## OHLCV file transfer
+
+- create tar file of ohlcv files from ~/crypto/Features:
+  - cd ~/crypto/Features
+  - tar -czvf ohlcv.tar.gz *.jdf
+  - or
+  - tar -czvf ohlcv.tar.gz ~/crypto/Features/*.jdf
+- list files in tar file ohlcv.tar.gz:
+  - tar -ztvf ohlcv.tgz
+- extract files from ohlcv.tar.gz to ~/crypto/Features:
+  - tar -xzvf projects.tar.gz -C ~/crypto/Features
+- split a big file into 1.5GB chunks
+  - split -b 700m <#file_to_split#> parts_
+  - creates:
+    - -rw-rw-r--   1 tor tor 2955474895 jun 10 17:40  ohlcv.tar.gz
+    - -rw-rw-r--   1 tor tor 1572864000 jun 10 17:43  ohlcv.tar.gz.parts_aa
+    - -rw-rw-r--   1 tor tor 1382610895 jun 10 17:43  ohlcv.tar.gz.parts_ab
+- combine split files
+  - cat ohlcv.tar.gz.parts_* > ohlcv.tar.gz

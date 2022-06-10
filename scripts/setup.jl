@@ -16,7 +16,7 @@ add([
     "DataAPI",   # CryptoExchange
     "JDF",  # CryptoExchange, Ohlcv, Assets
     "CSV",  # CryptoExchange, Ohlcv
-    "TimeZones", "CategoricalArrays",  # Ohlcv
+    "CategoricalArrays",  # Ohlcv
     "Logging",  # CryptoExchange, Ohlcv, Assets, Features
     "RollingFunctions", "Statistics",  # Features
     "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
