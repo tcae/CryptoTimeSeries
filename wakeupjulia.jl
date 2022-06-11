@@ -1,2 +1,2 @@
-println("wake up julia")
+println("wake up julia $VERSION")
 

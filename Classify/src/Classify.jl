@@ -56,6 +56,8 @@ end
 
 Base.length(tcs::TradeChances001) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
 
+requiredminutes = 2 * Features.requiredminutes  # 1*  to calc features + 1* to build trade history
+
 function buycompliant(f2, window, breakoutstd, ix)
     df = Ohlcv.dataframe(f2.ohlcv)
     afr = f2.regr[window]

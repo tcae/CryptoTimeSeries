@@ -32,7 +32,7 @@ end
 trade cache contains all required data to support the tarde loop
 """
 mutable struct Cache
-    backtest::Bool
+    backtestchunk  # 0 if no backtest or in case of backtest nbr of minutes to process until next reload
     usdtfree
     usdtlocked
     classify!  # function to classsify trade chances
@@ -41,7 +41,7 @@ mutable struct Cache
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, logtime
     orderlog  # DataFrame with cols like openorders
     # transactionlog  # DataFrame
-    Cache(backtest, free, locked) = new(backtest, free, locked, Classify.traderules001!, Dict(), nothing, CryptoXch.orderdataframe([], Dates.now(UTC)), CryptoXch.orderdataframe([], Dates.now(UTC)))
+    Cache(backtestchunk, free, locked) = new(backtestchunk, free, locked, Classify.traderules001!, Dict(), nothing, CryptoXch.orderdataframe([], Dates.now(UTC)), CryptoXch.orderdataframe([], Dates.now(UTC)))
 end
 
 makerfee = 0.075 / 100
@@ -49,6 +49,7 @@ takerfee = 0.075 / 100
 tradingfee = max(makerfee, takerfee)
 
 ohlcvdf(cache, base) = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
+backtest(cache) = cache.backtestchunk > 0
 
 function freelocked(portfoliodf, base)
     portfoliodf = portfoliodf[portfoliodf.base .== base, :]
@@ -59,15 +60,17 @@ function freelocked(portfoliodf, base)
     end
 end
 
-function preparetradecache(backtest)
+function preparetradecache(backtestchunk)
     # TODO read not only assets but also open orders and assign them to cache to be considered in the trade loop
     usdtdf = CryptoXch.getUSDTmarket()
     pdf = CryptoXch.portfolio(usdtdf)
+    free, locked = freelocked(pdf, "usdt")
+    cache = Cache(backtestchunk, free, locked)  # no need to cache focusbases because they will be implicitly stored via keys(bd)
     usdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :]
     focusbases = usdtdf.base
-    if backtest
+    if backtest(cache)
         if EnvConfig.configmode == EnvConfig.test
-            initialperiod = Dates.Minute(3 * Features.requiredminutes)
+            initialperiod = Dates.Minute(Classify.requiredminutes + cache.backtestchunk)
             # 3*requiredminutes for 1*  to calc features, 1* to build trade history, 1* to check Trade loop
         else
             initialperiod = Dates.Day(4)
@@ -75,15 +78,13 @@ function preparetradecache(backtest)
         end
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
     else
-        initialperiod = Dates.Minute(2 * Features.requiredminutes)
+        initialperiod = Dates.Minute(Classify.requiredminutes)
         # 2* because 1* for collecting breakouts to compare and 1* to build up std of largest window
         enddt = floor(Dates.now(Dates.UTC), Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
     end
     startdt = enddt - initialperiod
     @assert startdt < enddt
     startdt = floor(startdt, Dates.Minute)
-    free, locked = freelocked(pdf, "usdt")
-    cache = Cache(backtest, free, locked)  # no need to cache focusbases because they will be implicitly stored via keys(bd)
     for base in focusbases
         ohlcv = Ohlcv.defaultohlcv(base)
         Ohlcv.read!(ohlcv)
@@ -95,7 +96,7 @@ function preparetradecache(backtest)
             @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Features.requiredminutes
             continue
         end
-        lastix = backtest ? Features.requiredminutes : size(Ohlcv.dataframe(ohlcv), 1)
+        lastix = backtest(cache) ? Classify.requiredminutes : size(Ohlcv.dataframe(ohlcv), 1)
         free, locked = freelocked(pdf, base)
         cache.bd[base] = BaseInfo(free, locked, lastix, Features.Features002(ohlcv))
     end
@@ -105,45 +106,49 @@ function preparetradecache(backtest)
     return cache
 end
 
+function sleepuntilnextminute(lastdt)
+    enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
+    if lastdt == enddt
+        nowdt = Dates.now(Dates.UTC)
+        nextdt = lastdt + Dates.Minute(1)
+        period = Dates.Millisecond(nextdt - floor(nowdt, Dates.Millisecond))
+        sleepseconds = floor(period, Dates.Second)
+        sleepseconds = Dates.value(sleepseconds) + 1
+        @info "trade loop sleep seconds: $sleepseconds"
+        sleep(sleepseconds)
+        enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
+    end
+end
+
 """
 append most recent ohlcv data as well as corresponding features
 returns `true` if successful appended else `false`
 """
 function appendmostrecent!(cache::Cache, base)
     continuetrading = false
-    if cache.backtest
+    if backtest(cache)
         cache.bd[base].lastix += 1
         continuetrading = cache.bd[base].lastix <= size(ohlcvdf(cache, base), 1)
     else  # production
         df = ohlcvdf(cache, base)
         lastdt = df.opentime[end]
-        enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
-        if lastdt == enddt
-            nowdt = Dates.now(Dates.UTC)
-            nextdt = lastdt + Dates.Minute(1)
-            period = Dates.Millisecond(nextdt - floor(nowdt, Dates.Millisecond))
-            sleepseconds = floor(period, Dates.Second)
-            sleepseconds = Dates.value(sleepseconds) + 1
-            @info "trade loop sleep seconds: $sleepseconds"
-            sleep(sleepseconds)
-            enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
-        end
+        sleepuntilnextminute(lastdt)
         # startdt = enddt - Dates.Minute(Features.requiredminutes)
         startdt = df.opentime[begin]  # stay with start to prevent invalidating extremeix
         lastix = size(df, 1)
         CryptoXch.cryptoupdate!(Features.ohlcv(cache.bd[base].features), startdt, enddt)
         df = ohlcvdf(cache, base)
         println("extended from $lastdt to $enddt -> check df: $(df.opentime[begin]) - $(df.opentime[end]) size=$(size(df,1))")
-        # ! TODO impleement error handling
+        # ! TODO implement error handling
         @assert lastdt == df.opentime[lastix]  # make sure begin wasn't cut
         cache.bd[base].lastix = size(df, 1)
         cache.bd[base].features.update(cache.bd[base].features)
         continuetrading = cache.bd[base].lastix  > lastix
     end
     if !continuetrading
-        @info "stop continue at ix=$(cache.bd[base].lastix) while size=$(size(ohlcvdf(cache, base), 1)) backtest=$(cache.backtest) continue=$continuetrading"
+        @info "stop continue at ix=$(cache.bd[base].lastix) while size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading"
     elseif  (cache.bd[base].lastix % 1000) == 0
-        @info "continue at ix=$(cache.bd[base].lastix) < size=$(size(ohlcvdf(cache, base), 1)) backtest=$(cache.backtest) continue=$continuetrading"
+        @info "continue at ix=$(cache.bd[base].lastix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading"
     end
     return continuetrading
 end
@@ -195,7 +200,7 @@ function reportliquidity(cache, base)
 end
 
 function closeorder!(cache, order, side, status)
-    if cache.backtest
+    if backtest(cache)
         if status == "FILLED"
             order = (;order..., executedQty=order.origQty)
             # order.executedQty = order.origQty
@@ -256,7 +261,7 @@ end
 
 function neworder!(cache, base, price, qty, side, status, tc)
     qty = CryptoXch.floorbase(base, qty)  # see also minimum order granularity of xchange
-    if cache.backtest
+    if backtest(cache)
         orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
         while !isnothing(Classify.tradechanceoforder(cache.tradechances, orderid))
             orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
@@ -419,13 +424,13 @@ end
 + follow up on open orders (preferably non blocking)
 
 """
-function tradeloop(backtest=true)
+function tradeloop(backtestchunk)
     # TODO add hooks to enable coupling to the cockpit visualization
     profileinit = false
     # Profile.clear()
     continuetrading = true
     while continuetrading
-        cache = preparetradecache(backtest)
+        cache = preparetradecache(backtestchunk)
         assetrefresh = false
         refreshtimestamp = Dates.now(Dates.UTC)
         println("strting trading core loop")
