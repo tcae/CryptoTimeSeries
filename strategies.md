@@ -197,6 +197,24 @@ Challenges:
   - spread surprise sigma = factor * sigma to signal surprise plunge (sell) or raise (buy)
   - spread sigma minutes = longest considered regression window = minutes used to calculate the median of all regression window sigmas
 
+## Learnings volatility catcher
+
+### Approach
+
+- 24h median spread of different regression windows are compared and the best selected. *Best* learnings:
+  - maximum gain over the last 24h but at least minimumgain is best
+    - minimumgain 1%, 0.75%, 1.5% doesn't matter much (<1% difference)
+  - best (trades * gain) compared to best gain results in -10% performance decrease
+  - best (max trades && gain > 0) compared to best gain results in -20% performance decrease
+- spread has to be > minimumgain
+- regression line of selected regression window has to be > minimumgradient (of 0.0001)
+- regression line of 24h regression window has to be > minimumgradient (of 0.0001)
+  - compared to no 24h regression gradient check makes a difference of +10% performance
+- for buy compliance all shorter regression window gradients have to be >= than the longer results in no orders
+
+### to be assessed
+
+- significant sell price change to the worse --> if regression gradient negative then sell at regression price (instead of upper band price) to get smaller gain instead of waiting for stop loss
 
 ## Notes for using volatility and trend tracker side by side
 - General thoughts

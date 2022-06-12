@@ -23,7 +23,7 @@ requiredminutes = maximum(regressionwindows002)
 
 periodlabels(p) = p%(24*60) == 0 ? "$(round(Int, p/(24*60)))d" : p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m"
 
-struct Features002Regr
+mutable struct Features002Regr
     grad::Vector{Float32} # rolling regression gradients - length == ohlcv
     regry::Vector{Float32}  # rolling regression price - length == ohlcv
     std::Vector{Float32}  # standard deviation of regression window - length == ohlcv
@@ -37,7 +37,15 @@ mutable struct Features002
     regr::Dict  # dict with regression minutes as key -> value is Features002Regr
     # fdf::DataFrame  # cache of features
     update  # function to update features due to extended ohlcv
-    Features002(ohlcv) = new(ohlcv, getfeatures002(ohlcv), getfeatures002!)
+    firstix  # features start at firstix of ohlcv.df
+    lastix  # features end at lastix of ohlcv.df
+    function Features002(ohlcv, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
+        df = Ohlcv.dataframe(ohlcv)
+        lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
+        maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
+        firstix = firstix > maxfirstix ? maxfirstix : firstix
+        new(ohlcv, getfeatures002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
+    end
 end
 
 
@@ -832,26 +840,27 @@ end
 #     return l1xtrm, l2xtrm, l3xtrm
 # end
 
+featureix(f2::Features002, ohlcvix) = ohlcvix - f2.firstix + 1
 
 """
-In general don't call this function directly but via Feature002 contructor `Features.Features002(ohlcv)`
+In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`
 """
-function getfeatures002(ohlcv::OhlcvData)
+function getfeatures002(ohlcv::OhlcvData, firstix, lastix)
     # println("getfeatures002 init")
-    pivot = Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
-    @assert length(pivot) >= requiredminutes "length(pivot): $(length(pivot)) >= $requiredminutes"
+    pivot = Ohlcv.pivot!(ohlcv)[firstix:lastix]
+    open = df.open[firstix:lastix]
+    high = df.high[firstix:lastix]
+    low = df.low[firstix:lastix]
+    close = df.close[firstix:lastix]
+    ymv = [open, high, low, close]
+    @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $requiredminutes"
+    @assert firstindex(ohlcv.df.opentime) <= firstix <= lastix <= lastindex(ohlcv.df.opentime) "$(firstindex(ohlcv.df.opentime)) <= $firstix <= $lastix <= $(lastindex(ohlcv.df.opentime))"
     regr = Dict()
     for window in regressionwindows002
-        # println("$(EnvConfig.now()): Feature002 for $(ohlcv.base) regression window $window")
         regry, grad = rollingregression(pivot, window)
-        ymv = [df.open, df.high, df.low, df.close]
         std = rollingregressionstdmv(ymv, regry, grad, window, 1)
-        # medianstd = Statistics.median(std[end-requiredminutes+window:end])
         medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1, window)
-        # xtrmix = regressionextremesix!(nothing, grad, 1, forward=true)
-        # breakoutix = breakoutextremesix!(nothing, ohlcv, medianstd, regry, breakoutstd, 1)
-        # regr[window] = Features002Regr(grad, regry, std, xtrmix, breakoutix, medianstd)
         regr[window] = Features002Regr(grad, regry, std, medianstd)
     end
     return regr
@@ -860,26 +869,53 @@ end
 """
 Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
 """
-function getfeatures002!(f2::Features002)
+function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f2.ohlcv.df.opentime))
     # println("getfeatures002!")
-    pivot = f2.ohlcv.df[!, :pivot]
-    df = Ohlcv.dataframe(ohlcv)
-    for window in keys(f2.regr)
-        fr = f2.regr[window]
-        if length(pivot) > length(fr.grad)
-            regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
-            ymv = [df.open, df.high, df.low, df.close]
-            rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
-            rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1, window)
-            # lastxtrmix = length(fr.xtrmix) > 0 ? abs(fr.xtrmix[end]) : 1
-            # regressionextremesix!(fr.xtrmix, grad, lastxtrmix, forward=true)
-            # lastbreakoutix = length(fr.breakoutix) > 0 ? abs(fr.breakoutix[end]) : 1
-            # breakoutextremesix!(fr.breakoutix, f2.ohlcv, fr.medianstd, fr.regry, f2.breakoutstd, lastbreakoutix)
+    df = Ohlcv.dataframe(f2.ohlcv)
+    if f2.lastix >= lastindex(df, 1)
+        return f2
+    end
+    lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
+    maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
+    firstix = firstix > maxfirstix ? maxfirstix : firstix
+
+    pivot = df[!, :pivot][firstix:lastix]
+    open = df.open[firstix:lastix]
+    high = df.high[firstix:lastix]
+    low = df.low[firstix:lastix]
+    close = df.close[firstix:lastix]
+    ymv = [open, high, low, close]
+    if (f2.lastix >= firstix >= f2.firstix) && (lastix >= f2.lastix)
+        firstfeatureix = firstix - f2.firstix + 1
+        for window in keys(f2.regr)
+            fr = f2.regr[window]
+            if firstfeatureix > 1  # cut start of available features
+                fr.regry = fr.regry[firstfeatureix:end]
+                fr.grad = fr.grad[firstfeatureix:end]
+                fr.std = fr.std[firstfeatureix:end]
+                fr.medianstd = fr.medianstd[firstfeatureix:end]
+            end
+            if lastix > f2.lastix
+                regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
+                rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
+                rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1, window)
+            else
+                @warn "getfeatures002! nothing to add because lastix == f2.lastix"
+            end
             @assert length(pivot) == length(fr.grad) == length(fr.regry) == length(fr.std)
-        else
-            @warn "nothing to add because length(pivot) <= length(f2[window].grad)" length(pivot) length(fr.grad)
+        end
+    else
+        @info "getfeatures002! no reuse of previous calculations: f2.firstix=$(f2.firstix) f2.lastix=$(f2.lastix) firstix=$firstix lastix=$lastix"
+        for window in regressionwindows002
+            regry, grad = rollingregression(pivot, window)
+            std = rollingregressionstdmv(ymv, regry, grad, window, 1)
+            medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1, window)
+            f2.regr[window] = Features002Regr(grad, regry, std, medianstd)
+            @assert length(pivot) == length(grad) == length(regry) == length(std)
         end
     end
+    f2.firstix = firstix
+    f2.lastix = lastix
     return f2
 end
 

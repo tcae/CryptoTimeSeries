@@ -449,8 +449,7 @@ function spreadtraces(f2, window, normref, period, enddt)
     # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
     s5 = scatter(name="pivot", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
 
-    breakoutix = Classify.breakoutextremesix!(nothing, f2.ohlcv, ftr.medianstd, ftr.regry, 1.0, startix)  #! containment
-    # breakoutix = Classify.breakoutextremesix!(nothing, f2.ohlcv, ftr.medianstd, ftr.regry, f2.breakoutstd, startix)
+    breakoutix = Classify.breakoutextremesix!(f2, window, 1.0, startix)
     logbreakix(df, breakoutix)
     xix = [ix for ix in breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
     y = [df.high[ix] for ix in xix if ix > 0]

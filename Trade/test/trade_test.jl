@@ -7,7 +7,7 @@ using Trade
 # EnvConfig.init(test)
 EnvConfig.init(training)
 println(EnvConfig.trainingbases)
-Trade.tradeloop(true)
+@time Trade.tradeloop(100)
 # tradecaches = Trade.preparetradecache(false)
 # for (key, tc) in tradecaches
 #     println("tradecache base=$key")

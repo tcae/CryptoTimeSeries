@@ -24,7 +24,7 @@ minimumdayusdtvolume = 10000000  # per day = 6944 per minute
 mutable struct BaseInfo
     assetfree
     assetlocked
-    lastix
+    currentix
     features
 end
 
@@ -70,10 +70,10 @@ function preparetradecache(backtestchunk)
     focusbases = usdtdf.base
     if backtest(cache)
         if EnvConfig.configmode == EnvConfig.test
-            initialperiod = Dates.Minute(Classify.requiredminutes + cache.backtestchunk)
+            initialperiod = Dates.Minute(Classify.requiredminutes + 4*60)
             # 3*requiredminutes for 1*  to calc features, 1* to build trade history, 1* to check Trade loop
         else
-            initialperiod = Dates.Day(4)
+            initialperiod = Dates.Month(6)
             # initialperiod = Dates.Year(4)
         end
         enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
@@ -90,15 +90,16 @@ function preparetradecache(backtestchunk)
         Ohlcv.read!(ohlcv)
         origlen = size(ohlcv.df, 1)
         ohlcv.df = ohlcv.df[enddt .>= ohlcv.df.opentime .>= startdt, :]
-        println("cutting $base ohlcv from $origlen to $(size(ohlcv.df)) minutes")
+        println("cutting $base ohlcv from $origlen to $(size(ohlcv.df, 1)) minutes ($(EnvConfig.timestr(startdt)) - $(EnvConfig.timestr(enddt)))")
         # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
-        if size(Ohlcv.dataframe(ohlcv), 1) < Features.requiredminutes
-            @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Features.requiredminutes
+        if size(Ohlcv.dataframe(ohlcv), 1) < Classify.requiredminutes
+            @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Classify.requiredminutes
             continue
         end
-        lastix = backtest(cache) ? Classify.requiredminutes : size(Ohlcv.dataframe(ohlcv), 1)
+        currentix = backtest(cache) ? Classify.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
         free, locked = freelocked(pdf, base)
-        cache.bd[base] = BaseInfo(free, locked, lastix, Features.Features002(ohlcv))
+        cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, Classify.requiredminutes+cache.backtestchunk))
+        # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
     end
     # no need to cache assets because they are implicitly stored via keys(bd)
     reportliquidity(cache, nothing)
@@ -118,6 +119,7 @@ function sleepuntilnextminute(lastdt)
         sleep(sleepseconds)
         enddt = floor(Dates.now(Dates.UTC), Dates.Minute)
     end
+    return enddt
 end
 
 """
@@ -125,36 +127,50 @@ append most recent ohlcv data as well as corresponding features
 returns `true` if successful appended else `false`
 """
 function appendmostrecent!(cache::Cache, base)
+    global count = 0
     continuetrading = false
+    df = ohlcvdf(cache, base)
     if backtest(cache)
-        cache.bd[base].lastix += 1
-        continuetrading = cache.bd[base].lastix <= size(ohlcvdf(cache, base), 1)
+        cache.bd[base].currentix += 1
+        if cache.bd[base].currentix > cache.bd[base].features.lastix
+            # calculate next chunk of features
+            lastix = min(cache.bd[base].currentix + cache.backtestchunk - 1, lastindex(df, 1))
+            firstix =  max(min(cache.bd[base].currentix, lastix) - Classify.requiredminutes, firstindex(df, 1))
+            cache.bd[base].features.update(cache.bd[base].features, firstix, lastix)
+            # @info "appendmostrecent! ohlcv.df=$(size(cache.bd[base].features.ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
+            count+= 1
+        end
+        if cache.bd[base].currentix <= cache.bd[base].features.lastix
+            continuetrading = true
+            if (cache.bd[base].currentix % 1000) == 0
+                @info "continue at ix=$(cache.bd[base].currentix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading"
+            end
+        else
+            continuetrading = false
+            @info "stop trading loop due to backtest ohlcv for $base exhausted - count = $count"
+        end
     else  # production
-        df = ohlcvdf(cache, base)
         lastdt = df.opentime[end]
-        sleepuntilnextminute(lastdt)
+        enddt = sleepuntilnextminute(lastdt)
         # startdt = enddt - Dates.Minute(Features.requiredminutes)
-        startdt = df.opentime[begin]  # stay with start to prevent invalidating extremeix
-        lastix = size(df, 1)
+        startdt = df.opentime[begin]  # stay with start until tradeloop cleanup
+        currentix = lastindex(df, 1)
         CryptoXch.cryptoupdate!(Features.ohlcv(cache.bd[base].features), startdt, enddt)
         df = ohlcvdf(cache, base)
         println("extended from $lastdt to $enddt -> check df: $(df.opentime[begin]) - $(df.opentime[end]) size=$(size(df,1))")
         # ! TODO implement error handling
-        @assert lastdt == df.opentime[lastix]  # make sure begin wasn't cut
-        cache.bd[base].lastix = size(df, 1)
-        cache.bd[base].features.update(cache.bd[base].features)
-        continuetrading = cache.bd[base].lastix  > lastix
-    end
-    if !continuetrading
-        @info "stop continue at ix=$(cache.bd[base].lastix) while size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading"
-    elseif  (cache.bd[base].lastix % 1000) == 0
-        @info "continue at ix=$(cache.bd[base].lastix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading"
+        @assert lastdt == df.opentime[currentix]  # make sure begin wasn't cut
+        cache.bd[base].currentix = lastindex(df, 1)
+        cache.bd[base].features.update(cache.bd[base].features, cache.bd[base].currentix - Classify.requiredminutes, cache.bd[base].currentix)
+        if lastdt < df.opentime[end]
+            continuetrading = true
+        else
+            continuetrading = false
+            @info "stop trading loop due to no reloading progress for $base"
+        end
     end
     return continuetrading
 end
-
-significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
-significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
 
 "Returns the cumulated portfolio liquidity in USDT as (total, free, locked)"
 function totalusdtliquidity(cache)
@@ -162,9 +178,9 @@ function totalusdtliquidity(cache)
     usdtlocked = cache.usdtlocked
     for (b, binfo) in cache.bd
         df = Ohlcv.dataframe(Features.ohlcv(binfo.features))
-        lastix = binfo.lastix > size(df, 1) ? size(df, 1) : binfo.lastix
-        usdtfree += binfo.assetfree * df.close[lastix]
-        usdtlocked += binfo.assetlocked * df.close[lastix]
+        currentix = binfo.currentix > size(df, 1) ? size(df, 1) : binfo.currentix
+        usdtfree += binfo.assetfree * df.close[currentix]
+        usdtlocked += binfo.assetlocked * df.close[currentix]
     end
     usdttotal = usdtfree + usdtlocked
     return usdttotal, usdtfree, usdtlocked
@@ -177,8 +193,8 @@ function usdtliquidity(cache, base)
         locked = cache.usdtlocked
     else
         df = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
-        lastix = cache.bd[base].lastix > size(df, 1) ? size(df, 1) : cache.bd[base].lastix
-        lastprice = df.close[lastix]
+        currentix = cache.bd[base].currentix > size(df, 1) ? size(df, 1) : cache.bd[base].currentix
+        lastprice = df.close[currentix]
         free = cache.bd[base].assetfree * lastprice
         locked = cache.bd[base].assetlocked * lastprice
     end
@@ -213,7 +229,7 @@ function closeorder!(cache, order, side, status)
     end
     df = Ohlcv.dataframe(cache.bd[order.base].features.ohlcv)
     opentime = df[!, :opentime]
-    timeix = cache.bd[order.base].lastix
+    timeix = cache.bd[order.base].currentix
     # @info "close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))"
     # reportliquidity(cache, order.base)
     order = (;order..., status = status)
@@ -255,7 +271,7 @@ function buyqty(cache, base)
     orderportfoliopercentage = 2.0 / 100
     usdtqty = max((usdttotal * orderportfoliopercentage), usdtmin)
     df = ohlcvdf(cache, base)
-    baseqty = usdtqty / df.close[cache.bd[base].lastix]
+    baseqty = usdtqty / df.close[cache.bd[base].currentix]
     return baseqty
 end
 
@@ -347,18 +363,17 @@ function trade!(cache)
         end
         if order.side == "SELL"
             df = ohlcvdf(cache, order.base)
-            if df.high[cache.bd[order.base].lastix] > order.price
+            if df.high[cache.bd[order.base].currentix] > order.price
                 closeorder!(cache, order, "SELL", "FILLED")
-            elseif significantsellpricechange(tc, order.price)  # including emergency sells
+            elseif Classify.significantsellpricechange(tc, order.price)  # including emergency sells
                 closeorder!(cache, order, "SELL", "CANCELED")
-                # buy order is closed, now issue a sell order
                 neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", "NEW", tc)
                 #? order.origQty remains unchanged?
             end
         end
         if order.side == "BUY"
             df = ohlcvdf(cache, order.base)
-            if df.low[cache.bd[order.base].lastix] < order.price
+            if df.low[cache.bd[order.base].currentix] < order.price
                 closeorder!(cache, order, "BUY", "FILLED")
                 # buy order is closed, now issue a sell order
                 qty = cache.bd[order.base].assetfree
@@ -375,7 +390,7 @@ function trade!(cache)
                 elseif tc.probability < 0.5
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed because of low chance of buy success
-                elseif significantbuypricechange(tc, order.price)
+                elseif Classify.significantbuypricechange(tc, order.price)
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order with adapted price
                     neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
@@ -404,7 +419,7 @@ function coretradeloop(cache)
     for base in keys(cache.bd)
         continuetrading = appendmostrecent!(cache, base)
         if continuetrading
-            cache.tradechances = cache.classify!(cache.tradechances, cache.bd[base].features, cache.bd[base].lastix)
+            cache.tradechances = cache.classify!(cache.tradechances, cache.bd[base].features, cache.bd[base].currentix)
         else
             assetrefresh = true
             break
