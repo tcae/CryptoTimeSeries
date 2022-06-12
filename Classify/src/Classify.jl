@@ -11,14 +11,15 @@ export traderules001!, tradeperformance
 
 mutable struct TradeRules001
     minimumgain  # minimum spread around regression to consider buy
-    minimumgradient  # pre-requisite to buy
+    minimumgradientdaypercentage  # 1% gain per day aspre-requisite to buy
     stoplossstd  # factor to multiply with std to dtermine stop loss price (only in combi with negative regr gradient)
     breakoutstdset  # set of breakoutstd factors to test when determining the best combi or regregression window and spread
 end
 
 shortestwindow = minimum(Features.regressionwindows002)
 # tr001default = TradeRules001(0.02, 0.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
-tr001default = TradeRules001(0.0075, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
+# tr001default = TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
+tr001default = TradeRules001(0.01, 1.0, 1.0, 3.0, [1.0])  # for test purposes
 
 mutable struct TradeChance001
     base::String
@@ -58,6 +59,8 @@ Base.length(tcs::TradeChances001) = length(keys(tcs.basedict)) + length(keys(tcs
 requiredtradehistory = Features.requiredminutes
 requiredminutes = requiredtradehistory + Features.requiredminutes
 
+daypercentage(gradient, price) = 24 * 60 * gradient / price * 100
+
 function buycompliant(f2, window, breakoutstd, ix)
     df = Ohlcv.dataframe(f2.ohlcv)
     afr = f2.regr[window]
@@ -66,8 +69,8 @@ function buycompliant(f2, window, breakoutstd, ix)
     lowerprice = lowerbandprice(afr, fix, breakoutstd)
     ok =  ((df.low[ix] < lowerprice) &&
         (spreadpercent >= tr001default.minimumgain) &&
-        (afr.grad[fix] > tr001default.minimumgradient) &&
-        (f2.regr[24*60].grad[fix] > tr001default.minimumgradient))
+        (daypercentage(afr.grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage) &&
+        (daypercentage(f2.regr[24*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage))
     return ok
 end
 
@@ -261,8 +264,6 @@ function newbuychance(tradechances::TradeChances001, f2::Features.Features002, c
     return tc
 end
 
-significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
-significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.1
 
 """
 returns the chance expressed in gain between currentprice and future sellprice * probability
@@ -275,7 +276,7 @@ Trading strategy:
     - spread satisfies minimum profit requirements
 - sell if price is above normal deviation range of spread regression window
 - stop loss sell: if regression price < buy regression price - stoplossstd * std
-- spread gradient is OK = spread gradient > `minimumgradient`
+- spread gradient is OK = spread gradient > `minimumgradientdaypercentage`
 - normal deviation range = regry +- breakoutstd * std = band around regry of std * 2 * breakoutstd
 - spread satisfies minimum profit requirements = normal deviation range >= minimumgain
 
@@ -314,13 +315,7 @@ function traderules001!(tradechances, f2::Features.Features002, currentix)
                 tc.probability = 1.0
                 @info "stop loss sell for $base due to plunge out of spread ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[fix]) tc: $tc"
             else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
-                sellprice = upperbandprice(afr, fix, tc.breakoutstd)
-                if significantsellpricechange(tc, sellprice) && (sellprice < tc.sellprice)
-                    # regression gradient turned negative -> sell quickly with less gain
-                    tc.sellprice = afr.regry[fix]
-                else
-                    tc.sellprice = sellprice
-                end
+                tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
                 # probability to reach sell price
                 tc.probability = 0.8 * (1 - max((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.stoplossprice), 0.0))
                 # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"

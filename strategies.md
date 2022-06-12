@@ -202,15 +202,32 @@ Challenges:
 ### Approach
 
 - 24h median spread of different regression windows are compared and the best selected. *Best* learnings:
-  - maximum gain over the last 24h but at least minimumgain is best
-    - minimumgain 1%, 0.75%, 1.5% doesn't matter much (<1% difference)
-  - best (trades * gain) compared to best gain results in -10% performance decrease
+  - maximum gain over the last 24h but at least minimumgain is best, 24h grad > 0
+    - minimumgain 1% -->  (10000->9930.5 with 200 invest)
+    - minimumgain 0.75% -->  (10000->9881.2 with 200 invest)
+    - minimumgain 1.5% -->  (10000->9959.0 with 200 invest)
+      - bestgain, 24h grad positiv, regr decrease / sellprice adaptation up & down, medianstd, Classify.tr001default = Classify.TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+  - best (trades * gain) compared to best gain results in -10% performance decrease  (10000->9906.7 with 200 invest)
   - best (max trades && gain > 0) compared to best gain results in -20% performance decrease
 - spread has to be > minimumgain
 - regression line of selected regression window has to be > minimumgradient (of 0.0001)
 - regression line of 24h regression window has to be > minimumgradient (of 0.0001)
-  - compared to no 24h regression gradient check makes a difference of +10% performance
+  - compared to no 24h regression gradient check makes a difference of +10% performance  (10000->9930.5 vs. 9856.0 with 200 invest)
 - for buy compliance all shorter regression window gradients have to be >= than the longer results in no orders
+- improve stop loss strategy
+  - if significant price decrease set sellprice to regry --> resultet in 20% performance decrease compared to no such measure
+  - if 20% sell price decrease then set sel price to current pivot price (1,5% min gain, bestgain, 24h regr > 0, sellprice increase possible) -->  (10000->9936,3 with 200 invest)
+  - if 20% sell price decrease then set sel price to current pivot price (1,5% min gain, bestgain, 24h regr > 0, sellprice increase NOT possible) -->  (10000->9929.8 with 200 invest)
+  - no stop loss --> -30% performace decrease (10000->9870.8 with 200 invest)
+- no sell price change
+- use std instead of meanstd --> (10000->9990.6 with 200 invest)
+  - (10000->9990.6 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd  Classify.tr001default = Classify.TradeRules001(0.015, 0.0001, 3.0, [1.0])
+    - best result so far but little trading due to std factor constraint vs high minimum gain of 1.5%
+  - (10000->9940.2 with 200 invest) bestgain, 24h grad positiv, regr decrease / sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 0.0001, 3.0, [1.0])
+    - mediocre result but a lot of trading due to std factor constraint vs high minimum gain of 1.0%
+  - (10000->99xx.2 with 200 invest) bestgain, 24h grad positiv, regr decrease / sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 0.0001, 1.4, [1.0])
+    - tighter stop loss shows worse results
+
 
 ### to be assessed
 

@@ -267,11 +267,13 @@ end
 
 function buyqty(cache, base)
     usdttotal, usdtfree, _ = totalusdtliquidity(cache)
-    usdtmin = 20.0
+    usdtmin = 2 * CryptoXch.minimumquotevolume
     orderportfoliopercentage = 2.0 / 100
-    usdtqty = max((usdttotal * orderportfoliopercentage), usdtmin)
+    usdtqty = min((usdttotal * orderportfoliopercentage), usdtfree)
+    usdtqty = max(usdtqty, usdtmin)
     df = ohlcvdf(cache, base)
     baseqty = usdtqty / df.close[cache.bd[base].currentix]
+    baseqty = CryptoXch.floorbase(base, baseqty)
     return baseqty
 end
 
@@ -301,10 +303,13 @@ function neworder!(cache, base, price, qty, side, status, tc)
         # check balances and whether it matches with fills of transactions including fees
     end
     # reportliquidity(cache, base)
-    priceusdt = CryptoXch.roundbase("usdt", order.price)
     # @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
+    orderusdt = CryptoXch.floorbase("usdt", order.origQty * order.price)
+    if orderusdt < CryptoXch.minimumquotevolume
+        @warn "$side order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient minimum volume $(CryptoXch.minimumquotevolume) USDT - order #$(order.orderId) is not executed"
+        return
+    end
     if side == "BUY"
-        orderusdt = CryptoXch.roundbase("usdt", order.origQty * order.price)
         if orderusdt > cache.usdtfree
             @warn "BUY order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
         else
@@ -315,15 +320,19 @@ function neworder!(cache, base, price, qty, side, status, tc)
         end
     elseif side == "SELL"
         if order.origQty > cache.bd[order.base].assetfree
-            @warn "SELL order $(order.origQty) $(order.base) has insufficient free coverage $(cache.bd[order.base].assetfree) $(order.base) - order #$(order.orderId) is not executed"
-        else
-            cache.bd[order.base].assetfree  -= order.origQty
-            cache.bd[order.base].assetlocked  += order.origQty
-            push!(cache.openorders, order)
-            Classify.registersellorder!(cache.tradechances, orderid, tc)
+            @warn "SELL order $(order.origQty) $(order.base) has insufficient free coverage $(cache.bd[order.base].assetfree) $(order.base) - order #$(order.orderId) is reduced"
+            cache.bd[order.base].assetfree = CryptoXch.floorbase(base, cache.bd[order.base].assetfree)
+            order = (;order..., origQty=cache.bd[order.base].assetfree)
         end
+        cache.bd[order.base].assetfree  -= order.origQty
+        cache.bd[order.base].assetlocked  += order.origQty
+        push!(cache.openorders, order)
+        Classify.registersellorder!(cache.tradechances, orderid, tc)
     end
 end
+
+significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.2
+significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.2
 
 """
 - selects the trades to be executed and places orders
@@ -365,8 +374,14 @@ function trade!(cache)
             df = ohlcvdf(cache, order.base)
             if df.high[cache.bd[order.base].currentix] > order.price
                 closeorder!(cache, order, "SELL", "FILLED")
-            elseif Classify.significantsellpricechange(tc, order.price)  # including emergency sells
+            elseif significantsellpricechange(tc, order.price)  # including emergency sells
                 closeorder!(cache, order, "SELL", "CANCELED")
+                # if false  # tc.sellprice < order.price
+                #     pivotcurrent = cache.bd[order.base].features.ohlcv.df.pivot[cache.bd[order.base].currentix]
+                #     @info "significant regry decrease -> reduction to pivot=$(pivotcurrent) instead of upperbandprice=$(tc.sellprice)"
+                #     neworder!(cache, order.base, pivotcurrent, order.origQty, "SELL", "NEW", tc)
+                # else
+                # end
                 neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", "NEW", tc)
                 #? order.origQty remains unchanged?
             end
@@ -390,7 +405,7 @@ function trade!(cache)
                 elseif tc.probability < 0.5
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed because of low chance of buy success
-                elseif Classify.significantbuypricechange(tc, order.price)
+                elseif significantbuypricechange(tc, order.price)
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order with adapted price
                     neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
@@ -401,7 +416,7 @@ function trade!(cache)
     # check remaining new base buy chances
     for (base, tc) in cache.tradechances.basedict
         usdttotal, _, _ = usdtliquidity(cache, base)
-        if usdttotal < CryptoXch.minimumquotevolume
+        if usdttotal <= CryptoXch.minimumquotevolume
             # no new order if asset is already in possession
             neworder!(cache, base, tc.buyprice, buyqty(cache, base), "BUY", "NEW", tc)
             Classify.deletenewbuychanceofbase!(cache.tradechances, base)

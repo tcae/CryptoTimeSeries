@@ -618,6 +618,9 @@ Returns the rolling median of std over requiredminutes starting at startindex.
 If window > 0 then the window length is subtracted from requiredminutes because it is considered in the first std
 """
 function rollingmedianstd!(medianstd, std, requiredminutes, startindex, window=1)
+    medianstd = copy(std)
+    return medianstd
+
     if window > requiredminutes
         @warn "rollingmedianstd! window=$window > requiredminutes=$requiredminutes"
         window = requiredminutes
@@ -897,8 +900,8 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
             end
             if lastix > f2.lastix
                 regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
-                rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
-                rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1, window)
+                fr.std = rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
+                fr.medianstd = rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1, window)
             else
                 @warn "getfeatures002! nothing to add because lastix == f2.lastix"
             end
@@ -916,6 +919,14 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
     end
     f2.firstix = firstix
     f2.lastix = lastix
+
+    for window in keys(f2.regr)
+        @assert firstindex(f2.regr[window].std) == featureix(f2, firstix)
+        @assert lastindex(f2.regr[window].std) == featureix(f2, lastix)
+        @assert firstindex(f2.regr[window].medianstd) == featureix(f2, firstix)
+        @assert lastindex(f2.regr[window].medianstd) == featureix(f2, lastix) "lastix=$lastix f2.firstix=$(f2.firstix) lastindex(f2.regr[$window].medianstd)=$(lastindex(f2.regr[window].medianstd)) len(std)=$(length(f2.regr[window].std)) len(std)=$(length(f2.regr[window].medianstd))"
+    end
+
     return f2
 end
 
