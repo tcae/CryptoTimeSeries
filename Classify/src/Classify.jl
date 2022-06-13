@@ -19,7 +19,8 @@ end
 shortestwindow = minimum(Features.regressionwindows002)
 # tr001default = TradeRules001(0.02, 0.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
 # tr001default = TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
-tr001default = TradeRules001(0.01, 1.0, 1.0, 3.0, [1.0])  # for test purposes
+tr001default = TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
+# tr001default = TradeRules001(0.01, 2.0, 3.0, [1.0])  # for test purposes
 
 mutable struct TradeChance001
     base::String
@@ -120,7 +121,7 @@ function calcspread(f2::Features.Features002, window, currentix, breakoutstd)
         buyix = sellix = 0
         for ix in xix
             # first minimum as buy if sell is closed
-            buyix = (buyix == 0) && (sellix == 0) && (ix < 0) && buycompliant(f2, window, breakoutstd, abs(ix)) ? ix : buyix
+            buyix = (buyix == 0) && (sellix == 0) && (ix < 0) ? ix : buyix
             # first maximum as sell if buy was done
             sellix = (buyix < 0) && (sellix == 0) && (ix > 0) ? ix : sellix
             if buyix < 0 < sellix
@@ -148,7 +149,8 @@ function breakoutextremesix!(f2::Features.Features002, window, breakoutstd, star
             end
         end
         if breakoutix >= 0
-            if df[ix, :low] < afr.regry[fix] - breakoutstd * afr.medianstd[fix]
+            if buycompliant(f2, window, breakoutstd, ix)
+            # if df[ix, :low] < afr.regry[fix] - breakoutstd * afr.medianstd[fix]
                 push!(extremeix, -ix)
             end
         end

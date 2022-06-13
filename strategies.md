@@ -206,7 +206,7 @@ Challenges:
     - minimumgain 1% -->  (10000->9930.5 with 200 invest)
     - minimumgain 0.75% -->  (10000->9881.2 with 200 invest)
     - minimumgain 1.5% -->  (10000->9959.0 with 200 invest)
-      - bestgain, 24h grad positiv, regr decrease / sellprice adaptation up & down, medianstd, Classify.tr001default = Classify.TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+      - bestgain, 24h grad positiv, sellprice adaptation up & down, medianstd, Classify.tr001default = Classify.TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
   - best (trades * gain) compared to best gain results in -10% performance decrease  (10000->9906.7 with 200 invest)
   - best (max trades && gain > 0) compared to best gain results in -20% performance decrease
 - spread has to be > minimumgain
@@ -220,13 +220,26 @@ Challenges:
   - if 20% sell price decrease then set sel price to current pivot price (1,5% min gain, bestgain, 24h regr > 0, sellprice increase NOT possible) -->  (10000->9929.8 with 200 invest)
   - no stop loss --> -30% performace decrease (10000->9870.8 with 200 invest)
 - no sell price change
-- use std instead of meanstd --> (10000->9990.6 with 200 invest)
+- use std instead of meanstd --> yields better results
   - (10000->9990.6 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd  Classify.tr001default = Classify.TradeRules001(0.015, 0.0001, 3.0, [1.0])
-    - best result so far but little trading due to std factor constraint vs high minimum gain of 1.5%
-  - (10000->9940.2 with 200 invest) bestgain, 24h grad positiv, regr decrease / sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 0.0001, 3.0, [1.0])
+    - Although best result so far not the top candidate due to little trading because of std factor constraint vs high minimum gain of 1.5%
+  - (10000->9940.2 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 0.0001, 3.0, [1.0])
     - mediocre result but a lot of trading due to std factor constraint vs high minimum gain of 1.0%
-  - (10000->99xx.2 with 200 invest) bestgain, 24h grad positiv, regr decrease / sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 0.0001, 1.4, [1.0])
+  - (10000->9928.8 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 0.0001, 1.4, [1.0])
     - tighter stop loss shows worse results
+  - (10000->9973.5 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - good result with a lot of trading - my top candidate so far
+- increasing the minimum gradient as buy pre-requisite to x% gain/day - that is an improvement boost
+  - (10000->9973.4 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 1.0, 3.0, [1.0])
+  - (10000->9985.6 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 1.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+  - (10000->10004.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - TOPPER
+  - (10000->9990.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 3.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - move from 2% to 3% 24h gain/day decreases performance slightly
+  - (10000->9998.5 with 200 invest) bestgain, 24h min grad, 4hgrad > 2 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - no improvement with 4h gradient rule on top of 24h gradient rule
+  - (10000->9995.1 with 200 invest) bestgain, 24h grad positiv, 1hgrad > 2 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - no improvement with 1h gradient rule on top of 24h gradient rule
 
 
 ### to be assessed
