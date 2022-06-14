@@ -71,6 +71,7 @@ function buycompliant(f2, window, breakoutstd, ix)
     ok =  ((df.low[ix] < lowerprice) &&
         (spreadpercent >= tr001default.minimumgain) &&
         (daypercentage(afr.grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage) &&
+        (daypercentage(f2.regr[1*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage) &&
         (daypercentage(f2.regr[24*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage))
     return ok
 end

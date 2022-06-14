@@ -234,6 +234,7 @@ Challenges:
   - (10000->9985.6 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 1.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
   - (10000->10004.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
     - TOPPER
+    - (10000->9994.9 with 200 invest) with selected regr  && 24 h regr gradient  > min gradient moved from Classify.calcspread to Classify.breakoutextremesix! where it belongs as part of the point selection
   - (10000->9990.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 3.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
     - move from 2% to 3% 24h gain/day decreases performance slightly
   - (10000->9998.5 with 200 invest) bestgain, 24h min grad, 4hgrad > 2 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
