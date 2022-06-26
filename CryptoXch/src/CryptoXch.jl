@@ -502,7 +502,7 @@ end
 Returns a data frame with filled with the binance response as provided in `orderdictarray` with a `logtimeutc` timestamp per row.
 If `orderdictarray` is empty then an empty dataframe is returned.
 """
-function orderdataframe(orderdictarray, logtimeutc)
+function orderdataframe(orderdictarray)
     df = DataFrame(
         base=String[],
         orderId=Int64[],
@@ -514,15 +514,13 @@ function orderdataframe(orderdictarray, logtimeutc)
         status=String[],
         timeInForce=String[],
         type=String[],
-        side=String[],
+        side=String[]
         # stopPrice=Float32[],
         # icebergQty=Float32[],
         # time=Dates.DateTime[],
         # updateTime=Dates.DateTime[],
         # isWorking=Bool[],
         # origQuoteOrderQty=Float32[],
-        logtime=Dates.DateTime[],
-        message=String[]
         )
 
     for oodict in orderdictarray
@@ -538,15 +536,13 @@ function orderdataframe(orderdictarray, logtimeutc)
                 oodict["status"],
                 oodict["timeInForce"],
                 oodict["type"],
-                oodict["side"],
+                oodict["side"]
                 # parse(Float32, oodict["stopPrice"]),
                 # parse(Float32, oodict["icebergQty"]),
                 # Dates.unix2datetime(oodict["time"] / 1000),
                 # Dates.unix2datetime(oodict["updateTime"] / 1000),
                 # oodict["isWorking"],
                 # parse(Float32, oodict["origQuoteOrderQty"]),
-                logtimeutc,
-                ""
                 ))
                 # println(df)
         else
@@ -579,7 +575,7 @@ function getopenorders(base)
     symbol = isnothing(base) ? nothing : uppercase(base * EnvConfig.cryptoquote)
     if EnvConfig.configmode == EnvConfig.production
         ooarray = MyBinance.openOrders(symbol, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdataframe(ooarray, Dates.now(UTC))
+        df = orderdataframe(ooarray)
         return df
     else
     end
@@ -589,7 +585,7 @@ function getorder(base, orderid)
     symbol = uppercase(base * EnvConfig.cryptoquote)
     if EnvConfig.configmode == EnvConfig.production
         oo = MyBinance.order(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdataframe([oo], Dates.now(UTC))
+        df = orderdataframe([oo])
         return df
     else
     end
@@ -599,7 +595,7 @@ function cancelorder(base, orderid)
     symbol = uppercase(base * EnvConfig.cryptoquote)
     if EnvConfig.configmode == EnvConfig.production
         oo = MyBinance.cancelOrder(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdataframe([oo], Dates.now(UTC))
+        df = orderdataframe([oo])
         return df
         # "symbol": "LTCBTC",
         # "origClientOrderId": "myOrder1",
@@ -624,7 +620,7 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
     oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
     println(oo)
-    df = orderdataframe([oo], Dates.now(UTC))
+    df = orderdataframe([oo])
     return df
     # "symbol": "BTCUSDT",
     # "orderId": 28,
