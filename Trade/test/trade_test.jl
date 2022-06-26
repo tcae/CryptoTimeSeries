@@ -7,8 +7,8 @@ using Test, Dates
 using EnvConfig, Ohlcv, Features
 using Trade, Classify
 
-# EnvConfig.init(test)
-EnvConfig.init(training)
+EnvConfig.init(test)
+# EnvConfig.init(training)
 println(EnvConfig.trainingbases)
 @info "bestgain, selected and 4h and 24h grad > min gain, sellprice adaptation up & down, std instead of medianstd" Classify.tr001default
 @time Trade.tradeloop(100)

@@ -19,8 +19,8 @@ end
 shortestwindow = minimum(Features.regressionwindows002)
 # tr001default = TradeRules001(0.02, 0.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
 # tr001default = TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
-tr001default = TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
-# tr001default = TradeRules001(0.01, 2.0, 3.0, [1.0])  # for test purposes
+# tr001default = TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # topper
+tr001default = TradeRules001(0.005, 2.0, 3.0, [1.0])  # for test purposes
 
 mutable struct TradeChance001
     base::String

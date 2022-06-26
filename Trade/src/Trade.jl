@@ -11,7 +11,7 @@ All history data will be collected but a fixed subset **`historysubset`** will b
 """
 module Trade
 
-using Dates, DataFrames, JSON, Profile, Logging
+using Dates, DataFrames, JSON, Profile, Logging, CSV
 using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
@@ -41,13 +41,15 @@ mutable struct Cache
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, logtime
     orderlog  # DataFrame with cols like openorders
     # transactionlog  # DataFrame
-    Cache(backtestchunk, free, locked) = new(backtestchunk, free, locked, Classify.traderules001!, Dict(), nothing, CryptoXch.orderdataframe([], Dates.now(UTC)), CryptoXch.orderdataframe([], Dates.now(UTC)))
+    messagelog  # fileid
+    runid
+    Cache(backtestchunk) = new(backtestchunk, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, CryptoXch.orderdataframe([], Dates.now(UTC)), CryptoXch.orderdataframe([], Dates.now(UTC)), nothing, runid())
 end
 
 makerfee = 0.075 / 100
 takerfee = 0.075 / 100
 tradingfee = max(makerfee, takerfee)
-
+runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
 ohlcvdf(cache, base) = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
 backtest(cache) = cache.backtestchunk > 0
 
@@ -60,12 +62,11 @@ function freelocked(portfoliodf, base)
     end
 end
 
-function preparetradecache(backtestchunk)
+function preparetradecache!(cache::Cache)
     # TODO read not only assets but also open orders and assign them to cache to be considered in the trade loop
     usdtdf = CryptoXch.getUSDTmarket()
     pdf = CryptoXch.portfolio(usdtdf)
-    free, locked = freelocked(pdf, "usdt")
-    cache = Cache(backtestchunk, free, locked)  # no need to cache focusbases because they will be implicitly stored via keys(bd)
+    cache.usdtfree, cache.usdtlocked = freelocked(pdf, "usdt")
     usdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :]
     focusbases = usdtdf.base
     if backtest(cache)
@@ -122,6 +123,11 @@ function sleepuntilnextminute(lastdt)
     return enddt
 end
 
+function writetradelogs(cache::Cache)
+    CSV.write(logpath("orderlog_$(cache.runid).csv"), cache.orderlog)
+    flush(cache.messagelog)
+end
+
 """
 append most recent ohlcv data as well as corresponding features
 returns `true` if successful appended else `false`
@@ -144,6 +150,7 @@ function appendmostrecent!(cache::Cache, base)
             continuetrading = true
             if (cache.bd[base].currentix % 1000) == 0
                 println("continue at ix=$(cache.bd[base].currentix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading")
+                writetradelogs(cache)
             end
         else
             continuetrading = false
@@ -215,6 +222,12 @@ function reportliquidity(cache, base)
     end
 end
 
+function orderwarn(order, msg)
+    msg = length(order.message) > 0 ? msg = order.message * "; " * msg : msg
+    order = (;order..., message=msg)
+    @warn msg
+end
+
 function closeorder!(cache, order, side, status)
     if backtest(cache)
         if status == "FILLED"
@@ -242,7 +255,7 @@ function closeorder!(cache, order, side, status)
         end
         if !isapprox(cache.usdtlocked, orderusdt)
             if (cache.usdtlocked < orderusdt)
-                @warn "locked $(cache.usdtlocked) USDT insufficient to fill buy order #$(order.orderId) of $(order.origQty) $(order.base) (== $orderusdt USDT)"
+                orderwarn(order, "closeorder! locked $(cache.usdtlocked) USDT insufficient to fill buy order #$(order.orderId) of $(order.origQty) $(order.base) (== $orderusdt USDT)")
             end
         end
         cache.usdtlocked = cache.usdtlocked < orderusdt ? 0.0 : cache.usdtlocked - orderusdt
@@ -251,7 +264,7 @@ function closeorder!(cache, order, side, status)
     elseif (side == "SELL")
         if !isapprox(cache.bd[order.base].assetlocked, order.origQty)
             if cache.bd[order.base].assetlocked < order.origQty
-                @warn "locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order #$(order.orderId) of $(order.origQty) $(order.base)"
+                orderwarn(order, "closeorder! locked $(cache.bd[order.base].assetlocked) $(order.base) insufficient to fill sell order #$(order.orderId) of $(order.origQty) $(order.base)")
             end
         end
         cache.bd[order.base].assetlocked = cache.bd[order.base].assetlocked < order.origQty ? 0.0 : cache.bd[order.base].assetlocked - order.origQty
@@ -262,7 +275,7 @@ function closeorder!(cache, order, side, status)
     push!(cache.orderlog, order)
     Classify.deletetradechanceoforder!(cache.tradechances, order.orderId)
     totalusdt, _, _ = totalusdtliquidity(cache)
-    @info "close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))  new total USDT = $(round(totalusdt;digits=3))"
+    orderwarn(order, "closeorder! close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))  new total USDT = $(round(totalusdt;digits=3))")
 end
 
 function buyqty(cache, base)
@@ -295,7 +308,8 @@ function neworder!(cache, base, price, qty, side, tc)
             timeInForce = "GTC",
             type = "LIMIT",
             side = side,
-            logtime = Dates.now(UTC)
+            logtime = Dates.now(UTC),
+            message = ""
         )
     else
         # TODO implement production
@@ -307,12 +321,12 @@ function neworder!(cache, base, price, qty, side, tc)
     # @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
     orderusdt = CryptoXch.floorbase("usdt", order.origQty * order.price)
     if orderusdt < CryptoXch.minimumquotevolume
-        @warn "$side order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient minimum volume $(CryptoXch.minimumquotevolume) USDT - order #$(order.orderId) is not executed"
+        orderwarn(order, "neworder! $side order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient minimum volume $(CryptoXch.minimumquotevolume) USDT - order #$(order.orderId) is not executed")
         return
     end
     if side == "BUY"
         if orderusdt > cache.usdtfree
-            @warn "BUY order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
+            orderwarn(order, "neworder! BUY order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed")
         else
             cache.usdtfree -= orderusdt
             cache.usdtlocked += orderusdt
@@ -321,7 +335,7 @@ function neworder!(cache, base, price, qty, side, tc)
         end
     elseif side == "SELL"
         if order.origQty > cache.bd[order.base].assetfree
-            @warn "SELL order $(order.origQty) $(order.base) has insufficient free coverage $(cache.bd[order.base].assetfree) $(order.base) - order #$(order.orderId) is reduced"
+            orderwarn(order, "neworder! SELL order $(order.origQty) $(order.base) has insufficient free coverage $(cache.bd[order.base].assetfree) $(order.base) - order #$(order.orderId) is reduced")
             cache.bd[order.base].assetfree = CryptoXch.floorbase(base, cache.bd[order.base].assetfree)
             order = (;order..., origQty=cache.bd[order.base].assetfree)
         end
@@ -447,6 +461,7 @@ function coretradeloop(cache)
     return continuetrading
 end
 
+logpath(file) = normpath(joinpath(homedir(), EnvConfig.datapathprefix, file))
 """
 **`tradeloop`** has to
 + get new exchange data (preferably non blocking)
@@ -457,14 +472,15 @@ end
 """
 function tradeloop(backtestchunk)
     # TODO add hooks to enable coupling to the cockpit visualization
-    io = open(normpath(joinpath(homedir(), EnvConfig.datapathprefix, "log.txt")), "w+")
-    logger = SimpleLogger(io)
+    cache = Cache(backtestchunk)
+    cache.messagelog = open(logpath("messagelog_$(cache.runid).txt"), "w")
+    logger = SimpleLogger(cache.messagelog)
     defaultlogger = global_logger(logger)
     profileinit = false
     # Profile.clear()
     continuetrading = true
     while continuetrading
-        cache = preparetradecache(backtestchunk)
+        preparetradecache!(cache)
         assetrefresh = false
         refreshtimestamp = Dates.now(Dates.UTC)
         println("starting trading core loop")
@@ -481,11 +497,11 @@ function tradeloop(backtestchunk)
         # end
         reportliquidity(cache, nothing)
     end
+    writetradelogs(cache)
     println("finished trading core loop")
     # Profile.print()
-    flush(io)
     global_logger(defaultlogger)
-    close(io)
+    close(cache.messagelog)
 end
 
 end  # module

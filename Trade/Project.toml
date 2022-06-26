@@ -5,6 +5,7 @@ version = "0.1.1"
 
 [deps]
 Assets = "e4c5a7f8-51b3-4a40-8507-79544143629b"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Classify = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
 CryptoXch = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"

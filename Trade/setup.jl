@@ -7,7 +7,7 @@ activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.upgrade_manifest()
-Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging" ])
+Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging", "CSV" ])
 Pkg.resolve()
 Pkg.update()
 Pkg.gc()

@@ -521,7 +521,8 @@ function orderdataframe(orderdictarray, logtimeutc)
         # updateTime=Dates.DateTime[],
         # isWorking=Bool[],
         # origQuoteOrderQty=Float32[],
-        logtime=Dates.DateTime[]
+        logtime=Dates.DateTime[],
+        message=String[]
         )
 
     for oodict in orderdictarray
@@ -544,7 +545,8 @@ function orderdataframe(orderdictarray, logtimeutc)
                 # Dates.unix2datetime(oodict["updateTime"] / 1000),
                 # oodict["isWorking"],
                 # parse(Float32, oodict["origQuoteOrderQty"]),
-                logtimeutc
+                logtimeutc,
+                ""
                 ))
                 # println(df)
         else
