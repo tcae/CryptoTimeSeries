@@ -82,15 +82,19 @@ function init(mode::Mode)
             "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx"]
         datapath = "Features/"
     elseif  configmode == training
-        trainingbases = bases = ["btc"]
-        datapath = "Features/"
-        # bases = [
-        #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx",
-        #     "link", "ada", "matic", "omg", "zec",
-        #     "theta", "vet"]
+        # trainingbases = bases = ["btc", "xrp", "eos"]
+        # datapath = "Features/"
+        trainingbases = [
+            "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx", "zrx", "bch",
+            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
+            "tfuel", "theta", "ont", "vet", "iost"]
+        bases = [
+            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx",
+            "link", "ada", "matic", "omg", "zec", "xlm",
+            "theta", "vet"]
         # trainingbases = [
         #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
-        # datapath = "TrainingFeatures/"
+        datapath = "TrainingOHLCV/"
     elseif configmode == test
         trainingbases = bases = ["sine", "doublesine"]
         # trainingbases = ["sine", "doublesine"]

@@ -11,7 +11,7 @@ All history data will be collected but a fixed subset **`historysubset`** will b
 """
 module Trade
 
-using Dates, DataFrames, JSON, Profile
+using Dates, DataFrames, JSON, Profile, Logging
 using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
@@ -143,11 +143,11 @@ function appendmostrecent!(cache::Cache, base)
         if cache.bd[base].currentix <= cache.bd[base].features.lastix
             continuetrading = true
             if (cache.bd[base].currentix % 1000) == 0
-                @info "continue at ix=$(cache.bd[base].currentix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading"
+                println("continue at ix=$(cache.bd[base].currentix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading")
             end
         else
             continuetrading = false
-            @info "stop trading loop due to backtest ohlcv for $base exhausted - count = $count"
+            println("stop trading loop due to backtest ohlcv for $base exhausted - count = $count")
         end
     else  # production
         lastdt = df.opentime[end]
@@ -166,7 +166,7 @@ function appendmostrecent!(cache::Cache, base)
             continuetrading = true
         else
             continuetrading = false
-            @info "stop trading loop due to no reloading progress for $base"
+            println("stop trading loop due to no reloading progress for $base")
         end
     end
     return continuetrading
@@ -277,7 +277,8 @@ function buyqty(cache, base)
     return baseqty
 end
 
-function neworder!(cache, base, price, qty, side, status, tc)
+function neworder!(cache, base, price, qty, side, tc)
+    status = "NEW"
     qty = CryptoXch.floorbase(base, qty)  # see also minimum order granularity of xchange
     if backtest(cache)
         orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
@@ -379,10 +380,10 @@ function trade!(cache)
                 # if false  # tc.sellprice < order.price
                 #     pivotcurrent = cache.bd[order.base].features.ohlcv.df.pivot[cache.bd[order.base].currentix]
                 #     @info "significant regry decrease -> reduction to pivot=$(pivotcurrent) instead of upperbandprice=$(tc.sellprice)"
-                #     neworder!(cache, order.base, pivotcurrent, order.origQty, "SELL", "NEW", tc)
+                #     neworder!(cache, order.base, pivotcurrent, order.origQty, "SELL", tc)
                 # else
                 # end
-                neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", "NEW", tc)
+                neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", tc)
                 #? order.origQty remains unchanged?
             end
         end
@@ -392,7 +393,7 @@ function trade!(cache)
                 closeorder!(cache, order, "BUY", "FILLED")
                 # buy order is closed, now issue a sell order
                 qty = cache.bd[order.base].assetfree
-                neworder!(cache, order.base, tc.sellprice, qty, "SELL", "NEW", tc)
+                neworder!(cache, order.base, tc.sellprice, qty, "SELL", tc)
                 # getorder and check that it is filled
             else
                 if order.base in keys(cache.tradechances.basedict)
@@ -400,7 +401,7 @@ function trade!(cache)
                     newtc = cache.tradechances.basedict[order.base]
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
-                    neworder!(cache, order.base, newtc.buyprice, buyqty(cache, order.base), "BUY", "NEW", newtc)
+                    neworder!(cache, order.base, newtc.buyprice, buyqty(cache, order.base), "BUY", newtc)
                     Classify.deletenewbuychanceofbase!(cache.tradechances, order.base)
                 elseif tc.probability < 0.5
                     closeorder!(cache, order, "BUY", "CANCELED")
@@ -408,7 +409,7 @@ function trade!(cache)
                 elseif significantbuypricechange(tc, order.price)
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order with adapted price
-                    neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", "NEW", tc)
+                    neworder!(cache, order.base, tc.buyprice, buyqty(cache, order.base), "BUY", tc)
                 end
             end
         end
@@ -418,7 +419,7 @@ function trade!(cache)
         usdttotal, _, _ = usdtliquidity(cache, base)
         if usdttotal <= CryptoXch.minimumquotevolume
             # no new order if asset is already in possession
-            neworder!(cache, base, tc.buyprice, buyqty(cache, base), "BUY", "NEW", tc)
+            neworder!(cache, base, tc.buyprice, buyqty(cache, base), "BUY", tc)
             Classify.deletenewbuychanceofbase!(cache.tradechances, base)
         end
     end
@@ -456,6 +457,9 @@ end
 """
 function tradeloop(backtestchunk)
     # TODO add hooks to enable coupling to the cockpit visualization
+    io = open(normpath(joinpath(homedir(), EnvConfig.datapathprefix, "log.txt")), "w+")
+    logger = SimpleLogger(io)
+    defaultlogger = global_logger(logger)
     profileinit = false
     # Profile.clear()
     continuetrading = true
@@ -463,7 +467,7 @@ function tradeloop(backtestchunk)
         cache = preparetradecache(backtestchunk)
         assetrefresh = false
         refreshtimestamp = Dates.now(Dates.UTC)
-        println("strting trading core loop")
+        println("starting trading core loop")
         while !assetrefresh && continuetrading
             if profileinit
                 @profile continuetrading = coretradeloop(cache)
@@ -479,6 +483,9 @@ function tradeloop(backtestchunk)
     end
     println("finished trading core loop")
     # Profile.print()
+    flush(io)
+    global_logger(defaultlogger)
+    close(io)
 end
 
 end  # module

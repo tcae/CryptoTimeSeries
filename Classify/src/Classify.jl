@@ -504,9 +504,9 @@ function printresult(target, yhat)
     df = DataFrame()
     # println("target: $(size(target)) $(typeof(target)), yhat: $(size(yhat)) $(typeof(yhat))")
     # println("target: $(typeof(target)), yhat: $(typeof(yhat))")
-    df.target = target
-    df.predict = yhat
-    df.mae = abs.(df.target - df.predict)
+    df[:, :target] = target
+    df[:, :predict] = yhat
+    df[:, :mae] = abs.(df[!, :target] - df[!, :predict])
     println(df[1:3,:])
     predictmae = mae(yhat, target) #|> mean
     # println("mean(df.mae)=$(sum(df.mae)/size(df,1))  vs. predictmae=$predictmae")

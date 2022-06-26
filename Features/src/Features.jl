@@ -607,7 +607,7 @@ function rollingregressionstdmv!(std, ymv, regr_y, grad, window)
             std = append!(std, stdnew)
             @assert length(std) == length(regr_y)
         else
-            @warn "nothing to append when length(std) >= length(y)" length(std) length(y)
+            @warn "nothing to append when length(std) >= length(y)" length(std) ymvlen
         end
     end
     return std
@@ -858,7 +858,7 @@ function getfeatures002(ohlcv::OhlcvData, firstix, lastix)
     close = df.close[firstix:lastix]
     ymv = [open, high, low, close]
     @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $requiredminutes"
-    @assert firstindex(ohlcv.df.opentime) <= firstix <= lastix <= lastindex(ohlcv.df.opentime) "$(firstindex(ohlcv.df.opentime)) <= $firstix <= $lastix <= $(lastindex(ohlcv.df.opentime))"
+    @assert firstindex(ohlcv.df[!, :opentime]) <= firstix <= lastix <= lastindex(ohlcv.df[!, :opentime]) "$(firstindex(ohlcv.df[!, :opentime])) <= $firstix <= $lastix <= $(lastindex(ohlcv.df[!, :opentime]))"
     regr = Dict()
     for window in regressionwindows002
         regry, grad = rollingregression(pivot, window)
@@ -872,7 +872,7 @@ end
 """
 Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
 """
-function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f2.ohlcv.df.opentime))
+function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f2.ohlcv.df[!, :opentime]))
     # println("getfeatures002!")
     df = Ohlcv.dataframe(f2.ohlcv)
     if f2.lastix >= lastindex(df, 1)

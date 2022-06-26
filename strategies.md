@@ -199,8 +199,9 @@ Challenges:
 
 ## Learnings volatility catcher
 
-### Approach
+### Approach and results with BTC/USDT 6 months
 
+- cutting btc ohlcv from 2530476 to 262081 minutes (211002 01:00 - 220402 01:00)
 - 24h median spread of different regression windows are compared and the best selected. *Best* learnings:
   - maximum gain over the last 24h but at least minimumgain is best, 24h grad > 0
     - minimumgain 1% -->  (10000->9930.5 with 200 invest)
@@ -238,9 +239,13 @@ Challenges:
   - (10000->9990.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 3.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
     - move from 2% to 3% 24h gain/day decreases performance slightly
   - (10000->9998.5 with 200 invest) bestgain, 24h min grad, 4hgrad > 2 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
-    - no improvement with 4h gradient rule on top of 24h gradient rule
-  - (10000->9995.1 with 200 invest) bestgain, 24h grad positiv, 1hgrad > 2 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
-    - no improvement with 1h gradient rule on top of 24h gradient rule
+    - no improvement with 4h 2* min gradient rule on top of 24h gradient rule
+  - (10000->9994.4 with 200 invest) bestgain, selected and 2h and 24h grad > min gain, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - no improvement with 2h 1* minimal gradient rule on top of 24h gradient rule
+  - (10000->9994.4 with 200 invest) bestgain, selected and 4h and 24h grad > min gain, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - no improvement with 4h 1* minimal gradient rule on top of 24h gradient rule
+  - (10000->10003.3 with 200 invest) bestgain, 24h grad positiv, 1hgrad > 1 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+    - close to Topper with 1h 1* minimal gradient rule on top of 24h gradient rule
 
 
 ### to be assessed

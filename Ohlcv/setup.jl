@@ -1,16 +1,16 @@
 # push!(LOAD_PATH, "/home/tor/TorProjects/CryptoTimeSeries/src")
 # push!(DEPOT_PATH, "/home/tor/TorProjects", "/home/tor/TorProjects/CryptoTimeSeries", "/home/tor/TorProjects/CryptoTimeSeries/src")
 
-import Pkg: activate, add, status, resolve
-activate(@__DIR__)
+using Pkg
+Pkg.activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
-
-add([ "Dates", "Logging", "DataFrames", "CategoricalArrays", "JDF", "CSV", "Statistics" ])
+# Pkg.upgrade_manifest()
+Pkg.add([ "Dates", "Logging", "DataFrames", "CategoricalArrays", "JDF", "CSV", "Statistics" ])
 
 # resolve()
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")
 
-
-# required packages for CryptoExchange
-# add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
+# Pkg.resolve()
+# Pkg.update()
+Pkg.gc()

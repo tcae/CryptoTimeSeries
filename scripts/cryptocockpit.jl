@@ -471,6 +471,7 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
     df = Ohlcv.dataframe(ohlcv)
     if !("opentime" in names(df))
         println("candlestickgraph $base len(df): $(size(df,1)) names: $(names(df))")
+        return fig
     end
     startdt = enddt - period
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
@@ -508,16 +509,13 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
         end
         traces = append!([
             bar(x=subdf.opentime, y=subdf.basevolume, name="basevolume", yaxis="y2")], traces)
-        if false  # disable featureSet001 `heatmap`
-            fig = addheatmap!(traces, ohlcv, subdf, normref)
-        else
-            fig = Plot(traces,
-                Layout(xaxis_rangeslider_visible=false,
-                    yaxis=attr(title_text="% of last pivot", domain=[0.3, 1.0]),
-                    yaxis2=attr(title="vol", side="right", domain=[0.0, 0.2]),
-                    yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
-                )
-        end
+        # fig = addheatmap!(traces, ohlcv, subdf, normref)
+        fig = Plot(traces,
+            Layout(xaxis_rangeslider_visible=false,
+                yaxis=attr(title_text="% of last pivot", domain=[0.3, 1.0]),
+                yaxis2=attr(title="vol", side="right", domain=[0.0, 0.2]),
+                yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false))
+            )
     end
     return fig
 end

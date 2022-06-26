@@ -1,7 +1,7 @@
 name = "Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"

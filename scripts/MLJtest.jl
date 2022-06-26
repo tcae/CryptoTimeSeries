@@ -9,6 +9,8 @@ using MLJBase, RDatasets, MLJTuning, MLJModels
 using Targets, TestOhlcv
 # using RDatasets
 using PlotlyJS, WebIO, Dates, DataFrames
+using DecisionTree, PartialLeastSquaresRegressor
+
 
 
 function iris1()
@@ -32,8 +34,8 @@ function iris1()
     mach = machine(tree, X, y)  # wrapping the model in data creates a machine
     train, test = partition(eachindex(y), 0.7); # 70:30 split
     println("training: $(size(train,1))  test: $(size(test,1))")
-    fit!(mach, rows=train)
-    yhat = predict(mach, X[test,:])
+    MLJ.fit!(mach, rows=train)
+    yhat = MLJ.predict(mach, X[test,:])
     yhat[3:5]
     log_loss(yhat, y[test]) |> mean
 end
@@ -58,9 +60,9 @@ function regression2()
 
     pls_machine = machine(pls_model, X, y)
 
-    fit!(pls_machine, rows=train)
+    MLJ.fit!(pls_machine, rows=train)
 
-    yhat = predict(pls_machine, rows=test)
+    yhat = MLJ.predict(pls_machine, rows=test)
 
     mae(yhat, y[test]) |> mean
 
@@ -75,7 +77,7 @@ end
 # Classify.regression1()
 # mlfeatures_test()
 
-@load KPLSRegressor pkg=PartialLeastSquaresRegressor
+# @load KPLSRegressor pkg=PartialLeastSquaresRegressor  # not required because of above ´using´
 
 # loading data and selecting some features
 data = RDatasets.dataset("datasets", "longley")[:, 2:5]
@@ -100,7 +102,7 @@ self_tuning_pls_model = TunedModel(model =          pls_model,
 self_tuning_pls = machine(self_tuning_pls_model, X, y)
 
 # fitting with tunning
-fit!(self_tuning_pls, verbosity=0)
+MLJ.fit!(self_tuning_pls, verbosity=0)
 
 # getting the report
 report(self_tuning_pls)

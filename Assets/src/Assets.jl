@@ -136,6 +136,8 @@ end
 
 function loadassets(backtest=false)::AssetData
     if backtest
+        enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
+        usdtvolume = 1000  # fixed start budget
         ad = AssetData(emptyassetdataframe(), usdtvolume, backtest)
         ad.basedf[:, :base] = EnvConfig.trainingbases
         ad.basedf[:, :manual] .= true

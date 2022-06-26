@@ -257,7 +257,7 @@ function prettyprint(histo)
 end
 
 function tradegradienthisto_test()
-    ohlcv = TestOhlcv.doublesinedata(40, 2)
+    ohlcv = TestOhlcv.sinedata(20, 40, 0, 1)
     regr5 = Features.normrollingregression(ohlcv.df.pivot, 5)
     longhisto, shorthisto = GradientGainDistributions.tradegradienthisto(ohlcv.df.pivot, regr5)
     prettyprint(longhisto)
@@ -282,7 +282,7 @@ gradientdistributions()
 
 @testset "Targets gradient gain distribution tests" begin
 
-    ohlcv = TestOhlcv.doublesinedata(40, 2)
+    ohlcv = TestOhlcv.sinedata(20, 40, 0, 1)
     regressions = Features.normrollingregression(ohlcv.df.pivot, 5)
     longhisto, shorthisto = GradientGainDistributions.tradegradienthisto(ohlcv.df.pivot, regressions, 0.01, 0.5)
     @test isapprox(longhisto.buygradient, 0.0003251453f0)

@@ -766,7 +766,9 @@ function prettyprint(prices, regressions, gains)
 end
 
 function singlebasegradientgain_test()
-    ohlcv = TestOhlcv.doublesinedata(40, 2)
+    enddt = DateTime("2022-04-02T01:00:00")
+    startdt = enddt - Dates.Minute(40)
+    ohlcv = TestOhlcv.sinedata(20, 40, 0, 2)
     regr5 = Features.normrollingregression(ohlcv.df.pivot, 5)
     gains = singlebasegradientgain(ohlcv.df.pivot, regr5)
     # prettyprint(ohlcv.df.pivot, regr5, gains)
@@ -783,9 +785,9 @@ function steepestbasegain_test()
     rdf = DataFrame(shortsine=shortsineregr, longsine=longsineregr)
     # show(rdf, allrows=true)
     gdf = DataFrame()
-    gdf.shortsine = singlebasegradientgain(shortsine.df.pivot, shortsineregr)
-    gdf.longsine = singlebasegradientgain(longsine.df.pivot, longsineregr)
-    gdf.steepest = steepestbasegain(pdf, rdf, ["shortsine", "longsine"])
+    gdf[:, :shortsine] = singlebasegradientgain(shortsine.df.pivot, shortsineregr)
+    gdf[:, :longsine] = singlebasegradientgain(longsine.df.pivot, longsineregr)
+    gdf[:, :steepest] = steepestbasegain(pdf, rdf, ["shortsine", "longsine"])
     # show(gdf, allrows=true)
     # println("steepest gain=$(gdf[end, :steepest])")
     return gdf[end, :steepest]
@@ -794,7 +796,7 @@ end
 
 # Config.init(Config.test)
 EnvConfig.init(EnvConfig.production)
-println("\nconfig mode = $(Config.configmode)")
+println("\nconfig mode = $(EnvConfig.configmode)")
 # gainperregressionwindow()
 # gainperregressionwindowlastgain2()
 # gainperregressionwindowlastgain(["btc", "xrp"], [5, 15])
@@ -808,7 +810,7 @@ println("\nconfig mode = $(Config.configmode)")
 regressionminutesset = [5, 15, 30, 60, 4 * 60, 12 * 60, 24 * 60]
 # regressionminutesset = [60, 24 * 60]
 # regressionminutesset = [24 * 60]
-bases = Config.trainingbases
+bases = EnvConfig.trainingbases
 # bases = ["bnb"]
 # gradientgainhisto(bases, regressionminutesset)
 println("")
