@@ -110,10 +110,10 @@ function merge!(ohlcv::OhlcvData, addohlcv::OhlcvData)
         @warn "addohlcv is full subset of ohlcv - no action"
     elseif df2[begin, :opentime] <= df1[begin, :opentime] <= (df2[end, :opentime] + Dates.Minute(1)) <= df1[end, :opentime]
         startoverlap = Int(Dates.Minute(df2[end, :opentime] - df1[begin, :opentime])/Dates.Minute(1)) + 1
-        ohlcv.df = vcat(df2[!, save_cols], df1[begin+startoverlap:end, :])
+        ohlcv.df = vcat(df2[!, :], df1[begin+startoverlap:end, :])
     elseif df1[begin, :opentime] <= df2[begin, :opentime] <= (df1[end, :opentime] + Dates.Minute(1)) <= df2[end, :opentime]
         endoverlap = Int(Dates.Minute(df1[end, :opentime] - df2[begin, :opentime])/Dates.Minute(1)) + 1
-        ohlcv.df = vcat(df1[begin:end-endoverlap, save_cols], df2[!, :])
+        ohlcv.df = vcat(df1[begin:end-endoverlap, :], df2[!, :])
     end
     return ohlcv
 end

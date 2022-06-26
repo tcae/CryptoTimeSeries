@@ -89,7 +89,7 @@ end
     @test nrow(df) == 0
     mdf = CryptoXch.getUSDTmarket()
     # println(mdf)
-    @test names(mdf) == ["base", "quotevolume24h", "lastprice", "pricechangepercent"]
+    @test names(mdf) == ["base", "qte", "quotevolume24h", "pricechangepercent", "lastprice"]
     @test nrow(mdf) > 10
 
     EnvConfig.init(EnvConfig.test)
@@ -97,7 +97,7 @@ end
     ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:45:03"), DateTime("2022-01-02T22:49:35"))
     # println(Ohlcv.dataframe(ohlcv))
     @test size(Ohlcv.dataframe(ohlcv), 1) == 5
-    @test names(Ohlcv.dataframe(ohlcv)) == ["opentime", "open", "high", "low", "close", "basevolume"]
+    @test names(Ohlcv.dataframe(ohlcv)) == ["opentime", "open", "high", "low", "close", "basevolume", "pivot"]
 
     ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:45:01"), DateTime("2022-01-02T22:49:55"))
     # println(Ohlcv.dataframe(ohlcv))
@@ -125,6 +125,7 @@ end
 
     ohlcv1 = Ohlcv.copy(ohlcv)
     CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:46:45"))
+    # println(Ohlcv.dataframe(ohlcv1))
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 4
 
     CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:47:45"))
@@ -140,6 +141,9 @@ end
 
     CryptoXch.cryptoupdate!(ohlcv1, DateTime("2022-01-02T22:50:03"), DateTime("2022-01-02T22:55:45"))
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 6
+
+    Ohlcv.delete(ohlcv)
+    @test size(Ohlcv.dataframe(Ohlcv.read!(ohlcv)), 1) == 0
 
     @test CryptoXch.onlyconfiguredsymbols("BTCUSDT")
     @test !CryptoXch.onlyconfiguredsymbols("BTCBNB")

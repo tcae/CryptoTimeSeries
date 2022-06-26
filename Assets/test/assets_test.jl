@@ -22,11 +22,11 @@ EnvConfig.init(production)
     ad1 = Assets.read()
     # ad1 = Assets.loadassets()
     # @test size(ad1.df, 1) > 0
-    nsyms = Symbol.(names(ad1.df))
+    nsyms = Symbol.(names(ad1.basedf))
     @test all([col in nsyms for col in Assets.savecols])
     Assets.write(ad1)
     ad2 = Assets.read()
-    @test ad1.df==ad2.df
+    @test ad1.basedf==ad2.basedf
     # println("ad2.df")
     # println(ad2.df)
 

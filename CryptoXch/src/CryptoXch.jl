@@ -74,13 +74,13 @@ function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates
     df = nothing
     if EnvConfig.configmode == EnvConfig.test
         println("ohlcfromexchange test mode: $base, $startdt, $enddt, $interval, $cryptoquote")
-        if base in EnvConfig.bases
+        # if base in EnvConfig.bases
             rstatus, df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
-        else
-            df = Ohlcv.defaultohlcvdataframe()
-            rstatus = 112
-            @warn "$base is an unknown base for EnvConfig.test mode"
-        end
+        # else
+        #     df = Ohlcv.defaultohlcvdataframe()
+        #     rstatus = 112
+        #     @warn "$base is an unknown base for EnvConfig.test mode"
+        # end
     end
     if (EnvConfig.configmode != EnvConfig.test) || (rstatus == 111)
         try
@@ -179,11 +179,11 @@ end
 """
 Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from Binance.
 
-- ohlcv containes the requested base identifier and interval - the result will be stored in teh data frame of this structure
+- ohlcv containes the requested base identifier and interval - the result will be stored in the data frame of this structure
 - startdt and enddt are DateTime stamps that specify the requested time range
 - if closecachegap==true then any gap to chached data will be closed when asking for missing data from Binance
 
-Tis function reduces the returned ohlcv to the requested time range (different to cryptodownload).
+This function reduces the returned ohlcv to the requested time range (different to cryptodownload).
 Therefore, don't use the ohlcv to write to stored cache because the stored history will be overridden and is lost.
 """
 function cryptoupdate!(ohlcv, startdt, enddt, closecachegap=false)
@@ -194,8 +194,9 @@ function cryptoupdate!(ohlcv, startdt, enddt, closecachegap=false)
         Logging.@warn "Invalid datetime range: end datetime $enddt <= start datetime $startdt"
         return ohlcv
     end
+    startdt = floor(startdt, intervalperiod(interval))
+    enddt = floor(enddt, intervalperiod(interval))
     olddf = Ohlcv.dataframe(ohlcv)
-    loadall = false
     if size(olddf, 1) > 0  # there is already data available
         if (startdt < olddf[begin, :opentime])
             if (enddt >= olddf[begin, :opentime]) || closecachegap
@@ -211,9 +212,6 @@ function cryptoupdate!(ohlcv, startdt, enddt, closecachegap=false)
                     end
                 end
                 Ohlcv.setdataframe!(ohlcv, olddf)
-                subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
-            else  # requested time range is before available olddf data
-                loadall = true
             end
         end
         if (enddt > olddf[end, :opentime])
@@ -231,15 +229,11 @@ function cryptoupdate!(ohlcv, startdt, enddt, closecachegap=false)
                     end
                 end
                 Ohlcv.setdataframe!(ohlcv, olddf)
-                subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
-            else  # requested time range is after available olddf data
-                loadall = true
             end
         end
-    else
-        loadall = true
+        subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
     end
-    if loadall
+    if size(olddf, 1) == 0
         newdf = gethistoryohlcv(base, startdt, enddt, interval)
         Ohlcv.setdataframe!(ohlcv, newdf)
     end
@@ -298,7 +292,11 @@ function cryptodownload(base, interval, startdt, enddt)::OhlcvData
         newdf = gethistoryohlcv(base, startdt, enddt, interval)
         Ohlcv.setdataframe!(ohlcv, newdf)
     end
-    Ohlcv.write(ohlcv)
+    if size(Ohlcv.dataframe(ohlcv), 1) > 0
+        Ohlcv.write(ohlcv)
+    else
+        @warn "cryptodownload: No $base OHLCV data written due to empty dataframe"
+    end
     return ohlcv
 end
 
@@ -545,6 +543,9 @@ function orderdataframe(orderdictarray)
                 # parse(Float32, oodict["origQuoteOrderQty"]),
                 ))
                 # println(df)
+            if "fills" in keys(oodict)
+                println("FILLS on $(oodict["status"]) $(oodict["side"]) order $(oodict["orderId"]) of $(oodict["symbol"]): $(oodict["fills"])")
+            end
         else
             @warn "$(EnvConfig.now()) getopenorders: ignoring $(oodict["symbol"]) as not configured symbol"
             # printorderinfo(index, oodict)
