@@ -81,7 +81,20 @@ function initialbtcdownload()
     return ohlcv
 end
 
-
+function orderstring2values!_test()
+    ood = [
+        Dict("symbol" => "LTCUSDT", "orderId" => 1, "isWorking" => true, "price" => "0.1", "time" => 1499827319559,
+        "fills" => [
+            Dict("price" => "4000.00000000", "qty" => "1.00000000","commission" => "4.00000000", "commissionAsset" => "USDT", "tradeId" => 56),
+            Dict("price" => "4000.10000000", "qty" => "1.10000000","commission" => "4.10000000", "commissionAsset" => "USDT", "tradeId" => 57)
+            ]
+        )
+    ]
+    # println("before value conversion: $ood")
+    ood = CryptoXch.orderstring2values!(ood)
+    # println("after value conversion: $ood")
+    return ood
+end
 
 @testset "CryptoXch tests" begin
 
@@ -148,6 +161,25 @@ end
     @test CryptoXch.onlyconfiguredsymbols("BTCUSDT")
     @test !CryptoXch.onlyconfiguredsymbols("BTCBNB")
     @test !CryptoXch.onlyconfiguredsymbols("EURUSDT")
+
+    ood = orderstring2values!_test()
+    @test ood[1]["price"] isa AbstractFloat
+    @test ood[1]["time"] isa DateTime
+    @test ood[1]["fills"][1]["qty"] isa AbstractFloat
+
+    oo1 = CryptoXch.createorder("btc", "BUY", 19001.0, 20.0)
+    println("createorder: $oo1")
+    oo2 = CryptoXch.getorder("btc", oo1["orderId"])
+    println("getorder: $oo2")
+    # @test oo1["orderId"] == oo2["orderId"]
+    ooarray = CryptoXch.getopenorders(nothing)
+    println("getopenorders(nothing): $ooarray")
+    ooarray = CryptoXch.getopenorders("btc")
+    println("getopenorders(\"btc\"): $ooarray")
+    oo2 = CryptoXch.cancelorder("btc", oo1["orderId"])
+    println("cancelorder: $oo2")
+    @test oo1["orderId"] == oo2["orderId"]
+
 end
 
 

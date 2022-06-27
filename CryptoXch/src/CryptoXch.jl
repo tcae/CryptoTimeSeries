@@ -496,123 +496,63 @@ function printorderinfo(orderix, oodict)
     end
 end
 
-"""
-Returns a data frame with filled with the binance response as provided in `orderdictarray` with a `logtimeutc` timestamp per row.
-If `orderdictarray` is empty then an empty dataframe is returned.
-"""
-function orderdataframe(orderdictarray)
-    df = DataFrame(
-        base=String[],
-        orderId=Int64[],
-        # clientOrderId=String[],
-        price=Float32[],
-        origQty=Float32[],
-        executedQty=Float32[],
-        # cummulativeQuoteQty=Float32[],
-        status=String[],
-        timeInForce=String[],
-        type=String[],
-        side=String[]
-        # stopPrice=Float32[],
-        # icebergQty=Float32[],
-        # time=Dates.DateTime[],
-        # updateTime=Dates.DateTime[],
-        # isWorking=Bool[],
-        # origQuoteOrderQty=Float32[],
-        )
-
+function orderstring2values!(orderdictarray)
+    f32keys = ["price", "qty", "origQty", "executedQty", "cummulativeQuoteQty", "stopPrice", "icebergQty", "origQuoteOrderQty", "commission"]
+    datekeys = ["time", "updateTime"]
     for oodict in orderdictarray
-        if onlyconfiguredsymbols(oodict["symbol"])
-            push!(df, (
-                lowercase(replace(oodict["symbol"], uppercase(EnvConfig.cryptoquote) => "")),
-                oodict["orderId"],
-                # oodict["clientOrderId"],
-                parse(Float32, oodict["price"]),
-                parse(Float32, oodict["origQty"]),
-                parse(Float32, oodict["executedQty"]),
-                # parse(Float32, oodict["cummulativeQuoteQty"]),
-                oodict["status"],
-                oodict["timeInForce"],
-                oodict["type"],
-                oodict["side"]
-                # parse(Float32, oodict["stopPrice"]),
-                # parse(Float32, oodict["icebergQty"]),
-                # Dates.unix2datetime(oodict["time"] / 1000),
-                # Dates.unix2datetime(oodict["updateTime"] / 1000),
-                # oodict["isWorking"],
-                # parse(Float32, oodict["origQuoteOrderQty"]),
-                ))
-                # println(df)
-            if "fills" in keys(oodict)
-                println("FILLS on $(oodict["status"]) $(oodict["side"]) order $(oodict["orderId"]) of $(oodict["symbol"]): $(oodict["fills"])")
+        for entry in keys(oodict)
+            if entry in f32keys
+                oodict[entry] = parse(Float32, oodict[entry])
+            elseif entry in datekeys
+                oodict[entry] = Dates.unix2datetime(oodict[entry] / 1000)
+            elseif entry == "symbol"
+                oodict["base"] = lowercase(replace(oodict["symbol"], uppercase(EnvConfig.cryptoquote) => ""))
+                # TODO assumption that onlyUSDT quote is traded is containment - requires a more general approach
+            elseif entry == "fills"
+                oodict["fills"] = orderstring2values!(oodict["fills"])
             end
-        else
-            @warn "$(EnvConfig.now()) getopenorders: ignoring $(oodict["symbol"]) as not configured symbol"
-            # printorderinfo(index, oodict)
         end
     end
-    # "symbol": "LTCBTC",
-    # "orderId": 1,
-    # "orderListId": -1, //Unless OCO, the value will always be -1
-    # "clientOrderId": "myOrder1",
-    # "price": "0.1",
-    # "origQty": "1.0",
-    # "executedQty": "0.0",
-    # "cummulativeQuoteQty": "0.0",
-    # "status": "NEW",
-    # "timeInForce": "GTC",
-    # "type": "LIMIT",
-    # "side": "BUY",
-    # "stopPrice": "0.0",
-    # "icebergQty": "0.0",
-    # "time": 1499827319559,
-    # "updateTime": 1499827319559,
-    # "isWorking": true,
-    # "origQuoteOrderQty": "0.000000"
-    return df
+    return orderdictarray
 end
 
 function getopenorders(base)
     symbol = isnothing(base) ? nothing : uppercase(base * EnvConfig.cryptoquote)
-    if EnvConfig.configmode == EnvConfig.production
-        ooarray = MyBinance.openOrders(symbol, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdataframe(ooarray)
-        return df
-    else
-    end
+    ooarray = MyBinance.openOrders(symbol, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    # println(ooarray)
+    ooarray = orderstring2values!(ooarray)
+    return ooarray
 end
 
 function getorder(base, orderid)
     symbol = uppercase(base * EnvConfig.cryptoquote)
-    if EnvConfig.configmode == EnvConfig.production
-        oo = MyBinance.order(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdataframe([oo])
-        return df
-    else
-    end
+    oo = MyBinance.order(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    # println(oo)
+    ooarray = orderstring2values!([oo])
+    @assert length(ooarray) == 1
+    return ooarray[begin]
 end
 
 function cancelorder(base, orderid)
     symbol = uppercase(base * EnvConfig.cryptoquote)
-    if EnvConfig.configmode == EnvConfig.production
-        oo = MyBinance.cancelOrder(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-        df = orderdataframe([oo])
-        return df
-        # "symbol": "LTCBTC",
-        # "origClientOrderId": "myOrder1",
-        # "orderId": 4,
-        # "orderListId": -1, //Unless part of an OCO, the value will always be -1.
-        # "clientOrderId": "cancelMyOrder1",
-        # "price": "2.00000000",
-        # "origQty": "1.00000000",
-        # "executedQty": "0.00000000",
-        # "cummulativeQuoteQty": "0.00000000",
-        # "status": "CANCELED",
-        # "timeInForce": "GTC",
-        # "type": "LIMIT",
-        # "side": "BUY"
-    else
-    end
+    oo = MyBinance.cancelOrder(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    # println(oo)
+    ooarray = orderstring2values!([oo])
+    @assert length(ooarray) == 1
+    return ooarray[begin]
+    # "symbol": "LTCBTC",
+    # "origClientOrderId": "myOrder1",
+    # "orderId": 4,
+    # "orderListId": -1, //Unless part of an OCO, the value will always be -1.
+    # "clientOrderId": "cancelMyOrder1",
+    # "price": "2.00000000",
+    # "origQty": "1.00000000",
+    # "executedQty": "0.00000000",
+    # "cummulativeQuoteQty": "0.00000000",
+    # "status": "CANCELED",
+    # "timeInForce": "GTC",
+    # "type": "LIMIT",
+    # "side": "BUY"
 end
 
 function createorder(base::String, orderside::String, limitprice, usdtquantity)
@@ -620,9 +560,10 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     qty = floor(usdtquantity / limitprice; digits=4)  #* round due to LOT_FILTER minimum granularity constraint
     order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
     oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
-    println(oo)
-    df = orderdataframe([oo])
-    return df
+    # println(oo)
+    ooarray = orderstring2values!([oo])
+    @assert length(ooarray) == 1
+    return ooarray[begin]
     # "symbol": "BTCUSDT",
     # "orderId": 28,
     # "orderListId": -1, //Unless OCO, value will be -1
@@ -636,7 +577,14 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     # "timeInForce": "GTC",
     # "type": "MARKET",
     # "side": "SELL",
-    # "fills": [...
+    # "fills": [
+    # {
+    #     "price": "4000.00000000",
+    #     "qty": "1.00000000",
+    #     "commission": "4.00000000",
+    #     "commissionAsset": "USDT",
+    #     "tradeId": 56
+    # },...]
 
 end
 
