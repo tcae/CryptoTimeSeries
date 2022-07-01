@@ -8,6 +8,7 @@ using EnvConfig, Ohlcv, Features
 using Trade, Classify
 
 # EnvConfig.init(test)
+# EnvConfig.init(production)
 EnvConfig.init(training)
 println(EnvConfig.trainingbases)
 @info "traderules001 bestgain, selected and 24h grad > min gain and current grad > window/4 pastgrad, sellprice adaptation up & down, std instead of medianstd" Classify.tr001default

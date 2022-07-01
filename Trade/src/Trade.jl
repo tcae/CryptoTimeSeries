@@ -88,8 +88,54 @@ function freelocked(portfoliodf, base)
     end
 end
 
+function loadopenorders!(cache::Cache)
+    csvoodf = DataFrame()
+    if isfile(logpath("openorders.csv"))
+        csvoodf = CSV.File(logpath("csvoodf.csv")) |> DataFrame
+        # println("openorders found $(typeof(csvoodf))")
+        # println(csvoodf)
+    end
+    ooarray = CryptoXch.getopenorders(nothing)
+    oodf = orderdataframex()
+    if length(ooarray) > 0
+        for oo in ooarray
+            opentime = oo["time"]
+            closetime = dummytime()
+            message = "msg "
+            for row in eachrow(csvoodf)
+                if row.orderId == oo["orderId"]
+                    opentime = row.opentime
+                    closetime = row.closetime
+                    message = row.message
+                end
+            end
+            push!(oodf, (
+                oo["base"],
+                oo["orderId"],
+                oo["price"],
+                oo["origQty"],
+                oo["executedQty"],
+                oo["status"],
+                oo["timeInForce"],
+                oo["type"],
+                oo["side"],
+                opentime,
+                closetime,
+                message
+            ))
+            # for (k, v) in oo
+            #     println("k:$k v:$v")
+            # end
+        end
+        # println(oodf)
+        # println(ooarray)
+        CSV.write(logpath("openorders.csv"), oodf)
+    end
+    cache.openorders = oodf
+end
+
 function preparetradecache!(cache::Cache)
-    # TODO read not only assets but also open orders and assign them to cache to be considered in the trade loop
+    loadopenorders!(cache)
     usdtdf = CryptoXch.getUSDTmarket()
     pdf = CryptoXch.portfolio(usdtdf)
     cache.usdtfree, cache.usdtlocked = freelocked(pdf, "usdt")
@@ -150,8 +196,14 @@ function sleepuntilnextminute(lastdt)
 end
 
 function writetradelogs(cache::Cache)
+    CSV.write(logpath("openorders.csv"), cache.openorders)
     CSV.write(logpath("orderlog_$(cache.runid).csv"), cache.orderlog)
     flush(cache.messagelog)
+end
+
+function readopenorders(cache::Cache)
+    CSV.read(logpath("openorders.csv"))
+    cache.openorders = CSV.File(logpath("openorders.csv")) |> DataFrame
 end
 
 """
@@ -422,7 +474,6 @@ to be considered:
     - adapt buy chance with orderid
 """
 function trade!(cache)
-    # TODO update TradeLog -> append to csv
     for order in copy.(eachrow(cache.openorders))
         tc = Classify.tradechanceoforder(cache.tradechances, order.orderId)
         if isnothing(tc)
