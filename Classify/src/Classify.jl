@@ -66,11 +66,17 @@ function buycompliant(f2, window, breakoutstd, ix)
     df = Ohlcv.dataframe(f2.ohlcv)
     afr = f2.regr[window]
     fix = Features.featureix(f2, ix)
+
+    pastix = ix - Int64(ceil(window / 4))
+    pastfix = Features.featureix(f2, pastix)
+    # pastmaximumgradientdaypercentage = daypercentage(afr.grad[fix], df.close[ix]) / 2
+
     spreadpercent = banddeltaprice(afr, fix, breakoutstd) / afr.regry[fix]
     lowerprice = lowerbandprice(afr, fix, breakoutstd)
     ok =  ((df.low[ix] < lowerprice) &&
         (spreadpercent >= tr001default.minimumgain) &&
         (daypercentage(afr.grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage) &&
+        (daypercentage(afr.grad[fix], df.close[ix]) > daypercentage(afr.grad[pastfix], df.close[pastix])) &&
         (daypercentage(f2.regr[1*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage) &&
         (daypercentage(f2.regr[24*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaypercentage))
     return ok
