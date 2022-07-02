@@ -40,10 +40,10 @@ mutable struct Cache
     tradechances  # ::Classify.TradeChances001
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, opentime, closetime, message
     orderlog  # DataFrame with cols like openorders
-    # transactionlog  # DataFrame
+    transactionlog  # DataFrame of transaction to fill orders
     messagelog  # fileid
     runid
-    Cache(backtestchunk) = new(backtestchunk, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, orderdataframex(), orderdataframex(), nothing, runid())
+    Cache(backtestchunk) = new(backtestchunk, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, orderdataframex(), orderdataframex(), filldataframe(), nothing, runid())
 end
 
 makerfee = 0.075 / 100
@@ -79,6 +79,17 @@ function orderdataframex()
         )
 end
 
+function filldataframe()
+    return DataFrame(
+        orderId=Int64[],
+        tradeId=Int64[],
+        price=Float32[],
+        qty=Float32[],
+        commission=Float32[],
+        commissionAsset=String[],
+        )
+end
+
 function freelocked(portfoliodf, base)
     portfoliodf = portfoliodf[portfoliodf.base .== base, :]
     if size(portfoliodf, 1) > 0
@@ -96,7 +107,7 @@ As a result a dataframe of open orders is created in cache.
 function loadopenorders!(cache::Cache)
     csvoodf = DataFrame()
     if isfile(logpath("openorders.csv"))
-        csvoodf = CSV.File(logpath("csvoodf.csv")) |> DataFrame
+        csvoodf = CSV.File(logpath("openorders.csv")) |> DataFrame
         # println("openorders found $(typeof(csvoodf))")
         # println(csvoodf)
     end
@@ -307,6 +318,20 @@ end
 
 ordertime(cache, base)  = Ohlcv.dataframe(cache.bd[base].features.ohlcv)[cache.bd[base].currentix, :opentime]
 
+function logfills!(cache, orderid, fillsarray)
+    for f in fillsarray
+        fill = (
+            price = f["price"],
+            qty = f["qty"],
+            commission = f["commission"],
+            commissionAsset = f["commissionAsset"],
+            tradeId = f["tradeId"],
+            orderId = orderid
+            )
+        push!(cache.transactionlog, fill)
+    end
+end
+
 function closeorder!(cache, order, side, status)
     df = Ohlcv.dataframe(cache.bd[order.base].features.ohlcv)
     opentime = df[!, :opentime]
@@ -315,21 +340,34 @@ function closeorder!(cache, order, side, status)
     order = (;order..., closetime=ordertime(cache, order.base))
     if backtest(cache)
         if status == "FILLED"
-            order = (;order..., executedQty=order.origQty)
+            order = (;order..., status = status, executedQty=order.origQty)
             # order.executedQty = order.origQty
         end
-    else
-        order = (;order..., executedQty=order.origQty)
-        # order.executedQty = order.origQty
-        # TODO implement production
+    else  # no backtest
+        xchorder = CryptoXch.getorder(order.base, order.orderId)
+        if (status == "CANCELED") && (xchorder.status != "FILLED")
+            xchorder = CryptoXch.cancelorder(order.base, order.orderId)
+        end
+        order = (;order...,
+            price = xchorder["price"],
+            origQty = xchorder["origQty"],
+            executedQty = xchorder["executedQty"],
+            status = xchorder["status"],
+            timeInForce = xchorder["timeInForce"],
+            type = xchorder["type"],
+            side = xchorder["side"],
+            opentime = order.opentime,
+            closetime = order.closetime,
+            message = order.message
+        )
+        if "fills" in keys(xchorder)
+            logfills!(cache, order.orderId, xchorder["fills"])
+        end
         # TODO read order and fill executedQty and confirm FILLED (if not CANCELED) and read order fills (=transactions) to get the right fee
     end
-    # reportliquidity(cache, order.base)
-    order = (;order..., status = status)
-    # order.status = status
-    executedusdt = CryptoXch.floorbase("usdt", order.executedQty * order.price)
+    executedusdt = CryptoXch.ceilbase("usdt", order.executedQty * order.price)
     if (side == "BUY")
-        orderusdt = CryptoXch.floorbase("usdt", order.origQty * order.price)
+        orderusdt = CryptoXch.ceilbase("usdt", order.origQty * order.price)
         if order.executedQty > 0
             Classify.registerbuy!(cache.tradechances, timeix, order.price, order.orderId, cache.bd[order.base].features)
         end
@@ -388,43 +426,67 @@ function neworder!(cache, base, price, qty, side, tc)
         while !isnothing(Classify.tradechanceoforder(cache.tradechances, orderid))
             orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
         end
-        order = (
-            base = base,
-            orderId = orderid, # unique id in backtest
-            price = price,
-            origQty = qty,
-            executedQty = 0.0,
-            status = "NEW",
-            timeInForce = "GTC",
-            type = "LIMIT",
-            side = side,
-            opentime = ordertime(cache, base),
-            closetime = dummytime(),
-            message = ""
-        )
     else
+        orderid = 0
+    end
+    order = (
+        base = base,
+        orderId = orderid, # unique id in backtest
+        price = price,
+        origQty = qty,
+        executedQty = 0.0,
+        status = "NEW",
+        timeInForce = "GTC",
+        type = "LIMIT",
+        side = side,
+        opentime = ordertime(cache, base),
+        closetime = dummytime(),
+        message = ""
+    )
         # TODO implement production
         # create new one with corrected price
         # use create order response to fill order record
         # check balances and whether it matches with fills of transactions including fees
-    end
-    # reportliquidity(cache, base)
+
+        # reportliquidity(cache, base)
     # @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
-    orderusdt = CryptoXch.floorbase("usdt", order.origQty * order.price)
+    orderusdt = CryptoXch.ceilbase("usdt", qty * price)
     if orderusdt < CryptoXch.minimumquotevolume
-        msg = "neworder! $side order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient minimum volume $(CryptoXch.minimumquotevolume) USDT - order #$(order.orderId) is not executed"
+        msg = "neworder! $side order $qty $(order.base)=$orderusdt USDT has insufficient minimum volume $(CryptoXch.minimumquotevolume) USDT - order #$(order.orderId) is not executed"
         msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
-        order = (;order..., message=msg);
+        order = (;order..., status = "REJECTED", orderId=0, message=msg);
+        push!(cache.orderlog, order)
         @warn msg
         return
     end
     if side == "BUY"
         if orderusdt > cache.usdtfree
-            msg = "neworder! BUY order $(order.origQty) $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
+            msg = "neworder! BUY order $qty $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
             msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
-            order = (;order..., message=msg);
+            order = (;order..., status = "REJECTED", orderId=0, message=msg);
+            push!(cache.orderlog, order)
             @warn msg
         else
+            if !backtest(cache)
+                xchorder = CryptoXch.createorder(base, "BUY", price, qty)
+                order = (
+                    base = xchorder["base"],
+                    orderId = xchorder["orderId"],
+                    price = xchorder["price"],
+                    origQty = xchorder["origQty"],
+                    executedQty = xchorder["executedQty"],
+                    status = xchorder["status"],
+                    timeInForce = xchorder["timeInForce"],
+                    type = xchorder["type"],
+                    side = xchorder["side"],
+                    opentime = xchorder["time"],
+                    closetime = order.closetime,
+                    message = order.message
+                )
+                if "fills" in keys(xchorder)
+                    logfills!(cache, order.orderId, xchorder["fills"])
+                end
+            end
             cache.usdtfree -= orderusdt
             cache.usdtlocked += orderusdt
             push!(cache.openorders, order)
@@ -434,11 +496,31 @@ function neworder!(cache, base, price, qty, side, tc)
         if order.origQty > cache.bd[order.base].assetfree
             msg = "neworder! SELL order $(order.origQty) $(order.base) has insufficient free coverage $(cache.bd[order.base].assetfree) $(order.base) - order #$(order.orderId) is reduced"
             msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
-            order = (;order..., message=msg);
             @warn msg
 
-            cache.bd[order.base].assetfree = CryptoXch.floorbase(base, cache.bd[order.base].assetfree)
-            order = (;order..., origQty=cache.bd[order.base].assetfree)
+            qty = CryptoXch.floorbase(base, cache.bd[order.base].assetfree)
+            if !backtest(cache)
+                xchorder = CryptoXch.createorder(base, "SELL", price, qty)
+                order = (
+                    base = xchorder["base"],
+                    orderId = xchorder["orderId"],
+                    price = xchorder["price"],
+                    origQty = xchorder["origQty"],
+                    executedQty = xchorder["executedQty"],
+                    status = xchorder["status"],
+                    timeInForce = xchorder["timeInForce"],
+                    type = xchorder["type"],
+                    side = xchorder["side"],
+                    opentime = xchorder["time"],
+                    closetime = order.closetime,
+                    message = order.message
+                )
+                if "fills" in keys(xchorder)
+                    logfills!(cache, order.orderId, xchorder["fills"])
+                end
+            else
+                order = (;order..., origQty=qty)
+            end
         end
         cache.bd[order.base].assetfree  -= order.origQty
         cache.bd[order.base].assetlocked  += order.origQty

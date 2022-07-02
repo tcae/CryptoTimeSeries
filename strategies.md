@@ -139,10 +139,10 @@ Break out handling approach: if smaller regression windows are within x \* stand
 
 Consider out of spread deviations down from a reached price level as trade criteria.
 
-
 ## Notes backup from Trade.jl
 
 Challenges:
+
 - what is an uptrend, considering that we have more or less significant distortions during an uptrend? Once determined, history data need to get corresponding **`targetlabels`**
 - when does a profitable uptrend starts?
 - when does an uptrend ends? Independent whether or not it is a profitable uptrend we have to limit losses
@@ -152,13 +152,14 @@ Challenges:
 - how to adapt the parameters of the trading strategy based on history data? **`trainstrategy`**
 - how to evaluate the success of the trading strategy? **`assessstrategy`**
 - how to learn from history concerning patterns and learning strategies?
-    + visualize / report an overall status
-    + in situations that need to be changed
-        - understand what happened
-        - how probable are comparable situations
+  - visualize / report an overall status
+  - in situations that need to be changed
+    - understand what happened
+    - how probable are comparable situations
 - what is an efficient SW design for the **`tradeloop`**
 
 ## Notes for using volatility and trend tracker in combination
+
 - General thoughts
   - less volatility = more stable direction -> tracking preferred
   - high volatility = instable direction -> catch statistic outliers for yield
@@ -179,7 +180,7 @@ Challenges:
   - in general spread window is
     - the shortest regression window that satisfies profitabilityrequirements with deviation catching
     - has positive trend
-    - has the most catches * normal deviation range (e.g. 2 * 1 sigma) = gain wihtin 24h among spread window candidates
+    - has the most catches \* normal deviation range (e.g. 2 \* 1 sigma) = gain wihtin 24h among spread window candidates
     - spread sigma calculation = median of this window over the last 24h
   - for every buy the spread is newly calculated and stays with the trade
 - tracker window change
@@ -252,13 +253,17 @@ Challenges:
     - 22-07-01_22-39-20_SHA-922d3d24efbaf1933037263adc6b2fdd6b789d62
     - bestgain, selected and 1h grad > min gain and 24h grad > min gain and current grad > window/4 pastgrad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
     - TOPPER
-
+- (10000->9982.5 with 200 invest)
+  - traded Any["btc"]
+  - finished trading core loop for run ID: 22-07-02_17-25-26_SHA-98bc952a909f122d01e362316090efea602cc81a
+  - traderules001 bestgain, selected and 15min grad > min and 24h grad > min gain and current grad > window/4 pastgrad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
 
 ### to be assessed
 
 - significant sell price change to the worse --> if regression gradient negative then sell at regression price (instead of upper band price) to get smaller gain instead of waiting for stop loss
 
 ## Notes for using volatility and trend tracker side by side
+
 - General thoughts
   - less volatility = more stable direction -> tracking preferred
   - high volatility = instable direction -> catch statistic outliers for yield
