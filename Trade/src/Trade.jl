@@ -88,6 +88,11 @@ function freelocked(portfoliodf, base)
     end
 end
 
+"""
+Loads the last stored opoen orders and requests all open orders from the XCH.
+opentime, closetime and messages are taken over from stored open orders but XCH open orders are leading.
+As a result a dataframe of open orders is created in cache.
+"""
 function loadopenorders!(cache::Cache)
     csvoodf = DataFrame()
     if isfile(logpath("openorders.csv"))
@@ -593,9 +598,12 @@ function tradeloop(backtestchunk)
         #     # TODO the read ohlcv data shall be from time to time appended to the historic data
         # end
         reportliquidity(cache, nothing)
+        total, free, locked = totalusdtliquidity(cache)
+        println("liquidity portfolio total free: $(round(free;digits=3)) USDT, locked: $(round(locked;digits=3)) USDT, total: $(round(total;digits=3)) USDT")
     end
     writetradelogs(cache)
-    println("finished trading core loop")
+    println("traded $(keys(cache.bd))")
+    println("finished trading core loop for run ID: $(cache.runid)")
     # Profile.print()
     global_logger(defaultlogger)
     close(cache.messagelog)

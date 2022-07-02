@@ -234,7 +234,6 @@ Challenges:
   - (10000->9973.4 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.01, 1.0, 3.0, [1.0])
   - (10000->9985.6 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 1.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
   - (10000->10004.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
-    - TOPPER
     - (10000->9994.9 with 200 invest) with selected regr  && 24 h regr gradient  > min gradient moved from Classify.calcspread to Classify.breakoutextremesix! where it belongs as part of the point selection
   - (10000->9990.9 with 200 invest) bestgain, 24h grad positiv, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 3.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
     - move from 2% to 3% 24h gain/day decreases performance slightly
@@ -246,6 +245,13 @@ Challenges:
     - no improvement with 4h 1* minimal gradient rule on top of 24h gradient rule
   - (10000->10003.3 with 200 invest) bestgain, 24h grad positiv, 1hgrad > 1 * min grad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
     - close to Topper with 1h 1* minimal gradient rule on top of 24h gradient rule
+  - (10000->9993.0 with 200 invest)
+    - 22-07-01_22-38-25_SHA-e2da163c794b3860973777c8e1afd3f331987827
+    - bestgain, selected and (NO 1h grad > min gain) 24h grad > min gain and current grad > window/4 pastgrad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
+  - (10000->10008.3 with 200 invest)
+    - 22-07-01_22-39-20_SHA-922d3d24efbaf1933037263adc6b2fdd6b789d62
+    - bestgain, selected and 1h grad > min gain and 24h grad > min gain and current grad > window/4 pastgrad, sellprice adaptation up & down, std instead of medianstd Classify.tr001default = Classify.TradeRules001(0.015, 2.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+    - TOPPER
 
 
 ### to be assessed
