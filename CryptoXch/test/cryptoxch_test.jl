@@ -168,16 +168,16 @@ end
     @test ood[1]["fills"][1]["qty"] isa AbstractFloat
 
     oo1 = CryptoXch.createorder("btc", "BUY", 19001.0, 20.0)
-    println("createorder: $oo1")
+    # println("createorder: $oo1")
     oo2 = CryptoXch.getorder("btc", oo1["orderId"])
-    println("getorder: $oo2")
-    # @test oo1["orderId"] == oo2["orderId"]
+    # println("getorder: $oo2")
+    @test oo1["orderId"] == oo2["orderId"]
     ooarray = CryptoXch.getopenorders(nothing)
-    println("getopenorders(nothing): $ooarray")
+    # println("getopenorders(nothing): $ooarray")
     ooarray = CryptoXch.getopenorders("btc")
-    println("getopenorders(\"btc\"): $ooarray")
+    # println("getopenorders(\"btc\"): $ooarray")
     oo2 = CryptoXch.cancelorder("btc", oo1["orderId"])
-    println("cancelorder: $oo2")
+    # println("cancelorder: $oo2")
     @test oo1["orderId"] == oo2["orderId"]
 
 end

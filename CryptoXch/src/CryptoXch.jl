@@ -8,6 +8,27 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using MyBinance, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
+struct SymbolFilter
+    quoteprecision
+    quotemin
+    pricestep
+    baseprecision
+    basemin
+    basestep
+    function SymbolFilter(base)
+        symbol = uppercase(base * EnvConfig.cryptoquote)
+        symdict = symboldict(xchinfo, symbol)
+        filter = symdict["filters"]
+        new(
+            symdict["quoteAssetPrecision"],
+            filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional"),
+            filterflotatvalue(filter, "PRICE_FILTER", "tickSize"),
+            symdict["baseAssetPrecision"],
+            filterflotatvalue(filter, "LOT_SIZE", "minQty"),
+            filterflotatvalue(filter, "LOT_SIZE", "stepSize")
+        )
+    end
+end
 
 basenottradable = ["boba",
     "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm", "hc", "mco",
@@ -17,6 +38,7 @@ basestablecoin = ["usdt", "tusd", "busd", "usdc", "eur"]
 baseignore = []
 baseignore = append!(baseignore, basestablecoin, basenottradable)
 minimumquotevolume = 10  # USDT
+xchinfo = MyBinance.getExchangeInfo()
 
 function klines2jdict(jsonkline)
     Dict(
@@ -556,8 +578,69 @@ function cancelorder(base, orderid)
     # "side": "BUY"
 end
 
+"""
+Returns the symbol Dict of symbol from a Binance exchange info structure or `nothing` if symbol entry not found
+"""
+function symboldict(xchinfo, symbol)
+    for sym in xchinfo["symbols"]
+        if sym["symbol"] == symbol
+            return sym
+            break
+        end
+    end
+    return nothing
+end
+
+function filterflotatvalue(symbolfilters, filtertype, filterentry)
+    for filter in symbolfilters
+        if filter["filterType"] == filtertype
+            return parse(Float32, filter[filterentry])
+        end
+    end
+    @error "filter of type $filtertype and entry $filterentry not found"
+    return 0.0
+end
+
+"""
+adapt limitprice and usdtquantity according to xch filter rules and issue order
+"""
 function createorder(base::String, orderside::String, limitprice, usdtquantity)
     symbol = uppercase(base * EnvConfig.cryptoquote)
+    symdict = symboldict(xchinfo, symbol)
+    limitprice = round(limitprice, ; digits=symdict["quoteAssetPrecision"])
+    usdtquantity = floor(usdtquantity, ; digits=symdict["quoteAssetPrecision"])
+    filter = symdict["filters"]
+    minnotional = filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional")
+    if usdtquantity < minnotional
+        @error "create order error due to qty $usdtquantity < minimal qty $minnotional for $symbol"
+    end
+    minprize = filterflotatvalue(filter, "PRICE_FILTER", "minPrice")
+    if limitprice < minprize
+        @error "create order error due to limitprice $limitprice < minimal price $minprize for $symbol"
+    end
+    maxprize = filterflotatvalue(filter, "PRICE_FILTER", "maxPrice")
+    if limitprice > maxprize
+        @error "create order error due to limitprice $limitprice > maximal price $maxprize for $symbol"
+    end
+    ticksize = filterflotatvalue(filter, "PRICE_FILTER", "tickSize")
+    if ticksize > 0.0
+        limitprice = limitprice - (limitprice % ticksize)
+    end
+    qty = usdtquantity / limitprice
+    qty = round(qty, ; digits=symdict["baseAssetPrecision"])
+    minqty = filterflotatvalue(filter, "LOT_SIZE", "minQty")
+    if qty < minqty
+        @error "create order error due to qty $qty < minimal qty $minqty for $symbol"
+    end
+    maxqty = filterflotatvalue(filter, "LOT_SIZE", "maxQty")
+    if qty > maxqty
+        @error "create order error due to qty $qty > maximal qty $maxqty for $symbol"
+    end
+    stepsize = filterflotatvalue(filter, "LOT_SIZE", "stepSize")
+    if stepsize > 0.0
+        qty = qty - (qty % stepsize)
+    end
+    filter = xchinfo["symbols"]
     qty = floor(usdtquantity / limitprice; digits=4)  #* round due to LOT_FILTER minimum granularity constraint
     order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
     oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)

@@ -26,6 +26,7 @@ mutable struct BaseInfo
     assetlocked
     currentix
     features
+    symbolfilter
 end
 
 """
@@ -187,7 +188,7 @@ function preparetradecache!(cache::Cache)
         end
         currentix = backtest(cache) ? Classify.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
         free, locked = freelocked(pdf, base)
-        cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, Classify.requiredminutes+cache.backtestchunk))
+        cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, Classify.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
         # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
     end
     # no need to cache assets because they are implicitly stored via keys(bd)
@@ -420,7 +421,13 @@ function buyqty(cache, base)
 end
 
 function neworder!(cache, base, price, qty, side, tc)
-    qty = CryptoXch.floorbase(base, qty)  # see also minimum order granularity of xchange
+    if cache.bd[base].symbolfilter.pricestep > 0.0
+        price = price - (price % cache.bd[base].symbolfilter.pricestep)
+    end
+    qty = floor(qty, ; digits=cache.bd[base].symbolfilter.baseprecision)
+    if cache.bd[base].symbolfilter.basestep > 0.0
+        qty = qty - (qty % cache.bd[base].symbolfilter.basestep)
+    end
     if backtest(cache)
         orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
         while !isnothing(Classify.tradechanceoforder(cache.tradechances, orderid))
@@ -443,16 +450,21 @@ function neworder!(cache, base, price, qty, side, tc)
         closetime = dummytime(),
         message = ""
     )
-        # TODO implement production
-        # create new one with corrected price
-        # use create order response to fill order record
-        # check balances and whether it matches with fills of transactions including fees
-
-        # reportliquidity(cache, base)
+    # TODO check balances and whether it matches with fills of transactions including fees
+    # reportliquidity(cache, base)
     # @info "open $(order.side) order #$(order.orderId) of $(order.origQty) $(order.base) because $(order.status) at $priceusdt USDT tc: $tc"
-    orderusdt = CryptoXch.ceilbase("usdt", qty * price)
-    if orderusdt < CryptoXch.minimumquotevolume
-        msg = "neworder! $side order $qty $(order.base)=$orderusdt USDT has insufficient minimum volume $(CryptoXch.minimumquotevolume) USDT - order #$(order.orderId) is not executed"
+    if qty < cache.bd[base].symbolfilter.basemin
+        msg = "neworder! $side order $qty $(order.base)=$qty $base is less than required minimum amount of $(cache.bd[base].symbolfilter.basemin) - order #$(order.orderId) is not executed"
+        msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
+        order = (;order..., status = "REJECTED", orderId=0, message=msg);
+        push!(cache.orderlog, order)
+        @warn msg
+        return
+    end
+    orderusdt = qty * price
+    orderusdt = round(orderusdt, ; digits=cache.bd[base].symbolfilter.quoteprecision)
+    if orderusdt < cache.bd[base].symbolfilter.quotemin
+        msg = "neworder! $side order $qty $(order.base)=$orderusdt USDT is less than required minimum volume $(cache.bd[base].symbolfilter.quotemin) USDT - order #$(order.orderId) is not executed"
         msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
         order = (;order..., status = "REJECTED", orderId=0, message=msg);
         push!(cache.orderlog, order)
