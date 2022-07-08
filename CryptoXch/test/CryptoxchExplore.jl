@@ -36,7 +36,6 @@ function initialbtcdownload()
     return ohlcv
 end
 
-EnvConfig.init(EnvConfig.test)
 
 # oo1 = CryptoXch.createorder("btc", "BUY", 19001.0, 20.0)
 # println("createorder: $oo1")
@@ -98,6 +97,20 @@ function showxchinfo()
     println("listed $count symbols")
 end
 
-showxchinfo()
+function testorder(price, usdtvol)
+    oo = nothing
+    try
+        oo = CryptoXch.createorder("btc", "BUY", price, usdtvol)
+    catch err
+        @error err
+    end
+    !isnothing(oo) && @info oo
+end
+
+# showxchinfo()
+
+testorder(19001.0, 20.0)
+testorder(19001.0001, 5.0)
+testorder(19001.00000000002, 20.00008)
 
 end  # module

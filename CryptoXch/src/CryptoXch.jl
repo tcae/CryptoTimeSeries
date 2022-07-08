@@ -176,7 +176,7 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
         notreachedenddate = (res[end, :opentime] < enddt)
         if res[end, :opentime] <= lastdt
             # no progress since last ohlcv  read
-            Logging.@warn "no progress since last ohlcv read"
+            Logging.@warn "no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime])"
             break
         end
         lastdt = res[end, :opentime]
@@ -607,8 +607,8 @@ adapt limitprice and usdtquantity according to xch filter rules and issue order
 function createorder(base::String, orderside::String, limitprice, usdtquantity)
     symbol = uppercase(base * EnvConfig.cryptoquote)
     symdict = symboldict(xchinfo, symbol)
-    limitprice = round(limitprice, ; digits=symdict["quoteAssetPrecision"])
-    usdtquantity = floor(usdtquantity, ; digits=symdict["quoteAssetPrecision"])
+    limitprice = round(limitprice; digits=symdict["quoteAssetPrecision"])
+    usdtquantity = floor(usdtquantity; digits=symdict["quoteAssetPrecision"])
     filter = symdict["filters"]
     minnotional = filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional")
     if usdtquantity < minnotional
@@ -622,10 +622,11 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     if limitprice > maxprize
         @error "create order error due to limitprice $limitprice > maximal price $maxprize for $symbol"
     end
-    ticksize = filterflotatvalue(filter, "PRICE_FILTER", "tickSize")
-    if ticksize > 0.0
-        limitprice = limitprice - (limitprice % ticksize)
-    end
+    tickdigits = Int64(floor(-log10(filterflotatvalue(filter, "PRICE_FILTER", "tickSize")); digits=0))
+    println("before tickdigits correction: limitprice=$limitprice tickdigits=$tickdigits maxprice=$maxprize minprice=$minprize")
+    limitprice = round(limitprice; digits=tickdigits)
+    println("after tickdigits correction: limitprice=$limitprice")
+
     qty = usdtquantity / limitprice
     qty = round(qty, ; digits=symdict["baseAssetPrecision"])
     minqty = filterflotatvalue(filter, "LOT_SIZE", "minQty")
@@ -636,12 +637,12 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     if qty > maxqty
         @error "create order error due to qty $qty > maximal qty $maxqty for $symbol"
     end
-    stepsize = filterflotatvalue(filter, "LOT_SIZE", "stepSize")
-    if stepsize > 0.0
-        qty = qty - (qty % stepsize)
-    end
+    stepdigits = Int64(floor(-log10(filterflotatvalue(filter, "LOT_SIZE", "stepSize")); digits=0))
+    println("before stepdigits correction: limitprice=$qty tickdigits=$stepdigits maxqty=$maxqty minqty=$minqty")
+    qty = round(qty; digits=stepdigits)
+    println("after stepdigits correction: limitprice=$qty")
+
     filter = xchinfo["symbols"]
-    qty = floor(usdtquantity / limitprice; digits=4)  #* round due to LOT_FILTER minimum granularity constraint
     order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
     oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
     # println(oo)
@@ -672,7 +673,18 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
 
 end
 
-EnvConfig.init(EnvConfig.production)
+function createordernocheck(base::String, orderside::String, limitprice, usdtquantity)
+    println("$base: $orderside $limitprice $usdtquantity")
+    symbol = uppercase(base * EnvConfig.cryptoquote)
+    qty = usdtquantity / limitprice
+    order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
+    oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=false)
+    # println(oo)
+    ooarray = orderstring2values!([oo])
+    return ooarray[begin]
+end
+
+# EnvConfig.init(EnvConfig.production)
 # EnvConfig.init(EnvConfig.test)
 # oo = createorder("btc", "BUY", 18850.0, 90.0)
 # oo = getopenorders(nothing)
