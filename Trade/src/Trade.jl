@@ -34,6 +34,9 @@ trade cache contains all required data to support the tarde loop
 """
 mutable struct Cache
     backtestchunk  # 0 if no backtest or in case of backtest nbr of minutes to process until next reload
+    backtestperiod  # only considered if backtestchunk > 0
+    backtestenddt  # only considered if backtestchunk > 0
+    baseconstraint  # if != nothing then only trade bases that are in baseconstraint
     usdtfree
     usdtlocked
     classify!  # function to classsify trade chances
@@ -44,17 +47,31 @@ mutable struct Cache
     transactionlog  # DataFrame of transaction to fill orders
     messagelog  # fileid
     runid
-    Cache(backtestchunk) = new(backtestchunk, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, orderdataframex(), orderdataframex(), filldataframe(), nothing, runid())
+    function Cache(backtestchunk, backtestperiod, backtestenddt, baseconstraint)
+        @assert backtestchunk >= 0
+        backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
+        # classify = Classify.traderules001!
+        openorders = orderdataframex()
+        orderlog = orderdataframex()
+        transactionlog = filldataframe()
+        baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
+        runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
+        messagelog = open(logpath("messagelog_$runid.txt"), "w")
+        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules002!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+    end
 end
 
 makerfee = 0.075 / 100
 takerfee = 0.075 / 100
 tradingfee = max(makerfee, takerfee)
-runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
 ohlcvdf(cache, base) = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
 backtest(cache) = cache.backtestchunk > 0
 dummytime() = DateTime("2000-01-01T00:00:00")
 
+function concatstringarray(strarr)
+
+end
 function orderdataframex()
     return DataFrame(
         base=String[],
@@ -156,41 +173,30 @@ function preparetradecache!(cache::Cache)
     usdtdf = CryptoXch.getUSDTmarket()
     pdf = CryptoXch.portfolio(usdtdf)
     cache.usdtfree, cache.usdtlocked = freelocked(pdf, "usdt")
-    usdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :]
-    focusbases = usdtdf.base
-    if backtest(cache)
-        if EnvConfig.configmode == EnvConfig.test
-            initialperiod = Dates.Minute(Classify.requiredminutes + 4*60)
-            # 3*requiredminutes for 1*  to calc features, 1* to build trade history, 1* to check Trade loop
-        else
-            initialperiod = Dates.Month(6)
-            # initialperiod = Dates.Year(4)
-        end
-        enddt = DateTime("2022-04-02T01:00:00")  # fix to get reproducible results
-    else
-        initialperiod = Dates.Minute(Classify.requiredminutes)
-        # 2* because 1* for collecting breakouts to compare and 1* to build up std of largest window
-        enddt = floor(Dates.now(Dates.UTC), Dates.Minute)  # don't use ceil because that includes a potentially partial running minute
-    end
-    startdt = enddt - initialperiod
+    liquidusdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :base]
+    enddt = backtest(cache) ? cache.backtestenddt : floor(Dates.now(Dates.UTC), Dates.Minute)
+    initialperiod = backtest(cache) ? Dates.Minute(Classify.requiredminutes) + cache.backtestperiod : Dates.Minute(Classify.requiredminutes)
+    startdt = floor(enddt - initialperiod, Dates.Minute)
     @assert startdt < enddt
-    startdt = floor(startdt, Dates.Minute)
-    for base in focusbases
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.read!(ohlcv)
-        origlen = size(ohlcv.df, 1)
-        ohlcv.df = ohlcv.df[enddt .>= ohlcv.df.opentime .>= startdt, :]
-        println("cutting $base ohlcv from $origlen to $(size(ohlcv.df, 1)) minutes ($(EnvConfig.timestr(startdt)) - $(EnvConfig.timestr(enddt)))")
-        # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
-        if size(Ohlcv.dataframe(ohlcv), 1) < Classify.requiredminutes
-            @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Classify.requiredminutes
-            continue
+    for base in usdtdf.base
+        if (isnothing(cache.baseconstraint) ? true : (base in cache.baseconstraint)) && ((base in pdf.base) || (base in liquidusdtdf))
+            ohlcv = Ohlcv.defaultohlcv(base)
+            Ohlcv.read!(ohlcv)
+            origlen = size(ohlcv.df, 1)
+            ohlcv.df = ohlcv.df[enddt .>= ohlcv.df.opentime .>= startdt, :]
+            println("cutting $base ohlcv from $origlen to $(size(ohlcv.df, 1)) minutes ($(EnvConfig.timestr(startdt)) - $(EnvConfig.timestr(enddt)))")
+            # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
+            if size(Ohlcv.dataframe(ohlcv), 1) < Classify.requiredminutes
+                @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Classify.requiredminutes
+                continue
+            end
+            currentix = backtest(cache) ? Classify.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
+            free, locked = freelocked(pdf, base)
+            cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, Classify.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
+            # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
         end
-        currentix = backtest(cache) ? Classify.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
-        free, locked = freelocked(pdf, base)
-        cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, Classify.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
-        # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
     end
+    println("trading $(keys(cache.bd))")
     # no need to cache assets because they are implicitly stored via keys(bd)
     reportliquidity(cache, nothing)
     reportliquidity(cache, "usdt")
@@ -251,7 +257,7 @@ function appendmostrecent!(cache::Cache, base)
             continuetrading = false
             @info "stop trading loop due to backtest ohlcv for $base exhausted - count = $count"
         end
-    else  # production
+    else  # no backtest
         lastdt = df.opentime[end]
         enddt = sleepuntilnextminute(lastdt)
         # startdt = enddt - Dates.Minute(Features.requiredminutes)
@@ -664,10 +670,8 @@ logpath(file) = normpath(joinpath(homedir(), EnvConfig.datapathprefix, file))
 + follow up on open orders (preferably non blocking)
 
 """
-function tradeloop(backtestchunk)
+function tradeloop(cache)
     # TODO add hooks to enable coupling to the cockpit visualization
-    cache = Cache(backtestchunk)
-    cache.messagelog = open(logpath("messagelog_$(cache.runid).txt"), "w")
     logger = SimpleLogger(cache.messagelog)
     defaultlogger = global_logger(logger)
     @info "run ID: $(cache.runid)"

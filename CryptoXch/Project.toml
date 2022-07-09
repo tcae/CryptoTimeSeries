@@ -1,7 +1,7 @@
 name = "CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.1.1"
+version = "0.1.2"
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"

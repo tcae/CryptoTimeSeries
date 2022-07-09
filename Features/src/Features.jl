@@ -844,6 +844,7 @@ end
 # end
 
 featureix(f2::Features002, ohlcvix) = ohlcvix - f2.firstix + 1
+ohlcvix(f2::Features002, featureix) = featureix + f2.firstix - 1
 
 """
 In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`

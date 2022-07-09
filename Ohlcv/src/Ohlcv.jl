@@ -226,10 +226,11 @@ function fillgaps!(ohlcv::OhlcvData)
 end
 
 """
-returns the relative forward/backward looking gain
+- returns the relative forward/backward looking gain
+- deducts relativefee from both prices
 """
-function relativegain(prices, baseix, gainix)
-    gain = (prices[gainix] - prices[baseix]) / prices[baseix]
+function relativegain(prices, baseix, gainix; relativefee=0.0)
+    gain = (prices[gainix] - prices[baseix] - (prices[gainix] + prices[baseix]) * relativefee) / prices[baseix]
     # println("forward gain(prices[$baseix]= $(prices[baseix]) prices[$gainix]= $(prices[gainix]))=$gain")
     return gain
 end

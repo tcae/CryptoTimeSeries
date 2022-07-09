@@ -16,17 +16,21 @@ struct SymbolFilter
     basemin
     basestep
     function SymbolFilter(base)
-        symbol = uppercase(base * EnvConfig.cryptoquote)
-        symdict = symboldict(xchinfo, symbol)
-        filter = symdict["filters"]
-        new(
-            symdict["quoteAssetPrecision"],
-            filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional"),
-            filterflotatvalue(filter, "PRICE_FILTER", "tickSize"),
-            symdict["baseAssetPrecision"],
-            filterflotatvalue(filter, "LOT_SIZE", "minQty"),
-            filterflotatvalue(filter, "LOT_SIZE", "stepSize")
-        )
+        if EnvConfig.configmode == EnvConfig.test
+            new(6, 10, 0.01, 6, 0.1, 0.01)
+        else
+            symbol = uppercase(base * EnvConfig.cryptoquote)
+            symdict = symboldict(xchinfo, symbol)
+            filter = symdict["filters"]
+            new(
+                symdict["quoteAssetPrecision"],
+                filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional"),
+                filterflotatvalue(filter, "PRICE_FILTER", "tickSize"),
+                symdict["baseAssetPrecision"],
+                filterflotatvalue(filter, "LOT_SIZE", "minQty"),
+                filterflotatvalue(filter, "LOT_SIZE", "stepSize")
+            )
+        end
     end
 end
 
@@ -468,7 +472,7 @@ function portfolio(usdtdf)
                     push!(df, (base, lockedbase, freebase, usdtvolumebase))
                 end
             elseif base in basestablecoin
-                push!(df, (base, lockedbase, freebase, 1.0))
+                push!(df, (base, lockedbase, freebase, freebase + lockedbase))
             end
         end
     else  # test or training
@@ -609,40 +613,47 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     symdict = symboldict(xchinfo, symbol)
     limitprice = round(limitprice; digits=symdict["quoteAssetPrecision"])
     usdtquantity = floor(usdtquantity; digits=symdict["quoteAssetPrecision"])
-    filter = symdict["filters"]
-    minnotional = filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional")
+    symfilter = SymbolFilter(base)
+    # filter = symdict["filters"]
+    # minnotional = filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional")
+    minnotional = symfilter.quotemin
     if usdtquantity < minnotional
         @error "create order error due to qty $usdtquantity < minimal qty $minnotional for $symbol"
     end
-    minprize = filterflotatvalue(filter, "PRICE_FILTER", "minPrice")
-    if limitprice < minprize
-        @error "create order error due to limitprice $limitprice < minimal price $minprize for $symbol"
-    end
-    maxprize = filterflotatvalue(filter, "PRICE_FILTER", "maxPrice")
-    if limitprice > maxprize
-        @error "create order error due to limitprice $limitprice > maximal price $maxprize for $symbol"
-    end
-    tickdigits = Int64(floor(-log10(filterflotatvalue(filter, "PRICE_FILTER", "tickSize")); digits=0))
+    # minprize = filterflotatvalue(filter, "PRICE_FILTER", "minPrice")
+    # if limitprice < minprize
+    #     @error "create order error due to limitprice $limitprice < minimal price $minprize for $symbol"
+    # end
+    # maxprize = filterflotatvalue(filter, "PRICE_FILTER", "maxPrice")
+    # if limitprice > maxprize
+    #     @error "create order error due to limitprice $limitprice > maximal price $maxprize for $symbol"
+    # end
+    ticksize = symfilter.pricestep
+    # tickdigits = Int64(floor(-log10(filterflotatvalue(filter, "PRICE_FILTER", "tickSize")); digits=0))
+    tickdigits = Int64(floor(-log10(ticksize); digits=0))
     println("before tickdigits correction: limitprice=$limitprice tickdigits=$tickdigits maxprice=$maxprize minprice=$minprize")
     limitprice = round(limitprice; digits=tickdigits)
     println("after tickdigits correction: limitprice=$limitprice")
 
     qty = usdtquantity / limitprice
-    qty = round(qty, ; digits=symdict["baseAssetPrecision"])
-    minqty = filterflotatvalue(filter, "LOT_SIZE", "minQty")
+    # qty = round(qty, ; digits=symdict["baseAssetPrecision"])
+    qty = round(qty, ; digits=symfilter.baseprecision)
+    # minqty = filterflotatvalue(filter, "LOT_SIZE", "minQty")
+    minqty = symfilter.basemin
     if qty < minqty
         @error "create order error due to qty $qty < minimal qty $minqty for $symbol"
     end
-    maxqty = filterflotatvalue(filter, "LOT_SIZE", "maxQty")
-    if qty > maxqty
-        @error "create order error due to qty $qty > maximal qty $maxqty for $symbol"
-    end
-    stepdigits = Int64(floor(-log10(filterflotatvalue(filter, "LOT_SIZE", "stepSize")); digits=0))
+    # maxqty = filterflotatvalue(filter, "LOT_SIZE", "maxQty")
+    # if qty > maxqty
+    #     @error "create order error due to qty $qty > maximal qty $maxqty for $symbol"
+    # end
+    # stepdigits = Int64(floor(-log10(filterflotatvalue(filter, "LOT_SIZE", "stepSize")); digits=0))
+    basestep = symfilter.basestep
+    stepdigits = Int64(floor(-log10(basestep); digits=0))
     println("before stepdigits correction: limitprice=$qty tickdigits=$stepdigits maxqty=$maxqty minqty=$minqty")
     qty = round(qty; digits=stepdigits)
     println("after stepdigits correction: limitprice=$qty")
 
-    filter = xchinfo["symbols"]
     order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
     oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
     # println(oo)
