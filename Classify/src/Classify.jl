@@ -106,7 +106,7 @@ function buycompliant001(f2, window, breakoutstd, ix)
         (spreadpercent >= tr001default.minimumgain) &&
         (daygain(afr.grad[fix], df.close[ix]) > tr001default.minimumgradientdaygain) &&
         (daygain(afr.grad[fix], df.close[ix]) > daygain(afr.grad[pastfix], df.close[pastix])) &&
-        # (daygain(f2.regr[1*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaygain) &&
+        (daygain(f2.regr[1*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaygain) &&
         (daygain(f2.regr[24*60].grad[fix], df.close[ix]) > tr001default.minimumgradientdaygain))
     return ok
 end
