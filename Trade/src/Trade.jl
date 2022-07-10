@@ -57,8 +57,8 @@ mutable struct Cache
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
         messagelog = open(logpath("messagelog_$runid.txt"), "w")
-        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
-        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules002!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules002!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
     end
 end
 

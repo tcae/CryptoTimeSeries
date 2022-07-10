@@ -2,7 +2,7 @@
 
 julia_version = "1.8.0-rc1"
 manifest_format = "2.0"
-project_hash = "7de2e65e1e5e57a85a86690a3bcd2bda098c4b87"
+project_hash = "58fd2255aaf280e2315a5d742ca0850503c014ad"
 
 [[deps.ARFFFiles]]
 deps = ["CategoricalArrays", "Dates", "Parsers", "Tables"]
@@ -835,6 +835,18 @@ deps = ["MacroTools", "Test"]
 git-tree-sha1 = "6187bb2d5fcbb2007c39e7ac53308b0d371124bd"
 uuid = "9fb69e20-1954-56bb-a84f-559cc56a8ff7"
 version = "0.2.2"
+
+[[deps.Hwloc]]
+deps = ["Hwloc_jll"]
+git-tree-sha1 = "92d99146066c5c6888d5a3abc871e6a214388b91"
+uuid = "0e44f5e4-bd66-52a0-8798-143a42290a1d"
+version = "2.0.0"
+
+[[deps.Hwloc_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "303d70c961317c4c20fafaf5dbe0e6d610c38542"
+uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
+version = "2.7.1+0"
 
 [[deps.HypergeometricFunctions]]
 deps = ["DualNumbers", "LinearAlgebra", "SpecialFunctions", "Test"]

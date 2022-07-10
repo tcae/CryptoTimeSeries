@@ -27,6 +27,19 @@ mutable struct TradeRules002  # only relevant for traderules002!
     shorterwindowimprovement  # gain factor to exceed by shorter backtest window in order to be considered
 end
 
+"Interpolate a 2% gain for 24h and 0.1% for 5min as straight line gx+b = deltapercentage/deltaminutes * requestedminutes + percentage at start"
+interpolateminpercentage(minutes) = (0.02 - 0.001) / (24*60 - 5) * (minutes - 5) + 0.001
+
+function mingainminuterange(minutesarray)
+    mingains = Dict()
+    for minutes in minutesarray
+        mingains[minutes] = interpolateminpercentage(minutes)
+    end
+    return mingains
+end
+
+tr2default = TradeRules002(0.015, mingainminuterange(Features.regressionwindows002), 0.2)
+
 mutable struct TradeChance001
     base::String
     buydt  # buy datetime remains nothing until completely bought
@@ -45,6 +58,22 @@ mutable struct TradeChances001
     orderdict  # Dict of open orders
 end
 
+upperbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] + stdfactor * fr.medianstd[ix]
+lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.medianstd[ix]
+stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.medianstd[ix]
+banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.medianstd[ix]
+
+requiredtradehistory = Features.requiredminutes
+requiredminutes = requiredtradehistory + Features.requiredminutes
+
+"""
+- grad = deltaprice / deltaminutes
+- deltaprice per day = grad * 24 * 60
+- (deltaprice / reference_price) per day = grad * 24 * 60 / reference_price
+"""
+minutesgain(gradient, refprice, minutes) = minutes * gradient / refprice
+daygain(gradient, refprice) = minutesgain(gradient, refprice, 24 * 60)
+
 function Base.show(io::IO, tc::TradeChance001)
     print(io::IO, "tc: base=$(tc.base), buydt=$(EnvConfig.timestr(tc.buydt)), buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), prob=$(round(tc.probability*100; digits=2))%, window=$(tc.regrminutes), stop loss sell=$(round(tc.stoplossprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
 end
@@ -61,30 +90,6 @@ function Base.show(io::IO, tcs::TradeChances001)
 end
 
 Base.length(tcs::TradeChances001) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
-
-requiredtradehistory = Features.requiredminutes
-requiredminutes = requiredtradehistory + Features.requiredminutes
-
-"""
-- grad = deltaprice / deltaminutes
-- deltaprice per day = grad * 24 * 60
-- (deltaprice / reference_price) per day = grad * 24 * 60 / reference_price
-"""
-minutesgain(gradient, refprice, minutes) = minutes * gradient / refprice
-daygain(gradient, refprice) = minutesgain(gradient, refprice, 24 * 60)
-
-"Interpolate a 2% gain for 24h and 0.1% for 5min as straight line gx+b = deltapercentage/deltaminutes * requestedminutes + percentage at start"
-interpolateminpercentage(minutes) = (0.02 - 0.001) / (24*60 - 5) * (minutes - 5) + 0.001
-
-function mingainminuterange(minutesarray)
-    mingains = Dict()
-    for minutes in minutesarray
-        mingains[minutes] = interpolateminpercentage(minutes)
-    end
-    return mingains
-end
-
-tr2default = TradeRules002(0.015, mingainminuterange(Features.regressionwindows002), 0.2)
 
 function buycompliant001(f2, window, breakoutstd, ix)
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -129,11 +134,6 @@ function bestspreadwindow001(f2::Features.Features002, currentix, minimumgain, b
     end
 return bestwindow, bestbreakoutstd
 end
-
-upperbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] + stdfactor * fr.medianstd[ix]
-lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.medianstd[ix]
-stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.medianstd[ix]
-banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.medianstd[ix]
 
 """
 Returns the number of trades within the last `requiredminutes` and the gain achived.
@@ -343,12 +343,15 @@ function traderules001!(tradechances, f2::Features.Features002, currentix)
                 tc.sellprice = df.low[currentix]
                 tc.probability = 1.0
                 @info "stop loss sell for $base due to plunge out of spread ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[fix]) tc: $tc"
-            else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
+            elseif buycompliant001(f2, tc.regrminutes, tc.breakoutstd, currentix)
                 tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
-                # probability to reach sell price
-                tc.probability = 0.8 * (1 - max((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.stoplossprice), 0.0))
-                # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
+            elseif afr.grad[fix] < 0
+                tc.sellprice = max(lowerbandprice(afr, fix, tc.breakoutstd), tc.buyprice * (1 + combinedbuysellfee))
+            else
+                tc.sellprice = afr.regry[fix]
             end
+            tc.probability = 0.8 * (1 - max((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.stoplossprice), 0.0))  # probability to reach sell price
+            # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
         end
     end
     if !isnothing(newtc)
