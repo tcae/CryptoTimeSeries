@@ -59,6 +59,7 @@ function Base.show(io::IO, features::Features002Regr)
 end
 
 function Base.show(io::IO, features::Features002)
+    println(io::IO, "Features002 firstix=$(features.firstix), lastix=$(features.lastix)")
     println(io::IO, features.ohlcv)
     for (key, value) in features.regr
         println(io::IO, "regr key: $key")

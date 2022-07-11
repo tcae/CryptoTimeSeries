@@ -49,6 +49,7 @@ mutable struct Cache
     runid
     function Cache(backtestchunk, backtestperiod, backtestenddt, baseconstraint)
         @assert backtestchunk >= 0
+        baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
         # classify = Classify.traderules001!
         openorders = orderdataframex()
@@ -57,8 +58,8 @@ mutable struct Cache
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
         messagelog = open(logpath("messagelog_$runid.txt"), "w")
-        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
-        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules002!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules002!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
     end
 end
 
@@ -408,7 +409,7 @@ function closeorder!(cache, order, side, status)
     msg = "closeorder! close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))  new total USDT = $(round(totalusdt;digits=3))"
     msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
     order = (;order..., message=msg);
-    @warn msg
+    @info msg
 
     push!(cache.orderlog, order)
     Classify.deletetradechanceoforder!(cache.tradechances, order.orderId)

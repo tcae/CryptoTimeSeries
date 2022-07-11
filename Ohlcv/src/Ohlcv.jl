@@ -22,7 +22,7 @@ mutable struct OhlcvData
 end
 
 function Base.show(io::IO, ohlcv::OhlcvData)
-    print(io::IO, "ohlcv: base=$(ohlcv.base) base=$(ohlcv.interval) size=$(size(ohlcv.df)) pivot: max=$(maximum(ohlcv.df[!, :pivot])) median=$(Statistics.median(ohlcv.df[!, :pivot])) min=$(minimum(ohlcv.df[!, :pivot]))")
+    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) pivot: max=$(maximum(ohlcv.df[!, :pivot])) median=$(Statistics.median(ohlcv.df[!, :pivot])) min=$(minimum(ohlcv.df[!, :pivot]))")
 end
 
 
@@ -230,7 +230,11 @@ end
 - deducts relativefee from both prices
 """
 function relativegain(prices, baseix, gainix; relativefee=0.0)
-    gain = (prices[gainix] - prices[baseix] - (prices[gainix] + prices[baseix]) * relativefee) / prices[baseix]
+    if baseix > gainix
+        gain = (prices[baseix] - prices[gainix] - (prices[gainix] + prices[baseix]) * relativefee) / prices[baseix]
+    else
+        gain = (prices[gainix] - prices[baseix] - (prices[gainix] + prices[baseix]) * relativefee) / prices[baseix]
+    end
     # println("forward gain(prices[$baseix]= $(prices[baseix]) prices[$gainix]= $(prices[gainix]))=$gain")
     return gain
 end

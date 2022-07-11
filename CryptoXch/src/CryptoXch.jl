@@ -631,7 +631,7 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     ticksize = symfilter.pricestep
     # tickdigits = Int64(floor(-log10(filterflotatvalue(filter, "PRICE_FILTER", "tickSize")); digits=0))
     tickdigits = Int64(floor(-log10(ticksize); digits=0))
-    println("before tickdigits correction: limitprice=$limitprice tickdigits=$tickdigits maxprice=$maxprize minprice=$minprize")
+    println("before tickdigits correction: limitprice=$limitprice tickdigits=$tickdigits")
     limitprice = round(limitprice; digits=tickdigits)
     println("after tickdigits correction: limitprice=$limitprice")
 
@@ -650,7 +650,7 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     # stepdigits = Int64(floor(-log10(filterflotatvalue(filter, "LOT_SIZE", "stepSize")); digits=0))
     basestep = symfilter.basestep
     stepdigits = Int64(floor(-log10(basestep); digits=0))
-    println("before stepdigits correction: limitprice=$qty tickdigits=$stepdigits maxqty=$maxqty minqty=$minqty")
+    println("before stepdigits correction: limitprice=$qty tickdigits=$stepdigits minqty=$minqty")
     qty = round(qty; digits=stepdigits)
     println("after stepdigits correction: limitprice=$qty")
 

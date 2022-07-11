@@ -38,7 +38,7 @@ function mingainminuterange(minutesarray)
     return mingains
 end
 
-tr2default = TradeRules002(0.015, mingainminuterange(Features.regressionwindows002), 0.2)
+tr002default = TradeRules002(0.015, mingainminuterange(Features.regressionwindows002), 0.2)
 
 mutable struct TradeChance001
     base::String
@@ -115,7 +115,7 @@ end
 Returns the best performing combination of spread window and breakoutstd factor.
 In case that minimumgain requirements are not met, `bestwindow` returns 0 and `breakoutstd` returns 0.0.
 """
-function bestspreadwindow001(f2::Features.Features002, currentix, minimumgain, breakoutstdset)
+function bestspreadwindow001(f2::Features.Features002, ohlcvix, minimumgain, breakoutstdset)
     @assert length(breakoutstdset) > 0
     maxtrades = 0
     maxgain = minimumgain
@@ -123,7 +123,7 @@ function bestspreadwindow001(f2::Features.Features002, currentix, minimumgain, b
     bestbreakoutstd = 0.0
     for breakoutstd in breakoutstdset
         for window in keys(f2.regr)
-                trades, gain = calcspread001(f2, window, currentix, breakoutstd)
+                trades, gain = calcspread001(f2, window, ohlcvix, breakoutstd)
             if gain > maxgain  # (trades > maxtrades) && (gain > 0)
                 maxgain = gain
                 maxtrades = trades
@@ -139,15 +139,15 @@ end
 Returns the number of trades within the last `requiredminutes` and the gain achived.
 In case that minimumgain requirements are not met by fr.medianstd, `trades` and `gain` return 0.
 """
-function calcspread001(f2::Features.Features002, window, currentix, breakoutstd)
+function calcspread001(f2::Features.Features002, window, ohlcvix, breakoutstd)
     fr = f2.regr[window]
-    fix = Features.featureix(f2, currentix)
+    fix = Features.featureix(f2, ohlcvix)
     gain = 0.0
     trades = 0
     if fix >= (requiredminutes)
-        startix = max(1, currentix - requiredtradehistory)
+        startix = max(1, ohlcvix - requiredtradehistory)
         breakoutix = breakoutextremesix001!(f2, window, breakoutstd, startix)
-        xix = [ix for ix in breakoutix if startix <= abs(ix)  <= currentix]
+        xix = [ix for ix in breakoutix if startix <= abs(ix)  <= ohlcvix]
         # println("breakoutextremesix @ window $window breakoutstd $breakoutstd : $xix")
         buyix = sellix = 0
         for ix in xix
@@ -272,20 +272,20 @@ function cleanupnewbuychance!(tradechances::TradeChances001, base)
     return tradechances
 end
 
-function newbuychance001(f2::Features.Features002, currentix)
+function newbuychance001(f2::Features.Features002, ohlcvix)
     base = Ohlcv.basesymbol(f2.ohlcv)
     tc = nothing
-    fix = Features.featureix(f2, currentix)
-    regrminutes, breakoutstd = bestspreadwindow001(f2, currentix, tr001default.minimumgain, tr001default.breakoutstdset)
+    fix = Features.featureix(f2, ohlcvix)
+    regrminutes, breakoutstd = bestspreadwindow001(f2, ohlcvix, tr001default.minimumgain, tr001default.breakoutstdset)
     if regrminutes > 0 # best window found
-        if buycompliant001(f2, regrminutes, breakoutstd, currentix)
-            # @info "buy signal $base price=$(round(df.low[currentix];digits=3)) window=$regrminutes ix=$currentix time=$(opentime[currentix])"
+        if buycompliant001(f2, regrminutes, breakoutstd, ohlcvix)
+            # @info "buy signal $base price=$(round(df.low[ohlcvix];digits=3)) window=$regrminutes ix=$ohlcvix time=$(opentime[ohlcvix])"
             afr = f2.regr[regrminutes]
             # spread = banddeltaprice(afr, fix, breakoutstd)
             buyprice = lowerbandprice(afr, fix, breakoutstd)
             sellprice = upperbandprice(afr, fix, breakoutstd)
             # probability to reach buy price
-            # probability = max(min((spread - (df.low[currentix] - buyprice)) / spread, 1.0), 0.0)
+            # probability = max(min((spread - (df.low[ohlcvix] - buyprice)) / spread, 1.0), 0.0)
             probability = 0.8
             tcstoplossprice = stoplossprice(afr, fix, tr001default.stoplossstd)
             tc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, breakoutstd)
@@ -310,16 +310,16 @@ Trading strategy:
 - spread satisfies minimum profit requirements = normal deviation range >= minimumgain
 
 """
-function traderules001!(tradechances, f2::Features.Features002, currentix)
+function traderules001!(tradechances, f2::Features.Features002, ohlcvix)
     tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
-    @assert f2.firstix < currentix <= f2.lastix "$(f2.firstix) < $currentix <= $(f2.lastix)"
+    @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
     opentime = df[!, :opentime]
     pivot = df[!, :pivot]
     base = Ohlcv.basesymbol(f2.ohlcv)
     cleanupnewbuychance!(tradechances, base)
-    newtc = newbuychance001(f2, currentix)
+    newtc = newbuychance001(f2, ohlcvix)
     for tc in values(tradechances.orderdict)
         if tc.base == Ohlcv.basesymbol(Features.ohlcv(f2))
             if isnothing(tc.buydt)
@@ -336,22 +336,22 @@ function traderules001!(tradechances, f2::Features.Features002, currentix)
                 end
             end
             afr = f2.regr[tc.regrminutes]
-            fix = Features.featureix(f2, currentix)
+            fix = Features.featureix(f2, ohlcvix)
             spread = banddeltaprice(afr, fix, tc.breakoutstd)
-            if (pivot[currentix] < tc.stoplossprice) && (afr.grad[fix] < 0)
+            if (pivot[ohlcvix] < tc.stoplossprice) && (afr.grad[fix] < 0)
                 # stop loss exit due to plunge of price and negative regression line
-                tc.sellprice = df.low[currentix]
+                tc.sellprice = df.low[ohlcvix]
                 tc.probability = 1.0
-                @info "stop loss sell for $base due to plunge out of spread ix=$currentix time=$(opentime[currentix]) at regression price of $(afr.regry[fix]) tc: $tc"
-            elseif buycompliant001(f2, tc.regrminutes, tc.breakoutstd, currentix)
+                @info "stop loss sell for $base due to plunge out of spread ix=$ohlcvix time=$(opentime[ohlcvix]) at regression price of $(afr.regry[fix]) tc: $tc"
+            elseif buycompliant001(f2, tc.regrminutes, tc.breakoutstd, ohlcvix)
                 tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
             elseif afr.grad[fix] < 0
                 tc.sellprice = max(lowerbandprice(afr, fix, tc.breakoutstd), tc.buyprice * (1 + combinedbuysellfee))
             else
                 tc.sellprice = afr.regry[fix]
             end
-            tc.probability = 0.8 * (1 - max((tc.buyprice - pivot[currentix])/(tc.buyprice - tc.stoplossprice), 0.0))  # probability to reach sell price
-            # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
+            tc.probability = 0.8 # * (1 - max((tc.buyprice - pivot[ohlcvix])/(tc.buyprice - tc.stoplossprice), 0.0))  # probability to reach sell price
+            # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$ohlcvix  time=$(opentime[ohlcvix])"
         end
     end
     if !isnothing(newtc)
@@ -363,7 +363,34 @@ function traderules001!(tradechances, f2::Features.Features002, currentix)
     return tradechances
 end
 
-buycompliant002(f2, window, featureix) = f2.regr[window].grad[featureix] >= tr2default.minimumbuygradientdict[window]
+function alllargerwindowgradimprove(f2, window, featureix)
+    ok = true
+    for w in Features.regressionwindows002
+        if w >= window
+            pastfeatureix = featureix - Int64(ceil(w / 4))
+            ok = ok && (f2.regr[w].grad[featureix] > f2.regr[w].grad[pastfeatureix])
+        end
+    end
+    return ok
+end
+
+function buycompliant002(f2, window, ohlcvix)
+    @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
+    df = Ohlcv.dataframe(f2.ohlcv)
+    afr = f2.regr[window]
+    fix = Features.featureix(f2, ohlcvix)
+
+    pastix = ohlcvix - Int64(ceil(window / 4))
+    pastfix = Features.featureix(f2, pastix)
+    ok =  (
+        (minutesgain(afr.grad[fix], df.close[ohlcvix], window) > tr002default.minimumbuygradientdict[window]) &&
+        alllargerwindowgradimprove(f2, window, fix) &&
+        # (afr.grad[fix] > afr.grad[pastfix]) &&
+        (minutesgain(f2.regr[1*60].grad[fix], df.close[ohlcvix], 1*60) > tr002default.minimumbuygradientdict[1*60]) &&
+        (minutesgain(f2.regr[24*60].grad[fix], df.close[ohlcvix], 24*60) > tr002default.minimumbuygradientdict[24*60]))
+
+    return ok
+end
 
 """
 Returns the best performing regression window within the last backtestminutes period before .
@@ -371,7 +398,7 @@ In case that minimumgain requirements are not met, `bestwindow` returns 0 and `m
 """
 function bestregrwindow002(f2::Features.Features002, ohlcvix, backtestminutes)
     maxtrades = 0
-    maxgain = tr2default.minimumbacktestgain
+    maxgain = tr002default.minimumbacktestgain
     bestwindow = 0
     fix = Features.featureix(f2, ohlcvix)
     startfix = fix - backtestminutes
@@ -384,7 +411,7 @@ function bestregrwindow002(f2::Features.Features002, ohlcvix, backtestminutes)
         for eix in extremeix
             if (lastix < 0) && (eix > 0)
                 lastix = abs(lastix)
-                while  (lastix < eix) && !buycompliant002(f2, window, lastix)
+                while  (lastix < eix) && !buycompliant002(f2, window, Features.ohlcvix(f2, lastix))
                     lastix += 1
                 end
                 if lastix < eix
@@ -404,22 +431,22 @@ function bestregrwindow002(f2::Features.Features002, ohlcvix, backtestminutes)
         end
     end
     maxgain = bestwindow > 0 ? maxgain : 0.0
-    return bestwindow, maxgain
+    return bestwindow, maxgain, maxtrades
 end
 
 """
 Returns the best performing combined regression window and backtestminutes period.
 In case that minimumgain requirements are not met, `bestwindow` returns 0 and `bestbacktestminutes` returns 0.
 """
-function bestbacktestwindow(f2::Features.Features002, ohlcvix)
-    maxgain = tr2default.minimumbacktestgain
+function bestbacktestwindow002(f2::Features.Features002, ohlcvix)
+    maxgain = tr002default.minimumbacktestgain
     bestwindow = 0
     bestbacktestminutes = 0
     for backtestminutes in reverse(Features.regressionwindows002)
-        window, gain = bestregrwindow002(f2, ohlcvix, backtestminutes)
+        window, gain, trades = bestregrwindow002(f2, ohlcvix, backtestminutes)
         if (gain > maxgain) && (window > 0)
             if bestbacktestminutes > 0
-                if gain > (1 + tr2default.shorterwindowimprovement) * maxgain
+                if gain > (1 + tr002default.shorterwindowimprovement) * maxgain
                     maxgain = gain
                     bestwindow = window
                     bestbacktestminutes = backtestminutes
@@ -434,22 +461,22 @@ function bestbacktestwindow(f2::Features.Features002, ohlcvix)
     return bestwindow, bestbacktestminutes
 end
 
-function newbuychance002(f2::Features.Features002, currentix)
+function newbuychance002(f2::Features.Features002, ohlcvix)
     df = Ohlcv.dataframe(f2.ohlcv)
     # opentime = df[!, :opentime]
     base = Ohlcv.basesymbol(f2.ohlcv)
     tc = nothing
-    fix = Features.featureix(f2, currentix)
-    regrminutes, bestbacktestminutes = bestbacktestwindow(f2, currentix)
+    fix = Features.featureix(f2, ohlcvix)
+    regrminutes, bestbacktestminutes = bestbacktestwindow002(f2, ohlcvix)
     if regrminutes > 0 # best window found
-        if buycompliant002(f2, regrminutes, fix)
-            # @info "buy signal $base price=$(round(df.low[currentix];digits=3)) window=$regrminutes ix=$currentix time=$(opentime[currentix])"
+        if buycompliant002(f2, regrminutes, ohlcvix)
+            # @info "buy signal $base price=$(round(df.low[ohlcvix];digits=3)) window=$regrminutes ix=$ohlcvix time=$(opentime[ohlcvix])"
             afr = f2.regr[regrminutes]
             # spread = banddeltaprice(afr, fix, breakoutstd)
-            buyprice = df.pivot[currentix]
-            sellprice = upperbandprice(afr, fix, 1.0)
+            buyprice = df.pivot[ohlcvix]
+            sellprice = buyprice * 1.02
             # probability to reach buy price
-            # probability = max(min((spread - (df.low[currentix] - buyprice)) / spread, 1.0), 0.0)
+            # probability = max(min((spread - (df.low[ohlcvix] - buyprice)) / spread, 1.0), 0.0)
             probability = 0.8
             tcstoplossprice = stoplossprice(afr, fix, 3.0)
             tc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, 1.0)
@@ -471,16 +498,16 @@ Trading strategy:
 - sell if price is at maximum == gradient of regression is zero
 
 """
-function traderules002!(tradechances, f2::Features.Features002, currentix)
+function traderules002!(tradechances, f2::Features.Features002, ohlcvix)
     tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
-    @assert f2.firstix < currentix <= f2.lastix "$(f2.firstix) < $currentix <= $(f2.lastix)"
+    @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
     opentime = df[!, :opentime]
     pivot = df[!, :pivot]
     base = Ohlcv.basesymbol(f2.ohlcv)
     cleanupnewbuychance!(tradechances, base)
-    newtc = newbuychance002(f2, currentix)
+    newtc = newbuychance002(f2, ohlcvix)
     for tc in values(tradechances.orderdict)
         if tc.base == Ohlcv.basesymbol(Features.ohlcv(f2))
             if isnothing(tc.buydt)
@@ -497,19 +524,19 @@ function traderules002!(tradechances, f2::Features.Features002, currentix)
                 end
             end
             afr = f2.regr[tc.regrminutes]
-            fix = Features.featureix(f2, currentix)
+            fix = Features.featureix(f2, ohlcvix)
             if afr.grad[fix] < 0
-                if pivot[currentix] > lowerbandprice(afr, fix, 1.0)
-                    tc.sellprice = df.pivot[currentix]
+                if pivot[ohlcvix] > lowerbandprice(afr, fix, 1.0)
+                    tc.sellprice = df.pivot[ohlcvix]
                 else
-                    tc.sellprice = df.low[currentix]
+                    tc.sellprice = df.low[ohlcvix]
                 end
                 tc.probability = 1.0
-            else  # if pivot[currentix] > afr.regry[currentix]  # above normal deviations
-                tc.sellprice = upperbandprice(afr, fix, 2.0)
+            else  # if pivot[ohlcvix] > afr.regry[ohlcvix]  # above normal deviations
+                tc.sellprice = pivot[ohlcvix] * 1.02  # normally not reachable within a minute or we catch a peak
                 # probability to reach sell price
-                tc.probability = 0.8 * (1 - max((tc.buyprice - pivot[currentix])/(tc.buyprice - lowerbandprice(afr, fix, 2.0)), 0.0))  # disputable
-                # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$currentix  time=$(opentime[currentix])"
+                tc.probability = 0.8 # * (1 - max((tc.buyprice - pivot[ohlcvix])/(tc.buyprice - lowerbandprice(afr, fix, 2.0)), 0.0))  # disputable
+                # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$ohlcvix  time=$(opentime[ohlcvix])"
             end
         end
     end
