@@ -18,9 +18,10 @@ end
 
 # tr001default = TradeRules001(0.02, 0.0, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])
 # tr001default = TradeRules001(0.015, 0.0001, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # for test purposes
-tr001default = TradeRules001(0.015, 0.02, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # topper
+const tr001default = TradeRules001(0.015, 0.02, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0])  # topper
 # tr001default = TradeRules001(0.005, 0.0, 3.0, [0.5])  # for test purposes
 combinedbuysellfee = 0.002
+
 mutable struct TradeRules002  # only relevant for traderules002!
     minimumbacktestgain  # minimum gain in backtest check to consider buy
     minimumbuygradientdict  # regression time window specific gradient dict creating a hysteresis to avoid frequent buy/sell around a minimum/maximum
@@ -38,7 +39,7 @@ function mingainminuterange(minutesarray)
     return mingains
 end
 
-tr002default = TradeRules002(0.015, mingainminuterange(Features.regressionwindows002), 0.2)
+const tr002default = TradeRules002(0.015, mingainminuterange(Features.regressionwindows002), 0.2)
 
 mutable struct TradeChance001
     base::String
@@ -295,6 +296,8 @@ function newbuychance001(f2::Features.Features002, ohlcvix)
 end
 
 """
+    traderules001!(tradechances, f2::Features.Features002, ohlcvix)
+
 returns the chance expressed in gain between currentprice and future sellprice * probability
 if tradechances === nothing then an empty TradeChance001 array is created and with results returned
 
@@ -311,6 +314,8 @@ Trading strategy:
 
 """
 function traderules001!(tradechances, f2::Features.Features002, ohlcvix)
+    @info "$(@doc traderules001!)" maxlog=1
+    @info "tr001default: $(tr001default)" maxlog=1
     tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
@@ -365,13 +370,15 @@ end
 
 function alllargerwindowgradimprove(f2, window, featureix)
     ok = true
+    count = ok = 0
     for w in Features.regressionwindows002
         if w >= window
             pastfeatureix = featureix - Int64(ceil(w / 4))
-            ok = ok && (f2.regr[w].grad[featureix] > f2.regr[w].grad[pastfeatureix])
+            ok = f2.regr[w].grad[featureix] > f2.regr[w].grad[pastfeatureix] ? ok + 1 : ok
+            count += 1
         end
     end
-    return ok
+    return (count / ok) < 2
 end
 
 function buycompliant002(f2, window, ohlcvix)
@@ -486,6 +493,8 @@ function newbuychance002(f2::Features.Features002, ohlcvix)
 end
 
 """
+    traderules002!(tradechances, f2::Features.Features002, ohlcvix)
+
 returns the chance expressed in gain between currentprice and future sellprice * probability
 if tradechances === nothing then an empty TradeChance001 array is created and with results returned
 
@@ -499,6 +508,8 @@ Trading strategy:
 
 """
 function traderules002!(tradechances, f2::Features.Features002, ohlcvix)
+    @info "$(@doc traderules002!)" maxlog=1
+    @info "tr002default: $(tr002default)" maxlog=1
     tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
@@ -543,9 +554,70 @@ function traderules002!(tradechances, f2::Features.Features002, ohlcvix)
     if !isnothing(newtc)
         tradechances.basedict[base] = newtc
     end
+    return tradechances
+end
 
-    # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!
-    # TODO use case of breakout rise after sell above deviation range is not yet covered
+"""
+    traderules000!(tradechances, f2::Features.Features002, ohlcvix)
+
+returns the chance expressed in gain between currentprice and future sellprice * probability
+if tradechances === nothing then an empty TradeChance001 array is created and with results returned
+
+Trading strategy:
+- buy if regression line is at minimum
+- sell if regression line is at maximum == gradient of regression is zero
+
+"""
+function traderules000!(tradechances, f2::Features.Features002, ohlcvix)
+    regressionminutes = 24*60
+    @info "$(@doc traderules002!)" maxlog=1
+    @info "regressionminutes=$(regressionminutes)" maxlog=1
+    tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
+    if isnothing(f2); return tradechances; end
+    @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
+    df = Ohlcv.dataframe(f2.ohlcv)
+    opentime = df[!, :opentime]
+    pivot = df[!, :pivot]
+    base = Ohlcv.basesymbol(f2.ohlcv)
+    cleanupnewbuychance!(tradechances, base)
+    featureix = Features.featureix(f2, ohlcvix)
+    afr = f2.regr[regressionminutes]
+    newtc = nothing
+    if featureix > 1
+        if (afr.grad[featureix-1] <= 0) && (afr.grad[featureix] > 0)
+            buyprice = df.pivot[ohlcvix]
+            sellprice = buyprice * 1.1
+            probability = 0.8
+            tcstoplossprice = buyprice * 0.8
+            newtc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regressionminutes, tcstoplossprice, 1.0)
+        end
+    end
+
+    for tc in values(tradechances.orderdict)
+        if tc.base == Ohlcv.basesymbol(Features.ohlcv(f2))
+            if isnothing(tc.buydt)
+                if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) # && (tc.breakoutstd == newtc.breakoutstd)
+                    # not yet bought -> adapt with latest insights
+                    tc.buyprice = newtc.buyprice
+                    tc.probability = newtc.probability
+                    tc.stoplossprice = newtc.stoplossprice
+                    tc.sellprice = newtc.sellprice
+                    newtc = nothing
+                else
+                    # outdated buy chance
+                    tc.probability = 0.1
+                end
+            end
+            afr = f2.regr[tc.regrminutes]
+            if (afr.grad[featureix-1] >= 0) && (afr.grad[featureix] < 0)
+                    tc.sellprice = df.pivot[ohlcvix]
+                tc.probability = 1.0
+            end
+        end
+    end
+    if !isnothing(newtc)
+        tradechances.basedict[base] = newtc
+    end
     return tradechances
 end
 
