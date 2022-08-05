@@ -570,8 +570,7 @@ Trading strategy:
 """
 function traderules000!(tradechances, f2::Features.Features002, ohlcvix)
     regressionminutes = 24*60
-    @info "$(@doc traderules002!)" maxlog=1
-    @info "regressionminutes=$(regressionminutes)" maxlog=1
+    @info "$(@doc traderules000!)" regressionminutes maxlog=1
     tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"

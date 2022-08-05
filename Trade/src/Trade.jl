@@ -51,16 +51,16 @@ mutable struct Cache
         @assert backtestchunk >= 0
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        # classify = Classify.traderules001!
+        # classify = Classify.traderules000!
+        classify = Classify.traderules001!
+        # classify = Classify.traderules002!
         openorders = orderdataframex()
         orderlog = orderdataframex()
         transactionlog = filldataframe()
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
         messagelog = open(logpath("messagelog_$runid.txt"), "w")
-        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules000!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
-        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules001!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
-        # new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Classify.traderules002!, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, classify, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
     end
 end
 
