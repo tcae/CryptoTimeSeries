@@ -414,32 +414,36 @@ function getUSDTmarket()
             end
         end
     else  # test or training
-        for base in EnvConfig.bases
-            push!(df, (
-                base,
-                lowercase(EnvConfig.cryptoquote),
-                # 0.0,        # "weightedAvgPrice"
-                # 0.0,        # "askQty"
-                15000000.0, # "quoteVolume"
-                5.0,        # "priceChangePercent"
-                # 2,          # "count"
-                100.0,      # "lastPrice"
-                # 100.0,      # "openPrice"
-                # 20,         # "firstId"
-                # 3,          # "lastQty"
-                # DateTime("2019-01-02 01:11:58:121", "y-m-d H:M:S:s"),  # "openTime"
-                # DateTime("2019-01-02 01:12:59:121", "y-m-d H:M:S:s"),  # "closeTime"
-                # 100.0,      # "askPrice"
-                # 0.0,        # "priceChange"
-                # 100.0,      # "highPrice"
-                # 100.0,      # "prevClosePrice"
-                # 4.0,        # "bidQty"
-                # 2.0,        # "volume"
-                # 99.0,       # "bidPrice"
-                # 21,         # "lastId"
-                # 99.5        # "lowPrice"
-            ))
-
+        # for base in EnvConfig.bases
+        p24dictarray = MyBinance.get24HR()
+        for (index, p24dict) in enumerate(p24dictarray)
+            base = lowercase(replace(p24dict["symbol"], uppercase(EnvConfig.cryptoquote) => ""))
+            if onlyconfiguredsymbols(p24dict["symbol"])
+                push!(df, (
+                    base,
+                    lowercase(EnvConfig.cryptoquote),
+                    # 0.0,        # "weightedAvgPrice"
+                    # 0.0,        # "askQty"
+                    15000000.0, # "quoteVolume"
+                    5.0,        # "priceChangePercent"
+                    # 2,          # "count"
+                    100.0,      # "lastPrice"
+                    # 100.0,      # "openPrice"
+                    # 20,         # "firstId"
+                    # 3,          # "lastQty"
+                    # DateTime("2019-01-02 01:11:58:121", "y-m-d H:M:S:s"),  # "openTime"
+                    # DateTime("2019-01-02 01:12:59:121", "y-m-d H:M:S:s"),  # "closeTime"
+                    # 100.0,      # "askPrice"
+                    # 0.0,        # "priceChange"
+                    # 100.0,      # "highPrice"
+                    # 100.0,      # "prevClosePrice"
+                    # 4.0,        # "bidQty"
+                    # 2.0,        # "volume"
+                    # 99.0,       # "bidPrice"
+                    # 21,         # "lastId"
+                    # 99.5        # "lowPrice"
+                ))
+            end
         end
     end
     return df
