@@ -39,7 +39,7 @@ function mingainminuterange(minutesarray)
     return mingains
 end
 
-const tr002default = TradeRules002(0.05, mingainminuterange(Features.regressionwindows002), 0.2)
+const tr002default = TradeRules002(0.1, mingainminuterange(Features.regressionwindows002), 0.2)
 
 mutable struct TradeChance001
     base::String
