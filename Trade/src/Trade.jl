@@ -589,6 +589,8 @@ function trade!(cache)
             continue
         end
         if order.side == "SELL"
+            @info "trade! close order $tc"
+
             df = ohlcvdf(cache, order.base)
             if df.high[cache.bd[order.base].currentix] > order.price
                 closeorder!(cache, order, "SELL", "FILLED")
