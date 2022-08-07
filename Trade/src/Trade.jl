@@ -52,8 +52,8 @@ mutable struct Cache
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
         # classify = Classify.traderules000!
-        # classify = Classify.traderules001!
-        classify = Classify.traderules002!
+        classify = Classify.traderules001!
+        # classify = Classify.traderules002!
         openorders = orderdataframex()
         orderlog = orderdataframex()
         transactionlog = filldataframe()
