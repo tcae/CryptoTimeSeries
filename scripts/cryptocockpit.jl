@@ -4,6 +4,10 @@
 # activate(pwd())
 # cd(@__DIR__)
 
+# TODO treat orders as portfolio part, show sel limit as line
+# TODO show % improvement of portfolio and whike portfolio
+# TODO buy at next specific regresson minimum
+# TODO migrate all windows to ohlcv graphs
 # TODO deviation spread and tracker visualization
 # TODO deviation spread and tracker window clear color other regression windows opaque
 # TODO yellow within x sigma range, green break out, red plunge
@@ -20,8 +24,8 @@ using EnvConfig, Ohlcv, Features, Targets, Assets, Classify
 include("../scripts/cockpitdatatablecolors.jl")
 
 dtf = "yyyy-mm-dd HH:MM"
-# EnvConfig.init(EnvConfig.production)
-EnvConfig.init(EnvConfig.test)
+EnvConfig.init(EnvConfig.production)
+# EnvConfig.init(EnvConfig.test)
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 cssdir = EnvConfig.setprojectdir()  * "/scripts/"
@@ -33,11 +37,19 @@ function loadohlcv(base, interval)
     global ohlcvcache
     k = base * interval
     if !(k in keys(ohlcvcache))
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, interval)
-        Ohlcv.read!(ohlcv)
-        # Ohlcv.accumulate!(ohlcv, interval)
-        ohlcvcache[k] = ohlcv
+        k1m = base * "1m"
+        if !(k1m in keys(ohlcvcache))
+            ohlcv = Ohlcv.defaultohlcv(base)
+            Ohlcv.setinterval!(ohlcv, "1m")
+            Ohlcv.read!(ohlcv)
+            ohlcvcache[k1m] = ohlcv
+        end
+        if (k != k1m)
+            ohlcv = Ohlcv.defaultohlcv(base)
+            Ohlcv.setdataframe!(ohlcv, Ohlcv.accumulate(Ohlcv.dataframe(ohlcvcache[k1m]), interval))
+            Ohlcv.setinterval!(ohlcv, interval)
+            ohlcvcache[k] = ohlcv
+        end
     end
     return ohlcvcache[k]
 end
@@ -59,6 +71,12 @@ function updateassets(download=false)
         sort!(a.basedf, [:portfolio], rev=true)
         a.basedf.id = a.basedf.base
         println("updating table data of size: $(size(a.basedf))")
+
+        # initial delay but quick switching?
+        for base in a.basedf.base
+            loadohlcv(base, "1m")
+            println("$(EnvConfig.now()) loading $base")
+        end
     end
     return a
 end
@@ -99,7 +117,7 @@ app.layout = html_div() do
                 (label = "features", value = "features"),
                 (label = "targets", value = "targets"),
                 (label = "normalize", value = "normalize")],
-                value=[EnvConfig.configmode == EnvConfig.test ? "test" : "normalize"],
+                value=[EnvConfig.configmode == EnvConfig.test ? "test" : "normalize", "regression1d"],
                 # value=["regression1d", "normalize"],
                 labelStyle=(:display => "inline-block")
         ),
@@ -116,7 +134,7 @@ app.layout = html_div() do
         dash_datatable(id="kpi_table", editable=false,
             columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.basedf) if i != "id"],  # exclude "id" to not display it
             data = Dict.(pairs.(eachrow(assets.basedf))),
-            style_data_conditional=discrete_background_color_bins(assets.basedf, n_bins=31, columns="pricechangepercent"),
+            style_data_conditional=discrete_background_color_bins(assets.basedf, n_bins=length(names(assets.basedf)), columns="pricechangepercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
@@ -449,16 +467,17 @@ function spreadtraces(f2, window, normref, period, enddt)
     # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
     s5 = scatter(name="pivot", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
 
-    breakoutix = Classify.breakoutextremesix001!(f2, window, 1.0, startix)
-    logbreakix(df, breakoutix)
-    xix = [ix for ix in breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
-    y = [df.high[ix] for ix in xix if ix > 0]
-    x = [df[ix, :opentime] for ix in xix if ix > 0]
-    s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-down"))
-    y = [df.low[abs(ix)] for ix in xix if ix < 0]
-    x = [df[abs(ix), :opentime] for ix in xix if ix < 0]
-    s4 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-up"))
-    return [s2, s1, s5, s3, s4]
+    # breakoutix = Classify.breakoutextremesix001!(f2, window, 1.0, startix)
+    # logbreakix(df, breakoutix)
+    # xix = [ix for ix in breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
+    # y = [df.high[ix] for ix in xix if ix > 0]
+    # x = [df[ix, :opentime] for ix in xix if ix > 0]
+    # s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-down"))
+    # y = [df.low[abs(ix)] for ix in xix if ix < 0]
+    # x = [df[abs(ix), :opentime] for ix in xix if ix < 0]
+    # s4 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-up"))
+    # return [s2, s1, s5, s3, s4]
+    return [s2, s1, s5]
 end
 
 function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, spread)
@@ -495,15 +514,20 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
                     mode="lines", showlegend=false)], traces)
         end
 
+        intervalminutes = interval == "1m" ? 1 : Features.regressionwindows001[interval]
         spread = isnothing(spread) ? [] : spread
         # println("typeof(spread): $(typeof(spread)) = $spread isempty(spread)=$(isempty(spread)); period=$period ")
         if !isempty(spread)
-            f2 = featureset002(ohlcv, period, enddt)
-            # println("priod=$period, enddt=$enddt")
+            f2 = nothing
+            # println("period=$period, enddt=$enddt")
             for win in spread
-                # win = parse(Int64, window)
-                #  visualization spreads
-                traces = append!(spreadtraces(f2, win, normref, period, enddt), traces)
+                # winminutes = win == "1m" ? 1 : Features.regressionwindows001[win]
+                if win > intervalminutes
+                    # win = parse(Int64, window)
+                    #  visualization spreads
+                    f2 = isnothing(f2) ? featureset002(loadohlcv(base, "1m"), period, enddt) : f2
+                    traces = append!(spreadtraces(f2, win, normref, period, enddt), traces)
+                end
             end
             # println("length(traces)=$(length(traces))")
         end
@@ -541,8 +565,8 @@ callback!(
 ) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, spread, indicator
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
-    s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id)"
-    # println(s)
+    s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id) spread = $spread"
+    println(s)
     # println("enddt4h $enddt4h, enddt1d $enddt1d, enddt10d $enddt10d, enddt6M $enddt6M, enddtall $enddtall")
     drawbases = [focus]
     append!(drawbases, [s for s in select if s != focus])
@@ -551,14 +575,15 @@ callback!(
 
     fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap, spread)
     targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)) : nothing
-    fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
-        drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)
-    fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
-        drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression)
-    fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-        focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression, false, [])
+    # fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
+    #     drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)
+    fig1d = candlestickgraph(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)), focus, "5m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression, false, spread)
+    # fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
+    #     drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression)
+    fig10d = candlestickgraph(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)), focus, "1h", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression, false, spread)
     # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
     #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression)
+    fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)), focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression, false, spread)
     figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
         drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
 
@@ -607,7 +632,7 @@ callback!(
         #     return 0, olddata, active_row_id, options
         end
         if !(assets === nothing)
-            println("data update assets.basedf.size: $(size(assets.basedf))")
+            # println("data update assets.basedf.size: $(size(assets.basedf))")
             return 1, Dict.(pairs.(eachrow(assets.basedf))), active_row_id, [(label = i, value = i) for i in assets.basedf.base]
         else
             @warn "found no assets"
