@@ -94,23 +94,32 @@ end
 function ohlcvaccumulate()
     dfmin = DataFrame(
         opentime=[DateTime("2022-01-02T22:54:00")+Dates.Minute(i) for i in 0:8],
-        open=[1.2, 1.8, 1.4, 1.3, 1.9, 1.5, 1.0, 1.1, 0.9],
-        high=[2.0, 1.8, 1.9, 1.6, 1.9, 1.6, 1.2, 1.3, 1.6],
-        low= [1.0, 1.3, 1.4, 1.2, 1.1, 1.2, 1.0, 0.9, 0.8],
-        close=[1.3, 1.7, 1.5, 1.4, 1.8, 1.3, 1.1, 1.0, 0.9],
-        basevolume=[1.0*i for i in 1:9]
+        open=Float32[1.2, 1.8, 1.4, 1.3, 1.9, 1.5, 1.0, 1.1, 0.9],
+        high=Float32[2.0, 1.8, 1.9, 1.6, 1.9, 1.6, 1.2, 1.3, 1.6],
+        low= Float32[1.0, 1.3, 1.4, 1.2, 1.1, 1.2, 1.0, 0.9, 0.8],
+        close=Float32[1.3, 1.7, 1.5, 1.4, 1.8, 1.3, 1.1, 1.0, 0.9],
+        basevolume=Float32[1.0*i for i in 1:9]
     )
     dfmin.pivot = Ohlcv.pivot(dfmin)
     dfmin3 = DataFrame(
         opentime=[DateTime("2022-01-02T22:54:00")+Dates.Minute(i*3) for i in 0:2],
-        open=[1.2, 1.3, 1.0],
-        high=[2.0, 1.9, 1.6],
-        low= [1.0, 1.1, 0.8],
-        close=[1.5, 1.3, 0.9],
-        basevolume=[6.0, 15.0, 24.0]
+        open=Float32[1.2, 1.3, 1.0],
+        high=Float32[2.0, 1.9, 1.6],
+        low= Float32[1.0, 1.1, 0.8],
+        close=Float32[1.5, 1.3, 0.9],
+        basevolume=Float32[6.0, 15.0, 24.0]
     )
     dfmin3.pivot = Ohlcv.pivot(dfmin3)
-    return dfmin, dfmin3
+    dfmin5 = DataFrame(
+        opentime=[DateTime("2022-01-02T22:50:00")+Dates.Minute(i*5) for i in 0:2],
+        open=Float32[1.2, 1.8, 1.0],
+        high=Float32[2.0, 1.9, 1.6],
+        low= Float32[1.0, 1.1, 0.8],
+        close=Float32[1.3, 1.3, 0.9],
+        basevolume=Float32[1.0, 20.0, 24.0]
+    )
+    dfmin5.pivot = Ohlcv.pivot(dfmin5)
+    return dfmin, dfmin3, dfmin5
 end
 
 function ohlcvab(offset)
@@ -148,9 +157,10 @@ EnvConfig.init(test)
 
 ohlcv1 = testohlcvinit("test")
 
-dfmin, dfmin3 = ohlcvaccumulate()
+dfmin, dfmin3, dfmin5 = ohlcvaccumulate()
 println(dfmin)
 @test dfmin3 == Ohlcv.accumulate(dfmin, "3m")
+@test dfmin5 == Ohlcv.accumulate(dfmin, "5m")
 
 @test names(Ohlcv.dataframe(ohlcv1)) == ["opentime", "open", "high", "low", "close", "basevolume", "pivot"]
 @test nrow(Ohlcv.dataframe(ohlcv1)) == 9

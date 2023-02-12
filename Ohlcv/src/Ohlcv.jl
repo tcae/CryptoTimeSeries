@@ -28,31 +28,28 @@ end
 
 save_cols = [:opentime, :open, :high, :low, :close, :basevolume]
 testbases = ["sinus", "triplesinus"]
+periods = Dict(
+    "1m" => Dates.Minute(1),
+    "3m" => Dates.Minute(3),
+    "5m" => Dates.Minute(5),
+    "15m" => Dates.Minute(15),
+    "30m" => Dates.Minute(30),
+    "1h" => Dates.Hour(1),
+    "2h" => Dates.Hour(2),
+    "4h" => Dates.Hour(4),
+    "6h" => Dates.Hour(6),
+    "8h" => Dates.Hour(8),
+    "12h" => Dates.Hour(12),
+    "1d" => Dates.Day(1),
+    "3d" => Dates.Day(3),
+    "1w" => Dates.Week(1),
+    "1M" => Dates.Week(4)  # better to be able to calculate with this period
+)
 
+"Returns a Dates.Period that corresponds to a period string"
 function intervalperiod(interval)
-    periods = Dict(
-        "1m" => Dates.Minute(1),
-        "3m" => Dates.Minute(3),
-        "5m" => Dates.Minute(5),
-        "15m" => Dates.Minute(15),
-        "30m" => Dates.Minute(30),
-        "1h" => Dates.Hour(1),
-        "2h" => Dates.Hour(2),
-        "4h" => Dates.Hour(4),
-        "6h" => Dates.Hour(6),
-        "8h" => Dates.Hour(8),
-        "12h" => Dates.Hour(12),
-        "1d" => Dates.Day(1),
-        "3d" => Dates.Day(3),
-        "1w" => Dates.Week(1),
-        "1M" => Dates.Week(4)  # better to be able to calculate with this period
-    )
-    if interval in keys(periods)
-        return periods[interval]
-    else
-        @warn "unknown $interval"
-        return Dates.Minute(1)
-    end
+    @assert interval in keys(periods) "unknown $interval"
+    return periods[interval]
 end
 
 "Returns an empty dataframe with all persistent columns"
@@ -305,24 +302,34 @@ function accumulate(df::DataFrame, interval)
         return df  # no accumulation required because this is the smallest supported period
     end
     period = Ohlcv.intervalperiod(interval)
+    periodm = Dates.Minute(period).value
+    rows1m = size(df, 1)
     # adf = defaultohlcvdataframe()
-    if size(df, 1) > 0
-        adf = DataFrame(df[1, :])
-        delete!(adf, 1)
-        opentime, open, high, low, close, basevolume = df[1, [:opentime, :open, :high, :low, :close, :basevolume]]  # initialze with equal type
+    if rows1m > 0
+        firstdt = df[1, :opentime]
+        startadd = Dates.Minute(ceil(firstdt, Dates.Minute(period)) - firstdt).value # minutes before period rounded start
+        endadd = rows1m % periodm - startadd # minutes after period rounded end
+        rowsperiod = rows1m ÷ periodm + (startadd > 0 ? 1 : 0) + (endadd > 0 ? 1 : 0)
+        adf = defaultohlcvdataframe(rowsperiod)
+        aix = 0
+        open = high = low = close = basevolume = Float32(0.0)
         for ix in 1:size(df, 1)
-            ts = floor(df[ix, :opentime], period)
-            if (ts > opentime) || (ix == 1)
-                if ix > 1
-                    # push!(adf, Dict(:opentime => opentime, :open => open, :high => high, :low => low, :close => close, :basevolume => basevolume))
-                    push!(adf, Dict(:opentime => opentime, :open => open, :high => high, :low => low, :close => close, :basevolume => basevolume, :pivot => 0.0))
+            if ((ix - 1 - startadd) % periodm == 0) || (ix == 1)
+                if aix > 0
+                    adf[aix, :open] = open
+                    adf[aix, :high] = high
+                    adf[aix, :low] = low
+                    adf[aix, :close] = close
+                    adf[aix, :basevolume] = basevolume
                 end
+                aix += 1
+                @assert aix <= rowsperiod
                 # init next accumulation period
                 open = df[ix, :open]
                 high = df[ix, :high]
                 low = df[ix, :low]
                 basevolume = df[ix, :basevolume]
-                opentime = ts
+                adf[aix, :opentime] = floor(df[ix, :opentime], period)
             else
                 high = max(high, df[ix, :high])
                 low = min(low, df[ix, :low])
@@ -330,13 +337,15 @@ function accumulate(df::DataFrame, interval)
             end
             close = df[ix, :close]
         end
-        push!(adf, Dict(:opentime => opentime, :open => open, :high => high, :low => low, :close => close, :basevolume => basevolume, :pivot => 0.0))
-        if haspivot(df)
-            adf[:, :pivot] = pivot(adf)
-        else
-            adf = adf[:, save_cols]
+        if aix > 0
+            adf[aix, :open] = open
+            adf[aix, :high] = high
+            adf[aix, :low] = low
+            adf[aix, :close] = close
+            adf[aix, :basevolume] = basevolume
         end
     end
+    adf[:, :pivot] = pivot(adf)
     return adf
 end
 

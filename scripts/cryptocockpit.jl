@@ -75,6 +75,12 @@ function updateassets(download=false)
         # initial delay but quick switching?
         for base in a.basedf.base
             loadohlcv(base, "1m")
+            Threads.@threads for interval in ["5m", "1h", "1d"]
+                loadohlcv(base, interval)
+            end
+            # loadohlcv(base, "5m")
+            # loadohlcv(base, "1h")
+            # loadohlcv(base, "1d")
             println("$(EnvConfig.now()) loading $base")
         end
     end
