@@ -305,45 +305,38 @@ function accumulate(df::DataFrame, interval)
     periodm = Dates.Minute(period).value
     rows1m = size(df, 1)
     # adf = defaultohlcvdataframe()
-    if rows1m > 0
-        firstdt = df[1, :opentime]
-        startadd = Dates.Minute(ceil(firstdt, Dates.Minute(period)) - firstdt).value # minutes before period rounded start
-        endadd = rows1m % periodm - startadd # minutes after period rounded end
-        rowsperiod = rows1m ÷ periodm + (startadd > 0 ? 1 : 0) + (endadd > 0 ? 1 : 0)
-        adf = defaultohlcvdataframe(rowsperiod)
-        aix = 0
-        open = high = low = close = basevolume = Float32(0.0)
-        for ix in 1:size(df, 1)
-            if ((ix - 1 - startadd) % periodm == 0) || (ix == 1)
-                if aix > 0
-                    adf[aix, :open] = open
-                    adf[aix, :high] = high
-                    adf[aix, :low] = low
-                    adf[aix, :close] = close
-                    adf[aix, :basevolume] = basevolume
-                end
-                aix += 1
-                @assert aix <= rowsperiod
-                # init next accumulation period
-                open = df[ix, :open]
-                high = df[ix, :high]
-                low = df[ix, :low]
-                basevolume = df[ix, :basevolume]
-                adf[aix, :opentime] = floor(df[ix, :opentime], period)
-            else
-                high = max(high, df[ix, :high])
-                low = min(low, df[ix, :low])
-                basevolume += df[ix, :basevolume]
-            end
-            close = df[ix, :close]
+    if rows1m == 0; return df; end
+    firstdt = df[1, :opentime]
+    startadd = Dates.Minute(ceil(firstdt, Dates.Minute(period)) - firstdt).value # minutes before period rounded start
+    endadd = rows1m % periodm - startadd # minutes after period rounded end
+    rowsperiod = rows1m ÷ periodm + (startadd > 0 ? 1 : 0) + (endadd > 0 ? 1 : 0)
+    adfix = Array{Int64}(undef, rowsperiod + 1)
+    adf = defaultohlcvdataframe(rowsperiod)
+    aix = 0
+    adfix[1] = offset = startadd > 0 ? 1 : 0
+    for aix in (1 + offset):rowsperiod; adfix[aix] = (aix - 1 - offset) * periodm + startadd + 1; end
+    adfix[rowsperiod + 1] = rows1m + 1
+    Threads.@threads for aix in 1:rowsperiod
+        ix = adfix[aix]
+        nextblockix = adfix[aix+1]
+        open = df[ix, :open]
+        high = df[ix, :high]
+        low = df[ix, :low]
+        basevolume = df[ix, :basevolume]
+        adf[aix, :opentime] = floor(df[ix, :opentime], period)
+        ix += 1
+        while ix < nextblockix
+            high = max(high, df[ix, :high])
+            low = min(low, df[ix, :low])
+            basevolume += df[ix, :basevolume]
+            ix += 1
         end
-        if aix > 0
-            adf[aix, :open] = open
-            adf[aix, :high] = high
-            adf[aix, :low] = low
-            adf[aix, :close] = close
-            adf[aix, :basevolume] = basevolume
-        end
+        ix -= 1
+        adf[aix, :open] = open
+        adf[aix, :high] = high
+        adf[aix, :low] = low
+        adf[aix, :close] = df[ix, :close]
+        adf[aix, :basevolume] = basevolume
     end
     adf[:, :pivot] = pivot(adf)
     return adf
