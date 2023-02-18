@@ -35,7 +35,7 @@ Be cautious and don't use it for real trading unless you know what to do. There 
 
 Following the DrWatson approach, each module is located in the src folder and has a corresponding '_test' unti test in the test folder.
 
-- Main module is [Trade](src/trade.jl)
+- Main module is [Trade](src/trade.jl), which runs a tradeloop but uses trade rules from TradeRules
 - Machine learning is made available by [Classify](src/classify.jl).
 - [Targets](Targets/src/Targets.jl) provides target labels to train, evaluate and test machine learning approaches.
 - [Features](Features/src/Features.jl) provides features as input for machine learning.
