@@ -1,0 +1,4 @@
+name = "TradingStrategy"
+uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
+authors = ["tcae <tcae@posteo.nl>"]
+version = "0.1.0"

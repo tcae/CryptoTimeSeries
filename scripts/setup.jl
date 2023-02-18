@@ -2,11 +2,48 @@
 # push!(DEPOT_PATH, "/home/tor/TorProjects", "/home/tor/TorProjects/CryptoTimeSeries", "/home/tor/TorProjects/CryptoTimeSeries/src")
 
 using Pkg
+# rootpath = ".."
 rootpath = joinpath(@__DIR__, "..")
+if Sys.islinux()
+    # rootpath = joinpath(@__DIR__, "..")
+    println("Linux, rootpath: $rootpath, homepath: $(homedir())")
+elseif Sys.isapple()
+    # rootpath = joinpath(@__DIR__, "..")
+    println("Apple, rootpath: $rootpath, homepath: $(homedir())")
+elseif Sys.iswindows()
+    # rootpath = joinpath(@__DIR__, "..")
+    println("Windows, rootpath: $rootpath, homepath: $(homedir())")
+else
+    # rootpath = joinpath(@__DIR__, "..")
+    println("unknown OS, rootpath: $rootpath, homepath: $(homedir())")
+end
 Pkg.activate(rootpath)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
+mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "MyBinance", "CryptoXch", "Assets", "Classify", "TradingStrategy", "Trade"]
 # Pkg.upgrade_manifest()
+# for mypackage in mypackages
+#     try
+#         Pkg.free(mypackage)
+#     catch err
+#         println(err)
+#     end
+# end
+# for mypackage in mypackages
+#     try
+#         Pkg.rm(mypackage)
+#     catch err
+#         println(err)
+#     end
+# end
+rootpath = "."
+for mypackage in mypackages
+    folderpath = joinpath(rootpath, mypackage)
+    println("preparing $folderpath")
+    # Pkg.activate(folderpath)
+    Pkg.develop(path=folderpath)
+    # Pkg.gc()
+end
 Pkg.add(url="https://github.com/tlienart/OpenSpecFun_jll.jl")  # fix for MKL issue in Scikit-learn - see MLJ manual
 Pkg.add([
     "Test",
@@ -28,24 +65,6 @@ Pkg.add([
     "Profile"  # Trade
     ])
 
-for mypackage in ["Assets", "Classify", "CryptoXch", "EnvConfig", "Features", "MyBinance", "Ohlcv", "Targets", "TestOhlcv", "Trade"]
-    folderpath = joinpath(rootpath, mypackage)
-    println("preparing $folderpath")
-    # Pkg.activate(folderpath)
-    Pkg.develop(path=folderpath)
-    # Pkg.gc()
-end
-# develop(path="/home/tor/TorProjects/CryptoTimeSeries")
-# Pkg.develop(path=joinpath(rootpath, "../Assets"))
-# Pkg.develop(path=joinpath(@__DIR__, "../Classify"))
-# Pkg.develop(path=joinpath(@__DIR__, "../CryptoXch"))
-# Pkg.develop(path=joinpath(@__DIR__, "../EnvConfig"))
-# Pkg.develop(path=joinpath(@__DIR__, "../Features"))
-# Pkg.develop(path=joinpath(@__DIR__, "../MyBinance"))
-# Pkg.develop(path=joinpath(@__DIR__, "../Ohlcv"))
-# Pkg.develop(path=joinpath(@__DIR__, "../Targets"))
-# Pkg.develop(path=joinpath(@__DIR__, "../TestOhlcv"))
-# Pkg.develop(path=joinpath(@__DIR__, "../Trade"))
 # Pkg.resolve()
 # Pkg.update()
 Pkg.gc()
