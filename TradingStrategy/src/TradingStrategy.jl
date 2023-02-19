@@ -177,6 +177,11 @@ mutable struct TradeChances001
     end
 end
 
+function Base.show(io::IO, tcs::TradeChances001)
+    println("TradeChances001: minimumgain=$(tcs.tr.minimumgain) minimumgradientdaygain=$(tcs.tr.minimumgradientdaygain) stoplossstd=$(tcs.tr.stoplossstd) breakoutstdset=$(tcs.tr.breakoutstdset)")
+    println(tcs.tcs)
+end
+
 function buycompliant001(f2, window, breakoutstd, ix)
     df = Ohlcv.dataframe(f2.ohlcv)
     afr = f2.regr[window]
@@ -402,6 +407,11 @@ mutable struct TradeChances002
     end
 end
 
+function Base.show(io::IO, tcs::TradeChances002)
+    println("TradeChances002: minimumbacktestgain=$(tcs.tr.minimumbacktestgain) minimumbuygradientdict=$(tcs.tr.minimumbuygradientdict) shorterwindowimprovement=$(tcs.tr.shorterwindowimprovement)")
+    println(tcs.tcs)
+end
+
 function alllargerwindowgradimprove(f2, window, featureix)
     ok = true
     count = ok = 0
@@ -611,6 +621,10 @@ mutable struct TradeChances000
             3.0
             )
     end
+end
+
+function Base.show(io::IO, tcs::TradeChances000)
+    show(tcs.tcs)
 end
 
 
