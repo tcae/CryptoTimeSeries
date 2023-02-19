@@ -45,7 +45,7 @@ struct Authentication
         if configmode == production
             filename = normpath(joinpath(homedir(), authpathprefix, "auth.json"))
         else  # must be test
-            filename = normpath(joinpath(homedir(), authpathprefix, "auth_Tst1.json"))
+            filename = normpath(joinpath(homedir(), authpathprefix, "auth.json"))   # "auth_Tst1.json" no longer valid
         end
         dicttxt = open(filename, "r") do f
             read(f, String)  # file information to string

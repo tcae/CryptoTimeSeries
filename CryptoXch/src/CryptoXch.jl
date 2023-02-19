@@ -654,9 +654,9 @@ function createorder(base::String, orderside::String, limitprice, usdtquantity)
     # stepdigits = Int64(floor(-log10(filterflotatvalue(filter, "LOT_SIZE", "stepSize")); digits=0))
     basestep = symfilter.basestep
     stepdigits = Int64(floor(-log10(basestep); digits=0))
-    println("before stepdigits correction: limitprice=$qty tickdigits=$stepdigits minqty=$minqty")
+    println("before stepdigits correction: base_quantity=$qty stepdigits=$stepdigits minqty=$minqty")
     qty = round(qty; digits=stepdigits)
-    println("after stepdigits correction: limitprice=$qty")
+    println("after stepdigits correction: base_quantity=$qty")
 
     order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
     oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)

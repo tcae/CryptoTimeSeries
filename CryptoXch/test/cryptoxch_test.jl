@@ -167,10 +167,15 @@ end
     @test ood[1]["time"] isa DateTime
     @test ood[1]["fills"][1]["qty"] isa AbstractFloat
 
-    oo1 = CryptoXch.createorder("btc", "BUY", 19001.0, 20.0)
+    # EnvConfig.init(EnvConfig.test)
+    EnvConfig.init(EnvConfig.production)
+
+    ooarray = CryptoXch.getopenorders(nothing)
+    println("getopenorders(nothing): $ooarray")
+    oo1 = CryptoXch.createorder("btc", "BUY", 19001.0003, 26.01)
     # println("createorder: $oo1")
     oo2 = CryptoXch.getorder("btc", oo1["orderId"])
-    # println("getorder: $oo2")
+    println("getorder: $oo2")
     @test oo1["orderId"] == oo2["orderId"]
     ooarray = CryptoXch.getopenorders(nothing)
     # println("getopenorders(nothing): $ooarray")
@@ -180,6 +185,7 @@ end
     # println("cancelorder: $oo2")
     @test oo1["orderId"] == oo2["orderId"]
 
+    println("test IP with CLI: wget -qO- http://ipecho.net/plain | xargs echo")
 end
 
 

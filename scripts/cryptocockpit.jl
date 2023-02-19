@@ -589,9 +589,10 @@ callback!(
     fig10d = candlestickgraph(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)), focus, "1h", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression, false, spread)
     # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
     #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression)
-    fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)), focus, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression, false, spread)
-    figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
-        drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
+    fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)), focus, "1d", Dates.Year(1), Dates.DateTime(enddt6M, dtf), regression, false, spread)
+    # figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
+    #     drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
+    figall = candlestickgraph(timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, dtf)), focus, "3d", Dates.Year(4), Dates.DateTime(enddtall, dtf), false, false, spread)
 
     return fig1d, fig10d, fig6M, figall, fig4h, targets4h
 end

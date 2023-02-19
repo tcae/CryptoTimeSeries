@@ -15,9 +15,10 @@ EnvConfig.init(production)
 # MyBinance.getKlines("BTCUSDT")
 # MyBinance.account(EnvConfig.authorization.key, EnvConfig.authorization.secret)
 # MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
+# order = MyBinance.createOrder("BTCUSDT", )
 res = MyBinance.openOrders(nothing, EnvConfig.authorization.key, EnvConfig.authorization.secret)
 # res = MyBinance.openOrders("CHZUSDT", EnvConfig.authorization.key, EnvConfig.authorization.secret)
-# println(res)
+println(res)
 for o in res
     for dictentry in o
         println(dictentry)

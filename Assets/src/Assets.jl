@@ -159,7 +159,7 @@ function loadassets(backtest=false)::AssetData
         # println("lastdayvolume OK USDT len=$(length(bases)) - $bases")
         bases = union(Set(bases), manual, portfolio)
         # println("union1 len=$(length(bases)) - $bases")
-        CryptoXch.downloadupdate!(bases, enddt, Dates.Year(4))
+        CryptoXch.downloadupdate!(bases, enddt, Dates.Year(6))
         automatic = Set(automaticselect(usdtdf, 30, minimumdayquotevolume))  # will use just downloaded updates
         allbases = union(portfolio, manual, automatic)
         # println("allbases len=$(length(allbases)) - $allbases")
