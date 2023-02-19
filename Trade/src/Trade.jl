@@ -2,12 +2,8 @@
 # Pkg.add(["Dates", "DataFrames"])
 
 """
-## problem statement
-
-This module shall automatically follow the most profitable crypto currecncy at Binance, buy when an uptrend starts and sell when it ends.
-
-
-All history data will be collected but a fixed subset **`historysubset`** will be used for training, evaluation and test. Such data is OHLCV data of a fixed set of crypto currencies that have proven to show sufficient liquidity.
+*Trade* is the top level module that shall  follow the most profitable crypto currecncy at Binance, buy when an uptrend starts and sell when it ends.
+It generates the OHLCV data, executes the trades in a loop but delegates the trade startegy to *TradingStrategy*.
 """
 module Trade
 
@@ -44,9 +40,9 @@ mutable struct Cache
     baseconstraint  # if != nothing then only trade bases that are in baseconstraint
     usdtfree
     usdtlocked
-    classify!  # function to classsify trade chances
+    tradingstrategy!  # function to classsify trade chances
     bd  # dict[base] of BaseInfo
-    tradechances  # ::Classify.TradeChances001
+    tradechances  # ::Classify.TradeChances
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, opentime, closetime, message
     orderlog  # DataFrame with cols like openorders
     transactionlog  # DataFrame of transaction to fill orders
@@ -56,16 +52,16 @@ mutable struct Cache
         @assert backtestchunk >= 0
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        # classify = Classify.traderules000!
-        classify = Classify.traderules001!
-        # classify = Classify.traderules002!
+        # strategy = Classify.traderules000!
+        strategy = Classify.traderules001!
+        # strategy = Classify.traderules002!
         openorders = orderdataframex()
         orderlog = orderdataframex()
         transactionlog = filldataframe()
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
         messagelog = open(logpath("messagelog_$runid.txt"), "w")
-        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, classify, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, strategy, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
     end
 end
 
@@ -178,15 +174,16 @@ end
 function preparetradecache!(cache::Cache)
     loadopenorders!(cache)
     usdtdf = CryptoXch.getUSDTmarket()
-    pdf = CryptoXch.portfolio(usdtdf)
+    pdf = CryptoXch.portfolio(usdtdf) # consider all portfolio bases
     cache.usdtfree, cache.usdtlocked = freelocked(pdf, "usdt")
-    liquidusdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :base]
+    liquidusdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :base] # consider only symbols with a USDT daily volume > threshold
     enddt = backtest(cache) ? cache.backtestenddt : floor(Dates.now(Dates.UTC), Dates.Minute)
     initialperiod = backtest(cache) ? Dates.Minute(Classify.requiredminutes) + cache.backtestperiod : Dates.Minute(Classify.requiredminutes)
     startdt = floor(enddt - initialperiod, Dates.Minute)
     @assert startdt < enddt
     for base in usdtdf.base
         if (isnothing(cache.baseconstraint) ? true : (base in cache.baseconstraint)) && ((base in pdf.base) || (base in liquidusdtdf))
+            # prepare data for all bases that qualified before
             ohlcv = Ohlcv.defaultohlcv(base)
             Ohlcv.read!(ohlcv)
             origlen = size(ohlcv.df, 1)
@@ -245,7 +242,7 @@ function appendmostrecent!(cache::Cache, base)
     global count = 0
     continuetrading = false
     df = ohlcvdf(cache, base)
-    if backtest(cache)
+    if backtest(cache) # conume next backtest data
         cache.bd[base].currentix += 1
         if cache.bd[base].currentix > cache.bd[base].features.lastix
             # calculate next chunk of features
@@ -600,13 +597,8 @@ function trade!(cache)
             if df.high[cache.bd[order.base].currentix] > order.price
                 closeorder!(cache, order, "SELL", "FILLED")
             elseif significantsellpricechange(tc, order.price)  # including emergency sells
+                # set new limit price
                 closeorder!(cache, order, "SELL", "CANCELED")
-                # if false  # tc.sellprice < order.price
-                #     pivotcurrent = cache.bd[order.base].features.ohlcv.df.pivot[cache.bd[order.base].currentix]
-                #     @info "significant regry decrease -> reduction to pivot=$(pivotcurrent) instead of upperbandprice=$(tc.sellprice)"
-                #     neworder!(cache, order.base, pivotcurrent, order.origQty, "SELL", tc)
-                # else
-                # end
                 neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", tc)
                 #? order.origQty remains unchanged?
             end
@@ -653,20 +645,21 @@ end
 
 # end
 
-function coretradeloop(cache)
+function coretradeloop(cache::Cache)
     global count = 1
     continuetrading = false
     for base in keys(cache.bd)
-        continuetrading = appendmostrecent!(cache, base)
+        continuetrading = appendmostrecent!(cache, base) # add either next backtest data or wait until new realtime data
         if continuetrading
-            cache.tradechances = cache.classify!(cache.tradechances, cache.bd[base].features, cache.bd[base].currentix)
+            # assess trade chances
+            cache.tradechances = cache.tradingstrategy!(cache.tradechances, cache.bd[base].features, cache.bd[base].currentix)
         else
             assetrefresh = true
             break
         end
     end
     if continuetrading
-        trade!(cache)
+        trade!(cache) # execute trades on basis of assessed trade chances
     end
     return continuetrading
 end
@@ -691,7 +684,7 @@ function tradeloop(cache)
     # Profile.clear()
     continuetrading = true
     while continuetrading
-        preparetradecache!(cache)
+        preparetradecache!(cache) # determine the bases to be considered for trading and prepare their initial data
         assetrefresh = false
         refreshtimestamp = Dates.now(Dates.UTC)
         println("starting trading core loop")

@@ -502,6 +502,8 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
     startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
     subdf = df[startdt .< df.opentime .<= enddt, :]
+    # startdt = startdt < df[begin, :opentime] ? df[begin, :opentime] : startdt
+    # period = (enddt - startdt) + Dates.Minute(1)
     if size(subdf,1) > 0
         normref = subdf[end, :pivot]
         traces = append!([
@@ -592,7 +594,7 @@ callback!(
     fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)), focus, "1d", Dates.Year(1), Dates.DateTime(enddt6M, dtf), regression, false, spread)
     # figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
     #     drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
-    figall = candlestickgraph(timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, dtf)), focus, "3d", Dates.Year(6), Dates.DateTime(enddtall, dtf), false, false, spread)
+    figall = candlestickgraph(timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, dtf)), focus, "3d", Dates.Year(6), Dates.DateTime(enddtall, dtf), false, false, nothing)
 
     return fig1d, fig10d, fig6M, figall, fig4h, targets4h
 end

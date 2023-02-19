@@ -455,6 +455,10 @@ function balances()
     return portfolio
 end
 
+"""
+*portfolio* returns a dataframe of currently owned crypto bases with their *locked* and *free* base amount
+as well as the most current price (provided via *usdtdf*)
+"""
 function portfolio(usdtdf)
     df = DataFrame(
         base=String[],

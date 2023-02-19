@@ -41,7 +41,7 @@ end
 
 const tr002default = TradeRules002(0.1, mingainminuterange(Features.regressionwindows002), 0.2)
 
-mutable struct TradeChance001
+mutable struct TradeChance
     base::String
     buydt  # buy datetime remains nothing until completely bought
     buyprice
@@ -54,7 +54,7 @@ mutable struct TradeChance001
     breakoutstd  # only relevant for traderules001! (not traderules002!)
 end
 
-mutable struct TradeChances001
+mutable struct TradeChances
     basedict  # Dict of new buy orders
     orderdict  # Dict of open orders
 end
@@ -75,11 +75,11 @@ requiredminutes = requiredtradehistory + Features.requiredminutes
 minutesgain(gradient, refprice, minutes) = minutes * gradient / refprice
 daygain(gradient, refprice) = minutesgain(gradient, refprice, 24 * 60)
 
-function Base.show(io::IO, tc::TradeChance001)
+function Base.show(io::IO, tc::TradeChance)
     print(io::IO, "tc: base=$(tc.base), buydt=$(EnvConfig.timestr(tc.buydt)), buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), prob=$(round(tc.probability*100; digits=2))%, window=$(tc.regrminutes), stop loss sell=$(round(tc.stoplossprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
 end
 
-function Base.show(io::IO, tcs::TradeChances001)
+function Base.show(io::IO, tcs::TradeChances)
     println("tradechances: $(values(tcs.basedict)) new buy chances")
     for (ix, tc) in enumerate(values(tcs.basedict))
         println("$ix: $tc")
@@ -90,7 +90,7 @@ function Base.show(io::IO, tcs::TradeChances001)
     end
 end
 
-Base.length(tcs::TradeChances001) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
+Base.length(tcs::TradeChances) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
 
 function buycompliant001(f2, window, breakoutstd, ix)
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -195,7 +195,7 @@ function breakoutextremesix001!(f2::Features.Features002, window, breakoutstd, s
     return extremeix
 end
 
-function registerbuy!(tradechances::TradeChances001, buyix, buyprice, buyorderid, f2::Features.Features002)
+function registerbuy!(tradechances::TradeChances, buyix, buyprice, buyorderid, f2::Features.Features002)
     @assert buyix > 0
     @assert buyprice > 0
     tc = tradechanceoforder(tradechances, buyorderid)
@@ -209,7 +209,7 @@ function registerbuy!(tradechances::TradeChances001, buyix, buyprice, buyorderid
         tc.buydt = opentime[buyix]
         tc.buyprice = buyprice
         tc.buyorderid = buyorderid
-        tc.stoplossprice = stoplossprice(afr, fix, tr001default.stoplossstd)
+        tc.stoplossprice = stoplossprice(afr, fix, tr001default.stoplossstd) #! common function but TradeRules001 specific content!
         spread = banddeltaprice(afr, fix, tc.breakoutstd)
         tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
         # tc.sellprice = afr.regry[fix] + halfband
@@ -219,7 +219,7 @@ function registerbuy!(tradechances::TradeChances001, buyix, buyprice, buyorderid
     return tc
 end
 
-function tradechanceoforder(tradechances::TradeChances001, orderid)
+function tradechanceoforder(tradechances::TradeChances, orderid)
     tc = nothing
     if orderid in keys(tradechances.orderdict)
         tc = tradechances.orderdict[orderid]
@@ -227,7 +227,7 @@ function tradechanceoforder(tradechances::TradeChances001, orderid)
     return tc
 end
 
-function tradechanceofbase(tradechances::TradeChances001, base)
+function tradechanceofbase(tradechances::TradeChances, base)
     tc = nothing
     if base in keys(tradechances.basedict)
         tc = tradechances.basedict[base]
@@ -235,30 +235,30 @@ function tradechanceofbase(tradechances::TradeChances001, base)
     return tc
 end
 
-function deletetradechanceoforder!(tradechances::TradeChances001, orderid)
+function deletetradechanceoforder!(tradechances::TradeChances, orderid)
     if orderid in keys(tradechances.orderdict)
         delete!(tradechances.orderdict, orderid)
     end
 end
 
-function deletenewbuychanceofbase!(tradechances::TradeChances001, base)
+function deletenewbuychanceofbase!(tradechances::TradeChances, base)
     if base in keys(tradechances.basedict)
         delete!(tradechances.basedict, base)
     end
 end
 
-function registerbuyorder!(tradechances::TradeChances001, orderid, tc::TradeChance001)
+function registerbuyorder!(tradechances::TradeChances, orderid, tc::TradeChance)
     tc.buyorderid = orderid
     tradechances.orderdict[orderid] = tc
 end
 
-function registersellorder!(tradechances::TradeChances001, orderid, tc::TradeChance001)
+function registersellorder!(tradechances::TradeChances, orderid, tc::TradeChance)
     tc.sellorderid = orderid
     tradechances.orderdict[orderid] = tc
 end
 
 "Remove all new buy chances. Those that were issued as orders are moved to the open order dict"
-function cleanupnewbuychance!(tradechances::TradeChances001, base)
+function cleanupnewbuychance!(tradechances::TradeChances, base)
     if (base in keys(tradechances.basedict))
         tc = tradechances.basedict[base]
         delete!(tradechances.basedict, base)
@@ -289,7 +289,7 @@ function newbuychance001(f2::Features.Features002, ohlcvix)
             # probability = max(min((spread - (df.low[ohlcvix] - buyprice)) / spread, 1.0), 0.0)
             probability = 0.8
             tcstoplossprice = stoplossprice(afr, fix, tr001default.stoplossstd)
-            tc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, breakoutstd)
+            tc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, breakoutstd)
         end
     end
     return tc
@@ -299,7 +299,7 @@ end
     traderules001!(tradechances, f2::Features.Features002, ohlcvix)
 
 returns the chance expressed in gain between currentprice and future sellprice * probability
-if tradechances === nothing then an empty TradeChance001 array is created and with results returned
+if tradechances === nothing then an empty TradeChance array is created and with results returned
 
 Trading strategy:
 - buy if price is
@@ -316,7 +316,7 @@ Trading strategy:
 function traderules001!(tradechances, f2::Features.Features002, ohlcvix)
     @info "$(@doc traderules001!)" maxlog=1
     @info "tr001default: $(tr001default)" maxlog=1
-    tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
+    tradechances = isnothing(tradechances) ? TradeChances(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -486,7 +486,7 @@ function newbuychance002(f2::Features.Features002, ohlcvix)
             # probability = max(min((spread - (df.low[ohlcvix] - buyprice)) / spread, 1.0), 0.0)
             probability = 0.8
             tcstoplossprice = stoplossprice(afr, fix, 3.0)
-            tc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, 1.0)
+            tc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, 1.0)
         end
     end
     return tc
@@ -496,7 +496,7 @@ end
     traderules002!(tradechances, f2::Features.Features002, ohlcvix)
 
 returns the chance expressed in gain between currentprice and future sellprice * probability
-if tradechances === nothing then an empty TradeChance001 array is created and with results returned
+if tradechances === nothing then an empty TradeChance array is created and with results returned
 
 Trading strategy:
 - buy if price is
@@ -510,7 +510,7 @@ Trading strategy:
 function traderules002!(tradechances, f2::Features.Features002, ohlcvix)
     @info "$(@doc traderules002!)" maxlog=1
     @info "tr002default: $(tr002default)" maxlog=1
-    tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
+    tradechances = isnothing(tradechances) ? TradeChances(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -561,7 +561,7 @@ end
     traderules000!(tradechances, f2::Features.Features002, ohlcvix)
 
 returns the chance expressed in gain between currentprice and future sellprice * probability
-if tradechances === nothing then an empty TradeChance001 array is created and with results returned
+if tradechances === nothing then an empty TradeChance array is created and with results returned
 
 Trading strategy:
 - buy if regression line is at minimum
@@ -571,7 +571,7 @@ Trading strategy:
 function traderules000!(tradechances, f2::Features.Features002, ohlcvix)
     regressionminutes = 24*60
     @info "$(@doc traderules000!)" regressionminutes maxlog=1
-    tradechances = isnothing(tradechances) ? TradeChances001(Dict(), Dict()) : tradechances
+    tradechances = isnothing(tradechances) ? TradeChances(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -588,7 +588,7 @@ function traderules000!(tradechances, f2::Features.Features002, ohlcvix)
             sellprice = buyprice * 1.1
             probability = 0.8
             tcstoplossprice = buyprice * 0.8
-            newtc = TradeChance001(base, nothing, buyprice, 0, sellprice, 0, probability, regressionminutes, tcstoplossprice, 1.0)
+            newtc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, probability, regressionminutes, tcstoplossprice, 1.0)
         end
     end
 
