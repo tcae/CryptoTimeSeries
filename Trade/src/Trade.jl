@@ -8,7 +8,7 @@ It generates the OHLCV data, executes the trades in a loop but delegates the tra
 module Trade
 
 using Dates, DataFrames, JSON, Profile, Logging, CSV
-using EnvConfig, Ohlcv, Classify, CryptoXch, Assets, Features
+using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Features
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
 
@@ -40,9 +40,8 @@ mutable struct Cache
     baseconstraint  # if != nothing then only trade bases that are in baseconstraint
     usdtfree
     usdtlocked
-    tradingstrategy!  # function to classsify trade chances
     bd  # dict[base] of BaseInfo
-    tradechances  # ::Classify.TradeChances
+    tradechances  # ::TradingStrategy.TradeChances
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, opentime, closetime, message
     orderlog  # DataFrame with cols like openorders
     transactionlog  # DataFrame of transaction to fill orders
@@ -52,16 +51,14 @@ mutable struct Cache
         @assert backtestchunk >= 0
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        # strategy = Classify.traderules000!
-        strategy = Classify.traderules001!
-        # strategy = Classify.traderules002!
+        tradechances = TradingStrategy.TradeChances000()
         openorders = orderdataframex()
         orderlog = orderdataframex()
         transactionlog = filldataframe()
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
         messagelog = open(logpath("messagelog_$runid.txt"), "w")
-        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, strategy, Dict(), nothing, openorders, orderlog, transactionlog, messagelog, runid)
+        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Dict(), tradechances, openorders, orderlog, transactionlog, messagelog, runid)
     end
 end
 
@@ -178,7 +175,7 @@ function preparetradecache!(cache::Cache)
     cache.usdtfree, cache.usdtlocked = freelocked(pdf, "usdt")
     liquidusdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :base] # consider only symbols with a USDT daily volume > threshold
     enddt = backtest(cache) ? cache.backtestenddt : floor(Dates.now(Dates.UTC), Dates.Minute)
-    initialperiod = backtest(cache) ? Dates.Minute(Classify.requiredminutes) + cache.backtestperiod : Dates.Minute(Classify.requiredminutes)
+    initialperiod = backtest(cache) ? Dates.Minute(TradingStrategy.requiredminutes) + cache.backtestperiod : Dates.Minute(TradingStrategy.requiredminutes)
     startdt = floor(enddt - initialperiod, Dates.Minute)
     @assert startdt < enddt
     for base in usdtdf.base
@@ -190,13 +187,13 @@ function preparetradecache!(cache::Cache)
             ohlcv.df = ohlcv.df[enddt .>= ohlcv.df.opentime .>= startdt, :]
             println("cutting $base ohlcv from $origlen to $(size(ohlcv.df, 1)) minutes ($(EnvConfig.timestr(startdt)) - $(EnvConfig.timestr(enddt)))")
             # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
-            if size(Ohlcv.dataframe(ohlcv), 1) < Classify.requiredminutes
-                @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=Classify.requiredminutes
+            if size(Ohlcv.dataframe(ohlcv), 1) < TradingStrategy.requiredminutes
+                @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=TradingStrategy.requiredminutes
                 continue
             end
-            currentix = backtest(cache) ? Classify.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
+            currentix = backtest(cache) ? TradingStrategy.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
             free, locked = freelocked(pdf, base)
-            cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, Classify.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
+            cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, TradingStrategy.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
             # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
         end
     end
@@ -247,7 +244,7 @@ function appendmostrecent!(cache::Cache, base)
         if cache.bd[base].currentix > cache.bd[base].features.lastix
             # calculate next chunk of features
             lastix = min(cache.bd[base].currentix + cache.backtestchunk - 1, lastindex(df, 1))
-            firstix =  max(min(cache.bd[base].currentix, lastix) - Classify.requiredminutes, firstindex(df, 1))
+            firstix =  max(min(cache.bd[base].currentix, lastix) - TradingStrategy.requiredminutes, firstindex(df, 1))
             cache.bd[base].features.update(cache.bd[base].features, firstix, lastix)
             # @info "appendmostrecent! ohlcv.df=$(size(cache.bd[base].features.ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
             count+= 1
@@ -274,7 +271,7 @@ function appendmostrecent!(cache::Cache, base)
         # ! TODO implement error handling
         @assert lastdt == df.opentime[currentix]  # make sure begin wasn't cut
         cache.bd[base].currentix = lastindex(df, 1)
-        cache.bd[base].features.update(cache.bd[base].features, cache.bd[base].currentix - Classify.requiredminutes, cache.bd[base].currentix)
+        cache.bd[base].features.update(cache.bd[base].features, cache.bd[base].currentix - TradingStrategy.requiredminutes, cache.bd[base].currentix)
         if lastdt < df.opentime[end]
             continuetrading = true
         else
@@ -381,7 +378,7 @@ function closeorder!(cache, order, side, status)
     if (side == "BUY")
         orderusdt = CryptoXch.ceilbase("usdt", order.origQty * order.price)
         if order.executedQty > 0
-            Classify.registerbuy!(cache.tradechances, timeix, order.price, order.orderId, cache.bd[order.base].features)
+            TradingStrategy.registerbuy!(cache.tradechances, timeix, order.price, order.orderId, cache.bd[order.base].features)
         end
         if !isapprox(cache.usdtlocked, orderusdt)
             if (cache.usdtlocked < orderusdt)
@@ -416,7 +413,7 @@ function closeorder!(cache, order, side, status)
     @info msg
 
     push!(cache.orderlog, order)
-    Classify.deletetradechanceoforder!(cache.tradechances, order.orderId)
+    TradingStrategy.deletetradechanceoforder!(cache.tradechances, order.orderId)
 end
 
 function buyqty(cache, base)
@@ -441,7 +438,7 @@ function neworder!(cache, base, price, qty, side, tc)
     end
     if backtest(cache)
         orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
-        while !isnothing(Classify.tradechanceoforder(cache.tradechances, orderid))
+        while !isnothing(TradingStrategy.tradechanceoforder(cache.tradechances, orderid))
             orderid = Dates.value(convert(Millisecond, Dates.now())) # unique id in backtest
         end
     else
@@ -513,7 +510,7 @@ function neworder!(cache, base, price, qty, side, tc)
             cache.usdtfree -= orderusdt
             cache.usdtlocked += orderusdt
             push!(cache.openorders, order)
-            Classify.registerbuyorder!(cache.tradechances, orderid, tc)
+            TradingStrategy.registerbuyorder!(cache.tradechances, orderid, tc)
         end
     elseif side == "SELL"
         if order.origQty > cache.bd[order.base].assetfree
@@ -548,7 +545,7 @@ function neworder!(cache, base, price, qty, side, tc)
         cache.bd[order.base].assetfree  -= order.origQty
         cache.bd[order.base].assetlocked  += order.origQty
         push!(cache.openorders, order)
-        Classify.registersellorder!(cache.tradechances, orderid, tc)
+        TradingStrategy.registersellorder!(cache.tradechances, orderid, tc)
     end
 end
 
@@ -585,7 +582,7 @@ to be considered:
 """
 function trade!(cache)
     for order in copy.(eachrow(cache.openorders))
-        tc = Classify.tradechanceoforder(cache.tradechances, order.orderId)
+        tc = TradingStrategy.tradechanceoforder(cache.tradechances, order.orderId)
         if isnothing(tc)
             @warn "no tradechance found for $(order.side) order #$(order.orderId)" tc
             continue
@@ -612,13 +609,13 @@ function trade!(cache)
                 neworder!(cache, order.base, tc.sellprice, qty, "SELL", tc)
                 # getorder and check that it is filled
             else
-                if order.base in keys(cache.tradechances.basedict)
+                if order.base in keys(cache.tradechances.tcs.basedict)
                     # buy price not reached but other new buy chance available - hence, cancel old buy order and use new chance
-                    newtc = cache.tradechances.basedict[order.base]
+                    newtc = cache.tradechances.tcs.basedict[order.base]
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
                     neworder!(cache, order.base, newtc.buyprice, buyqty(cache, order.base), "BUY", newtc)
-                    Classify.deletenewbuychanceofbase!(cache.tradechances, order.base)
+                    TradingStrategy.deletenewbuychanceofbase!(cache.tradechances, order.base)
                 elseif tc.probability < 0.5
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed because of low chance of buy success
@@ -631,12 +628,12 @@ function trade!(cache)
         end
     end
     # check remaining new base buy chances
-    for (base, tc) in cache.tradechances.basedict
+    for (base, tc) in cache.tradechances.tcs.basedict
         usdttotal, _, _ = usdtliquidity(cache, base)
         if usdttotal <= CryptoXch.minimumquotevolume
             # no new order if asset is already in possession
             neworder!(cache, base, tc.buyprice, buyqty(cache, base), "BUY", tc)
-            Classify.deletenewbuychanceofbase!(cache.tradechances, base)
+            TradingStrategy.deletenewbuychanceofbase!(cache.tradechances, base)
         end
     end
 end
@@ -652,7 +649,7 @@ function coretradeloop(cache::Cache)
         continuetrading = appendmostrecent!(cache, base) # add either next backtest data or wait until new realtime data
         if continuetrading
             # assess trade chances
-            cache.tradechances = cache.tradingstrategy!(cache.tradechances, cache.bd[base].features, cache.bd[base].currentix)
+            cache.tradechances = TradingStrategy.assesstrades!(cache.tradechances, cache.bd[base].features, cache.bd[base].currentix)
         else
             assetrefresh = true
             break

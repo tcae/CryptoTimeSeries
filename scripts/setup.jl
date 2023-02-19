@@ -18,6 +18,7 @@ else
     println("unknown OS, rootpath: $rootpath, homepath: $(homedir())")
 end
 Pkg.activate(rootpath)
+cd(rootpath)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "MyBinance", "CryptoXch", "Assets", "Classify", "TradingStrategy", "Trade"]

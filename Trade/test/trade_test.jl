@@ -4,8 +4,8 @@ using Pkg
 module TradeTest
 
 using Test, Dates
-using EnvConfig, Ohlcv, Features
-using Trade, Classify
+using EnvConfig
+using Trade
 
 # EnvConfig.init(test)
 # backtestchunk = 100; enddt = DateTime("2022-03-28T10:00:00"); period = Dates.Day(1)  # short backtest
@@ -26,7 +26,8 @@ backtestchunk = 100; enddt = DateTime("2022-08-05T20:00:00"); period = Dates.Mon
 
 for base in ["btc", "atom", "doge", "sol", "mana", "near", "axs", "matic", "link", "waves", "ada", "bnb", "eos", "vet"]
     cache = Trade.Cache(backtestchunk, period, enddt, [base])
-    @time Trade.tradeloop(cache)
+    Trade.tradeloop(cache)
+    # @time Trade.tradeloop(cache)
 end
 
 

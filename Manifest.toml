@@ -2584,15 +2584,16 @@ uuid = "9f7883ad-71c0-57eb-9f7f-b5c9e6d3789c"
 version = "0.2.23"
 
 [[deps.Trade]]
-deps = ["Assets", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JSON", "Logging", "Ohlcv", "Profile"]
+deps = ["Assets", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JSON", "Logging", "Ohlcv", "Profile", "TradingStrategy"]
 path = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.1.2"
 
 [[deps.TradingStrategy]]
+deps = ["DataFrames", "Dates", "EnvConfig", "Features", "Logging", "Ohlcv", "Test"]
 path = "TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.1.0"
+version = "0.2.0"
 
 [[deps.TranscodingStreams]]
 deps = ["Random", "Test"]

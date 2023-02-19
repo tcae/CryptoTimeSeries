@@ -1,14 +1,20 @@
 # push!(LOAD_PATH, "/home/tor/TorProjects/CryptoTimeSeries/src")
 # push!(DEPOT_PATH, "/home/tor/TorProjects", "/home/tor/TorProjects/CryptoTimeSeries", "/home/tor/TorProjects/CryptoTimeSeries/src")
 
-import Pkg: activate, add, status, resolve
 using Pkg
-activate(@__DIR__)
+Pkg.activate(@__DIR__)
 cd(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
+# Pkg.upgrade_manifest()
+Pkg.add([
+    "Test",
+    "DataFrames",
+    "Dates",
+    "Logging"
+    ])
 
-mypackages = ["EnvConfig", "Ohlcv", "TradingStrategy", "CryptoXch", "Features"]
+mypackages = ["EnvConfig", "Ohlcv", "Features"]
 rootpath = ".."
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)
@@ -18,11 +24,9 @@ for mypackage in mypackages
     # Pkg.gc()
 end
 
-Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging", "CSV" ])
-Pkg.resolve()
-Pkg.update()
+# Pkg.resolve()
+# Pkg.update()
 Pkg.gc()
 Pkg.precompile()
-
-activate("..")
 cd("..")
+Pkg.activate(".")
