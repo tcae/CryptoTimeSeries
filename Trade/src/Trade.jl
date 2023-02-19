@@ -30,7 +30,12 @@ mutable struct BaseInfo
 end
 
 """
-trade cache contains all required data to support the tarde loop
+*Cache* contains the recipe and state parameters for the **tradeloop** as parameter. Recipe parameters to create a *Cache* are
++ *backtestchunk* 0 in case of no bcktest or the number of faeture OHLCV minutes to consume for optimizing the backtest
++ *backtestperiod* is the *Dates* period of the backtest (in case *backtestchunk* > 0)
++ *backtestenddt* specifies the last *DateTime* of the backtest
++ *baseconstraint* is an array of base crypto strings that constrains the crypto bases for trading else if *nothing* there is no constraint
+
 """
 mutable struct Cache
     backtestchunk  # 0 if no backtest or in case of backtest nbr of minutes to process until next reload
