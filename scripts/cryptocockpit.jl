@@ -75,7 +75,7 @@ function updateassets(download=false)
         # initial delay but quick switching?
         for base in a.basedf.base
             loadohlcv(base, "1m")
-            Threads.@threads for interval in ["5m", "1h", "1d"]
+            Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
                 loadohlcv(base, interval)
             end
             # loadohlcv(base, "5m")
@@ -592,7 +592,7 @@ callback!(
     fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)), focus, "1d", Dates.Year(1), Dates.DateTime(enddt6M, dtf), regression, false, spread)
     # figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
     #     drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
-    figall = candlestickgraph(timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, dtf)), focus, "3d", Dates.Year(4), Dates.DateTime(enddtall, dtf), false, false, spread)
+    figall = candlestickgraph(timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, dtf)), focus, "3d", Dates.Year(6), Dates.DateTime(enddtall, dtf), false, false, spread)
 
     return fig1d, fig10d, fig6M, figall, fig4h, targets4h
 end
