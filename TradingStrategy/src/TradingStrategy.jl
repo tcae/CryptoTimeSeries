@@ -75,6 +75,7 @@ end
 
 Base.length(tcs::TradeChances) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
 
+"Used by Trade.closeorder! if buy order is executed"
 function registerbuy!(tradechances::TradeChances, buyix, buyprice, buyorderid, f2::Features.Features002, stoplossstd)
     @assert buyix > 0
     @assert buyprice > 0
@@ -99,6 +100,7 @@ function registerbuy!(tradechances::TradeChances, buyix, buyprice, buyorderid, f
     return tc
 end
 
+"Delivers the tradechance based on orderid. E.g. used in TradingStrategy.registerbuy!, Trade.trade!, Trade.neorder"
 function tradechanceoforder(tradechances::TradeChances, orderid)
     tc = nothing
     if orderid in keys(tradechances.orderdict)
@@ -107,6 +109,7 @@ function tradechanceoforder(tradechances::TradeChances, orderid)
     return tc
 end
 
+"not yet used"
 function tradechanceofbase(tradechances::TradeChances, base)
     tc = nothing
     if base in keys(tradechances.basedict)
@@ -115,29 +118,33 @@ function tradechanceofbase(tradechances::TradeChances, base)
     return tc
 end
 
+"Used by Trade.closeorder!"
 function deletetradechanceoforder!(tradechances::TradeChances, orderid)
     if orderid in keys(tradechances.orderdict)
         delete!(tradechances.orderdict, orderid)
     end
 end
 
+"Used by Trade.trade!"
 function deletenewbuychanceofbase!(tradechances::TradeChances, base)
     if base in keys(tradechances.basedict)
         delete!(tradechances.basedict, base)
     end
 end
 
+"Used by Trade.neworder!"
 function registerbuyorder!(tradechances::TradeChances, orderid, tc::TradeChance)
     tc.buyorderid = orderid
     tradechances.orderdict[orderid] = tc
 end
 
+"Used by Trade.neworder!"
 function registersellorder!(tradechances::TradeChances, orderid, tc::TradeChance)
     tc.sellorderid = orderid
     tradechances.orderdict[orderid] = tc
 end
 
-"Remove all new buy chances. Those that were issued as orders are moved to the open order dict"
+"Remove all new buy chances. Those that were issued as orders are moved to the open order dict, Used by TradingStrategy.assesstrades!"
 function cleanupnewbuychance!(tradechances::TradeChances, base)
     if (base in keys(tradechances.basedict))
         tc = tradechances.basedict[base]
@@ -182,7 +189,7 @@ function Base.show(io::IO, tcs::TradeChances001)
     println(tcs.tcs)
 end
 
-function buycompliant001(f2, window, breakoutstd, ix)
+function buycompliant001(f2, window, breakoutstd, ix, tr001)
     df = Ohlcv.dataframe(f2.ohlcv)
     afr = f2.regr[window]
     fix = Features.featureix(f2, ix)
@@ -206,15 +213,15 @@ end
 Returns the best performing combination of spread window and breakoutstd factor.
 In case that minimumgain requirements are not met, `bestwindow` returns 0 and `breakoutstd` returns 0.0.
 """
-function bestspreadwindow001(f2::Features.Features002, ohlcvix, minimumgain, breakoutstdset)
-    @assert length(breakoutstdset) > 0
+function bestspreadwindow001(f2::Features.Features002, ohlcvix, tr001)
+    @assert length(tr001.breakoutstdset) > 0
     maxtrades = 0
-    maxgain = minimumgain
+    maxgain = tr001.minimumgain
     bestwindow = 0
     bestbreakoutstd = 0.0
-    for breakoutstd in breakoutstdset
+    for breakoutstd in tr001.breakoutstdset
         for window in keys(f2.regr)
-                trades, gain = calcspread001(f2, window, ohlcvix, breakoutstd)
+                trades, gain = calcspread001(f2, window, ohlcvix, breakoutstd, tr001)
             if gain > maxgain  # (trades > maxtrades) && (gain > 0)
                 maxgain = gain
                 maxtrades = trades
@@ -230,14 +237,14 @@ end
 Returns the number of trades within the last `requiredminutes` and the gain achived.
 In case that minimumgain requirements are not met by fr.medianstd, `trades` and `gain` return 0.
 """
-function calcspread001(f2::Features.Features002, window, ohlcvix, breakoutstd)
+function calcspread001(f2::Features.Features002, window, ohlcvix, breakoutstd, tr001)
     fr = f2.regr[window]
     fix = Features.featureix(f2, ohlcvix)
     gain = 0.0
     trades = 0
     if fix >= (requiredminutes)
         startix = max(1, ohlcvix - requiredtradehistory)
-        breakoutix = breakoutextremesix001!(f2, window, breakoutstd, startix)
+        breakoutix = breakoutextremesix001!(f2, window, breakoutstd, startix, tr001)
         xix = [ix for ix in breakoutix if startix <= abs(ix)  <= ohlcvix]
         # println("breakoutextremesix @ window $window breakoutstd $breakoutstd : $xix")
         buyix = sellix = 0
@@ -257,7 +264,7 @@ function calcspread001(f2::Features.Features002, window, ohlcvix, breakoutstd)
     return trades, gain
 end
 
-function breakoutextremesix001!(f2::Features.Features002, window, breakoutstd, startindex)
+function breakoutextremesix001!(f2::Features.Features002, window, breakoutstd, startindex, tr001)
     @assert f2.lastix >= startindex >= f2.firstix "$(f2.lastix) >= $startindex >= $(f2.firstix)"
     afr = f2.regr[window]
     df = Ohlcv.dataframe(Features.ohlcv(f2))
@@ -271,7 +278,7 @@ function breakoutextremesix001!(f2::Features.Features002, window, breakoutstd, s
             end
         end
         if breakoutix >= 0
-            if buycompliant001(f2, window, breakoutstd, ix)
+            if buycompliant001(f2, window, breakoutstd, ix, tr001)
             # if df[ix, :low] < afr.regry[fix] - breakoutstd * afr.medianstd[fix]
                 push!(extremeix, -ix)
             end
@@ -289,9 +296,9 @@ function newbuychance001(f2::Features.Features002, ohlcvix, tr001)
     base = Ohlcv.basesymbol(f2.ohlcv)
     tc = nothing
     fix = Features.featureix(f2, ohlcvix)
-    regrminutes, breakoutstd = bestspreadwindow001(f2, ohlcvix, tr001.minimumgain, tr001.breakoutstdset)
+    regrminutes, breakoutstd = bestspreadwindow001(f2, ohlcvix, tr001)
     if regrminutes > 0 # best window found
-        if buycompliant001(f2, regrminutes, breakoutstd, ohlcvix)
+        if buycompliant001(f2, regrminutes, breakoutstd, ohlcvix, tr001)
             # @info "buy signal $base price=$(round(df.low[ohlcvix];digits=3)) window=$regrminutes ix=$ohlcvix time=$(opentime[ohlcvix])"
             afr = f2.regr[regrminutes]
             # spread = banddeltaprice(afr, fix, breakoutstd)
@@ -328,16 +335,15 @@ Trading strategy:
 function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, ohlcvix)::TradeChances001
     @info "$(@doc assesstrades!)" maxlog=1
     @info "tr001: $(tradechances.tr)" maxlog=1
-    tradechances = isnothing(tradechances) ? TradeChances(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
     opentime = df[!, :opentime]
     pivot = df[!, :pivot]
     base = Ohlcv.basesymbol(f2.ohlcv)
-    cleanupnewbuychance!(tradechances, base)
+    cleanupnewbuychance!(tradechances.tcs, base)
     newtc = newbuychance001(f2, ohlcvix, tradechances.tr)
-    for tc in values(tradechances.orderdict)
+    for tc in values(tradechances.tcs.orderdict)
         if tc.base == Ohlcv.basesymbol(Features.ohlcv(f2))
             if isnothing(tc.buydt)
                 if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) && (tc.breakoutstd == newtc.breakoutstd)
@@ -360,7 +366,7 @@ function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, 
                 tc.sellprice = df.low[ohlcvix]
                 tc.probability = 1.0
                 @info "stop loss sell for $base due to plunge out of spread ix=$ohlcvix time=$(opentime[ohlcvix]) at regression price of $(afr.regry[fix]) tc: $tc"
-            elseif buycompliant001(f2, tc.regrminutes, tc.breakoutstd, ohlcvix)
+            elseif buycompliant001(f2, tc.regrminutes, tc.breakoutstd, ohlcvix, tradechances.tr)
                 tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
             elseif afr.grad[fix] < 0
                 tc.sellprice = max(lowerbandprice(afr, fix, tc.breakoutstd), tc.buyprice * (1 + combinedbuysellfee))
@@ -372,7 +378,7 @@ function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, 
         end
     end
     if !isnothing(newtc)
-        tradechances.basedict[base] = newtc
+        tradechances.tcs.basedict[base] = newtc
     end
 
     # TODO use case of breakout rise following with tracker window is not yet covered - implemented in traderules002!
@@ -383,7 +389,6 @@ end
 registerbuy!(tradechances::TradeChances001, buyix, buyprice, buyorderid, f2::Features.Features002) = registerbuy!(tradechances.tcs, buyix, buyprice, buyorderid, f2, tradechances.tr.stoplossstd)
 tradechanceoforder(tradechances::TradeChances001, orderid) = tradechanceoforder(tradechances.tcs, orderid)
 deletetradechanceoforder!(tradechances::TradeChances001, orderid) = deletetradechanceoforder!(tradechances.tcs, orderid)
-tradechanceoforder(tradechances::TradeChances001, orderid) = tradechanceoforder(tradechances.tcs, orderid)
 registerbuyorder!(tradechances::TradeChances001, orderid, tc::TradeChance) = registerbuyorder!(tradechances.tcs, orderid, tc)
 registersellorder!(tradechances::TradeChances001, orderid, tc::TradeChance) = registersellorder!(tradechances.tcs, orderid, tc)
 deletenewbuychanceofbase!(tradechances::TradeChances001, base) = deletenewbuychanceofbase!(tradechances.tcs, base)
@@ -554,16 +559,15 @@ Trading strategy:
 function assesstrades!(tradechances::TradeChances002, f2::Features.Features002, ohlcvix)::TradeChances002
     @info "$(@doc assesstrades!)" maxlog=1
     @info "tr002: $(tradechances.tr)" maxlog=1
-    tradechances = isnothing(tradechances) ? TradeChances(Dict(), Dict()) : tradechances
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
     opentime = df[!, :opentime]
     pivot = df[!, :pivot]
     base = Ohlcv.basesymbol(f2.ohlcv)
-    cleanupnewbuychance!(tradechances, base)
+    cleanupnewbuychance!(tradechances.tcs, base)
     newtc = newbuychance002(f2, ohlcvix, tradechances.tr)
-    for tc in values(tradechances.orderdict)
+    for tc in values(tradechances.tcs.orderdict)
         if tc.base == Ohlcv.basesymbol(Features.ohlcv(f2))
             if isnothing(tc.buydt)
                 if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) # && (tc.breakoutstd == newtc.breakoutstd)
@@ -596,7 +600,7 @@ function assesstrades!(tradechances::TradeChances002, f2::Features.Features002, 
         end
     end
     if !isnothing(newtc)
-        tradechances.basedict[base] = newtc
+        tradechances.tcs.basedict[base] = newtc
     end
     return tradechances
 end
@@ -604,7 +608,6 @@ end
 registerbuy!(tradechances::TradeChances002, buyix, buyprice, buyorderid, f2::Features.Features002) = registerbuy!(tradechances.tcs, buyix, buyprice, buyorderid, f2, tradechances.tr.stoplossstd)
 tradechanceoforder(tradechances::TradeChances002, orderid) = tradechanceoforder(tradechances.tcs, orderid)
 deletetradechanceoforder!(tradechances::TradeChances002, orderid) = deletetradechanceoforder!(tradechances.tcs, orderid)
-tradechanceoforder(tradechances::TradeChances002, orderid) = tradechanceoforder(tradechances.tcs, orderid)
 registerbuyorder!(tradechances::TradeChances002, orderid, tc::TradeChance) = registerbuyorder!(tradechances.tcs, orderid, tc)
 registersellorder!(tradechances::TradeChances002, orderid, tc::TradeChance) = registersellorder!(tradechances.tcs, orderid, tc)
 deletenewbuychanceofbase!(tradechances::TradeChances002, base) = deletenewbuychanceofbase!(tradechances.tcs, base)
@@ -693,7 +696,6 @@ end
 registerbuy!(tradechances::TradeChances000, buyix, buyprice, buyorderid, f2::Features.Features002) = registerbuy!(tradechances.tcs, buyix, buyprice, buyorderid, f2, tradechances.stoplossstd)
 tradechanceoforder(tradechances::TradeChances000, orderid) = tradechanceoforder(tradechances.tcs, orderid)
 deletetradechanceoforder!(tradechances::TradeChances000, orderid) = deletetradechanceoforder!(tradechances.tcs, orderid)
-tradechanceoforder(tradechances::TradeChances000, orderid) = tradechanceoforder(tradechances.tcs, orderid)
 registerbuyorder!(tradechances::TradeChances000, orderid, tc::TradeChance) = registerbuyorder!(tradechances.tcs, orderid, tc)
 registersellorder!(tradechances::TradeChances000, orderid, tc::TradeChance) = registersellorder!(tradechances.tcs, orderid, tc)
 deletenewbuychanceofbase!(tradechances::TradeChances000, base) = deletenewbuychanceofbase!(tradechances.tcs, base)

@@ -262,7 +262,7 @@ function nextpeakindices(prices, mingainpct, minlosspct)
             break
         end
     end
-    distances = [ (distancesix[ix] == 0 ? 0.0 : prices[distancesix[ix]] - prices[ix] ) for ix in 1:length(prices)]
+    distances = [ (distancesix[ix] == 0 ? 0.0 : prices[distancesix[ix]] - prices[ix] ) for ix in eachindex(prices)]  # 1:length(prices)]
     return distances, distancesix
 end
 
@@ -668,7 +668,7 @@ function lastextremes(prices, regressions)::DataFrame
     lastmaxix = 1
     lastminix = 1
     dist = zeros(Float32, 4, size(regressions,1))
-    for ix in 2:size(regressions,1)
+    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
         lastminix = (regressions[ix-1] < 0) && (regressions[ix] >= 0) ? ix - 1 : lastminix
         lastmaxix = (regressions[ix-1] > 0) && (regressions[ix] <= 0) ? ix - 1 : lastmaxix
         dist[pmax, ix] = (prices[lastmaxix] - prices[ix]) / prices[ix]  # normalized to last price
@@ -692,7 +692,7 @@ function lastgainloss(prices, regressions)::DataFrame
     lastmaxix = [1, 1]
     lastminix = [1, 1]
     gainloss = zeros(Float32, 2, size(regressions,1))
-    for ix in 2:size(regressions,1)
+    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
         if (regressions[ix-1] <= 0) && (regressions[ix] > 0)
             lastminix[1] = lastminix[2]
             lastminix[2] = ix - 1
@@ -772,7 +772,7 @@ end
 """
 function regressionaccelerationhistory(regressions)
     acchistory = zeros(Float32, 1, size(regressions,1))
-    for ix in 2:size(regressions,1)
+    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
         acceleration = regressions[ix] - regressions[ix-1]
         if acceleration > 0
             if acchistory[ix-1] > 0

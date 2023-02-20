@@ -172,7 +172,7 @@ function test8()
     z = zeros(Float32, (size(lines,1), size(df,1)))
 
     for (ix, wk) in enumerate(lines)
-        for r in 1:size(df,1)
+        for r in eachindex(axes(df,1))  # 1:size(df,1)
             z[ix, r] = df[r, wk]
         end
     end

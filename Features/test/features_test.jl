@@ -60,8 +60,8 @@ end
 function nextpeakindices_test(prices, target)
     df = DataFrame()
     df.prices = prices
-    df[:, :targetdist] = [(target[ix] == 0 ? 0.0 : prices[target[ix]] - prices[ix]) for ix in 1:length(prices)]
-    df.targetgain = [(target[ix] == 0) ? 0.0 : Features.gain(prices, ix, target[ix]) for ix in 1:length(prices)]
+    df[:, :targetdist] = [(target[ix] == 0 ? 0.0 : prices[target[ix]] - prices[ix]) for ix in eachindex(prices)]  # 1:length(prices)]
+    df.targetgain = [(target[ix] == 0) ? 0.0 : Features.gain(prices, ix, target[ix]) for ix in eachindex(prices)]  # 1:length(prices)]
     df.target = target
     df[:, :dist], df[:, :distix] = Features.nextpeakindices(prices, 0.05, -0.05)
     df[:, :distgain] = [(df[ix, :distix] == 0 ? 0.0 : Features.gain(prices, ix, df[ix, :distix])) for ix in 1:length(prices)]

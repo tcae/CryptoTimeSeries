@@ -105,7 +105,7 @@ using Dash, PlotlyJS, JSON3
                             Layout(uirevision = "zoom"
                             )
                         )
-                for i in 1:length(value)
+                for i in eachindex(value)  # 1:length(value)
                     addtraces!(cur_plot,vline(value[i],ydata))
                 end
             return figure=(cur_plot)

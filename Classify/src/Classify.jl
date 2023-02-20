@@ -630,7 +630,7 @@ function tradeperformance(prices, signals)
     startprice = 1.0
     asset = 0.0
 
-    for ix in 1:size(prices, 1)
+    for ix in eachindex(prices)  # 1:size(prices, 1)
         if (signals[ix] == "long") && (cash > 0)
                 asset = cash / prices[ix] * (1 - fee)
                 cash = 0.0

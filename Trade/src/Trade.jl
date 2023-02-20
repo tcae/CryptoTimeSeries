@@ -51,7 +51,9 @@ mutable struct Cache
         @assert backtestchunk >= 0
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        tradechances = TradingStrategy.TradeChances000()
+        # tradechances = TradingStrategy.TradeChances000()
+        tradechances = TradingStrategy.TradeChances001()
+        # tradechances = TradingStrategy.TradeChances002()
         openorders = orderdataframex()
         orderlog = orderdataframex()
         transactionlog = filldataframe()

@@ -17,7 +17,7 @@ function getz()
     for _ in 1: 3
         z = push!(z, rand(4))
     end
-    t = [["t $i2 $i1 $(z[i1][i2])" for i2 in 1:size(z[1], 1)] for i1 in 1:size(z, 1)]
+    t = [["t $i2 $i1 $(z[i1][i2])" for i2 in 1:size(z[1], 1)] for i1 in eachindex(z)]  # 1:size(z, 1)]
     println(z)
     println(t)
     return z, t

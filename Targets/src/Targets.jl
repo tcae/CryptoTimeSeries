@@ -348,7 +348,7 @@ function bestregression(relativedistarray, requiredrelativeamplitude)
         return []
     end
     bestregr = zeros(Int32, plen)
-    for xpix in 1:size(relativedistarray, 1)
+    for xpix in eachindex(relativedistarray)  # 1:size(relativedistarray, 1)
         @assert plen == size(relativedistarray[xpix])
         dist = relativedistarray[xpix][1]
         for ix in 1:plen
