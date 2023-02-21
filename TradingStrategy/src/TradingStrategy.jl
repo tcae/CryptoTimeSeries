@@ -173,6 +173,19 @@ mutable struct TradeRules001  # only relevant for traderules001!
     breakoutstdset  # set of breakoutstd factors to test when determining the best combi or regregression window and spread
 end
 
+"""
+*TradeChances001* trading strategy:
+- buy if price is
+    - below normal deviation range of spread regression window
+    - spread gradient is OK
+    - spread satisfies minimum profit requirements
+- sell if price is above normal deviation range of spread regression window
+- stop loss sell: if regression price < buy regression price - stoplossstd * std
+- spread gradient is OK = spread gradient > `minimumgradientdaygain`
+- normal deviation range = regry +- breakoutstd * std = band around regry of std * 2 * breakoutstd
+- spread satisfies minimum profit requirements = normal deviation range >= minimumgain
+
+"""
 mutable struct TradeChances001
     tr::TradeRules001
     tcs::TradeChances
@@ -320,21 +333,9 @@ end
 returns the chance expressed in gain between currentprice and future sellprice * probability
 if tradechances === nothing then an empty TradeChance array is created and with results returned
 
-Trading strategy:
-- buy if price is
-    - below normal deviation range of spread regression window
-    - spread gradient is OK
-    - spread satisfies minimum profit requirements
-- sell if price is above normal deviation range of spread regression window
-- stop loss sell: if regression price < buy regression price - stoplossstd * std
-- spread gradient is OK = spread gradient > `minimumgradientdaygain`
-- normal deviation range = regry +- breakoutstd * std = band around regry of std * 2 * breakoutstd
-- spread satisfies minimum profit requirements = normal deviation range >= minimumgain
-
 """
 function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, ohlcvix)::TradeChances001
-    @info "$(@doc assesstrades!)" maxlog=1
-    @info "tr001: $(tradechances.tr)" maxlog=1
+    @info "$(@doc TradeChances001)" tradechances.tr.minimumgain tradechances.tr.minimumgradientdaygain tradechances.tr.stoplossstd tradechances.tr.breakoutstdset maxlog=1
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -401,6 +402,16 @@ mutable struct TradeRules002  # only relevant for traderules002!
     stoplossstd  # not used in TradingStrategy002 - factor to multiply with std to dtermine stop loss price (only in combi with negative regr gradient)
 end
 
+"""
+*TradeChances002* trading strategy:
+- buy if price if
+    - exceeds a minimum gradient after reaching a minimum
+    - use regression window that performd best in the backtest time window and that satisfies minimum profit requirement
+    - use different backtest time windows but shorter time windows have to outperform the longer ones by >20% to be considered
+    - only regression time windows that are <= backtest time window are considered
+- sell if price is at maximum == gradient of regression is zero
+
+"""
 mutable struct TradeChances002
     tr::TradeRules002
     tcs::TradeChances
@@ -414,7 +425,7 @@ end
 
 function Base.show(io::IO, tcs::TradeChances002)
     println("TradeChances002: minimumbacktestgain=$(tcs.tr.minimumbacktestgain) minimumbuygradientdict=$(tcs.tr.minimumbuygradientdict) shorterwindowimprovement=$(tcs.tr.shorterwindowimprovement)")
-    println(tcs.tcs)
+    show(tcs.tcs)
 end
 
 function alllargerwindowgradimprove(f2, window, featureix)
@@ -547,18 +558,9 @@ end
 returns the chance expressed in gain between currentprice and future sellprice * probability
 if tradechances === nothing then an empty TradeChance array is created and with results returned
 
-Trading strategy:
-- buy if price is
-    - exceeds a minimum gradient after reaching a minimum
-    - use regression window that performd best in the backtest time window and that satisfies minimum profit requirement
-    - use different backtest time windows but shorter time windows have to outperform the longer ones by >20% to be considered
-    - only regression time windows that are <= backtest time window are considered
-- sell if price is at maximum == gradient of regression is zero
-
 """
 function assesstrades!(tradechances::TradeChances002, f2::Features.Features002, ohlcvix)::TradeChances002
-    @info "$(@doc assesstrades!)" maxlog=1
-    @info "tr002: $(tradechances.tr)" maxlog=1
+    @info "$(@doc TradeChances002)" tradechances.tr.minimumbacktestgain tradechances.tr.minimumbuygradientdict tradechances.tr.shorterwindowimprovement tradechances.tr.stoplossstd maxlog=1
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)
@@ -620,13 +622,14 @@ mutable struct TradeChances000
     tcs::TradeChances
     function TradeChances000()
         new(
-            TradeChances(Dict(), Dict()),
-            3.0
+            3.0,
+            TradeChances(Dict(), Dict())
             )
     end
 end
 
 function Base.show(io::IO, tcs::TradeChances000)
+    show("TradeChances000 - test print \n \n")
     show(tcs.tcs)
 end
 
@@ -644,7 +647,7 @@ Trading strategy:
 """
 function assesstrades!(tradechances::TradeChances000, f2::Features.Features002, ohlcvix)::TradeChances000
     regressionminutes = 24*60
-    @info "$(@doc assesstrades!)" regressionminutes maxlog=1
+    @info "$(@doc TradeChances000)" regressionminutes maxlog=1
     if isnothing(f2); return tradechances; end
     @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
     df = Ohlcv.dataframe(f2.ohlcv)

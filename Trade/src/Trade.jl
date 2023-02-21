@@ -51,8 +51,8 @@ mutable struct Cache
         @assert backtestchunk >= 0
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        # tradechances = TradingStrategy.TradeChances000()
-        tradechances = TradingStrategy.TradeChances001()
+        tradechances = TradingStrategy.TradeChances000()
+        # tradechances = TradingStrategy.TradeChances001()
         # tradechances = TradingStrategy.TradeChances002()
         openorders = orderdataframex()
         orderlog = orderdataframex()
@@ -586,11 +586,11 @@ function trade!(cache)
     for order in copy.(eachrow(cache.openorders))
         tc = TradingStrategy.tradechanceoforder(cache.tradechances, order.orderId)
         if isnothing(tc)
-            @warn "no tradechance found for $(order.side) order #$(order.orderId)" tc
+            @warn "no tradechance found for $(order.side) order #$(order.orderId)" tc maxlog=10
             continue
         end
         if order.side == "SELL"
-            @info "trade! close order $tc"
+            # @info "trade! close order $tc"
 
             df = ohlcvdf(cache, order.base)
             if df.high[cache.bd[order.base].currentix] > order.price
