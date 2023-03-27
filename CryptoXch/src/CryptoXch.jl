@@ -334,8 +334,6 @@ function downloadupdate!(bases, enddt, period=Dates.Year(4))
         println("$(EnvConfig.now()) updating $base ($ix of $count)")
         startdt = enddt - period
         ohlcv = CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-        # ohlcv = Ohlcv.accumulate!(ohlcv, "1d")  !! accumulate! is too confusing and is deprecated
-        # Ohlcv.write(ohlcv)
     end
 end
 
