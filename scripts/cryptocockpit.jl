@@ -24,8 +24,8 @@ using EnvConfig, Ohlcv, Features, Targets, Assets, Classify
 include("../scripts/cockpitdatatablecolors.jl")
 
 dtf = "yyyy-mm-dd HH:MM"
-EnvConfig.init(EnvConfig.production)
-# EnvConfig.init(EnvConfig.test)
+# EnvConfig.init(EnvConfig.production)
+EnvConfig.init(EnvConfig.test)
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 cssdir = EnvConfig.setprojectdir()  * "/scripts/"

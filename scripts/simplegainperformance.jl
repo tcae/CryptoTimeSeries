@@ -159,7 +159,7 @@ function lastregressionamplitudes(regressions, nbramplitudes=2)
     up = zeros(Float32, size(regressions[:prices], 1))
     down = zeros(Float32, size(regressions[:prices], 1))
     lastix = 0
-    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
+    for ix in Iterators.drop(eachindex(regressions), 1)  # 2:size(regressions,1)
         down[ix] = down[ix-1]
         up[ix] = up[ix-1]
         if (regressions[ix-1] <= 0) && (regressions[ix] > 0)  # start up slope
@@ -239,7 +239,7 @@ function steepestbasegain(prices::DataFrame, regressions::DataFrame, bases)
     bestix[1], maxgrad = maxgradient(regressions, bases, 1)
     gains[1] = 1.0  # start: 1 USDT
     lastix = 1
-    for rix in eachindex(gains[begin+1:end])  # 2:size(gains, 1)
+    for rix in Iterators.drop(eachindex(gains), 1)  # 2:size(gains, 1)
         bestix[rix], maxgrad = maxgradient(regressions, bases, rix)
         if regressions[rix, bases[bestix[rix]]] > 0.0
             if regressions[rix - 1, bases[bestix[rix - 1]]] <= 0.0  # start of upslope, no need to sell because last gradient was negative

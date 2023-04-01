@@ -668,7 +668,7 @@ function lastextremes(prices, regressions)::DataFrame
     lastmaxix = 1
     lastminix = 1
     dist = zeros(Float32, 4, size(regressions,1))
-    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
+    for ix in Iterators.drop(eachindex(regressions), 1)  # 2:size(regressions,1)
         lastminix = (regressions[ix-1] < 0) && (regressions[ix] >= 0) ? ix - 1 : lastminix
         lastmaxix = (regressions[ix-1] > 0) && (regressions[ix] <= 0) ? ix - 1 : lastmaxix
         dist[pmax, ix] = (prices[lastmaxix] - prices[ix]) / prices[ix]  # normalized to last price
@@ -692,7 +692,7 @@ function lastgainloss(prices, regressions)::DataFrame
     lastmaxix = [1, 1]
     lastminix = [1, 1]
     gainloss = zeros(Float32, 2, size(regressions,1))
-    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
+    for ix in Iterators.drop(eachindex(regressions), 1)  # 2:size(regressions,1)
         if (regressions[ix-1] <= 0) && (regressions[ix] > 0)
             lastminix[1] = lastminix[2]
             lastminix[2] = ix - 1
@@ -772,7 +772,7 @@ end
 """
 function regressionaccelerationhistory(regressions)
     acchistory = zeros(Float32, 1, size(regressions,1))
-    for ix in eachindex(regressions[begin+1:end])  # 2:size(regressions,1)
+    for ix in Iterators.drop(eachindex(regressions), 1)  # 2:size(regressions,1)
         acceleration = regressions[ix] - regressions[ix-1]
         if acceleration > 0
             if acchistory[ix-1] > 0
@@ -932,9 +932,18 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
     return f2
 end
 
-function mostrecentix(f2::Features002)
-    ix = size(f2.ohlcv.df, 1)
+regrfeatures(f2r::Features002Regr) = hcat(f2r.grad, f2r.regry, f2r.std, f2r.medianstd)
+
+function getfeatures(f2::Features002, regrwindows)
+    feat = nothing
+    for win in regressionwindows002
+        if win in regrwindows
+            feat = isnothing(feat) ? regrfeatures(f2.regr[win]) : hcat(feat, regrfeatures(f2.regr[win]))
+        end
+    end
+    permutedims(feat, (2, 1)) # columns shall represent samples
 end
+
 
 function getfeatures(ohlcv::OhlcvData)
     return getfeatures001(ohlcv)

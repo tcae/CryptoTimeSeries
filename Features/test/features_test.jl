@@ -96,6 +96,16 @@ function nextpeakdistance_test()
     return res
 end
 
+function testfeatures()
+    enddt = DateTime("2022-01-02T22:54:00")
+    startdt = enddt - Dates.Day(3)
+    ohlcv = TestOhlcv.testdataframe("sine", startdt, enddt)
+    ol = Ohlcv.dataframe(ohlcv).length()
+    f2 = Features.Features002(ohlcv)
+    f2a = Features.getfeatures(f2)
+    println("ohlcv len: $ol  f2 size: $(size(f2a))")
+
+end
 
 EnvConfig.init(test)
 # config_test()
@@ -104,7 +114,7 @@ EnvConfig.init(test)
 # lastgainloss_test()
 # println("rolling regression $(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
 # println("norm rolling regression $(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
-
+testfeatures()
 
 # TODO getfeatures test to be added
 @testset "Features tests" begin
