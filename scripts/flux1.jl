@@ -2,7 +2,7 @@
 using Flux, Statistics, ProgressMeter
 using Plots  # to draw the above figure
 
-function example(;plotlosses=false)
+function example()
 
     # Generate some data for the XOR problem: vectors of length 2, as columns of a matrix:
     noisy = rand(Float32, 2, 1000)                                    # 2×1000 Matrix{Float32}
@@ -28,7 +28,7 @@ function example(;plotlosses=false)
 
     # Training loop, using the whole data set 1000 times:
     losses = []
-    @showprogress for epoch in 1:1_000
+    @showprogress for epoch in 1:500
         for (x, y) in loader
             loss, grads = Flux.withgradient(model) do m
                 # Evaluate model and loss inside gradient context:
@@ -44,18 +44,18 @@ function example(;plotlosses=false)
     trained = model(noisy |> gpu) |> cpu  # first row is prob. of true, second row p(false)
 
     meanaccuracy = mean((trained[1,:] .> 0.5) .== truth)  # accuracy 94% so far!
-    return meanaccuracy, noisy, truth, untrained, trained, losses, loader
+    return meanaccuracy, noisy, truth, untrained, trained, losses, length(loader)
 end
 
 println("Flux example 1")
-@time meanaccuracy, noisy, truth, untrained, trained, losses, loader = example(plotlosses=true)
+@time meanaccuracy, noisy, truth, untrained, trained, losses, batchcount = example()
 
 println(meanaccuracy)  # accuracy 94% so far!
 
 # plot losses graph
 p1 = plot(losses; xaxis=(:log10, "iteration"), yaxis="loss", label="per batch")
-n = length(loader)
-plot!(p1, n:n:length(losses), mean.(Iterators.partition(losses, n)), label="epoch mean", dpi=200)
+println("batchcount: $batchcount  losses length: $(length(losses))")
+plot!(p1, batchcount:batchcount:length(losses), mean.(Iterators.partition(losses, batchcount)), label="epoch mean", dpi=200)
 
 # plot noisy graph
 p_true = scatter(noisy[1,:], noisy[2,:], zcolor=truth, title="True classification", legend=false)
