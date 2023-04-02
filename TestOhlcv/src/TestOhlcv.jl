@@ -136,7 +136,7 @@ function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     df = sinedata(2*60, 3000000)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
-    println("test single sinus $(size(df))")
+    # println("test single sinus $(size(df))")
     df = Ohlcv.accumulate(df, interval)
     return df
 end
@@ -146,7 +146,7 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     df = sinedata(2*60, 3000000, 0, 10.5)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     df = df[startdt .< df.opentime .<= enddt, :]
-    println("test double sinus $(size(df))")
+    # println("test double sinus $(size(df))")
     df = Ohlcv.accumulate(df, interval)
     return df
 end
@@ -161,8 +161,8 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
         df = dispatch[base](startdt, enddt, interval)
         if df === nothing
             @warn "unexpected missing df" base startdt enddt interval
-        else
-            println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
+        # else
+        #     println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
         end
         Ohlcv.addpivot!(df)
         return 200, df
@@ -170,6 +170,15 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
         # @warn "unknown testohlcv test base: $base"
         return 111, Ohlcv.defaultohlcvdataframe()
     end
+end
+
+function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
+    ohlcv = Ohlcv.defaultohlcv(base)
+    ret, df = testdataframe(base, startdt, enddt, interval, cryptoquote)
+    if ret== 200
+        ohlcv = Ohlcv.setdataframe!(ohlcv, df)
+    end
+    return ret, ohlcv
 end
 
 end

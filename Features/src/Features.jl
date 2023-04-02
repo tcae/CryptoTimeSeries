@@ -44,7 +44,7 @@ mutable struct Features002
         lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
         maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
         firstix = firstix > maxfirstix ? maxfirstix : firstix
-        new(ohlcv, getfeatures002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
+        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
     end
 end
 
@@ -850,7 +850,11 @@ ohlcvix(f2::Features002, featureix) = featureix + f2.firstix - 1
 """
 In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`
 """
-function getfeatures002(ohlcv::OhlcvData, firstix, lastix)
+function getfeatures002(ohlcv::OhlcvData, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
+    f2 = Features002(ohlcv, firstix, lastix)
+end
+
+function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)
     # println("getfeatures002 init")
     df = Ohlcv.dataframe(ohlcv)
     pivot = Ohlcv.pivot!(ohlcv)[firstix:lastix]
@@ -934,12 +938,11 @@ end
 
 regrfeatures(f2r::Features002Regr) = hcat(f2r.grad, f2r.regry, f2r.std, f2r.medianstd)
 
-function getfeatures(f2::Features002, regrwindows)
+function getfeatures(f2::Features002, regrwindows=regressionwindows002)
     feat = nothing
-    for win in regressionwindows002
-        if win in regrwindows
-            feat = isnothing(feat) ? regrfeatures(f2.regr[win]) : hcat(feat, regrfeatures(f2.regr[win]))
-        end
+    for win in regrwindows
+        @assert win in regressionwindows002
+        feat = isnothing(feat) ? regrfeatures(f2.regr[win]) : hcat(feat, regrfeatures(f2.regr[win]))
     end
     permutedims(feat, (2, 1)) # columns shall represent samples
 end

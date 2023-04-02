@@ -2554,7 +2554,7 @@ version = "1.7.1"
 deps = ["DataFrames", "Dates", "EnvConfig", "Features", "Logging", "Ohlcv"]
 path = "TestOhlcv"
 uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
-version = "0.1.1"
+version = "0.1.2"
 
 [[deps.ThreadingUtilities]]
 deps = ["ManualMemory"]

@@ -1,6 +1,7 @@
 # With Julia 1.7+, this will prompt if neccessary to install everything, including CUDA:
 using Flux, Statistics, ProgressMeter
 using Plots  # to draw the above figure
+using MLBase
 
 function example()
 
@@ -45,6 +46,10 @@ function example()
 
     meanaccuracy = mean((trained[1,:] .> 0.5) .== truth)  # accuracy 94% so far!
     return meanaccuracy, noisy, truth, untrained, trained, losses, length(loader)
+end
+
+function eval(noisy, truth, untrained, trained)
+
 end
 
 println("Flux example 1")
