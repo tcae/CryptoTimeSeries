@@ -21,7 +21,7 @@ Pkg.activate(rootpath)
 cd(rootpath)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
-mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "MyBinance", "CryptoXch", "Assets", "Classify", "TradingStrategy", "Trade"]
+mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "Bybit", "CryptoXch", "Assets", "Classify", "TradingStrategy", "Trade"]
 # Pkg.upgrade_manifest()
 # for mypackage in mypackages
 #     try

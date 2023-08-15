@@ -2,7 +2,7 @@
 
 ## Getting started
 
-<!-- This code base is using the Julia Language and [DrWatson](https://juliadynamics.github.io/DrWatson.jl/stable/) -->
+<!-- This code base is using the Julia Language ) -->
 This code base is using the Julia Language to make a reproducible project named
 > CryptoTimeSeries
 
@@ -10,9 +10,9 @@ It is authored by tcae.
 
 To (locally) reproduce this project, do the following:
 
-0. Download this code base. Notice that raw data are typically not included in the
+1. Download this code base. Notice that raw data are typically not included in the
    git-history and may need to be downloaded independently.
-1. Open a Julia console and do:
+2. Open a Julia console and do:
 
    ```julia
    julia> using Pkg
@@ -33,17 +33,19 @@ Be cautious and don't use it for real trading unless you know what to do. There 
 
 ## Entry points
 
-Following the DrWatson approach, each module is located in the src folder and has a corresponding '_test' unti test in the test folder.
+Each module is located in the src folder and has a corresponding '_test' unti test in the test folder.
 
-- Main module is [Trade](src/trade.jl), which runs a tradeloop but uses trade rules from TradeRules
-- Machine learning is made available by [Classify](src/classify.jl).
+- The main module is [Trade](Trade/src/Trade.jl) that is setup via [trade_test](Trade/test/trade_test.jl), which runs a tradeloop but applies [TradingStrategy](TradingStrategy/src/TradingStrategy.jl) to determine buy and sell actions
+- Machine learning is made available by [Classify](Classify/src/Classify.jl).
 - [Targets](Targets/src/Targets.jl) provides target labels to train, evaluate and test machine learning approaches.
-- [Features](Features/src/Features.jl) provides features as input for machine learning.
+- [Features](Features/src/Features.jl) provides OHLCV derived features as input for machine learning and trading.
 - [Ohlcv](Ohlcv/src/Ohlcv.jl) provides means to get locally stored historic Open High Low Close Volume data.
-- [Exchange](src/exchange.jl) is the abstract layer to [MyBinance](src/Binance.jl)
-- [Config](EnvConfig/src/EnvConfig.jl) provides common configuratioin items, like the set of cryptos to use or common folders
+- [CryptoXch](CryptoXch/src/CryptoXch.jl) is the abstract layer to [Bybit](Bybit/src/Bybit.jl)
+- [Assets](Assets/src/Assets.jl) is selecting those assets from the exchange that are compliant to certain criteria that makes them a trading candidate.
+- [EnvConfig](EnvConfig/src/EnvConfig.jl) provides common configuratioin items, like the set of cryptos to use or common folders
+- [TestOhlcv](TestOhlcv/src/TestOhlcv.jl) provides periodic OHLCV patterns to test implementations.
 
-Scripts for investigations as well as the GUI are located in the scripts folder without a unit test
+Scripts for investigations as well as the GUI ([cryptocockpit](scripts/cryptocockpit.jl)) are located in the scripts folder without a unit test
 
 ## Under construction
 
@@ -53,8 +55,7 @@ Scripts for investigations as well as the GUI are located in the scripts folder 
 
 ## to do
 
-- don't cache day ohlcv in files but aggregate them from miute data : is probaly faster, reduces code and storage
-  - change in assets.jl and cryptocockpit.jl
+- Trade/preparetradecache! should use Assets.jl instead of creating it's own asset selection
 
 ## OHLCV file transfer
 

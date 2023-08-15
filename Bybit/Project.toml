@@ -1,7 +1,7 @@
-name = "MyBinance"
+name = "Bybit"
 uuid = "6b34612f-2f8c-4852-8832-29260c2555ec"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.1.0"
+version = "0.2.1"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"

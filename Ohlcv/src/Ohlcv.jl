@@ -2,7 +2,8 @@
 # Pkg.add(["Dates", "DataFrames", "CategoricalArrays", "JDF", "CSV"])
 
 """
-Use 'Config' to get canned train, eval, test data.
+Provides facilities to work with OHLCV data sequences including storage and retrieval.
+Use 'TestOhlcv' to get canned train, eval, test data.
 
 In future to add new OHLCV data from Binance.
 """
