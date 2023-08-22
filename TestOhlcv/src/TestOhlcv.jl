@@ -135,7 +135,7 @@ function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
     df = sinedata(2*60, 3000000)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
-    df = df[startdt .< df.opentime .<= enddt, :]
+    df = df[startdt .<= df.opentime .<= enddt, :]
     # println("test single sinus $(size(df))")
     df = Ohlcv.accumulate(df, interval)
     return df
@@ -145,7 +145,7 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
     df = sinedata(2*60, 3000000, 0, 10.5)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
-    df = df[startdt .< df.opentime .<= enddt, :]
+    df = df[startdt .<= df.opentime .<= enddt, :]
     # println("test double sinus $(size(df))")
     df = Ohlcv.accumulate(df, interval)
     return df
@@ -155,21 +155,20 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
     dispatch = Dict(
         "sine" => singlesine,
         "doublesine" => doublesine
-
     )
-    if base in keys(dispatch)
-        df = dispatch[base](startdt, enddt, interval)
-        if df === nothing
-            @warn "unexpected missing df" base startdt enddt interval
-        # else
-        #     println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
-        end
-        Ohlcv.addpivot!(df)
-        return 200, df
-    else
-        # @warn "unknown testohlcv test base: $base"
-        return 111, Ohlcv.defaultohlcvdataframe()
+    testbase = base
+    if !(base in keys(dispatch))
+        @warn "unknown testohlcv test base: $base - fallback: using sine to fill $base"
+        testbase = "sine"
     end
+    df = dispatch[testbase](startdt, enddt, interval)
+    if df === nothing
+        @warn "unexpected missing df" base testbase startdt enddt interval
+    # else
+    #     println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
+    end
+    Ohlcv.addpivot!(df)
+    return df
 end
 
 function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)

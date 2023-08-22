@@ -29,10 +29,10 @@ struct SymbolFilter
             end
             @assert !isnothing(symdict)
             new(
-                Int64(floor(-log10(parse(Float32, symdict["lotSizeFilter"]["quotePrecision"])); digits=0))
-                parse(Float32, symdict["lotSizeFilter"]["minOrderAmt"])
-                Int64(floor(-log10(parse(Float32, symdict["priceFilter"]["tickSize"])); digits=0))
-                Int64(floor(-log10(parse(Float32, symdict["lotSizeFilter"]["basePrecision"])); digits=0))
+                Int64(floor(-log10(parse(Float32, symdict["lotSizeFilter"]["quotePrecision"])); digits=0)),
+                parse(Float32, symdict["lotSizeFilter"]["minOrderAmt"]),
+                Int64(floor(-log10(parse(Float32, symdict["priceFilter"]["tickSize"])); digits=0)),
+                Int64(floor(-log10(parse(Float32, symdict["lotSizeFilter"]["basePrecision"])); digits=0)),
                 parse(Float32, symdict["lotSizeFilter"]["minOrderQty"])
             )
         end
@@ -80,14 +80,15 @@ function klines2jdf(jsonkline)
             )
     else
         len = length(jsonkline)
-        df[:, :opentime] = [Dates.unix2datetime(jsonkline[ix][1]/1000) for ix in 1:len]
-        df[:, :open] = [parse(Float32, jsonkline[ix][2]) for ix in 1:len]
-        df[:, :high] = [parse(Float32, jsonkline[ix][3]) for ix in 1:len]
-        df[:, :low] = [parse(Float32, jsonkline[ix][4]) for ix in 1:len]
-        df[:, :close] = [parse(Float32, jsonkline[ix][5]) for ix in 1:len]
-        df[:, :basevolume] = [parse(Float32, jsonkline[ix][6]) for ix in 1:len]
+        # counting backwards because Bybit (in contrast to Binance) returns the newest data first
+        df[:, :opentime] = [Dates.unix2datetime(parse(Int64, jsonkline[ix][1])/1000) for ix in len:-1:1]
+        df[:, :open] = [parse(Float32, jsonkline[ix][2]) for ix in len:-1:1]
+        df[:, :high] = [parse(Float32, jsonkline[ix][3]) for ix in len:-1:1]
+        df[:, :low] = [parse(Float32, jsonkline[ix][4]) for ix in len:-1:1]
+        df[:, :close] = [parse(Float32, jsonkline[ix][5]) for ix in len:-1:1]
+        df[:, :basevolume] = [parse(Float32, jsonkline[ix][6]) for ix in len:-1:1]
         Ohlcv.addpivot!(df)
-        # df.quotevolume = [parse(Float32, jsonkline[ix][8]) for ix in 1:len]
+        # df.quotevolume = [parse(Float32, jsonkline[ix][8]) for ix in len:-1:1]
     end
     return df
 end
@@ -101,23 +102,22 @@ Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> wee
 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 """
 function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
-    rstatus = 0
     df = nothing
     if EnvConfig.configmode == EnvConfig.test
         println("ohlcfromexchange test mode: $base, $startdt, $enddt, $interval, $cryptoquote")
         # if base in EnvConfig.bases
-            rstatus, df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
+            df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
         # else
         #     df = Ohlcv.defaultohlcvdataframe()
         #     rstatus = 112
         #     @warn "$base is an unknown base for EnvConfig.test mode"
         # end
     end
-    if (EnvConfig.configmode != EnvConfig.test) || (rstatus == 111)
+    if (EnvConfig.configmode != EnvConfig.test)
         try
             symbol = uppercase(base*cryptoquote)
             # println("symbol=$symbol start=$startdt end=$enddt")
-            rstatus, arr = Bybit.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
+            arr = Bybit.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
             # println(typeof(r))
             # show(r)
             # arr = Bybit.r2j(r.body)
@@ -128,20 +128,18 @@ function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates
             df = klines2jdf(missing)
         end
     end
-    return rstatus, df
+    return df
 end
 
 function getlastminutesdata()
     enddt = Dates.now(Dates.UTC)
     startdt = enddt - Dates.Minute(7)
-    stat, res = ohlcfromexchange("BTCUSDT", startdt, enddt)
+    res = ohlcfromexchange("BTCUSDT", startdt, enddt)
     # display(nrow(res))
-    println("getlastminutesdata $stat")
     display(last(res, 3))
     # display(first(res, 3))
     enddt = Dates.now(Dates.UTC)
-    stat, res2 = ohlcfromexchange("BTCUSDT", enddt - Dates.Second(1), enddt)
-    println("getlastminutesdata $stat")
+    res2 = ohlcfromexchange("BTCUSDT", enddt - Dates.Second(1), enddt)
     # display(res)
     display(nrow(res2))
     display(last(res2, 3))
@@ -168,36 +166,37 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
 
     notreachedenddate = true
     df = Ohlcv.defaultohlcvdataframe()
-    lastdt = startdt - Dates.Minute(1)  # make sure lastdt break condition is not true
+    lastdt = enddt + Dates.Minute(1)  # make sure lastdt break condition is not true
     while notreachedenddate
-        stat, res = ohlcfromexchange(base, startdt, enddt, interval)
-        # display(nrow(res))
-        # display(first(res, 3))
-        # display(last(res, 3))
-        if stat != 200  # == NOT OK
+        try
+            res = ohlcfromexchange(base, startdt, enddt, interval)
+            if size(res, 1) == 0
+                # Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
+                break
+            end
+            # display(nrow(res))
+            # display(first(res, 3))
+            # display(last(res, 3))
+            notreachedenddate = (res[begin, :opentime] > startdt) # Bybit loads newest first
+            if res[begin, :opentime] >= lastdt
+                # no progress since last ohlcv  read
+                Logging.@warn "no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime])"
+                break
+            end
+            lastdt = res[begin, :opentime]
+            # println("$(Dates.now()) read $(nrow(res)) $base from $enddt backwards until $lastdt")
+            enddt = floor(lastdt, intervalperiod(interval))
+            while (size(df,1) > 0) && (res[end, :opentime] >= df[begin, :opentime])  # replace last row with updated data
+                deleteat!(res, size(res, 1))
+            end
+            if (size(res, 1) > 0) && (names(df) == names(res))
+                df = vcat(res, df)
+            else
+                Logging.@error "vcat data frames names not matching df: $(names(df)) - res: $(names(res))"
+                break
+            end
+        catch err
             Logging.@warn "HTTP binance klines request NOT OK returning status $stat"
-            break
-        end
-        if size(res, 1) == 0
-            # Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
-            break
-        end
-        notreachedenddate = (res[end, :opentime] < enddt)
-        if res[end, :opentime] <= lastdt
-            # no progress since last ohlcv  read
-            Logging.@warn "no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime])"
-            break
-        end
-        lastdt = res[end, :opentime]
-        # println("$(Dates.now()) read $(nrow(res)) $base from $startdt until $lastdt")
-        startdt = floor(lastdt, intervalperiod(interval))
-        while (size(df,1) > 0) && (res[begin, :opentime] <= df[end, :opentime])  # replace last row with updated data
-            deleteat!(df, size(df, 1))
-        end
-        if (size(res, 1) > 0) && (names(df) == names(res))
-            df = vcat(df, res)
-        else
-            Logging.@error "vcat data frames names not matching df: $(names(df)) - res: $(names(res))"
             break
         end
     end
@@ -377,7 +376,7 @@ function getUSDTmarket()
                     lowercase(replace(p24dict["symbol"], uppercase(EnvConfig.cryptoquote) => "")),
                     lowercase(EnvConfig.cryptoquote),
                     parse(Float32, p24dict["turnover24h"]), # trading quote volume
-                    parse(Float32, p24dict["price24hPcnt"]), # price change in %
+                    parse(Float32, p24dict["price24hPcnt"]) * 100, # price change in %
                     parse(Float32, p24dict["lastPrice"]) # last price
                 ))
             end
@@ -422,9 +421,9 @@ function portfolio(usdtdf)
     if EnvConfig.configmode == EnvConfig.production
         portfolioarray = Bybit.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
         for pdict in portfolioarray
-            base = lowercase(pdict["asset"])
-            freebase = parse(Float32, pdict["free"])
+            base = lowercase(pdict["coin"])
             lockedbase = parse(Float32, pdict["locked"])
+            freebase = parse(Float32, pdict["availableToWithdraw"])
             if (base in usdtdf.base) && !(base in basenottradable)
                 lastprices = usdtdf[usdtdf.base .== base, :lastprice]
                 usdtvolumebase = (freebase + lockedbase) * lastprices[begin]

@@ -75,24 +75,24 @@ function init(mode::Mode)
     authorization = Authentication()
     if configmode == production
         bases = [
-            "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx", "zrx", "bch",
+            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
             "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
-            "tfuel", "theta", "ont", "vet", "iost"]
+            "theta"]
         trainingbases = [
-            "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx"]
+            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx"]
         datapath = "Features/"
     elseif  configmode == training
         # trainingbases = bases = ["btc"]
         # trainingbases = bases = ["btc", "xrp", "eos"]
         datapath = "Features/"
         trainingbases = [
-            "btc", "xrp", "eos", "bnb", "eth", "neo", "ltc", "trx", "zrx", "bch",
+            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
             "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
-            "tfuel", "theta", "ont", "vet", "iost"]
+            "theta"]
         bases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx",
             "link", "ada", "matic", "omg", "zec", "xlm",
-            "theta", "vet"]
+            "theta"]
         # trainingbases = [
         #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
         # datapath = "TrainingOHLCV/"

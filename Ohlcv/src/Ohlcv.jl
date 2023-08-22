@@ -421,9 +421,13 @@ function write(ohlcv::OhlcvData)
     mnm = mnemonic(ohlcv)
     filename = EnvConfig.datafile(mnm)
     # println(filename)
-    JDF.savejdf(filename, ohlcv.df[!, save_cols])  # without :pivot
-    df = ohlcv.df
-    println("saved $filename of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+    try
+        JDF.savejdf(filename, ohlcv.df[!, save_cols])  # without :pivot
+        df = ohlcv.df
+        println("saved $filename of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+    catch e
+        Logging.@warn "exception $e detected"
+    end
 end
 
 function read!(ohlcv::OhlcvData)::OhlcvData

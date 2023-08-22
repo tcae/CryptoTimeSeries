@@ -9,15 +9,30 @@ BYBIT_API_REST = "https://api.bybit.com"
 BYBIT_API_WS = "wss://stream.binance.com:9443/ws/"
 
 const recv_window = "5000"
-
+const kline_interval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "M", "W"]
+const interval2bybitinterval = Dict(
+    "1m" => "1",
+    "3m" => "3",
+    "5m" => "5",
+    "15m" => "15",
+    "30m" => "30",
+    "1h" => "60",
+    "2h" => "120",
+    "4h" => "240",
+    "6h" => "360",
+    "12h" => "720",
+    "1d" => "D",
+    "1w" => "W",
+    "1M" => "M"  # better to be able to calculate with this period
+)
 
 function apiKS()
-    apiKey = get(ENV, "BYBIT_APIKEY", "")
-    apiSecret = get(ENV, "BYBIT_SECRET", "")
+    apiPublicKey = get(ENV, "BYBIT_APIKEY", "")
+    apiSecretKey = get(ENV, "BYBIT_SECRET", "")
 
-    @assert apiKey != "" || apiSecret != "" "BYBIT_APIKEY/BYBIT_APISECRET should be present in the environment dictionary ENV"
+    @assert apiPublicKey != "" || apiSecretKey != "" "BYBIT_APIKEY/BYBIT_APISECRET should be present in the environment dictionary ENV"
 
-    apiKey, apiSecret
+    apiPublicKey, apiSecretKey
 end
 
 function dict2Params(dict::Union{Dict, Nothing})
@@ -65,8 +80,9 @@ function genSignature(time_stamp, payload, public_key, secret_key)
     return hash
 end
 
-function HttpPrivateRequest(method, endPoint, payload, Info, public_key, secret_key)
+function HttpPrivateRequest(method, endPoint, params, Info, public_key, secret_key)
     time_stamp = string(timestamp())
+    payload = dict2Params(params)
     signature = genSignature(time_stamp, payload, public_key, secret_key)
     headers = Dict(
         "X-BAPI-API-KEY" => public_key,
@@ -138,13 +154,6 @@ end
 
 ##################### PUBLIC CALL's #####################
 
-# Simple test if ByBit API is online
-function ping()
-    # received response: 200
-    r = HTTP.request("GET", string(BYBIT_API_REST, "api/v1/ping"))
-    r.status
-end
-
 # ByBit servertime
 function serverTime() # Bybit tested
     # at 2022-01-01 17:14 local MET received 2022-01-01T16:14:09.849
@@ -158,16 +167,6 @@ function get24HR() # Bybit tested
     # Dict{String, Any}("weightedAvgPrice" => "0.07925733", "askQty" => "1.90000000", "quoteVolume" => "3444.47417461", "priceChangePercent" => "0.077", "count" => 98593, "lastPrice" => "0.07887600", "openPrice" => "0.07881500", "firstId" => 317932287, "lastQty" => "0.06160000", "openTime" => 1640966508178…)
     # return HttpPublicRequest("GET", "/spot/v3/public/quote/ticker/24hr", nothing, "ticker/24h")["list"]
     return HttpPublicRequest("GET", "/v5/market/tickers", Dict("category" => "spot"), "ticker/24h")["list"]
-end
-
-function getDepth(symbol::String; limit=100) # 500(5), 1000(10)
-    # getDepth("BTCUSDT"; limit=5)
-    # Dict{String, Any} with 3 entries:
-    # "lastUpdateId" => 16005065018
-    # "asks"         => Any[Any["47402.00000000", "0.98372000"], Any["47402.28000000", "0.00851000"], Any["47402.29000000", "0.02434000"], Any["47407.71000000", "0.14470000"], Any["47407.72000000", "0.18910000"]]
-    # "bids"         => Any[Any["47401.99000000", "0.05273000"], Any["47401.98000000", "0.10546000"], Any["47401.06000000", "0.00098000"], Any["47400.00000000", "0.00023000"], Any["47399.55000000", "0.01055000"]]
-    r = HTTP.request("GET", string(BYBIT_API_DEPTH, "?symbol=", symbol,"&limit=",limit))
-    r2j(r.body)
 end
 
 function get24HR(symbol::String) # Bybit tested
@@ -197,7 +196,7 @@ function get24HR(symbol::String) # Bybit tested
     # return HttpPublicRequest("GET", "/spot/v3/public/quote/ticker/24hr", Dict("symbol" => symbol), "ticker/24h")
 end
 
-function getExchangeInfo(symbol=nothing)
+function getExchangeInfo(symbol=nothing) # Bybit tested
     # Dict{String, Any} with 5 entries:
     # "symbols"         => Any[Dict{String, Any}("orderTypes"=>Any["LIMIT", "LIMIT_MAKER", "MARKET", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"], "ocoAllowed"=>true, "isSpotTradingAllowed"=>true, "baseAssetPrecision"=>8, "quoteAsset"=>"BTC", "status"=>"TRADING", "icebergAllowed…
     # "rateLimits"      => Any[Dict{String, Any}("intervalNum"=>1, "interval"=>"MINUTE", "rateLimitType"=>"REQUEST_WEIGHT", "limit"=>1200), Dict{String, Any}("intervalNum"=>10, "interval"=>"SECOND", "rateLimitType"=>"ORDERS", "limit"=>50), Dict{String, Any}("intervalNum"=>1…
@@ -239,57 +238,31 @@ function getExchangeInfo(symbol=nothing)
     end
 end
 
-function getMarket()
-    # error - not found
-    r = HTTP.request("GET", "https://www.binance.com/exchange/public/product")
-    r2j(r.body)["data"]
-end
-
-function getMarket(symbol::String)
-    # error - not found
-    r = HTTP.request("GET", string("https://www.binance.com/exchange/public/product?symbol=", symbol))
-    r2j(r.body)["data"]
-end
-
 # ByBit get candlesticks/klines data
-function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
+function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") # Bybit tested
     # getKlines("BTCUSDT")
     # 500-element Vector{Any}:
     # Any[1641024600000, "47092.03000000", "47107.42000000", "47085.31000000", "47098.98000000", "7.44682000", 1641024659999, "350714.74503740", 319, "2.75790000", "129875.86140450", "0"]
-    query = string("?symbol=", symbol, "&interval=", interval)
-
+    @assert interval in keys(interval2bybitinterval) "$interval is unknown Bybit interval"
+    @assert !isnothing(symbol) && (symbol != "") "missing symbol for Bybit klines"
+    params = Dict("category" => "spot", "symbol" => symbol, "interval" => interval2bybitinterval[interval], "limit" => 1000)
     if !isnothing(startDateTime) && !isnothing(endDateTime)
-        startTime = Printf.@sprintf("%.0d",Dates.datetime2unix(startDateTime) * 1000)
-        endTime = Printf.@sprintf("%.0d",Dates.datetime2unix(endDateTime) * 1000)
-        query = string(query, "&startTime=", startTime, "&endTime=", endTime)
+        params["start"] = Printf.@sprintf("%.0d",Dates.datetime2unix(startDateTime) * 1000)
+        params["end"] = Printf.@sprintf("%.0d",Dates.datetime2unix(endDateTime) * 1000)
     end
-    r = HTTP.request("GET", string(BYBIT_API_KLINES, query))
+    try
+        response = HttpPublicRequest("GET", "/v5/market/kline", params, "instruments-info")
+        # r = HTTP.request("GET", string(BYBIT_API_KLINES, query))
 
-    #! TCAE: HTTP response log inserted to understand errors - especially rate limit errors - headers may be good enough
-    # julia> dump(HTTP.Response)
-    # HTTP.Response <: Any
-    # status::Int32
-    # major::Int16
-    # minor::Int16
-    # cookies::Array{HTTP.Cookies.Cookie,1}
-    # headers::Dict{String,String}
-    # body::HTTP.FIFOBuffers.FIFOBuffer
-    # request::Nullable{HTTP.Request}
-    # history::Array{HTTP.Response,1}
-    if r.status != 200
-        filename = pwd() * "/$(Dates.now())HTTP-log.json"
-        Logging.@warn "HTTP binanace klines request NOT OK returning status $stat - log file response: $filename"
-        open(filename,"a") do io
-            # JSON.print(io, r2j(r), 4)  # ERROR: LoadError: Unexpected character Line: 0 Around: ...HTTP/1.1 200 OK  Conte...
-            println(io, r)
-        end
+        return response["list"]
+    catch err
+        rethrow()
     end
-
-    return r.status, r2j(r.body)
 end
 
 ##################### SECURED CALL's NEEDS apiKey / apiSecret #####################
 function openOrders(symbol, apiKey::String, apiSecret::String)
+    @assert false "not implemented for Bybit"
     headers = Dict("X-BAPI-API-KEY" => apiKey)
     if (symbol === nothing) || (length(symbol) == 0)
         query = string("recvWindow=50000&timestamp=", timestamp())
@@ -306,6 +279,7 @@ function openOrders(symbol, apiKey::String, apiSecret::String)
 end
 
 function order(symbol, orderid, apiKey::String, apiSecret::String)
+    @assert false "not implemented for Bybit"
     headers = Dict("X-BAPI-API-KEY" => apiKey)
     if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
         query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
@@ -320,6 +294,7 @@ function order(symbol, orderid, apiKey::String, apiSecret::String)
 end
 
 function cancelOrder(symbol, orderid, apiKey::String, apiSecret::String)
+    @assert false "not implemented for Bybit"
     headers = Dict("X-BAPI-API-KEY" => apiKey)
     if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
         query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
@@ -343,6 +318,7 @@ function createOrder(symbol::String, orderSide::String;
     quantity::Float64=0.0, orderType::String = "LIMIT",
     price::Float64=0.0, stopPrice::Float64=0.0,
     icebergQty::Float64=0.0, newClientOrderId::String="")
+    @assert false "not implemented for Bybit"
 
       if quantity <= 0.0
           error("Quantity cannot be <=0 for order type.")
@@ -398,15 +374,15 @@ function createOrder(symbol::String, orderSide::String;
       order
   end
 
-# account call contains balances
-function account(apiKey::String, apiSecret::String)
+# account call contains account status information - not yet used
+function account(apiKey::String, apiSecret::String) # Bybit tested
     endpoint = "/v5/account/info"
     method = "GET"
-    params = ""
-    myresult = HttpPrivateRequest(method, endpoint, params, "AccountInfo", apiKey, apiSecret)
+    myresult = HttpPrivateRequest(method, endpoint, nothing, "AccountInfo", apiKey, apiSecret)
 end
 
 function executeOrder(order::Dict, apiKey, apiSecret; execute=false)
+    @assert false "not implemented for Bybit"
     headers = Dict("X-BAPI-API-KEY" => apiKey)
     query = string(dict2Params(order), "&timestamp=", timestamp())
     body = string(query, "&signature=", doSign(query, apiSecret))
@@ -422,15 +398,22 @@ function executeOrder(order::Dict, apiKey, apiSecret; execute=false)
 end
 
 # returns default balances with amounts > 0
-function balances(apiKey::String, apiSecret::String; balanceFilter = x -> parse(Float64, x["free"]) > 0.0 || parse(Float64, x["locked"]) > 0.0)
-    acc = account(apiKey,apiSecret)
-    balances = filter(balanceFilter, acc["balances"])
+function balances(apiKey::String, apiSecret::String; balanceFilter = x -> parse(Float64, x["walletBalance"]) > 0.0 || parse(Float64, x["locked"]) > 0.0) # Bybit tested
+
+    endpoint = "/v5/account/wallet-balance"
+    method = "GET"
+    params = Dict("accountType" => "UNIFIED")
+    walletbalance = HttpPrivateRequest(method, endpoint, params, "WalletBalance", apiKey, apiSecret)
+    balance = walletbalance["list"][1]
+    filteredbalance = filter(balanceFilter, balance["coin"])
+    return filteredbalance
 end
 
 
 # Websockets functions
 
 function wsFunction(channel::Channel, ws::String, symbol::String)
+    @assert false "not implemented for Bybit"
     HTTP.WebSockets.open(string(BYBIT_API_WS, lowercase(symbol), ws); verbose=false) do io
       while !eof(io);
         put!(channel, r2j(readavailable(io)))
@@ -439,26 +422,32 @@ function wsFunction(channel::Channel, ws::String, symbol::String)
 end
 
 function wsTradeAgg(channel::Channel, symbol::String)
+    @assert false "not implemented for Bybit"
     wsFunction(channel, "@aggTrade", symbol)
 end
 
 function wsTradeRaw(channel::Channel, symbol::String)
+    @assert false "not implemented for Bybit"
     wsFunction(channel, "@trade", symbol)
 end
 
 function wsDepth(channel::Channel, symbol::String; level=5)
+    @assert false "not implemented for Bybit"
     wsFunction(channel, string("@depth", level), symbol)
 end
 
 function wsDepthDiff(channel::Channel, symbol::String)
+    @assert false "not implemented for Bybit"
     wsFunction(channel, "@depth", symbol)
 end
 
 function wsTicker(channel::Channel, symbol::String)
+    @assert false "not implemented for Bybit"
     wsFunction(channel, "@ticker", symbol)
 end
 
 function wsTicker24Hr(channel::Channel)
+    @assert false "not implemented for Bybit"
     HTTP.WebSockets.open(string(BYBIT_API_WS, "!ticker@arr"); verbose=false) do io
       while !eof(io);
         put!(channel, r2j(readavailable(io)))
@@ -468,12 +457,14 @@ end
 
 function wsKline(channel::Channel, symbol::String; interval="1m")
   #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
-    wsFunction(channel, string("@kline_", interval), symbol)
+  @assert false "not implemented for Bybit"
+  wsFunction(channel, string("@kline_", interval), symbol)
 end
 
 function wsKlineStreams(channel::Channel, symbols::Array, interval="1m")
   #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
-    allStreams = map(s -> string(lowercase(s), "@kline_", interval), symbols)
+  @assert false "not implemented for Bybit"
+  allStreams = map(s -> string(lowercase(s), "@kline_", interval), symbols)
     error = false;
     while !error
         try
@@ -492,6 +483,7 @@ end
 
 function wsKlineStreams(callback::Function, symbols::Array; interval="1m")
     #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
+    @assert false "not implemented for Bybit"
       allStreams = map(s -> string(lowercase(s), "@kline_", interval), symbols)
       @async begin
         HTTP.WebSockets.open(string("wss://stream.binance.com:9443/ws/",join(allStreams, "/")); verbose=false) do io
@@ -504,12 +496,14 @@ function wsKlineStreams(callback::Function, symbols::Array; interval="1m")
 end
 
 function openUserData(apiKey)
+    @assert false "not implemented for Bybit"
     headers = Dict("X-BAPI-API-KEY" => apiKey)
     r = HTTP.request("POST", BYBIT_API_USER_DATA_STREAM, headers)
     return r2j(r.body)["listenKey"]
 end
 
 function keepAlive(apiKey, listenKey)
+    @assert false "not implemented for Bybit"
     if length(listenKey) == 0
         return false
     end
@@ -521,6 +515,7 @@ function keepAlive(apiKey, listenKey)
 end
 
 function closeUserData(apiKey, listenKey)
+    @assert false "not implemented for Bybit"
     if length(listenKey) == 0
         return false
     end
@@ -531,6 +526,7 @@ function closeUserData(apiKey, listenKey)
 end
 
 function wsUserData(channel::Channel, apiKey, listenKey; reconnect=true)
+    @assert false "not implemented for Bybit"
 
     function mykeepAlive()
         return keepAlive(apiKey, listenKey)
