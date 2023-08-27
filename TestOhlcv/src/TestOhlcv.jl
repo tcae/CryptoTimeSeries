@@ -158,7 +158,7 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
     )
     testbase = base
     if !(base in keys(dispatch))
-        @warn "unknown testohlcv test base: $base - fallback: using sine to fill $base"
+        @info "unknown testohlcv test base: $base - fallback: using sine to fill $base"
         testbase = "sine"
     end
     df = dispatch[testbase](startdt, enddt, interval)
@@ -173,11 +173,9 @@ end
 
 function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     ohlcv = Ohlcv.defaultohlcv(base)
-    ret, df = testdataframe(base, startdt, enddt, interval, cryptoquote)
-    if ret== 200
-        ohlcv = Ohlcv.setdataframe!(ohlcv, df)
-    end
-    return ret, ohlcv
+    df = testdataframe(base, startdt, enddt, interval, cryptoquote)
+    ohlcv = Ohlcv.setdataframe!(ohlcv, df)
+    return ohlcv
 end
 
 end

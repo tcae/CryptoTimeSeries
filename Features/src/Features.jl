@@ -12,62 +12,10 @@ using Combinatorics
 using Logging
 using EnvConfig, Ohlcv
 
-struct Features001
-    fdf::DataFrame
-    featuremask::Vector{String}
-    ohlcv::OhlcvData
-end
-
-regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60]  # , 3*24*60, 10*24*60]
-requiredminutes = maximum(regressionwindows002)
+#region FeatureUtilities
 
 periodlabels(p) = p%(24*60) == 0 ? "$(round(Int, p/(24*60)))d" : p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m"
 
-mutable struct Features002Regr
-    grad::Vector{Float32} # rolling regression gradients - length == ohlcv
-    regry::Vector{Float32}  # rolling regression price - length == ohlcv
-    std::Vector{Float32}  # standard deviation of regression window - length == ohlcv
-    # xtrmix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
-    # breakoutix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max) - length <= ohlcv
-    medianstd::Vector{Float32}  # median standard deviation over requiredminutes
-end
-
-mutable struct Features002
-    ohlcv::OhlcvData
-    regr::Dict  # dict with regression minutes as key -> value is Features002Regr
-    # fdf::DataFrame  # cache of features
-    update  # function to update features due to extended ohlcv
-    firstix  # features start at firstix of ohlcv.df
-    lastix  # features end at lastix of ohlcv.df
-    function Features002(ohlcv, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
-        df = Ohlcv.dataframe(ohlcv)
-        lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
-        maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
-        firstix = firstix > maxfirstix ? maxfirstix : firstix
-        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
-    end
-end
-
-
-function Base.show(io::IO, features::Features002Regr)
-    println(io::IO, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
-    println(io::IO, "- regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
-    println(io::IO, "- std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
-    print(io::IO, "- median std deviation: size=$(size(features.medianstd)) max=$(maximum(features.medianstd)) median=$(Statistics.median(features.medianstd)) min=$(minimum(features.medianstd))")
-    # println(io::IO, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
-    # print(io::IO, "- breakoutix indices: size=$(size(features.breakoutix)) #maxima=$(length(filter(r -> r > 0, features.breakoutix))) #minima=$(length(filter(r -> r < 0, features.breakoutix)))")
-end
-
-function Base.show(io::IO, features::Features002)
-    println(io::IO, "Features002 firstix=$(features.firstix), lastix=$(features.lastix)")
-    println(io::IO, features.ohlcv)
-    for (key, value) in features.regr
-        println(io::IO, "regr key: $key")
-        println(io::IO, value)
-    end
-end
-
-ohlcv(features::Features002) = features.ohlcv
 indexinrange(index, last) = 0 < index <= last
 nextindex(forward, index) = forward ? index + 1 : index - 1
 up(slope) = slope > 0
@@ -592,7 +540,7 @@ function rollingregressionstdmv(ymv, regr_y, grad, window, startindex)
 end
 
 """
-calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *y*
+calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *ymv*
 """
 function rollingregressionstdmv!(std, ymv, regr_y, grad, window)
     @assert size(ymv, 1) > 0
@@ -617,11 +565,10 @@ end
 """
 Returns the rolling median of std over requiredminutes starting at startindex.
 If window > 0 then the window length is subtracted from requiredminutes because it is considered in the first std
+
+This function is deprecated as it did not result in better results than using std
 """
 function rollingmedianstd!(medianstd, std, requiredminutes, startindex, window=1)
-    medianstd = copy(std)
-    return medianstd
-
     if window > requiredminutes
         @warn "rollingmedianstd! window=$window > requiredminutes=$requiredminutes"
         window = requiredminutes
@@ -736,7 +683,7 @@ ab ac ad bc bd cd
 abc abd acd bcd
 
 """
-function polynomialfeatures!(features, polynomialconnect)
+function polynomialfeatures!(features::DataFrame, polynomialconnect::Int)
     featurenames = names(features)  # copy or ref to names? - copy is required
     for poly in 2:polynomialconnect
         for pcf in Combinatorics.combinations(featurenames, poly)
@@ -791,9 +738,28 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
+# function last3extremes(pivot, regrgrad)
+#     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
+#     regressiongains = zeros(Float32, pricelen)
+#     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
+#     # work consistently backward to treat initial fill and incremental fill alike
+#     return l1xtrm, l2xtrm, l3xtrm
+# end
+
+#endregion FeatureUtilities
+
+#region Features001
 regressionwindows001 = Dict("5m" => 5, "15m" => 15, "1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
 
 sortedregressionwindowkeys001 = [d[1] for d in sort(collect(regressionwindows001), by = x -> x[2])]
+
+" Features001 is no longer used and replaced by Features002 "
+struct Features001
+    fdf::DataFrame
+    featuremask::Vector{String}
+    ohlcv::OhlcvData
+end
+
 
 """
 Properties at various rolling windows calculated on df data with ohlcv + pilot columns:
@@ -836,13 +802,67 @@ function getfeatures001(ohlcv::OhlcvData)
     return Features001(fdf, featuremask, ohlcv)
 end
 
-# function last3extremes(pivot, regrgrad)
-#     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
-#     regressiongains = zeros(Float32, pricelen)
-#     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
-#     # work consistently backward to treat initial fill and incremental fill alike
-#     return l1xtrm, l2xtrm, l3xtrm
-# end
+"""
+ Update featureset001 to match ohlcv.
+ constraint: either featureset001 is nothing or empty or it has to be appended
+ but no need to add before an existing start
+"""
+function getfeatures!(features::Features001, ohlcv::OhlcvData)
+    # TODO to be done
+    return features
+end
+
+
+#endregion Features001
+
+#region Features002
+"Features002 is a feature set used in trading strategy"
+
+regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60]  # , 3*24*60, 10*24*60]
+requiredminutes = maximum(regressionwindows002)
+
+mutable struct Features002Regr
+    grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
+    regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
+    std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
+    xtrmix::Vector{Int32}  # indices of extremes (<0 if min, >0 if max); length << ohlcv
+    # medianstd::Vector{Float32}  # deprecated; median standard deviation over requiredminutes; length == ohlcv - requiredminutes
+end
+
+mutable struct Features002
+    ohlcv::OhlcvData
+    regr::Dict  # dict with regression minutes as key -> value is Features002Regr
+    # fdf::DataFrame  # cache of features
+    update  # function to update features due to extended ohlcv
+    firstix  # features start at firstix of ohlcv.df
+    lastix  # features end at lastix of ohlcv.df
+    function Features002(ohlcv, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
+        df = Ohlcv.dataframe(ohlcv)
+        lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
+        maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
+        firstix = firstix > maxfirstix ? maxfirstix : firstix
+        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
+    end
+end
+
+function Base.show(io::IO, features::Features002Regr)
+    println(io::IO, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
+    println(io::IO, "- regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
+    println(io::IO, "- std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
+    # print(io::IO, "- median std deviation: size=$(size(features.medianstd)) max=$(maximum(features.medianstd)) median=$(Statistics.median(features.medianstd)) min=$(minimum(features.medianstd))")
+    println(io::IO, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
+end
+
+function Base.show(io::IO, features::Features002)
+    println(io::IO, "Features002 firstix=$(features.firstix), lastix=$(features.lastix)")
+    println(io::IO, features.ohlcv)
+    for (key, value) in features.regr
+        println(io::IO, "regr key: $key")
+        println(io::IO, value)
+    end
+end
+
+ohlcv(features::Features002) = features.ohlcv
 
 featureix(f2::Features002, ohlcvix) = ohlcvix - f2.firstix + 1
 ohlcvix(f2::Features002, featureix) = featureix + f2.firstix - 1
@@ -850,10 +870,13 @@ ohlcvix(f2::Features002, featureix) = featureix + f2.firstix - 1
 """
 In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`
 """
-function getfeatures002(ohlcv::OhlcvData, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
+function getfeatures002(ohlcv::OhlcvData, firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
     f2 = Features002(ohlcv, firstix, lastix)
 end
 
+"""
+Is called by Features002 constructor and returns a Dict of regression calculatioins for all time windows of *regressionwindows002*
+"""
 function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)
     # println("getfeatures002 init")
     df = Ohlcv.dataframe(ohlcv)
@@ -869,14 +892,17 @@ function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)
     for window in regressionwindows002
         regry, grad = rollingregression(pivot, window)
         std = rollingregressionstdmv(ymv, regry, grad, window, 1)
-        medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1, window)
-        regr[window] = Features002Regr(grad, regry, std, medianstd)
+        xtrmix = regressionextremesix!(nothing, grad, 1)
+        regr[window] = Features002Regr(grad, regry, std, xtrmix)
     end
     return regr
 end
 
 """
-Appends features if length(f2.ohlcv.pivot) > length(f2.regr[x].grad)
+Appends features from firstix of ohlcv until and including lastix of ohlcv
+but only if f2.lastix < lastindex(f2.ohlcv.pivot) because otherwise the features are already there
+
+Features before firstix are deleted to save memory
 """
 function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f2.ohlcv.df[!, :opentime]))
     # println("getfeatures002!")
@@ -886,7 +912,7 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
     end
     lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
     maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
-    firstix = firstix > maxfirstix ? maxfirstix : firstix
+    firstix = firstix > maxfirstix ? maxfirstix : firstix  # ? is that correct
 
     pivot = df[!, :pivot][firstix:lastix]
     open = df.open[firstix:lastix]
@@ -895,19 +921,19 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
     close = df.close[firstix:lastix]
     ymv = [open, high, low, close]
     if (f2.lastix >= firstix >= f2.firstix) && (lastix >= f2.lastix)
-        firstfeatureix = firstix - f2.firstix + 1
+        firstfeatureix = featureix(f2, firstix)  # firstix - f2.firstix + 1
         for window in keys(f2.regr)
             fr = f2.regr[window]
-            if firstfeatureix > 1  # cut start of available features
+            if firstfeatureix > 1  # cut start of available features to save memory
                 fr.regry = fr.regry[firstfeatureix:end]
                 fr.grad = fr.grad[firstfeatureix:end]
                 fr.std = fr.std[firstfeatureix:end]
-                fr.medianstd = fr.medianstd[firstfeatureix:end]
+                ## fr.xtrmix is not cut but should not hurt due to number(extremes) << length(ohlcv)
             end
             if lastix > f2.lastix
                 regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
                 fr.std = rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
-                fr.medianstd = rollingmedianstd!(fr.medianstd, fr.std, requiredminutes, length(fr.medianstd)+1, window)
+                fr.xtrmix = regressionextremesix!(fr.xtrmix, fr.grad, fr.xtrmix[end]) # search forward from last extreme
             else
                 @warn "getfeatures002! nothing to add because lastix == f2.lastix"
             end
@@ -918,8 +944,8 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
         for window in regressionwindows002
             regry, grad = rollingregression(pivot, window)
             std = rollingregressionstdmv(ymv, regry, grad, window, 1)
-            medianstd = rollingmedianstd!(nothing, std, requiredminutes, 1, window)
-            f2.regr[window] = Features002Regr(grad, regry, std, medianstd)
+            xtrmix = regressionextremesix!(nothing, grad, 1)
+            f2.regr[window] = Features002Regr(grad, regry, std, xtrmix)
             @assert length(pivot) == length(grad) == length(regry) == length(std)
         end
     end
@@ -929,40 +955,18 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
     for window in keys(f2.regr)
         @assert firstindex(f2.regr[window].std) == featureix(f2, firstix)
         @assert lastindex(f2.regr[window].std) == featureix(f2, lastix)
-        @assert firstindex(f2.regr[window].medianstd) == featureix(f2, firstix)
-        @assert lastindex(f2.regr[window].medianstd) == featureix(f2, lastix) "lastix=$lastix f2.firstix=$(f2.firstix) lastindex(f2.regr[$window].medianstd)=$(lastindex(f2.regr[window].medianstd)) len(std)=$(length(f2.regr[window].std)) len(std)=$(length(f2.regr[window].medianstd))"
     end
 
     return f2
 end
 
-regrfeatures(f2r::Features002Regr) = hcat(f2r.grad, f2r.regry, f2r.std, f2r.medianstd)
-
-function getfeatures(f2::Features002, regrwindows=regressionwindows002)
-    feat = nothing
-    for win in regrwindows
-        @assert win in regressionwindows002
-        feat = isnothing(feat) ? regrfeatures(f2.regr[win]) : hcat(feat, regrfeatures(f2.regr[win]))
-    end
-    permutedims(feat, (2, 1)) # columns shall represent samples
-end
-
+#endregion Features002
 
 function getfeatures(ohlcv::OhlcvData)
     return getfeatures001(ohlcv)
     # return getfeatures002(ohlcv)
 end
 
-
-"""
- Update featureset001 to match ohlcv.
- constraint: either featureset001 is nothing or empty or it has to be appended
- but no need to add before an existing start
-"""
-function getfeatures!(features::Features001, ohlcv::OhlcvData)
-    # TODO to be done
-    return features
-end
 
 end  # module
 

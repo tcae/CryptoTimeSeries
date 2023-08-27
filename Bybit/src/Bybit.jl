@@ -7,6 +7,7 @@ import HTTP, SHA, JSON, Dates, Printf, Logging
 # base URL of the ByBit API
 BYBIT_API_REST = "https://api.bybit.com"
 BYBIT_API_WS = "wss://stream.binance.com:9443/ws/"
+BYBIT_API_USER_DATA_STREAM ="to be defined for Bybit"
 
 const recv_window = "5000"
 const kline_interval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "M", "W"]

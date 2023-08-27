@@ -1,12 +1,14 @@
 name = "Bybit"
-uuid = "6b34612f-2f8c-4852-8832-29260c2555ec"
-authors = ["tcae <tcae@posteo.nl>"]
-version = "0.2.1"
+uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
+authors = ["Torsten <dropincloud7.gmail.com>"]
+version = "0.1.1"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

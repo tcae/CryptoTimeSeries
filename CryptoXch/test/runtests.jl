@@ -29,57 +29,6 @@ enddt = DateTime("2020-09-11T22:49:00")
 
 # Binance.wsKlineStreams(cb, ["BTCUSDT", "XRPUSDT"])
 
-function gethistoryohlcv_test()
-    startdt = DateTime("2020-08-11T22:45:00")
-    enddt = DateTime("2020-08-12T22:49:00")
-    df = CryptoXch.gethistoryohlcv("btc", startdt, enddt)
-    # display(first(df, 2))
-    # display(last(df, 2))
-    # println("saved btc from $(df[1, :opentime]) until $(df[end, :opentime])")
-    return df
-end
-
-function addstartgapbtcdownload()
-    startdt = DateTime("2022-01-02T22:40:03")
-    enddt = DateTime("2022-01-02T22:41:35")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
-    return ohlcv
-end
-
-function appendgapbtcdownload()
-    startdt = DateTime("2022-01-02T22:53:03")
-    enddt = DateTime("2022-01-02T22:55:35")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
-    return ohlcv
-end
-
-function appendoverlapbtcdownload()
-    startdt = DateTime("2022-01-02T22:47:03")
-    enddt = DateTime("2022-01-02T22:51:35")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
-    return ohlcv
-end
-
-function addfulloverlapbtcdownload()
-    startdt = DateTime("2022-01-02T22:44:01")
-    enddt = DateTime("2022-01-02T22:50:45")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
-    return ohlcv
-end
-
-function addstartoverlapbtcdownload()
-    startdt = DateTime("2022-01-02T22:43:03")
-    enddt = DateTime("2022-01-02T22:47:35")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
-    return ohlcv
-end
-
-function initialbtcdownload()
-    startdt = DateTime("2022-01-02T22:45:03")
-    enddt = DateTime("2022-01-02T22:49:35")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
-    return ohlcv
-end
 
 function orderstring2values!_test()
     ood = [

@@ -99,11 +99,10 @@ end
 function testfeatures()
     enddt = DateTime("2022-01-02T22:54:00")
     startdt = enddt - Dates.Day(3)
-    _, ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+    ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
     ol = size(Ohlcv.dataframe(ohlcv),1)
     f2 = Features.Features002(ohlcv)
-    f2a = Features.getfeatures(f2)
-    return ol, size(f2a)
+    return ol, f2
 
 end
 
@@ -115,12 +114,17 @@ EnvConfig.init(test)
 # println("rolling regression $(Features.rollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
 # println("norm rolling regression $(Features.normrollingregression([2.9, 3.1, 3.6, 3.8, 4, 4.1, 5], 4))")
 
-# TODO getfeatures test to be added
 @testset "Features tests" begin
 
-ol, (f2ar, f2ac) = testfeatures()
-@test ol == f2ac
-@test f2ar == length(fieldnames(Features.Features002Regr)) * length(Features.regressionwindows002)
+ol, f2 = testfeatures()
+@test ol == 4321
+@test length(keys(f2.regr)) == length(Features.regressionwindows002)
+for (win, f2r) in pairs(f2.regr)
+    @test 0 < length(f2r.grad) <= ol
+    @test 0 < length(f2r.regry) <= ol
+    @test 0 < length(f2r.std) <= ol
+    @test 0 < length(f2r.xtrmix) <= ol
+end
 
 yvec = [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
 regr,grad = Features.rollingregression(yvec, 7)
@@ -240,7 +244,7 @@ xix = Features.regressionextremesix!(xix[3:5], reggrad, 7; forward=false)
 @test "2h" == Features.periodlabels(2*60)
 @test "2d" == Features.periodlabels(2*24*60)
 
-end
+end # testset
 
 # distancepeaktest()
 
