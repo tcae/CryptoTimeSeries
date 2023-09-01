@@ -5,30 +5,35 @@
 
 module CryptoXch
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging
-using MyBinance, EnvConfig, Ohlcv, TestOhlcv
+using Bybit, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
 struct SymbolFilter
-    quoteprecision
-    quotemin
-    pricestep
-    baseprecision
-    basemin
-    basestep
+    quoteprecision  # Bybit: quotePrecision digits
+    quotemin  # Bybit: minOrderAmt
+    pricestepprecision  # Bybit: tickSize digits
+    baseprecision  # Bybit: basePrecision digits
+    basemin  # Bybit: minOrderQty
+    # basestep  # Bybit: not used by Bybit
     function SymbolFilter(base)
         if EnvConfig.configmode == EnvConfig.test
-            new(6, 10, 0.01, 6, 0.1, 0.01)
+            new(6, 10, 0.01, 6, 0.1)
         else
             symbol = uppercase(base * EnvConfig.cryptoquote)
-            symdict = symboldict(xchinfo, symbol)
-            filter = symdict["filters"]
+            symdict = nothing
+            for sym in xchinfo
+                if sym["symbol"] == symbol
+                    symdict = sym
+                    break
+                end
+            end
+            @assert !isnothing(symdict)
             new(
-                symdict["quoteAssetPrecision"],
-                filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional"),
-                filterflotatvalue(filter, "PRICE_FILTER", "tickSize"),
-                symdict["baseAssetPrecision"],
-                filterflotatvalue(filter, "LOT_SIZE", "minQty"),
-                filterflotatvalue(filter, "LOT_SIZE", "stepSize")
+                Int64(floor(-log10(parse(Float32, symdict["lotSizeFilter"]["quotePrecision"])); digits=0)),
+                parse(Float32, symdict["lotSizeFilter"]["minOrderAmt"]),
+                Int64(floor(-log10(parse(Float32, symdict["priceFilter"]["tickSize"])); digits=0)),
+                Int64(floor(-log10(parse(Float32, symdict["lotSizeFilter"]["basePrecision"])); digits=0)),
+                parse(Float32, symdict["lotSizeFilter"]["minOrderQty"])
             )
         end
     end
@@ -42,7 +47,7 @@ basestablecoin = ["usdt", "tusd", "busd", "usdc", "eur"]
 baseignore = []
 baseignore = append!(baseignore, basestablecoin, basenottradable)
 minimumquotevolume = 10  # USDT
-xchinfo = MyBinance.getExchangeInfo()
+xchinfo = Bybit.getExchangeInfo()
 
 function klines2jdict(jsonkline)
     Dict(
@@ -75,14 +80,15 @@ function klines2jdf(jsonkline)
             )
     else
         len = length(jsonkline)
-        df[:, :opentime] = [Dates.unix2datetime(jsonkline[ix][1]/1000) for ix in 1:len]
-        df[:, :open] = [parse(Float32, jsonkline[ix][2]) for ix in 1:len]
-        df[:, :high] = [parse(Float32, jsonkline[ix][3]) for ix in 1:len]
-        df[:, :low] = [parse(Float32, jsonkline[ix][4]) for ix in 1:len]
-        df[:, :close] = [parse(Float32, jsonkline[ix][5]) for ix in 1:len]
-        df[:, :basevolume] = [parse(Float32, jsonkline[ix][6]) for ix in 1:len]
+        # counting backwards because Bybit (in contrast to Binance) returns the newest data first
+        df[:, :opentime] = [Dates.unix2datetime(parse(Int64, jsonkline[ix][1])/1000) for ix in len:-1:1]
+        df[:, :open] = [parse(Float32, jsonkline[ix][2]) for ix in len:-1:1]
+        df[:, :high] = [parse(Float32, jsonkline[ix][3]) for ix in len:-1:1]
+        df[:, :low] = [parse(Float32, jsonkline[ix][4]) for ix in len:-1:1]
+        df[:, :close] = [parse(Float32, jsonkline[ix][5]) for ix in len:-1:1]
+        df[:, :basevolume] = [parse(Float32, jsonkline[ix][6]) for ix in len:-1:1]
         Ohlcv.addpivot!(df)
-        # df.quotevolume = [parse(Float32, jsonkline[ix][8]) for ix in 1:len]
+        # df.quotevolume = [parse(Float32, jsonkline[ix][8]) for ix in len:-1:1]
     end
     return df
 end
@@ -96,26 +102,25 @@ Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> wee
 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 """
 function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
-    rstatus = 0
     df = nothing
     if EnvConfig.configmode == EnvConfig.test
         println("ohlcfromexchange test mode: $base, $startdt, $enddt, $interval, $cryptoquote")
         # if base in EnvConfig.bases
-            rstatus, df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
+            df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
         # else
         #     df = Ohlcv.defaultohlcvdataframe()
         #     rstatus = 112
         #     @warn "$base is an unknown base for EnvConfig.test mode"
         # end
     end
-    if (EnvConfig.configmode != EnvConfig.test) || (rstatus == 111)
+    if (EnvConfig.configmode != EnvConfig.test)
         try
             symbol = uppercase(base*cryptoquote)
             # println("symbol=$symbol start=$startdt end=$enddt")
-            rstatus, arr = MyBinance.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
+            arr = Bybit.getKlines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
             # println(typeof(r))
             # show(r)
-            # arr = MyBinance.r2j(r.body)
+            # arr = Bybit.r2j(r.body)
             df = klines2jdf(arr)
             # return Dict(:status => r.status, :headers => r.headers, :body => df, :version => r.version, :request => r.request)
         catch e
@@ -123,20 +128,18 @@ function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates
             df = klines2jdf(missing)
         end
     end
-    return rstatus, df
+    return df
 end
 
 function getlastminutesdata()
     enddt = Dates.now(Dates.UTC)
     startdt = enddt - Dates.Minute(7)
-    stat, res = ohlcfromexchange("BTCUSDT", startdt, enddt)
+    res = ohlcfromexchange("BTCUSDT", startdt, enddt)
     # display(nrow(res))
-    println("getlastminutesdata $stat")
     display(last(res, 3))
     # display(first(res, 3))
     enddt = Dates.now(Dates.UTC)
-    stat, res2 = ohlcfromexchange("BTCUSDT", enddt - Dates.Second(1), enddt)
-    println("getlastminutesdata $stat")
+    res2 = ohlcfromexchange("BTCUSDT", enddt - Dates.Second(1), enddt)
     # display(res)
     display(nrow(res2))
     display(last(res2, 3))
@@ -163,36 +166,37 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
 
     notreachedenddate = true
     df = Ohlcv.defaultohlcvdataframe()
-    lastdt = startdt - Dates.Minute(1)  # make sure lastdt break condition is not true
+    lastdt = enddt + Dates.Minute(1)  # make sure lastdt break condition is not true
     while notreachedenddate
-        stat, res = ohlcfromexchange(base, startdt, enddt, interval)
-        # display(nrow(res))
-        # display(first(res, 3))
-        # display(last(res, 3))
-        if stat != 200  # == NOT OK
+        try
+            res = ohlcfromexchange(base, startdt, enddt, interval)
+            if size(res, 1) == 0
+                # Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
+                break
+            end
+            # display(nrow(res))
+            # display(first(res, 3))
+            # display(last(res, 3))
+            notreachedenddate = (res[begin, :opentime] > startdt) # Bybit loads newest first
+            if res[begin, :opentime] >= lastdt
+                # no progress since last ohlcv  read
+                Logging.@warn "no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime])"
+                break
+            end
+            lastdt = res[begin, :opentime]
+            # println("$(Dates.now()) read $(nrow(res)) $base from $enddt backwards until $lastdt")
+            enddt = floor(lastdt, intervalperiod(interval))
+            while (size(df,1) > 0) && (res[end, :opentime] >= df[begin, :opentime])  # replace last row with updated data
+                deleteat!(res, size(res, 1))
+            end
+            if (size(res, 1) > 0) && (names(df) == names(res))
+                df = vcat(res, df)
+            else
+                Logging.@error "vcat data frames names not matching df: $(names(df)) - res: $(names(res))"
+                break
+            end
+        catch err
             Logging.@warn "HTTP binance klines request NOT OK returning status $stat"
-            break
-        end
-        if size(res, 1) == 0
-            # Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
-            break
-        end
-        notreachedenddate = (res[end, :opentime] < enddt)
-        if res[end, :opentime] <= lastdt
-            # no progress since last ohlcv  read
-            Logging.@warn "no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime])"
-            break
-        end
-        lastdt = res[end, :opentime]
-        # println("$(Dates.now()) read $(nrow(res)) $base from $startdt until $lastdt")
-        startdt = floor(lastdt, intervalperiod(interval))
-        while (size(df,1) > 0) && (res[begin, :opentime] <= df[end, :opentime])  # replace last row with updated data
-            deleteat!(df, size(df, 1))
-        end
-        if (size(res, 1) > 0) && (names(df) == names(res))
-            df = vcat(df, res)
-        else
-            Logging.@error "vcat data frames names not matching df: $(names(df)) - res: $(names(res))"
             break
         end
     end
@@ -359,87 +363,36 @@ function getUSDTmarket()
     df = DataFrame(
         base=String[],
         qte=String[],
-        # weightedAvgPrice=Float32[],
-        # askQty=Float32[],
         quotevolume24h=Float32[],
         pricechangepercent=Float32[],
-        # count=Int64[],
         lastprice=Float32[],
-        # openPrice=Float32[],
-        # firstId=Int64[],
-        # lastQty=Float32[],
-        # openTime=Dates.DateTime[],
-        # closeTime=Dates.DateTime[],
-        # askPrice=Float32[],
-        # priceChange=Float32[],
-        # highprice=Float32[],
-        # prevClosePrice=Float32[],
-        # bidQty=Float32[],
-        # volume=Float32[],
-        # bidPrice=Float32[],
-        # lastId=Int64[],
-        # lowprice=Float32[]
     )
     if EnvConfig.configmode == EnvConfig.production
-        p24dictarray = MyBinance.get24HR()
+        p24dictarray = Bybit.get24HR()
         for (index, p24dict) in enumerate(p24dictarray)
             if onlyconfiguredsymbols(p24dict["symbol"])
                 # printorderinfo(index, oodict)
                 push!(df, (
                     lowercase(replace(p24dict["symbol"], uppercase(EnvConfig.cryptoquote) => "")),
                     lowercase(EnvConfig.cryptoquote),
-                    # parse(Float32, p24dict["weightedAvgPrice"]),
-                    # parse(Float32, p24dict["askQty"]),
-                    parse(Float32, p24dict["quoteVolume"]),
-                    parse(Float32, p24dict["priceChangePercent"]),
-                    # p24dict["count"],
-                    parse(Float32, p24dict["lastPrice"]),
-                    # parse(Float32, p24dict["openPrice"]),
-                    # p24dict["firstId"],
-                    # parse(Float32, p24dict["lastQty"]),
-                    # Dates.unix2datetime(p24dict["openTime"] / 1000),
-                    # Dates.unix2datetime(p24dict["closeTime"] / 1000),
-                    # parse(Float32, p24dict["askPrice"]),
-                    # parse(Float32, p24dict["priceChange"]),
-                    # parse(Float32, p24dict["highPrice"]),
-                    # parse(Float32, p24dict["prevClosePrice"]),
-                    # parse(Float32, p24dict["bidQty"]),
-                    # parse(Float32, p24dict["volume"]),
-                    # parse(Float32, p24dict["bidPrice"]),
-                    # p24dict["lastId"],
-                    # parse(Float32, p24dict["lowPrice"])
+                    parse(Float32, p24dict["turnover24h"]), # trading quote volume
+                    parse(Float32, p24dict["price24hPcnt"]) * 100, # price change in %
+                    parse(Float32, p24dict["lastPrice"]) # last price
                 ))
             end
         end
     else  # test or training
         # for base in EnvConfig.bases
-        p24dictarray = MyBinance.get24HR()
+        p24dictarray = Bybit.get24HR()  #! also in test/training dependent on Bybit?
         for (index, p24dict) in enumerate(p24dictarray)
             base = lowercase(replace(p24dict["symbol"], uppercase(EnvConfig.cryptoquote) => ""))
             if onlyconfiguredsymbols(p24dict["symbol"])
                 push!(df, (
                     base,
                     lowercase(EnvConfig.cryptoquote),
-                    # 0.0,        # "weightedAvgPrice"
-                    # 0.0,        # "askQty"
-                    15000000.0, # "quoteVolume"
-                    5.0,        # "priceChangePercent"
-                    # 2,          # "count"
+                    15000000.0, # "turnover24h" = quote volume USD
+                    5.0,        # "price24hPcnt"
                     100.0,      # "lastPrice"
-                    # 100.0,      # "openPrice"
-                    # 20,         # "firstId"
-                    # 3,          # "lastQty"
-                    # DateTime("2019-01-02 01:11:58:121", "y-m-d H:M:S:s"),  # "openTime"
-                    # DateTime("2019-01-02 01:12:59:121", "y-m-d H:M:S:s"),  # "closeTime"
-                    # 100.0,      # "askPrice"
-                    # 0.0,        # "priceChange"
-                    # 100.0,      # "highPrice"
-                    # 100.0,      # "prevClosePrice"
-                    # 4.0,        # "bidQty"
-                    # 2.0,        # "volume"
-                    # 99.0,       # "bidPrice"
-                    # 21,         # "lastId"
-                    # 99.5        # "lowPrice"
                 ))
             end
         end
@@ -448,7 +401,7 @@ function getUSDTmarket()
 end
 
 function balances()
-    portfolio = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    portfolio = Bybit.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
     # println(portfolio)
     return portfolio
 end
@@ -466,11 +419,11 @@ function portfolio(usdtdf)
         )
 
     if EnvConfig.configmode == EnvConfig.production
-        portfolioarray = MyBinance.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
+        portfolioarray = Bybit.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
         for pdict in portfolioarray
-            base = lowercase(pdict["asset"])
-            freebase = parse(Float32, pdict["free"])
+            base = lowercase(pdict["coin"])
             lockedbase = parse(Float32, pdict["locked"])
+            freebase = parse(Float32, pdict["availableToWithdraw"])
             if (base in usdtdf.base) && !(base in basenottradable)
                 lastprices = usdtdf[usdtdf.base .== base, :lastprice]
                 usdtvolumebase = (freebase + lockedbase) * lastprices[begin]
@@ -538,8 +491,8 @@ function orderstring2values!(orderdictarray)
                 oodict[entry] = parse(Float32, oodict[entry])
             elseif entry in datekeys
                 oodict[entry] = Dates.unix2datetime(oodict[entry] / 1000)
-            elseif entry == "symbol"
-                oodict["base"] = lowercase(replace(oodict["symbol"], uppercase(EnvConfig.cryptoquote) => ""))
+            elseif entry == "s"
+                oodict["base"] = lowercase(replace(oodict["s"], uppercase(EnvConfig.cryptoquote) => ""))
                 # TODO assumption that onlyUSDT quote is traded is containment - requires a more general approach
             elseif entry == "fills"
                 oodict["fills"] = orderstring2values!(oodict["fills"])
@@ -551,7 +504,7 @@ end
 
 function getopenorders(base)
     symbol = isnothing(base) ? nothing : uppercase(base * EnvConfig.cryptoquote)
-    ooarray = MyBinance.openOrders(symbol, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    ooarray = Bybit.openOrders(symbol, EnvConfig.authorization.key, EnvConfig.authorization.secret)
     # println(ooarray)
     ooarray = orderstring2values!(ooarray)
     return ooarray
@@ -559,7 +512,7 @@ end
 
 function getorder(base, orderid)
     symbol = uppercase(base * EnvConfig.cryptoquote)
-    oo = MyBinance.order(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    oo = Bybit.order(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
     # println(oo)
     ooarray = orderstring2values!([oo])
     @assert length(ooarray) == 1
@@ -568,12 +521,12 @@ end
 
 function cancelorder(base, orderid)
     symbol = uppercase(base * EnvConfig.cryptoquote)
-    oo = MyBinance.cancelOrder(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    oo = Bybit.cancelOrder(symbol, orderid, EnvConfig.authorization.key, EnvConfig.authorization.secret)
     # println(oo)
     ooarray = orderstring2values!([oo])
     @assert length(ooarray) == 1
     return ooarray[begin]
-    # "symbol": "LTCBTC",
+    # "s": "LTCBTC",
     # "origClientOrderId": "myOrder1",
     # "orderId": 4,
     # "orderListId": -1, //Unless part of an OCO, the value will always be -1.
@@ -589,84 +542,45 @@ function cancelorder(base, orderid)
 end
 
 """
-Returns the symbol Dict of symbol from a Binance exchange info structure or `nothing` if symbol entry not found
-"""
-function symboldict(xchinfo, symbol)
-    for sym in xchinfo["symbols"]
-        if sym["symbol"] == symbol
-            return sym
-            break
-        end
-    end
-    return nothing
-end
-
-function filterflotatvalue(symbolfilters, filtertype, filterentry)
-    for filter in symbolfilters
-        if filter["filterType"] == filtertype
-            return parse(Float32, filter[filterentry])
-        end
-    end
-    @error "filter of type $filtertype and entry $filterentry not found"
-    return 0.0
-end
-
-"""
 adapt limitprice and usdtquantity according to xch filter rules and issue order
 """
 function createorder(base::String, orderside::String, limitprice, usdtquantity)
     symbol = uppercase(base * EnvConfig.cryptoquote)
-    symdict = symboldict(xchinfo, symbol)
-    limitprice = round(limitprice; digits=symdict["quoteAssetPrecision"])
-    usdtquantity = floor(usdtquantity; digits=symdict["quoteAssetPrecision"])
     symfilter = SymbolFilter(base)
-    # filter = symdict["filters"]
-    # minnotional = filterflotatvalue(filter, "MIN_NOTIONAL", "minNotional")
-    minnotional = symfilter.quotemin
-    if usdtquantity < minnotional
-        @error "create order error due to qty $usdtquantity < minimal qty $minnotional for $symbol"
+    limitprice = round(limitprice; digits=symfilter.quoteprecision)
+    usdtquantity = floor(usdtquantity; digits=symfilter.quoteprecision)
+
+    if usdtquantity < symfilter.quotemin
+        @error "create order error due to qty $usdtquantity < minimal qty $(symfilter.quotemin) for $symbol"
     end
-    # minprize = filterflotatvalue(filter, "PRICE_FILTER", "minPrice")
-    # if limitprice < minprize
-    #     @error "create order error due to limitprice $limitprice < minimal price $minprize for $symbol"
-    # end
-    # maxprize = filterflotatvalue(filter, "PRICE_FILTER", "maxPrice")
-    # if limitprice > maxprize
-    #     @error "create order error due to limitprice $limitprice > maximal price $maxprize for $symbol"
-    # end
-    ticksize = symfilter.pricestep
-    # tickdigits = Int64(floor(-log10(filterflotatvalue(filter, "PRICE_FILTER", "tickSize")); digits=0))
-    tickdigits = Int64(floor(-log10(ticksize); digits=0))
+
+    tickdigits = symfilter.pricestepprecision
     println("before tickdigits correction: limitprice=$limitprice tickdigits=$tickdigits")
     limitprice = round(limitprice; digits=tickdigits)
     println("after tickdigits correction: limitprice=$limitprice")
 
     qty = usdtquantity / limitprice
-    # qty = round(qty, ; digits=symdict["baseAssetPrecision"])
-    qty = round(qty, ; digits=symfilter.baseprecision)
-    # minqty = filterflotatvalue(filter, "LOT_SIZE", "minQty")
+    qty = round(qty; digits=symfilter.baseprecision)
     minqty = symfilter.basemin
     if qty < minqty
         @error "create order error due to qty $qty < minimal qty $minqty for $symbol"
     end
-    # maxqty = filterflotatvalue(filter, "LOT_SIZE", "maxQty")
-    # if qty > maxqty
-    #     @error "create order error due to qty $qty > maximal qty $maxqty for $symbol"
-    # end
-    # stepdigits = Int64(floor(-log10(filterflotatvalue(filter, "LOT_SIZE", "stepSize")); digits=0))
-    basestep = symfilter.basestep
-    stepdigits = Int64(floor(-log10(basestep); digits=0))
-    println("before stepdigits correction: base_quantity=$qty stepdigits=$stepdigits minqty=$minqty")
-    qty = round(qty; digits=stepdigits)
-    println("after stepdigits correction: base_quantity=$qty")
 
-    order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
-    oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
+    ### base step not used by Bybit
+    # basestep = symfilter.basestep
+    # stepdigits = Int64(floor(-log10(basestep); digits=0))
+    # println("before stepdigits correction: base_quantity=$qty stepdigits=$stepdigits minqty=$minqty")
+    # qty = round(qty; digits=stepdigits)
+    # println("after stepdigits correction: base_quantity=$qty")
+    ###
+
+    order = Bybit.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
+    oo = Bybit.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=true)
     # println(oo)
     ooarray = orderstring2values!([oo])
     @assert length(ooarray) == 1
     return ooarray[begin]
-    # "symbol": "BTCUSDT",
+    # "s": "BTCUSDT",
     # "orderId": 28,
     # "orderListId": -1, //Unless OCO, value will be -1
     # "clientOrderId": "6gCrw2kRUAF9CvJDGP16IP",
@@ -694,8 +608,8 @@ function createordernocheck(base::String, orderside::String, limitprice, usdtqua
     println("$base: $orderside $limitprice $usdtquantity")
     symbol = uppercase(base * EnvConfig.cryptoquote)
     qty = usdtquantity / limitprice
-    order = MyBinance.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
-    oo = MyBinance.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=false)
+    order = Bybit.createOrder(symbol, orderside; quantity=qty, orderType="LIMIT", price=limitprice)
+    oo = Bybit.executeOrder(order, EnvConfig.authorization.key, EnvConfig.authorization.secret; execute=false)
     # println(oo)
     ooarray = orderstring2values!([oo])
     return ooarray[begin]
@@ -713,8 +627,8 @@ end
 # getbalances()
 # println(getUSDTmarket())
 
-# ap = MyBinance.getAllPrices()
-# p24 = MyBinance.get24HR()
+# ap = Bybit.getAllPrices()
+# p24 = Bybit.get24HR()
 # println("len(all prices)=$(length(ap)) len(24HR)=$(length(p24))")
 # println(p24[1])
 # for (key, value) in p24[1]

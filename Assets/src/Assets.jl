@@ -72,8 +72,9 @@ function portfolioselect(usdtdf)
     if EnvConfig.configmode == EnvConfig.production
         portfolio = CryptoXch.balances()
         # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
-        pdf[:, :basevolume] = [parse(Float32, d["free"]) + parse(Float32, d["locked"]) for d in portfolio]
-        pdf[:, :base] = [lowercase(d["asset"]) for d in portfolio]
+        # pdf[:, :basevolume] = [parse(Float32, d["WalletBalance"]) + parse(Float32, d["locked"]) for d in portfolio]
+        pdf[:, :basevolume] = [parse(Float32, d["walletBalance"]) for d in portfolio]
+        pdf[:, :base] = [lowercase(d["coin"]) for d in portfolio]
         pdf = filter(r -> r.base in usdtdf.base, pdf)
         pdf[:, :usdt] .= 0.0
         pusdtdf = filter(r -> r.base in pdf.base, usdtdf)

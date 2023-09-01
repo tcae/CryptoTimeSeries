@@ -2,7 +2,7 @@
 module CryptoXchTest
 using Dates, DataFrames
 
-using Ohlcv, EnvConfig, CryptoXch, MyBinance
+using Ohlcv, EnvConfig, CryptoXch, Bybit
 
 function balances_test()
     result = CryptoXch.balances()
@@ -49,7 +49,7 @@ end
 # println("cancelorder: $oo2")
 
 function showxchinfo()
-    exchangeinfo = MyBinance.getExchangeInfo()
+    exchangeinfo = Bybit.getExchangeInfo()
 
     println("Binance server time: $(Dates.unix2datetime(exchangeinfo["serverTime"]/1000)) $(exchangeinfo["timezone"]) - entries: $(keys(exchangeinfo))")
     println("Rate limits ($(length(exchangeinfo["rateLimits"]))):")

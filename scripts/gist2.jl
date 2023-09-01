@@ -1,14 +1,14 @@
 
 # include("../src/Binance.jl")
 using JSON, HTTP, DataFrames
-using MyBinance
+using Bybit
 
 # println(@__FILE__)
 # println(dirname(@__FILE__))
 # println(dirname(dirname(@__FILE__)))
 # println(pwd())
 
-# ei = MyBinance.getExchangeInfo()
+# ei = Bybit.getExchangeInfo()
 # open(pwd() * "/HTTP-log.json","a") do io
 #     JSON.print(io, ei, 4)
 # end

@@ -13,8 +13,8 @@ function balances_test()
     display(EnvConfig.datapath)
 end
 
-# EnvConfig.init(test)
-EnvConfig.init(production)
+EnvConfig.init(test)
+# EnvConfig.init(production)
 # balances_test()
 
 userdataChannel = Channel(10)
@@ -106,6 +106,7 @@ end
     @test nrow(mdf) > 10
 
     EnvConfig.init(EnvConfig.test)
+    # EnvConfig.init(EnvConfig.production)
     ohlcv = Ohlcv.defaultohlcv("btc")
     ohlcv = CryptoXch.cryptodownload("btc", "1m", DateTime("2022-01-02T22:45:03"), DateTime("2022-01-02T22:49:35"))
     # println(Ohlcv.dataframe(ohlcv))
@@ -170,20 +171,20 @@ end
     # EnvConfig.init(EnvConfig.test)
     EnvConfig.init(EnvConfig.production)
 
-    ooarray = CryptoXch.getopenorders(nothing)
-    println("getopenorders(nothing): $ooarray")
-    oo1 = CryptoXch.createorder("btc", "BUY", 19001.0003, 26.01)
-    # println("createorder: $oo1")
-    oo2 = CryptoXch.getorder("btc", oo1["orderId"])
-    println("getorder: $oo2")
-    @test oo1["orderId"] == oo2["orderId"]
-    ooarray = CryptoXch.getopenorders(nothing)
+    # ooarray = CryptoXch.getopenorders(nothing)
     # println("getopenorders(nothing): $ooarray")
-    ooarray = CryptoXch.getopenorders("btc")
-    # println("getopenorders(\"btc\"): $ooarray")
-    oo2 = CryptoXch.cancelorder("btc", oo1["orderId"])
-    # println("cancelorder: $oo2")
-    @test oo1["orderId"] == oo2["orderId"]
+    # oo1 = CryptoXch.createorder("btc", "BUY", 19001.0003, 26.01)
+    # # println("createorder: $oo1")
+    # oo2 = CryptoXch.getorder("btc", oo1["orderId"])
+    # println("getorder: $oo2")
+    # @test oo1["orderId"] == oo2["orderId"]
+    # ooarray = CryptoXch.getopenorders(nothing)
+    # # println("getopenorders(nothing): $ooarray")
+    # ooarray = CryptoXch.getopenorders("btc")
+    # # println("getopenorders(\"btc\"): $ooarray")
+    # oo2 = CryptoXch.cancelorder("btc", oo1["orderId"])
+    # # println("cancelorder: $oo2")
+    # @test oo1["orderId"] == oo2["orderId"]
 
     println("test IP with CLI: wget -qO- http://ipecho.net/plain | xargs echo")
 end

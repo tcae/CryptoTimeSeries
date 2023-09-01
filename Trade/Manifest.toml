@@ -303,7 +303,7 @@ uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 version = "4.1.1"
 
 [[deps.CryptoXch]]
-deps = ["CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "MyBinance", "Ohlcv", "TestOhlcv"]
+deps = ["CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Bybit", "Ohlcv", "TestOhlcv"]
 path = "../CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 version = "0.1.2"
@@ -1117,9 +1117,9 @@ git-tree-sha1 = "82dfb2cead9895e10ee1b0ca37a01088456c4364"
 uuid = "a975b10e-0019-58db-a62f-e48ff68538c9"
 version = "0.7.6"
 
-[[deps.MyBinance]]
+[[deps.Bybit]]
 deps = ["Dates", "HTTP", "JSON", "Logging", "Printf", "SHA"]
-path = "../MyBinance"
+path = "../Bybit"
 uuid = "6b34612f-2f8c-4852-8832-29260c2555ec"
 version = "0.1.0"
 
