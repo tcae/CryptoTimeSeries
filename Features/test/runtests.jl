@@ -244,6 +244,27 @@ xix = Features.regressionextremesix!(xix[3:5], reggrad, 7; forward=false)
 @test "2h" == Features.periodlabels(2*60)
 @test "2d" == Features.periodlabels(2*24*60)
 
+md = DateTime("2022-06-02T12:54:00")
+@test Features.relativedayofyear(md) == 0.4192f0
+@test Features.relativedayofweek(md) == 0.5714f0
+@test Features.relativeminuteofday(md) == 0.5375f0
+
+enddt = DateTime("2022-01-02T22:54:00")
+startdt = enddt - Dates.Day(2)
+ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+df = Ohlcv.dataframe(ohlcv)
+f2 = Features.Features002(ohlcv)
+
+f12x = Features.features12x1m01(f2)
+f12xd = describe(f12x)
+@test all(f12xd.eltype .== Float32)
+@test all(f12xd.nmissing .== 0)
+@test all(-1.9 .< f12xd.min .< 1.9)
+@test all(-1.9 .< f12xd.median .< 1.9)
+@test all(-1.9 .< f12xd.max .< 2.9)
+@test all(-1.2 .< f12xd.mean .< 1.2)
+@test size(f12xd, 1) == 60
+
 end # testset
 
 # distancepeaktest()

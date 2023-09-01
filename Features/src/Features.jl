@@ -8,7 +8,7 @@ module Features
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, runmedian, rolling
 import DataFrames: DataFrame, Statistics
-using Combinatorics
+using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv
 
@@ -21,6 +21,9 @@ nextindex(forward, index) = forward ? index + 1 : index - 1
 up(slope) = slope > 0
 downorflat(slope) = slope <= 0
 
+relativedayofyear(date::DateTime)::Float32 = round(Dates.dayofyear(date) / 365, digits=4)
+relativedayofweek(date::DateTime)::Float32 = round(Dates.dayofweek(date) / 7, digits=4)
+relativeminuteofday(date::DateTime)::Float32 = round(Dates.Minute(date - DateTime(Date(date))).value / 1440, digits=4)
 
 """
 - returns index of next regression extreme (or 0 if no extreme)
@@ -328,7 +331,7 @@ regressiony(regry, grad, window) = [regry - grad * (window - 1), regry]
  y is a one dimensional array.
 
  - Regression Equation(y) = a + bx
- - Gradient(b) = (NΣXY - (ΣX)(ΣY)) / (NΣ(X^2) - (ΣX)^2)
+ - Gradient(b) = (NΣXY - (ΣX)(ΣY)) / (NΣ(X^2) - (ΣX)^2) (y increase per x unit)
  - Intercept(a) = (ΣY - b(ΣX)) / N
  - used from https://www.easycalculation.com/statistics/learn-regression.php
 
@@ -818,8 +821,9 @@ end
 #region Features002
 "Features002 is a feature set used in trading strategy"
 
-regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60]  # , 3*24*60, 10*24*60]
+regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60] # , 3*24*60, 9*24*60]
 requiredminutes = maximum(regressionwindows002)
+relativevolumes002 = [(1, 60), (5, 4*60)]  # , (4*60, 9*24*60)]
 
 mutable struct Features002Regr
     grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
@@ -832,16 +836,18 @@ end
 mutable struct Features002
     ohlcv::OhlcvData
     regr::Dict  # dict with regression minutes as key -> value is Features002Regr
-    # fdf::DataFrame  # cache of features
+    relvol::Dict  # dict of (shortwindowlength, longwindowlength) key and relative volume vector Vector{Float32} values
     update  # function to update features due to extended ohlcv
     firstix  # features start at firstix of ohlcv.df
     lastix  # features end at lastix of ohlcv.df
     function Features002(ohlcv, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
         df = Ohlcv.dataframe(ohlcv)
+        @assert size(df, 1) >= requiredminutes
         lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
         maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
+        firstix = firstix < requiredminutes ? requiredminutes : firstix
         firstix = firstix > maxfirstix ? maxfirstix : firstix
-        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
+        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix), getrelvolumes002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
     end
 end
 
@@ -875,9 +881,19 @@ function getfeatures002(ohlcv::OhlcvData, firstix=firstindex(ohlcv.df[!, :openti
 end
 
 """
+Is called by Features002 constructor and returns a Dict of (short, long) => relative volume Float32 vector
+"""
+function getrelvolumes002(ohlcv::OhlcvData, firstix, lastix)::Dict
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
+    relvols = [relativevolume(ohlcvdf[firstix:lastix, :basevolume], s, l) for (s, l) in relativevolumes002]
+    rvd = Dict(zip(relativevolumes002, relvols))
+    return rvd
+end
+
+"""
 Is called by Features002 constructor and returns a Dict of regression calculatioins for all time windows of *regressionwindows002*
 """
-function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)
+function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)::Dict
     # println("getfeatures002 init")
     df = Ohlcv.dataframe(ohlcv)
     pivot = Ohlcv.pivot!(ohlcv)[firstix:lastix]
@@ -886,7 +902,7 @@ function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)
     low = df.low[firstix:lastix]
     close = df.close[firstix:lastix]
     ymv = [open, high, low, close]
-    @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $requiredminutes"
+    @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $requiredminutes (requiredminutes)"
     @assert firstindex(ohlcv.df[!, :opentime]) <= firstix <= lastix <= lastindex(ohlcv.df[!, :opentime]) "$(firstindex(ohlcv.df[!, :opentime])) <= $firstix <= $lastix <= $(lastindex(ohlcv.df[!, :opentime]))"
     regr = Dict()
     for window in regressionwindows002
@@ -929,12 +945,14 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
                 fr.grad = fr.grad[firstfeatureix:end]
                 fr.std = fr.std[firstfeatureix:end]
                 ## fr.xtrmix is not cut but should not hurt due to number(extremes) << length(ohlcv)
+                #! getrelvolumes002 volumes not yet cut
             end
             if lastix > f2.lastix
                 regry, grad = rollingregression!(fr.regry, fr.grad, pivot, window)
                 fr.std = rollingregressionstdmv!(fr.std, ymv, regry, grad, window)
                 fr.xtrmix = regressionextremesix!(fr.xtrmix, fr.grad, fr.xtrmix[end]) # search forward from last extreme
-            else
+                 #! getrelvolumes002 volumes not yet added
+                else
                 @warn "getfeatures002! nothing to add because lastix == f2.lastix"
             end
             @assert length(pivot) == length(fr.grad) == length(fr.regry) == length(fr.std)
@@ -965,6 +983,47 @@ end
 function getfeatures(ohlcv::OhlcvData)
     return getfeatures001(ohlcv)
     # return getfeatures002(ohlcv)
+end
+
+"""
+returns 1 minute based features starting at f2.startix and end at f2.lastix
+
+- Provides a feature vector of the most recent 12x 1 minute time window ohlc relative values
+  - (OHLC- pivot) / pivot
+- Most recent regression features for time windows 15m,1h,4h, 12h, 1d
+  - Regression gradient
+  - Y distance from regression line / std deviation
+- Relative median volume 1m/1h
+- Relative minute of the day
+"""
+function features12x1m01(f2::Features.Features002)::DataFrame
+    ohlcvdf = Ohlcv.dataframe(f2.ohlcv)
+    @assert !isnothing(ohlcvdf)
+    @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
+    @assert (f2.firstix <= f2.lastix)
+    @assert !isnothing(ohlcvdf) && (size(ohlcvdf, 1) >= f2.lastix) && (f2.firstix <= f2.lastix)
+    # fvec = zeros(Float32, f2.lastix - f2.firstix + 1)
+    fvecdf = DataFrame()
+    lookback = 11
+    for ix in 0:lookback
+        ixstr = string(ix, pad=2, base=10)
+        fix = f2.firstix - ix
+        lix = f2.lastix - ix
+        for col in ["open", "high", "low", "close"]
+            fvecdf[!, col*ixstr] = ohlcvdf[fix:lix, col] - ohlcvdf[fix:lix, :pivot]
+        end
+    end
+    firstfix = featureix(f2, f2.firstix)
+    lastfix = featureix(f2, f2.lastix)
+    for regrwindow in [15, 60, 4*60, 12*60, 24*60]
+        colname = "grad" * Features.periodlabels(regrwindow)
+        fvecdf[:, colname] = f2.regr[regrwindow].grad[firstfix:lastfix]
+        colname = "disty" * Features.periodlabels(regrwindow)
+        fvecdf[:, colname] = ohlcvdf[f2.firstix:f2.lastix, :pivot] - f2.regr[regrwindow].regry[firstfix:lastfix]
+    end
+    fvecdf[:, "1m/1hvol"] = relativevolume(ohlcvdf[f2.firstix:f2.lastix, :basevolume], 1, 60)
+    fvecdf[:, "relminute"] = map(Features.relativeminuteofday, ohlcvdf[f2.firstix:f2.lastix, :opentime])
+    return fvecdf
 end
 
 

@@ -24,9 +24,9 @@ end
 returns ohlcv data starting 2019-01-02 01:11 for - by default 5.7 years
 """
 function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmultiple = 1)
-    price = 200
-    volumeconst = 100
-    amplitude = 0.007  # 0.7% of price
+    price::Float32 = 200
+    volumeconst::Float32 = 100
+    amplitude::Float32 = 0.007  # 0.7% of price
     firstutc = DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s")
     firstutc = round(firstutc, Dates.Minute)
     # lastutc = round(lastutc, Dates.Minute)
@@ -48,13 +48,13 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmu
     # high =   (y / 2)
     # low =    (y / 2)
     # close =  (y / 4)
-    open =  price .* (y .* amplitude .+ 1 .+ variation ./ 4)
-    high =  price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
-    low =   price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
-    close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
+    open::Vector{Float32} =  price .* (y .* amplitude .+ 1 .+ variation ./ 4)
+    high::Vector{Float32} =  price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
+    low::Vector{Float32} =   price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
+    close::Vector{Float32} = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     @assert low <= open <= high "low $(low) <= open $(open) <= high $(high)"
     @assert low <= close <= high "low $(low) <= close $(close) <= high $(high)"
-    volume = (1.1 .- abs.(y1)) .* volumeconst
+    volume::Vector{Float32} = (1.1 .- abs.(y1)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
     df[:, :pivot] = Ohlcv.pivot(df)
     return df
