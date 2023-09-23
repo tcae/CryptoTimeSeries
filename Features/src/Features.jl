@@ -24,6 +24,10 @@ downorflat(slope) = slope <= 0
 relativedayofyear(date::DateTime)::Float32 = round(Dates.dayofyear(date) / 365, digits=4)
 relativedayofweek(date::DateTime)::Float32 = round(Dates.dayofweek(date) / 7, digits=4)
 relativeminuteofday(date::DateTime)::Float32 = round(Dates.Minute(date - DateTime(Date(date))).value / 1440, digits=4)
+relativetimedict = Dict(
+    "relminuteofday" => relativeminuteofday,
+    "reldayofweek" => relativedayofweek,
+    "reldayofyear" => relativedayofyear)
 
 """
 - returns index of next regression extreme (or 0 if no extreme)
@@ -985,10 +989,126 @@ function getfeatures(ohlcv::OhlcvData)
     # return getfeatures002(ohlcv)
 end
 
-"""
-returns 1 minute based features starting at f2.startix and end at f2.lastix
+#region Features003
 
-- Provides a feature vector of the most recent 12x 1 minute time window ohlc relative values
+mutable struct Features003
+    f2::Features002
+    maxlookback  # number of regression windows to concatenate as feature vector
+end
+
+function Base.show(io::IO, features::Features003)
+    println(io::IO, "Features003 lookback periods=$(features.maxlookback)")
+    println(io::IO, features.f2)
+end
+
+"""
+Returns a DataFrame with feature vectors in each row. Each feature vector is based on f2.ohlcv time windows.
+The feature vectors covering the ohlcv time range from f2.startix until f2.lastix.
+Each feature vector is composed of:
+
+- The most recent `lookbackperiods` x f2.ohlcv time window ohlc relative values. If `lookbackperiods = 0` then only the most recent ohlc relative values.
+  - (OHLC- pivot) / pivot
+
+"""
+function deltaOhlc!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; normalize=true::Bool)::DataFrame
+    fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
+    ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
+    lbfirstix = f3.f2.firstix + f3.maxlookback
+    for ix in 0:f3.maxlookback
+        ixstr = f3.maxlookback > 0 ? string(ix, pad=2, base=10) : ""
+        fix = lbfirstix - ix
+        lix = f3.f2.lastix - ix
+        for col in ["open", "high", "low", "close"]
+            colname = col*ixstr
+            fvecdf[!, colname] = ohlcvdf[fix:lix, col] .- ohlcvdf[fix:lix, :pivot]
+            if normalize
+                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[lbfirstix:f3.f2.lastix, :pivot]
+            end
+        end
+    end
+    return fvecdf
+end
+
+"""
+Returns a DataFrame with feature vectors in each row. Each feature vector is based on f3.f2.ohlcv time windows.
+The feature vectors covering the ohlcv time range from f3.f2.startix + f3.maxlookback until f3.f2.lastix.
+Each feature vector is composed of:
+
+- Most recent `lookback` periods regression features for time windows as provided in `regrwindows` (e.g `[15, 60, 4*60]`). If `lookback = 0` then only the most recent regression features.
+  - Regression gradient
+  - (Y distance from regression line) / (2 * std deviation)
+"""
+function regressionfeatures!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; regrwindows::Vector{<:Integer}, lookback, normalize=true::Bool)::DataFrame
+    debug = false
+    @assert f3.maxlookback >= lookback * maximum(regrwindows)
+    fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
+    ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
+    lbfirstix = f3.f2.firstix + f3.maxlookback
+    debug ? println("lbfirstix=$lbfirstix") : 0
+    for ix in 0:lookback
+        ixstr = lookback > 0 ? string(ix, pad=2, base=10) : ""
+        for regrwindow in regrwindows
+            ixoffset = ix * regrwindow
+            firstfix = featureix(f3.f2, lbfirstix - ixoffset)
+            lastfix = featureix(f3.f2, f3.f2.lastix - ixoffset)
+            firstoix = lbfirstix - ixoffset
+            lastoix = f3.f2.lastix - ixoffset
+                colname = "grad" * Features.periodlabels(regrwindow) * ixstr
+            fvecdf[!, colname] = f3.f2.regr[regrwindow].grad[firstfix:lastfix]
+            if normalize
+                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[lbfirstix:f3.f2.lastix, :pivot]
+            end
+            colname = "disty" * Features.periodlabels(regrwindow) * ixstr
+            fvecdf[!, colname] = (ohlcvdf[firstoix:lastoix, :pivot] .- f3.f2.regr[regrwindow].regry[firstfix:lastfix]) ./ f3.f2.regr[regrwindow].std[firstfix:lastfix]
+
+            debug ? fvecdf[!, "firstix" * Features.periodlabels(regrwindow) * ixstr] = [ix for ix in firstfix:lastfix] : 0
+        end
+    end
+    return fvecdf
+end
+
+"""
+Returns a DataFrame with feature vectors in each row. Each feature vector is based on f2.ohlcv time windows.
+The feature vectors covering the ohlcv time range from f2.startix until f2.lastix.
+Each feature vector is composed of:
+
+- Relative median volume 1m/1h (just 1 element)
+"""
+function relativevolume!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, shortvol, longvol)::DataFrame
+    fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
+    ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
+    lbfirstix = f3.f2.firstix + f3.maxlookback
+    colname = Features.periodlabels(shortvol) * "/" * Features.periodlabels(longvol) * "vol"
+    fvecdf[!, colname] = relativevolume(ohlcvdf[lbfirstix:f3.f2.lastix, :basevolume], shortvol, longvol)
+    return fvecdf
+end
+
+"""
+Returns a DataFrame with feature vectors in each row. Each feature vector is based on f2.ohlcv time windows.
+The feature vectors covering the ohlcv time range from f2.startix until f2.lastix.
+Each feature vector is composed of:
+
+- Relative date/time accordign to keyword as mapped in Features.relativetimedict
+  - "relminuteofday" => relativeminuteofday
+  - "reldayofweek" => relativedayofweek
+  - "reldayofyear" => relativedayofyear
+
+"""
+function relativetime!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, relativedatetime)::DataFrame
+    ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
+    @assert !isnothing(ohlcvdf)
+    lbfirstix = f3.f2.firstix + f3.maxlookback
+    fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
+    fvecdf[!, relativedatetime] = map(relativetimedict[relativedatetime], ohlcvdf[lbfirstix:f3.f2.lastix, :opentime])
+    return fvecdf
+end
+
+"""
+Returns a DataFrame with feature vectors in each row. Each feature vector is based on 1 minute time windows.
+The feature vectors covering the ohlcv time range from f2.startix until f2.lastix.
+Each feature vector is composed of:
+
+- The most recent 12x 1 minute time window ohlc relative values
   - (OHLC- pivot) / pivot
 - Most recent regression features for time windows 15m,1h,4h, 12h, 1d
   - Regression gradient
@@ -999,32 +1119,54 @@ returns 1 minute based features starting at f2.startix and end at f2.lastix
 function features12x1m01(f2::Features.Features002)::DataFrame
     ohlcvdf = Ohlcv.dataframe(f2.ohlcv)
     @assert !isnothing(ohlcvdf)
+    @assert f2.ohlcv.interval == "1m"
     @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
     @assert (f2.firstix <= f2.lastix)
     @assert !isnothing(ohlcvdf) && (size(ohlcvdf, 1) >= f2.lastix) && (f2.firstix <= f2.lastix)
-    # fvec = zeros(Float32, f2.lastix - f2.firstix + 1)
-    fvecdf = DataFrame()
-    lookback = 11
-    for ix in 0:lookback
-        ixstr = string(ix, pad=2, base=10)
-        fix = f2.firstix - ix
-        lix = f2.lastix - ix
-        for col in ["open", "high", "low", "close"]
-            fvecdf[!, col*ixstr] = ohlcvdf[fix:lix, col] - ohlcvdf[fix:lix, :pivot]
-        end
-    end
-    firstfix = featureix(f2, f2.firstix)
-    lastfix = featureix(f2, f2.lastix)
-    for regrwindow in [15, 60, 4*60, 12*60, 24*60]
-        colname = "grad" * Features.periodlabels(regrwindow)
-        fvecdf[:, colname] = f2.regr[regrwindow].grad[firstfix:lastfix]
-        colname = "disty" * Features.periodlabels(regrwindow)
-        fvecdf[:, colname] = ohlcvdf[f2.firstix:f2.lastix, :pivot] - f2.regr[regrwindow].regry[firstfix:lastfix]
-    end
-    fvecdf[:, "1m/1hvol"] = relativevolume(ohlcvdf[f2.firstix:f2.lastix, :basevolume], 1, 60)
-    fvecdf[:, "relminute"] = map(Features.relativeminuteofday, ohlcvdf[f2.firstix:f2.lastix, :opentime])
+    f3 = Features003(f2, 11)
+    fvecdf = deltaOhlc!(nothing, f3; normalize=true)
+    fvecdf = regressionfeatures!(fvecdf, f3; regrwindows=[15, 60, 4*60, 12*60, 24*60], lookback=0, normalize=true)
+    fvecdf = relativevolume!(fvecdf, f3, 1, 60)
+    fvecdf = relativetime!(fvecdf, f3, "relminuteofday")
     return fvecdf
 end
+
+"""
+Returns a DataFrame with feature vectors in each row. Each feature vector is based on 1 minute time windows.
+The feature vectors covering the ohlcv time range from f2.startix until f2.lastix.
+Each feature vector is composed of:
+
+- The most recent `lookbackperiods` + 1  `focusregrwindow` minutes time window ohlc relative values
+  - (OHLC- pivot) / pivot
+- Most recent regression features for time windows in minutes, e.g. [15, 60, 4*60, 12*60, 24*60]
+  - Regression gradient
+  - Y distance from regression line / std deviation
+- Relative median volume short time window/long time window
+- Relative datetime
+"""
+function regressionfeatures01(f2::Features.Features002, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)::DataFrame
+    ohlcvdf = Ohlcv.dataframe(f2.ohlcv)
+    @assert !isnothing(ohlcvdf)
+    @assert f2.ohlcv.interval == "1m"
+    @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
+    @assert (f2.firstix <= f2.lastix)
+    @assert !isnothing(ohlcvdf) && (size(ohlcvdf, 1) >= f2.lastix) && (f2.firstix <= f2.lastix)
+    f3 = Features003(f2, lookbackperiods * focusregrwindow)
+    @assert (f2.firstix + f3.maxlookback) <= f2.lastix
+    fvecdf = regressionfeatures!(nothing, f3; regrwindows=regrwindows, lookback=0, normalize=true)
+    fvecdf = regressionfeatures!(fvecdf, f3; regrwindows=[focusregrwindow], lookback=lookbackperiods, normalize=true)
+    fvecdf = relativevolume!(fvecdf, f3, shortvol, longvol)
+    fvecdf = relativetime!(fvecdf, f3, reltime)
+    return fvecdf
+end
+
+features12x5m01(f2) =  regressionfeatures01(f2,  11, 5,     [15, 60,   4*60,  12*60,   24*60],    5,     4*60,     "relminuteofday")
+features12x15m01(f2) = regressionfeatures01(f2,  11, 15,    [5,  60,   4*60,  12*60,   24*60],    15,    12*60,    "relminuteofday")
+features12x1h01(f2) =  regressionfeatures01(f2,  11, 60,    [5,  15,   4*60,  12*60,   24*60],    60,    24*60,    "reldayofweek")
+features12x4h01(f2) =  regressionfeatures01(f2,  11, 4*60,  [15, 60,   12*60, 24*60,   3*24*60],  4*60,  3*24*60,  "reldayofweek")
+features12x12h01(f2) = regressionfeatures01(f2,  11, 12*60, [60, 4*60, 24*60, 3*24*60, 10*24*60], 12*60, 7*24*60,  "reldayofyear")
+features12x1d01(f2) =  regressionfeatures01(f2,  11, 24*60, [60, 4*60, 12*60, 3*24*60, 10*24*60], 24*60, 14*24*60, "reldayofyear")
+#endregion Features003
 
 
 end  # module

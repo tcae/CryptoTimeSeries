@@ -24,9 +24,9 @@ end
 returns ohlcv data starting 2019-01-02 01:11 for - by default 5.7 years
 """
 function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmultiple = 1)
-    price::Float32 = 200
+    price::Float32 = 2  # 200
     volumeconst::Float32 = 100
-    amplitude::Float32 = 0.007  # 0.7% of price
+    amplitude::Float32 = 0.07  # 0.007  # 0.7% of price
     firstutc = DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s")
     firstutc = round(firstutc, Dates.Minute)
     # lastutc = round(lastutc, Dates.Minute)
@@ -61,7 +61,7 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmu
 end
 
 function oldsinedata(periodminutes, periods)
-    price = 200
+    price = 2  # 200
     volumeconst = 100
     amplitude = 0.007  # 0.5% of price
     firstutc = DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s")
