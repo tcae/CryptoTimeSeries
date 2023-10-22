@@ -15,7 +15,7 @@ using EnvConfig
 export write, read!, OhlcvData
 
 """
-Ohlcv data starts in teh first row with the oldest data and adds new data at the end
+Ohlcv data starts in the first row with the oldest data and adds new data at the end
 """
 mutable struct OhlcvData
     df::DataFrames.DataFrame

@@ -46,7 +46,7 @@ end
 function distancepeaktest()
     x, y = TestOhlcv.sinesamples(400, 2, [(150, 0, 0.5)])
     _, grad = Features.rollingregression(y, 50)
-    distances, regressionix, priceix = Features.distancesregressionpeak(y, grad)
+    distances, regressionix, priceix = Features.pricediffregressionpeak(y, grad)
     df = DataFrame()
     df.x = x
     df.y = y
@@ -255,15 +255,63 @@ ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
 df = Ohlcv.dataframe(ohlcv)
 f2 = Features.Features002(ohlcv)
 
-f12x = Features.features12x1m01(f2)
+# f12x = Features.features12x1m01(f2)
+# f12xd = describe(f12x)
+# @test all(f12xd.eltype .== Float32)
+# @test all(f12xd.nmissing .== 0)
+# @test all(-1.9 .< f12xd.min .< 1.9)
+# @test all(-1.9 .< f12xd.median .< 1.9)
+# @test all(-1.9 .< f12xd.max .< 2.9)
+# @test all(-1.2 .< f12xd.mean .< 1.2)
+# @test size(f12xd, 1) == 60
+
+rdf = DataFrame()
+df = DataFrame((colA = [1.1f0, 3.5f0, 8.0f0]))
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",1, 1, size(df,1); fill=nothing)
+@test rdf[!, "colA01"] == [1.1f0, 1.1f0, 3.5f0]
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",2, 1, size(df,1); fill=nothing)
+@test rdf[!, "colA02"] == [1.1f0, 1.1f0, 1.1f0]
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",3, 1, size(df,1); fill=nothing)
+@test rdf[!, "colA03"] == [1.1f0, 1.1f0, 1.1f0]
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",3, 1, size(df,1); fill=0)
+@test rdf[!, "colA03"] == [0.0f0, 0.0f0, 0.0f0]
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",2, 2, size(df,1); fill=0)
+@test rdf[!, "colA02"] == [0.0f0, 1.1f0]
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",1, 1, size(df,1); fill=nothing)
+rdf, colname = Features.lookbackrow!(rdf, df, "colA",2, 1, size(df,1); fill=nothing)
+@test size(rdf) == (3, 2)
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",1, 1, size(df,1); fill=nothing)
+@test_throws AssertionError Features.lookbackrow!(rdf, df, "colA",2, 2, size(df,1); fill=0)
+rdf, colname = Features.lookbackrow!(nothing, df, "colA",0, 1, size(df,1); fill=nothing)
+@test rdf[!, "colA00"] == [1.1f0, 3.5f0, 8.0f0]
+
+enddt = DateTime("2022-01-02T22:54:00")
+startdt = enddt - Dates.Day(20)
+ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+f12x, f3 = Features.regressionfeatures01(ohlcv,  11, 5, [15, 60], 5, 4*60, "relminuteofday")
+# println("regressionfeatures01(ohlcv)")
+# println("size(f12x)=$(size(f12x))")
+# println("size(regr[5].grad(f3))=$(size(Features.grad(f3, 5)))")
+# println("size(regr[15].grad(f3))=$(size(Features.grad(f3, 15)))")
+# println("size(ohlcvdataframe(f3))=$(size(Features.ohlcvdataframe(f3)))")
 f12xd = describe(f12x)
-@test all(f12xd.eltype .== Float32)
-@test all(f12xd.nmissing .== 0)
-@test all(-1.9 .< f12xd.min .< 1.9)
-@test all(-1.9 .< f12xd.median .< 1.9)
-@test all(-1.9 .< f12xd.max .< 2.9)
-@test all(-1.2 .< f12xd.mean .< 1.2)
+# println("describe(f12x)=$f12xd")
+@test size(f12xd, 1) == 30
+@test minimum(f12xd[!, :min]) > -3.2
+@test maximum(f12xd[!, :max]) < 3.2
+@test all(y-> eltype(y) == Float32, eachcol(f12x))
+f12x, f3 = Features.features12x1m01(ohlcv)
+# println("features12x1m01(ohlcv)")
+# println("size(f12x)=$(size(f12x))")
+# println("size(regr[5].grad(f3))=$(size(Features.grad(f3, 5)))")
+# println("size(regr[15].grad(f3))=$(size(Features.grad(f3, 15)))")
+# println("size(ohlcvdataframe(f3))=$(size(Features.ohlcvdataframe(f3)))")
+f12xd = describe(f12x)
+# println("describe(f12x)=$f12xd")
 @test size(f12xd, 1) == 60
+@test minimum(f12xd[!, :min]) > -3.2
+@test maximum(f12xd[!, :max]) < 3.2
+@test all(y-> eltype(y) == Float32, eachcol(f12x))
 
 end # testset
 

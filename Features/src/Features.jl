@@ -221,9 +221,10 @@ function nextpeakindices(prices, mingainpct, minlosspct)
     return distances, distancesix
 end
 
+"returns the price difference of current price to next peak price based on a straight line aaproach between last peak and next peak "
 function smoothdistance(prices, lastpeakix, currentix, nextpeakix)
     # if !(0 < lastpeakix <= currentix <= nextpeakix)
-    #     @warn "unexpected distancesregressionpeak index sequence" lastpeakix currentix nextpeakix
+    #     @warn "unexpected pricediffregressionpeak index sequence" lastpeakix currentix nextpeakix
     # end
     grad = nextpeakix > lastpeakix ? (prices[nextpeakix]  - prices[lastpeakix]) / (nextpeakix  - lastpeakix) : 0.0
     smoothprice = prices[lastpeakix] + grad * (currentix - lastpeakix)
@@ -231,35 +232,36 @@ function smoothdistance(prices, lastpeakix, currentix, nextpeakix)
 end
 
 """
-- returns distances of a smoothed price (straight price line between extremes) to next extreme
-- distances will be negative if the next extreme is a minimum and positive if it is a maximum
+- if `smoothing == true` returns pricediffs of a smoothed price (straight price line between extremes) to next extreme price
+- if `smoothing == false` returns pricediffs of current price to next extreme price
+- pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
 - the extreme is determined by slope sign change of the regression gradients given in `regressions`
 - from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
 - for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
 
 """
-function distancesregressionpeak(prices, regressions)
+function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
     @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
-    @assert !(regressions === nothing) && (size(regressions, 1) > 0) "regressions nothing == $(regressions === nothing) or length == 0"
-    @assert size(prices, 1) == size(regressions, 1) "size(prices) $(size(prices, 1)) != size(regressions) $(size(regressions, 1))"
+    @assert !(regressiongradients === nothing) && (size(regressiongradients, 1) > 0) "regressions nothing == $(regressiongradients === nothing) or length == 0"
+    @assert size(prices, 1) == size(regressiongradients, 1) "size(prices) $(size(prices, 1)) != size(regressions) $(size(regressiongradients, 1))"
     @assert length(size(prices)) == 1 "length(size(prices)) $(length(size(prices))) != 1"
-    distances = zeros(Float32, length(prices))
+    pricediffs = zeros(Float32, length(prices))
     regressionix = zeros(Int32, length(prices))
     priceix = zeros(Int32, length(prices))
     plen = length(prices)
-    gix = pix = rix = 0
+    pix = rix = 0
     lastpix = 1
     for cix in 1:plen
         if pix <= cix
-            maxsearch = regressions[cix] > 0
+            maxsearch = regressiongradients[cix] > 0
             if rix < cix
-                rix = extremeregressionindex(regressions, cix; forward=true)
+                rix = extremeregressionindex(regressiongradients, cix; forward=true)
                 rix = rix == 0 ? plen : rix
             elseif rix < plen  # rix >= cix
-                # extreme price index pix between cix and last regression extreme rix was found and distances filled
+                # extreme price index pix between cix and last regression extreme rix was found and pricediffs filled
                 # look for next regression extreme starting from last regression extreme
-                maxsearch = regressions[rix] > 0
-                rix = extremeregressionindex(regressions, rix; forward=true)
+                maxsearch = regressiongradients[rix] > 0
+                rix = extremeregressionindex(regressiongradients, rix; forward=true)
                 rix = rix == 0 ? plen : rix
             end
             lastpix = pix > lastpix ? pix : lastpix
@@ -268,14 +270,18 @@ function distancesregressionpeak(prices, regressions)
             # >> search from regression extreme back to last price extreme for global extreme yields better results
             pix = extremepriceindex(prices, rix, cix, maxsearch)  # search back from extreme rix to current index cix
         end
-        distances[cix] = smoothdistance(prices, lastpix, cix, pix)  # use staright line between extremes to calculate distance
-        # distances[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable
+        if smoothing
+            pricediffs[cix] = smoothdistance(prices, lastpix, cix, pix)  # use straight line between extremes to calculate distance
+        else
+            pricediffs[cix] = prices[pix]  - prices[cix]
+        end
+        # pricediffs[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable
         regressionix[cix] = rix
         priceix[cix] = pix
     end
     @assert all([0<priceix[i]<=plen for i in 1:plen]) priceix
     @assert all([0<regressionix[i]<=plen for i in 1:plen]) regressionix
-    return distances, regressionix, priceix
+    return pricediffs, regressionix, priceix
 end
 
 """
@@ -826,8 +832,11 @@ end
 "Features002 is a feature set used in trading strategy"
 
 regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60] # , 3*24*60, 9*24*60]
-requiredminutes = maximum(regressionwindows002)
-relativevolumes002 = [(1, 60), (5, 4*60)]  # , (4*60, 9*24*60)]
+relativevolumes002 = [(1, 60), (5, 4*60)]  # , (4*60, 9*24*60)] # TODO should be part of Features002
+
+function setregressionwindows(regrwindows)
+    regressionwindows002 = regrwindows
+end
 
 mutable struct Features002Regr
     grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
@@ -844,16 +853,21 @@ mutable struct Features002
     update  # function to update features due to extended ohlcv
     firstix  # features start at firstix of ohlcv.df
     lastix  # features end at lastix of ohlcv.df
-    function Features002(ohlcv, firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
+    requiredminutes
+    function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)
         df = Ohlcv.dataframe(ohlcv)
-        @assert size(df, 1) >= requiredminutes
+        reqmin = requiredminutes(regrwindows)
+        @assert size(df, 1) >= reqmin
         lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
-        maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
-        firstix = firstix < requiredminutes ? requiredminutes : firstix
+        maxfirstix = max((lastix - reqmin + 1), firstindex(df, 1))
+        firstix = firstix < reqmin ? reqmin : firstix
         firstix = firstix > maxfirstix ? maxfirstix : firstix
-        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix), getrelvolumes002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix)
+        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix, regrwindows), getrelvolumes002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix, reqmin)
     end
 end
+
+requiredminutes(f2::Features002) = f2.requiredminutes
+requiredminutes(regr::Vector{<:Integer}=regressionwindows002) = maximum(regr)
 
 function Base.show(io::IO, features::Features002Regr)
     println(io::IO, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
@@ -881,7 +895,7 @@ ohlcvix(f2::Features002, featureix) = featureix + f2.firstix - 1
 In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`
 """
 function getfeatures002(ohlcv::OhlcvData, firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
-    f2 = Features002(ohlcv, firstix, lastix)
+    f2 = Features002(ohlcv; firstix=firstix, lastix=lastix)
 end
 
 """
@@ -897,7 +911,7 @@ end
 """
 Is called by Features002 constructor and returns a Dict of regression calculatioins for all time windows of *regressionwindows002*
 """
-function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)::Dict
+function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix, regrwindows)::Dict
     # println("getfeatures002 init")
     df = Ohlcv.dataframe(ohlcv)
     pivot = Ohlcv.pivot!(ohlcv)[firstix:lastix]
@@ -906,10 +920,10 @@ function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix)::Dict
     low = df.low[firstix:lastix]
     close = df.close[firstix:lastix]
     ymv = [open, high, low, close]
-    @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $requiredminutes (requiredminutes)"
+    @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes(regrwindows) "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $(requiredminutes(regrwindows)) (requiredminutes)"
     @assert firstindex(ohlcv.df[!, :opentime]) <= firstix <= lastix <= lastindex(ohlcv.df[!, :opentime]) "$(firstindex(ohlcv.df[!, :opentime])) <= $firstix <= $lastix <= $(lastindex(ohlcv.df[!, :opentime]))"
     regr = Dict()
-    for window in regressionwindows002
+    for window in regrwindows
         regry, grad = rollingregression(pivot, window)
         std = rollingregressionstdmv(ymv, regry, grad, window, 1)
         xtrmix = regressionextremesix!(nothing, grad, 1)
@@ -931,7 +945,7 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
         return f2
     end
     lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
-    maxfirstix = max((lastix - requiredminutes + 1), firstindex(df, 1))
+    maxfirstix = max((lastix - requiredminutes(f2) + 1), firstindex(df, 1))
     firstix = firstix > maxfirstix ? maxfirstix : firstix  # ? is that correct
 
     pivot = df[!, :pivot][firstix:lastix]
@@ -963,7 +977,7 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
         end
     else
         @info "getfeatures002! no reuse of previous calculations: f2.firstix=$(f2.firstix) f2.lastix=$(f2.lastix) firstix=$firstix lastix=$lastix"
-        for window in regressionwindows002
+        for window in keys(f2.regr)
             regry, grad = rollingregression(pivot, window)
             std = rollingregressionstdmv(ymv, regry, grad, window, 1)
             xtrmix = regressionextremesix!(nothing, grad, 1)
@@ -991,14 +1005,79 @@ end
 
 #region Features003
 
+"""
+- maxlookback = number of features (e.g. regression windows) to concatenate as feature vector
+- features are availble from ohlcv index `f3.firstix = f3.f2.firstix + f3.maxlookback *` maxlength(feature) onwards
+- maxlength(feature) = e.g. number of minutes of longest regression window
+"""
 mutable struct Features003
     f2::Features002
     maxlookback  # number of regression windows to concatenate as feature vector
+    firstix
+    function Features003(f2, maxlookback)
+        firstix = requiredminutes(f2, maxlookback)
+        new(f2, maxlookback, firstix)
+    end
 end
+
+(Features003)(ohlcv, regrwindows, maxlookback; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime)) =
+    Features003(Features002(ohlcv; firstix=firstix, lastix=lastix, regrwindows=regrwindows), maxlookback)
+
+requiredminutes(f2::Features002, maxlookback) = f2.firstix + requiredminutes(f2) * (maxlookback)
+requiredminutes(f3::Features003) = requiredminutes(f3.f2, f3.maxlookback)
 
 function Base.show(io::IO, features::Features003)
     println(io::IO, "Features003 lookback periods=$(features.maxlookback)")
     println(io::IO, features.f2)
+end
+
+featureix(f3::Features003, ohlcvix) = ohlcvix - f3.firstix + 1
+ohlcvix(f3::Features003, featureix) = featureix + f3.firstix - 1
+
+firstix(f3::Features003) = f3.firstix
+grad(f3, regrminutes) =  f3.f2.regr[regrminutes].grad[f3.firstix - f3.f2.firstix + 1:end]
+regry(f3, regrminutes) = f3.f2.regr[regrminutes].regry[f3.firstix - f3.f2.firstix + 1:end]
+std(f3, regrminutes) =   f3.f2.regr[regrminutes].std[f3.firstix - f3.f2.firstix + 1:end]
+ohlcvdataframe(f3) = Ohlcv.dataframe(f3.f2.ohlcv)[f3.firstix:f3.f2.lastix, :]
+
+"""
+Return a DataFrame column `df[firstix-lookback:lastix-lookback, col]` that reprents the `lookback` predecessor rows of that col.
+Assumes that predecessors have lower row indices than the successor rows, i.e. newer values are appended at the end of the `df`.
+If lookback refers to elements out side of df the `fill` be used. If `fill` is `nothing` then df[begin, col] is used.
+"""
+function lookbackrow!(rdf::Union{DataFrame, Nothing}, df::DataFrame, col::String,lookback, firstix=1, lastix=size(df,1); fill=nothing)
+    dfl = size(df,1)
+    @assert lookback >= 0 "lookback ($lookback) >= 0"
+    @assert dfl >= 1 "size(df,1) == $dfl < 1"
+    @assert 1 <= firstix <= dfl "1 <= firstix ($firstix) <= dfl ($dfl)"
+    @assert 1 <= lastix <= dfl "1 <= lastix ($lastix) <= dfl ($dfl)"
+    @assert firstix <= lastix "firstix ($firstix) <= lastix ($lastix)"
+    if isnothing(rdf)
+        rdf = DataFrame()
+        rdfl = 0
+    else
+        rdfl = size(rdf,1)
+        @assert rdfl == (lastix - firstix + 1)  "rdfl ($rdfl) == (lastix ($lastix) - firstix ($firstix) + 1)"
+    end
+    # ixstr = lookback > 0 ? string(lookback, pad=2, base=10) : ""
+    ixstr = string(lookback, pad=2, base=10)
+    colname = col*ixstr
+    fix = max(1, firstix - lookback)
+    lix = lastix - lookback
+    fill = isnothing(fill) ? df[fix, col] : fill
+    fillcount = firstix > lookback ? 0 : 1 - (firstix - lookback)
+    fillarr = similar(df[!, col], fillcount)
+    fillarr .= fill
+    if lix >= fix # copy lookback vector part
+        if fillcount > 0
+            rdf[!, colname] = vcat(fillarr, df[fix:lix, col])
+        else
+            rdf[!, colname] = df[fix:lix, col]
+        end
+    else
+        rdf[!, colname] = fillarr
+    end
+    return rdf, colname
 end
 
 """
@@ -1011,18 +1090,23 @@ Each feature vector is composed of:
 
 """
 function deltaOhlc!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; normalize=true::Bool)::DataFrame
-    fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
+    #! not yet tested
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
-    lbfirstix = f3.f2.firstix + f3.maxlookback
-    for ix in 0:f3.maxlookback
-        ixstr = f3.maxlookback > 0 ? string(ix, pad=2, base=10) : ""
-        fix = lbfirstix - ix
-        lix = f3.f2.lastix - ix
-        for col in ["open", "high", "low", "close"]
-            colname = col*ixstr
-            fvecdf[!, colname] = ohlcvdf[fix:lix, col] .- ohlcvdf[fix:lix, :pivot]
+    fvecdf = nothing
+    df = DataFrame()
+    ofix = f3.firstix - f3.maxlookback
+    @assert ofix > 0
+    fix = f3.firstix
+    lix = f3.f2.lastix
+    for col in ["open", "high", "low", "close"]
+        deltacol = col * "-p"
+        df[!,deltacol] = ohlcvdf[ofix:lix, col] .- ohlcvdf[ofix:lix, :pivot] #TODO inefficient if long vectors and f3.firstix close to end
+        # println("size(df)=$(size(df))  size(ohlcvdf)=$(size(ohlcvdf))  col=$col  ofix=$ofix  fix=$fix  lix=$lix  ")
+        for lookback in 0:f3.maxlookback
+            fvecdf, colname = Features.lookbackrow!(fvecdf, df, deltacol, lookback, 1+f3.maxlookback)
+            @assert (lix-fix+1) == size(fvecdf, 1) "(lix-fix+1) == size(fvecdf, 1)  ($lix-$fix+1) == $(size(fvecdf, 1))"
             if normalize
-                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[lbfirstix:f3.f2.lastix, :pivot]
+                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[fix:lix, :pivot]
             end
         end
     end
@@ -1039,29 +1123,40 @@ Each feature vector is composed of:
   - (Y distance from regression line) / (2 * std deviation)
 """
 function regressionfeatures!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; regrwindows::Vector{<:Integer}, lookback, normalize=true::Bool)::DataFrame
-    debug = false
-    @assert f3.maxlookback >= lookback * maximum(regrwindows)
+    # debug = true
+    @assert f3.maxlookback >= lookback
     fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
-    lbfirstix = f3.f2.firstix + f3.maxlookback
-    debug ? println("lbfirstix=$lbfirstix") : 0
+    # debug ? println("f3.firstix=$(f3.firstix) size(ohlcvdf)=$(size(ohlcvdf))") : 0
+    # debug ? println("fvecdf = $fvecdf") : 0
     for ix in 0:lookback
         ixstr = lookback > 0 ? string(ix, pad=2, base=10) : ""
         for regrwindow in regrwindows
+            if !(regrwindow in keys(f3.f2.regr))
+                @warn "skipping regrwindow because it is not in f3.f2.regr" regrwindow keys(f3.f2.regr)
+                continue
+            end
             ixoffset = ix * regrwindow
-            firstfix = featureix(f3.f2, lbfirstix - ixoffset)
+            firstfix = featureix(f3.f2, f3.firstix - ixoffset)
             lastfix = featureix(f3.f2, f3.f2.lastix - ixoffset)
-            firstoix = lbfirstix - ixoffset
+            firstoix = f3.firstix - ixoffset
             lastoix = f3.f2.lastix - ixoffset
-                colname = "grad" * Features.periodlabels(regrwindow) * ixstr
+            colname = "grad" * Features.periodlabels(regrwindow) * ixstr
+            # debug ? println("fvecdf = $(size(fvecdf)) $(names(fvecdf)) firstfix=$firstfix lastfix=$lastfix firstoix=$firstoix lastoix=$lastoix") : 0
+            # debug ? println("grad = $(size(f3.f2.regr[regrwindow].grad)) ") : 0
             fvecdf[!, colname] = f3.f2.regr[regrwindow].grad[firstfix:lastfix]
             if normalize
-                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[lbfirstix:f3.f2.lastix, :pivot]
+                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[f3.firstix:f3.f2.lastix, :pivot]
             end
             colname = "disty" * Features.periodlabels(regrwindow) * ixstr
-            fvecdf[!, colname] = (ohlcvdf[firstoix:lastoix, :pivot] .- f3.f2.regr[regrwindow].regry[firstfix:lastfix]) ./ f3.f2.regr[regrwindow].std[firstfix:lastfix]
-
-            debug ? fvecdf[!, "firstix" * Features.periodlabels(regrwindow) * ixstr] = [ix for ix in firstfix:lastfix] : 0
+            fvecdf[!, colname] = ohlcvdf[firstoix:lastoix, :pivot] .- f3.f2.regr[regrwindow].regry[firstfix:lastfix]
+            # println("f3.f2.regr[regrwindow($(regrwindow))].std: min=$(minimum(f3.f2.regr[regrwindow].std)) mean=$(Statistics.mean(f3.f2.regr[regrwindow].std)) max=$(maximum(f3.f2.regr[regrwindow].std))")
+            # println("f3.f2.regr[regrwindow($(regrwindow))].regry: min=$(minimum(f3.f2.regr[regrwindow].regry)) mean=$(Statistics.mean(f3.f2.regr[regrwindow].regry)) max=$(maximum(f3.f2.regr[regrwindow].regry))")
+            # println("ohlcvdf[firstoix:lastoix, :pivot]: min=$(minimum(ohlcvdf[firstoix:lastoix, :pivot])) mean=$(Statistics.mean(ohlcvdf[firstoix:lastoix, :pivot])) max=$(maximum(ohlcvdf[firstoix:lastoix, :pivot]))")
+            # println("pivot - regr[regrwindow($(regrwindow))].regry: min=$(minimum(fvecdf[!, colname])) mean=$(Statistics.mean(fvecdf[!, colname])) max=$(maximum(fvecdf[!, colname]))")
+            fvecdf[!, colname] = fvecdf[!, colname] ./ f3.f2.regr[regrwindow].std[firstfix:lastfix]
+            # println("(pivot - regr[regrwindow($(regrwindow))].regry)/std: min=$(minimum(fvecdf[!, colname])) mean=$(Statistics.mean(fvecdf[!, colname])) max=$(maximum(fvecdf[!, colname]))")
+            # debug ? fvecdf[!, "firstix" * Features.periodlabels(regrwindow) * ixstr] = [ix for ix in firstfix:lastfix] : 0
         end
     end
     return fvecdf
@@ -1077,9 +1172,8 @@ Each feature vector is composed of:
 function relativevolume!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, shortvol, longvol)::DataFrame
     fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
-    lbfirstix = f3.f2.firstix + f3.maxlookback
     colname = Features.periodlabels(shortvol) * "/" * Features.periodlabels(longvol) * "vol"
-    fvecdf[!, colname] = relativevolume(ohlcvdf[lbfirstix:f3.f2.lastix, :basevolume], shortvol, longvol)
+    fvecdf[!, colname] = relativevolume(ohlcvdf[f3.firstix:f3.f2.lastix, :basevolume], shortvol, longvol)
     return fvecdf
 end
 
@@ -1097,9 +1191,8 @@ Each feature vector is composed of:
 function relativetime!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, relativedatetime)::DataFrame
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
     @assert !isnothing(ohlcvdf)
-    lbfirstix = f3.f2.firstix + f3.maxlookback
     fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
-    fvecdf[!, relativedatetime] = map(relativetimedict[relativedatetime], ohlcvdf[lbfirstix:f3.f2.lastix, :opentime])
+    fvecdf[!, relativedatetime] = map(relativetimedict[relativedatetime], ohlcvdf[f3.firstix:f3.f2.lastix, :opentime])
     return fvecdf
 end
 
@@ -1116,19 +1209,23 @@ Each feature vector is composed of:
 - Relative median volume 1m/1h
 - Relative minute of the day
 """
-function features12x1m01(f2::Features.Features002)::DataFrame
-    ohlcvdf = Ohlcv.dataframe(f2.ohlcv)
+function features12x1m01(ohlcv::Ohlcv.OhlcvData, lookbackperiods=11)
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
     @assert !isnothing(ohlcvdf)
-    @assert f2.ohlcv.interval == "1m"
+    @assert Ohlcv.interval(ohlcv) == "1m"
+    f2 = Features.Features002(ohlcv)
     @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
     @assert (f2.firstix <= f2.lastix)
-    @assert !isnothing(ohlcvdf) && (size(ohlcvdf, 1) >= f2.lastix) && (f2.firstix <= f2.lastix)
-    f3 = Features003(f2, 11)
+    f3 = Features003(f2, lookbackperiods)
+    @assert (f2.firstix + f3.maxlookback) <= f2.lastix
+    # println(f3)
     fvecdf = deltaOhlc!(nothing, f3; normalize=true)
+    # println("deltaOhlc!: size(fvecdf)=$(size(fvecdf))")
     fvecdf = regressionfeatures!(fvecdf, f3; regrwindows=[15, 60, 4*60, 12*60, 24*60], lookback=0, normalize=true)
+    # println("regressionfeatures!: size(fvecdf)=$(size(fvecdf))")
     fvecdf = relativevolume!(fvecdf, f3, 1, 60)
     fvecdf = relativetime!(fvecdf, f3, "relminuteofday")
-    return fvecdf
+    return fvecdf, f3
 end
 
 """
@@ -1144,20 +1241,20 @@ Each feature vector is composed of:
 - Relative median volume short time window/long time window
 - Relative datetime
 """
-function regressionfeatures01(f2::Features.Features002, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)::DataFrame
-    ohlcvdf = Ohlcv.dataframe(f2.ohlcv)
+function regressionfeatures01(ohlcv::Ohlcv.OhlcvData, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
     @assert !isnothing(ohlcvdf)
-    @assert f2.ohlcv.interval == "1m"
+    @assert Ohlcv.interval(ohlcv) == "1m"
+    f2 = Features.Features002(ohlcv)
     @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
     @assert (f2.firstix <= f2.lastix)
-    @assert !isnothing(ohlcvdf) && (size(ohlcvdf, 1) >= f2.lastix) && (f2.firstix <= f2.lastix)
-    f3 = Features003(f2, lookbackperiods * focusregrwindow)
+    f3 = Features003(f2, lookbackperiods)
     @assert (f2.firstix + f3.maxlookback) <= f2.lastix
     fvecdf = regressionfeatures!(nothing, f3; regrwindows=regrwindows, lookback=0, normalize=true)
     fvecdf = regressionfeatures!(fvecdf, f3; regrwindows=[focusregrwindow], lookback=lookbackperiods, normalize=true)
     fvecdf = relativevolume!(fvecdf, f3, shortvol, longvol)
     fvecdf = relativetime!(fvecdf, f3, reltime)
-    return fvecdf
+    return fvecdf, f3
 end
 
 features12x5m01(f2) =  regressionfeatures01(f2,  11, 5,     [15, 60,   4*60,  12*60,   24*60],    5,     4*60,     "relminuteofday")

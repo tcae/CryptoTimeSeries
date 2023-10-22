@@ -415,7 +415,7 @@ end
 
 function featureset002(ohlcv, period, enddt)
     df = Ohlcv.dataframe(ohlcv)
-    startdt = enddt - period - Dates.Minute(Features.requiredminutes)
+    startdt = enddt - period - Dates.Minute(Features.requiredminutes())
     subdf = copy(df[startdt .< df.opentime .<= enddt, :], copycols=true)
     subohlcv = Ohlcv.copy(ohlcv)
     # println("len(subohlcv): $(size(subdf, 1)) len(ohlcv): $(size(df, 1))")

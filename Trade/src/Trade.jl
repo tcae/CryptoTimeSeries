@@ -195,7 +195,7 @@ function preparetradecache!(cache::Cache)
             end
             currentix = backtest(cache) ? TradingStrategy.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
             free, locked = freelocked(pdf, base)
-            cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv, 1, TradingStrategy.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
+            cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv; firstix=1, lastix=TradingStrategy.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
             # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
         end
     end

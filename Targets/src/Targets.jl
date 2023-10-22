@@ -281,53 +281,73 @@ function targets4(prices, regressionminutes)  # TODO missing unit test
 end
 
 struct LabelThresholds
-    buy
-    sellbought
-    sell
-    buysold
+    longbuy
+    longhold
+    shorthold
+    shortbuy
 end
 
-defaultlabelthresholds = LabelThresholds(0.03, 0.00, -0.05, -0.000)
+"""
+- buy long at more than 3% gain potential from current price
+- hold long above 0.01% gain potential from current price
+- close long position below 0.01% gain potential from current price
+
+- buy short at or lower than -3% loss potential from current price
+- hold short below -0.01% loss potential from current price
+- close short position above -0.01% loss potential from current price
+"""
+defaultlabelthresholds = LabelThresholds(0.03, 0.0001, -0.0001, -0.03)
 
 """
 Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
 
-- The folllowing invariant is assumed: `buythreshold > sellboughtthreshold >= 0 >= buysoldthreshold > sellthreshold`
-- a gain shall exceed `buythreshold` for a buy (long buy) signal
-- bought assets shall be closed if the remaining gain falls below `sellboughtthreshold`
-- a loss shall exceed `sellthreshold` for a sell (short buy) signal
-- sold (short buy) assets shall be closed if the remaining loss falls below `buysoldthreshold`
+- The folllowing invariant is assumed: `longbuy > longclose >= 0 >= shortclose > shortbuy`
+- a gain shall be above `longbuy` threshold for a buy (long buy) signal
+- bought assets shall be held (but not bought) if the remaining gain is above `closelong` threshold
+- bought assets shall be closed if the remaining gain is below `closelong` threshold
+- a loss shall be below `shortbuy` for a sell (short buy) signal
+- sold (short buy) assets shall be held if the remaining loss is below `closeshort`
+- sold (short buy) assets shall be closed if the remaining loss is above `closeshort`
 - all thresholds are relative gain values: if backwardrelative then the relative gain is calculated with the target price otherwise with the current price
 
 """
 function getlabels(relativedist, labelthresholds)
     lt = labelthresholds
     rd = relativedist
-    # labels = [(rd > lt.buy ? "long" : (rd < lt.sell ? "short" : ((lt.buysold < rd < lt.sellbought) ? "close" :  "hold"))) for rd in relativedist]
-    labels = [(rd > lt.buy ? "long" : (lt.buysold < rd ? "close" : "hold")) for rd in relativedist]
+    labels = [(rd > lt.longbuy ? "longbuy" : (rd > lt.longhold ? "longhold" :
+              (lt.shortbuy > rd ? "shortbuy" : (lt.shorthold > rd ? "shorthold" : "close")))) for rd in relativedist]
+    # labels = [(rd > lt.longbuy ? "buy" : (lt.shortclose > rd ? "close" : "hold")) for rd in relativedist]
     return labels
 end
 
-function relativedistances(prices, distances, priceix, backwardrelative=true)
+function relativedistances(prices, pricediffs, priceix, backwardrelative=true)
     if backwardrelative
-        relativedist = [(priceix[ix] == 0 ? 0.0 : distances[ix] / prices[priceix[ix]]) for ix in 1:size(prices, 1)]
+        relativedist = [(priceix[ix] == 0 ? 0.0 : pricediffs[ix] / prices[priceix[ix]]) for ix in 1:size(prices, 1)]
     else
-        relativedist = distances ./ prices
+        relativedist = pricediffs ./ prices
     end
 end
 
 function continuousdistancelabels(prices, labelthresholds)
-    distances, priceix = Features.nextpeakindices(prices, labelthresholds.buy, labelthresholds.sell)
-    relativedist = relativedistances(prices, distances, priceix, true)
+    pricediffs, priceix = Features.nextpeakindices(prices, labelthresholds.longbuy, labelthresholds.shortbuy)
+    relativedist = relativedistances(prices, pricediffs, priceix, true)
     labels = getlabels(relativedist, labelthresholds)
-    return labels, relativedist, distances, priceix
+    return labels, relativedist, pricediffs, priceix
 end
 
-function continuousdistancelabels(prices, regressions, labelthresholds)
-    distances, regressionix, priceix = Features.distancesregressionpeak(prices, regressions)
-    relativedist = relativedistances(prices, distances, priceix, true)
+"""
+- returns pricediffs of current price to next extreme price
+- pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
+- the extreme is determined by slope sign change of the regression gradients given in `regressions`
+- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
+- for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
+
+"""
+function continuousdistancelabels(prices, regressiongradients, labelthresholds)
+    pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients; smoothing=false)
+    relativedist = relativedistances(prices, pricediffs, priceix, true)
     labels = getlabels(relativedist, labelthresholds)
-    return labels, relativedist, distances, regressionix, priceix
+    return labels, relativedist, pricediffs, regressionix, priceix
 end
 
 """
@@ -335,7 +355,7 @@ end
     + an entry of 0 means that none of the regressions meets the required amplitude requirement specified in `requiredrelativeamplitude`
 - `relativedistarray` is a sorted array of relativedist arrays as provided by `continuousdistancelabels`
     + the arrays are sorted according to regressionwindow starting with the shortest regressionwindow and ending with the longest
-    + each array entry contains an array of relative distances of the price extremes
+    + each array entry contains an array of relative pricediffs of the price extremes
     + each array has the same length
 """
 function bestregression(relativedistarray, requiredrelativeamplitude)

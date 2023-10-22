@@ -47,8 +47,8 @@ lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - std
 stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.std[ix]
 banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.std[ix]
 
-requiredtradehistory = Features.requiredminutes
-requiredminutes = requiredtradehistory + Features.requiredminutes
+requiredtradehistory = Features.requiredminutes()
+requiredminutes = requiredtradehistory + Features.requiredminutes()
 
 """
 - grad = deltaprice / deltaminutes

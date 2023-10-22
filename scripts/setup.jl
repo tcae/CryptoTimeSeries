@@ -53,12 +53,14 @@ Pkg.add([
     "Dates",  # EnvConfig, Binance, CryptoExchange, Ohlcv, Assets
     "DataFrames",  # CryptoExchange, Ohlcv, Assets, Features
     "DataAPI",   # CryptoExchange
+    "Indicators",  # CryptoExchange, Ohlcv, Assets, Features
     "JDF",  # CryptoExchange, Ohlcv, Assets
     "CSV",  # CryptoExchange, Ohlcv
     "CategoricalArrays",  # Ohlcv
     "Logging",  # CryptoExchange, Ohlcv, Assets, Features
+    "PrettyPrinting",
     "RollingFunctions", "Statistics",  # Features
-    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
+    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "cuDNN",
     "MLJGLMInterface", "GLM",
     "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -

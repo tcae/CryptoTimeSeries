@@ -93,7 +93,7 @@ function continuousdistancelabels_test()
     _, grad = Features.rollingregression(y, Int64(round(periodsamples/2)))
 
     labels1, relativedist1, realdist1, priceix1 = Targets.continuousdistancelabels(y, Targets.defaultlabelthresholds)
-    labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, grad, Targets.defaultlabelthresholds)
+    labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, grad, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
 
     # labels1, realdist1, x, y, priceix1 = prepare1(totalsamples, periodsamples, yconst)
     # labels2, realdist2, _, _, priceix2, regressionix2 = prepare2(totalsamples, periodsamples, yconst)
@@ -109,16 +109,19 @@ function continuousdistancelabels_test()
     df.relativedist2 = relativedist2
     df.labels2 = labels2
     df.regressionix2 = regressionix2
-    # println(df)
-    # traces = [
-    #     scatter(y=y, x=x, mode="lines", name="input"),
-    #     # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
-    #     scatter(y=realdist1, x=x, mode="lines", name="realdist1", line_dash="dot"),
-    #     scatter(y=realdist2, x=x, mode="lines", name="realdist2")
-    # ]
-    # p = plot(traces)
-    # display(p)
-    # println(priceix2)
+
+    println(df)
+    traces = [
+        scatter(y=y, x=x, mode="lines", name="input"),
+        # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
+        # scatter(y=realdist1, x=x, mode="lines", name="realdist1", line_dash="dot"),
+        scatter(y=relativedist2, x=x, mode="lines", name="relativedist2", line_dash="dot"),
+        scatter(y=realdist2, x=x, mode="lines", name="realdist2")
+    ]
+    p = plot(traces)
+    display(p)
+    println(priceix2)
+
     return priceix2 == [3, 3, 8, 8, 8, 8, 8, 13, 13, 13, 13, 13, 18, 18, 18, 18, 18, 18, 19, 20]
 end
 
