@@ -6,7 +6,7 @@ Pkg.activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.upgrade_manifest()
-Pkg.add(url="https://github.com/tlienart/OpenSpecFun_jll")  # fix for MKL issue in Scikit-learn - see MLJ manual
+# Pkg.add(url="https://github.com/tlienart/OpenSpecFun_jll")  # fix for MKL issue in Scikit-learn - see MLJ manual
 Pkg.add([
     "Test",
     "JSON",
@@ -15,12 +15,12 @@ Pkg.add([
     "CategoricalArrays",
     "Logging",
     "Statistics",
-    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "Flux", "cuDNN",
+    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "Flux", "cuDNN", "StatisticalMeasures", "JLSO",
     "MLJGLMInterface", "GLM",
-    "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
+    "MLJLinearModels", "MLJDecisionTreeInterface", # "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
     "PrettyPrinting",
-    "IJulia", "Plots", "WebIO", "Dash", "PlotlyJS", "Colors"  # Regressionsim, CryptoCockpit, Notebooks
+    "IJulia", "Plots", "PlotlyJS", "Colors"  # "WebIO", "Dash",   Regressionsim, CryptoCockpit, Notebooks
     ])
 
 # Pkg.develop(path="/home/tor/TorProjects/CryptoTimeSeries")

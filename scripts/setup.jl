@@ -60,7 +60,7 @@ Pkg.add([
     "Logging",  # CryptoExchange, Ohlcv, Assets, Features
     "PrettyPrinting",
     "RollingFunctions", "Statistics",  # Features
-    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "cuDNN",
+    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "cuDNN", "StatisticalMeasures",
     "MLJGLMInterface", "GLM",
     "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -

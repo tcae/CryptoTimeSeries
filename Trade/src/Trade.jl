@@ -59,7 +59,7 @@ mutable struct Cache
         transactionlog = filldataframe()
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
-        messagelog = open(logpath("messagelog_$runid.txt"), "w")
+        messagelog = open(EnvConfig.logpath("messagelog_$runid.txt"), "w")
         new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Dict(), tradechances, openorders, orderlog, transactionlog, messagelog, runid)
     end
 end
@@ -126,8 +126,8 @@ As a result a dataframe of open orders is created in cache.
 """
 function loadopenorders!(cache::Cache)
     csvoodf = DataFrame()
-    if isfile(logpath("openorders.csv"))
-        csvoodf = CSV.File(logpath("openorders.csv")) |> DataFrame
+    if isfile(EnvConfig.logpath("openorders.csv"))
+        csvoodf = CSV.File(EnvConfig.logpath("openorders.csv")) |> DataFrame
         # println("openorders found $(typeof(csvoodf))")
         # println(csvoodf)
     end
@@ -165,7 +165,7 @@ function loadopenorders!(cache::Cache)
         end
         # println(oodf)
         # println(ooarray)
-        CSV.write(logpath("openorders.csv"), oodf)
+        CSV.write(EnvConfig.logpath("openorders.csv"), oodf)
     end
     cache.openorders = oodf
 end
@@ -223,14 +223,14 @@ function sleepuntilnextminute(lastdt)
 end
 
 function writetradelogs(cache::Cache)
-    CSV.write(logpath("openorders.csv"), cache.openorders)
-    CSV.write(logpath("orderlog_$(cache.runid).csv"), cache.orderlog)
+    CSV.write(EnvConfig.logpath("openorders.csv"), cache.openorders)
+    CSV.write(EnvConfig.logpath("orderlog_$(cache.runid).csv"), cache.orderlog)
     flush(cache.messagelog)
 end
 
 function readopenorders(cache::Cache)
-    CSV.read(logpath("openorders.csv"))
-    cache.openorders = CSV.File(logpath("openorders.csv")) |> DataFrame
+    CSV.read(EnvConfig.logpath("openorders.csv"))
+    cache.openorders = CSV.File(EnvConfig.logpath("openorders.csv")) |> DataFrame
 end
 
 """
@@ -663,7 +663,6 @@ function coretradeloop(cache::Cache)
     return continuetrading
 end
 
-logpath(file) = normpath(joinpath(homedir(), EnvConfig.datapathprefix, file))
 """
 **`tradeloop`** has to
 + get new exchange data (preferably non blocking)

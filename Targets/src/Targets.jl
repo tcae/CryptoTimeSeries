@@ -13,8 +13,9 @@ module Targets
 
 using EnvConfig, Ohlcv, Features
 
-# labellevels = ["short", "close", "hold", "long"]
-labellevels = ["close", "hold", "long"]
+"returns all possible labels:"
+possiblelabels() = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
+
 
 strongsell=-2; sell=-1; hold=0; buy=1; strongbuy=2
 gainthreshold = 0.01  # 1% gain threshold
@@ -312,6 +313,7 @@ Because the trade signals are not independent classes but an ordered set of acti
 
 """
 function getlabels(relativedist, labelthresholds)
+    @assert all([lab in ["longbuy", "longhold", "shortbuy", "shorthold", "close"] for lab in possiblelabels()])
     lt = labelthresholds
     rd = relativedist
     labels = [(rd > lt.longbuy ? "longbuy" : (rd > lt.longhold ? "longhold" :
