@@ -312,7 +312,7 @@ Because the trade signals are not independent classes but an ordered set of acti
 - all thresholds are relative gain values: if backwardrelative then the relative gain is calculated with the target price otherwise with the current price
 
 """
-function getlabels(relativedist, labelthresholds)
+function getlabels(relativedist, labelthresholds::LabelThresholds)
     @assert all([lab in ["longbuy", "longhold", "shortbuy", "shorthold", "close"] for lab in possiblelabels()])
     lt = labelthresholds
     rd = relativedist
@@ -322,32 +322,96 @@ function getlabels(relativedist, labelthresholds)
     return labels
 end
 
-function relativedistances(prices, pricediffs, priceix, backwardrelative=true)
+function relativedistances(prices::Vector{T}, pricediffs, priceix, backwardrelative=true) where {T<:Real}
     if backwardrelative
-        relativedist = [(priceix[ix] == 0 ? 0.0 : pricediffs[ix] / prices[priceix[ix]]) for ix in 1:size(prices, 1)]
+        relativedist = [(priceix[ix] == 0 ? T(0.0) : pricediffs[ix] / prices[priceix[ix]]) for ix in 1:size(prices, 1)]
     else
         relativedist = pricediffs ./ prices
     end
 end
 
-function continuousdistancelabels(prices, labelthresholds)
+function continuousdistancelabels(prices, labelthresholds::LabelThresholds)
     pricediffs, priceix = Features.nextpeakindices(prices, labelthresholds.longbuy, labelthresholds.shortbuy)
     relativedist = relativedistances(prices, pricediffs, priceix, true)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, priceix
 end
 
-"""
-- returns pricediffs of current price to next extreme price
-- pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
-- the extreme is determined by slope sign change of the regression gradients given in `regressions`
-- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
-- for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
+mutable struct Dists
+    pricediffs
+    regressionix
+    priceix
+    relativedist
+    Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
+end
+# function (Dists)(prices, pricediffs, regressionix, priceix)
+#     println("hello")
+#     println("prices = $prices")
+#     println("pricediffs = $pricediffs")
+#     println("regressionix = $regressionix")
+#     println("priceix = $priceix")
+#     Dists(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
+# end
 
 """
-function continuousdistancelabels(prices, regressiongradients, labelthresholds)
+- returns for each index of prices
+    - labels based on given thresholds that are compared with relative pricediffs
+    - relative pricediffs related to the index under consideration (answering: what can be gained/lost from the current ix)
+    - absolute pricediffs of current price to next extreme price
+    - for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
+    - pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
+- the extreme is determined by slope sign change of the regression gradients given in `regressions`
+- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
+- for multiple regressiongradients the next extreme exceeding long/short buy thresholds is used
+
+"""
+function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{Vector{T}}, labelthresholds::LabelThresholds) where {T<:Real}
+    # for rg in regressiongradients
+    #     println(prices)
+    #     println(Features.pricediffregressionpeak(prices, rg; smoothing=false)...)
+    # end
+    dists = [Dists(prices, Features.pricediffregressionpeak(prices, rg; smoothing=false)...) for rg in regressiongradients]
+    result = dists[1]  #* array reuse!
+    rix = xix = nothing
+    for pix in eachindex(prices)
+        if isnothing(xix) || (xix == pix)
+            rix = nix = nothing
+            for dix in eachindex(dists)
+                if (dists[dix].relativedist[pix] > labelthresholds.longbuy) || (dists[dix].relativedist[pix] < labelthresholds.shortbuy)
+                    # dix exceeds threshold => rix is assigned to dix if larger or rix undefined
+                    rix = !isnothing(rix) && (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix])) ? rix : dix
+                    # println("inner test")
+                end
+                # nix gets next extrema
+                nix = !isnothing(nix) && (dists[dix].priceix[pix] > dists[nix].priceix[pix]) ? nix : dix
+            end
+            rix = isnothing(rix) ? nix : rix  # fallback to nix if rix still undefined
+            xix = dists[rix].priceix[pix]
+        end
+        # println("rix = $rix  pix = $pix  xix = $xix")
+        result.pricediffs[pix] = dists[rix].pricediffs[pix]
+        result.regressionix[pix] = dists[rix].regressionix[pix]
+        result.priceix[pix] = dists[rix].priceix[pix]
+        result.relativedist[pix] = dists[rix].relativedist[pix]
+    end
+    labels = getlabels(result.relativedist, labelthresholds)
+    return labels, result.relativedist, result.pricediffs, result.regressionix, result.priceix
+end
+
+"""
+- returns for each index of prices
+    - labels based on given thresholds that are compared with relative pricediffs
+    - relative pricediffs related to the index under consideration (answering: what can be gained/lost from the current ix)
+    - absolute pricediffs of current price to next extreme price
+    - for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
+    - pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
+- the extreme is determined by slope sign change of the regression gradients given in `regressions`
+- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
+
+"""
+function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{T}, labelthresholds::LabelThresholds) where {T<:Real}
     pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients; smoothing=false)
-    relativedist = relativedistances(prices, pricediffs, priceix, true)
+    relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, regressionix, priceix
 end

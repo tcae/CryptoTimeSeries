@@ -65,7 +65,7 @@ function prepare1(totalsamples, periodsamples, yconst)
 end
 
 function prepare2(totalsamples, periodsamples, yconst)
-    x, y = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
+    x, y::Vector{Float32} = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
     _, grad = Features.rollingregression(y, Int64(round(periodsamples/2)))
 
     labels, relativedist, realdist, regressionix, priceix = Targets.continuousdistancelabels(y, grad, Targets.defaultlabelthresholds)
@@ -89,10 +89,11 @@ function continuousdistancelabels_test()
     # periodsamples = 10  # minutes per  period
     # totalsamples = 60  # 1 hour in minute frequency
     yconst = 2.0
-    x, y = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
+    x, y::Vector{Float32} = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
     _, grad = Features.rollingregression(y, Int64(round(periodsamples/2)))
 
     labels1, relativedist1, realdist1, priceix1 = Targets.continuousdistancelabels(y, Targets.defaultlabelthresholds)
+    # labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, [grad, grad], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
     labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, grad, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
 
     # labels1, realdist1, x, y, priceix1 = prepare1(totalsamples, periodsamples, yconst)
@@ -100,6 +101,7 @@ function continuousdistancelabels_test()
     df = DataFrame()
     df.x = x
     df.y = y
+    df.grad = grad
     df.realdist1 = realdist1
     df.priceix1 = priceix1
     df.relativedist1 = relativedist1
@@ -110,6 +112,7 @@ function continuousdistancelabels_test()
     df.labels2 = labels2
     df.regressionix2 = regressionix2
 
+    println("eltype(realdist1)=$(eltype(realdist1)) eltype(relativedist1)=$(eltype(relativedist1))")
     println(df)
     traces = [
         scatter(y=y, x=x, mode="lines", name="input"),
@@ -120,7 +123,16 @@ function continuousdistancelabels_test()
     ]
     p = plot(traces)
     display(p)
-    println(priceix2)
+    println("labels1 = $labels1")
+    println("relativedist1 = $relativedist1")
+    println("realdist1 = $realdist1")
+    println("priceix1 = $priceix1")
+
+    println("labels2 = $labels2")
+    println("relativedist2 = $relativedist2")
+    println("realdist2 = $realdist2")
+    println("regressionix2 = $regressionix2")
+    println("priceix2 = $priceix2")
 
     return priceix2 == [3, 3, 8, 8, 8, 8, 8, 13, 13, 13, 13, 13, 18, 18, 18, 18, 18, 18, 19, 20]
 end
@@ -200,7 +212,33 @@ end
     # @test regressionlabelsx_test(Targets.regressionlabels1, "regressionlabels1_testdata.csv")
     # @test regressionlabelsx_test(Targets.regressionlabels2, "regressionlabels2_testdata.csv")
     # @test regressionlabelsx_test(Targets.regressionlabels3, "regressionlabels3_testdata.csv")
-    @test continuousdistancelabels_test()
+    # @test continuousdistancelabels_test()
+
+    totalsamples = 20  # minutes
+    periodsamples = 10  # minutes per  period
+    yconst = 2.0  # y elevation = level
+    x, y::Vector{Float32} = TestOhlcv.sinesamples(totalsamples, yconst, [(periodsamples, 0, 0.5)])
+    _, grad = Features.rollingregression(y, Int64(round(periodsamples/2)))
+
+    labels1, relativedist1, realdist1, priceix1 = Targets.continuousdistancelabels(y, Targets.defaultlabelthresholds)
+    @test labels1 == ["longbuy", "longbuy", "close", "shortbuy", "shortbuy", "shortbuy", "shortbuy", "close", "longbuy", "longbuy", "longbuy", "longbuy", "close", "shortbuy", "shortbuy", "shortbuy", "close", "longbuy", "longbuy", "close"]
+    @test relativedist1 ≈ [0.19209163f0, 0.07337247f0, 0.0f0, -0.6238597f0, -0.5047131f0, -0.31192985f0, -0.11914659f0, 0.0f0, 0.38418326f0, 0.31081077f0, 0.19209163f0, 0.07337247f0, 0.0f0, -0.45098034f0, -0.3445183f0, -0.17225915f0, 0.0f0, 0.10646201f0, 0.10646201f0, 0.0f0]
+    @test realdist1 ≈ [0.47552824f0, 0.18163562f0, 0.0f0, -0.9510565f0, -0.76942086f0, -0.47552824f0, -0.18163562f0, 0.0f0, 0.9510565f0, 0.76942086f0, 0.47552824f0, 0.18163562f0, 0.0f0, -0.76942086f0, -0.58778524f0, -0.29389262f0, 0.0f0, 0.18163562f0, 0.18163562f0, 0.0f0]
+    @test priceix1 == [4, 4, 4, 9, 9, 9, 9, 9, 14, 14, 14, 14, 14, 20, 20, 20, 20, 20, 20, 0]
+
+    labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, grad, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+    @test labels2 == ["longhold", "longhold", "shorthold", "shorthold", "shorthold", "shorthold", "shorthold", "longbuy", "longbuy", "longbuy", "longhold", "longhold", "shorthold", "shorthold", "shorthold", "shorthold", "shorthold", "close", "close", "close"]
+    @test relativedist2 ≈ [0.23776412f0, 0.07918227f0, -0.38418326f0, -0.38418326f0, -0.33542147f0, -0.23776412f0, -0.10646201f0, 0.6238597f0, 0.6238597f0, 0.45098034f0, 0.23776412f0, 0.07918227f0, -0.38418326f0, -0.38418326f0, -0.33542147f0, -0.23776412f0, -0.10646201f0, 0.0f0, 0.0f0, 0.0f0]
+    @test realdist2 ≈ [0.47552824f0, 0.18163562f0, -0.9510565f0, -0.9510565f0, -0.76942086f0, -0.47552824f0, -0.18163562f0, 0.9510565f0, 0.9510565f0, 0.76942086f0, 0.47552824f0, 0.18163562f0, -0.9510565f0, -0.9510565f0, -0.76942086f0, -0.47552824f0, -0.18163562f0, 0.0f0, 0.0f0, 0.0f0]
+    @test regressionix2 == [6, 6, 11, 11, 11, 11, 11, 16, 16, 16, 16, 16, 20, 20, 20, 20, 20, 20, 20, 20]
+    @test priceix2 == [3, 3, 8, 8, 8, 8, 8, 13, 13, 13, 13, 13, 18, 18, 18, 18, 18, 18, 19, 20]
+
+    labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(y, [grad, grad], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+    @test labels2 == ["longhold", "longhold", "shorthold", "shorthold", "shorthold", "shorthold", "shorthold", "longbuy", "longbuy", "longbuy", "longhold", "longhold", "shorthold", "shorthold", "shorthold", "shorthold", "shorthold", "close", "close", "close"]
+    @test relativedist2 ≈ [0.23776412f0, 0.07918227f0, -0.38418326f0, -0.38418326f0, -0.33542147f0, -0.23776412f0, -0.10646201f0, 0.6238597f0, 0.6238597f0, 0.45098034f0, 0.23776412f0, 0.07918227f0, -0.38418326f0, -0.38418326f0, -0.33542147f0, -0.23776412f0, -0.10646201f0, 0.0f0, 0.0f0, 0.0f0]
+    @test realdist2 ≈ [0.47552824f0, 0.18163562f0, -0.9510565f0, -0.9510565f0, -0.76942086f0, -0.47552824f0, -0.18163562f0, 0.9510565f0, 0.9510565f0, 0.76942086f0, 0.47552824f0, 0.18163562f0, -0.9510565f0, -0.9510565f0, -0.76942086f0, -0.47552824f0, -0.18163562f0, 0.0f0, 0.0f0, 0.0f0]
+    @test regressionix2 == [6, 6, 11, 11, 11, 11, 11, 16, 16, 16, 16, 16, 20, 20, 20, 20, 20, 20, 20, 20]
+    @test priceix2 == [3, 3, 8, 8, 8, 8, 8, 13, 13, 13, 13, 13, 18, 18, 18, 18, 18, 18, 19, 20]
 end  # of testset
 
 # end  # of with logger

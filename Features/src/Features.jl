@@ -166,7 +166,7 @@ Returns the index vector to the next significant extreme.
 
 maxix[2], minix[2] are updated with the latest improvement. They are reset after the counterslope is closed as significant
 """
-function nextpeakindices(prices, mingainpct, minlosspct)
+function nextpeakindices(prices::Vector{T}, mingainpct, minlosspct) where {T<:Real}
     distancesix = zeros(Int32, length(prices))  # 0 indicates as default no significant extremum
     minix = [1, 1, 1]
     maxix = [1, 1, 1]
@@ -217,7 +217,7 @@ function nextpeakindices(prices, mingainpct, minlosspct)
             break
         end
     end
-    distances = [ (distancesix[ix] == 0 ? 0.0 : prices[distancesix[ix]] - prices[ix] ) for ix in eachindex(prices)]  # 1:length(prices)]
+    distances = [ (distancesix[ix] == 0 ? T(0.0) : prices[distancesix[ix]] - prices[ix] ) for ix in eachindex(prices)]  # 1:length(prices)]
     return distances, distancesix
 end
 

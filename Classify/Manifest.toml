@@ -251,9 +251,9 @@ weakdeps = ["JSON", "RecipesBase", "SentinelArrays", "StructTypes"]
 
 [[deps.CategoricalDistributions]]
 deps = ["CategoricalArrays", "Distributions", "Missings", "OrderedCollections", "Random", "ScientificTypes"]
-git-tree-sha1 = "d4f2e31204e3ce62b9d6407b63df3fad734e9e3f"
+git-tree-sha1 = "3124343a1b0c9a2f5fdc1d9bcc633ba11735a4c4"
 uuid = "af321ab8-2d2e-40a6-b165-3d674595d28e"
-version = "0.1.12"
+version = "0.1.13"
 
     [deps.CategoricalDistributions.extensions]
     UnivariateFiniteDisplayExt = "UnicodePlots"
@@ -263,9 +263,9 @@ version = "0.1.12"
 
 [[deps.ChainRules]]
 deps = ["Adapt", "ChainRulesCore", "Compat", "Distributed", "GPUArraysCore", "IrrationalConstants", "LinearAlgebra", "Random", "RealDot", "SparseArrays", "SparseInverseSubset", "Statistics", "StructArrays", "SuiteSparse"]
-git-tree-sha1 = "01b0594d8907485ed894bc59adfc0a24a9cde7a3"
+git-tree-sha1 = "7e4f5593e7e1ab923cebc5414f6d5433872cdd19"
 uuid = "082447d4-558c-5d27-93f4-14fc19e9eca2"
-version = "1.55.0"
+version = "1.56.0"
 
 [[deps.ChainRulesCore]]
 deps = ["Compat", "LinearAlgebra"]
@@ -900,10 +900,10 @@ uuid = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
 version = "0.5.2"
 
 [[deps.JLD2]]
-deps = ["FileIO", "MacroTools", "Mmap", "OrderedCollections", "Pkg", "Printf", "Reexport", "Requires", "TranscodingStreams", "UUIDs"]
-git-tree-sha1 = "572d024660119ee626938419c14db0db5f3f3283"
+deps = ["FileIO", "MacroTools", "Mmap", "OrderedCollections", "Pkg", "PrecompileTools", "Printf", "Reexport", "Requires", "TranscodingStreams", "UUIDs"]
+git-tree-sha1 = "ebec83429b5dea3857e071d927156207ebd6d617"
 uuid = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
-version = "0.4.36"
+version = "0.4.37"
 
 [[deps.JLFzf]]
 deps = ["Pipe", "REPL", "Random", "fzf_jll"]
