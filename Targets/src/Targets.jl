@@ -12,6 +12,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 module Targets
 
 using EnvConfig, Ohlcv, Features
+using DataFrames
 
 "returns all possible labels:"
 possiblelabels() = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
@@ -342,16 +343,18 @@ mutable struct Dists
     regressionix
     priceix
     relativedist
-    Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
+    # Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
 end
-# function (Dists)(prices, pricediffs, regressionix, priceix)
-#     println("hello")
-#     println("prices = $prices")
-#     println("pricediffs = $pricediffs")
-#     println("regressionix = $regressionix")
-#     println("priceix = $priceix")
-#     Dists(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
-# end
+
+function (Dists)(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) ::Vector{Dists} where {T<:Real}
+    d = Array{Dists}(undef, length(regressiongradients))
+    for ix in eachindex(d)
+        pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients[ix]; smoothing=false)
+        relativedist = relativedistances(prices, pricediffs, priceix, false)
+        d[ix] = Dists(pricediffs, regressionix, priceix, relativedist)
+    end
+    return d
+end
 
 """
 - returns for each index of prices
@@ -370,32 +373,56 @@ function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector
     #     println(prices)
     #     println(Features.pricediffregressionpeak(prices, rg; smoothing=false)...)
     # end
-    dists = [Dists(prices, Features.pricediffregressionpeak(prices, rg; smoothing=false)...) for rg in regressiongradients]
-    result = dists[1]  #* array reuse!
-    rix = xix = nothing
+    dists = (Dists)(prices, regressiongradients)
+    df = DataFrames.DataFrame()
+    df[!, "prices"] = prices
+    for i in eachindex(dists)
+        df[!, "grad" * string(i, pad=2, base=10)] = regressiongradients[i]
+        df[!, "pricediffs" * string(i, pad=2, base=10)] = dists[i].pricediffs
+        df[!, "regressionix" * string(i, pad=2, base=10)] = dists[i].regressionix
+        df[!, "priceix" * string(i, pad=2, base=10)] = dists[i].priceix
+        df[!, "relativedist" * string(i, pad=2, base=10)] = dists[i].relativedist
+    end
+    result = Dists(zero(dists[1].pricediffs), zero(dists[1].regressionix), zero(dists[1].priceix), zero(dists[1].relativedist))
+    rix = nothing
+    buypix = firstindex(prices)
     for pix in eachindex(prices)
-        if isnothing(xix) || (xix == pix)
-            rix = nix = nothing
-            for dix in eachindex(dists)
-                if (dists[dix].relativedist[pix] > labelthresholds.longbuy) || (dists[dix].relativedist[pix] < labelthresholds.shortbuy)
-                    # dix exceeds threshold => rix is assigned to dix if larger or rix undefined
-                    rix = !isnothing(rix) && (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix])) ? rix : dix
-                    # println("inner test")
-                end
-                # nix gets next extrema
-                nix = !isnothing(nix) && (dists[dix].priceix[pix] > dists[nix].priceix[pix]) ? nix : dix
+        nix = nothing
+        rix = !isnothing(rix) && (buypix > pix) ? rix : nothing  # hold on to rix if buy prixe ix not yet reached
+        for dix in eachindex(dists)
+            if (dists[dix].relativedist[pix] > labelthresholds.longbuy) || (dists[dix].relativedist[pix] < labelthresholds.shortbuy)
+                # dix exceeds threshold => rix is assigned to dix if larger or rix undefined
+                rix = !isnothing(rix) && (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix])) ? rix : dix
+                buypix = abs(dists[rix].priceix[pix])
+                # println("inner test: pix =$pix dix=$dix rix=$rix")
             end
-            rix = isnothing(rix) ? nix : rix  # fallback to nix if rix still undefined
-            xix = dists[rix].priceix[pix]
+            # nix gets next extrema
+            nix = !isnothing(nix) && (abs(dists[dix].priceix[pix]) > abs(dists[nix].priceix[pix])) ? nix : dix
         end
-        # println("rix = $rix  pix = $pix  xix = $xix")
-        result.pricediffs[pix] = dists[rix].pricediffs[pix]
-        result.regressionix[pix] = dists[rix].regressionix[pix]
-        result.priceix[pix] = dists[rix].priceix[pix]
-        result.relativedist[pix] = dists[rix].relativedist[pix]
+        # println("rix = $rix  pix = $pix")
+        if isnothing(rix)  # fallback to nix if rix still undefined
+            result.pricediffs[pix] = dists[nix].pricediffs[pix]
+            result.regressionix[pix] = dists[nix].regressionix[pix]
+            result.priceix[pix] = dists[nix].priceix[pix]
+            result.relativedist[pix] = dists[nix].relativedist[pix]
+        else
+            result.pricediffs[pix] = dists[rix].pricediffs[pix]
+            result.regressionix[pix] = dists[rix].regressionix[pix]
+            result.priceix[pix] = dists[rix].priceix[pix]
+            result.relativedist[pix] = dists[rix].relativedist[pix]
+        end
     end
     labels = getlabels(result.relativedist, labelthresholds)
-    return labels, result.relativedist, result.pricediffs, result.regressionix, result.priceix
+    df[!, "result-pricediffs"] = result.pricediffs
+    df[!, "result-regressionix"] = result.regressionix
+    df[!, "result-priceix"] = result.priceix
+    df[!, "result-relativedist"] = result.relativedist
+    df[!, "result-labels"] = labels
+    # println("result-pricediffs=$(result.pricediffs)")
+    # println("result-regressionix=$(result.regressionix)")
+    # println("result-priceix=$(result.priceix)")
+    # println("result-relativedist=$(result.relativedist)")
+return labels, result.relativedist, result.pricediffs, result.regressionix, result.priceix, df
 end
 
 """

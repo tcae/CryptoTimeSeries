@@ -16,9 +16,9 @@ using EnvConfig, Ohlcv
 
 periodlabels(p) = p%(24*60) == 0 ? "$(round(Int, p/(24*60)))d" : p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m"
 
-indexinrange(index, last) = 0 < index <= last
+indexinrange(index, start, last) = start <= index <= last
 nextindex(forward, index) = forward ? index + 1 : index - 1
-up(slope) = slope > 0
+uporflat(slope) = slope >= 0
 downorflat(slope) = slope <= 0
 
 relativedayofyear(date::DateTime)::Float32 = round(Dates.dayofyear(date) / 365, digits=4)
@@ -30,33 +30,44 @@ relativetimedict = Dict(
     "reldayofyear" => relativedayofyear)
 
 """
-- returns index of next regression extreme (or 0 if no extreme)
-    - regression extreme index: in case of uphill **after** slope > 0
-    - regression extreme index: in case of downhill **after** slope <= 0
+- returns index of next regression extreme or 0 in case of no extreme
+    - regression extreme index: in case of uphill **after** slope >= 0, i.e. index of first downhill grad as positive number to indicate maximum
+    - regression extreme index: in case of downhill **after** slope <= 0, i.e. index of first uphill grad as negative number to indicate minimum
+    - if there is any slope then teh last index is considered an extreme
 
 """
 function extremeregressionindex(regressions, startindex; forward)
-    reglen = length(regressions)
+    startindex= abs(startindex)
+    regend = lastindex(regressions)
+    regstart = firstindex(regressions)
+    arrayend = forward ? startindex >= regend : startindex <= regstart
     extremeindex = 0
-    @assert indexinrange(startindex, reglen) "index: $startindex  len: $reglen"
-    if regressions[startindex] > 0
-        while indexinrange(startindex, reglen) && up(regressions[startindex])
+    @assert indexinrange(startindex, regstart, regend) "index: $startindex  len: $regend"
+    while indexinrange(startindex, regstart, regend) && regressions[startindex] == 0
+        startindex = nextindex(forward, startindex)
+    end
+    if indexinrange(startindex, regstart, regend)
+        upwards = regressions[startindex] > 0
+        downwards = regressions[startindex] < 0
+    else
+        upwards = downwards = false
+    end
+    if upwards
+        while indexinrange(startindex, regstart, regend) && uporflat(regressions[startindex])
             startindex = nextindex(forward, startindex)
         end
-    else  # regressions[startindex] <= 0
-        while indexinrange(startindex, reglen) && downorflat(regressions[startindex])
+    elseif downwards
+        while indexinrange(startindex, regstart, regend) && downorflat(regressions[startindex])
             startindex = nextindex(forward, startindex)
         end
     end
-    if indexinrange(startindex, reglen)  # then extreme detected
-        if forward
-            extremeindex = startindex
-        elseif startindex < reglen
-            extremeindex = startindex
-        end
-        # else end of array and no extreme detected, which is signalled by returned index 0
+    if indexinrange(startindex, regstart, regend)  # then extreme detected
+        extremeindex = forward ? (downwards ? -startindex : startindex) : (downwards ? startindex : -startindex)
+    else
+        extremeindex = forward ? (downwards ? -regend : regend) : (downwards ? regstart : -regstart)
+        arrayend = true
     end
-    return extremeindex
+    return extremeindex, arrayend
 end
 
 """
@@ -70,31 +81,31 @@ The index array is either created if not present or is extended.
     - if forward (default) the extremeix ix will be appended otherwise added to the start
 
 """
-function regressionextremesix!(extremeix, regressiongradients, startindex; forward=true)
-    @assert startindex > 0
-    @assert !isnothing(regressiongradients)
-    if startindex > length(regressiongradients)
-        @warn "unepected startindex beyond length of search vector *regressiongradients*" startindex length(regressiongradients)
-        return extremeix
-    end
+function regressionextremesix!(extremeix::Union{Nothing, Vector{T}}, regressiongradients, startindex; forward=true) where {T<:Integer}
+    regend = lastindex(regressiongradients)
+    regstart = firstindex(regressiongradients)
+    @assert indexinrange(startindex, regstart, regend) "index: $startindex  len: $regend"
     if isnothing(extremeix)
         extremeix = Int32[]
     end
-    xix = extremeregressionindex(regressiongradients, startindex; forward)
-    while xix != 0
+    xix, arrayend = extremeregressionindex(regressiongradients, startindex; forward)
+    while true
         if forward
-            if (length(extremeix) > 0) && (abs(extremeix[end]) >= xix)
+            if (length(extremeix) > 0) && (abs(extremeix[end]) >= abs(xix))
                 @warn "inconsistency: abs(extremeix[end]) >= next xtreme ix" extremeix[end] xix
             end
-            extremeix = regressiongradients[xix] > 0 ? push!(extremeix, -xix) : push!(extremeix, xix)
+            extremeix = push!(extremeix, xix)
         else
-            if (length(extremeix) > 0) && (abs(extremeix[1]) <= xix)
-                @warn "inconsistency: extremeix[end] <= next xtreme ix" extremeix[end] xix
+            if (length(extremeix) > 0) && (abs(extremeix[1]) <= abs(xix))
+                @warn "inconsistency: abs(extremeix[start]) <= next xtreme ix" extremeix[end] xix
             end
-            extremeix = regressiongradients[xix] > 0 ? pushfirst!(extremeix, xix) : pushfirst!(extremeix, -xix)
+            extremeix = pushfirst!(extremeix, xix)
         end
-        xix = extremeregressionindex(regressiongradients, xix; forward)
+        arrayend ? break : false
+        xix, arrayend = extremeregressionindex(regressiongradients, xix; forward)
+        # println("inner loop: xix=$xix arrayend=$arrayend")
     end
+    # println("extremeix=$extremeix xix=$xix arrayend=$arrayend startindex=$startindex forward=$forward regend=$regend")
     return extremeix
 end
 
@@ -109,10 +120,11 @@ newifbetter(old, new, maxsearch) = maxsearch ? new > old : new < old
 """
 function extremepriceindex(prices, startindex, endindex, maxsearch)
     @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
-    plen = length(prices)
+    pend = lastindex(prices)
+    pstart = firstindex(prices)
     extremeindex = startindex
-    @assert indexinrange(startindex, plen)  "index: $startindex  len: $plen"
-    @assert indexinrange(endindex, plen)  "index: $endindex  len: $plen"
+    @assert indexinrange(startindex, pstart, pend)  "index: $startindex  len: $pend"
+    @assert indexinrange(endindex, pstart, pend)  "index: $endindex  len: $pend"
     forward = startindex < endindex
     while forward ? startindex <= endindex : startindex >= endindex
         extremeindex = newifbetterequal(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
@@ -129,10 +141,11 @@ end
 """
 function nextlocalextremepriceindex(prices, startindex, endindex, maxsearch)
     @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
-    plen = length(prices)
+    pend = lastindex(prices)
+    pstart = firstindex(prices)
     extremeindex = startindex
-    @assert indexinrange(startindex, plen)  "index: $startindex  len: $plen"
-    @assert indexinrange(endindex, plen)  "index: $endindex  len: $plen"
+    @assert indexinrange(startindex, pstart, pend)  "index: $startindex  len: $pend"
+    @assert indexinrange(endindex, pstart, pend)  "index: $endindex  len: $pend"
     forward = startindex < endindex
     startindex = nextindex(forward, startindex)
     while forward ? startindex <= endindex : startindex >= endindex
@@ -171,21 +184,21 @@ function nextpeakindices(prices::Vector{T}, mingainpct, minlosspct) where {T<:Re
     minix = [1, 1, 1]
     maxix = [1, 1, 1]
     pix = 1
-    plen = length(prices)
-    maxix[1] = nextlocalextremepriceindex(prices, 1, plen, true)
+    pend = lastindex(prices)
+    maxix[1] = nextlocalextremepriceindex(prices, 1, pend, true)
     maxix[2] = prices[maxix[2]] < prices[maxix[1]] ? maxix[1] : maxix[2]
-    minix[1] = nextlocalextremepriceindex(prices, 1, plen, false)
+    minix[1] = nextlocalextremepriceindex(prices, 1, pend, false)
     minix[2] = prices[minix[2]] > prices[minix[1]] ? minix[1] : minix[2]
-    while pix <= plen
+    while pix <= pend
         if minix[1] > maxix[1]  # last time minimum fund -> now find maximum
-            maxix[1] = nextlocalextremepriceindex(prices, minix[1], plen, true)
+            maxix[1] = nextlocalextremepriceindex(prices, minix[1], pend, true)
             maxix[2] = prices[maxix[2]] < prices[maxix[1]] ? maxix[1] : maxix[2]
         elseif minix[1] < maxix[1]  # last time maximum fund -> now find minimum
-            minix[1] = nextlocalextremepriceindex(prices, maxix[1], plen, false)
+            minix[1] = nextlocalextremepriceindex(prices, maxix[1], pend, false)
             minix[2] = prices[minix[2]] > prices[minix[1]] ? minix[1] : minix[2]
         else  # no further extreme should be end of prices array
-            if !(minix[1] == maxix[1] == plen)
-                @warn "unexpected !(minix[1] == maxix[1] == plen)" minix[1] maxix[1] plen pix
+            if !(minix[1] == maxix[1] == pend)
+                @warn "unexpected !(minix[1] == maxix[1] == pend)" minix[1] maxix[1] pend pix
             end
         end
         if maxix[2] > minix[2]  # gain
@@ -207,7 +220,7 @@ function nextpeakindices(prices::Vector{T}, mingainpct, minlosspct) where {T<:Re
                 maxix[2] = minix[2]  # reset to follow new maxix[1] improvements
             end
         end
-        if (maxix[1] == plen) || (minix[1] == plen)  # finish
+        if (maxix[1] == pend) || (minix[1] == pend)  # finish
             if (maxix[2] > minix[3]) && (gain(prices, minix[3], maxix[2]) >= mingainpct)
                 pix = fillwithextremeix(distancesix, minix[3], maxix[2])  # write loss indices
             end
@@ -231,6 +244,8 @@ function smoothdistance(prices, lastpeakix, currentix, nextpeakix)
     return prices[nextpeakix] - smoothprice
 end
 
+maxsearch(regressionextremeindex) = regressionextremeindex > 0
+
 """
 - if `smoothing == true` returns pricediffs of a smoothed price (straight price line between extremes) to next extreme price
 - if `smoothing == false` returns pricediffs of current price to next extreme price
@@ -248,27 +263,25 @@ function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
     pricediffs = zeros(Float32, length(prices))
     regressionix = zeros(Int32, length(prices))
     priceix = zeros(Int32, length(prices))
-    plen = length(prices)
-    pix = rix = 0
-    lastpix = 1
-    for cix in 1:plen
+    pend = lastindex(prices)
+    lastpix = pix = rix = firstindex(prices)
+    for cix in eachindex(prices)
         if pix <= cix
-            maxsearch = regressiongradients[cix] > 0
-            if rix < cix
-                rix = extremeregressionindex(regressiongradients, cix; forward=true)
-                rix = rix == 0 ? plen : rix
-            elseif rix < plen  # rix >= cix
-                # extreme price index pix between cix and last regression extreme rix was found and pricediffs filled
-                # look for next regression extreme starting from last regression extreme
-                maxsearch = regressiongradients[rix] > 0
-                rix = extremeregressionindex(regressiongradients, rix; forward=true)
-                rix = rix == 0 ? plen : rix
-            end
-            lastpix = pix > lastpix ? pix : lastpix
+            # if rix <= cix
+                rix, arrend = extremeregressionindex(regressiongradients, rix; forward=true)
+                # rix = rix == 0 ? pend : rix
+                lastpix = pix > lastpix ? pix : lastpix
+                pix = extremepriceindex(prices, abs(rix), min((cix+1), abs(rix)), maxsearch(rix))  # search back from extreme rix to current index cix
+                # elseif rix < pend  # rix >= cix
+            #     # extreme price index pix between cix and last regression extreme rix was found and pricediffs filled
+            #     # look for next regression extreme starting from last regression extreme
+            #     maxsearch = regressiongradients[rix] > 0
+            #     rix, arrend = extremeregressionindex(regressiongradients, rix; forward=true)
+            #     rix = rix == 0 ? pend : rix
+            # end
             # - it was expected that the relevant actual price maximum is between gradient inflection index and regression extreme
             # >> it turned out that the inflection is not reliable
             # >> search from regression extreme back to last price extreme for global extreme yields better results
-            pix = extremepriceindex(prices, rix, cix, maxsearch)  # search back from extreme rix to current index cix
         end
         if smoothing
             pricediffs[cix] = smoothdistance(prices, lastpix, cix, pix)  # use straight line between extremes to calculate distance
@@ -277,10 +290,13 @@ function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
         end
         # pricediffs[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable
         regressionix[cix] = rix
-        priceix[cix] = pix
+        priceix[cix] = maxsearch(rix) ? pix : -pix
     end
-    @assert all([0<priceix[i]<=plen for i in 1:plen]) priceix
-    @assert all([0<regressionix[i]<=plen for i in 1:plen]) regressionix
+    @assert all([0 < abs(priceix[i]) <= pend for i in 1:pend]) priceix
+    @assert all([0 < abs(regressionix[i]) <= pend for i in 1:pend]) regressionix
+    # println("pricediffs=$pricediffs")
+    # println("regressionix=$regressionix")
+    # println("priceix=$priceix")
     return pricediffs, regressionix, priceix
 end
 
@@ -288,19 +304,19 @@ end
 Returns the index of the next extreme **after** gradient changed sign or after it was zero.
 """
 function nextextremeindex(regressions, startindex)
-    reglen = length(regressions)
+    regend = lastindex(regressions)
     extremeindex = 0
-    @assert (startindex > 0) && (startindex <= reglen)
+    @assert (startindex > 0) && (startindex <= regend)
     if regressions[startindex] > 0
-        while (startindex <= reglen) && (regressions[startindex] > 0)
+        while (startindex <= regend) && (regressions[startindex] > 0)
             startindex += 1
         end
     else  # regressions[startindex] <= 0
-        while (startindex <= reglen) && (regressions[startindex] <= 0)
+        while (startindex <= regend) && (regressions[startindex] <= 0)
             startindex += 1
         end
     end
-    if startindex <= reglen  # then extreme detected
+    if startindex <= regend  # then extreme detected
         extremeindex = startindex
         # else end of array and no extreme detected, which is signalled by returned index 0
     end
@@ -311,9 +327,9 @@ end
 Returns the index of the previous extreme **after** gradient changed sign or after it was zero.
 """
 function prevextremeindex(regressions, startindex)
-    reglen = length(regressions)
+    regend = lastindex(regressions)
     extremeindex = 0
-    @assert (startindex > 0) && (startindex <= reglen)
+    @assert (startindex > 0) && (startindex <= regend)
     if regressions[startindex] > 0
         while (startindex > 0) && (regressions[startindex] > 0)
             startindex -= 1

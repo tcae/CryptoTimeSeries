@@ -229,16 +229,16 @@ smv2 = Features.rollingregressionstdmv!(smv2, ymv, regr, grad, 3)
 reggrad = [1, 2, 0, 0, -1, 0, 1, -3, 1, 1, 0]
 xix = Int32[]
 xix = Features.regressionextremesix!(xix, reggrad, 1; forward=true)
-@test xix == [3, -7, 8, -9, 11]
+@test xix == [5, -7, 8, -9, 11]
 xix = Features.regressionextremesix!(nothing, reggrad, 1; forward=true)
-@test xix == [3, -7, 8, -9, 11]
+@test xix == [5, -7, 8, -9, 11]
 xix2 = xix[1:3]
 xix2 = Features.regressionextremesix!(xix2, reggrad, 8; forward=true)
-@test xix2 == [3, -7, 8, -9, 11]
+@test xix2 == [5, -7, 8, -9, 11]
 xix = Features.regressionextremesix!(nothing, reggrad, length(reggrad); forward=false)
-@test xix == [2, -6, 7, -8, 10]
-xix = Features.regressionextremesix!(xix[3:5], reggrad, 7; forward=false)
-@test xix == [2, -6, 7, -8, 10]
+@test xix == [-1, 2, -5, 7, -8]
+xix = Features.regressionextremesix!(xix[3:5], reggrad, 5; forward=false)
+@test xix == [-1, 2, -5, 7, -8]
 
 @test "121m" == Features.periodlabels(2*60+1)
 @test "2h" == Features.periodlabels(2*60)
