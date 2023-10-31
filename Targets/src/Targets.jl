@@ -12,7 +12,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 module Targets
 
 using EnvConfig, Ohlcv, Features
-using DataFrames
+using DataFrames, Logging
 
 "returns all possible labels:"
 possiblelabels() = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
@@ -282,6 +282,16 @@ function targets4(prices, regressionminutes)  # TODO missing unit test
     return result
 end
 
+"""
+- defines the relative transaction thresholds
+    - buy long at more than *longbuy* gain potential from current price
+    - hold long above *longhold* gain potential from current price
+    - close long position below *longhold* gain potential from current price
+    - buy short at or lower than *shortbuy* loss potential from current price
+    - hold short below *shorthold* loss potential from current price
+    - close short position above *shorthold* loss potential from current price
+- Targets.defaultlabelthresholds provides default thresholds
+"""
 struct LabelThresholds
     longbuy
     longhold
@@ -385,21 +395,32 @@ function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector
     end
     result = Dists(zero(dists[1].pricediffs), zero(dists[1].regressionix), zero(dists[1].priceix), zero(dists[1].relativedist))
     rix = nothing
-    buypix = firstindex(prices)
     for pix in eachindex(prices)
         nix = nothing
-        rix = !isnothing(rix) && (buypix > pix) ? rix : nothing  # hold on to rix if buy prixe ix not yet reached
         for dix in eachindex(dists)
             if (dists[dix].relativedist[pix] > labelthresholds.longbuy) || (dists[dix].relativedist[pix] < labelthresholds.shortbuy)
-                # dix exceeds threshold => rix is assigned to dix if larger or rix undefined
-                rix = !isnothing(rix) && (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix])) ? rix : dix
-                buypix = abs(dists[rix].priceix[pix])
-                # println("inner test: pix =$pix dix=$dix rix=$rix")
+                # dix exceeds threshold => rix is assigned to dix if priceix is closer or rix undefined
+                if !isnothing(rix)
+                    if sign(dists[dix].priceix[pix]) == sign(dists[rix].priceix[pix])
+                        if (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix])) &&  #dix peak is nearer than rix peak
+                           (abs(dists[dix].relativedist[pix]) > (abs(dists[rix].relativedist[pix]) * 0.5))  # dix peak has at least half the gain of rix
+                           rix = dix  # take over
+                           # else rix remains unchanged
+                        end
+                    else  # buy peak in opposite direction
+                        if (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix]))  #dix peak is nearer than rix peak => take over and close
+                            rix = dix
+                            # else wait with take over until slope changes because short term slope is not in favor of gain => wait for better buy gain
+                            # this also ensures that the open buy position will get close signals (i.e. close or opposite hold or opposite buy)
+                        end
+                    end
+                else  # no rix assigned yet => take over
+                    rix = dix
+                end
             end
             # nix gets next extrema
             nix = !isnothing(nix) && (abs(dists[dix].priceix[pix]) > abs(dists[nix].priceix[pix])) ? nix : dix
         end
-        # println("rix = $rix  pix = $pix")
         if isnothing(rix)  # fallback to nix if rix still undefined
             result.pricediffs[pix] = dists[nix].pricediffs[pix]
             result.regressionix[pix] = dists[nix].regressionix[pix]
@@ -441,6 +462,107 @@ function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector
     relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, regressionix, priceix
+end
+
+"Default relative transaction penalty of 1% on all transactions for fee and time lag, i.e. each open and each close, that is subtracted from gain."
+defaultrelativetransactionpenalty = 0.01
+
+function calcgaindetails(prices, xtrmix, relativetransactionpenalty)
+    gain = zeros(Float64, length(xtrmix))
+    lastix = firstindex(xtrmix)
+    for ix in eachindex(xtrmix)
+        gain[ix] = ix == lastix ? 0 : 0 #TODO
+    end
+end
+
+mutable struct Gains
+    pricediffs
+    regressionix
+    priceix
+    relativedist
+    # Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
+end
+
+function (Dists)(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) ::Vector{Dists} where {T<:Real}
+    d = Array{Dists}(undef, length(regressiongradients))
+    for ix in eachindex(d)
+        pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients[ix]; smoothing=false)
+        relativedist = relativedistances(prices, pricediffs, priceix, false)
+        d[ix] = Dists(pricediffs, regressionix, priceix, relativedist)
+    end
+    return d
+end
+
+mutable struct PriceExtremeCombi
+    peakix  # vector of signed indices (positive for maxima, negative for minima)
+    ix  # running index within peakix
+    anchorix  # index of begin of peak sequence under assessment
+    gain  # current cumulated gain since anchorix
+    function PriceExtremeCombi(prices, regressionextremesix=Int64[])
+        regr = regressionextremesix  # fill array of price extremes by backward search from regression extremes
+        extremesix = [sign(regr(rix)) * Features.extremepriceindex(prices, abs(regr(rix)), abs(regr(rix-1)), (regr(rix) > 0)) for rix in firstindex(regr)+1:lastindex(regr)]
+        return new(extremesix, firstindex(extremesix)+1, firstindex(extremesix), 0.0)
+    end
+end
+
+function gain(prices, ix1, ix2, labelthresholds::LabelThresholds, relativetransactionpenalty)
+    @assert labelthresholds.longbuy > 2 * relativetransactionpenalty
+    @assert abs(labelthresholds.shortbuy) > 2 * relativetransactionpenalty
+    g = Ohlcv.relativegain(prices, abs(ix1), abs(ix2))
+    if g > 0
+        g = g >= labelthresholds.longbuy ? g - relativetransactionpenalty : 0.0  # consider fee and time lag
+    else
+        g = g <= labelthresholds.shortbuy ? abs(g) - relativetransactionpenalty : 0.0  # consider fee and time lag
+    end
+    return g
+end
+
+"""
+- Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info
+- relativetransactionpenalty (default=1%) is subtracted from the gain first at open and second at close
+"""
+function bestregressiontargetcombi(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds, relativetransactionpenalty=defaultrelativetransactionpenalty)
+    #! unit test to be added
+    sortedxtrmix = sort([(k, length(f2.regr[k].xtrmix)) for k in keys(f2.regr)], by= x -> x[2], rev=true)  # sorted tuple of (key, length of xtremes),long arrays first
+    prices = Ohlcv.dataframe(f2.ohlcv).Ohlcv.pivot
+    @assert !isnothing(prices)
+    combi = PriceExtremeCombi(f2.regr[sortedxtrmix[begin][1]].xtrmix)
+    logdf = DataFrame([:combikey, :combipeakix, :combixix, :singlekey, :singlepeakix, :singlexix], [Int32, Int32, Int32, Int32, Int32])
+    for six in (firstindex(sortedxtrmix)+1):lastindex(sortedxtrmix)
+        newcombi = PriceExtremeCombi(prices)
+        single = PriceExtremeCombi(f2.regr[sortedxtrmix[six][1]].xtrmix)
+        while (combi.ix <= lastindex(combi.peakix)) || (single.ix <= lastindex(single.peakix))
+            combi.gain = gain(prices, combi.peakix[combi.ix-1], combi.peakix[combi.ix], labelthresholds, relativetransactionpenalty) + combi.gain  # accumulate gain
+            single.gain = gain(prices, single.peakix[single.ix-1], single.peakix[single.ix], labelthresholds, relativetransactionpenalty) + single.gain  # accumulate gain
+            if abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix])  # then the higher frequent combi catched up with the next extreme of single
+                if combi.gain >= single.gain
+                    if (lastindex(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(combi.peakix[combi.anchorix]))  # one index overlap?
+                        newcombi.peakix = vcat(newcombi.peakix, combi.peakix[combi.anchorix+1:combi.ix])
+                    else
+                        newcombi.peakix = vcat(newcombi.peakix, combi.peakix[combi.anchorix:combi.ix])
+                    end
+                else
+                    if (lastindex(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(single.peakix[single.anchorix]))  # one index overlap?
+                        newcombi.peakix = vcat(newcombi.peakix, single.peakix[single.anchorix+1:single.ix])
+                    else
+                        newcombi.peakix = vcat(newcombi.peakix, single.peakix[single.anchorix:single.ix])
+                    end
+                end
+                combi.gain = single.gain = 0.0
+            end
+            if abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix])  # then the higher frequent combi catched up with the next extreme of single
+                push!(logdf, (sortedxtrmix[six-1][1], combi.peakix[combi.ix], combi.ix, sortedxtrmix[six][1], single.peakix[single.ix], single.ix))
+            end
+            combi.anchorix = combi.ix
+            combi.ix += 1
+            single.anchorix = single.ix
+            single.ix += 1
+        end
+    end
+    if size(logdf, 1) > 0
+        @warn "lower frequent extremes are not always a full subset of higher frequent extremes" logdf
+    end
+    return sortedxtrmix
 end
 
 """

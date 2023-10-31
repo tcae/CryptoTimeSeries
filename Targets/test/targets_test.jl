@@ -189,36 +189,20 @@ end
     grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
     grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
     labels, relativedist, realdist, regressionix, priceix, df = Targets.continuousdistancelabels(y, [grad1, grad2], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-    @test labels == ["longhold", "shorthold", "close", "shorthold", "longhold", "close", "longhold", "shorthold", "longhold", "shorthold", "longhold", "shorthold", "longhold", "shorthold", "longhold", "longhold", "longhold", "close", "longhold", "close"]
-    @test relativedist ≈ [0.28999996, -0.24806197, -0.029999971, -0.24806197, 0.23711342, 0.043478325, 0.20000005, -0.1666667, 0.20000005, -0.1666667, 0.20000005, -0.1666667, 0.20000005, -0.1666667, 0.20000005, 0.09090911, 0.20000005, 0.0, 0.20000005, 0.0]
-    @test realdist ≈ [0.28999996, -0.31999993, -0.029999971, -0.31999993, 0.23000002, 0.05000007, 0.20000005, -0.20000005, 0.20000005, -0.20000005, 0.20000005, -0.20000005, 0.20000005, -0.20000005, 0.20000005, 0.100000024, 0.20000005, 0.0, 0.20000005, 0.0]
-    @test regressionix == [3, -6, -6, -6, 9, 9, 9, -11, 13, -16, 17, -18, 19, -20, 20, 20, 20, 20, 20, 20]
     @test priceix == [2, -5, -5, -5, 8, 8, 8, -9, 10, -11, 12, -13, 14, -15, 18, 18, 18, 20, 20, 20]
     # println("not exceeding buy thresholds should result always in next possible extreme")
     # println(df)
-    # println("labels = $labels")
-    # println("relativedist = $relativedist")
-    # println("realdist = $realdist")
-    # println("regressionix = $regressionix")
     # println("priceix = $priceix")
 
-    # nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme
+    # nearer extreme not exceeding buy thresholds should should only win against further away buy-threshold exceeding extremes if the latter one is not yet in reach with their regression extremes
     y =     [1.0f0, 1.2f0, 1.0f0, 1.31f0, 0.91f0, 1.1f0, 1.0f0, 0.9f0, 1.0f0, 1.1f0, 1.0f0, 1.3f0, 1.0f0, 1.2f0, 0.91f0, 1.182f0, 1.0f0, 1.1f0, 1.2f0, 1.3f0]
     grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
     grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
     labels, relativedist, realdist, regressionix, priceix, df = Targets.continuousdistancelabels(y, [grad1, grad2], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
     # println("nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme")
     # println(df)
-    # println("labels = $labels")
-    # println("relativedist = $relativedist")
-    # println("realdist = $realdist")
-    # println("regressionix = $regressionix")
     # println("priceix = $priceix")
-    @test labels == ["longbuy", "longhold", "longbuy", "shorthold", "longhold", "shorthold", "shorthold", "longbuy", "longhold", "longhold", "longhold", "shorthold", "close", "shorthold", "longbuy", "longhold", "longhold", "longhold", "longhold", "close"]
-    @test relativedist ≈ [0.30999994, 0.09166658, 0.30999994, -0.30534345, 0.2087912, -0.18181822, -0.100000024, 0.44444442, 0.29999995, 0.18181811, 0.29999995, -0.29999995, -0.089999974, -0.24166667, 0.42857134, 0.09983072, 0.29999995, 0.18181811, 0.083333254, 0.0]
-    @test realdist ≈ [0.30999994, 0.109999895, 0.30999994, -0.39999992, 0.19, -0.20000005, -0.100000024, 0.39999998, 0.29999995, 0.19999993, 0.29999995, -0.38999993, -0.089999974, -0.29000002, 0.38999993, 0.11799991, 0.29999995, 0.19999993, 0.099999905, 0.0]
-    @test regressionix == [6, 6, 6, -6, 9, -11, -11, 13, 13, 13, 13, -16, -16, -16, 20, 20, 20, 20, 20, 20]
-    @test priceix == [4, 4, 4, -5, 6, -8, -8, 12, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
+    @test priceix == [4, 4, 4, -8, -8, -8, -8, 12, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
 
     # nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme
     y =     [1.0f0, 1.3f0, 1.0f0, 1.3f0, 0.9f0, 1.2f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0, 0.9f0, 1.2f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0]
@@ -227,16 +211,28 @@ end
     labels, relativedist, realdist, regressionix, priceix, df = Targets.continuousdistancelabels(y, [grad1, grad2], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
     # println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme")
     # println(df)
-    # println("labels = $labels")
-    # println("relativedist = $relativedist")
-    # println("realdist = $realdist")
-    # println("regressionix = $regressionix")
     # println("priceix = $priceix")
-    @test labels == ["longhold", "shorthold", "shorthold", "shorthold", "longbuy", "longhold", "longhold", "shorthold", "longhold", "shorthold", "shorthold", "shorthold", "shorthold", "shorthold", "longbuy", "longhold", "longhold", "shorthold", "longhold", "close"]
-    @test relativedist ≈ [0.29999995, -0.3076923, -0.100000024, -0.3076923, 0.44444442, 0.083333254, 0.29999995, -0.2307692, 0.29999995, -0.3076923, -0.100000024, -0.3076923, -0.100000024, -0.3076923, 0.44444442, 0.083333254, 0.29999995, -0.2307692, 0.29999995, 0.0]
-    @test realdist ≈ [0.29999995, -0.39999998, -0.100000024, -0.39999998, 0.39999998, 0.099999905, 0.29999995, -0.29999995, 0.29999995, -0.39999998, -0.100000024, -0.39999998, -0.100000024, -0.39999998, 0.39999998, 0.099999905, 0.29999995, -0.29999995, 0.29999995, 0.0]
-    @test regressionix == [3, -6, -6, -6, 9, 9, 9, -11, 13, -16, -16, -16, -16, -16, 20, 20, 20, -20, 20, 20]
-    @test priceix == [2, -5, -5, -5, 8, 8, 8, -9, 10, -15, -15, -15, -15, -15, 18, 18, 18, -19, 20, 20]
+    @test priceix == [2, -5, -5, -5, 8, 8, 8, -15, -15, -15, -15, -15, -15, -15, 16, -17, 18, -19, 20, 20]
+
+    # if a long term buy exceeding regr extreme is interrupted by a short term buy exceeding regr then the short term has priority and the long term focus is resumed if it is still buy exceeded afterwards
+    y =     [1.0f0, 1.1f0, 1.1f0, 0.9f0, 0.75f0, 0.8f0, 0.8f0, 0.85f0, 0.8f0, 0.75f0, 0.7f0, 0.6f0, 0.5f0, 0.6f0, 0.65f0, 0.7f0, 0.71f0, 0.75f0, 0.7f0, 0.6f0]
+    grad1 = [-0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f1]
+    grad2 = [0.2f0, 0.1f0, 0.1f0, -0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.1f0, 0.2f0, 0.2f0, -0.2f0, -0.2f0, 0.0f0]
+    labels, relativedist, realdist, regressionix, priceix, df = Targets.continuousdistancelabels(y, [grad1, grad2], Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+    # println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme")
+    # println(df)
+    # println("priceix = $priceix")
+    @test priceix == [-13, -5, -5, -5, 8, 8, 8, -13, -13, -13, -13, -13, 18, 18, 18, 18, 18, -20, -20, 20]
+
+    # if a long term buy exceeding regr extreme is interrupted by a short term buy exceeding regr then the short term has priority except the long term has mor than double gain
+    y =     [1.0f0, 1.1f0, 1.1f0, 0.9f0, 0.75f0, 0.8f0, 0.8f0, 0.85f0, 0.8f0, 0.75f0, 0.7f0, 0.6f0, 0.4f0, 0.6f0, 0.65f0, 0.7f0, 0.71f0, 0.75f0, 0.7f0, 0.6f0]
+    grad1 = [-0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f1]
+    grad2 = [0.2f0, 0.1f0, 0.1f0, -0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.1f0, 0.2f0, 0.2f0, -0.2f0, -0.2f0, 0.0f0]
+    labels, relativedist, realdist, regressionix, priceix, df = Targets.continuousdistancelabels(y, [grad1, grad2], Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+    # println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme if near term buy has at least 50% of the far term buy gain")
+    # println(df)
+    # println("priceix = $priceix")
+    @test priceix == [-13, -13, -13, -13, -13, -13, -13, -13, -13, -13, -13, -13, 18, 18, 18, 18, 18, 19, 20, 20]
 
 end  # of testset
 

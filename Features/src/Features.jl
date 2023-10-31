@@ -252,7 +252,7 @@ maxsearch(regressionextremeindex) = regressionextremeindex > 0
 - pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
 - the extreme is determined by slope sign change of the regression gradients given in `regressions`
 - from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
-- for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
+- 2 further index arrays are returned: with regression extreme indices and with price extreme indices
 
 """
 function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
@@ -1225,15 +1225,7 @@ Each feature vector is composed of:
 - Relative median volume 1m/1h
 - Relative minute of the day
 """
-function features12x1m01(ohlcv::Ohlcv.OhlcvData, lookbackperiods=11)
-    ohlcvdf = Ohlcv.dataframe(ohlcv)
-    @assert !isnothing(ohlcvdf)
-    @assert Ohlcv.interval(ohlcv) == "1m"
-    f2 = Features.Features002(ohlcv)
-    @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
-    @assert (f2.firstix <= f2.lastix)
-    f3 = Features003(f2, lookbackperiods)
-    @assert (f2.firstix + f3.maxlookback) <= f2.lastix
+function features12x1m01(f3::Features003)
     # println(f3)
     fvecdf = deltaOhlc!(nothing, f3; normalize=true)
     # println("deltaOhlc!: size(fvecdf)=$(size(fvecdf))")
@@ -1242,6 +1234,21 @@ function features12x1m01(ohlcv::Ohlcv.OhlcvData, lookbackperiods=11)
     fvecdf = relativevolume!(fvecdf, f3, 1, 60)
     fvecdf = relativetime!(fvecdf, f3, "relminuteofday")
     return fvecdf, f3
+end
+
+function features12x1m01(f2::Features002, lookbackperiods=11)
+    f3 = Features003(f2, lookbackperiods)
+    return features12x1m01(f3)
+end
+
+function features12x1m01(ohlcv::Ohlcv.OhlcvData, lookbackperiods=11)
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
+    @assert !isnothing(ohlcvdf)
+    @assert Ohlcv.interval(ohlcv) == "1m"
+    f2 = Features.Features002(ohlcv)
+    @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
+    @assert (f2.firstix <= f2.lastix)
+    return features12x1m01(f2, lookbackperiods)
 end
 
 """
@@ -1257,6 +1264,19 @@ Each feature vector is composed of:
 - Relative median volume short time window/long time window
 - Relative datetime
 """
+function regressionfeatures01(f3::Features003, focusregrwindow, regrwindows, shortvol, longvol, reltime)
+    fvecdf = regressionfeatures!(nothing, f3; regrwindows=regrwindows, lookback=0, normalize=true)
+    fvecdf = regressionfeatures!(fvecdf, f3; regrwindows=[focusregrwindow], lookback=f3.maxlookback, normalize=true)
+    fvecdf = relativevolume!(fvecdf, f3, shortvol, longvol)
+    fvecdf = relativetime!(fvecdf, f3, reltime)
+    return fvecdf, f3
+end
+
+function regressionfeatures01(f2::Features002, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)
+    f3 = Features003(f2, lookbackperiods)
+    return regressionfeatures01(f3, focusregrwindow, regrwindows, shortvol, longvol, reltime)
+end
+
 function regressionfeatures01(ohlcv::Ohlcv.OhlcvData, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)
     ohlcvdf = Ohlcv.dataframe(ohlcv)
     @assert !isnothing(ohlcvdf)
@@ -1264,13 +1284,7 @@ function regressionfeatures01(ohlcv::Ohlcv.OhlcvData, lookbackperiods, focusregr
     f2 = Features.Features002(ohlcv)
     @assert (size(ohlcvdf, 1) >= f2.lastix) "size(ohlcvdf)=$(size(ohlcvdf, 1)) < f2.lastix"
     @assert (f2.firstix <= f2.lastix)
-    f3 = Features003(f2, lookbackperiods)
-    @assert (f2.firstix + f3.maxlookback) <= f2.lastix
-    fvecdf = regressionfeatures!(nothing, f3; regrwindows=regrwindows, lookback=0, normalize=true)
-    fvecdf = regressionfeatures!(fvecdf, f3; regrwindows=[focusregrwindow], lookback=lookbackperiods, normalize=true)
-    fvecdf = relativevolume!(fvecdf, f3, shortvol, longvol)
-    fvecdf = relativetime!(fvecdf, f3, reltime)
-    return fvecdf, f3
+    return regressionfeatures01(f2, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)
 end
 
 features12x5m01(f2) =  regressionfeatures01(f2,  11, 5,     [15, 60,   4*60,  12*60,   24*60],    5,     4*60,     "relminuteofday")
