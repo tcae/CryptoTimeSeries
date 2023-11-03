@@ -443,7 +443,7 @@ function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector
     # println("result-regressionix=$(result.regressionix)")
     # println("result-priceix=$(result.priceix)")
     # println("result-relativedist=$(result.relativedist)")
-return labels, result.relativedist, result.pricediffs, result.regressionix, result.priceix, df
+    return labels, result.relativedist, result.pricediffs, result.regressionix, result.priceix, df
 end
 
 """
@@ -483,29 +483,34 @@ mutable struct Gains
     # Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
 end
 
-function (Dists)(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) ::Vector{Dists} where {T<:Real}
-    d = Array{Dists}(undef, length(regressiongradients))
-    for ix in eachindex(d)
-        pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients[ix]; smoothing=false)
-        relativedist = relativedistances(prices, pricediffs, priceix, false)
-        d[ix] = Dists(pricediffs, regressionix, priceix, relativedist)
-    end
-    return d
-end
-
 mutable struct PriceExtremeCombi
     peakix  # vector of signed indices (positive for maxima, negative for minima)
     ix  # running index within peakix
     anchorix  # index of begin of peak sequence under assessment
     gain  # current cumulated gain since anchorix
-    function PriceExtremeCombi(prices, regressionextremesix=Int64[])
-        regr = regressionextremesix  # fill array of price extremes by backward search from regression extremes
-        extremesix = [sign(regr(rix)) * Features.extremepriceindex(prices, abs(regr(rix)), abs(regr(rix-1)), (regr(rix) > 0)) for rix in firstindex(regr)+1:lastindex(regr)]
-        return new(extremesix, firstindex(extremesix)+1, firstindex(extremesix), 0.0)
+    regrwindow
+    rw
+    function PriceExtremeCombi(f2, regrwindow)
+        if isnothing(f2)
+            extremesix = Int64[]
+            rw = String[]
+        else
+            prices = Ohlcv.dataframe(f2.ohlcv).pivot
+            regr = f2.regr[regrwindow].xtrmix  # fill array of price extremes by backward search from regression extremes
+            # println("PriceExtremeCombi regr=$regr")
+            extremesix = [sign(regr[rix]) * Features.extremepriceindex(prices, abs(regr[rix])+f2.firstix-1, rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1])+f2.firstix-1, (regr[rix] > 0)) for rix in eachindex(regr)]
+            # println("PriceExtremeCombi extremesix=$extremesix")
+            rw = repeat([string(regrwindow)], length(extremesix))
+        end
+        return new(extremesix, firstindex(extremesix), firstindex(extremesix), 0.0, regrwindow, rw)
     end
 end
 
-function gain(prices, ix1, ix2, labelthresholds::LabelThresholds, relativetransactionpenalty)
+function Base.show(io::IO, pec::PriceExtremeCombi)
+    println(io, "PriceExtremeCombi(regrwindow=$(pec.regrwindow)) len(peakix)=$(length(pec.peakix)) ix=$(pec.ix) anchorix=$(pec.anchorix)")
+end
+
+function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds, relativetransactionpenalty) where {T<:Real, K<:Integer}
     @assert labelthresholds.longbuy > 2 * relativetransactionpenalty
     @assert abs(labelthresholds.shortbuy) > 2 * relativetransactionpenalty
     g = Ohlcv.relativegain(prices, abs(ix1), abs(ix2))
@@ -517,6 +522,41 @@ function gain(prices, ix1, ix2, labelthresholds::LabelThresholds, relativetransa
     return g
 end
 
+function gain(prices::Vector{T}, peakix::Vector{K}, labelthresholds::LabelThresholds, relativetransactionpenalty) where {T<:Real, K<:Integer}
+    g = 0.0
+    for i in eachindex(peakix)
+        if i > firstindex(peakix)
+            g += gain(prices, peakix[i-1], peakix[i], labelthresholds, relativetransactionpenalty)
+        end
+    end
+    return g
+end
+
+function copyover!(newcombi::PriceExtremeCombi, append::PriceExtremeCombi)
+    if (lastindex(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(append.peakix[append.anchorix]))  # one index overlap?
+        newcombi.peakix = vcat(newcombi.peakix, append.peakix[append.anchorix+1:append.ix])
+        newcombi.rw = vcat(newcombi.rw, append.rw[append.anchorix+1:append.ix])
+    else
+        newcombi.peakix = vcat(newcombi.peakix, append.peakix[append.anchorix:append.ix])
+        newcombi.rw = vcat(newcombi.rw, append.rw[append.anchorix:append.ix])
+    end
+    return newcombi
+end
+
+function reset!(pec::PriceExtremeCombi)
+    pec.ix = firstindex(pec.peakix)
+    pec.anchorix = firstindex(pec.peakix)
+end
+
+"merges the ix position and returns the better of the 2 PriceExtremeCombi"
+function segmentgain(prices, pec::PriceExtremeCombi, labelthresholds::LabelThresholds=defaultlabelthresholds, relativetransactionpenalty=defaultrelativetransactionpenalty)
+    g = 0.0
+    for ix in (pec.anchorix+1):pec.ix
+        g = gain(prices, pec.peakix[ix-1], pec.peakix[ix], labelthresholds, relativetransactionpenalty) + g  # accumulate gain
+    end
+    return g
+end
+
 """
 - Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info
 - relativetransactionpenalty (default=1%) is subtracted from the gain first at open and second at close
@@ -524,45 +564,91 @@ end
 function bestregressiontargetcombi(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds, relativetransactionpenalty=defaultrelativetransactionpenalty)
     #! unit test to be added
     sortedxtrmix = sort([(k, length(f2.regr[k].xtrmix)) for k in keys(f2.regr)], by= x -> x[2], rev=true)  # sorted tuple of (key, length of xtremes),long arrays first
-    prices = Ohlcv.dataframe(f2.ohlcv).Ohlcv.pivot
+    prices = Ohlcv.dataframe(f2.ohlcv).pivot
     @assert !isnothing(prices)
-    combi = PriceExtremeCombi(f2.regr[sortedxtrmix[begin][1]].xtrmix)
-    logdf = DataFrame([:combikey, :combipeakix, :combixix, :singlekey, :singlepeakix, :singlexix], [Int32, Int32, Int32, Int32, Int32])
+    combi = PriceExtremeCombi(f2, first(sortedxtrmix)[1])
+    gains = [("single+" * Features.periodlabels(combi.regrwindow), gain(prices, combi.peakix, labelthresholds, relativetransactionpenalty))]
+    df = DataFrame()
+    df[:, "single+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.peakix, repeat([0], 1))
     for six in (firstindex(sortedxtrmix)+1):lastindex(sortedxtrmix)
-        newcombi = PriceExtremeCombi(prices)
-        single = PriceExtremeCombi(f2.regr[sortedxtrmix[six][1]].xtrmix)
-        while (combi.ix <= lastindex(combi.peakix)) || (single.ix <= lastindex(single.peakix))
-            combi.gain = gain(prices, combi.peakix[combi.ix-1], combi.peakix[combi.ix], labelthresholds, relativetransactionpenalty) + combi.gain  # accumulate gain
-            single.gain = gain(prices, single.peakix[single.ix-1], single.peakix[single.ix], labelthresholds, relativetransactionpenalty) + single.gain  # accumulate gain
-            if abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix])  # then the higher frequent combi catched up with the next extreme of single
-                if combi.gain >= single.gain
-                    if (lastindex(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(combi.peakix[combi.anchorix]))  # one index overlap?
-                        newcombi.peakix = vcat(newcombi.peakix, combi.peakix[combi.anchorix+1:combi.ix])
-                    else
-                        newcombi.peakix = vcat(newcombi.peakix, combi.peakix[combi.anchorix:combi.ix])
-                    end
-                else
-                    if (lastindex(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(single.peakix[single.anchorix]))  # one index overlap?
-                        newcombi.peakix = vcat(newcombi.peakix, single.peakix[single.anchorix+1:single.ix])
-                    else
-                        newcombi.peakix = vcat(newcombi.peakix, single.peakix[single.anchorix:single.ix])
-                    end
-                end
-                combi.gain = single.gain = 0.0
+        newcombi = PriceExtremeCombi(nothing, "combi+" * Features.periodlabels(sortedxtrmix[six][1]))
+        single = PriceExtremeCombi(f2, sortedxtrmix[six][1])
+        push!(gains, ("single+" * Features.periodlabels(single.regrwindow), gain(prices, single.peakix, labelthresholds, relativetransactionpenalty)))
+        reset!(combi)
+        df[:, "single+" * Features.periodlabels(single.regrwindow)] = vcat(single.peakix, repeat([0], length(df[!, 1]) - length(single.peakix)))
+        while (combi.ix < lastindex(combi.peakix)) && (single.ix < lastindex(single.peakix))
+            while (single.ix < lastindex(single.peakix)) && (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix]))
+                single.ix += 1
             end
-            if abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix])  # then the higher frequent combi catched up with the next extreme of single
-                push!(logdf, (sortedxtrmix[six-1][1], combi.peakix[combi.ix], combi.ix, sortedxtrmix[six][1], single.peakix[single.ix], single.ix))
+            while (combi.ix < lastindex(combi.peakix)) && (abs(single.peakix[single.ix]) > abs(combi.peakix[combi.ix]))
+                if (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix+1]))  # then the higher frequent combi catched up with the next extreme of single
+                    combi.ix = sign(single.peakix[single.ix]) == sign(combi.peakix[combi.ix+1]) ? combi.ix + 1 : combi.ix
+                    @assert sign(single.peakix[single.ix]) == sign(combi.peakix[combi.ix])
+                    # now sign of both peaks is equal
+                    # next choose one of the peak ix as common peak
+                    if combi.peakix[combi.ix] > 0  # == index of maximum
+                        @assert single.peakix[single.ix] > 0
+                        if (prices[combi.peakix[combi.ix]] < prices[single.peakix[single.ix]]) && (single.peakix[single.ix] > abs(combi.peakix[combi.ix-1]))
+                            combi.peakix[combi.ix] = single.peakix[single.ix]
+                            combi.rw[combi.ix] = single.rw[single.ix]
+                        else
+                            if (prices[combi.peakix[combi.ix]] < prices[single.peakix[single.ix]]) && (single.peakix[single.ix] <= abs(combi.peakix[combi.ix-1]))
+                                @warn "non optimal maximum decision" prices[combi.peakix[combi.ix]] prices[single.peakix[single.ix]] single.peakix[single.ix] abs(combi.peakix[combi.ix-1])
+                            end
+                            if prices[combi.peakix[combi.ix]] > prices[single.peakix[single.ix]]
+                                single.peakix[single.ix] = combi.peakix[combi.ix]
+                                single.rw[single.ix]= combi.rw[combi.ix]
+                            end
+                        end
+                    else  # combi.peakix[single.ix] < 0  == index of minimum
+                        if (prices[abs(combi.peakix[combi.ix])] > prices[abs(single.peakix[single.ix])]) && (abs(single.peakix[single.ix]) > abs(combi.peakix[combi.ix-1]))
+                            combi.peakix[combi.ix] = single.peakix[single.ix]
+                            combi.rw[combi.ix] = single.rw[single.ix]
+                        else
+                            if (prices[abs(combi.peakix[combi.ix])] > prices[abs(single.peakix[single.ix])]) && (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix-1]))
+                                @warn "non optimal minimum decision" prices[combi.peakix[combi.ix]] prices[single.peakix[single.ix]] single.peakix[single.ix] abs(combi.peakix[combi.ix-1])
+                            end
+                            if prices[abs(combi.peakix[combi.ix])] < prices[abs(single.peakix[single.ix])]
+                                single.peakix[single.ix] = combi.peakix[combi.ix]
+                                single.rw[single.ix]= combi.rw[combi.ix]
+                            end
+                        end
+                    end
+                    break  # detected end of segment and merged them by selecting common peak, now copy them over and start a new segment
+                else
+                    combi.ix += 1
+                end
+            end
+
+            if segmentgain(prices, combi, labelthresholds, relativetransactionpenalty) >= segmentgain(prices, single, labelthresholds, relativetransactionpenalty)
+                newcombi = copyover!(newcombi, combi)
+            else
+                newcombi = copyover!(newcombi, single)
             end
             combi.anchorix = combi.ix
-            combi.ix += 1
             single.anchorix = single.ix
-            single.ix += 1
         end
+        if combi.ix < lastindex(combi.peakix)
+            @assert single.ix == lastindex(single.peakix)
+            combi.ix= lastindex(combi.peakix)
+            copyover!(newcombi, combi)
+        elseif single.ix < lastindex(single.peakix)
+            @assert combi.ix == lastindex(combi.peakix)
+            single.ix= lastindex(single.peakix)
+            copyover!(newcombi, single)
+        else
+            # matching last element of combi and single
+        end
+        combi = newcombi
+        push!(gains, (combi.regrwindow, gain(prices, combi.peakix, labelthresholds, relativetransactionpenalty)))
+        df[:, "combi+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.peakix, repeat([0], length(df[!, 1]) - length(combi.peakix)))
+        df[:, "regrwin+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.rw, repeat([0], length(df[!, 1]) - length(combi.rw)))
+        df[:, "prices+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat([prices[abs(i)] for i in combi.peakix], repeat([0], length(df[!, 1]) - length(combi.peakix)))
+        println(combi, single, newcombi)
+        @assert all([(sign(combi.peakix[i]) == -sign(combi.peakix[i-1])) for i in eachindex(combi.peakix) if (i > firstindex(combi.peakix)) && (combi.peakix[i] != 0)])
     end
-    if size(logdf, 1) > 0
-        @warn "lower frequent extremes are not always a full subset of higher frequent extremes" logdf
-    end
-    return sortedxtrmix
+    println("gains=$gains")
+    return combi.peakix, df
 end
 
 """

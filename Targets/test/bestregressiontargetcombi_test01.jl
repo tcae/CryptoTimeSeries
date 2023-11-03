@@ -7,8 +7,6 @@ ohlcv = TestOhlcv.testohlcv("doublesine", startdt, enddt)
 df = Ohlcv.dataframe(ohlcv)
 ol = size(df,1)
 f2 = Features.Features002(ohlcv)
-s = Targets.bestregressiontargetcombi(f2)
-println("s=$s length of first = $(s[1][2])")
 # println(f2)
 
 # layout = Layout(yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.25],
@@ -18,4 +16,8 @@ println("s=$s length of first = $(s[1][2])")
 #     bar(df, x=:opentime, y=:basevolume, name="basevolume", yaxis="y2")]
 
 # display(plot(p, layout))
+
+combi, df = Targets.bestregressiontargetcombi(f2)
+# println("s=$s length of first = $(s[1][2])")
+println(df)
 
