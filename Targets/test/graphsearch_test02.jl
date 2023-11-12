@@ -1,8 +1,17 @@
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
-using Test, CSV
+using Test, CSV, Logging, LoggingExtras
 using PlotlyJS, WebIO
 
 using EnvConfig, Features, Targets, TestOhlcv, Ohlcv
+
+all_logger = ConsoleLogger(stderr, Logging.BelowMinLevel)
+logger = EarlyFilteredLogger(all_logger) do args
+    r = Logging.Debug <= args.level < Logging.AboveMaxLevel && args._module === Targets
+    # r = Logging.Info <= args.level < Logging.AboveMaxLevel && args._module === Targets
+    return r
+end
+
+
 
     # periodsamples = 150  # minutes per  period
 # totalsamples = 20 * 24 * 60  # 20 days in minute frequency
@@ -18,9 +27,12 @@ labels1, relativedist1, realdist1, priceix1 = Targets.continuousdistancelabels(y
 # labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(ydata, [grad, grad], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
 # labels2, relativedist2, realdist2, regressionix2, priceix2 = Targets.continuousdistancelabels(ydata, grad, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
 
-f2 = Targets.fakef2fromarrays(ydata, [grad])
-labels3, relativedist3, realdist3, priceix3 = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-
+with_logger(logger) do
+    f2 = Targets.fakef2fromarrays(ydata, [grad])
+    labels2, relativedist2, realdist2, priceix2 = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+    f2 = Targets.fakef2fromarrays(ydata, [grad, grad])
+    labels3, relativedist3, realdist3, priceix3 = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+end
 # labels1, realdist1, x, ydata, priceix1 = prepare1(totalsamples, periodsamples, yconst)
 # labels2, realdist2, _, _, priceix2, regressionix2 = prepare2(totalsamples, periodsamples, yconst)
 df = DataFrame()
@@ -31,15 +43,15 @@ df.realdist1 = realdist1
 df.priceix1 = priceix1
 df.relativedist1 = relativedist1
 df.labels1 = labels1
-# df.realdist2 = realdist2
-# df.priceix2 = priceix2
+df.realdist2 = realdist2
+df.priceix2 = priceix2
 df.priceix3 = priceix3
-# df.delta = abs.(priceix2) .== abs.(priceix3)
-# df.realdist2 = relativedist2
+df.delta = abs.(priceix2) .== abs.(priceix3)
+df.realdist2 = relativedist2
 df.realdist3 = relativedist3
-# df.relativedist2 = relativedist2
+df.relativedist2 = relativedist2
 df.relativedist3 = relativedist3
-# df.labels2 = labels2
+df.labels2 = labels2
 df.labels3 = labels3
 # df.regressionix2 = regressionix2
 @assert ydata == Ohlcv.dataframe(f2.ohlcv).pivot

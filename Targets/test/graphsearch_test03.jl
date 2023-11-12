@@ -14,7 +14,7 @@ end
 with_logger(logger) do
 
  # nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme
- ydata =     [1.0f0, 1.2f0, 1.0f0, 1.31f0, 1.1f0, 1.1f0, 0.8f0, 0.9f0, 1.0f0, 1.1f0, 1.0f0, 1.3f0, 1.0f0, 1.2f0, 0.91f0, 1.182f0, 1.0f0, 1.1f0, 1.2f0, 1.3f0]
+ ydata =     [1.0f0, 1.2f0, 1.0f0, 1.29f0, 1.1f0, 1.1f0, 0.8f0, 0.9f0, 1.0f0, 1.1f0, 1.0f0, 1.31f0, 1.0f0, 1.2f0, 0.91f0, 1.182f0, 1.0f0, 1.1f0, 1.2f0, 1.3f0]
  grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.05f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
  grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, 0.0f0, 0.1f0, -0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
  f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])

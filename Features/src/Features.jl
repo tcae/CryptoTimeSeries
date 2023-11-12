@@ -30,7 +30,7 @@ relativetimedict = Dict(
     "reldayofyear" => relativedayofyear)
 
 """
-- returns index of next regression extreme or 0 in case of no extreme
+- returns index of next regression extreme or last (if forward) / first index in case of no extreme
     - regression extreme index: in case of uphill **after** slope >= 0, i.e. index of first downhill grad as positive number to indicate maximum
     - regression extreme index: in case of downhill **after** slope <= 0, i.e. index of first uphill grad as negative number to indicate minimum
     - if there is any slope then teh last index is considered an extreme
@@ -40,9 +40,10 @@ function extremeregressionindex(regressions, startindex; forward)
     startindex= abs(startindex)
     regend = lastindex(regressions)
     regstart = firstindex(regressions)
-    arrayend = forward ? startindex >= regend : startindex <= regstart
     extremeindex = 0
     @assert indexinrange(startindex, regstart, regend) "index: $startindex  len: $regend"
+    upwards = regressions[startindex] > 0
+    downwards = regressions[startindex] < 0
     while indexinrange(startindex, regstart, regend) && regressions[startindex] == 0
         startindex = nextindex(forward, startindex)
     end
@@ -65,9 +66,8 @@ function extremeregressionindex(regressions, startindex; forward)
         extremeindex = forward ? (downwards ? -startindex : startindex) : (downwards ? startindex : -startindex)
     else
         extremeindex = forward ? (downwards ? -regend : regend) : (downwards ? regstart : -regstart)
-        arrayend = true
     end
-    return extremeindex, arrayend
+    return extremeindex
 end
 
 """
@@ -79,33 +79,52 @@ The index array is either created if not present or is extended.
     - regressiongradients are the gradients of the regression lines calculated for each price
     - startindex is the index within regressiongradients where the search for extremes shall start
     - if forward (default) the extremeix ix will be appended otherwise added to the start
+    - the first in case of forward == false or the last in case of forward == true will always be added
 
 """
 function regressionextremesix!(extremeix::Union{Nothing, Vector{T}}, regressiongradients, startindex; forward=true) where {T<:Integer}
     regend = lastindex(regressiongradients)
     regstart = firstindex(regressiongradients)
     @assert indexinrange(startindex, regstart, regend) "index: $startindex  len: $regend"
+    xix = extremeregressionindex(regressiongradients, startindex; forward)
     if isnothing(extremeix)
         extremeix = Int32[]
+    elseif forward  # clean up extremeix that xix connects right - especially removes last element that was not an extreme but an end of array
+        ix = lastindex(extremeix)
+        while (abs(extremeix[ix]) >= abs(xix)) || (sign(extremeix[ix]) == sign(xix))
+            if ix == firstindex(extremeix)
+                extremeix = Int32[]
+                break
+            else
+                pop!(extremeix)
+            end
+            ix = lastindex(extremeix)
+        end
+    else  # backward == !forward - clean up extremeix that xix connects right - especially removes first element that was not an extreme but a start of array
+        ix = firstindex(extremeix)
+        while (abs(extremeix[ix]) <= abs(xix)) || (sign(extremeix[ix]) == sign(xix))
+            if ix == lastindex(extremeix)
+                extremeix = Int32[]
+                break
+            else
+                deleteat!(extremeix, 1)
+            end
+            ix = firstindex(extremeix)  # should be the same as before
+        end
     end
-    xix, arrayend = extremeregressionindex(regressiongradients, startindex; forward)
     while true
         if forward
-            if (length(extremeix) > 0) && (abs(extremeix[end]) >= abs(xix))
-                @warn "inconsistency: abs(extremeix[end]) >= next xtreme ix" extremeix[end] xix
-            end
+            @assert (length(extremeix) == 0) || (length(extremeix) > 0) && ((abs(extremeix[end]) >= abs(xix)) || (sign(extremeix[end]) != sign(xix))) "inconsistency: extremeix[end]=$(length(extremeix) > 0 ? extremeix[end] : "[]") xix=$xix"
             extremeix = push!(extremeix, xix)
         else
-            if (length(extremeix) > 0) && (abs(extremeix[1]) <= abs(xix))
-                @warn "inconsistency: abs(extremeix[start]) <= next xtreme ix" extremeix[end] xix
-            end
+            @assert (length(extremeix) == 0) || (length(extremeix) > 0) && ((abs(first(extremeix)) <= abs(xix)) || (sign(first(extremeix)) != sign(xix))) "inconsistency: first(extremeix)=$(length(extremeix) > 0 ? first(extremeix) : "[]") xix=$xix"
             extremeix = pushfirst!(extremeix, xix)
         end
+        arrayend = forward ? abs(xix) == lastindex(regressiongradients) : abs(xix) == firstindex(regressiongradients)
         arrayend ? break : false
-        xix, arrayend = extremeregressionindex(regressiongradients, xix; forward)
-        # println("inner loop: xix=$xix arrayend=$arrayend")
+        xix = extremeregressionindex(regressiongradients, xix; forward)
     end
-    # println("extremeix=$extremeix xix=$xix arrayend=$arrayend startindex=$startindex forward=$forward regend=$regend")
+    # println("regressionextremesix!: f2 extremeix=$extremeix")
     return extremeix
 end
 
@@ -127,7 +146,7 @@ function extremepriceindex(prices, startindex, endindex, maxsearch)
     @assert indexinrange(endindex, pstart, pend)  "index: $endindex  len: $pend"
     forward = startindex < endindex
     while forward ? startindex <= endindex : startindex >= endindex
-        extremeindex = newifbetterequal(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
+        extremeindex = newifbetter(prices[extremeindex], prices[startindex], maxsearch) ? startindex : extremeindex
         startindex = nextindex(forward, startindex)
     end
     return extremeindex
@@ -256,41 +275,37 @@ maxsearch(regressionextremeindex) = regressionextremeindex > 0
 
 """
 function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
+    #! deprecated
+    @error "Features.pricediffregressionpeak is deprecated and replaced by Targets.bestregressiontargetcombi"
+    return
+
+
     @assert !(prices === nothing) && (size(prices, 1) > 0) "prices nothing == $(prices === nothing) or length == 0"
     @assert !(regressiongradients === nothing) && (size(regressiongradients, 1) > 0) "regressions nothing == $(regressiongradients === nothing) or length == 0"
     @assert size(prices, 1) == size(regressiongradients, 1) "size(prices) $(size(prices, 1)) != size(regressions) $(size(regressiongradients, 1))"
-    @assert length(size(prices)) == 1 "length(size(prices)) $(length(size(prices))) != 1"
     pricediffs = zeros(Float32, length(prices))
     regressionix = zeros(Int32, length(prices))
     priceix = zeros(Int32, length(prices))
     pend = lastindex(prices)
     lastpix = pix = rix = firstindex(prices)
+    rix = firstindex(regressiongradients)
     for cix in eachindex(prices)
-        if pix <= cix
-            # if rix <= cix
-                rix, arrend = extremeregressionindex(regressiongradients, rix; forward=true)
-                # rix = rix == 0 ? pend : rix
-                lastpix = pix > lastpix ? pix : lastpix
-                pix = extremepriceindex(prices, abs(rix), min((cix+1), abs(rix)), maxsearch(rix))  # search back from extreme rix to current index cix
-                # elseif rix < pend  # rix >= cix
-            #     # extreme price index pix between cix and last regression extreme rix was found and pricediffs filled
-            #     # look for next regression extreme starting from last regression extreme
-            #     maxsearch = regressiongradients[rix] > 0
-            #     rix, arrend = extremeregressionindex(regressiongradients, rix; forward=true)
-            #     rix = rix == 0 ? pend : rix
-            # end
-            # - it was expected that the relevant actual price maximum is between gradient inflection index and regression extreme
-            # >> it turned out that the inflection is not reliable
-            # >> search from regression extreme back to last price extreme for global extreme yields better results
+        if (abs(pix) <= cix)
+            if abs(rix) == lastindex(regressiongradients)
+                pix = -sign(rix) * lastindex(prices)  # pix backwwards search alerady done
+            else
+                rix = extremeregressionindex(regressiongradients, rix; forward=true)
+                pix = sign(rix) * extremepriceindex(prices, abs(rix), min((cix), abs(rix)), maxsearch(rix))  # search back from extreme rix to current index cix
+            end
+            lastpix = abs(pix) > lastpix ? abs(pix) : lastpix
         end
         if smoothing
-            pricediffs[cix] = smoothdistance(prices, lastpix, cix, pix)  # use straight line between extremes to calculate distance
+            pricediffs[cix] = smoothdistance(prices, lastpix, cix, abs(pix))  # use straight line between extremes to calculate distance
         else
-            pricediffs[cix] = prices[pix]  - prices[cix]
+            pricediffs[cix] = prices[abs(pix)]  - prices[cix]
         end
-        # pricediffs[cix] = prices[pix] - prices[cix]  # calculate the distance to the actual price which may be instable
         regressionix[cix] = rix
-        priceix[cix] = maxsearch(rix) ? pix : -pix
+        priceix[cix] = pix
     end
     @assert all([0 < abs(priceix[i]) <= pend for i in 1:pend]) priceix
     @assert all([0 < abs(regressionix[i]) <= pend for i in 1:pend]) regressionix
@@ -870,16 +885,17 @@ mutable struct Features002
     firstix  # features start at firstix of ohlcv.df
     lastix  # features end at lastix of ohlcv.df
     requiredminutes
-    function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)
-        df = Ohlcv.dataframe(ohlcv)
-        reqmin = requiredminutes(regrwindows)
-        @assert size(df, 1) >= reqmin
-        lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
-        maxfirstix = max((lastix - reqmin + 1), firstindex(df, 1))
-        firstix = firstix < reqmin ? reqmin : firstix
-        firstix = firstix > maxfirstix ? maxfirstix : firstix
-        new(ohlcv, getfeatures002regr(ohlcv, firstix, lastix, regrwindows), getrelvolumes002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix, reqmin)
-    end
+end
+
+function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)
+    df = Ohlcv.dataframe(ohlcv)
+    reqmin = requiredminutes(regrwindows)
+    @assert size(df, 1) >= reqmin
+    lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
+    maxfirstix = max((lastix - reqmin + 1), firstindex(df, 1))
+    firstix = firstix < reqmin ? reqmin : firstix
+    firstix = firstix > maxfirstix ? maxfirstix : firstix
+    return Features002(ohlcv, getfeatures002regr(ohlcv, firstix, lastix, regrwindows), getrelvolumes002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix, reqmin)
 end
 
 requiredminutes(f2::Features002) = f2.requiredminutes

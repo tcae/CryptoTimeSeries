@@ -43,19 +43,19 @@ function lastgainloss_test()
     return isapprox(df, refdf, atol=10^-5)
 end
 
-function distancepeaktest()
-    x, y = TestOhlcv.sinesamples(400, 2, [(150, 0, 0.5)])
-    _, grad = Features.rollingregression(y, 50)
-    distances, regressionix, priceix = Features.pricediffregressionpeak(y, grad)
-    df = DataFrame()
-    df.x = x
-    df.y = y
-    df.grad = grad
-    df.dist = distances
-    df.pp = priceix
-    df.rp = regressionix
-    println(df)
-end
+# function distancepeaktest()
+#     x, y = TestOhlcv.sinesamples(400, 2, [(150, 0, 0.5)])
+#     _, grad = Features.rollingregression(y, 50)
+#     distances, regressionix, priceix = Features.pricediffregressionpeak(y, grad)
+#     df = DataFrame()
+#     df.x = x
+#     df.y = y
+#     df.grad = grad
+#     df.dist = distances
+#     df.pp = priceix
+#     df.rp = regressionix
+#     println(df)
+# end
 
 function nextpeakindices_test(prices, target)
     df = DataFrame()
@@ -315,6 +315,5 @@ f12xd = describe(f12x)
 
 end # testset
 
-# distancepeaktest()
 
 end  # module

@@ -15,17 +15,14 @@ end
 with_logger(logger) do
 
 # not exceeding buy thresholds should result always in next possible extreme
-y =     [1.0f0, 1.29f0, 1.0f0, 1.29f0, 0.97f0, 1.15f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.1f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0]
-# grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
+ydata = [1.0f0, 1.29f0, 1.0f0, 1.29f0, 0.97f0, 1.15f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.1f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0]
 grad1 = [0.2f0, 0.2f0, -0.2f0, -0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
 grad2 = [0.2f0, 0.1f0, 0.1f0, 0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
-# labels, relativedist, realdist, regressionix, priceix, df = Targets.continuousdistancelabels(y, [grad1, grad2], Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-
-f2 = Targets.fakef2fromarrays(y, [grad1, grad2])
-labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
+labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
 # labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.1, 0.05, -0.1, -0.1))
 df = DataFrame()
-df.prices = y
+df.prices = ydata
 df.grad1 = grad1
 df.grad2 = grad2
 df.priceix = priceix

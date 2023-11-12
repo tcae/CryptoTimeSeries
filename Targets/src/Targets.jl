@@ -12,7 +12,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 module Targets
 
 using EnvConfig, Ohlcv, Features
-using DataFrames, Logging
+using DataFrames, Logging, Dates, SortingAlgorithms
 
 "returns all possible labels:"
 possiblelabels() = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
@@ -293,10 +293,10 @@ end
 - Targets.defaultlabelthresholds provides default thresholds
 """
 struct LabelThresholds
-    longbuy
-    longhold
-    shorthold
-    shortbuy
+    longbuy::Float32
+    longhold::Float32
+    shorthold::Float32
+    shortbuy::Float32
 end
 
 """
@@ -327,15 +327,14 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
     @assert all([lab in ["longbuy", "longhold", "shortbuy", "shorthold", "close"] for lab in possiblelabels()])
     lt = labelthresholds
     rd = relativedist
-    labels = [(rd > lt.longbuy ? "longbuy" : (rd > lt.longhold ? "longhold" :
-              (lt.shortbuy > rd ? "shortbuy" : (lt.shorthold > rd ? "shorthold" : "close")))) for rd in relativedist]
-    # labels = [(rd > lt.longbuy ? "buy" : (lt.shortclose > rd ? "close" : "hold")) for rd in relativedist]
+    labels = [(rd >= lt.longbuy ? "longbuy" : (rd > lt.longhold ? "longhold" :
+              (lt.shortbuy >= rd ? "shortbuy" : (lt.shorthold > rd ? "shorthold" : "close")))) for rd in relativedist]
     return labels
 end
 
 function relativedistances(prices::Vector{T}, pricediffs, priceix, backwardrelative=true) where {T<:Real}
     if backwardrelative
-        relativedist = [(priceix[ix] == 0 ? T(0.0) : pricediffs[ix] / prices[priceix[ix]]) for ix in 1:size(prices, 1)]
+        relativedist = [(priceix[ix] == 0 ? T(0.0) : pricediffs[ix] / prices[abs(priceix[ix])]) for ix in 1:size(prices, 1)]
     else
         relativedist = pricediffs ./ prices
     end
@@ -343,12 +342,12 @@ end
 
 function continuousdistancelabels(prices, labelthresholds::LabelThresholds)
     pricediffs, priceix = Features.nextpeakindices(prices, labelthresholds.longbuy, labelthresholds.shortbuy)
-    relativedist = relativedistances(prices, pricediffs, priceix, true)
+    relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, priceix
 end
 
-mutable struct Dists
+mutable struct Dists #! deprecated
     pricediffs
     regressionix
     priceix
@@ -357,6 +356,10 @@ mutable struct Dists
 end
 
 function (Dists)(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) ::Vector{Dists} where {T<:Real}
+    #! deprecated
+    @error "Targets.continuousdistancelabels is deprecated and replaced by Targets.bestregressiontargetcombi"
+    return
+
     d = Array{Dists}(undef, length(regressiongradients))
     for ix in eachindex(d)
         pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients[ix]; smoothing=false)
@@ -378,7 +381,11 @@ end
 - for multiple regressiongradients the next extreme exceeding long/short buy thresholds is used
 
 """
-function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{Vector{T}}, labelthresholds::LabelThresholds) where {T<:Real}
+function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{Vector{T}}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
+    #! deprecated
+    @error "Targets.continuousdistancelabels is deprecated and replaced by Targets.bestregressiontargetcombi"
+    return
+
     # for rg in regressiongradients
     #     println(prices)
     #     println(Features.pricediffregressionpeak(prices, rg; smoothing=false)...)
@@ -457,34 +464,20 @@ end
 - from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
 
 """
-function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{T}, labelthresholds::LabelThresholds) where {T<:Real}
+function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{T}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
+    #! deprecated
+    @error "Targets.continuousdistancelabels is deprecated and replaced by Targets.bestregressiontargetcombi"
+    return
+
     pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients; smoothing=false)
     relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, regressionix, priceix
 end
 
-"Default relative transaction penalty of 1% on all transactions for fee and time lag, i.e. each open and each close, that is subtracted from gain."
-defaultrelativetransactionpenalty = 0.01
-
-function calcgaindetails(prices, xtrmix, relativetransactionpenalty)
-    gain = zeros(Float64, length(xtrmix))
-    lastix = firstindex(xtrmix)
-    for ix in eachindex(xtrmix)
-        gain[ix] = ix == lastix ? 0 : 0 #TODO
-    end
-end
-
-mutable struct Gains
-    pricediffs
-    regressionix
-    priceix
-    relativedist
-    # Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
-end
-
 mutable struct PriceExtremeCombi
     peakix  # vector of signed indices (positive for maxima, negative for minima)
+    regrxtrmix
     ix  # running index within peakix
     anchorix  # index of begin of peak sequence under assessment
     gain  # current cumulated gain since anchorix
@@ -493,16 +486,27 @@ mutable struct PriceExtremeCombi
     function PriceExtremeCombi(f2, regrwindow)
         if isnothing(f2)
             extremesix = Int64[]
+            regr = Int64[]
             rw = String[]
         else
             prices = Ohlcv.dataframe(f2.ohlcv).pivot
-            regr = f2.regr[regrwindow].xtrmix  # fill array of price extremes by backward search from regression extremes
+            regr = f2.regr[regrwindow].xtrmix
+            regr = [sign(regr[rix]) * Features.ohlcvix(f2, abs(regr[rix])) for rix in eachindex(regr)]  # translate to price index
             # println("PriceExtremeCombi regr=$regr")
-            extremesix = [sign(regr[rix]) * Features.extremepriceindex(prices, abs(regr[rix])+f2.firstix-1, rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1])+f2.firstix-1, (regr[rix] > 0)) for rix in eachindex(regr)]
+            # fill array of price extremes by backward search from regression extremes
+            extremesix = [sign(regr[rix]) * Features.extremepriceindex(prices, abs(regr[rix]), rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1])+1, (regr[rix] > 0)) for rix in eachindex(regr)]
+            if abs(last(extremesix)) < abs(last(regr))  # add end peak to have the end slope considered in gain
+                push!(extremesix, -last(regr))
+                push!(regr, -last(regr))
+            end
+            if abs(first(extremesix)) > firstindex(prices) # add start peak to have the first slope considered in gain
+                pushfirst!(extremesix, -sign(first(extremesix)) * firstindex(prices))
+                pushfirst!(regr, first(extremesix))
+            end
             # println("PriceExtremeCombi extremesix=$extremesix")
             rw = repeat([string(regrwindow)], length(extremesix))
         end
-        return new(extremesix, firstindex(extremesix), firstindex(extremesix), 0.0, regrwindow, rw)
+        return new(extremesix, regr, firstindex(extremesix), firstindex(extremesix), 0.0, regrwindow, rw)
     end
 end
 
@@ -510,35 +514,55 @@ function Base.show(io::IO, pec::PriceExtremeCombi)
     println(io, "PriceExtremeCombi(regrwindow=$(pec.regrwindow)) len(peakix)=$(length(pec.peakix)) ix=$(pec.ix) anchorix=$(pec.anchorix)")
 end
 
-function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds, relativetransactionpenalty) where {T<:Real, K<:Integer}
-    @assert labelthresholds.longbuy > 2 * relativetransactionpenalty
-    @assert abs(labelthresholds.shortbuy) > 2 * relativetransactionpenalty
+function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
     g = Ohlcv.relativegain(prices, abs(ix1), abs(ix2))
     if g > 0
-        g = g >= labelthresholds.longbuy ? g - relativetransactionpenalty : 0.0  # consider fee and time lag
+        g = g >= labelthresholds.longbuy ? g : 0.0
     else
-        g = g <= labelthresholds.shortbuy ? abs(g) - relativetransactionpenalty : 0.0  # consider fee and time lag
+        g = g <= labelthresholds.shortbuy ? abs(g) : 0.0
     end
     return g
 end
 
-function gain(prices::Vector{T}, peakix::Vector{K}, labelthresholds::LabelThresholds, relativetransactionpenalty) where {T<:Real, K<:Integer}
+function gain(prices::Vector{T}, peakix::Vector{K}, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
     g = 0.0
     for i in eachindex(peakix)
         if i > firstindex(peakix)
-            g += gain(prices, peakix[i-1], peakix[i], labelthresholds, relativetransactionpenalty)
+            g += gain(prices, peakix[i-1], peakix[i], labelthresholds)
         end
     end
     return g
 end
 
+"""
+- may change append.peakix[append.anchorix]
+"""
+function adaptappendsegmentconnection!(append, newcombi)
+    if length(newcombi.peakix) == 0
+        return
+    end
+    skip = 0
+    while (abs(newcombi.peakix[end]) >= abs(append.peakix[append.anchorix+skip]) || (sign(newcombi.peakix[end]) == sign(append.peakix[append.anchorix+skip]))) && (append.anchorix+skip < append.ix)
+        skip += 1
+    end
+    if (skip > 0)
+        append.anchorix = append.anchorix + skip - 1
+        append.peakix[append.anchorix] = newcombi.peakix[end]
+    end
+end
+
 function copyover!(newcombi::PriceExtremeCombi, append::PriceExtremeCombi)
-    if (lastindex(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(append.peakix[append.anchorix]))  # one index overlap?
-        newcombi.peakix = vcat(newcombi.peakix, append.peakix[append.anchorix+1:append.ix])
-        newcombi.rw = vcat(newcombi.rw, append.rw[append.anchorix+1:append.ix])
-    else
-        newcombi.peakix = vcat(newcombi.peakix, append.peakix[append.anchorix:append.ix])
-        newcombi.rw = vcat(newcombi.rw, append.rw[append.anchorix:append.ix])
+    eix = lastindex(newcombi.peakix)
+    overlap = (length(newcombi.peakix) > 0) && (abs(newcombi.peakix[end]) >= abs(append.peakix[append.anchorix])) ? 1 : 0  # one index overlap?
+    newcombi.peakix = vcat(newcombi.peakix, append.peakix[append.anchorix+overlap:append.ix])
+    newcombi.regrxtrmix = vcat(newcombi.regrxtrmix, append.regrxtrmix[append.anchorix+overlap:append.ix])
+    newcombi.rw = vcat(newcombi.rw, append.rw[append.anchorix+overlap:append.ix])
+    # println("append.ix=$(append.ix) append.anchorix=$(append.anchorix) append.regrwindow=$(append.regrwindow) overlap=$overlap")
+    # println("newcombi.peakix=$(newcombi.peakix) append.peakix=$(append.peakix)")
+    # println("newcombi.regrxtrmix=$(newcombi.regrxtrmix) append.regrxtrmix=$(append.regrxtrmix)")
+    # println("newcombi.rw=$(newcombi.rw) append.rw=$(append.rw)")
+    if (eix > 0) && (eix < lastindex(newcombi.peakix))
+        @assert sign(newcombi.peakix[eix]) != sign(newcombi.peakix[eix+1])
     end
     return newcombi
 end
@@ -549,106 +573,285 @@ function reset!(pec::PriceExtremeCombi)
 end
 
 "merges the ix position and returns the better of the 2 PriceExtremeCombi"
-function segmentgain(prices, pec::PriceExtremeCombi, labelthresholds::LabelThresholds=defaultlabelthresholds, relativetransactionpenalty=defaultrelativetransactionpenalty)
+function segmentgain(prices, pec::PriceExtremeCombi, labelthresholds::LabelThresholds=defaultlabelthresholds)
     g = 0.0
     for ix in (pec.anchorix+1):pec.ix
-        g = gain(prices, pec.peakix[ix-1], pec.peakix[ix], labelthresholds, relativetransactionpenalty) + g  # accumulate gain
+        g = gain(prices, pec.peakix[ix-1], pec.peakix[ix], labelthresholds) + g  # accumulate gain
     end
     return g
 end
 
-"""
-- Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info
-- relativetransactionpenalty (default=1%) is subtracted from the gain first at open and second at close
-"""
-function bestregressiontargetcombi(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds, relativetransactionpenalty=defaultrelativetransactionpenalty)
-    #! unit test to be added
+function nextextremepair!(combi, single)
+    while (single.ix < lastindex(single.peakix)) && ((abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix])) || (single.anchorix == single.ix))
+        single.ix += 1
+    end
+    while (combi.ix < lastindex(combi.peakix)) && (abs(single.peakix[single.ix]) > abs(combi.peakix[combi.ix]))
+        # println("bestregressiontargetcombi $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) single.peakix[single.ix]=$(single.peakix[single.ix]) combi.peakix[combi.ix]=$(combi.peakix[combi.ix]) combi.peakix[combi.ix+1]=$(combi.peakix[combi.ix+1])")
+        combi.ix += 1
+    end
+    # now combi catched up with the next extreme of single
+    while (single.ix < lastindex(single.peakix)) && (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix]))
+        if abs(single.peakix[single.ix+1]) > abs(combi.peakix[combi.ix])
+            break
+        else
+            single.ix += 1
+        end
+    end
+end
+
+mutable struct ToporderElem
+    pix   # peak index
+    rwarr # signed regression window array (negative = minimum, positive = maximum)
+end
+
+mutable struct GraphElem
+    pix   # peak (=extreme) index
+    gain  # relative gain if above threshold otherwise 0.0
+    rw    # signed regression window (negative = minimum, positive = maximum)
+end
+
+" Returns peakarr with each extreme index only once for a maximum and once for a minimum in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)"
+function reducedpeakarr(peakarr::Vector{ToporderElem}, startix)::Vector{ToporderElem}  # peakarr = [(extreme index, signed regression minutes),()], startix = index within peakarr
+    if isnothing(startix) || startix < firstindex(peakarr)
+        return vcat([ToporderElem(0, [0])], reducedpeakarr(peakarr, firstindex(peakarr)))
+    end
+    if startix >= lastindex(peakarr)
+        return [ToporderElem(last(peakarr).pix+1000000, [0])]
+    end
+    ix = startix
+    pix = peakarr[startix].pix
+    while (ix < lastindex(peakarr)) && (pix == peakarr[ix].pix)
+        ix += 1
+    end
+    # create arrays of signed regression minutes from consecutive tuples with same pix
+    rwarrmax = [first(peakarr[i].rwarr) for i in startix:ix if (pix == peakarr[i].pix) && (sign(first(peakarr[i].rwarr)) == 1)]
+    rwarrmin = [first(peakarr[i].rwarr) for i in startix:ix if (pix == peakarr[i].pix) && (sign(first(peakarr[i].rwarr)) == -1)]
+    if length(rwarrmax) > 0
+        if length(rwarrmin) > 0
+            peaktuplearr = vcat([ToporderElem(pix, rwarrmax)], [ToporderElem(-pix, rwarrmin)], reducedpeakarr(peakarr, ix))
+        else
+            peaktuplearr = vcat([ToporderElem(pix, rwarrmax)], reducedpeakarr(peakarr, ix))
+        end
+    else
+        if length(rwarrmin) > 0
+            peaktuplearr = vcat([ToporderElem(-pix, rwarrmin)], reducedpeakarr(peakarr, ix))
+        end
+    end
+    return peaktuplearr
+end
+
+graphelemcomparison(a, b) = (a.pix == b.pix) && (a.rw == b.rw)
+
+notinarray(array, element) = isnothing(findfirst(x -> graphelemcomparison(x, element), array))
+
+function peaksuccessors(rwset::Set, peaktuplearr::Vector{ToporderElem}, startix, prices, labelthresholds::LabelThresholds)
+    tuplearr = []
+    pix = abs(peaktuplearr[startix].pix)
+    @assert all(x -> x == sign(first(peaktuplearr[startix].rwarr)), sign.(peaktuplearr[startix].rwarr))  # all of same sign?
+    pixsign = sign(first(peaktuplearr[startix].rwarr))
+    rws = copy(rwset)
+    ix = startix + 1
+    while (ix <= lastindex(peaktuplearr)) && (!isempty(rws))
+        if pix < abs(peaktuplearr[ix].pix)
+            for rw in peaktuplearr[ix].rwarr
+                if ((abs(rw) in rws) || (rw == 0)) && (pixsign != sign(rw))  # pixsign == 0 will be connected to maxima and minima
+                    delete!(rws, abs(rw))
+                    if  (ix < firstindex(peaktuplearr)) || (ix > lastindex(peaktuplearr)) ||
+                        (pix < firstindex(prices)) || (pix > lastindex(prices)) ||
+                        (peaktuplearr[ix].pix < firstindex(prices)) || (peaktuplearr[ix].pix > lastindex(prices))
+                        g = 0.000001  # very small gain to incentive reproducable behavior - it also supports longer in favor of shorter paths
+                    else
+                        g = gain(prices, pix, peaktuplearr[ix].pix, labelthresholds)
+                    end
+                    push!(tuplearr, GraphElem(peaktuplearr[ix].pix, g, rw))
+                end
+            end
+        end
+        ix += 1
+    end
+    return tuplearr  # of format (positive prices index of extreme, gain, signed regression minutes depending of max/min)
+end
+
+function computebestpath(graph, toporder::Vector{ToporderElem}, startpix, maxgain)
+    # vertex is an extreme index (a.k.a pix)
+    distances = Dict(pix => 0.0 for pix in keys(graph))
+    predecessors = Dict{Integer, Union{Nothing, ToporderElem}}(pix => nothing for pix in keys(graph))
+    distances[startpix] = maxgain
+
+    for vertex in toporder
+        for ge in graph[vertex.pix]
+            if distances[vertex.pix] + ge.gain > distances[ge.pix]
+                distances[ge.pix] = distances[vertex.pix] + ge.gain
+                predecessors[ge.pix] = vertex
+            end
+        end
+    end
+    return distances, predecessors
+end
+
+function tracepath(predecessors::Dict{Integer, Union{Nothing, Targets.ToporderElem}}, startvertex::Targets.ToporderElem, lastvertex::Targets.ToporderElem)
+    path = []
+    current_vertex = lastvertex
+    while !isnothing(current_vertex) && (current_vertex.pix != startvertex.pix)
+        pushfirst!(path, current_vertex)
+        current_vertex = predecessors[current_vertex.pix]
+    end
+    pushfirst!(path, startvertex)
+    return path
+end
+
+" Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info "
+function bestregressiontargetcombi2(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    debug = false
+    @debug "Targets.bestregressiontargetcombi2" begin
+        debug = true
+    end
+    maxgain = 100000.0
+    prices = Ohlcv.dataframe(f2.ohlcv).pivot
+    @assert !isnothing(prices)
+    pec = Dict(rw => PriceExtremeCombi(f2, rw) for rw in keys(f2.regr))
+
+    peakarr = sort([ToporderElem(abs(pix), [sign(pix) * rw]) for rw in keys(pec) for pix in pec[rw].peakix], by = x -> x.pix, rev=false)
+    # peakarr contains now a sorted list of tuple of (positive extreme indices, signed regression minutes depending of max/min)
+    # multiple equal peak indices can be in peakarr from different regression windows
+    peakarr = reducedpeakarr(peakarr, nothing)
+    # now peakarr has each extreme index only once in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)
+    rwset = Set([rw for rw in keys(pec)])
+    peakgraph = Dict()
+    for ix in eachindex(peakarr)
+        pix = peakarr[ix].pix
+        psucc = peaksuccessors(rwset, peakarr, ix, prices, labelthresholds)
+        peakgraph[pix] = psucc
+    end
+    _, predecessors = computebestpath(peakgraph, peakarr, first(peakarr).pix, maxgain)
+    bestpath = tracepath(predecessors, first(peakarr), last(peakarr))
+    @debug "ToporderElem {pix = peak index in prices, rwarr = regressions windows} - = minimum, + = maximum" bestpath
+    peakix = [toe.pix for toe in bestpath if firstindex(prices) <= abs(toe.pix) <= lastindex(prices)]
+    if debug
+        for (rw, pec) in pec
+            pec.anchorix = firstindex(pec.peakix)
+            pec.ix = lastindex(pec.peakix)
+            pec.gain = segmentgain(prices, pec, labelthresholds)
+        end
+        g = gain(prices, peakix, labelthresholds)
+        println("gains of regression window: $([(rw, p.gain) for (rw, p) in pec]) combi gain: $g")
+    end
+    return peakix
+end
+
+function continuousdistancelabels2(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    peakix = bestregressiontargetcombi2(f2, labelthresholds)
+    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
+    return labels, relativedist, pricediffs, priceix
+end
+
+" Returns an array of best prices index extremes and an arry of regressionextremes "
+function bestregressiontargetcombi(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    debug = false
+    @debug "Targets.bestregressiontargetcombi" begin
+        debug = true
+    end
     sortedxtrmix = sort([(k, length(f2.regr[k].xtrmix)) for k in keys(f2.regr)], by= x -> x[2], rev=true)  # sorted tuple of (key, length of xtremes),long arrays first
     prices = Ohlcv.dataframe(f2.ohlcv).pivot
     @assert !isnothing(prices)
     combi = PriceExtremeCombi(f2, first(sortedxtrmix)[1])
-    gains = [("single+" * Features.periodlabels(combi.regrwindow), gain(prices, combi.peakix, labelthresholds, relativetransactionpenalty))]
-    df = DataFrame()
-    df[:, "single+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.peakix, repeat([0], 1))
+    debug ? gains = [("single+" * Features.periodlabels(combi.regrwindow), gain(prices, combi.peakix, labelthresholds))] : 0
+    debug ? df = DataFrame() : 0
+    debug ? df[:, "single+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.peakix, repeat([0], length(combi.peakix))) : 0
+    debug ? df[:, "sregrxtrmix+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.regrxtrmix, repeat([0], length(df[!, 1]) - length(combi.regrxtrmix))) : 0
+    debug ? df[:, "sregrwin+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.rw, repeat([0], length(df[!, 1]) - length(combi.rw))) : 0
     for six in (firstindex(sortedxtrmix)+1):lastindex(sortedxtrmix)
         newcombi = PriceExtremeCombi(nothing, "combi+" * Features.periodlabels(sortedxtrmix[six][1]))
         single = PriceExtremeCombi(f2, sortedxtrmix[six][1])
-        push!(gains, ("single+" * Features.periodlabels(single.regrwindow), gain(prices, single.peakix, labelthresholds, relativetransactionpenalty)))
+        debug ? push!(gains, ("single+" * Features.periodlabels(single.regrwindow), gain(prices, single.peakix, labelthresholds))) : 0
         reset!(combi)
-        df[:, "single+" * Features.periodlabels(single.regrwindow)] = vcat(single.peakix, repeat([0], length(df[!, 1]) - length(single.peakix)))
+        debug ? df[:, "single+" * Features.periodlabels(single.regrwindow)] = vcat(single.peakix, repeat([0], length(df[!, 1]) - length(single.peakix))) : 0
+        debug ? df[:, "sregrxtrmix+" * Features.periodlabels(single.regrwindow)] = vcat(single.regrxtrmix, repeat([0], length(df[!, 1]) - length(single.regrxtrmix))) : 0
+        debug ? df[:, "sregrwin+" * Features.periodlabels(single.regrwindow)] = vcat(single.rw, repeat([0], length(df[!, 1]) - length(single.rw))) : 0
         while (combi.ix < lastindex(combi.peakix)) && (single.ix < lastindex(single.peakix))
-            while (single.ix < lastindex(single.peakix)) && (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix]))
-                single.ix += 1
-            end
-            while (combi.ix < lastindex(combi.peakix)) && (abs(single.peakix[single.ix]) > abs(combi.peakix[combi.ix]))
-                if (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix+1]))  # then the higher frequent combi catched up with the next extreme of single
-                    combi.ix = sign(single.peakix[single.ix]) == sign(combi.peakix[combi.ix+1]) ? combi.ix + 1 : combi.ix
-                    @assert sign(single.peakix[single.ix]) == sign(combi.peakix[combi.ix])
-                    # now sign of both peaks is equal
-                    # next choose one of the peak ix as common peak
-                    if combi.peakix[combi.ix] > 0  # == index of maximum
-                        @assert single.peakix[single.ix] > 0
-                        if (prices[combi.peakix[combi.ix]] < prices[single.peakix[single.ix]]) && (single.peakix[single.ix] > abs(combi.peakix[combi.ix-1]))
-                            combi.peakix[combi.ix] = single.peakix[single.ix]
-                            combi.rw[combi.ix] = single.rw[single.ix]
-                        else
-                            if (prices[combi.peakix[combi.ix]] < prices[single.peakix[single.ix]]) && (single.peakix[single.ix] <= abs(combi.peakix[combi.ix-1]))
-                                @warn "non optimal maximum decision" prices[combi.peakix[combi.ix]] prices[single.peakix[single.ix]] single.peakix[single.ix] abs(combi.peakix[combi.ix-1])
-                            end
-                            if prices[combi.peakix[combi.ix]] > prices[single.peakix[single.ix]]
-                                single.peakix[single.ix] = combi.peakix[combi.ix]
-                                single.rw[single.ix]= combi.rw[combi.ix]
-                            end
-                        end
-                    else  # combi.peakix[single.ix] < 0  == index of minimum
-                        if (prices[abs(combi.peakix[combi.ix])] > prices[abs(single.peakix[single.ix])]) && (abs(single.peakix[single.ix]) > abs(combi.peakix[combi.ix-1]))
-                            combi.peakix[combi.ix] = single.peakix[single.ix]
-                            combi.rw[combi.ix] = single.rw[single.ix]
-                        else
-                            if (prices[abs(combi.peakix[combi.ix])] > prices[abs(single.peakix[single.ix])]) && (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix-1]))
-                                @warn "non optimal minimum decision" prices[combi.peakix[combi.ix]] prices[single.peakix[single.ix]] single.peakix[single.ix] abs(combi.peakix[combi.ix-1])
-                            end
-                            if prices[abs(combi.peakix[combi.ix])] < prices[abs(single.peakix[single.ix])]
-                                single.peakix[single.ix] = combi.peakix[combi.ix]
-                                single.rw[single.ix]= combi.rw[combi.ix]
-                            end
-                        end
-                    end
-                    break  # detected end of segment and merged them by selecting common peak, now copy them over and start a new segment
-                else
-                    combi.ix += 1
-                end
-            end
+            nextextremepair!(combi, single)
+            @assert (combi.ix == lastindex(combi.peakix)) || (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix]))
+            # now single catched up with combi and staying just one ix behind
+            adaptappendsegmentconnection!(single, newcombi)
+            adaptappendsegmentconnection!(combi, newcombi)
+            # println("bestregressiontargetcombi2 $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) ")
 
-            if segmentgain(prices, combi, labelthresholds, relativetransactionpenalty) >= segmentgain(prices, single, labelthresholds, relativetransactionpenalty)
-                newcombi = copyover!(newcombi, combi)
-            else
-                newcombi = copyover!(newcombi, single)
+            combigain = segmentgain(prices, combi, labelthresholds)
+            singlegain = segmentgain(prices, single, labelthresholds)
+            if (combigain != 0.0f0) || (singlegain != 0.0f0)  # prefer better gain
+                newcombi = combigain >= singlegain ? copyover!(newcombi, combi) : copyover!(newcombi, single)
+            else  # if both gains == 0.0 then prefer higher frequency of peaks
+                newcombi = (combi.ix - combi.anchorix) > (single.ix - single.anchorix) ? copyover!(newcombi, combi) : copyover!(newcombi, single)
             end
             combi.anchorix = combi.ix
             single.anchorix = single.ix
         end
-        if combi.ix < lastindex(combi.peakix)
+        # println("bestregressiontargetcombi3 $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) ")
+        if combi.ix <= lastindex(combi.peakix)
+            # println("combi finish combi=$combi")
             @assert single.ix == lastindex(single.peakix)
-            combi.ix= lastindex(combi.peakix)
+            combi.ix = lastindex(combi.peakix)
             copyover!(newcombi, combi)
-        elseif single.ix < lastindex(single.peakix)
+        elseif single.ix <= lastindex(single.peakix)
+            # println("combi finish combi=$combi")
             @assert combi.ix == lastindex(combi.peakix)
-            single.ix= lastindex(single.peakix)
+            single.ix = lastindex(single.peakix)
             copyover!(newcombi, single)
         else
             # matching last element of combi and single
         end
+        @debug combi, single, newcombi
         combi = newcombi
-        push!(gains, (combi.regrwindow, gain(prices, combi.peakix, labelthresholds, relativetransactionpenalty)))
-        df[:, "combi+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.peakix, repeat([0], length(df[!, 1]) - length(combi.peakix)))
-        df[:, "regrwin+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.rw, repeat([0], length(df[!, 1]) - length(combi.rw)))
-        df[:, "prices+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat([prices[abs(i)] for i in combi.peakix], repeat([0], length(df[!, 1]) - length(combi.peakix)))
-        println(combi, single, newcombi)
+        debug ? push!(gains, (string(combi.regrwindow), gain(prices, combi.peakix, labelthresholds))) : 0
+        debug ? df[:, "combi+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.peakix, repeat([0], length(df[!, 1]) - length(combi.peakix))) : 0
+        debug ? df[:, "cregrxtrmix+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.regrxtrmix, repeat([0], length(df[!, 1]) - length(combi.regrxtrmix))) : 0
+        debug ? df[:, "cregrwin+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.rw, repeat([0], length(df[!, 1]) - length(combi.rw))) : 0
+        debug ? df[:, "prices+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat([prices[abs(i)] for i in combi.peakix], repeat([0], length(df[!, 1]) - length(combi.peakix))) : 0
+        # debug ? println(combi, single, newcombi) : 0
         @assert all([(sign(combi.peakix[i]) == -sign(combi.peakix[i-1])) for i in eachindex(combi.peakix) if (i > firstindex(combi.peakix)) && (combi.peakix[i] != 0)])
     end
-    println("gains=$gains")
-    return combi.peakix, df
+    @debug "" gains
+    # @debug "" df
+    debug ? println(df) : 0
+    return combi.peakix, combi.regrxtrmix
+end
+
+function ohlcvlabels(prices::Vector{T}, pricepeakix::Vector{S}, labelthresholds::LabelThresholds=defaultlabelthresholds) where {T<:AbstractFloat, S<:Integer}
+    pricediffs = zeros(Float32, length(prices))
+    priceix = zeros(Int32, length(prices))
+    pix = firstindex(pricepeakix)
+    for ix in eachindex(prices)
+        if (ix >= abs(pricepeakix[pix]) && (pix < lastindex(pricepeakix)))
+            pix = pix + 1
+            priceix[ix] = pricepeakix[pix]
+        elseif (pix <= lastindex(pricepeakix)) && (ix <= abs(pricepeakix[pix]))
+            priceix[ix] = pricepeakix[pix]
+        else
+            priceix[ix] = -sign(pricepeakix[pix]) * lastindex(priceix)
+        end
+        pricediffs[ix] = prices[abs(priceix[ix])]  - prices[ix]
+        # println("ix=$ix prices[ix]=$(prices[ix]) priceix[ix]=$(priceix[ix]) prices[abs(priceix[ix])]=$(prices[abs(priceix[ix])])")
+    end
+    relativedist = relativedistances(prices, pricediffs, priceix, false)
+    labels = getlabels(relativedist, labelthresholds)
+    return labels, relativedist, pricediffs, priceix
+end
+
+function continuousdistancelabels(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    peakix, _ = bestregressiontargetcombi(f2, labelthresholds)
+    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
+    return labels, relativedist, pricediffs, priceix
+end
+
+function fakef2fromarrays(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) where {T<:AbstractFloat}
+    ohlcv = Ohlcv.defaultohlcv("BTC")
+    Ohlcv.setdataframe!(ohlcv, DataFrame(opentime=zeros(DateTime, length(prices)), open=prices, high=prices, low=prices, close=prices, basevolume=prices, pivot=prices))
+    regr = Dict()
+    for window in eachindex(regressiongradients)
+        regr[window] = Features.Features002Regr(regressiongradients[window], [1.0f0], [1.0f0], Features.regressionextremesix!(nothing, regressiongradients[window], 1))
+    end
+    f2 = Features.Features002(ohlcv, regr, Dict(1 =>[1.0f0]), fakef2fromarrays, firstindex(prices), lastindex(prices), 0)
+    return f2
 end
 
 """
@@ -684,4 +887,97 @@ function bestregression(relativedistarray, requiredrelativeamplitude)
     return bestregr
 end
 
+"Function to perform topological sort on a graph that is described via a dict"
+function topological_sort(graph)
+    visited = Set()
+    top_order = []
+
+    function dfs(vertex)
+        if vertex in visited
+            return
+        end
+        push!(visited, vertex)
+        for neighbor in graph[vertex]
+            dfs(neighbor[1])
+        end
+        push!(top_order, vertex)
+    end
+
+    for vertex in keys(graph)
+        dfs(vertex)
+    end
+
+    return reverse(top_order)
+end
+
+"""
+Finding the best path in an acyclic directed graph is a well-defined problem. If the graph is acyclic, it means that there are no cycles (i.e., no closed loops) in the graph. One common algorithm used to find the best path in such a graph is the topological sort algorithm.
+
+Here are the general steps to compute the best path in an acyclic directed graph:
+
+    Topological Sort:
+        Perform a topological sort of the vertices in the graph. Topological sorting is a linear ordering of the vertices such that for every directed edge (u, v), vertex u comes before v in the ordering.
+
+    Initialize Distances:
+        Initialize the distances from the source vertex to all other vertices to a large value (infinity for practical purposes) except for the source vertex itself, which is initialized to 0.
+
+    Relaxation:
+        For each vertex u in the topologically sorted order, relax all the adjacent vertices v of u. Relaxation involves checking if the path through u to v is shorter than the current known path to v. If it is, update the distance to v.
+
+    Shortest Path:
+        After the topological sort and relaxation steps, the distances to all vertices from the source vertex will represent the shortest path.
+
+Function to compute the best path and predecessors in an acyclic directed graph
+"""
+function compute_best_path_test(graph, source)
+    top_order = topological_sort(graph)
+    distances = Dict(vertex => Inf for vertex in keys(graph))
+    predecessors = Dict{String, Union{Nothing, String}}(vertex => nothing for vertex in keys(graph))
+    distances[source] = 0
+
+    for vertex in top_order
+        for (neighbor, weight) in graph[vertex]
+            if distances[vertex] + weight < distances[neighbor]
+                distances[neighbor] = distances[vertex] + weight
+                predecessors[neighbor] = vertex
+            end
+        end
+    end
+
+    return distances, predecessors
+end
+
+# Function to trace the best path from source to target
+function trace_path_test(predecessors, source, target)
+    path = []
+    current_vertex = target
+    while current_vertex != source
+        pushfirst!(path, current_vertex)
+        current_vertex = predecessors[current_vertex]
+    end
+    pushfirst!(path, source)
+    return path
+end
+
+function test_trace_path()
+    # Example usage:
+    graph = Dict(
+        "A" => [("B", 1), ("C", 2)],
+        "B" => [("D", 3)],
+        "C" => [("D", 3)],
+        "D" => []
+    )
+
+    source_vertex = "A"
+    target_vertex = "D"
+
+    distances, predecessors = compute_best_path_test(graph, source_vertex)
+    best_path = trace_path_test(predecessors, source_vertex, target_vertex)
+
+    println("Distances from $source_vertex: ", distances)
+    println("Best path from $source_vertex to $target_vertex: ", best_path)
+end
+
 end  # module
+
+# Targets.pathtest()
