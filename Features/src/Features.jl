@@ -91,7 +91,7 @@ function regressionextremesix!(extremeix::Union{Nothing, Vector{T}}, regressiong
         extremeix = Int32[]
     elseif forward  # clean up extremeix that xix connects right - especially removes last element that was not an extreme but an end of array
         ix = lastindex(extremeix)
-        while (abs(extremeix[ix]) >= abs(xix)) || (sign(extremeix[ix]) == sign(xix))
+        while (length(extremeix) > 0) && ((abs(extremeix[ix]) >= abs(xix)) || (sign(extremeix[ix]) == sign(xix)))
             if ix == firstindex(extremeix)
                 extremeix = Int32[]
                 break
@@ -102,7 +102,7 @@ function regressionextremesix!(extremeix::Union{Nothing, Vector{T}}, regressiong
         end
     else  # backward == !forward - clean up extremeix that xix connects right - especially removes first element that was not an extreme but a start of array
         ix = firstindex(extremeix)
-        while (abs(extremeix[ix]) <= abs(xix)) || (sign(extremeix[ix]) == sign(xix))
+        while (length(extremeix) > 0) && ((abs(extremeix[ix]) <= abs(xix)) || (sign(extremeix[ix]) == sign(xix)))
             if ix == lastindex(extremeix)
                 extremeix = Int32[]
                 break
