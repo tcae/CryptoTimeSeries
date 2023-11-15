@@ -494,7 +494,16 @@ mutable struct PriceExtremeCombi
             regr = [sign(regr[rix]) * Features.ohlcvix(f2, abs(regr[rix])) for rix in eachindex(regr)]  # translate to price index
             # println("PriceExtremeCombi regr=$regr")
             # fill array of price extremes by backward search from regression extremes
-            extremesix = [sign(regr[rix]) * Features.extremepriceindex(prices, abs(regr[rix]), rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1])+1, (regr[rix] > 0)) for rix in eachindex(regr)]
+            extremesix = [sign(regr[rix]) * Features.extremepriceindex(prices, rix == lastindex(regr) ? abs(regr[rix]) : abs(regr[rix])-1 , rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1]), (regr[rix] > 0)) for rix in eachindex(regr)]
+            extremesix = Int64[]
+            for rix in eachindex(regr)
+                startrix = rix == lastindex(regr) ? abs(regr[rix]) : abs(regr[rix])-1
+                endrix = rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1])
+                maxsearch = regr[rix] > 0
+                peakindex = sign(regr[rix]) * Features.extremepriceindex(prices, startrix, endrix, maxsearch)
+                @assert length(extremesix) > 0 ? abs(peakindex) > abs(last(extremesix)) : true
+                push!(extremesix, peakindex)
+            end
             if abs(last(extremesix)) < abs(last(regr))  # add end peak to have the end slope considered in gain
                 push!(extremesix, -last(regr))
                 push!(regr, -last(regr))
@@ -611,11 +620,11 @@ mutable struct GraphElem
 end
 
 " Returns peakarr with each extreme index only once for a maximum and once for a minimum in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)"
-function reducedpeakarr(peakarr::Vector{ToporderElem}, startix)::Vector{ToporderElem}  # peakarr = [(extreme index, signed regression minutes),()], startix = index within peakarr
+function reducedpeakarrold(peakarr::Vector{ToporderElem}, startix)  # peakarr = [(extreme index, signed regression minutes),()], startix = index within peakarr
     if isnothing(startix) || startix < firstindex(peakarr)
         return vcat([ToporderElem(0, [0])], reducedpeakarr(peakarr, firstindex(peakarr)))
     end
-    if startix >= lastindex(peakarr)
+    if startix > lastindex(peakarr)
         return [ToporderElem(last(peakarr).pix+1000000, [0])]
     end
     ix = startix
@@ -626,6 +635,7 @@ function reducedpeakarr(peakarr::Vector{ToporderElem}, startix)::Vector{Toporder
     # create arrays of signed regression minutes from consecutive tuples with same pix
     rwarrmax = [first(peakarr[i].rwarr) for i in startix:ix if (pix == peakarr[i].pix) && (sign(first(peakarr[i].rwarr)) == 1)]
     rwarrmin = [first(peakarr[i].rwarr) for i in startix:ix if (pix == peakarr[i].pix) && (sign(first(peakarr[i].rwarr)) == -1)]
+    ix = startix == lastindex(peakarr) ? ix+1 : ix
     if length(rwarrmax) > 0
         if length(rwarrmin) > 0
             peaktuplearr = vcat([ToporderElem(pix, rwarrmax)], [ToporderElem(-pix, rwarrmin)], reducedpeakarr(peakarr, ix))
@@ -638,6 +648,32 @@ function reducedpeakarr(peakarr::Vector{ToporderElem}, startix)::Vector{Toporder
         end
     end
     return peaktuplearr
+end
+
+" Returns peakarr with each extreme index only once for a maximum and once for a minimum in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)"
+function reducepeakarr(peakarr::Vector{ToporderElem}, startix)  # peakarr = [(extreme index, signed regression minutes),()], startix = index within peakarr
+    reducedpeakarr = [ToporderElem(0, [0])]
+    startix = firstindex(peakarr)
+    while startix <=lastindex(peakarr)
+        endix = startix
+        pix = peakarr[startix].pix
+        while (endix < lastindex(peakarr)) && (pix == peakarr[endix].pix)
+            endix += 1
+        end
+        # create arrays of signed regression minutes from consecutive tuples with same pix
+        rwarrmax = [first(peakarr[i].rwarr) for i in startix:endix if (pix == peakarr[i].pix) && (sign(first(peakarr[i].rwarr)) == 1)]
+        if length(rwarrmax) > 0
+            push!(reducedpeakarr, ToporderElem(pix, rwarrmax))
+        end
+        rwarrmin = [first(peakarr[i].rwarr) for i in startix:endix if (pix == peakarr[i].pix) && (sign(first(peakarr[i].rwarr)) == -1)]
+        if length(rwarrmin) > 0
+            push!(reducedpeakarr, ToporderElem(-pix, rwarrmin))
+        end
+        startix += length(rwarrmax) + length(rwarrmin)
+        @assert length(rwarrmax) + length(rwarrmin) > 0 "peakarr=$peakarr startix=$startix endix=$endix"
+    end
+    ToporderElem(last(reducedpeakarr).pix+1000000, [0])
+    return reducedpeakarr
 end
 
 graphelemcomparison(a, b) = (a.pix == b.pix) && (a.rw == b.rw)
@@ -659,7 +695,7 @@ function peaksuccessors(rwset::Set, peaktuplearr::Vector{ToporderElem}, startix,
                     if  (ix < firstindex(peaktuplearr)) || (ix > lastindex(peaktuplearr)) ||
                         (pix < firstindex(prices)) || (pix > lastindex(prices)) ||
                         (peaktuplearr[ix].pix < firstindex(prices)) || (peaktuplearr[ix].pix > lastindex(prices))
-                        g = 0.000001  # very small gain to incentive reproducable behavior - it also supports longer in favor of shorter paths
+                        g = 0.000001  # very small gain to incentive reproducable behavior - it also supports longer instead of shorter paths
                     else
                         g = gain(prices, pix, peaktuplearr[ix].pix, labelthresholds)
                     end
@@ -709,22 +745,28 @@ function bestregressiontargetcombi2(f2::Features.Features002, labelthresholds::L
     maxgain = 100000.0
     prices = Ohlcv.dataframe(f2.ohlcv).pivot
     @assert !isnothing(prices)
-    pec = Dict(rw => PriceExtremeCombi(f2, rw) for rw in keys(f2.regr))
+    # pec = Dict(rw => PriceExtremeCombi(f2, rw) for rw in keys(f2.regr))
+    pec = Dict()
+    for rw in keys(f2.regr)
+        pec[rw] = PriceExtremeCombi(f2, rw)
+    end
 
     peakarr = sort([ToporderElem(abs(pix), [sign(pix) * rw]) for rw in keys(pec) for pix in pec[rw].peakix], by = x -> x.pix, rev=false)
     # peakarr contains now a sorted list of tuple of (positive extreme indices, signed regression minutes depending of max/min)
     # multiple equal peak indices can be in peakarr from different regression windows
-    peakarr = reducedpeakarr(peakarr, nothing)
-    # now peakarr has each extreme index only once in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)
+
+    reducedpeakarr = reducepeakarr(peakarr, nothing)
+    # now reducedpeakarr has each extreme index only once in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)
+
     rwset = Set([rw for rw in keys(pec)])
     peakgraph = Dict()
-    for ix in eachindex(peakarr)
-        pix = peakarr[ix].pix
-        psucc = peaksuccessors(rwset, peakarr, ix, prices, labelthresholds)
+    for ix in eachindex(reducedpeakarr)
+        pix = reducedpeakarr[ix].pix
+        psucc = peaksuccessors(rwset, reducedpeakarr, ix, prices, labelthresholds)
         peakgraph[pix] = psucc
     end
-    _, predecessors = computebestpath(peakgraph, peakarr, first(peakarr).pix, maxgain)
-    bestpath = tracepath(predecessors, first(peakarr), last(peakarr))
+    _, predecessors = computebestpath(peakgraph, reducedpeakarr, first(reducedpeakarr).pix, maxgain)
+    bestpath = tracepath(predecessors, first(reducedpeakarr), last(reducedpeakarr))
     @debug "ToporderElem {pix = peak index in prices, rwarr = regressions windows} - = minimum, + = maximum" bestpath
     peakix = [toe.pix for toe in bestpath if firstindex(prices) <= abs(toe.pix) <= lastindex(prices)]
     if debug

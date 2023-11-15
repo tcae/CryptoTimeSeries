@@ -183,12 +183,12 @@ end
         # CryptoTimeSeries/Targets/test/continuousdistancelabels_test02.jl
         f2 = Targets.fakef2fromarrays(ydata, [grad])
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-        @test priceix == Int32[4, 4, 4, -9, -9, -9, -9, -9, 14, 14, 14, 14, 14, -19, -19, -19, -19, -19, -19, 20]
+        @test priceix == Int32[4, 4, 4, -9, -9, -9, -9, -9, 14, 14, 14, 14, 14, -19, -19, -19, -19, -19, 20, 20]
 
         # regression test that multiple of the same still works
         f2 = Targets.fakef2fromarrays(ydata, [grad, grad])
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-        @test priceix == Int32[4, 4, 4, -9, -9, -9, -9, -9, 14, 14, 14, 14, 14, -19, -19, -19, -19, -19, -19, 20] broken = true
+        @test priceix == Int32[4, 4, 4, -9, -9, -9, -9, -9, 14, 14, 14, 14, 14, -19, -19, -19, -19, -19, 20, 20]
 
         # not exceeding buy thresholds should result always in next possible extreme => with graph search not the case
         # CryptoTimeSeries/Targets/test/graphsearch_test01.jl
@@ -197,7 +197,7 @@ end
         grad2 = [0.2f0, 0.1f0, 0.1f0, 0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-        @test priceix == Int32[2, -5, -5, -5, 6, -7, 12, 12, 12, 12, 12, -13, 16, 16, 16, -17, 18, -19, 20, -20] broken = true
+        @test priceix == Int32[2, -3, 4, -9, -9, -9, -9, -9, 12, 12, 12, -15, -15, -15, 16, -17, 18, -19, 20, 20]
 
         # CryptoTimeSeries/Targets/test/graphsearch_test03.jl
         ydata =     [1.0f0, 1.2f0, 1.0f0, 1.29f0, 1.1f0, 1.1f0, 0.8f0, 0.9f0, 1.0f0, 1.1f0, 1.0f0, 1.31f0, 1.0f0, 1.2f0, 0.91f0, 1.182f0, 1.0f0, 1.1f0, 1.2f0, 1.3f0]
@@ -206,7 +206,7 @@ end
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
         # println("nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme")
-        @test priceix == Int32[2, -7, -7, -7, -7, -7, 12, 12, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
+        @test priceix == Int32[2, -3, 4, -7, -7, -7, 12, 12, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
 
         # CryptoTimeSeries/Targets/test/graphsearch_test04.jl
         ydata = [1.0f0, 1.31f0, 1.0f0, 1.2f0, 0.9f0, 1.2f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0, 0.9f0, 1.2f0, 1.0f0, 1.3f0, 1.0f0, 1.3f0]
@@ -215,7 +215,7 @@ end
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
         # println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme")
-        @test priceix == Int32[2, -5, -5, -5, 8, 8, 8, -11, -11, -11, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
+        @test priceix == Int32[2, -5, -5, -5, 8, 8, 8, -9, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
 
         # CryptoTimeSeries/Targets/test/graphsearch_test05.jl
         ydata = [1.0f0, 1.1f0, 1.31f0, 0.9f0, 0.75f0, 0.8f0, 1.0f0, 0.85f0, 0.8f0, 0.75f0, 0.7f0, 0.6f0, 0.5f0, 0.6f0, 0.65f0, 0.7f0, 0.71f0, 0.75f0, 0.7f0, 0.4f0]
@@ -224,7 +224,7 @@ end
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
         # println("if a long term buy exceeding regr extreme is interrupted by a short term buy exceeding regr then the short term has priority and the long term focus is resumed if it is still buy exceeded afterwards")
-        @test priceix == Int32[3, 3, -5, -5, 7, 7, -10, -10, -10, 11, -13, -13, 18, 18, 18, 18, 18, -20, -20, -20]
+        @test priceix == Int32[-5, -5, -5, -5, 7, 7, -9, -9, 10, -11, 12, -13, 18, 18, 18, 18, 18, -20, -20, -20]
 
 
         enddt = DateTime("2022-01-02T22:54:00")
