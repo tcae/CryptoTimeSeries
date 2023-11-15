@@ -47,23 +47,26 @@ for mypackage in mypackages
 end
 Pkg.add(url="https://github.com/tlienart/OpenSpecFun_jll.jl")  # fix for MKL issue in Scikit-learn - see MLJ manual
 Pkg.add([
-    "Test",
+    "Test", "JuliaInterpreter",
     "JSON",  # EnvConfig
     "SHA", "Printf", "HTTP",  # Binance
     "Dates",  # EnvConfig, Binance, CryptoExchange, Ohlcv, Assets
     "DataFrames",  # CryptoExchange, Ohlcv, Assets, Features
     "DataAPI",   # CryptoExchange
+    "Indicators",  # CryptoExchange, Ohlcv, Assets, Features
     "JDF",  # CryptoExchange, Ohlcv, Assets
     "CSV",  # CryptoExchange, Ohlcv
     "CategoricalArrays",  # Ohlcv
-    "Logging",  # CryptoExchange, Ohlcv, Assets, Features
+    "Logging", "LoggingExtras",  # CryptoExchange, Ohlcv, Assets, Features
+    "PrettyPrinting",
     "RollingFunctions", "Statistics",  # Features
-    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
+    "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "cuDNN", "StatisticalMeasures",
     "MLJGLMInterface", "GLM",
     "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
     "IJulia", "Plots", "WebIO", "Dash", "PlotlyJS", "Colors", "ProfileView",  # Regressionsim, CryptoCockpit, Notebooks
     "Flux", "ProgressMeter", "MLUtils", # ML
+    "SortingAlgorithms",  # Targets
     "Profile"  # Trade
     ])
 

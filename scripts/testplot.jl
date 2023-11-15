@@ -201,4 +201,12 @@ function test8()
             yaxis3=attr(overlaying="y", visible =false, side="right", color="black", range=[0, 1], autorange=false)))
 end
 
-test3b()
+# test1()
+# test2()
+# test3()
+# test3b()
+# test4()
+test5()
+# test6()
+# test7()
+# test8()

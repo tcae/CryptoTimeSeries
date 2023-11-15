@@ -93,7 +93,7 @@ function prepare(labelthresholds)
     # println(relativedist[1:3])
     labels = CategoricalArray(labels, ordered=true)
     println(get_probs(labels))
-    levels!(labels, Targets.labellevels)
+    levels!(labels, levels(Targets.possiblelabels()))
     # println(levels(labels))
     return labels, relativedist, fdf, y
 end
@@ -203,7 +203,7 @@ function regression1()
     yhat1, stdfeatures = pls1(relativedist, features, train, test)
     predictlabels = Targets.getlabels(yhat1, lt)
     predictlabels = CategoricalArray(predictlabels, ordered=true)
-    levels!(predictlabels, Targets.labellevels)
+    levels!(predictlabels, levels(Targets.possiblelabels()))
 
     # confusion_matrix(predictlabels, labels[test])
     printresult(relativedist[test], yhat1)

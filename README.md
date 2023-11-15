@@ -29,7 +29,6 @@ This is a playground Machine Learning project that aims to predict the best trad
 
 Be cautious and don't use it for real trading unless you know what to do. There is no backward compatibility intention, restructuring of project parts may happen without announcement. Any trade signal from this software is no recommendation to trade. Trading cryptocurrencies is high risk.
 
-[Trading strategy considerations can be found here](strategies.md).
 
 ## Entry points
 
@@ -46,6 +45,22 @@ Each module is located in the src folder and has a corresponding '_test' unti te
 - [TestOhlcv](TestOhlcv/src/TestOhlcv.jl) provides periodic OHLCV patterns to test implementations.
 
 Scripts for investigations as well as the GUI ([cryptocockpit](scripts/cryptocockpit.jl)) are located in the scripts folder without a unit test
+
+## Design
+
+In order to achieve a seperation of concerns and a self documenting code, the approach is to separate
+
+- the environment configuration [EnvConfig](EnvConfig/src/EnvConfig.jl)
+- the used OHLCV data [Ohlcv](Ohlcv/src/Ohlcv.jl) and [TestOhlcv](TestOhlcv/src/TestOhlcv.jl)
+- the split into evaluation, test, and training data
+- the features derived from OHLCV data [Features](Features/src/Features.jl)
+- the machine learning targets [Targets](Targets/src/Targets.jl)
+- the classification training and test [Classify](Classify/src/Classify.jl)
+- the management of assets through an exchage broker [CryptoXch](CryptoXch/src/CryptoXch.jl), [Assets](Assets/src/Assets.jl)
+- the trading strategy [TradingStrategy](TradingStrategy/src/TradingStrategy.jl)
+- the trading loop [Trade](Trade/src/Trade.jl) and [trade_test](Trade/test/trade_test.jl)
+
+In case of variants, e.g. features or classification algorithms, the same function name is implemented by different modules residing in the same , e.g. Features or Classify, package and have to imported via the package name `using Features.Feature100`.
 
 ## Under construction
 

@@ -415,7 +415,7 @@ end
 
 function featureset002(ohlcv, period, enddt)
     df = Ohlcv.dataframe(ohlcv)
-    startdt = enddt - period - Dates.Minute(Features.requiredminutes)
+    startdt = enddt - period - Dates.Minute(Features.requiredminutes())
     subdf = copy(df[startdt .< df.opentime .<= enddt, :], copycols=true)
     subohlcv = Ohlcv.copy(ohlcv)
     # println("len(subohlcv): $(size(subdf, 1)) len(ohlcv): $(size(df, 1))")
@@ -457,7 +457,7 @@ function spreadtraces(f2, window, normref, period, enddt)
     # println("startdt: $startdt, startix:$startix, enddt:$enddt, endix:$endix")
     x = [df[ix, :opentime] for ix in startix:endix]
     xarea = vcat(x, reverse(x))
-    yarea = vcat([ftr.regry[ix] + ftr.medianstd[ix] for ix in startix:endix], [ftr.regry[ix] - ftr.medianstd[ix] for ix in endix:-1:startix])
+    yarea = vcat([ftr.regry[ix] + ftr.std[ix] for ix in startix:endix], [ftr.regry[ix] - ftr.std[ix] for ix in endix:-1:startix])
     # println("regry x: size=$(size(xarea)) max=$(maximum(xarea)) min=$(minimum(xarea)) y: size=$(size(yarea)) max=$(maximum(yarea)) min=$(minimum(yarea)) ")
     s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
     # x = [df[ix, :opentime] for ix in startix:endix]

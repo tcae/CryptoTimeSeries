@@ -34,7 +34,7 @@ mutable struct TradeChance
     probability  # probability to reach sell price once bought
     regrminutes
     stoplossprice
-    breakoutstd  # only relevant for traderules001! (not traderules002!)
+    breakoutstd  # only relevant for traderules001! (not traderules002!); indices of extremes (<0 if min, >0 if max) that exceed std distance from regry
 end
 
 mutable struct TradeChances
@@ -42,13 +42,13 @@ mutable struct TradeChances
     orderdict  # Dict of open orders
 end
 
-upperbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] + stdfactor * fr.medianstd[ix]
-lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.medianstd[ix]
-stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.medianstd[ix]
-banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.medianstd[ix]
+upperbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] + stdfactor * fr.std[ix]
+lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.std[ix]
+stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.std[ix]
+banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.std[ix]
 
-requiredtradehistory = Features.requiredminutes
-requiredminutes = requiredtradehistory + Features.requiredminutes
+requiredtradehistory = Features.requiredminutes()
+requiredminutes = requiredtradehistory + Features.requiredminutes()
 
 """
 - grad = deltaprice / deltaminutes
@@ -248,7 +248,7 @@ end
 
 """
 Returns the number of trades within the last `requiredminutes` and the gain achived.
-In case that minimumgain requirements are not met by fr.medianstd, `trades` and `gain` return 0.
+In case that minimumgain requirements are not met by fr.std, `trades` and `gain` return 0.
 """
 function calcspread001(f2::Features.Features002, window, ohlcvix, breakoutstd, tr001)
     fr = f2.regr[window]
@@ -286,13 +286,13 @@ function breakoutextremesix001!(f2::Features.Features002, window, breakoutstd, s
     for ix in startindex:f2.lastix
         fix = Features.featureix(f2, ix)
         if breakoutix <= 0
-            if df[ix, :high] > afr.regry[fix] + breakoutstd * afr.medianstd[fix]
+            if df[ix, :high] > afr.regry[fix] + breakoutstd * afr.std[fix]
                 push!(extremeix, ix)
             end
         end
         if breakoutix >= 0
             if buycompliant001(f2, window, breakoutstd, ix, tr001)
-            # if df[ix, :low] < afr.regry[fix] - breakoutstd * afr.medianstd[fix]
+            # if df[ix, :low] < afr.regry[fix] - breakoutstd * afr.std[fix]
                 push!(extremeix, -ix)
             end
         end

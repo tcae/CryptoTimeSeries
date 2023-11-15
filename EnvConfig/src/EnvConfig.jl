@@ -29,7 +29,7 @@ trainingbases = String[]
 datapathprefix = "crypto/"
 otherpathprefix = "crypto/"
 authpathprefix = ".catalyst/data/exchanges/bybit/"
-cachepath = datapathprefix * "cache/"
+logfilespath = datapathprefix * "logs/"
 datapath = "Features/"
 configmode = production
 authorization = nothing
@@ -58,6 +58,15 @@ end
 
 timestr(dt) = isnothing(dt) ? "nodatetime" : Dates.format(dt, EnvConfig.datetimeformat)
 now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
+
+"returns string with timestamp and current git instance to reproduce the used source"
+runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
+
+logpath(file) = normpath(joinpath(homedir(), logfilespath, file))
+
+"returns a full qualified log path with folder with a name constructed of runid()"
+uniquelogpath() = mkpath(normpath(joinpath(homedir(), logpath, runid())))
+
 
 " set project dir as working dir "
 function setprojectdir()

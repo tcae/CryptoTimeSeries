@@ -24,9 +24,9 @@ end
 returns ohlcv data starting 2019-01-02 01:11 for - by default 5.7 years
 """
 function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmultiple = 1)
-    price = 200
-    volumeconst = 100
-    amplitude = 0.007  # 0.7% of price
+    price::Float32 = 2  # 200
+    volumeconst::Float32 = 100
+    amplitude::Float32 = 0.07  # 0.007  # 0.7% of price
     firstutc = DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s")
     firstutc = round(firstutc, Dates.Minute)
     # lastutc = round(lastutc, Dates.Minute)
@@ -48,20 +48,20 @@ function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmu
     # high =   (y / 2)
     # low =    (y / 2)
     # close =  (y / 4)
-    open =  price .* (y .* amplitude .+ 1 .+ variation ./ 4)
-    high =  price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
-    low =   price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
-    close = price .* (y .* amplitude .+ 1 .- variation ./ 4)
+    open::Vector{Float32} =  price .* (y .* amplitude .+ 1 .+ variation ./ 4)
+    high::Vector{Float32} =  price .* (y .* amplitude .+ 1 .+ 0.01 ./ 2)
+    low::Vector{Float32} =   price .* (y .* amplitude .+ 1 .- 0.01 ./ 2)
+    close::Vector{Float32} = price .* (y .* amplitude .+ 1 .- variation ./ 4)
     @assert low <= open <= high "low $(low) <= open $(open) <= high $(high)"
     @assert low <= close <= high "low $(low) <= close $(close) <= high $(high)"
-    volume = (1.1 .- abs.(y1)) .* volumeconst
+    volume::Vector{Float32} = (1.1 .- abs.(y1)) .* volumeconst
     df = DataFrame(opentime=timestamp, open=open, high=high, low=low, close=close, basevolume=volume)
     df[:, :pivot] = Ohlcv.pivot(df)
     return df
 end
 
 function oldsinedata(periodminutes, periods)
-    price = 200
+    price = 2  # 200
     volumeconst = 100
     amplitude = 0.007  # 0.5% of price
     firstutc = DateTime("2019-01-02 01:11:28:121", "y-m-d H:M:S:s")
@@ -158,7 +158,7 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
     )
     testbase = base
     if !(base in keys(dispatch))
-        @warn "unknown testohlcv test base: $base - fallback: using sine to fill $base"
+        @info "unknown testohlcv test base: $base - fallback: using sine to fill $base"
         testbase = "sine"
     end
     df = dispatch[testbase](startdt, enddt, interval)
@@ -173,11 +173,9 @@ end
 
 function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     ohlcv = Ohlcv.defaultohlcv(base)
-    ret, df = testdataframe(base, startdt, enddt, interval, cryptoquote)
-    if ret== 200
-        ohlcv = Ohlcv.setdataframe!(ohlcv, df)
-    end
-    return ret, ohlcv
+    df = testdataframe(base, startdt, enddt, interval, cryptoquote)
+    ohlcv = Ohlcv.setdataframe!(ohlcv, df)
+    return ohlcv
 end
 
 end

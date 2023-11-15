@@ -58,7 +58,7 @@ println("Flux example 1")
 println(meanaccuracy)  # accuracy 94% so far!
 
 # plot losses graph
-p1 = plot(losses; xaxis=(:log10, "iteration"), yaxis="loss", label="per batch")
+p1 = Plots.plot(losses; xaxis=(:log10, "iteration"), yaxis="loss", label="per batch")
 println("batchcount: $batchcount  losses length: $(length(losses))")
 plot!(p1, batchcount:batchcount:length(losses), mean.(Iterators.partition(losses, batchcount)), label="epoch mean", dpi=200)
 
