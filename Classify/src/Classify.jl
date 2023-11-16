@@ -79,23 +79,17 @@ function prepare(labelthresholds)
     fdf = Features.polynomialfeatures!(fdf, 2)
     # fdf = Features.polynomialfeatures!(fdf, 3)
 
-    labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
-    # labels, relativedist, distances, priceix = Targets.continuousdistancelabels(y)
-    # df = DataFrames.DataFrame()
-    # df.x = x
-    # df.y = y
-    # df.grad = grad
-    # df.dist = relativedist
-    # df.pp = priceix
-    # df.rp = regressionix
-    println("size(features): $(size(fdf)) size(relativedist): $(size(relativedist))")
-    # println(features[1:3,:])
-    # println(relativedist[1:3])
-    labels = CategoricalArray(labels, ordered=true)
-    println(get_probs(labels))
-    levels!(labels, levels(Targets.possiblelabels()))
-    # println(levels(labels))
-    return labels, relativedist, fdf, y
+    @error "requires revision of deprecated continuousdistancelabels usage - new version with f2 features"
+    # labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
+
+    # println("size(features): $(size(fdf)) size(relativedist): $(size(relativedist))")
+    # # println(features[1:3,:])
+    # # println(relativedist[1:3])
+    # labels = CategoricalArray(labels, ordered=true)
+    # println(get_probs(labels))
+    # levels!(labels, levels(Targets.possiblelabels()))
+    # # println(levels(labels))
+    # return labels, relativedist, fdf, y
 end
 
 function pls1(relativedist, features, train, test)

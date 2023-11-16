@@ -182,12 +182,12 @@ end
 
         # CryptoTimeSeries/Targets/test/continuousdistancelabels_test02.jl
         f2 = Targets.fakef2fromarrays(ydata, [grad])
-        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
         @test priceix == Int32[4, 4, 4, -9, -9, -9, -9, -9, 14, 14, 14, 14, 14, -19, -19, -19, -19, -19, 20, 20]
 
         # regression test that multiple of the same still works
         f2 = Targets.fakef2fromarrays(ydata, [grad, grad])
-        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
         @test priceix == Int32[4, 4, 4, -9, -9, -9, -9, -9, 14, 14, 14, 14, 14, -19, -19, -19, -19, -19, 20, 20]
 
         # not exceeding buy thresholds should result always in next possible extreme => with graph search not the case
@@ -196,7 +196,7 @@ end
         grad1 = [0.2f0, 0.2f0, -0.2f0, -0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
         grad2 = [0.2f0, 0.1f0, 0.1f0, 0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
-        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
         @test priceix == Int32[2, -3, 4, -9, -9, -9, -9, -9, 12, 12, 12, -15, -15, -15, 16, -17, 18, -19, 20, 20]
 
         # CryptoTimeSeries/Targets/test/graphsearch_test03.jl
@@ -204,7 +204,7 @@ end
         grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.05f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
         grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, 0.0f0, 0.1f0, -0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
-        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
         # println("nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme")
         @test priceix == Int32[2, -3, 4, -7, -7, -7, 12, 12, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
 
@@ -213,7 +213,7 @@ end
         grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
         grad2 = [-0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.01f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
-        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
         # println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme")
         @test priceix == Int32[2, -5, -5, -5, 8, 8, 8, -9, 12, 12, 12, -15, -15, -15, 20, 20, 20, 20, 20, 20]
 
@@ -222,7 +222,7 @@ end
         grad1 = [-0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f1]
         grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, -0.01f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, 0.2f0, -0.1f0, 0.1f0, -0.1f0, 0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, -0.02f0]
         f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
-        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+        labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
         # println("if a long term buy exceeding regr extreme is interrupted by a short term buy exceeding regr then the short term has priority and the long term focus is resumed if it is still buy exceeded afterwards")
         @test priceix == Int32[-5, -5, -5, -5, 7, 7, -9, -9, 10, -11, 12, -13, 18, 18, 18, 18, 18, -20, -20, -20]
 

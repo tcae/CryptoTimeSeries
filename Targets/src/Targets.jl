@@ -340,140 +340,13 @@ function relativedistances(prices::Vector{T}, pricediffs, priceix, backwardrelat
     end
 end
 
-function continuousdistancelabels(prices, labelthresholds::LabelThresholds)
+function continuousdistancelabels(prices::Vector{T}, labelthresholds::LabelThresholds) where T<:AbstractFloat
     pricediffs, priceix = Features.nextpeakindices(prices, labelthresholds.longbuy, labelthresholds.shortbuy)
     relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, priceix
 end
 
-mutable struct Dists #! deprecated
-    pricediffs
-    regressionix
-    priceix
-    relativedist
-    # Dists(prices, pricediffs, regressionix, priceix) = new(pricediffs, regressionix, priceix, relativedistances(prices, pricediffs, priceix, false))
-end
-
-function (Dists)(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) ::Vector{Dists} where {T<:Real}
-    #! deprecated
-    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
-    return
-
-    d = Array{Dists}(undef, length(regressiongradients))
-    for ix in eachindex(d)
-        pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients[ix]; smoothing=false)
-        relativedist = relativedistances(prices, pricediffs, priceix, false)
-        d[ix] = Dists(pricediffs, regressionix, priceix, relativedist)
-    end
-    return d
-end
-
-"""
-- returns for each index of prices
-    - labels based on given thresholds that are compared with relative pricediffs
-    - relative pricediffs related to the index under consideration (answering: what can be gained/lost from the current ix)
-    - absolute pricediffs of current price to next extreme price
-    - for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
-    - pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
-- the extreme is determined by slope sign change of the regression gradients given in `regressions`
-- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
-- for multiple regressiongradients the next extreme exceeding long/short buy thresholds is used
-
-"""
-function continuousdistancelabels_old(prices::Vector{T}, regressiongradients::Vector{Vector{T}}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
-    #! deprecated
-    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
-    return
-
-    # for rg in regressiongradients
-    #     println(prices)
-    #     println(Features.pricediffregressionpeak(prices, rg; smoothing=false)...)
-    # end
-    dists = (Dists)(prices, regressiongradients)
-    df = DataFrames.DataFrame()
-    df[!, "prices"] = prices
-    for i in eachindex(dists)
-        df[!, "grad" * string(i, pad=2, base=10)] = regressiongradients[i]
-        df[!, "pricediffs" * string(i, pad=2, base=10)] = dists[i].pricediffs
-        df[!, "regressionix" * string(i, pad=2, base=10)] = dists[i].regressionix
-        df[!, "priceix" * string(i, pad=2, base=10)] = dists[i].priceix
-        df[!, "relativedist" * string(i, pad=2, base=10)] = dists[i].relativedist
-    end
-    result = Dists(zero(dists[1].pricediffs), zero(dists[1].regressionix), zero(dists[1].priceix), zero(dists[1].relativedist))
-    rix = nothing
-    for pix in eachindex(prices)
-        nix = nothing
-        for dix in eachindex(dists)
-            if (dists[dix].relativedist[pix] > labelthresholds.longbuy) || (dists[dix].relativedist[pix] < labelthresholds.shortbuy)
-                # dix exceeds threshold => rix is assigned to dix if priceix is closer or rix undefined
-                if !isnothing(rix)
-                    if sign(dists[dix].priceix[pix]) == sign(dists[rix].priceix[pix])
-                        if (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix])) &&  #dix peak is nearer than rix peak
-                           (abs(dists[dix].relativedist[pix]) > (abs(dists[rix].relativedist[pix]) * 0.5))  # dix peak has at least half the gain of rix
-                           rix = dix  # take over
-                           # else rix remains unchanged
-                        end
-                    else  # buy peak in opposite direction
-                        if (abs(dists[dix].priceix[pix]) < abs(dists[rix].priceix[pix]))  #dix peak is nearer than rix peak => take over and close
-                            rix = dix
-                            # else wait with take over until slope changes because short term slope is not in favor of gain => wait for better buy gain
-                            # this also ensures that the open buy position will get close signals (i.e. close or opposite hold or opposite buy)
-                        end
-                    end
-                else  # no rix assigned yet => take over
-                    rix = dix
-                end
-            end
-            # nix gets next extrema
-            nix = !isnothing(nix) && (abs(dists[dix].priceix[pix]) > abs(dists[nix].priceix[pix])) ? nix : dix
-        end
-        if isnothing(rix)  # fallback to nix if rix still undefined
-            result.pricediffs[pix] = dists[nix].pricediffs[pix]
-            result.regressionix[pix] = dists[nix].regressionix[pix]
-            result.priceix[pix] = dists[nix].priceix[pix]
-            result.relativedist[pix] = dists[nix].relativedist[pix]
-        else
-            result.pricediffs[pix] = dists[rix].pricediffs[pix]
-            result.regressionix[pix] = dists[rix].regressionix[pix]
-            result.priceix[pix] = dists[rix].priceix[pix]
-            result.relativedist[pix] = dists[rix].relativedist[pix]
-        end
-    end
-    labels = getlabels(result.relativedist, labelthresholds)
-    df[!, "result-pricediffs"] = result.pricediffs
-    df[!, "result-regressionix"] = result.regressionix
-    df[!, "result-priceix"] = result.priceix
-    df[!, "result-relativedist"] = result.relativedist
-    df[!, "result-labels"] = labels
-    # println("result-pricediffs=$(result.pricediffs)")
-    # println("result-regressionix=$(result.regressionix)")
-    # println("result-priceix=$(result.priceix)")
-    # println("result-relativedist=$(result.relativedist)")
-    return labels, result.relativedist, result.pricediffs, result.regressionix, result.priceix, df
-end
-
-"""
-- returns for each index of prices
-    - labels based on given thresholds that are compared with relative pricediffs
-    - relative pricediffs related to the index under consideration (answering: what can be gained/lost from the current ix)
-    - absolute pricediffs of current price to next extreme price
-    - for debugging purposes 2 further index arrays are returned: with regression extreme indices and with price extreme indices
-    - pricediffs will be negative if the next extreme is a minimum and positive if it is a maximum
-- the extreme is determined by slope sign change of the regression gradients given in `regressions`
-- from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
-
-"""
-function continuousdistancelabels_old(prices::Vector{T}, regressiongradients::Vector{T}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
-    #! deprecated
-    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
-    return
-
-    pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients; smoothing=false)
-    relativedist = relativedistances(prices, pricediffs, priceix, false)
-    labels = getlabels(relativedist, labelthresholds)
-    return labels, relativedist, pricediffs, regressionix, priceix
-end
 
 mutable struct PriceExtremeCombi
     peakix  # vector of signed indices (positive for maxima, negative for minima)
@@ -784,85 +657,10 @@ function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::La
     return peakix
 end
 
-function continuousdistancelabels(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
-    peakix = bestregressiontargetcombi(f2; labelthresholds=labelthresholds)
+function continuousdistancelabels(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
+    peakix = bestregressiontargetcombi(f2; labelthresholds=labelthresholds, regrwinarr=regrwinarr)
     labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
     return labels, relativedist, pricediffs, priceix
-end
-
-" Returns an array of best prices index extremes and an arry of regressionextremes "
-function bestregressiontargetcombi_old(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
-    #! deprecated
-    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
-    return
-
-    debug = false
-    @debug "Targets.bestregressiontargetcombi" begin
-        debug = true
-    end
-    sortedxtrmix = sort([(k, length(f2.regr[k].xtrmix)) for k in keys(f2.regr)], by= x -> x[2], rev=true)  # sorted tuple of (key, length of xtremes),long arrays first
-    prices = Ohlcv.dataframe(f2.ohlcv).pivot
-    @assert !isnothing(prices)
-    combi = PriceExtremeCombi(f2, first(sortedxtrmix)[1])
-    debug ? gains = [("single+" * Features.periodlabels(combi.regrwindow), gain(prices, combi.peakix, labelthresholds))] : 0
-    debug ? df = DataFrame() : 0
-    debug ? df[:, "single+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.peakix, repeat([0], length(combi.peakix))) : 0
-    debug ? df[:, "sregrxtrmix+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.regrxtrmix, repeat([0], length(df[!, 1]) - length(combi.regrxtrmix))) : 0
-    debug ? df[:, "sregrwin+" * Features.periodlabels(combi.regrwindow)] = vcat(combi.rw, repeat([0], length(df[!, 1]) - length(combi.rw))) : 0
-    for six in (firstindex(sortedxtrmix)+1):lastindex(sortedxtrmix)
-        newcombi = PriceExtremeCombi(nothing, "combi+" * Features.periodlabels(sortedxtrmix[six][1]))
-        single = PriceExtremeCombi(f2, sortedxtrmix[six][1])
-        debug ? push!(gains, ("single+" * Features.periodlabels(single.regrwindow), gain(prices, single.peakix, labelthresholds))) : 0
-        reset!(combi)
-        debug ? df[:, "single+" * Features.periodlabels(single.regrwindow)] = vcat(single.peakix, repeat([0], length(df[!, 1]) - length(single.peakix))) : 0
-        debug ? df[:, "sregrxtrmix+" * Features.periodlabels(single.regrwindow)] = vcat(single.regrxtrmix, repeat([0], length(df[!, 1]) - length(single.regrxtrmix))) : 0
-        debug ? df[:, "sregrwin+" * Features.periodlabels(single.regrwindow)] = vcat(single.rw, repeat([0], length(df[!, 1]) - length(single.rw))) : 0
-        while (combi.ix < lastindex(combi.peakix)) && (single.ix < lastindex(single.peakix))
-            nextextremepair!(combi, single)
-            @assert (combi.ix == lastindex(combi.peakix)) || (abs(single.peakix[single.ix]) <= abs(combi.peakix[combi.ix]))
-            # now single catched up with combi and staying just one ix behind
-            adaptappendsegmentconnection!(single, newcombi)
-            adaptappendsegmentconnection!(combi, newcombi)
-            # println("bestregressiontargetcombi $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) ")
-
-            combigain = segmentgain(prices, combi, labelthresholds)
-            singlegain = segmentgain(prices, single, labelthresholds)
-            if (combigain != 0.0f0) || (singlegain != 0.0f0)  # prefer better gain
-                newcombi = combigain >= singlegain ? copyover!(newcombi, combi) : copyover!(newcombi, single)
-            else  # if both gains == 0.0 then prefer higher frequency of peaks
-                newcombi = (combi.ix - combi.anchorix) > (single.ix - single.anchorix) ? copyover!(newcombi, combi) : copyover!(newcombi, single)
-            end
-            combi.anchorix = combi.ix
-            single.anchorix = single.ix
-        end
-        # println("bestregressiontargetcombi3 $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) ")
-        if combi.ix <= lastindex(combi.peakix)
-            # println("combi finish combi=$combi")
-            @assert single.ix == lastindex(single.peakix)
-            combi.ix = lastindex(combi.peakix)
-            copyover!(newcombi, combi)
-        elseif single.ix <= lastindex(single.peakix)
-            # println("combi finish combi=$combi")
-            @assert combi.ix == lastindex(combi.peakix)
-            single.ix = lastindex(single.peakix)
-            copyover!(newcombi, single)
-        else
-            # matching last element of combi and single
-        end
-        @debug combi, single, newcombi
-        combi = newcombi
-        debug ? push!(gains, (string(combi.regrwindow), gain(prices, combi.peakix, labelthresholds))) : 0
-        debug ? df[:, "combi+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.peakix, repeat([0], length(df[!, 1]) - length(combi.peakix))) : 0
-        debug ? df[:, "cregrxtrmix+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.regrxtrmix, repeat([0], length(df[!, 1]) - length(combi.regrxtrmix))) : 0
-        debug ? df[:, "cregrwin+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat(combi.rw, repeat([0], length(df[!, 1]) - length(combi.rw))) : 0
-        debug ? df[:, "prices+" * Features.periodlabels(sortedxtrmix[six][1])] = vcat([prices[abs(i)] for i in combi.peakix], repeat([0], length(df[!, 1]) - length(combi.peakix))) : 0
-        # debug ? println(combi, single, newcombi) : 0
-        @assert all([(sign(combi.peakix[i]) == -sign(combi.peakix[i-1])) for i in eachindex(combi.peakix) if (i > firstindex(combi.peakix)) && (combi.peakix[i] != 0)])
-    end
-    @debug "" gains
-    # @debug "" df
-    debug ? println(df) : 0
-    return combi.peakix, combi.regrxtrmix
 end
 
 function ohlcvlabels(prices::Vector{T}, pricepeakix::Vector{S}, labelthresholds::LabelThresholds=defaultlabelthresholds) where {T<:AbstractFloat, S<:Integer}
@@ -886,15 +684,6 @@ function ohlcvlabels(prices::Vector{T}, pricepeakix::Vector{S}, labelthresholds:
     return labels, relativedist, pricediffs, priceix
 end
 
-function continuousdistancelabels_old(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
-    #! deprecated
-    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
-    return
-
-    peakix, _ = bestregressiontargetcombi(f2, labelthresholds)
-    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
-    return labels, relativedist, pricediffs, priceix
-end
 
 function fakef2fromarrays(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) where {T<:AbstractFloat}
     ohlcv = Ohlcv.defaultohlcv("BTC")
