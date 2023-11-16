@@ -11,6 +11,8 @@ f12x.labels = labels
 f12x = coerce(f12x, :labels=>Multiclass)
 
 y, X = unpack(f12x, ==(:labels))
+# println("levels: $(levels(y)) max(relativedist)=$(maximum(relativedist)) min(relativedist)=$(minimum(relativedist))")
+levels!(y, Targets.possiblelabels())
 
 # (f12xtrain, f12xtest) = partition(f12x, 0.7, multi=false)
 # y, X = unpack(f12xtrain, ==(:labels))

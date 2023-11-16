@@ -56,7 +56,7 @@ Pkg.add([
     "Indicators",  # CryptoExchange, Ohlcv, Assets, Features
     "JDF",  # CryptoExchange, Ohlcv, Assets
     "CSV",  # CryptoExchange, Ohlcv
-    "CategoricalArrays",  # Ohlcv
+    "CategoricalArrays", "JLSO",  # Ohlcv, Classify
     "Logging", "LoggingExtras",  # CryptoExchange, Ohlcv, Assets, Features
     "PrettyPrinting",
     "RollingFunctions", "Statistics",  # Features

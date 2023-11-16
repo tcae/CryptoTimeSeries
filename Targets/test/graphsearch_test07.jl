@@ -19,7 +19,7 @@ with_logger(logger) do
     df = Ohlcv.dataframe(ohlcv)
     ol = size(df,1)
     f2 = Features.Features002(ohlcv)
-    labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2)  # , Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+    labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2)  # , Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
     df = DataFrame()
     df.realdist = realdist
     df.priceix = priceix

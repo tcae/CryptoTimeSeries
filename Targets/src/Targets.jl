@@ -357,7 +357,7 @@ end
 
 function (Dists)(prices::Vector{T}, regressiongradients::Vector{Vector{T}}) ::Vector{Dists} where {T<:Real}
     #! deprecated
-    @error "Targets.continuousdistancelabels is deprecated and replaced by Targets.bestregressiontargetcombi"
+    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
     return
 
     d = Array{Dists}(undef, length(regressiongradients))
@@ -381,9 +381,9 @@ end
 - for multiple regressiongradients the next extreme exceeding long/short buy thresholds is used
 
 """
-function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{Vector{T}}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
+function continuousdistancelabels_old(prices::Vector{T}, regressiongradients::Vector{Vector{T}}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
     #! deprecated
-    @error "Targets.continuousdistancelabels is deprecated and replaced by Targets.bestregressiontargetcombi"
+    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
     return
 
     # for rg in regressiongradients
@@ -464,9 +464,9 @@ end
 - from this regression extreme the peak is search backwards thereby skipping all local extrema that are insignifant for that regression window
 
 """
-function continuousdistancelabels(prices::Vector{T}, regressiongradients::Vector{T}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
+function continuousdistancelabels_old(prices::Vector{T}, regressiongradients::Vector{T}, labelthresholds::LabelThresholds) where {T<:AbstractFloat}
     #! deprecated
-    @error "Targets.continuousdistancelabels is deprecated and replaced by Targets.bestregressiontargetcombi"
+    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
     return
 
     pricediffs, regressionix, priceix = Features.pricediffregressionpeak(prices, regressiongradients; smoothing=false)
@@ -736,10 +736,11 @@ function tracepath(predecessors::Dict{Integer, Union{Nothing, Targets.ToporderEl
     return path
 end
 
-" Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info "
-function bestregressiontargetcombi2(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+""" Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info
+- `regrwinarr` may contain a subset of available regressionwindow minutes, e.g. `[5, 15]`, to reduce the best target combination to those. """
+function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
     debug = false
-    @debug "Targets.bestregressiontargetcombi2" begin
+    @debug "Targets.bestregressiontargetcombi" begin
         debug = true
     end
     maxgain = 100000.0
@@ -748,7 +749,9 @@ function bestregressiontargetcombi2(f2::Features.Features002, labelthresholds::L
     # pec = Dict(rw => PriceExtremeCombi(f2, rw) for rw in keys(f2.regr))
     pec = Dict()
     for rw in keys(f2.regr)
-        pec[rw] = PriceExtremeCombi(f2, rw)
+        if isnothing(regrwinarr) || (rw in regrwinarr)
+            pec[rw] = PriceExtremeCombi(f2, rw)
+        end
     end
 
     peakarr = sort([ToporderElem(abs(pix), [sign(pix) * rw]) for rw in keys(pec) for pix in pec[rw].peakix], by = x -> x.pix, rev=false)
@@ -781,14 +784,18 @@ function bestregressiontargetcombi2(f2::Features.Features002, labelthresholds::L
     return peakix
 end
 
-function continuousdistancelabels2(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
-    peakix = bestregressiontargetcombi2(f2, labelthresholds)
+function continuousdistancelabels(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    peakix = bestregressiontargetcombi(f2; labelthresholds=labelthresholds)
     labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
     return labels, relativedist, pricediffs, priceix
 end
 
 " Returns an array of best prices index extremes and an arry of regressionextremes "
-function bestregressiontargetcombi(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+function bestregressiontargetcombi_old(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    #! deprecated
+    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
+    return
+
     debug = false
     @debug "Targets.bestregressiontargetcombi" begin
         debug = true
@@ -816,7 +823,7 @@ function bestregressiontargetcombi(f2::Features.Features002, labelthresholds::La
             # now single catched up with combi and staying just one ix behind
             adaptappendsegmentconnection!(single, newcombi)
             adaptappendsegmentconnection!(combi, newcombi)
-            # println("bestregressiontargetcombi2 $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) ")
+            # println("bestregressiontargetcombi $six combi.ix=$(combi.ix)lastindex(combi.peakix)=$(lastindex(combi.peakix)) single.ix=$(single.ix) lastindex(single.peakix)=$(lastindex(single.peakix)) ")
 
             combigain = segmentgain(prices, combi, labelthresholds)
             singlegain = segmentgain(prices, single, labelthresholds)
@@ -879,7 +886,11 @@ function ohlcvlabels(prices::Vector{T}, pricepeakix::Vector{S}, labelthresholds:
     return labels, relativedist, pricediffs, priceix
 end
 
-function continuousdistancelabels(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+function continuousdistancelabels_old(f2::Features.Features002, labelthresholds::LabelThresholds=defaultlabelthresholds)
+    #! deprecated
+    @error "Targets.continuousdistancelabels_old is deprecated and replaced by Targets.bestregressiontargetcombi"
+    return
+
     peakix, _ = bestregressiontargetcombi(f2, labelthresholds)
     labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
     return labels, relativedist, pricediffs, priceix
@@ -899,7 +910,7 @@ end
 """
 - Returns the index within `relativedistarray` of the best regression.
     + an entry of 0 means that none of the regressions meets the required amplitude requirement specified in `requiredrelativeamplitude`
-- `relativedistarray` is a sorted array of relativedist arrays as provided by `continuousdistancelabels`
+- `relativedistarray` is a sorted array of relativedist arrays as provided by `continuousdistancelabels_old`
     + the arrays are sorted according to regressionwindow starting with the shortest regressionwindow and ending with the longest
     + each array entry contains an array of relative pricediffs of the price extremes
     + each array has the same length

@@ -18,7 +18,7 @@ ydata = [1.0f0, 1.1f0, 1.1f0, 0.9f0, 0.75f0, 0.8f0, 0.8f0, 0.85f0, 0.8f0, 0.75f0
 grad1 = [-0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f1]
 grad2 = [0.2f0, 0.1f0, 0.1f0, -0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.1f0, 0.2f0, 0.2f0, -0.2f0, -0.2f0, 0.0f0]
 f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
-labels, relativedist, realdist, priceix = Targets.continuousdistancelabels2(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
 println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme if near term buy has at least 50% of the far term buy gain")
 df = DataFrame()
 df.ydata = ydata
