@@ -29,11 +29,9 @@ labels1, relativedist1, realdist1, priceix1 = Targets.continuousdistancelabels(y
 
 with_logger(logger) do
     f2 = Targets.fakef2fromarrays(ydata, [grad])
-    labels2, relativedist2, realdist2, priceix2 = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
+    labels2, relativedist2, realdist2, priceix2 = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
     f2 = Targets.fakef2fromarrays(ydata, [grad, grad])
-    labels3, relativedist3, realdist3, priceix3 = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-    # labels1, realdist1, x, ydata, priceix1 = prepare1(totalsamples, periodsamples, yconst)
-    # labels2, realdist2, _, _, priceix2, regressionix2 = prepare2(totalsamples, periodsamples, yconst)
+    labels3, relativedist3, realdist3, priceix3 = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
     df = DataFrame()
     df.x = x
     df.ydata = ydata

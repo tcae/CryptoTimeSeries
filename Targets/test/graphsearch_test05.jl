@@ -18,7 +18,7 @@ ydata = [1.0f0, 1.1f0, 1.31f0, 0.9f0, 0.75f0, 0.8f0, 1.0f0, 0.85f0, 0.8f0, 0.75f
 grad1 = [-0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f1]
 grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, -0.01f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, 0.2f0, -0.1f0, 0.1f0, -0.1f0, 0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, -0.02f0]
 f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
-labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2, Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
+labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
 println("if a long term buy exceeding regr extreme is interrupted by a short term buy exceeding regr then the short term has priority and the long term focus is resumed if it is still buy exceeded afterwards")
 df = DataFrame()
 df.ydata = ydata
