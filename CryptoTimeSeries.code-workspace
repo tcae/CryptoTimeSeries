@@ -8,9 +8,21 @@
 		"jupyter.jupyterServerType": "local",
 		"julia.debuggerDefaultCompiled": [
 
+
+
 			"ALL_MODULES_EXCEPT_MAIN",
+			"-Assets.",
+			"-Bybit.",
+			"-Classify.",
+			"-CryptoXch.",
+			"-EnvConfig.",
        		"-Features.",
-       		"-Targets."
+			"-Ohlcv.",
+       		"-Targets.",
+			"-TestOhlcv.",
+			"-Trade.",
+			"-TradingStrategy."
+
 			// "Base.",
 			// "-Base.!",
 			// "-Base.all",

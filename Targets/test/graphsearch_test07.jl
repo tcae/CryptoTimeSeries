@@ -31,5 +31,5 @@ with_logger(logger) do
     # println("relativedist = $relativedist")
     # println("realdist = $realdist")
     # println("regressionix = $regressionix")
-    println("priceix = first: $(priceix[1]) last: $(priceix[end])")
+    println("priceix = first: $(priceix[firstindex(priceix):min(3, lastindex(priceix))]) last: $(priceix[max(lastindex(priceix)-3, firstindex(priceix)):end])")
 end

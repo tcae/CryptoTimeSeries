@@ -6,9 +6,9 @@ enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Day(20)
 ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
 f12x, f3 = Features.features12x5m01(ohlcv)
-labels, relativedist, _, _, _ = Targets.continuousdistancelabels(Features.ohlcvdataframe(f3).pivot, Features.grad(f3, 5), Targets.LabelThresholds(0.3, 0.05, -0.1, -0.6))
-f12x.labels = labels
-f12x = coerce(f12x, :labels=>Multiclass)
+labels, relativedist, _, _ = Targets.continuousdistancelabels(f3.f2; labelthresholds=Targets.LabelThresholds(0.03, 0.0001, -0.0001, -0.03), regrwinarr=[5])
+f12x.labels = labels[Features.ohlcvix(f3, 1):end]
+f12x = coerce(f12x, :labels=>OrderedFactor)
 
 y, X = unpack(f12x, ==(:labels))
 # println("levels: $(levels(y)) max(relativedist)=$(maximum(relativedist)) min(relativedist)=$(minimum(relativedist))")
@@ -67,7 +67,7 @@ curve = learning_curve(mach,
 
 # evaluate!(mach)
 # training_loss = cross_entropy(predict(mach, X), y) |> mean
-println(curve)
+println("curve=$curve")
 p = plot(
     scatter(x=curve.parameter_values, y=curve.measurements, mode="markers+lines", name=curve.parameter_name, showlegend=true),
     Layout(xaxis_title="epochs", yaxis_title="Cross Entropy", title_text="epoch convergence")

@@ -26,7 +26,6 @@ with_logger(logger) do
 
     # display(plot(p, layout))
 
-    pricepeakix, regressionpeakix = Targets.bestregressiontargetcombi(f2)
+    pricepeaks = Targets.bestregressiontargetcombi(f2)
     # println("s=$s length of first = $(s[1][2])")
-
 end

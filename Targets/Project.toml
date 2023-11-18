@@ -1,7 +1,7 @@
 name = "Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.1.6"
+version = "0.1.7"
 
 [deps]
 Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"

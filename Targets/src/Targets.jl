@@ -12,7 +12,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 module Targets
 
 using EnvConfig, Ohlcv, Features
-using DataFrames, Logging
+using DataFrames, Dates, Logging
 
 "returns all possible labels:"
 possiblelabels() = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
@@ -100,24 +100,17 @@ function continuousdistancelabels(prices::Vector{T}, labelthresholds::LabelThres
 end
 
 
-mutable struct PriceExtremeCombi
+mutable struct PriceExtreme
     peakix  # vector of signed indices (positive for maxima, negative for minima)
-    regrxtrmix
-    ix  # running index within peakix
-    anchorix  # index of begin of peak sequence under assessment
     gain  # current cumulated gain since anchorix
-    regrwindow
-    rw
-    function PriceExtremeCombi(f2, regrwindow)
+    function PriceExtreme(f2, regrwindow)
         if isnothing(f2)
             extremesix = Int64[]
-            regr = Int64[]
-            rw = String[]
         else
             prices = Ohlcv.dataframe(f2.ohlcv).pivot
             regr = f2.regr[regrwindow].xtrmix
             regr = [sign(regr[rix]) * Features.ohlcvix(f2, abs(regr[rix])) for rix in eachindex(regr)]  # translate to price index
-            # println("PriceExtremeCombi regr=$regr")
+            # println("PriceExtreme regr=$regr")
             # fill array of price extremes by backward search from regression extremes
             extremesix = [sign(regr[rix]) * Features.extremepriceindex(prices, rix == lastindex(regr) ? abs(regr[rix]) : abs(regr[rix])-1 , rix == firstindex(regr) ? f2.firstix : abs(regr[rix-1]), (regr[rix] > 0)) for rix in eachindex(regr)]
             extremesix = Int64[]
@@ -137,15 +130,13 @@ mutable struct PriceExtremeCombi
                 pushfirst!(extremesix, -sign(first(extremesix)) * firstindex(prices))
                 pushfirst!(regr, first(extremesix))
             end
-            # println("PriceExtremeCombi extremesix=$extremesix")
-            rw = repeat([string(regrwindow)], length(extremesix))
         end
-        return new(extremesix, regr, firstindex(extremesix), firstindex(extremesix), 0.0, regrwindow, rw)
+        return new(extremesix, 0.0)
     end
 end
 
-function Base.show(io::IO, pec::PriceExtremeCombi)
-    println(io, "PriceExtremeCombi(regrwindow=$(pec.regrwindow)) len(peakix)=$(length(pec.peakix)) ix=$(pec.ix) anchorix=$(pec.anchorix)")
+function Base.show(io::IO, pe::PriceExtreme)
+    println(io, "PriceExtreme len(peakix)=$(length(pe.peakix)) len(regrxtrmix)=$(length(pe.regrxtrmix)) gain=$(pe.gain)")
 end
 
 function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
@@ -167,16 +158,6 @@ function gain(prices::Vector{T}, peakix::Vector{K}, labelthresholds::LabelThresh
     end
     return g
 end
-
-"merges the ix position and returns the better of the 2 PriceExtremeCombi"
-function segmentgain(prices, pec::PriceExtremeCombi, labelthresholds::LabelThresholds=defaultlabelthresholds)
-    g = 0.0
-    for ix in (pec.anchorix+1):pec.ix
-        g = gain(prices, pec.peakix[ix-1], pec.peakix[ix], labelthresholds) + g  # accumulate gain
-    end
-    return g
-end
-
 
 mutable struct ToporderElem
     pix   # peak index
@@ -276,8 +257,10 @@ function tracepath(predecessors::Dict{Integer, Union{Nothing, Targets.ToporderEl
     return path
 end
 
-""" Returns an array of best prices index extremes, an array of corresponding performance and a DataFrame with debug info
-- `regrwinarr` may contain a subset of available regressionwindow minutes, e.g. `[5, 15]`, to reduce the best target combination to those. """
+"""
+Returns a Dict{regression window => PriceExtreme} of best prices index extremes including the special regressionwindow key "combi" that represents the best combination of extremes across the various regression windows.
+- `regrwinarr` may contain a subset of available regressionwindow minutes, e.g. `[5, 15]`, to reduce the best target combination to those.
+"""
 function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
     debug = false
     @debug "Targets.bestregressiontargetcombi" begin
@@ -286,22 +269,22 @@ function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::La
     maxgain = 100000.0
     prices = Ohlcv.dataframe(f2.ohlcv).pivot
     @assert !isnothing(prices)
-    # pec = Dict(rw => PriceExtremeCombi(f2, rw) for rw in keys(f2.regr))
-    pec = Dict()
+    # pe = Dict(rw => PriceExtreme(f2, rw) for rw in keys(f2.regr))
+    pe = Dict()
     for rw in keys(f2.regr)
         if isnothing(regrwinarr) || (rw in regrwinarr)
-            pec[rw] = PriceExtremeCombi(f2, rw)
+            pe[rw] = PriceExtreme(f2, rw)
         end
     end
 
-    peakarr = sort([ToporderElem(abs(pix), [sign(pix) * rw]) for rw in keys(pec) for pix in pec[rw].peakix], by = x -> x.pix, rev=false)
+    peakarr = sort([ToporderElem(abs(pix), [sign(pix) * rw]) for rw in keys(pe) for pix in pe[rw].peakix], by = x -> x.pix, rev=false)
     # peakarr contains now a sorted list of tuple of (positive extreme indices, signed regression minutes depending of max/min)
     # multiple equal peak indices can be in peakarr from different regression windows
 
     reducedpeakarr = reducepeakarr(peakarr, nothing)
     # now reducedpeakarr has each extreme index only once in sorted order as tuple of (positive extreme index, weight=Inf, array of signed regression minutes)
 
-    rwset = Set([rw for rw in keys(pec)])
+    rwset = Set([rw for rw in keys(pe)])
     peakgraph = Dict()
     for ix in eachindex(reducedpeakarr)
         pix = reducedpeakarr[ix].pix
@@ -312,21 +295,19 @@ function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::La
     bestpath = tracepath(predecessors, first(reducedpeakarr), last(reducedpeakarr))
     @debug "ToporderElem {pix = peak index in prices, rwarr = regressions windows} - = minimum, + = maximum" bestpath
     peakix = [toe.pix for toe in bestpath if firstindex(prices) <= abs(toe.pix) <= lastindex(prices)]
-    if debug
-        for (rw, pec) in pec
-            pec.anchorix = firstindex(pec.peakix)
-            pec.ix = lastindex(pec.peakix)
-            pec.gain = segmentgain(prices, pec, labelthresholds)
-        end
-        g = gain(prices, peakix, labelthresholds)
-        println("gains of regression window: $([(rw, p.gain) for (rw, p) in pec]) combi gain: $g")
+    for (rw, p) in pe
+        p.gain = gain(prices, p.peakix, labelthresholds)
     end
-    return peakix
+    pe["combi"] = PriceExtreme(nothing, "combi")
+    pe["combi"].peakix = peakix
+    pe["combi"].gain = gain(prices, peakix, labelthresholds)
+    return pe
 end
 
 function continuousdistancelabels(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
-    peakix = bestregressiontargetcombi(f2; labelthresholds=labelthresholds, regrwinarr=regrwinarr)
-    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, peakix, labelthresholds)
+    pe = bestregressiontargetcombi(f2; labelthresholds=labelthresholds, regrwinarr=regrwinarr)
+    @debug "gains of regression window: $([(rw, p.gain) for (rw, p) in pe])"
+    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, pe["combi"].peakix, labelthresholds)
     return labels, relativedist, pricediffs, priceix
 end
 
@@ -344,7 +325,6 @@ function ohlcvlabels(prices::Vector{T}, pricepeakix::Vector{S}, labelthresholds:
             priceix[ix] = -sign(pricepeakix[pix]) * lastindex(priceix)
         end
         pricediffs[ix] = prices[abs(priceix[ix])]  - prices[ix]
-        # println("ix=$ix prices[ix]=$(prices[ix]) priceix[ix]=$(priceix[ix]) prices[abs(priceix[ix])]=$(prices[abs(priceix[ix])])")
     end
     relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)

@@ -7,8 +7,8 @@ startdt = enddt - Dates.Day(20)
 ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
 f12x, f3 = Features.features12x5m01(ohlcv)
 # labels, relativedist, _, _, _ = Targets.continuousdistancelabels(Features.ohlcvdataframe(f3).pivot, Features.grad(f3, 5), Targets.LabelThresholds(0.03, 0.0001, -0.0001, -0.03))
-labels, relativedist, _, _, _ = Targets.continuousdistancelabels(Features.ohlcvdataframe(f3).pivot, Features.grad(f3, 5), Targets.LabelThresholds(0.03, 0.0001, -0.0001, -0.03))
-f12x.labels = labels
+labels, relativedist, _, _ = Targets.continuousdistancelabels(f3.f2; labelthresholds=Targets.LabelThresholds(0.03, 0.0001, -0.0001, -0.03), regrwinarr=[5])
+f12x.labels = labels[Features.ohlcvix(f3, 1):end]
 f12x = coerce(f12x, :labels=>OrderedFactor)
 
 y, X = unpack(f12x, ==(:labels))
@@ -99,3 +99,4 @@ println("machpred ≈ loadedmachpred is $(!isnothing(machpred) ? (!isnothing(loa
 
 # evaluate!(mach)
 # training_loss = cross_entropy(predict(mach, X), y) |> mean
+result
