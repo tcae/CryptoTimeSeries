@@ -18,7 +18,6 @@ import JSON
 
 @enum Mode test production training
 cryptoquote = "usdt"
-cryptoexchange = "binance"
 datetimeformat = "yymmdd HH:MM"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
@@ -26,11 +25,10 @@ setsplitfname = "sets_split.csv"
 testsetsplitfname = "test_sets_split.csv"
 bases = String[]
 trainingbases = String[]
-cryptopath = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "crypto"))
-@info "cryptopath=$cryptopath is an existing folder: $(isdir(cryptopath))"
-authpath = joinpath(cryptopath, "exchanges")  # ".catalyst/data/exchanges/bybit/"
-logfilespath = joinpath(cryptopath, "logs")
-datafolder = "EnvConfig is not initialized"
+datapathprefix = normpath(@__DIR__, "..", "..", joinpath("crypto"))
+authpath = joinpath(datapathprefix, "exchanges")  # ".catalyst/data/exchanges/bybit/"
+logfilespath = joinpath(datapathprefix, "logs")
+datapath = "Features/"
 configmode = production
 authorization = nothing
 # TODO file path checks to be added
@@ -78,7 +76,7 @@ end
 
 function init(mode::Mode)
     global configmode = mode
-    global bases, trainingbases, datafolder
+    global bases, trainingbases, datapath
     global authorization
 
     authorization = Authentication()
@@ -89,11 +87,11 @@ function init(mode::Mode)
             "theta"]
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx"]
-        datafolder = "Features"
+        datapath = "Features/"
     elseif  configmode == training
         # trainingbases = bases = ["btc"]
         # trainingbases = bases = ["btc", "xrp", "eos"]
-        datafolder = "Features"
+        datapath = "Features/"
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
             "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
@@ -104,13 +102,13 @@ function init(mode::Mode)
             "theta"]
         # trainingbases = [
         #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
-        # datafolder = "TrainingOHLCV"
+        # datapath = "TrainingOHLCV/"
     elseif configmode == test
         trainingbases = bases = ["sine", "doublesine"]
         # trainingbases = ["sine", "doublesine"]
         # bases = ["sine", "doublesine"]
-        datafolder = "TestFeatures"
-        # datafolder = "Features"
+        datapath = "TestFeatures/"
+        # datapath = "Features/"
     else
         Logging.@error("invalid Config mode $configmode")
     end
@@ -118,15 +116,15 @@ end
 
 function datafile(mnemonic::String, extension=".jdf")
     # no file existence checks here because it may be new file
-    return normpath(joinpath(cryptopath, datafolder, mnemonic * extension))
+    return normpath(joinpath(datapathprefix, datapath, mnemonic * extension))
 end
 
 function setsplitfilename()::String
     # println(configmode)
     if configmode == production
-        return normpath(joinpath(cryptopath, datafolder, setsplitfname))
+        return normpath(joinpath(datapathprefix, datapath, setsplitfname))
     else
-        return normpath(joinpath(cryptopath, datafolder, testsetsplitfname))
+        return normpath(joinpath(datapathprefix, datapath, testsetsplitfname))
     end
 end
 

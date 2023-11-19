@@ -39,6 +39,7 @@ function loadohlcv(base, interval)
     if !(k in keys(ohlcvcache))
         k1m = base * "1m"
         if !(k1m in keys(ohlcvcache))
+            println("ohlcv: $(k1m)")
             ohlcv = Ohlcv.defaultohlcv(base)
             Ohlcv.setinterval!(ohlcv, "1m")
             Ohlcv.read!(ohlcv)

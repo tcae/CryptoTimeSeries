@@ -383,19 +383,14 @@ function getUSDTmarket()
             end
         end
     else  # test or training
-        # for base in EnvConfig.bases
-        p24dictarray = Bybit.get24HR()  #! also in test/training dependent on Bybit?
-        for (index, p24dict) in enumerate(p24dictarray)
-            base = lowercase(replace(p24dict["symbol"], uppercase(EnvConfig.cryptoquote) => ""))
-            if onlyconfiguredsymbols(p24dict["symbol"])
-                push!(df, (
-                    base,
-                    lowercase(EnvConfig.cryptoquote),
-                    15000000.0, # "turnover24h" = quote volume USD
-                    5.0,        # "price24hPcnt"
-                    100.0,      # "lastPrice"
-                ))
-            end
+        for base in EnvConfig.bases
+            push!(df, (
+                base,
+                lowercase(EnvConfig.cryptoquote),
+                15000000.0, # "turnover24h" = quote volume USD
+                5.0,        # "price24hPcnt"
+                100.0,      # "lastPrice"
+            ))
         end
     end
     return df

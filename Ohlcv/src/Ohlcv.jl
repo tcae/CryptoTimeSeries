@@ -437,15 +437,19 @@ function read!(ohlcv::OhlcvData)::OhlcvData
     mnm = mnemonic(ohlcv)
     filename = EnvConfig.datafile(mnm)
     df = DataFrame()
-    # println(filename)
-    if isdir(filename)
+    println(filename)
+    # if isdir(filename)
         try
-            df = DataFrame(JDF.loadjdf(filename))
-            println("loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+            if isdir(filename)
+                df = DataFrame(JDF.loadjdf(filename))
+                println("loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+            else
+                println("no data found for $filename")
+            end
         catch e
             Logging.@warn "exception $e detected"
         end
-    end
+    # end
     # display(first(df, 1))
     addpivot!(df)
     setdataframe!(ohlcv, df)

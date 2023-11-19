@@ -106,8 +106,12 @@ savecols = [:base, :manual, :automatic, :portfolio, :xch, :update, :quotevolume2
 function write(ad::AssetData)
     mnm = mnemonic()
     filename = EnvConfig.datafile(mnm)
-    println("writing asset data to $filename")
-    JDF.savejdf(filename, ad.basedf[!, savecols])  # without :pivot
+    if size(ad.basedf, 1) > 0
+        println("writing asset data to $filename")
+        JDF.savejdf(filename, ad.basedf[!, savecols])  # without :pivot
+    else
+        @warn "missing asset data to write to $filename"
+    end
 end
 
 function read()::AssetData

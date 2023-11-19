@@ -157,18 +157,19 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
         "doublesine" => doublesine
     )
     testbase = base
-    if !(base in keys(dispatch))
-        @info "unknown testohlcv test base: $base - fallback: using sine to fill $base"
-        testbase = "sine"
+    if base in keys(dispatch)
+        df = dispatch[testbase](startdt, enddt, interval)
+        if df === nothing
+            @warn "unexpected missing df" base startdt enddt interval
+        # else
+        #     println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
+        end
+        Ohlcv.addpivot!(df)
+        return df
+    else
+        @info "unknown testohlcv test base: $base"
+        return Ohlcv.defaultohlcvdataframe(base)
     end
-    df = dispatch[testbase](startdt, enddt, interval)
-    if df === nothing
-        @warn "unexpected missing df" base testbase startdt enddt interval
-    # else
-    #     println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
-    end
-    Ohlcv.addpivot!(df)
-    return df
 end
 
 function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
