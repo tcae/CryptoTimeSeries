@@ -276,7 +276,7 @@ maxsearch(regressionextremeindex) = regressionextremeindex > 0
 """
 function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
     #! deprecated
-    @error "Features.pricediffregressionpeak is deprecated and replaced by Targets.bestregressiontargetcombi"
+    @error "Features.pricediffregressionpeak is deprecated and replaced by Targets.peaksbeforeregressiontargets"
     return
 
 
@@ -1303,12 +1303,28 @@ function regressionfeatures01(ohlcv::Ohlcv.OhlcvData, lookbackperiods, focusregr
     return regressionfeatures01(f2, lookbackperiods, focusregrwindow, regrwindows, shortvol, longvol, reltime)
 end
 
-features12x5m01(f2) =  regressionfeatures01(f2,  11, 5,     [15, 60,   4*60,  12*60,   24*60],    5,     4*60,     "relminuteofday")
-features12x15m01(f2) = regressionfeatures01(f2,  11, 15,    [5,  60,   4*60,  12*60,   24*60],    15,    12*60,    "relminuteofday")
-features12x1h01(f2) =  regressionfeatures01(f2,  11, 60,    [5,  15,   4*60,  12*60,   24*60],    60,    24*60,    "reldayofweek")
-features12x4h01(f2) =  regressionfeatures01(f2,  11, 4*60,  [15, 60,   12*60, 24*60,   3*24*60],  4*60,  3*24*60,  "reldayofweek")
-features12x12h01(f2) = regressionfeatures01(f2,  11, 12*60, [60, 4*60, 24*60, 3*24*60, 10*24*60], 12*60, 7*24*60,  "reldayofyear")
-features12x1d01(f2) =  regressionfeatures01(f2,  11, 24*60, [60, 4*60, 12*60, 3*24*60, 10*24*60], 24*60, 14*24*60, "reldayofyear")
+features12x5m01(f2::Features002) =  regressionfeatures01(f2,  11, 5,     [15, 60,   4*60,  12*60,   24*60],    5,     4*60,     "relminuteofday")
+features12x15m01(f2::Features002) = regressionfeatures01(f2,  11, 15,    [5,  60,   4*60,  12*60,   24*60],    15,    12*60,    "relminuteofday")
+features12x1h01(f2::Features002) =  regressionfeatures01(f2,  11, 60,    [5,  15,   4*60,  12*60,   24*60],    60,    24*60,    "reldayofweek")
+features12x4h01(f2::Features002) =  regressionfeatures01(f2,  11, 4*60,  [15, 60,   12*60, 24*60,   3*24*60],  4*60,  3*24*60,  "reldayofweek")
+features12x12h01(f2::Features002) = regressionfeatures01(f2,  11, 12*60, [60, 4*60, 24*60, 3*24*60, 10*24*60], 12*60, 7*24*60,  "reldayofyear")
+features12x1d01(f2::Features002) =  regressionfeatures01(f2,  11, 24*60, [60, 4*60, 12*60, 3*24*60, 10*24*60], 24*60, 14*24*60, "reldayofyear")
+
+features5m01(f3::Features003) =  regressionfeatures01(f3, 5,     [15, 60,   4*60,  12*60,   24*60],    5,     4*60,     "relminuteofday")
+features15m01(f3::Features003) = regressionfeatures01(f3, 15,    [5,  60,   4*60,  12*60,   24*60],    15,    12*60,    "relminuteofday")
+features1h01(f3::Features003) =  regressionfeatures01(f3, 60,    [5,  15,   4*60,  12*60,   24*60],    60,    24*60,    "reldayofweek")
+features4h01(f3::Features003) =  regressionfeatures01(f3, 4*60,  [15, 60,   12*60, 24*60,   3*24*60],  4*60,  3*24*60,  "reldayofweek")
+features12h01(f3::Features003) = regressionfeatures01(f3, 12*60, [60, 4*60, 24*60, 3*24*60, 10*24*60], 12*60, 7*24*60,  "reldayofyear")
+features1d01(f3::Features003) =  regressionfeatures01(f3, 24*60, [60, 4*60, 12*60, 3*24*60, 10*24*60], 24*60, 14*24*60, "reldayofyear")
+
+featureslookback01 = Dict()
+featureslookback01[5] = features5m01
+featureslookback01[15] = features15m01
+featureslookback01[60] = features1h01
+featureslookback01[4*60] = features4h01
+featureslookback01[12*60] = features12h01
+featureslookback01[24*60] = features1d01
+
 #endregion Features003
 
 

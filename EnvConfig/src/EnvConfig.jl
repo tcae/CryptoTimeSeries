@@ -27,8 +27,14 @@ testsetsplitfname = "test_sets_split.csv"
 bases = String[]
 trainingbases = String[]
 cryptopath = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "crypto"))
+if !isdir(cryptopath)
+    @error "missing crypto folder $cryptopath"
+end
 @info "cryptopath=$cryptopath is an existing folder: $(isdir(cryptopath))"
 authpath = joinpath(cryptopath, "exchanges")  # ".catalyst/data/exchanges/bybit/"
+if !isdir(cryptopath)
+    @error "missing auth folder $authpath"
+end
 logfilespath = joinpath(cryptopath, "logs")
 datafolder = "EnvConfig is not initialized"
 configmode = production

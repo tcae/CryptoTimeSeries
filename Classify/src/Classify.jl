@@ -3,8 +3,8 @@ Train and evaluate the trading signal classifiers
 """
 module Classify
 
-using DataFrames, Logging  # , MLJ
-using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics
+using DataFrames, Logging, Dates, PrettyPrinting
+using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics, JLSO, MLJFlux, Flux # , StatisticalMeasures
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 
 """
@@ -216,7 +216,211 @@ function regression1()
     # plot(traces)
 end
 
+
+#region DataPrep
+lth = Targets.LabelThresholds(0.03, 0.0001, -0.0001, -0.03)
+features = targets = nothing
+
+folds(data, nfolds) = partition(1:nrows(data), (1/nfolds for i in 1:(nfolds-1))...)
+
+function featurestargets(regrwindow, f3, pe)
+    @assert regrwindow in keys(Features.featureslookback01)
+    @assert regrwindow in keys(pe)
+    f12x, _ = Features.featureslookback01[regrwindow](f3)
+    labels, _, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe["combi"].peakix, lth)
+    f12x.labels = labels[Features.ohlcvix(f3, 1):end]
+    f12x = coerce(f12x, :labels=>OrderedFactor)  #  Multiclass
+    targets, features = unpack(f12x, ==(:labels))
+    levels!(targets, Targets.possiblelabels())
+    return features, targets
+end
+
+function basecombitestpartitions(rowcount, micropartions)
+    micropartionsize = Int(ceil(rowcount/micropartions, digits=0))
+    ix = 1
+    aix = 1
+    arr =[[],[],[]]
+    while ix <= rowcount
+        push!(arr[aix], (ix, min(rowcount, ix+micropartionsize-1)))
+        ix = ix + micropartionsize
+        aix = aix % 3 + 1
+    end
+    res =[[],[],[]]
+    for aix in 1:3
+        res[aix] = [[t[1]:t[2]; for t in arr[aix]]] # with rangeset
+        res[aix] = [t[1]:t[2]; for t in arr[aix]] # without rangeset
+    end
+    return res
+end
+
+function test_basecombitestpartitions()
+    res = basecombitestpartitions(26, 9)
+    # 3-element Vector{Vector{Any}}:
+    #     [UnitRange{Int64}[1:3, 10:12, 19:21]]
+    #     [UnitRange{Int64}[4:6, 13:15, 22:24]]
+    #     [UnitRange{Int64}[7:9, 16:18, 25:26]]
+
+    for vec in res
+        # for rangeset in vec  # rangeset not necessary
+            for range in vec  # rangeset
+                for ix in range
+                    println(ix)
+                end
+            end
+        # end
+    end
+    println(res)
+end
+
+function loadtestdata(;startdt=DateTime("2022-01-02T22:54:00")-Dates.Day(20), enddt=DateTime("2022-01-02T22:54:00"), ohlcv=TestOhlcv.testohlcv("sine", startdt, enddt))
+    # ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+    f2 = Features.Features002(ohlcv)
+    lookbackperiods = 11  # == using the last 12 concatenated regression windows
+    f3 = Features.Features003(f2, lookbackperiods)
+    pe = Targets.peaksbeforeregressiontargets(f2; labelthresholds=lth, regrwinarr=nothing)
+    return f3, pe
+end
+
+# apply out of sample stacking: https://burakhimmetoglu.com/2016/12/01/stacking-models-for-improved-predictions/
+
+#endregion DataPrep
+#region LearningNetwork
+
+mylosscount=1
+
+function myloss(yestimated, ylabel)
+    global mylosscount
+    eloss = Flux.crossentropy(yestimated, ylabel)
+    if mylosscount < 0 #switched off
+        println("yestimated=$yestimated, ylabel=$ylabel, loss=$eloss")
+    end
+    mylosscount += 1
+    return eloss
+end
+
+hidden_size1 = 64
+hidden_size2 = 32
+
+tsbuilder = MLJFlux.@builder begin
+                init=Flux.glorot_uniform(rng)
+                hidden1 = Dense(n_in, hidden_size1, relu)
+                hidden2 = Dense(hidden_size1, hidden_size2, relu)
+                outputlayer = Dense(hidden_size2, n_out)
+                Chain(hidden1, hidden2, outputlayer)
+            end
+
+nnc = @load NeuralNetworkClassifier pkg=MLJFlux
+
+clf = nnc( builder = tsbuilder,
+        finaliser = NNlib.softmax,
+        optimiser = Adam(0.001, (0.9, 0.999)),
+        loss =  myloss, # Flux.crossentropy,
+        epochs = 2,
+        batch_size = 2,
+        lambda = 0.0,
+        alpha = 0.0,
+        optimiser_changes_trigger_retraining = false)
+
+function newmacheval(clf, f3, pe, regrwindow)
+    features, targets = featurestargets(regrwindow, f3, pe)
+    mach = machine(clf, features, targets)
+    result = evaluate!(
+                mach,
+                resampling=CV(),  # Holdout(fraction_train=0.7),
+                measure=[cross_entropy],
+                verbosity=1)
+    # println("size(result.per_observation)=$(size(result.per_observation))")
+    # println("size(result.per_observation[1])=$(size(result.per_observation[1]))")
+    # println("size(result.per_observation[1][1])=$(size(result.per_observation[1][1]))")
+    # pprint(result.fitted_params_per_fold)
+    # println()
+    # println("result.report_per_fold=$((result.report_per_fold))")
+    # println("result.operation=$((result.operation))")
+    # println("result.resampling=$((result.resampling))")
+    # println("result.repeats=$((result.repeats))")
+    # println("size(result.train_test_rows)=$(size(result.train_test_rows))")
+    # println("size(result.train_test_rows[1][1])=$(size(result.train_test_rows[1][1]))")
+    # println("size(result.train_test_rows[1][2])=$(size(result.train_test_rows[1][2]))")
+    println()
+    machpred = predict(mach, features)
+    # println("machpred size: $(size(machpred)) \n $(machpred[1:5])")
+    return mach, result, machpred, targets
+end
+
+function savemach(mach, filename)
+    smach = serializable(mach)
+    JLSO.save(filename, :machine => smach)
+end
+
+function loadmach(filename)
+    loadedmach = JLSO.load(filename)[:machine]
+    # Deserialize and restore learned parameters to useable form:
+    restore!(loadedmach)
+    return loadedmach
+end
+
+#endregion LearningNetwork
+
+#region Evaluation
+
+"returns a (scores, targets) tuple of binary predictions of class `label`"
+function binarypredictions(multiclasspred, multiclasstargets, label)
+    class_events = MLJ.recode(multiclasstargets, "other", label=>label)
+    class_scores = pdf(multiclasspred, [label])[:,1]
+    class_scores = UnivariateFinite(levels(class_events), class_scores, augment=true, pool=class_events)
+    return class_scores, class_events
+end
+
+function aucscores(pred, targets)
+
+    # auc_scores = [auc(pred[:, i], targets .== i) for i in unique(targets)]  # ERROR: ArgumentError: invalid index: "shorthold" of type String
+    auc_scores = []
+    for class_label in unique(targets)
+        class_scores, class_events = binarypredictions(pred, targets, class_label)
+        auc_score = auc(class_scores, class_events)
+        push!(auc_scores, auc_score)
+    end
+    return auc_scores
+
+    # StatisticalMeasures.confmat(pred, targets)
+end
+
+function maxscoreclass(pred)
+    classlabels = classes(pred)
+    p = pdf(pred, classlabels)
+    maxindex = mapslices(argmax, p, dims=2)
+    labelvec = [classlabels[ix] for ix in maxindex]
+    return labelvec[:,1]
+end
+
+#endregion Evaluation
+
+mach = loaded_mach = machpred = loadedmachpred = result = nothing
+machfile = EnvConfig.logpath("PeriodicTimeSeriesFluxClassifierTuned.jlso")
+
+
+f3, pe = loadtestdata()
+regrwindow= 5
+
+# mach, result, pred, targets = newmacheval(clf, f3, pe, regrwindow)
+# result
+
+# savemach(mach, machfile)
+
+# loadedmach = loadmach(machfile)
+# features, targets = featurestargets(regrwindow, f3, pe)
+# loadedmachpred = predict(loadedmach, features)
+# println("loadedmachpred size: $(size(loadedmachpred)) \n $(loadedmachpred[1:5])")
+# println("machpred ≈ loadedmachpred is $(!isnothing(machpred) ? (!isnothing(loadedmachpred) ? machpred ≈ loadedmachpred : "invalid due to no loadedmachpred") : "invalid due to no machpred")")
+
+
+testshowauc() = showauc(machfile, f3, pe, regrwindow)
+# test_basecombitestpartitions()
 # EnvConfig.init(production)
 # EnvConfig.init(test)
+
+function testpred(pred)
+    println(pred)
+end
 
 end  # module

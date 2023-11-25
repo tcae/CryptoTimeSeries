@@ -136,7 +136,7 @@ mutable struct PriceExtreme
 end
 
 function Base.show(io::IO, pe::PriceExtreme)
-    println(io, "PriceExtreme len(peakix)=$(length(pe.peakix)) len(regrxtrmix)=$(length(pe.regrxtrmix)) gain=$(pe.gain)")
+    println(io, "PriceExtreme len(peakix)=$(length(pe.peakix)) gain=$(pe.gain)")
 end
 
 function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
@@ -258,12 +258,13 @@ function tracepath(predecessors::Dict{Integer, Union{Nothing, Targets.ToporderEl
 end
 
 """
-Returns a Dict{regression window => PriceExtreme} of best prices index extremes including the special regressionwindow key "combi" that represents the best combination of extremes across the various regression windows.
+Returns a Dict{regression window => PriceExtreme} of best prices index extremes 
+including the special regressionwindow key "combi" that represents the best combination of extremes across the various regression windows.
 - `regrwinarr` may contain a subset of available regressionwindow minutes, e.g. `[5, 15]`, to reduce the best target combination to those.
 """
-function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
+function peaksbeforeregressiontargets(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)::Dict
     debug = false
-    @debug "Targets.bestregressiontargetcombi" begin
+    @debug "Targets.peaksbeforeregressiontargets" begin
         debug = true
     end
     maxgain = 100000.0
@@ -305,7 +306,7 @@ function bestregressiontargetcombi(f2::Features.Features002; labelthresholds::La
 end
 
 function continuousdistancelabels(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
-    pe = bestregressiontargetcombi(f2; labelthresholds=labelthresholds, regrwinarr=regrwinarr)
+    pe = peaksbeforeregressiontargets(f2; labelthresholds=labelthresholds, regrwinarr=regrwinarr)
     @debug "gains of regression window: $([(rw, p.gain) for (rw, p) in pe])"
     labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, pe["combi"].peakix, labelthresholds)
     return labels, relativedist, pricediffs, priceix
