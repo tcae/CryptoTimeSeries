@@ -923,11 +923,19 @@ ohlcv(features::Features002) = features.ohlcv
 featureix(f2::Features002, ohlcvix) = ohlcvix - f2.firstix + 1
 ohlcvix(f2::Features002, featureix) = featureix + f2.firstix - 1
 
+firstix(f2::Features002) = f2.firstix
+grad(f2::Features002, regrminutes) =  f2.regr[regrminutes].grad[ohlcvix(f2, 1):end]
+regry(f2::Features002, regrminutes) = f2.regr[regrminutes].regry[ohlcvix(f2, 1):end]
+std(f2::Features002, regrminutes) =   f2.regr[regrminutes].std[ohlcvix(f2, 1):end]
+ohlcvdataframe(f2::Features002) = Ohlcv.dataframe(f2.ohlcv)[ohlcvix(f2, 1):end, :]
+opentime(f2::Features002) = Ohlcv.dataframe(f2.ohlcv)[ohlcvix(f2, 1):end, :opentime]
+
 """
 In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`
 """
 function getfeatures002(ohlcv::OhlcvData, firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
     f2 = Features002(ohlcv; firstix=firstix, lastix=lastix)
+    return f2
 end
 
 """
@@ -1067,10 +1075,11 @@ featureix(f3::Features003, ohlcvix) = ohlcvix - f3.firstix + 1
 ohlcvix(f3::Features003, featureix) = featureix + f3.firstix - 1
 
 firstix(f3::Features003) = f3.firstix
-grad(f3, regrminutes) =  f3.f2.regr[regrminutes].grad[f3.firstix - f3.f2.firstix + 1:end]
-regry(f3, regrminutes) = f3.f2.regr[regrminutes].regry[f3.firstix - f3.f2.firstix + 1:end]
-std(f3, regrminutes) =   f3.f2.regr[regrminutes].std[f3.firstix - f3.f2.firstix + 1:end]
-ohlcvdataframe(f3) = Ohlcv.dataframe(f3.f2.ohlcv)[f3.firstix:f3.f2.lastix, :]
+grad(f3, regrminutes) =  f3.f2.regr[regrminutes].grad[ohlcvix(f3, 1):end]
+regry(f3, regrminutes) = f3.f2.regr[regrminutes].regry[ohlcvix(f3, 1):end]
+std(f3, regrminutes) =   f3.f2.regr[regrminutes].std[ohlcvix(f3, 1):end]
+ohlcvdataframe(f3) = Ohlcv.dataframe(f3.f2.ohlcv)[ohlcvix(f3, 1):end, :]
+opentime(f3) = Ohlcv.dataframe(f3.f2.ohlcv)[ohlcvix(f3, 1):end, :opentime]
 
 """
 Return a DataFrame column `df[firstix-lookback:lastix-lookback, col]` that reprents the `lookback` predecessor rows of that col.

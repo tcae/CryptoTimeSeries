@@ -2,7 +2,7 @@
 
 julia_version = "1.9.2"
 manifest_format = "2.0"
-project_hash = "31da38bff2c31289daf1bbbe3ef245c427037b85"
+project_hash = "c6e7325431875747c8fefc9432ae0c4f3cc97d2c"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -56,9 +56,21 @@ version = "1.16.1+1"
 
 [[deps.CategoricalArrays]]
 deps = ["DataAPI", "Future", "Missings", "Printf", "Requires", "Statistics", "Unicode"]
-git-tree-sha1 = "5f5a975d996026a8dd877c35fe26a7b8179c02ba"
+git-tree-sha1 = "1568b28f91293458345dabba6a5ea3f183250a61"
 uuid = "324d7699-5711-5eae-9e2f-1d82baa6b597"
-version = "0.10.6"
+version = "0.10.8"
+
+    [deps.CategoricalArrays.extensions]
+    CategoricalArraysJSONExt = "JSON"
+    CategoricalArraysRecipesBaseExt = "RecipesBase"
+    CategoricalArraysSentinelArraysExt = "SentinelArrays"
+    CategoricalArraysStructTypesExt = "StructTypes"
+
+    [deps.CategoricalArrays.weakdeps]
+    JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+    RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
+    SentinelArrays = "91c51154-3ec4-41a3-a24f-3f23e20d615c"
+    StructTypes = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
 
 [[deps.ChainRulesCore]]
 deps = ["Compat", "LinearAlgebra", "SparseArrays"]
@@ -232,7 +244,7 @@ version = "4.4.2+2"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "0.1.6"
+version = "0.1.8"
 
 [[deps.FilePathsBase]]
 deps = ["Compat", "Dates", "Mmap", "Printf", "Test", "UUIDs"]

@@ -4,8 +4,9 @@ Train and evaluate the trading signal classifiers
 module Classify
 
 using DataFrames, Logging, Dates, PrettyPrinting
-using MLJ, MLJBase, PartialLeastSquaresRegressor, CategoricalArrays, Combinatorics, JLSO, MLJFlux, Flux # , StatisticalMeasures
+using JLSO, Flux, Statistics, ProgressMeter, StatisticalMeasures, ROC
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
+using Plots
 
 """
 Returns the trade performance percentage of trade sigals given in `signals` applied to `prices`.
@@ -33,206 +34,65 @@ function tradeperformance(prices, signals)
     return (cash - initialcash) / initialcash * 100
 end
 
-function researchmodels()
-    # filter(model) = model.is_supervised && model.target_scitype >: AbstractVector{<:Continuous}
-    # models(filter)[4]
-
-    filter(model) = model.is_supervised && model.is_pure_julia && model.target_scitype >: AbstractVector{<:Continuous}
-    models(filter)[4]
-
-    # models("regressor")
-end
-
-function get_probs(y::AbstractArray)
-    counts     = Dict{eltype(y), Float64}()
-    n_elements = length(y)
-
-    for y_k in y
-        if  haskey(counts, y_k)
-            counts[y_k] +=1
-        else
-            counts[y_k] = 1
-        end
-    end
-
-    for k in keys(counts)
-        counts[k] = counts[k]/n_elements
-    end
-    return counts
-end
-
-function prepare(labelthresholds)
-    if EnvConfig.configmode == test
-        x, y = TestOhlcv.sinesamples(20*24*60, 2, [(150, 0, 0.5)])
-        fdf, featuremask = Features.getfeatures(y)
-        _, grad = Features.rollingregression(y, 50)
-    else
-        ohlcv = Ohlcv.defaultohlcv("btc")
-        Ohlcv.setinterval!(ohlcv, "1m")
-        Ohlcv.read!(ohlcv)
-        y = Ohlcv.pivot!(ohlcv)
-        println("pivot: $(typeof(y)) $(length(y))")
-        fdf, featuremask = Features.getfeatures(ohlcv.df)
-        _, grad = Features.rollingregression(y, 12*60)
-    end
-    fdf = Features.mlfeatures(fdf, featuremask)
-    fdf = Features.polynomialfeatures!(fdf, 2)
-    # fdf = Features.polynomialfeatures!(fdf, 3)
-
-    @error "requires revision of deprecated continuousdistancelabels usage - new version with f2 features"
-    # labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
-
-    # println("size(features): $(size(fdf)) size(relativedist): $(size(relativedist))")
-    # # println(features[1:3,:])
-    # # println(relativedist[1:3])
-    # labels = CategoricalArray(labels, ordered=true)
-    # println(get_probs(labels))
-    # levels!(labels, levels(Targets.possiblelabels()))
-    # # println(levels(labels))
-    # return labels, relativedist, fdf, y
-end
-
-function pls1(relativedist, features, train, test)
-    featuressrc = source(features)
-    stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
-    fit!(stdfeaturesnode, rows=train)
-    ftest = features[test, :]
-    # println(ftest[1:10, :])
-    stdftest = stdfeaturesnode(rows=test)
-    # println(stdftest[1:10, :])
-
-    relativedistsrc = source(relativedist)
-    stdlabelsmachine = machine(Standardizer(), relativedistsrc)
-    stdlabelsnode = MLJBase.transform(stdlabelsmachine, relativedistsrc)
-    # fit!(stdlabelsnode, rows=train)
-
-    plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
-    yhat = inverse_transform(stdlabelsmachine, plsnode)
-    fit!(yhat, rows=train)
-    return yhat(rows=test), stdftest
-end
-
-function pls2(relativedist, features, train, test)
-    featuressrc = source(features)
-    stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
-    fit!(stdfeaturesnode, rows=train)
-    ftest = features[test, :]
-    # println(ftest[1:10, :])
-    stdftest = stdfeaturesnode(rows=test)
-    # println(stdftest[1:10, :])
-
-    relativedistsrc = source(relativedist)
-    stdlabelsmachine = machine(Standardizer(), relativedistsrc)
-    stdlabelsnode = MLJBase.transform(stdlabelsmachine, relativedistsrc)
-    fit!(stdlabelsnode, rows=train)
-
-    # plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
-    plsmodel = TunedModel(models=[PartialLeastSquaresRegressor.PLSRegressor(n_factors=20)], resampling=CV(nfolds=3), measure=rms)
-    plsnode =  predict(machine(plsmodel, stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
-    yhat = inverse_transform(stdlabelsmachine, plsnode)
-    fit!(yhat, rows=train)
-    return yhat(rows=test), stdftest
-end
-
-function pls3(relativedist, features, train, test)
-    featuressrc = source(features)
-    stdfeaturesnode = MLJ.transform(machine(Standardizer(), featuressrc), featuressrc)
-    fit!(stdfeaturesnode, rows=train)
-    ftest = features[test, :]
-    # println(ftest[1:10, :])
-    stdftest = stdfeaturesnode(rows=test)
-    # println(stdftest[1:10, :])
-
-    relativedistsrc = source(relativedist)
-    stdlabelsmachine = machine(Standardizer(), relativedistsrc)
-    stdlabelsnode = MLJBase.transform(stdlabelsmachine, relativedistsrc)
-    fit!(stdlabelsnode, rows=train)
-
-    # plsnode =  predict(machine(PartialLeastSquaresRegressor.PLSRegressor(n_factors=20), stdfeaturesnode, stdlabelsnode), stdfeaturesnode)
-    plsmodel = PartialLeastSquaresRegressor.PLSRegressor(n_factors=20)
-    plsmachine =  machine(plsmodel, stdfeaturesnode, stdlabelsnode)
-    e = evaluate!(plsmachine, resampling=CV(nfolds=3), measure=[rms, mae], verbosity=1)
-    println(e)
-    plsnode =  predict(plsmachine, stdfeaturesnode)
-    yhat = inverse_transform(stdlabelsmachine, plsnode)
-    return yhat(rows=test), stdftest
-end
-
-# function plssimple(relativedist, features, train, test)
-#     pls_model = @pipeline Standardizer PartialLeastSquaresRegressor.PLSRegressor(n_factors=8) target=Standardizer
-#     pls_machine = machine(pls_model, features, relativedist)
-#     fit!(pls_machine, rows=train)
-#     yhat = predict(pls_machine, rows=test)
-#     return yhat
-# end
-
-function printresult(target, yhat)
-    df = DataFrame()
-    # println("target: $(size(target)) $(typeof(target)), yhat: $(size(yhat)) $(typeof(yhat))")
-    # println("target: $(typeof(target)), yhat: $(typeof(yhat))")
-    df[:, :target] = target
-    df[:, :predict] = yhat
-    df[:, :mae] = abs.(df[!, :target] - df[!, :predict])
-    println(df[1:3,:])
-    predictmae = mae(yhat, target) #|> mean
-    # println("mean(df.mae)=$(sum(df.mae)/size(df,1))  vs. predictmae=$predictmae")
-    println("predictmae=$predictmae")
-    return df
-end
-
-function regression1()
-    lt = Targets.defaultlabelthresholds
-    labels, relativedist, features, y = prepare(lt)
-    train, test = partition(eachindex(relativedist), 0.8) # 70:30 split
-    # train, test = partition(eachindex(relativedist), 0.7, stratify=labels) # 70:30 split
-    println("training: $(size(train,1))  test: $(size(test,1))")
-
-    # models(matching(features, relativedist))
-    # Regr = @load BayesianRidgeRegressor pkg=ScikitLearn  #load model class
-    # regr = Regr()  #instatiate model
-
-    # building a pipeline with scaling on data
-    println("hello")
-    # println("typeof(regressor) $(typeof(regressor))")
-    yhat1, stdfeatures = pls1(relativedist, features, train, test)
-    predictlabels = Targets.getlabels(yhat1, lt)
-    predictlabels = CategoricalArray(predictlabels, ordered=true)
-    levels!(predictlabels, levels(Targets.possiblelabels()))
-
-    # confusion_matrix(predictlabels, labels[test])
-    printresult(relativedist[test], yhat1)
-    # yhat2 = plssimple(relativedist, features, train, test)
-    # printresult(relativedist[test], yhat2)
-    println("label performance $(round(tradeperformance(y[test], labels[test]); digits=1))%")
-    println("trade performance $(round(tradeperformance(y[test], predictlabels); digits=1))%")
-    # tay = ["$((labels[test])[ix])" for ix in 1:size(y, 1)]
-    # tayhat = ["$(predictlabels[ix])" for ix in 1:size(y, 1)]
-    # traces = [
-    #     scatter(y=y[test], x=x[test], mode="lines", name="input"),
-    #     # scatter(y=stdfeatures, x=x[test], mode="lines", name="std input"),
-    #     scatter(y=relativedist[test], x=x[test], text=labels[test], mode="lines", name="target"),
-    #     scatter(y=yhat1, x=x[test], text=predictlabels, mode="lines", name="predict")
-    # ]
-    # plot(traces)
-end
 
 
 #region DataPrep
-lth = Targets.LabelThresholds(0.03, 0.0001, -0.0001, -0.03)
-features = targets = nothing
+# folds(data, nfolds) = partition(1:nrows(data), (1/nfolds for i in 1:(nfolds-1))...)
 
-folds(data, nfolds) = partition(1:nrows(data), (1/nfolds for i in 1:(nfolds-1))...)
+"""
+    - Returns a Dict of setname => vector of row ranges
+    - input
+        - `rowrange` is the range of rows that are split in subranges, e.g. 2000:5000
+        - `samplesets` is a Dict of setname => relative setsize with sum of all setsizes == 1
+        - `gapsize` is the number of rows between partitions of different sets that are not included in any partition
+        - `relativesubrangesize` is the subrange size relative to `rowrange` of a consecutive range assigned to a setinterval
+        - gaps will be removed from a subrange
+        - relativesubrangesize * length(rowrange) > 2 * gapsize
+        - any relative setsize > 2 * relativesubrangesize
+        - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
+"""
+function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize)
+    rowstart = rowrange[1]
+    rowend = rowrange[end]
+    rows = rowend - rowstart + 1
+    @assert relativesubrangesize * rows > 2 * gapsize
+    @assert max(collect(values(samplesets))...) > 2 * relativesubrangesize "max(collect(values(samplesets))...)=$(max(collect(values(samplesets))...)) <= 2 * relativesubrangesize = $(2 * relativesubrangesize)"
+    minrelsetsize = min(collect(values(samplesets))...)
+    @assert minrelsetsize > 0.0
+    sn = [setname for setname in keys(samplesets)]
+    snl = length(sn)
+    ix = rowstart
+    aix = 1
+    arr =[[] for _ in sn]
+    while ix <= rowend
+        subrangesize = round(Int, rows * relativesubrangesize * samplesets[sn[aix]] / minrelsetsize)
+        push!(arr[aix], ((ix == rowstart ? ix : ix + gapsize), min(rowend, ix+subrangesize-1)))
+        ix = ix + subrangesize
+        aix = aix % snl + 1
+    end
+    res = Dict(sn[aix] => [t[1]:t[2]; for t in arr[aix]] for aix in eachindex(arr))
+    return res
+end
 
-function featurestargets(regrwindow, f3, pe)
-    @assert regrwindow in keys(Features.featureslookback01)
-    @assert regrwindow in keys(pe)
-    f12x, _ = Features.featureslookback01[regrwindow](f3)
-    labels, _, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe["combi"].peakix, lth)
-    f12x.labels = labels[Features.ohlcvix(f3, 1):end]
-    f12x = coerce(f12x, :labels=>OrderedFactor)  #  Multiclass
-    targets, features = unpack(f12x, ==(:labels))
-    levels!(targets, Targets.possiblelabels())
-    return features, targets
+function test_setpartitions()
+    # res = setpartitions(1:26, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/3), 0, 1/9)
+    # res = setpartitions(1:26, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/3), 1, 1/9)
+    res = setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 3/50)
+    # 3-element Vector{Vector{Any}}:
+    #     [UnitRange{Int64}[1:3, 10:12, 19:21]]
+    #     [UnitRange{Int64}[4:6, 13:15, 22:24]]
+    #     [UnitRange{Int64}[7:9, 16:18, 25:26]]
+
+    for (k, vec) in res
+        # for rangeset in vec  # rangeset not necessary
+            for range in vec  # rangeset
+                for ix in range
+                    # println("$k: $ix")
+                end
+            end
+        # end
+    end
+    println(res)
 end
 
 function basecombitestpartitions(rowcount, micropartions)
@@ -272,155 +132,147 @@ function test_basecombitestpartitions()
     println(res)
 end
 
-function loadtestdata(;startdt=DateTime("2022-01-02T22:54:00")-Dates.Day(20), enddt=DateTime("2022-01-02T22:54:00"), ohlcv=TestOhlcv.testohlcv("sine", startdt, enddt))
-    # ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
-    f2 = Features.Features002(ohlcv)
-    lookbackperiods = 11  # == using the last 12 concatenated regression windows
-    f3 = Features.Features003(f2, lookbackperiods)
-    pe = Targets.peaksbeforeregressiontargets(f2; labelthresholds=lth, regrwinarr=nothing)
-    return f3, pe
-end
 
-# apply out of sample stacking: https://burakhimmetoglu.com/2016/12/01/stacking-models-for-improved-predictions/
+"returns features as dataframe and targets as CategorialArray (which is why this function resides in Classify and not in Targets)."
+function featurestargets(regrwindow, f3::Features.Features003, pe::Dict)
+    @assert regrwindow in keys(Features.featureslookback01)
+    @assert regrwindow in keys(pe)
+    features, _ = Features.featureslookback01[regrwindow](f3)
+    labels, _, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe[regrwindow])
+    targets = labels[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
+    features = Array(features)  # change from df to array
+    @assert size(targets, 1) == size(features, 1)
+    features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
+    return features, targets
+end
 
 #endregion DataPrep
-#region LearningNetwork
 
-mylosscount=1
+#region LearningNetwork Flux
 
-function myloss(yestimated, ylabel)
-    global mylosscount
-    eloss = Flux.crossentropy(yestimated, ylabel)
-    if mylosscount < 0 #switched off
-        println("yestimated=$yestimated, ylabel=$ylabel, loss=$eloss")
-    end
-    mylosscount += 1
-    return eloss
+struct FluxMachine
+    model
+    optim
+    labels  # in fixed sequence as index == class id
+    losses
 end
 
-hidden_size1 = 64
-hidden_size2 = 32
+function adaptmachine(features, targets)::FluxMachine
+    model = Chain(
+        Dense(36 => 64, tanh),   # activation function inside layer
+        BatchNorm(64),
+        Dense(64 => 32),
+        BatchNorm(32),
+        Dense(32 => length(Targets.all_labels)),
+        softmax)
 
-tsbuilder = MLJFlux.@builder begin
-                init=Flux.glorot_uniform(rng)
-                hidden1 = Dense(n_in, hidden_size1, relu)
-                hidden2 = Dense(hidden_size1, hidden_size2, relu)
-                outputlayer = Dense(hidden_size2, n_out)
-                Chain(hidden1, hidden2, outputlayer)
+    # The model encapsulates parameters, randomly initialised. Its initial output is:
+    out1 = model(features)  # size(classes, observations)
+    onehottargets = Flux.onehotbatch(targets, Targets.all_labels)  # onehot class encoding of an observation as one column
+    loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
+    optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
+
+    # Training loop, using the whole data set 1000 times:
+    losses = []
+    @showprogress for epoch in 1:200  # 1:1000
+        for (x, y) in loader
+            loss, grads = Flux.withgradient(model) do m
+                # Evaluate model and loss inside gradient context:
+                y_hat = m(x)
+                Flux.crossentropy(y_hat, y)
             end
+            Flux.update!(optim, model, grads[1])
+            push!(losses, loss)  # logging, outside gradient context
+        end
+    end
 
-nnc = @load NeuralNetworkClassifier pkg=MLJFlux
-
-clf = nnc( builder = tsbuilder,
-        finaliser = NNlib.softmax,
-        optimiser = Adam(0.001, (0.9, 0.999)),
-        loss =  myloss, # Flux.crossentropy,
-        epochs = 2,
-        batch_size = 2,
-        lambda = 0.0,
-        alpha = 0.0,
-        optimiser_changes_trigger_retraining = false)
-
-function newmacheval(clf, f3, pe, regrwindow)
-    features, targets = featurestargets(regrwindow, f3, pe)
-    mach = machine(clf, features, targets)
-    result = evaluate!(
-                mach,
-                resampling=CV(),  # Holdout(fraction_train=0.7),
-                measure=[cross_entropy],
-                verbosity=1)
-    # println("size(result.per_observation)=$(size(result.per_observation))")
-    # println("size(result.per_observation[1])=$(size(result.per_observation[1]))")
-    # println("size(result.per_observation[1][1])=$(size(result.per_observation[1][1]))")
-    # pprint(result.fitted_params_per_fold)
-    # println()
-    # println("result.report_per_fold=$((result.report_per_fold))")
-    # println("result.operation=$((result.operation))")
-    # println("result.resampling=$((result.resampling))")
-    # println("result.repeats=$((result.repeats))")
-    # println("size(result.train_test_rows)=$(size(result.train_test_rows))")
-    # println("size(result.train_test_rows[1][1])=$(size(result.train_test_rows[1][1]))")
-    # println("size(result.train_test_rows[1][2])=$(size(result.train_test_rows[1][2]))")
-    println()
-    machpred = predict(mach, features)
-    # println("machpred size: $(size(machpred)) \n $(machpred[1:5])")
-    return mach, result, machpred, targets
+    optim # parameters, momenta and output have all changed
+    fm = FluxMachine(model, optim, Targets.all_labels, losses)
+    return fm
 end
+
+" Returns a predictions Float Array of size(classes, observations)"
+predict(fm::FluxMachine, features) = fm.model(features)  # size(classes, observations)
 
 function savemach(mach, filename)
-    smach = serializable(mach)
-    JLSO.save(filename, :machine => smach)
+    @error "save machine to be implemented for pure flux" filename
+    # smach = serializable(mach)
+    # JLSO.save(filename, :machine => smach)
 end
 
 function loadmach(filename)
-    loadedmach = JLSO.load(filename)[:machine]
+    @error "load machine to be implemented for pure flux" filename
+    # loadedmach = JLSO.load(filename)[:machine]
     # Deserialize and restore learned parameters to useable form:
-    restore!(loadedmach)
-    return loadedmach
+    # restore!(loadedmach)
+    # return loadedmach
 end
 
 #endregion LearningNetwork
 
 #region Evaluation
 
-"returns a (scores, targets) tuple of binary predictions of class `label`"
-function binarypredictions(multiclasspred, multiclasstargets, label)
-    class_events = MLJ.recode(multiclasstargets, "other", label=>label)
-    class_scores = pdf(multiclasspred, [label])[:,1]
-    class_scores = UnivariateFinite(levels(class_events), class_scores, augment=true, pool=class_events)
-    return class_scores, class_events
+labelvec(labelindexvec, labels=Targets.all_labels) = [labels[i] for i in labelindexvec]
+
+labelindexvec(labelvec, labels=Targets.all_labels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
+
+"returns a (scores, labelindices) tuple of best predictions"
+function maxpredictions(predictions, labels=Targets.all_labels)
+    @assert length(labels) == size(predictions, 1)
+    maxindex = mapslices(argmax, predictions, dims=1)
+    scores = [predictions[maxindex[i], i] for i in eachindex(maxindex)]
+    return scores, maxindex
 end
 
-function aucscores(pred, targets)
+"returns a (scores, booltargets) tuple of binary predictions of class `label`, i.e. booltargets[ix] == true if bestscore is assigned to focuslabel"
+function binarypredictions(predictions, focuslabel, labels=Targets.all_labels)
+    flix = findfirst(x -> x == focuslabel, labels)
+    @assert !isnothing(flix) && (firstindex(labels) <= flix <= lastindex(labels)) "$focuslabel==$(isnothing(flix) ? "nothing" : flix) not found in $labels[$(firstindex(labels)):$(lastindex(labels))]"
+    @assert length(labels) == size(predictions, 1) "length(labels)=$(length(labels)) == size(predictions, 1)=$(size(predictions, 1))"
+    maxindex = mapslices(argmax, predictions, dims=1)
+    ixvec = [flix == maxindex[i] for i in eachindex(maxindex)]
+    return predictions[flix, :], ixvec
+end
 
-    # auc_scores = [auc(pred[:, i], targets .== i) for i in unique(targets)]  # ERROR: ArgumentError: invalid index: "shorthold" of type String
-    auc_scores = []
-    for class_label in unique(targets)
-        class_scores, class_events = binarypredictions(pred, targets, class_label)
-        auc_score = auc(class_scores, class_events)
-        push!(auc_scores, auc_score)
+
+aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.AUC(ROC.roc(binarypredictions(pred, focuslabel, labels)...)) for focuslabel in labels)
+# aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+    # auc_scores = []
+    # for class_label in unique(targets)
+    #     class_scores, class_events = binarypredictions(pred, targets, class_label)
+    #     auc_score = auc(class_scores, class_events)
+    #     push!(auc_scores, auc_score)
+    # end
+    # return auc_scores
+# end
+
+"Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
+roccurves(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.roc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+# roccurves(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => roc_curve(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+
+function plotroccurves(rc::Dict)
+    plotlyjs()
+    default(legend=true)
+    plt = plot()
+    for (k, v) in rc
+        # println("$k = $(length(v[1]))  xxx $(length(v[2]))")
+        plot!(v, label=k)
     end
-    return auc_scores
-
-    # StatisticalMeasures.confmat(pred, targets)
+    # plot!(xlab="false positive rate", ylab="true positive rate")
+    # plot!([0, 1], [0, 1], linewidth=2, linestyle=:dash, color=:black, label="chance")
+    xlabel!("false positive rate")
+    ylabel!("true positive rate")
+    title!("receiver operator characteristic")
 end
 
-function maxscoreclass(pred)
-    classlabels = classes(pred)
-    p = pdf(pred, classlabels)
-    maxindex = mapslices(argmax, p, dims=2)
-    labelvec = [classlabels[ix] for ix in maxindex]
-    return labelvec[:,1]
+function confusionmatrix(pred, targets, labels=Targets.all_labels)
+    _, maxindex = maxpredictions(pred, labels)
+    StatisticalMeasures.ConfusionMatrices.confmat(labelvec(maxindex, labels), targets)
 end
 
 #endregion Evaluation
 
-mach = loaded_mach = machpred = loadedmachpred = result = nothing
-machfile = EnvConfig.logpath("PeriodicTimeSeriesFluxClassifierTuned.jlso")
-
-
-f3, pe = loadtestdata()
-regrwindow= 5
-
-# mach, result, pred, targets = newmacheval(clf, f3, pe, regrwindow)
-# result
-
-# savemach(mach, machfile)
-
-# loadedmach = loadmach(machfile)
-# features, targets = featurestargets(regrwindow, f3, pe)
-# loadedmachpred = predict(loadedmach, features)
-# println("loadedmachpred size: $(size(loadedmachpred)) \n $(loadedmachpred[1:5])")
-# println("machpred ≈ loadedmachpred is $(!isnothing(machpred) ? (!isnothing(loadedmachpred) ? machpred ≈ loadedmachpred : "invalid due to no loadedmachpred") : "invalid due to no machpred")")
-
-
-testshowauc() = showauc(machfile, f3, pe, regrwindow)
-# test_basecombitestpartitions()
 # EnvConfig.init(production)
 # EnvConfig.init(test)
-
-function testpred(pred)
-    println(pred)
-end
 
 end  # module

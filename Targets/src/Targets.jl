@@ -14,8 +14,8 @@ module Targets
 using EnvConfig, Ohlcv, Features
 using DataFrames, Dates, Logging
 
-"returns all possible labels:"
-possiblelabels() = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
+"returns all possible labels (don't change sequence because index is used as class id)"
+const all_labels = ["longbuy", "longhold", "longsell", "close", "shortsell", "shorthold", "shortbuy"]
 
 
 """
@@ -76,7 +76,7 @@ Because the trade signals are not independent classes but an ordered set of acti
 
 """
 function getlabels(relativedist, labelthresholds::LabelThresholds)
-    @assert all([lab in ["longbuy", "longhold", "shortbuy", "shorthold", "close"] for lab in possiblelabels()])
+    @assert all([lab in all_labels for lab in ["longbuy", "longhold", "shortbuy", "shorthold", "close"]])
     lt = labelthresholds
     rd = relativedist
     labels = [(rd >= lt.longbuy ? "longbuy" : (rd > lt.longhold ? "longhold" :
@@ -103,7 +103,8 @@ end
 mutable struct PriceExtreme
     peakix  # vector of signed indices (positive for maxima, negative for minima)
     gain  # current cumulated gain since anchorix
-    function PriceExtreme(f2, regrwindow)
+    labelthresholds::LabelThresholds
+    function PriceExtreme(f2, regrwindow, labelthresholds::LabelThresholds=defaultlabelthresholds)
         if isnothing(f2)
             extremesix = Int64[]
         else
@@ -131,12 +132,12 @@ mutable struct PriceExtreme
                 pushfirst!(regr, first(extremesix))
             end
         end
-        return new(extremesix, 0.0)
+        return new(extremesix, 0.0, labelthresholds)
     end
 end
 
 function Base.show(io::IO, pe::PriceExtreme)
-    println(io, "PriceExtreme len(peakix)=$(length(pe.peakix)) gain=$(pe.gain)")
+    println(io, "PriceExtreme len(peakix)=$(length(pe.peakix)) gain=$(pe.gain) labelthresholds=$(pe.labelthresholds)")
 end
 
 function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
@@ -258,7 +259,7 @@ function tracepath(predecessors::Dict{Integer, Union{Nothing, Targets.ToporderEl
 end
 
 """
-Returns a Dict{regression window => PriceExtreme} of best prices index extremes 
+Returns a Dict{regression window => PriceExtreme} of best prices index extremes
 including the special regressionwindow key "combi" that represents the best combination of extremes across the various regression windows.
 - `regrwinarr` may contain a subset of available regressionwindow minutes, e.g. `[5, 15]`, to reduce the best target combination to those.
 """
@@ -270,11 +271,11 @@ function peaksbeforeregressiontargets(f2::Features.Features002; labelthresholds:
     maxgain = 100000.0
     prices = Ohlcv.dataframe(f2.ohlcv).pivot
     @assert !isnothing(prices)
-    # pe = Dict(rw => PriceExtreme(f2, rw) for rw in keys(f2.regr))
+    # pe = Dict(rw => PriceExtreme(f2, rw, labelthresholds) for rw in keys(f2.regr))
     pe = Dict()
     for rw in keys(f2.regr)
         if isnothing(regrwinarr) || (rw in regrwinarr)
-            pe[rw] = PriceExtreme(f2, rw)
+            pe[rw] = PriceExtreme(f2, rw, labelthresholds)
         end
     end
 
@@ -299,7 +300,7 @@ function peaksbeforeregressiontargets(f2::Features.Features002; labelthresholds:
     for (rw, p) in pe
         p.gain = gain(prices, p.peakix, labelthresholds)
     end
-    pe["combi"] = PriceExtreme(nothing, "combi")
+    pe["combi"] = PriceExtreme(nothing, "combi", labelthresholds)
     pe["combi"].peakix = peakix
     pe["combi"].gain = gain(prices, peakix, labelthresholds)
     return pe
@@ -308,27 +309,27 @@ end
 function continuousdistancelabels(f2::Features.Features002; labelthresholds::LabelThresholds=defaultlabelthresholds, regrwinarr=nothing)
     pe = peaksbeforeregressiontargets(f2; labelthresholds=labelthresholds, regrwinarr=regrwinarr)
     @debug "gains of regression window: $([(rw, p.gain) for (rw, p) in pe])"
-    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, pe["combi"].peakix, labelthresholds)
+    labels, relativedist, pricediffs, priceix = ohlcvlabels(Ohlcv.dataframe(f2.ohlcv).pivot, pe["combi"])
     return labels, relativedist, pricediffs, priceix
 end
 
-function ohlcvlabels(prices::Vector{T}, pricepeakix::Vector{S}, labelthresholds::LabelThresholds=defaultlabelthresholds) where {T<:AbstractFloat, S<:Integer}
+function ohlcvlabels(prices::Vector{T}, pe::PriceExtreme) where {T<:AbstractFloat}
     pricediffs = zeros(Float32, length(prices))
     priceix = zeros(Int32, length(prices))
-    pix = firstindex(pricepeakix)
+    pix = firstindex(pe.peakix)
     for ix in eachindex(prices)
-        if (ix >= abs(pricepeakix[pix]) && (pix < lastindex(pricepeakix)))
+        if (ix >= abs(pe.peakix[pix]) && (pix < lastindex(pe.peakix)))
             pix = pix + 1
-            priceix[ix] = pricepeakix[pix]
-        elseif (pix <= lastindex(pricepeakix)) && (ix <= abs(pricepeakix[pix]))
-            priceix[ix] = pricepeakix[pix]
+            priceix[ix] = pe.peakix[pix]
+        elseif (pix <= lastindex(pe.peakix)) && (ix <= abs(pe.peakix[pix]))
+            priceix[ix] = pe.peakix[pix]
         else
-            priceix[ix] = -sign(pricepeakix[pix]) * lastindex(priceix)
+            priceix[ix] = -sign(pe.peakix[pix]) * lastindex(priceix)
         end
         pricediffs[ix] = prices[abs(priceix[ix])]  - prices[ix]
     end
     relativedist = relativedistances(prices, pricediffs, priceix, false)
-    labels = getlabels(relativedist, labelthresholds)
+    labels = getlabels(relativedist, pe.labelthresholds)
     return labels, relativedist, pricediffs, priceix
 end
 
@@ -342,6 +343,15 @@ function fakef2fromarrays(prices::Vector{T}, regressiongradients::Vector{Vector{
     end
     f2 = Features.Features002(ohlcv, regr, Dict(1 =>[1.0f0]), fakef2fromarrays, firstindex(prices), lastindex(prices), 0)
     return f2
+end
+
+
+function loaddata(;startdt=DateTime("2022-01-02T22:54:00")-Dates.Day(20), enddt=DateTime("2022-01-02T22:54:00"), ohlcv=TestOhlcv.testohlcv("sine", startdt, enddt), labelthresholds::LabelThresholds=defaultlabelthresholds)
+    f2 = Features.Features002(ohlcv)
+    lookbackperiods = 11  # == using the last 12 concatenated regression windows
+    f3 = Features.Features003(f2, lookbackperiods)
+    pe = Targets.peaksbeforeregressiontargets(f2; labelthresholds=labelthresholds, regrwinarr=nothing)
+    return f3, pe
 end
 
 end  # module

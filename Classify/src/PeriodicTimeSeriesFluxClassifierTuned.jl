@@ -1,6 +1,6 @@
-using MLJ, Dates, MLJFlux, Flux, DataFrames, PrettyPrinting, JLSO, CategoricalArrays
-using Ohlcv, Features, TestOhlcv, Targets, EnvConfig, Classify
-using PlotlyJS
+using Dates, Flux, DataFrames
+using Ohlcv, Features, TestOhlcv, Targets, EnvConfig, Classify, ROC
+using Plots
 
 
 #region DataPrep
@@ -22,11 +22,15 @@ mach = loaded_mach = machpred = loadedmachpred = result = nothing
 machfile = EnvConfig.logpath("PeriodicTimeSeriesFluxClassifierTuned.jlso")
 
 
-f3, pe = Classify.loadtestdata()
+# f3, pe = Targets.loaddata())
+startdt = DateTime("2022-01-02T22:54:00")-Dates.Day(20)
+enddt = DateTime("2022-01-02T22:54:00")
+f3, pe = Targets.loaddata(;startdt=startdt, enddt=enddt, ohlcv=TestOhlcv.testohlcv("sine", startdt, enddt), labelthresholds=lth)
 regrwindow= 5
 features, targets = Classify.featurestargets(regrwindow, f3, pe)
 
-# mach, result, machpred, targets = Classify.newmacheval(Classify.clf, f3, pe, regrwindow)
+fm = Classify.adaptmachine(features, targets)
+pred = Classify.predict(fm, features)
 
 # Classify.savemach(mach, machfile)
 
@@ -35,9 +39,17 @@ features, targets = Classify.featurestargets(regrwindow, f3, pe)
 # println("loadedmachpred size: $(size(loadedmachpred)) \n ")
 # println("machpred ≈ loadedmachpred is $(!isnothing(machpred) ? (!isnothing(loadedmachpred) ? machpred ≈ loadedmachpred : "invalid due to no loadedmachpred") : "invalid due to no machpred")")
 
-mach = Classify.loadmach(machfile)
-pred = predict(mach, features)
+# mach = Classify.loadmach(machfile)
+# pred = predict(mach, features)
+# println("size(targets)=$(size(targets)) size(features)=$(size(features)) ")
 
-# Classify.aucscores(pred, targets)
-MLJ.confmat(Classify.maxscoreclass(pred), targets)
+println("auc=$(Classify.aucscores(pred))")
+rc = Classify.roccurves(pred)
+# for (k, v) in rc
+#    println("key: $k size(cutoffs)=$(size(ROC.cutoffs(v)))")
+# end
+Classify.plotroccurves(rc)
+scores, labels = Classify.maxpredictions(pred)
+show(stdout, MIME"text/plain"(), Classify.confusionmatrix(pred, targets))  # prints the table
+
 # test_basecombitestpartitions()

@@ -104,5 +104,5 @@ report(mach).transformed_target_model_deterministic.model.training_losses
 # labels, relativedist, distances, regressionix, priceix = Targets.continuousdistancelabels(y, grad, labelthresholds)
 # labels = CategoricalArray(labels, ordered=true)
 # println(get_probs(labels))
-# levels!(labels, levels(Targets.possiblelabels()))
+# levels!(labels, levels(Targets.all_labels))
 

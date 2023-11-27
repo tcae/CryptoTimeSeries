@@ -2,7 +2,7 @@
 
 julia_version = "1.9.2"
 manifest_format = "2.0"
-project_hash = "f6ff55dcde157110a447f68132d89b1b4f1b6c18"
+project_hash = "f7a6bd7c93dc4477e38cf0962e4bc1bf6d3ff227"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "332e5d7baeff8497b923b730b994fa480601efc7"
@@ -432,10 +432,10 @@ weakdeps = ["InverseFunctions"]
     ChangesOfVariablesInverseFunctionsExt = "InverseFunctions"
 
 [[deps.Classify]]
-deps = ["CSV", "CategoricalArrays", "Colors", "Combinatorics", "Dash", "DataFrames", "Dates", "EnvConfig", "Features", "Flux", "GLM", "IJulia", "JLSO", "JSON", "Logging", "MLJ", "MLJBase", "MLJDecisionTreeInterface", "MLJFlux", "MLJGLMInterface", "MLJLinearModels", "MLJScikitLearnInterface", "Ohlcv", "OpenSpecFun_jll", "PartialLeastSquaresRegressor", "PlotlyJS", "Plots", "PrettyPrinting", "ScikitLearn", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "WebIO", "cuDNN"]
+deps = ["CSV", "CategoricalArrays", "Colors", "Combinatorics", "Dash", "DataFrames", "Dates", "EnvConfig", "Features", "Flux", "GLM", "IJulia", "JLSO", "JSON", "Logging", "MLJ", "MLJBase", "MLJFlux", "Ohlcv", "OpenSpecFun_jll", "PartialLeastSquaresRegressor", "PlotlyJS", "Plots", "PrettyPrinting", "ProgressMeter", "ROC", "ScikitLearn", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "WebIO", "cuDNN"]
 path = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.1.4"
+version = "0.1.6"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]
@@ -871,7 +871,7 @@ version = "0.2.8"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "0.1.7"
+version = "0.1.8"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -1290,6 +1290,12 @@ version = "0.8.2"
 git-tree-sha1 = "012e604e1c7458645cb8b436f8fba789a51b257f"
 uuid = "9b13fd28-a010-5f03-acff-a1bbcff69959"
 version = "1.0.0"
+
+[[deps.Infinity]]
+deps = ["Dates", "Random", "Requires"]
+git-tree-sha1 = "cf8234411cbeb98676c173f930951ea29dca3b23"
+uuid = "a303e19e-6eb4-11e9-3b09-cd9505f79100"
+version = "0.2.4"
 
 [[deps.Inflate]]
 git-tree-sha1 = "ea8031dea4aff6bd41f1df8f2fdfb25b33626381"
@@ -2524,6 +2530,14 @@ version = "0.7.7"
 deps = ["InteractiveUtils", "Markdown", "Sockets", "Unicode"]
 uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 
+[[deps.ROC]]
+deps = ["Infinity", "Missings", "RecipesBase"]
+git-tree-sha1 = "3b31e82496e6c30f9a9f6f3dcf43b9aec3193b3b"
+repo-rev = "master"
+repo-url = "https://github.com/diegozea/ROC.jl"
+uuid = "e4f92426-8875-4712-a903-a153c75bec82"
+version = "0.1.0"
+
 [[deps.Random]]
 deps = ["SHA", "Serialization"]
 uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
@@ -3032,10 +3046,10 @@ uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
 
 [[deps.Targets]]
-deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms"]
+deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms"]
 path = "Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-version = "0.1.8"
+version = "0.1.10"
 
 [[deps.Temporal]]
 deps = ["Dates", "HTTP", "JSON", "Pkg", "Printf", "Random", "RecipesBase", "Statistics", "Test"]

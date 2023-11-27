@@ -12,7 +12,7 @@ f12x = coerce(f12x, :labels=>OrderedFactor)
 
 y, X = unpack(f12x, ==(:labels))
 # println("levels: $(levels(y)) max(relativedist)=$(maximum(relativedist)) min(relativedist)=$(minimum(relativedist))")
-levels!(y, Targets.possiblelabels())
+levels!(y, Targets.all_labels)
 
 # (f12xtrain, f12xtest) = partition(f12x, 0.7, multi=false)
 # y, X = unpack(f12xtrain, ==(:labels))
