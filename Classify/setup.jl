@@ -10,13 +10,13 @@ println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.add(url="add https://github.com/diegozea/ROC.jl")
 Pkg.add([
     "Test",
-    "JSON",
+    "JSON3",
     "DataFrames",
     "CSV",
     "CategoricalArrays",
     "Logging",
     "Statistics",
-    "MLJ", # "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
+    # "MLJ", # "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
     "Flux", "cuDNN", "StatisticalMeasures", "JLSO", "ProgressMeter",
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", # "MLJScikitLearnInterface",

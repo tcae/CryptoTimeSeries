@@ -14,7 +14,7 @@ using EnvConfig, Ohlcv
 
 #region FeatureUtilities
 
-periodlabels(p) = p%(24*60) == 0 ? "$(round(Int, p/(24*60)))d" : p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m"
+periodlabels(p) = typeof(p) <: Integer ? (p%(24*60) == 0 ? ("$(round(Int, p/(24*60)))d") : (p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m")) : p
 
 indexinrange(index, start, last) = start <= index <= last
 nextindex(forward, index) = forward ? index + 1 : index - 1
@@ -862,12 +862,8 @@ end
 #region Features002
 "Features002 is a feature set used in trading strategy"
 
-regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60] # , 3*24*60, 9*24*60]
+regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
 relativevolumes002 = [(1, 60), (5, 4*60)]  # , (4*60, 9*24*60)] # TODO should be part of Features002
-
-function setregressionwindows(regrwindows)
-    regressionwindows002 = regrwindows
-end
 
 mutable struct Features002Regr
     grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
@@ -1054,16 +1050,20 @@ mutable struct Features003
     f2::Features002
     maxlookback  # number of regression windows to concatenate as feature vector
     firstix
+    regrwindow
     function Features003(f2, maxlookback)
         firstix = requiredminutes(f2, maxlookback)
-        new(f2, maxlookback, firstix)
+        f3regrwindow = keys(featureslookback01)
+        @assert all([rw in regressionwindows002 for rw in f3regrwindow])  "regressionwindows002=$regressionwindows002  f3regrwindow=$f3regrwindow"
+        new(f2, maxlookback, firstix, f3regrwindow)
     end
 end
 
 (Features003)(ohlcv, regrwindows, maxlookback; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime)) =
     Features003(Features002(ohlcv; firstix=firstix, lastix=lastix, regrwindows=regrwindows), maxlookback)
 
-requiredminutes(f2::Features002, maxlookback) = f2.firstix + requiredminutes(f2) * (maxlookback)
+# requiredminutes(f2::Features002, maxlookback) = f2.firstix + requiredminutes(f2) * (maxlookback)
+requiredminutes(f2::Features002, maxlookback) = f2.firstix + 24 * 60 * (maxlookback)  #! hard coded concatenation of regression windows up to 1 day
 requiredminutes(f3::Features003) = requiredminutes(f3.f2, f3.maxlookback)
 
 function Base.show(io::IO, features::Features003)

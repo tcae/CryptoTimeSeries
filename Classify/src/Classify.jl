@@ -52,6 +52,7 @@ end
         - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
 """
 function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize)
+    println("setpartitions rowrange=$rowrange, samplesets=$samplesets gapsize=$gapsize relativesubrangesize=$relativesubrangesize")
     rowstart = rowrange[1]
     rowend = rowrange[end]
     rows = rowend - rowstart + 1
@@ -135,35 +136,62 @@ end
 
 "returns features as dataframe and targets as CategorialArray (which is why this function resides in Classify and not in Targets)."
 function featurestargets(regrwindow, f3::Features.Features003, pe::Dict)
-    @assert regrwindow in keys(Features.featureslookback01)
+    @assert regrwindow in keys(Features.featureslookback01) "regrwindow=$regrwindow not in keys(Features.featureslookback01)=$(keys(Features.featureslookback01))"
     @assert regrwindow in keys(pe)
     features, _ = Features.featureslookback01[regrwindow](f3)
     labels, _, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe[regrwindow])
     targets = labels[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
     features = Array(features)  # change from df to array
-    @assert size(targets, 1) == size(features, 1)
+    @assert size(targets, 1) == size(features, 1)  "size(targets, 1)=$(size(targets, 1)) == size(features, 1)=$(size(features, 1))"
     features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
     return features, targets
+end
+
+function combifeaturestargets(basepredictions::Dict, f3::Features.Features003, pe::Dict)
+    @assert "combi" in keys(pe) "`combi` not in keys(pe)=$(keys(pe))"
+    labels, _, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe["combi"])
+    targets = labels[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
+    features = nothing
+    for (k, pred) in basepredictions
+        features = isnothing(features) ? pred : vcat(features, pred)
+    end
+    @assert size(targets, 1) == size(features, 2)  "size(targets, 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
+    return features, targets
+end
+
+"Returns the column (=samples) subset of featurestargets as given in ranges, which shall be a vector of ranges"
+function subsetdim2(featurestargets::AbstractArray, ranges::AbstractVector)
+    dim = length(size(featurestargets))
+    @assert 0 < dim <= 2 "dim=$dim"
+    res = nothing
+    for range in ranges
+        res = dim == 1 ? (isnothing(res) ? featurestargets[range] : vcat(res, featurestargets[range])) : (isnothing(res) ? featurestargets[:, range] : hcat(res, featurestargets[:, range]))
+    end
+    return res
 end
 
 #endregion DataPrep
 
 #region LearningNetwork Flux
 
-struct FluxMachine
+mutable struct FluxMachine
     model
     optim
     labels  # in fixed sequence as index == class id
     losses
 end
 
-function adaptmachine(features, targets)::FluxMachine
+function adaptmachine(features::AbstractMatrix, targets::AbstractVector)::FluxMachine
+    lay_in = size(features, 1)
+    lay_out = length(Targets.all_labels)
+    lay1 = 2 * lay_in
+    lay2 = round(Int, (lay1 + lay_out) / 2)
     model = Chain(
-        Dense(36 => 64, tanh),   # activation function inside layer
-        BatchNorm(64),
-        Dense(64 => 32),
-        BatchNorm(32),
-        Dense(32 => length(Targets.all_labels)),
+        Dense(lay_in => lay1, tanh),   # activation function inside layer
+        BatchNorm(lay1),
+        Dense(lay1 => lay2),
+        BatchNorm(lay2),
+        Dense(lay2 => lay_out),
         softmax)
 
     # The model encapsulates parameters, randomly initialised. Its initial output is:
@@ -193,6 +221,74 @@ end
 
 " Returns a predictions Float Array of size(classes, observations)"
 predict(fm::FluxMachine, features) = fm.model(features)  # size(classes, observations)
+
+function adaptmachine(regrwindow, f3::Features.Features003, pe::Dict, setranges::Dict)
+    println("$(EnvConfig.now()) preparing features and targets for regressionwindow $regrwindow")
+    features, targets = featurestargets(regrwindow, f3, pe)
+    trainfeatures = subsetdim2(features, setranges["base"])
+    traintargets = subsetdim2(targets, setranges["base"])
+    println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
+    fm = adaptmachine(trainfeatures, traintargets)
+    println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
+    pred = predict(fm, features)
+    return fm, pred, targets
+end
+
+function adaptcombi(f3::Features.Features003, pe::Dict, setranges::Dict)
+    fm = Dict()
+    pred = Dict()
+    targets = Dict()
+    for regrwindow in f3.regrwindow
+        fm[regrwindow], pred[regrwindow], targets[regrwindow] = adaptmachine(regrwindow, f3, pe, setranges)
+    end
+    println("$(EnvConfig.now()) preparing features and targets for combi classifier")
+    features, targets["combi"] = combifeaturestargets(pred, f3, pe)
+    trainfeatures = subsetdim2(features, setranges["combi"])
+    traintargets = subsetdim2(targets["combi"], setranges["combi"])
+    println("$(EnvConfig.now()) adapting machine for combi classifier")
+    fm["combi"] = adaptmachine(trainfeatures, traintargets)
+    println("$(EnvConfig.now()) predicting with combi classifier")
+    pred["combi"] = predict(fm["combi"], features)
+    @assert size(pred["combi"], 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred["combi"], 2)) == size(features, 2)=$(size(features, 2))"
+    @assert size(targets["combi"], 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets["combi"], 1)) == size(features, 2)=$(size(features, 2))"
+    return fm, pred, targets
+end
+
+function evaluate(ohlcv, labelthresholds)
+    f3, pe = Targets.loaddata(ohlcv, labelthresholds)
+    # println(f3)
+    len = length(Ohlcv.dataframe(f3.f2.ohlcv).pivot) - Features.ohlcvix(f3, 1) + 1
+    println("len=$len  length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)=$(length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)) Features.ohlcvix(f3, 1)=$(Features.ohlcvix(f3, 1))")
+    setranges = setpartitions(1:len, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 1/80)
+    for (s,v) in setranges
+        println("$s: $v")
+    end
+    fm, preds, targets = adaptcombi(f3, pe, setranges)
+    for (regrwindow,p) in preds
+        println("$(EnvConfig.now()) evaluating classifier $regrwindow")
+        pred = Dict(s => subsetdim2(p, rvec) for (s, rvec) in setranges)
+        target = Dict(s => subsetdim2(targets[regrwindow], rvec) for (s, rvec) in setranges)
+        for s in keys(pred)
+            pl = Features.periodlabels(regrwindow)
+            println("auc[$s, $pl]=$(Classify.aucscores(pred[s]))")
+            rc = Classify.roccurves(pred[s])
+            Classify.plotroccurves(rc, "$s / $pl")
+            # scores, labelindices = Classify.maxpredictions(pred)
+            show(stdout, MIME"text/plain"(), Classify.confusionmatrix(pred[s], target[s]))  # prints the table
+        end
+    end
+    println("$(EnvConfig.now()) ready with adapting and evaluating classifier stack")
+    return fm, preds, targets
+end
+
+function evaluatetest()
+    startdt = DateTime("2022-01-02T22:54:00")
+    enddt = startdt + Dates.Day(40)
+    ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+    labelthresholds = Targets.defaultlabelthresholds
+    res = evaluate( ohlcv, labelthresholds)
+    return
+end
 
 function savemach(mach, filename)
     @error "save machine to be implemented for pure flux" filename
@@ -250,7 +346,7 @@ aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.AUC(
 roccurves(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.roc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
 # roccurves(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => roc_curve(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
 
-function plotroccurves(rc::Dict)
+function plotroccurves(rc::Dict, customtitle)
     plotlyjs()
     default(legend=true)
     plt = plot()
@@ -262,7 +358,8 @@ function plotroccurves(rc::Dict)
     # plot!([0, 1], [0, 1], linewidth=2, linestyle=:dash, color=:black, label="chance")
     xlabel!("false positive rate")
     ylabel!("true positive rate")
-    title!("receiver operator characteristic")
+    title!("receiver operator characteristic $customtitle")
+    display(plt)
 end
 
 function confusionmatrix(pred, targets, labels=Targets.all_labels)

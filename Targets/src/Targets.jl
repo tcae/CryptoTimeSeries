@@ -11,7 +11,7 @@ Prediction algorithms are identified by name. Individuals are identified by name
 """
 module Targets
 
-using EnvConfig, Ohlcv, Features
+using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging
 
 "returns all possible labels (don't change sequence because index is used as class id)"
@@ -346,7 +346,8 @@ function fakef2fromarrays(prices::Vector{T}, regressiongradients::Vector{Vector{
 end
 
 
-function loaddata(;startdt=DateTime("2022-01-02T22:54:00")-Dates.Day(20), enddt=DateTime("2022-01-02T22:54:00"), ohlcv=TestOhlcv.testohlcv("sine", startdt, enddt), labelthresholds::LabelThresholds=defaultlabelthresholds)
+function loaddata(ohlcv, labelthresholds)
+    println("loaddata ohlcv=$ohlcv")
     f2 = Features.Features002(ohlcv)
     lookbackperiods = 11  # == using the last 12 concatenated regression windows
     f3 = Features.Features003(f2, lookbackperiods)
