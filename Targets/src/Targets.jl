@@ -348,9 +348,12 @@ end
 
 function loaddata(ohlcv, labelthresholds)
     println("loaddata ohlcv=$ohlcv")
+    println("$(EnvConfig.now()) start generating features002")
     f2 = Features.Features002(ohlcv)
+    println("$(EnvConfig.now()) start generating features003")
     lookbackperiods = 11  # == using the last 12 concatenated regression windows
     f3 = Features.Features003(f2, lookbackperiods)
+    println("$(EnvConfig.now()) start generating peaksbeforeregressiontargets")
     pe = Targets.peaksbeforeregressiontargets(f2; labelthresholds=labelthresholds, regrwinarr=nothing)
     return f3, pe
 end

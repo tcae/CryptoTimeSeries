@@ -5,7 +5,7 @@ module Classify
 
 using DataFrames, Logging, Dates, PrettyPrinting
 using JLSO, Flux, Statistics, ProgressMeter, StatisticalMeasures, ROC
-using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
+using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
 
 """
@@ -52,11 +52,12 @@ end
         - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
 """
 function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize)
-    println("setpartitions rowrange=$rowrange, samplesets=$samplesets gapsize=$gapsize relativesubrangesize=$relativesubrangesize")
     rowstart = rowrange[1]
     rowend = rowrange[end]
     rows = rowend - rowstart + 1
-    @assert relativesubrangesize * rows > 2 * gapsize
+    gapsize = relativesubrangesize * rows > 2 * gapsize ? gapsize : floor(Int, relativesubrangesize * rows / 3)
+    println("$(EnvConfig.now()) setpartitions rowrange=$rowrange, samplesets=$samplesets gapsize=$gapsize relativesubrangesize=$relativesubrangesize")
+    # @assert relativesubrangesize * rows > 2 * gapsize
     @assert max(collect(values(samplesets))...) > 2 * relativesubrangesize "max(collect(values(samplesets))...)=$(max(collect(values(samplesets))...)) <= 2 * relativesubrangesize = $(2 * relativesubrangesize)"
     minrelsetsize = min(collect(values(samplesets))...)
     @assert minrelsetsize > 0.0
@@ -222,6 +223,15 @@ end
 " Returns a predictions Float Array of size(classes, observations)"
 predict(fm::FluxMachine, features) = fm.model(features)  # size(classes, observations)
 
+function predictiondistribution(predictions, classifiertitle)
+    maxindex = mapslices(argmax, predictions, dims=1)
+    dist = zeros(Int, maximum(unique(maxindex)))
+    for ix in maxindex
+        dist[ix] += 1
+    end
+    println("$(EnvConfig.now()) prediction distribution with classifiertitle classifier: $dist")
+end
+
 function adaptmachine(regrwindow, f3::Features.Features003, pe::Dict, setranges::Dict)
     println("$(EnvConfig.now()) preparing features and targets for regressionwindow $regrwindow")
     features, targets = featurestargets(regrwindow, f3, pe)
@@ -231,63 +241,84 @@ function adaptmachine(regrwindow, f3::Features.Features003, pe::Dict, setranges:
     fm = adaptmachine(trainfeatures, traintargets)
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
     pred = predict(fm, features)
+    predictiondistribution(pred, regrwindow)
     return fm, pred, targets
 end
 
-function adaptcombi(f3::Features.Features003, pe::Dict, setranges::Dict)
-    fm = Dict()
-    pred = Dict()
-    targets = Dict()
-    for regrwindow in f3.regrwindow
-        fm[regrwindow], pred[regrwindow], targets[regrwindow] = adaptmachine(regrwindow, f3, pe, setranges)
-    end
+function adaptcombi(basepredictions::Dict, f3::Features.Features003, pe::Dict, setranges::Dict)
     println("$(EnvConfig.now()) preparing features and targets for combi classifier")
-    features, targets["combi"] = combifeaturestargets(pred, f3, pe)
+    features, targets = combifeaturestargets(basepredictions, f3, pe)
     trainfeatures = subsetdim2(features, setranges["combi"])
-    traintargets = subsetdim2(targets["combi"], setranges["combi"])
+    traintargets = subsetdim2(targets, setranges["combi"])
     println("$(EnvConfig.now()) adapting machine for combi classifier")
-    fm["combi"] = adaptmachine(trainfeatures, traintargets)
+    fm = adaptmachine(trainfeatures, traintargets)
     println("$(EnvConfig.now()) predicting with combi classifier")
-    pred["combi"] = predict(fm["combi"], features)
-    @assert size(pred["combi"], 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred["combi"], 2)) == size(features, 2)=$(size(features, 2))"
-    @assert size(targets["combi"], 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets["combi"], 1)) == size(features, 2)=$(size(features, 2))"
+    pred = predict(fm, features)
+    predictiondistribution(pred, "combi")
+    @assert size(pred, 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred, 2)) == size(features, 2)=$(size(features, 2))"
+    @assert size(targets, 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
     return fm, pred, targets
 end
 
-function evaluate(ohlcv, labelthresholds)
+function evaluateclassifier(preds, targets, regrwindow, setranges::Dict)
+    println("$(EnvConfig.now()) evaluating classifier $regrwindow")
+    pred = Dict(s => subsetdim2(preds, rvec) for (s, rvec) in setranges)
+    target = Dict(s => subsetdim2(targets, rvec) for (s, rvec) in setranges)
+    for s in keys(pred)
+        pl = Features.periodlabels(regrwindow)
+        if size(pred[s], 2) > 0
+            println("auc[$s, $pl]=$(Classify.aucscores(pred[s]))")
+            # rc = Classify.roccurves(pred[s])
+            # Classify.plotroccurves(rc, "$s / $pl")
+            # scores, labelindices = Classify.maxpredictions(pred)
+            show(stdout, MIME"text/plain"(), Classify.confusionmatrix(pred[s], target[s]))  # prints the table
+        else
+            @warn "no auc or roc data for [$s, $pl] due to missing predictions"
+        end
+    end
+end
+
+function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
     f3, pe = Targets.loaddata(ohlcv, labelthresholds)
     # println(f3)
     len = length(Ohlcv.dataframe(f3.f2.ohlcv).pivot) - Features.ohlcvix(f3, 1) + 1
-    println("len=$len  length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)=$(length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)) Features.ohlcvix(f3, 1)=$(Features.ohlcvix(f3, 1))")
-    setranges = setpartitions(1:len, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 1/80)
+    # println("$(EnvConfig.now()) len=$len  length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)=$(length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)) Features.ohlcvix(f3, 1)=$(Features.ohlcvix(f3, 1))")
+    setranges = setpartitions(1:len, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/80)
     for (s,v) in setranges
         println("$s: $v")
     end
-    fm, preds, targets = adaptcombi(f3, pe, setranges)
-    for (regrwindow,p) in preds
-        println("$(EnvConfig.now()) evaluating classifier $regrwindow")
-        pred = Dict(s => subsetdim2(p, rvec) for (s, rvec) in setranges)
-        target = Dict(s => subsetdim2(targets[regrwindow], rvec) for (s, rvec) in setranges)
-        for s in keys(pred)
-            pl = Features.periodlabels(regrwindow)
-            println("auc[$s, $pl]=$(Classify.aucscores(pred[s]))")
-            rc = Classify.roccurves(pred[s])
-            Classify.plotroccurves(rc, "$s / $pl")
-            # scores, labelindices = Classify.maxpredictions(pred)
-            show(stdout, MIME"text/plain"(), Classify.confusionmatrix(pred[s], target[s]))  # prints the table
+    fm = Dict(); preds = Dict(); targets = Dict()
+    for regrwindow in f3.regrwindow
+        if isnothing(select) || (regrwindow in select)
+            fm[regrwindow], preds[regrwindow], targets[regrwindow] = adaptmachine(regrwindow, f3, pe, setranges)
+            evaluateclassifier(preds[regrwindow], targets[regrwindow], regrwindow, setranges)
+        else
+            println("skipping $regrwindow classifier due to not selected")
         end
     end
+    if isnothing(select) || ("combi" in select)
+        fm["combi"], preds["combi"], targets["combi"] = adaptcombi(preds, f3, pe, setranges)
+        evaluateclassifier(preds["combi"], targets["combi"], "combi", setranges)
+    else
+        println("skipping combi classifier due to not selected")
+    end
     println("$(EnvConfig.now()) ready with adapting and evaluating classifier stack")
-    return fm, preds, targets
 end
 
-function evaluatetest()
-    startdt = DateTime("2022-01-02T22:54:00")
-    enddt = startdt + Dates.Day(40)
+function evaluate(base="BTC"::String, startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, period=Dates.Day(40); select=nothing)
+    EnvConfig.init(production)
+    ohlcv = Ohlcv.defaultohlcv(base)
+    enddt = startdt + period
+    CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)
+    labelthresholds = Targets.defaultlabelthresholds
+    evaluate(ohlcv, labelthresholds, select=select);
+end
+
+function evaluatetest(startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, period=Dates.Day(40); select=nothing)
+    enddt = startdt + period
     ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
     labelthresholds = Targets.defaultlabelthresholds
-    res = evaluate( ohlcv, labelthresholds)
-    return
+    evaluate( ohlcv, labelthresholds, select=select)
 end
 
 function savemach(mach, filename)
@@ -325,13 +356,27 @@ function binarypredictions(predictions, focuslabel, labels=Targets.all_labels)
     flix = findfirst(x -> x == focuslabel, labels)
     @assert !isnothing(flix) && (firstindex(labels) <= flix <= lastindex(labels)) "$focuslabel==$(isnothing(flix) ? "nothing" : flix) not found in $labels[$(firstindex(labels)):$(lastindex(labels))]"
     @assert length(labels) == size(predictions, 1) "length(labels)=$(length(labels)) == size(predictions, 1)=$(size(predictions, 1))"
+    if size(predictions, 2) == 0
+        return [],[]
+    end
     maxindex = mapslices(argmax, predictions, dims=1)
     ixvec = [flix == maxindex[i] for i in eachindex(maxindex)]
-    return predictions[flix, :], ixvec
+    return (length(ixvec) > 0 ? predictions[flix, :] : []), ixvec
 end
 
 
-aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.AUC(ROC.roc(binarypredictions(pred, focuslabel, labels)...)) for focuslabel in labels)
+function aucscores(pred, labels=Targets.all_labels)
+    aucdict = Dict()
+    if size(pred, 2) > 0
+        for focuslabel in labels
+            scores, predlabels = binarypredictions(pred, focuslabel, labels)
+            rocdata =  ROC.roc(scores, predlabels)
+            aucdict[focuslabel] = ROC.AUC(rocdata)
+        end
+    end
+    return aucdict
+    # Dict(String(focuslabel) => ROC.AUC(ROC.roc(binarypredictions(pred, focuslabel, labels)...)) for focuslabel in labels)
+end
 # aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
     # auc_scores = []
     # for class_label in unique(targets)
@@ -343,8 +388,17 @@ aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.AUC(
 # end
 
 "Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
-roccurves(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => ROC.roc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
-# roccurves(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => roc_curve(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+function roccurves(pred, labels=Targets.all_labels)
+    rocdict = Dict()
+    if size(pred, 2) > 0
+        for focuslabel in labels
+            scores, predlabels = binarypredictions(pred, focuslabel, labels)
+            rocdict[focuslabel] = ROC.roc(scores, predlabels)
+        end
+    end
+    return rocdict
+    # Dict(String(focuslabel) => ROC.roc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+end
 
 function plotroccurves(rc::Dict, customtitle)
     plotlyjs()

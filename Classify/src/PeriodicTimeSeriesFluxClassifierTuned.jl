@@ -1,13 +1,9 @@
-using Dates, Flux, DataFrames
-using Ohlcv, Features, TestOhlcv, Targets, EnvConfig, ROC
+using Dates
+# using Ohlcv, Features, TestOhlcv, Targets, EnvConfig, ROC
 # using Plots
 using Classify
 
-EnvConfig.init(production)
-base = "BTC"
-ohlcv = Ohlcv.defaultohlcv(base)
-Ohlcv.read!(ohlcv)
-labelthresholds = Targets.defaultlabelthresholds
-Classify.evaluate( ohlcv, labelthresholds);
+Classify.evaluate("BTC", DateTime("2022-01-02T22:54:00"), Dates.Day(40); select=[5, 15]) # nothing)
 
 # Classify.evaluatetest()
+println("done")

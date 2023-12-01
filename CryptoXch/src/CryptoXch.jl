@@ -208,11 +208,11 @@ function gethistoryohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.
 end
 
 """
-Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from Binance.
+Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from the exchange.
 
 - ohlcv containes the requested base identifier and interval - the result will be stored in the data frame of this structure
 - startdt and enddt are DateTime stamps that specify the requested time range
-- if closecachegap==true then any gap to chached data will be closed when asking for missing data from Binance
+- if closecachegap==true then any gap to chached data will be closed when asking for missing data from the exchange
 
 This function reduces the returned ohlcv to the requested time range (different to cryptodownload).
 Therefore, don't use the ohlcv to write to stored cache because the stored history will be overridden and is lost.
@@ -272,7 +272,7 @@ function cryptoupdate!(ohlcv, startdt, enddt, closecachegap=false)
 end
 
 """
-Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from Binance.
+Returns the OHLCV data of the requested time range by first checking the stored cache data and if unsuccessful requesting it from the Exchange.
 
     - *base* identifier and interval specify what data is requested - the result will be returned as OhlcvData structure
     - startdt and enddt are DateTime stamps that specify the requested time range

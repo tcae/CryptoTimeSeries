@@ -432,10 +432,10 @@ weakdeps = ["InverseFunctions"]
     ChangesOfVariablesInverseFunctionsExt = "InverseFunctions"
 
 [[deps.Classify]]
-deps = ["CSV", "CategoricalArrays", "Colors", "Combinatorics", "Dash", "DataFrames", "Dates", "EnvConfig", "Features", "Flux", "GLM", "IJulia", "JLSO", "JSON", "Logging", "MLJ", "MLJBase", "MLJFlux", "Ohlcv", "OpenSpecFun_jll", "PartialLeastSquaresRegressor", "PlotlyJS", "Plots", "PrettyPrinting", "ProgressMeter", "ROC", "ScikitLearn", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "WebIO", "cuDNN"]
+deps = ["CSV", "CategoricalArrays", "Colors", "Combinatorics", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "Flux", "IJulia", "JLSO", "JSON3", "Logging", "MLJBase", "MLJFlux", "Ohlcv", "PartialLeastSquaresRegressor", "PlotlyJS", "Plots", "PrettyPrinting", "ProgressMeter", "ROC", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.1.6"
+version = "0.1.7"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]
@@ -871,7 +871,7 @@ version = "0.2.8"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "0.1.8"
+version = "0.1.9"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -3049,7 +3049,7 @@ version = "1.10.0"
 deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "TestOhlcv"]
 path = "Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-version = "0.1.10"
+version = "0.1.11"
 
 [[deps.Temporal]]
 deps = ["Dates", "HTTP", "JSON", "Pkg", "Printf", "Random", "RecipesBase", "Statistics", "Test"]
