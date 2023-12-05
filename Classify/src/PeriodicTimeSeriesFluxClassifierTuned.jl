@@ -3,7 +3,7 @@ using Dates
 # using Plots
 using Classify
 
-Classify.evaluate("BTC", DateTime("2022-01-02T22:54:00"), Dates.Day(40); select=[5, 15]) # nothing)
+Classify.evaluate("BTC", DateTime("2022-01-02T22:54:00"), Dates.Day(40); select=[5]) # nothing)
 
 # Classify.evaluatetest()
 println("done")

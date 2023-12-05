@@ -4,7 +4,9 @@ Train and evaluate the trading signal classifiers
 module Classify
 
 using DataFrames, Logging, Dates, PrettyPrinting
-using JLSO, Flux, Statistics, ProgressMeter, StatisticalMeasures, ROC
+using BSON, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
+using CategoricalArrays
+using CategoricalDistributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
 
@@ -46,7 +48,7 @@ end
         - `samplesets` is a Dict of setname => relative setsize with sum of all setsizes == 1
         - `gapsize` is the number of rows between partitions of different sets that are not included in any partition
         - `relativesubrangesize` is the subrange size relative to `rowrange` of a consecutive range assigned to a setinterval
-        - gaps will be removed from a subrange
+        - gaps will be removed from a subrange to avoid crosstalk bias between ranges
         - relativesubrangesize * length(rowrange) > 2 * gapsize
         - any relative setsize > 2 * relativesubrangesize
         - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
@@ -164,6 +166,13 @@ end
 function subsetdim2(featurestargets::AbstractArray, ranges::AbstractVector)
     dim = length(size(featurestargets))
     @assert 0 < dim <= 2 "dim=$dim"
+
+    # working with views
+    ixvec = Int32[ix for range in ranges for ix in range]
+    res = dim == 1 ? view(featurestargets, ixvec) : view(featurestargets, :, ixvec)
+    return res
+
+    # copying ranges - currently disabled
     res = nothing
     for range in ranges
         res = dim == 1 ? (isnothing(res) ? featurestargets[range] : vcat(res, featurestargets[range])) : (isnothing(res) ? featurestargets[:, range] : hcat(res, featurestargets[:, range]))
@@ -237,6 +246,7 @@ function adaptmachine(regrwindow, f3::Features.Features003, pe::Dict, setranges:
     features, targets = featurestargets(regrwindow, f3, pe)
     trainfeatures = subsetdim2(features, setranges["base"])
     traintargets = subsetdim2(targets, setranges["base"])
+    trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
     fm = adaptmachine(trainfeatures, traintargets)
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
@@ -250,6 +260,7 @@ function adaptcombi(basepredictions::Dict, f3::Features.Features003, pe::Dict, s
     features, targets = combifeaturestargets(basepredictions, f3, pe)
     trainfeatures = subsetdim2(features, setranges["combi"])
     traintargets = subsetdim2(targets, setranges["combi"])
+    trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
     println("$(EnvConfig.now()) adapting machine for combi classifier")
     fm = adaptmachine(trainfeatures, traintargets)
     println("$(EnvConfig.now()) predicting with combi classifier")
@@ -267,9 +278,10 @@ function evaluateclassifier(preds, targets, regrwindow, setranges::Dict)
     for s in keys(pred)
         pl = Features.periodlabels(regrwindow)
         if size(pred[s], 2) > 0
-            println("auc[$s, $pl]=$(Classify.aucscores(pred[s]))")
-            # rc = Classify.roccurves(pred[s])
-            # Classify.plotroccurves(rc, "$s / $pl")
+            aucscores = Classify.aucscores(pred[s])
+            println("auc[$s, $pl]=$(aucscores)")
+            rc = Classify.roccurves(pred[s])
+            Classify.plotroccurves(rc, "$s / $pl")
             # scores, labelindices = Classify.maxpredictions(pred)
             show(stdout, MIME"text/plain"(), Classify.confusionmatrix(pred[s], target[s]))  # prints the table
         else
@@ -361,22 +373,38 @@ function binarypredictions(predictions, focuslabel, labels=Targets.all_labels)
     end
     maxindex = mapslices(argmax, predictions, dims=1)
     ixvec = [flix == maxindex[i] for i in eachindex(maxindex)]
+    # labelvec = [flix == maxindex[i] ? focuslabel : "other" for i in eachindex(maxindex)]
     return (length(ixvec) > 0 ? predictions[flix, :] : []), ixvec
 end
 
+function rocauc(scores, predlabels)    #ROC AUC is significantly slower than StatisticalMeasures
+    rocdata =  ROC.roc(scores, predlabels)  # ROC package
+    return ROC.AUC(rocdata)  # ROC package
+end
+
+function smauc(scores, predlabels)
+    y = categorical(predlabels, ordered=true)  # StatisticalMeasures package
+    ŷ = UnivariateFinite([false, true], scores, augment=true, pool=y)   # StatisticalMeasures package
+    return auc(ŷ, y)  # StatisticalMeasures package
+end
 
 function aucscores(pred, labels=Targets.all_labels)
     aucdict = Dict()
     if size(pred, 2) > 0
         for focuslabel in labels
             scores, predlabels = binarypredictions(pred, focuslabel, labels)
-            rocdata =  ROC.roc(scores, predlabels)
-            aucdict[focuslabel] = ROC.AUC(rocdata)
+            if length(unique(predlabels)) == 2
+                aucdict[focuslabel] = smauc(scores, predlabels)
+            else
+                # @warn "no max score for $focuslabel => auc = 0"
+                aucdict[focuslabel] = 0.0
+            end
         end
     end
     return aucdict
     # Dict(String(focuslabel) => ROC.AUC(ROC.roc(binarypredictions(pred, focuslabel, labels)...)) for focuslabel in labels)
 end
+
 # aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
     # auc_scores = []
     # for class_label in unique(targets)
@@ -393,23 +421,46 @@ function roccurves(pred, labels=Targets.all_labels)
     if size(pred, 2) > 0
         for focuslabel in labels
             scores, predlabels = binarypredictions(pred, focuslabel, labels)
-            rocdict[focuslabel] = ROC.roc(scores, predlabels)
+            if length(unique(predlabels)) == 2
+                y = categorical(predlabels, ordered=true)  # StatisticalMeasures package
+                ŷ = UnivariateFinite([false, true], scores, augment=true, pool=y)   # StatisticalMeasures package
+                rocdict[focuslabel] = roc_curve(ŷ, y)  # StatisticalMeasures package
+            else
+                # @warn "no max score for $focuslabel => roc = nothing"
+                rocdict[focuslabel] = nothing
+            end
         end
     end
     return rocdict
     # Dict(String(focuslabel) => ROC.roc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
 end
 
+# "Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
+# function roccurves(pred, labels=Targets.all_labels)
+#     rocdict = Dict()
+#     if size(pred, 2) > 0
+#         for focuslabel in labels
+#             scores, predlabels = binarypredictions(pred, focuslabel, labels)
+#             rocdict[focuslabel] = ROC.roc(scores, predlabels)
+#         end
+#     end
+#     return rocdict
+#     # Dict(String(focuslabel) => ROC.roc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+# end
+
 function plotroccurves(rc::Dict, customtitle)
     plotlyjs()
     default(legend=true)
     plt = plot()
     for (k, v) in rc
-        # println("$k = $(length(v[1]))  xxx $(length(v[2]))")
-        plot!(v, label=k)
+        if !isnothing(v)
+            # println("$k = $(length(v[1]))  xxx $(length(v[2]))")
+            # plot!(v, label=k)  # ROC package
+            plot!(v[1], v[2], label=k)  # StatisticalMeasures package
+        end
     end
     # plot!(xlab="false positive rate", ylab="true positive rate")
-    # plot!([0, 1], [0, 1], linewidth=2, linestyle=:dash, color=:black, label="chance")
+    plot!([0, 1], [0, 1], linewidth=2, linestyle=:dash, color=:black, label="chance")  # StatisticalMeasures package
     xlabel!("false positive rate")
     ylabel!("true positive rate")
     title!("receiver operator characteristic $customtitle")

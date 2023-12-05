@@ -7,7 +7,7 @@ It generates the OHLCV data, executes the trades in a loop but delegates the tra
 """
 module Trade
 
-using Dates, DataFrames, JSON, Profile, Logging, CSV
+using Dates, DataFrames, Profile, Logging, CSV
 using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Features
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit

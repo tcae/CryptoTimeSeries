@@ -6,18 +6,16 @@ Pkg.activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.upgrade_manifest()
-# Pkg.add(url="https://github.com/tlienart/OpenSpecFun_jll")  # fix for MKL issue in Scikit-learn - see MLJ manual
-# Pkg.add(url="add https://github.com/diegozea/ROC.jl")
 Pkg.add([
     "Test",
     "JSON3",
     "DataFrames",
     "CSV",
-    "CategoricalArrays",
-    "Logging",
+    "CategoricalArrays", "CategoricalDistributions",
+    "Logging", "ProfileView",
     "Statistics",
     # "MLJ", # "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
-    "Flux", "cuDNN", "StatisticalMeasures", "JLSO", "ProgressMeter",
+    "Flux", "cuDNN", "StatisticalMeasures", "BSON", "ProgressMeter", "MLUtils",
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", # "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
