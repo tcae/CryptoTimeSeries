@@ -620,7 +620,7 @@ uuid = "fa6b7ba4-c1ee-5f82-b5fc-ecf0adba8f74"
 version = "0.6.8"
 
 [[deps.EnvConfig]]
-deps = ["Dates", "JSON", "Logging", "Pkg", "Test"]
+deps = ["Dates", "JSON", "JSON3", "Logging", "Pkg", "Test"]
 path = "EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 version = "0.1.2"

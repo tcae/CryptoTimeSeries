@@ -30,7 +30,11 @@ cryptopath = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "crypto"))
 if !isdir(cryptopath)
     @error "missing crypto folder $cryptopath"
 end
-@info "cryptopath=$cryptopath is an existing folder: $(isdir(cryptopath))"
+if !isdir(cryptopath)
+    @warn "cryptopath=$cryptopath is not an existing folder - now creating it"
+    mkpath(cryptopath)
+    @assert isdir(cryptopath)  "cannot create $cryptopath"
+end
 authpath = joinpath(cryptopath, "exchanges")  # ".catalyst/data/exchanges/bybit/"
 if !isdir(cryptopath)
     @error "missing auth folder $authpath"

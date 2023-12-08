@@ -898,19 +898,19 @@ requiredminutes(f2::Features002) = f2.requiredminutes
 requiredminutes(regr::Vector{<:Integer}=regressionwindows002) = maximum(regr)
 
 function Base.show(io::IO, features::Features002Regr)
-    println(io::IO, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
-    println(io::IO, "- regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
-    println(io::IO, "- std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
-    # print(io::IO, "- median std deviation: size=$(size(features.medianstd)) max=$(maximum(features.medianstd)) median=$(Statistics.median(features.medianstd)) min=$(minimum(features.medianstd))")
-    println(io::IO, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
+    println(io, "- gradients: size=$(size(features.grad)) max=$(maximum(features.grad)) median=$(Statistics.median(features.grad)) min=$(minimum(features.grad))")
+    println(io, "- regression y: size=$(size(features.regry)) max=$(maximum(features.regry)) median=$(Statistics.median(features.regry)) min=$(minimum(features.regry))")
+    println(io, "- std deviation: size=$(size(features.std)) max=$(maximum(features.std)) median=$(Statistics.median(features.std)) min=$(minimum(features.std))")
+    # print(io, "- median std deviation: size=$(size(features.medianstd)) max=$(maximum(features.medianstd)) median=$(Statistics.median(features.medianstd)) min=$(minimum(features.medianstd))")
+    println(io, "- extreme indices: size=$(size(features.xtrmix)) #maxima=$(length(filter(r -> r > 0, features.xtrmix))) #minima=$(length(filter(r -> r < 0, features.xtrmix)))")
 end
 
 function Base.show(io::IO, features::Features002)
-    println(io::IO, "Features002 firstix=$(features.firstix), lastix=$(features.lastix)")
-    println(io::IO, features.ohlcv)
+    println(io, "Features002 firstix=$(features.firstix), lastix=$(features.lastix)")
+    println(io, features.ohlcv)
     for (key, value) in features.regr
-        println(io::IO, "regr key: $key")
-        println(io::IO, value)
+        println(io, "regr key: $key")
+        println(io, value)
     end
 end
 
@@ -1054,7 +1054,6 @@ mutable struct Features003
     function Features003(f2, maxlookback)
         firstix = requiredminutes(f2, maxlookback)
         f3regrwindow = keys(featureslookback01)
-        @assert all([rw in regressionwindows002 for rw in f3regrwindow])  "regressionwindows002=$regressionwindows002  f3regrwindow=$f3regrwindow"
         new(f2, maxlookback, firstix, f3regrwindow)
     end
 end
@@ -1333,7 +1332,6 @@ featureslookback01[60] = features1h01
 featureslookback01[4*60] = features4h01
 featureslookback01[12*60] = features12h01
 featureslookback01[24*60] = features1d01
-
 #endregion Features003
 
 
