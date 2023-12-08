@@ -37,7 +37,7 @@ function Base.show(io::IO, ac::AdaptContext)
     for ads in ac.adaptsets
         println(io, "symbol=$(ads.symbol) start=$(ads.startdt) end=$(ads.enddt) #targets=$(size(ads.targets)) #predictions=$(size(ads.predictions)) ")
         for (s,v) in ads.setranges
-            println(io,"$s: $v")
+            println(io,"$s: length=$(length(v))")
         end
     end
 end
@@ -396,7 +396,7 @@ function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
     # println("$(EnvConfig.now()) len=$len  length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)=$(length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)) Features.ohlcvix(f3, 1)=$(Features.ohlcvix(f3, 1))")
     setranges = setpartitions(1:len, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/80)
     for (s,v) in setranges
-        println("$s: $v")
+        println("$s: length=$(length(v))")
     end
     nnvec = NN[]
     # Threads.@threads for regrwindow in f3.regrwindow
@@ -422,11 +422,21 @@ function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
     println("$(EnvConfig.now()) ready with adapting and evaluating classifier stack")
 end
 
-function evaluate(base="BTC"::String, startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, period=Dates.Day(40); select=nothing)
+function evaluate(base::String, startdt::Dates.DateTime, period; select=nothing)
     EnvConfig.init(production)
     ohlcv = Ohlcv.defaultohlcv(base)
     enddt = startdt + period
     CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)
+    println("loaded $ohlcv")
+    labelthresholds = Targets.defaultlabelthresholds
+    evaluate(ohlcv, labelthresholds, select=select);
+end
+
+function evaluate(base::String; select=nothing)
+    EnvConfig.init(production)
+    ohlcv = Ohlcv.defaultohlcv(base)
+    Ohlcv.read!(ohlcv)
+    println("loaded $ohlcv")
     labelthresholds = Targets.defaultlabelthresholds
     evaluate(ohlcv, labelthresholds, select=select);
 end
@@ -436,6 +446,17 @@ function evaluatetest(startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, p
     ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
     labelthresholds = Targets.defaultlabelthresholds
     evaluate( ohlcv, labelthresholds, select=select)
+end
+
+function evaluatepredictions(filename)
+    println("$(EnvConfig.now()) load machine from file $(filename) for regressionwindow combi and predict")
+    nncombi = loadnn(filename)
+    println(nncombi)
+    for nn in nncombi.predecessors
+        evaluateclassifier(nn)
+    end
+    evaluateclassifier(nncombi)
+
 end
 
 function savenn(nn)

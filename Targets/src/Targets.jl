@@ -347,7 +347,7 @@ end
 
 
 function loaddata(ohlcv, labelthresholds)
-    println("loaddata ohlcv=$ohlcv")
+    println("loaddata ohlcv")
     println("$(EnvConfig.now()) start generating features002")
     f2 = Features.Features002(ohlcv)
     println("$(EnvConfig.now()) start generating features003")

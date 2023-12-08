@@ -26,7 +26,7 @@ mutable struct OhlcvData
 end
 
 function Base.show(io::IO, ohlcv::OhlcvData)
-    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) pivot: max=$(maximum(ohlcv.df[!, :pivot])) median=$(Statistics.median(ohlcv.df[!, :pivot])) min=$(minimum(ohlcv.df[!, :pivot]))")
+    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df))")  # pivot: max=$(maximum(ohlcv.df[!, :pivot])) median=$(Statistics.median(ohlcv.df[!, :pivot])) min=$(minimum(ohlcv.df[!, :pivot]))")
 end
 
 
