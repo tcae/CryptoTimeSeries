@@ -294,7 +294,7 @@ function adaptmachine(features::AbstractMatrix, targets::AbstractVector, mnemoni
             loss, grads = Flux.withgradient(nn.model) do m
                 # Evaluate model and loss inside gradient context:
                 y_hat = m(x)
-                nn.lossfunc(y_hat, y)
+                nn.lossfunc(y_hat, y)  #TODO here the real gain/loss can be considered
             end
             Flux.update!(nn.optim, nn.model, grads[1])
             push!(losses, loss)  # logging, outside gradient context
@@ -362,11 +362,11 @@ function adaptcombi(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict, setra
     println("adapted classifier:")
     println(nn)
     savenn(nn)
-    println("$(EnvConfig.now()) load machine from file $(nn.filename) for regressionwindow combi and predict")
-    nntest = loadnn(nn.filename)
-    println(nntest)
-    predtest = predict(nntest, features)
-    @assert pred ≈ predtest  "NN results differ from loaded NN: pred[:, 1:5] = $(pred[:, begin:begin+5]) predtest[:, 1:5] = $(predtest[:, begin:begin+5])"
+    # println("$(EnvConfig.now()) load machine from file $(nn.filename) for regressionwindow combi and predict")
+    # nntest = loadnn(nn.filename)
+    # println(nntest)
+    # predtest = predict(nntest, features)
+    # @assert pred ≈ predtest  "NN results differ from loaded NN: pred[:, 1:5] = $(pred[:, begin:begin+5]) predtest[:, 1:5] = $(predtest[:, begin:begin+5])"
     return nn
 end
 

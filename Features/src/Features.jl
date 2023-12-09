@@ -23,7 +23,7 @@ downorflat(slope) = slope <= 0
 
 relativedayofyear(date::DateTime)::Float32 = round(Dates.dayofyear(date) / 365.0, digits=4)
 relativedayofweek(date::DateTime)::Float32 = round(Dates.dayofweek(date) / 7.0, digits=4)
-relativeminuteofday(date::DateTime)::Float32 = round(Dates.Minute(date - DateTime(Date(date))).value / 1440.0, digits=4)
+relativeminuteofday(date::DateTime)::Float32 = round(Dates.Minute(round(date, Dates.Minute(1)) - DateTime(Date(date))).value / 1440.0, digits=4)
 relativetimedict = Dict(
     "relminuteofday" => relativeminuteofday,
     "reldayofweek" => relativedayofweek,
