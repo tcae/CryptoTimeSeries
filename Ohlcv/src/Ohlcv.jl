@@ -456,6 +456,111 @@ function read!(ohlcv::OhlcvData)::OhlcvData
     return ohlcv
 end
 
+function curetime!(ohlcvdf, rn)
+    rmrow = nothing
+    addrow = nothing
+    if floor(ohlcvdf[rn, :opentime], Minute(1)) != ohlcvdf[rn, :opentime]  # found time that is not a full minute
+        ohlcvdf[rn, :opentime] = floor(ohlcvdf[rn, :opentime], Minute(1))
+    end
+    # now the current row and all before should be full minutes
+    if (rn > 1) && (ohlcvdf[rn, :opentime] == ohlcvdf[rn-1, :opentime]) # remove one of the 2 rows with same timestamp
+        rmrow = ohlcvdf[rn-1, :basevolume] == 0.0f0 ? rn-1 : rn
+    elseif (ohlcvdf[rn, :opentime] - ohlcvdf[rn-1, :opentime]) > Minute(1)
+        addrow = rn
+    end
+    return addrow, rmrow
+end
+
+function cure!(ohlcvdf, defectdf)
+    @assert size(ohlcvdf, 2) >= 6  # 6 columns without, 7 with pivot
+    println("curing ...")
+    gdf = groupby(defectdf, :category)
+    rmrows = Int[]
+    addrows = Int[]
+    for (key, subdf) in pairs(gdf)
+        println("Number of data points for $(key.category): $(nrow(subdf))")
+        if key.category == "out-of-sequence"
+            for rn in subdf.rownumber
+                rnn = rn
+                while true
+                    addrow, rmrow = curetime!(ohlcvdf, rnn)
+                    !isnothing(rmrow) ? push!(rmrows, rmrow) : 0
+                    !isnothing(addrow) ? push!(addrows, addrow) : 0
+                    rnn = rnn < lastindex(ohlcvdf.opentime) ? ((ohlcvdf[rn, :opentime] - ohlcvdf[rn-1, :opentime]) != Minute(1) ? rnn + 1 : break) : break
+                end
+            end
+        end
+    end
+    deleteat!(ohlcvdf, rmrows)
+    # insert!(ohlcvdf, 5, ohlcvdf[1, :])  - gaps will not be fixed because no negative impact - furthermore add and delete have to be done from end to beginning to maintain row numbers
+
+end
+
+"""
+check a ohlcv for the following aspects:
+    - rows are all 1 minute apart without gaps and repeats
+    - data has no no negative values (i.e prices or voume)
+    - data has no nothing, NaN, Inf, missing elements
+    - expectation is that a trade break results in zero volume and no price moves
+"""
+function check(ohlcv::OhlcvData; cure=false)
+    odf = dataframe(ohlcv)
+    setvec = String[]
+    cnamevec = String[]
+    ixvec = Int[]
+    for cname in names(odf)
+        # println("analyzing column $cname")
+        cvec = odf[!, cname]
+        if cname == "opentime"
+            inv = [ix for ix in eachindex(cvec) if isnothing(cvec[ix]) || ismissing(cvec[ix])]
+            ixvec = vcat(ixvec, inv)
+            setname = "invalid"
+            setvec = vcat(setvec, [setname for _ in inv])
+            cnamevec = vcat(cnamevec, [cname for _ in inv])
+
+            nosequence = [ix for ix in eachindex(cvec) if (ix > firstindex(cvec)) && ((cvec[ix] - cvec[ix-1]) != Dates.Minute(1))]
+            xnosequence = [ix-1 for ix in nosequence if !((ix-1) in nosequence)]
+            nosequence = vcat(nosequence, xnosequence)
+            ixvec = vcat(ixvec, nosequence)
+            setname = "out-of-sequence"
+            setvec = vcat(setvec, [setname for _ in nosequence])
+            cnamevec = vcat(cnamevec, [cname for _ in nosequence])
+        else
+            inv = [ix for ix in eachindex(cvec) if isnothing(cvec[ix]) || ismissing(cvec[ix]) || isnan(cvec[ix])]
+            ixvec = vcat(ixvec, inv)
+            setname = "invalid"
+            setvec = vcat(setvec, [setname for _ in inv])
+            cnamevec = vcat(cnamevec, [cname for _ in inv])
+
+            inv = [ix for ix in eachindex(cvec) if isinf(cvec[ix]) || (cvec[ix] < 0)]
+            ixvec = vcat(ixvec, inv)
+            setname = "out-of-range"
+            setvec = vcat(setvec, [setname for _ in inv])
+            cnamevec = vcat(cnamevec, [cname for _ in inv])
+        end
+    end
+    if length(ixvec) > 0
+        # sc = categorical(setvec; compress=true)
+        rdf = DataFrame([setvec, cnamevec, ixvec], [:category, :colname, :rownumber])
+        sort!(rdf, :rownumber)
+        rodf = hcat(rdf, odf[rdf[!, :rownumber], :])
+        @warn "Ohlcv DataFrame of $ohlcv is checked NOT OK" rodf
+        if cure
+            cure!(odf, rdf)
+            write(ohlcv)
+        end
+    else
+        println("Ohlcv DataFrame of $ohlcv is checked OK")
+    end
+end
+
+function check(base::String; cure=false)
+    ohlcv = Ohlcv.defaultohlcv(base)
+    Ohlcv.read!(ohlcv)
+    check(ohlcv; cure)
+    check(ohlcv; cure=false)
+end
+
 function delete(ohlcv::OhlcvData)
     mnm = mnemonic(ohlcv)
     filename = EnvConfig.datafile(mnm)

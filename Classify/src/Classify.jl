@@ -325,9 +325,9 @@ end
     model = Chain(
         Dense(lay_in => lay1, tanh),   # activation function inside layer
         BatchNorm(lay1),
-        Dense(lay1 => lay2),
+        Dense(lay1 => lay2, tanh),
         BatchNorm(lay2),
-        Dense(lay2 => lay_out),
+        Dense(lay2 => lay_out, tanh),
         softmax)
     optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.crossentropy```
@@ -338,11 +338,11 @@ function model001(featurecount, labels, mnemonic)::NN
     lay1 = 2 * lay_in
     lay2 = round(Int, (lay1 + lay_out) / 2)
     model = Chain(
-        Dense(lay_in => lay1, relu),   # activation function inside layer
+        Dense(lay_in => lay1, tanh),   # activation function inside layer
         BatchNorm(lay1),
-        Dense(lay1 => lay2),
+        Dense(lay1 => lay2, tanh),
         BatchNorm(lay2),
-        Dense(lay2 => lay_out),
+        Dense(lay2 => lay_out, tanh),
         softmax)
     optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
     description = (@doc model001);
@@ -521,7 +521,6 @@ function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
 end
 
 function evaluate(base::String, startdt::Dates.DateTime, period; select=nothing)
-    EnvConfig.init(production)
     ohlcv = Ohlcv.defaultohlcv(base)
     enddt = startdt + period
     Ohlcv.read!(ohlcv)
@@ -532,7 +531,6 @@ function evaluate(base::String, startdt::Dates.DateTime, period; select=nothing)
 end
 
 function evaluate(base::String; select=nothing)
-    EnvConfig.init(production)
     ohlcv = Ohlcv.defaultohlcv(base)
     Ohlcv.read!(ohlcv)
     println("loaded $ohlcv")
@@ -771,8 +769,6 @@ end
 
 #endregion Evaluation
 
-# EnvConfig.init(production)
-# EnvConfig.init(test)
 function fluxstart()
     noisy = rand(Float32, 2, 1000)                                    # 2×1000 Matrix{Float32}
     truth = [xor(col[1]>0.5, col[2]>0.5) for col in eachcol(noisy)]   # 1000-element Vector{Bool}

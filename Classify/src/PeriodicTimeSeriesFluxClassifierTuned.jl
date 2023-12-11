@@ -1,7 +1,9 @@
 using Dates
-# using Ohlcv, Features, TestOhlcv, Targets, EnvConfig, ROC
+# using Features, TestOhlcv, Targets, ROC
 # using Plots
-using Classify
+using EnvConfig, Classify
+
+EnvConfig.init(production)
 
 # Classify.evaluate("BTC", DateTime("2022-01-02T22:54:00"), Dates.Day(40); select=[5]) # nothing)  #
 # Classify.evaluate("BTC", DateTime("2017-09-02T22:54:00"), Dates.Day(120); select=[5]) # nothing)  #
