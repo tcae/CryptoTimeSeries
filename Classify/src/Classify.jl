@@ -4,7 +4,7 @@ Train and evaluate the trading signal classifiers
 module Classify
 
 using DataFrames, Logging, Dates, PrettyPrinting
-using BSON, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
+using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
 using CategoricalDistributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
@@ -46,21 +46,27 @@ mutable struct NN
     model
     optim
     lossfunc
-    labels  # in fixed sequence as index == class id
+    labels::Vector{String}  # in fixed sequence as index == class id
     description
-    mnemonic
-    filename
-    predecessors::Vector{NN}
-    ac::Union{Nothing,AdaptContext}
+    mnemonic::String
+    fileprefix::String  # filename without suffix
+    predecessors::Vector{String}  # filename vector without suffix
+    featuresdescription::String
+    targetsdescription::String
+    losses::Vector
+    predictions::Vector{String}  # filename vector without suffix of predictions
+end
+
+function NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix)
+    return NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix, String[], "", "", [], String[])
 end
 
 function Base.show(io::IO, nn::NN)
-    println(io, "NN: labels=$(nn.labels) #predecessors=$(length(nn.predecessors)) mnemonic=$(nn.mnemonic) filename=$(nn.filename)")
+    println(io, "NN: labels=$(nn.labels) #predecessors=$(length(nn.predecessors)) mnemonic=$(nn.mnemonic) fileprefix=$(nn.fileprefix) #losses=$(length(nn.losses))")
+    println(io, "NN: featuresdecription=$(nn.featuresdescription) targetsdecription=$(nn.targetsdescription)")
+    println(io, "NN: predecessors=$(nn.predecessors)")
+    println(io, "NN: predictions=$(nn.predictions)")
     println(io, "NN: description=$(nn.description)")
-    println(io, isnothing(nn.ac) ? "NN: no adapt context" : nn.ac)
-    for nns in nn.predecessors
-        println(io, nns)
-    end
 end
 
 """
@@ -189,20 +195,88 @@ function test_basecombitestpartitions()
     println(res)
 end
 
+function predictionsfilename(fileprefix::String)
+prefix = splitext(fileprefix)[1]
+return prefix * ".jdf"
+end
+
+function loadpredictions(filename)
+    filename = predictionsfilename(filename)
+    df = DataFrame()
+    try
+        df = DataFrame(JDF.loadjdf(EnvConfig.logpath(filename)))
+        println("loaded $filename predictions dataframe of size=$(size(df))")
+    catch e
+        Logging.@warn "exception $e detected"
+    end
+    return df
+end
+
+function savepredictions(df, fileprefix)
+    filename = predictionsfilename(fileprefix)
+    println("saving $filename predictions dataframe of size=$(size(df))")
+    try
+        JDF.savejdf(EnvConfig.logpath(filename), df)
+    catch e
+        Logging.@warn "exception $e detected"
+    end
+    return fileprefix
+end
+
+function predictionsdataframe(nn::NN, setranges, targets, predictions, f3::Features.Features003)
+    df = DataFrame(permutedims(predictions, (2, 1)), nn.labels)
+    # for (ix, label) in enumerate(nn.labels)
+    #     df[label, :] = predictions[ix, :]
+    # end
+    setlabels = fill("unused", size(df, 1))
+    for (setname, vec) in setranges
+        for range in vec  # rangeset
+            for ix in range
+                setlabels[ix] = setname
+            end
+        end
+    end
+    sc = categorical(setlabels; compress=true)
+    df.set = sc
+    df.targets = categorical(targets; levels=nn.labels, compress=true)
+    df.opentime = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
+    println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
+    println(describe(df, :all))
+    fileprefix = uppercase(Ohlcv.basesymbol(f3.f2.ohlcv) * Ohlcv.quotesymbol(f3.f2.ohlcv)) * "_" * nn.fileprefix
+    savepredictions(df, fileprefix)
+    return fileprefix
+end
 
 "returns features as dataframe and targets as CategorialArray (which is why this function resides in Classify and not in Targets)."
 function featurestargets(regrwindow, f3::Features.Features003, pe::Dict)
     @assert regrwindow in keys(Features.featureslookback01) "regrwindow=$regrwindow not in keys(Features.featureslookback01)=$(keys(Features.featureslookback01))"
     @assert regrwindow in keys(pe)
     features, _ = Features.featureslookback01[regrwindow](f3)
+    println(describe(features, :all))
     featuresdescription = "featureslookback01[$regrwindow](f3)"
     labels, _, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe[regrwindow])
     targets = labels[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
+    println(describe(DataFrame(reshape(targets, (length(targets), 1)), ["targets"]), :all))
     targetsdescription = "ohlcvlabels(ohlcv.pivot, PriceExtreme[$regrwindow])"
     features = Array(features)  # change from df to array
     @assert size(targets, 1) == size(features, 1)  "size(targets, 1)=$(size(targets, 1)) == size(features, 1)=$(size(features, 1))"
     features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
     return features, targets, featuresdescription, targetsdescription
+end
+
+function predictionmatrix(df, labels)
+    pred = Array{Float32, 2}(undef, length(labels), size(df, 1))
+    pnames = names(df)
+    @assert size(pred, 1) == length(labels)
+    @assert size(pred, 2) == size(df, 1)
+    for (ix, label) in enumerate(labels)
+        if label in pnames
+            pred[ix, :] = df[:, label]
+        else
+            pred[ix, :] .= 0.0f0
+        end
+    end
+    return pred
 end
 
 function combifeaturestargets(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict)
@@ -212,7 +286,9 @@ function combifeaturestargets(nnvec::Vector{NN}, f3::Features.Features003, pe::D
     targetsdescription = "ohlcvlabels(ohlcv.pivot, PriceExtreme[combi])"
     features = nothing
     for nn in nnvec
-        features = isnothing(features) ? nn.ac.adaptsets[begin].predictions : vcat(features, nn.ac.adaptsets[begin].predictions)
+        df = loadpredictions(nn.predictions[begin])
+        pred = predictionmatrix(df, nn.labels)
+        features = isnothing(features) ? pred : vcat(features, pred)
     end
     featuresdescription = "basepredictions[$([nn.mnemonic for nn in nnvec])]"
     @assert size(targets, 1) == size(features, 2)  "size(targets, 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
@@ -272,8 +348,8 @@ function model001(featurecount, labels, mnemonic)::NN
     description = (@doc model001);
     lossfunc = Flux.crossentropy
     mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
-    filename = mnemonic * "_" * EnvConfig.runid() * ".bson"
-    nn = NN(model, optim, lossfunc, labels, description, mnemonic, filename, NN[], nothing)
+    fileprefix = mnemonic * "_" * EnvConfig.runid()
+    nn = NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix)
     return nn
 end
 
@@ -302,7 +378,8 @@ function adaptmachine(features::AbstractMatrix, targets::AbstractVector, mnemoni
     end
 
     nn.optim # parameters, momenta and output have all changed
-    return nn, losses
+    nn.losses = losses
+    return nn
 end
 
 " Returns a predictions Float Array of size(classes, observations)"
@@ -324,18 +401,19 @@ function adaptmachine(regrwindow, f3::Features.Features003, pe::Dict, setranges:
     traintargets = subsetdim2(targets, setranges["base"])
     trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
-    nn, losses = adaptmachine(trainfeatures, traintargets, Features.periodlabels(regrwindow))
+    nn = adaptmachine(trainfeatures, traintargets, Features.periodlabels(regrwindow))
+    nn.featuresdescription = featuresdescription
+    nn.targetsdescription = targetsdescription
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
     pred = predict(nn, features)
-    as = AdaptSet(targets, pred, setranges, f3)
-    nn.ac = AdaptContext(featuresdescription, targetsdescription, losses, [as])
+    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, f3))
     # predictiondistribution(pred, nn.mnemonic)
 
-    # println("adapted classifier:")
+    println("saving adapted classifier $(nn.fileprefix)")
     # println(nn)
-    # savenn(nn)
-    # println("$(EnvConfig.now()) load machine from file $(nn.filename) for regressionwindow $regrwindow and predict")
-    # nntest = loadnn(nn.filename)
+    savenn(nn)
+    # println("$(EnvConfig.now()) load machine from file $(nn.fileprefix) for regressionwindow $regrwindow and predict")
+    # nntest = loadnn(nn.fileprefix)
     # println(nntest)
     # predtest = predict(nntest, features)
     # @assert pred ≈ predtest  "NN results differ from loaded NN: pred[:, 1:5] = $(pred[:, begin:begin+5]) predtest[:, 1:5] = $(predtest[:, begin:begin+5])"
@@ -349,44 +427,64 @@ function adaptcombi(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict, setra
     traintargets = subsetdim2(targets, setranges["combi"])
     trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
     println("$(EnvConfig.now()) adapting machine for combi classifier")
-    nn, losses = adaptmachine(trainfeatures, traintargets, "combi")
-    nn.predecessors = nnvec
+    nn = adaptmachine(trainfeatures, traintargets, "combi")
+    nn.featuresdescription = featuresdescription
+    nn.targetsdescription = targetsdescription
+    nn.predecessors = [nn.fileprefix for nn in nnvec]
     println("$(EnvConfig.now()) predicting with combi classifier")
     pred = predict(nn, features)
-    as = AdaptSet(targets, pred, setranges, f3)
-    nn.ac = AdaptContext(featuresdescription, targetsdescription, losses, [as])
+    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, f3))
     # predictiondistribution(pred, nn.mnemonic)
     @assert size(pred, 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred, 2)) == size(features, 2)=$(size(features, 2))"
     @assert size(targets, 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
 
-    println("adapted classifier:")
-    println(nn)
+    println("saving adapted classifier $(nn.fileprefix)")
+    # println(nn)
     savenn(nn)
-    # println("$(EnvConfig.now()) load machine from file $(nn.filename) for regressionwindow combi and predict")
-    # nntest = loadnn(nn.filename)
+    # println("$(EnvConfig.now()) load machine from file $(nn.fileprefix) for regressionwindow combi and predict")
+    # nntest = loadnn(nn.fileprefix)
     # println(nntest)
     # predtest = predict(nntest, features)
     # @assert pred ≈ predtest  "NN results differ from loaded NN: pred[:, 1:5] = $(pred[:, begin:begin+5]) predtest[:, 1:5] = $(predtest[:, begin:begin+5])"
     return nn
 end
 
-function evaluateclassifier(nn::NN)
-    title = nn.mnemonic
-    println("$(EnvConfig.now()) evaluating classifier $title")
-    pred = Dict(s => subsetdim2(nn.ac.adaptsets[begin].predictions, rvec) for (s, rvec) in nn.ac.adaptsets[begin].setranges)
-    target = Dict(s => subsetdim2(nn.ac.adaptsets[begin].targets, rvec) for (s, rvec) in nn.ac.adaptsets[begin].setranges)
-    for s in keys(pred)
-        if size(pred[s], 2) > 0
-            aucscores = Classify.aucscores(pred[s])
+
+function evaluatepredictions(df::AbstractDataFrame, fileprefix)
+    title = fileprefix
+    for s in levels(df.set)
+        sdf = filter(row -> row.set == s, df, view=true)
+        if size(sdf, 1) > 0
+            aucscores = Classify.aucscores(sdf)
             println("auc[$s, $title]=$(aucscores)")
-            rc = Classify.roccurves(pred[s])
+            rc = Classify.roccurves(sdf)
             Classify.plotroccurves(rc, "$s / $title")
             # scores, labelindices = Classify.maxpredictions(pred)
-            show(stdout, MIME"text/plain"(), Classify.confusionmatrix(pred[s], target[s]))  # prints the table
+            show(stdout, MIME"text/plain"(), Classify.confusionmatrix(sdf, sdf.targets))  # prints the table
         else
             @warn "no auc or roc data for [$s, $title] due to missing predictions"
         end
     end
+end
+
+function evaluateclassifier(nn::NN)
+    title = nn.mnemonic
+    if length(nn.predecessors) > 0
+        println("$(EnvConfig.now()) evaluating $(length(nn.predecessors)) predecessors of $title")
+    end
+    for nnfileprefix in nn.predecessors
+        evaluateclassifier(nnfileprefix)
+    end
+    println("$(EnvConfig.now()) evaluating classifier $title")
+    for fileprefix in nn.predictions
+        df = loadpredictions(fileprefix)
+        evaluatepredictions(df, fileprefix)
+    end
+end
+
+function evaluateclassifier(fileprefix::String)
+    nn = loadnn(fileprefix)
+    evaluateclassifier(nn)
 end
 
 function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
@@ -426,7 +524,8 @@ function evaluate(base::String, startdt::Dates.DateTime, period; select=nothing)
     EnvConfig.init(production)
     ohlcv = Ohlcv.defaultohlcv(base)
     enddt = startdt + period
-    CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)
+    Ohlcv.read!(ohlcv)
+    subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
     println("loaded $ohlcv")
     labelthresholds = Targets.defaultlabelthresholds
     evaluate(ohlcv, labelthresholds, select=select);
@@ -437,6 +536,7 @@ function evaluate(base::String; select=nothing)
     ohlcv = Ohlcv.defaultohlcv(base)
     Ohlcv.read!(ohlcv)
     println("loaded $ohlcv")
+    println(describe(Ohlcv.dataframe(ohlcv)))
     labelthresholds = Targets.defaultlabelthresholds
     evaluate(ohlcv, labelthresholds, select=select);
 end
@@ -449,25 +549,54 @@ function evaluatetest(startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, p
 end
 
 function evaluatepredictions(filename)
-    println("$(EnvConfig.now()) load machine from file $(filename) for regressionwindow combi and predict")
-    nncombi = loadnn(filename)
-    println(nncombi)
-    for nn in nncombi.predecessors
-        evaluateclassifier(nn)
-    end
-    evaluateclassifier(nncombi)
-
+    println("$(EnvConfig.now()) load predictions from file $(filename)")
+    df = loadpredictions(filename)
+    evaluatepredictions(df,filename)
 end
 
-function savenn(nn)
-    # ac = nn.ac
-    # nn.ac = nothing
-    # acvec = [(actemp = nns.ac; nns.ac = nothing; actemp) for nns in nn.predecessors]
-    BSON.@save EnvConfig.logpath(nn.filename) nn
-    # nn.ac = ac
-    # for (ix, nns) in enumerate(nn.predecessors)
-    #     nns.ac = acvec[ix]
-    # end
+function lossesfilename(fileprefix::String)
+    prefix = splitext(fileprefix)[1]
+    return "losses_" * prefix * ".jdf"
+end
+
+function loadlosses!(nn)
+    filename = lossesfilename(nn.fileprefix)
+    df = DataFrame()
+    try
+        df = DataFrame(JDF.loadjdf(EnvConfig.logpath(filename)))
+        nn.losses = df[!, "losses"]
+        println("loaded $filename losses dataframe of size=$(size(df))")
+    catch e
+        Logging.@warn "exception $e detected"
+    end
+    return nn.losses
+end
+
+function savelosses(nn::NN)
+    filename = lossesfilename(nn.fileprefix)
+    df = DataFrame(reshape(nn.losses, (length(nn.losses), 1)), ["losses"])
+    df.dummy .= 0.0f0
+    println("saving $filename losses dataframe of size=$(size(df))")
+    try
+        JDF.savejdf(EnvConfig.logpath(filename), df)
+    catch e
+        Logging.@warn "exception $e detected"
+    end
+end
+
+function nnfilename(fileprefix::String)
+    prefix = splitext(fileprefix)[1]
+    return "NN" * prefix * ".bson"
+end
+
+function savenn(nn::NN)
+    # savelosses(nn)
+    lvec = nn.losses
+    gap = floor(Int, length(lvec) / 100)
+    start = length(lvec) % 100
+    nn.losses = [l for (ix, l) in enumerate(lvec) if ((ix-start) % gap) == 0]
+    @assert length(nn.losses) <= 100 "length(loses)=$(length(nn.losses))"
+    BSON.@save EnvConfig.logpath(nnfilename(nn.fileprefix)) nn
     # @error "save machine to be implemented for pure flux" filename
     # smach = serializable(mach)
     # JLSO.save(filename, :machine => smach)
@@ -475,7 +604,8 @@ end
 
 function loadnn(filename)
     nn = model001(1, Targets.all_labels, "dummy")  # dummy data struct
-    BSON.@load EnvConfig.logpath(filename) nn
+    BSON.@load EnvConfig.logpath(nnfilename(filename)) nn
+    # loadlosses!(nn)
     return nn
     # @error "load machine to be implemented for pure flux" filename
     # loadedmach = JLSO.load(filename)[:machine]
@@ -493,15 +623,45 @@ labelvec(labelindexvec, labels=Targets.all_labels) = [labels[i] for i in labelin
 labelindexvec(labelvec, labels=Targets.all_labels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
 
 "returns a (scores, labelindices) tuple of best predictions"
-function maxpredictions(predictions, labels=Targets.all_labels)
+function maxpredictions end
+function maxpredictions(predictions::AbstractMatrix, labels=Targets.all_labels)
     @assert length(labels) == size(predictions, 1)
     maxindex = mapslices(argmax, predictions, dims=1)
     scores = [predictions[maxindex[i], i] for i in eachindex(maxindex)]
     return scores, maxindex
 end
 
+function maxpredictions(predictions::AbstractDataFrame, labels=Targets.all_labels)
+    if size(predictions, 1) == 0
+        return [],[]
+    end
+    pnames = names(predictions)
+    scores = zeros32(size(predictions, 1))
+    maxindex = ones(UInt32, size(predictions, 1))
+    missinglabels = []
+    for (lix, label) in enumerate(labels)
+        if label in pnames
+            vec = predictions[!, label]
+            for ix in eachindex(vec)
+                if scores[ix] < vec[ix]
+                    scores[ix] = vec[ix]
+                    maxindex[ix] = lix
+                end
+            end
+        else
+            push!(missinglabels, label)
+        end
+    end
+    if length(missinglabels) > 0
+        println("maxpredictions: no predictions for $missinglabels")
+    end
+    return scores, maxindex
+end
+
 "returns a (scores, booltargets) tuple of binary predictions of class `label`, i.e. booltargets[ix] == true if bestscore is assigned to focuslabel"
-function binarypredictions(predictions, focuslabel, labels=Targets.all_labels)
+function binarypredictions end
+
+function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.all_labels)
     flix = findfirst(x -> x == focuslabel, labels)
     @assert !isnothing(flix) && (firstindex(labels) <= flix <= lastindex(labels)) "$focuslabel==$(isnothing(flix) ? "nothing" : flix) not found in $labels[$(firstindex(labels)):$(lastindex(labels))]"
     @assert length(labels) == size(predictions, 1) "length(labels)=$(length(labels)) == size(predictions, 1)=$(size(predictions, 1))"
@@ -514,6 +674,24 @@ function binarypredictions(predictions, focuslabel, labels=Targets.all_labels)
     return (length(ixvec) > 0 ? predictions[flix, :] : []), ixvec
 end
 
+function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.all_labels)
+    @assert focuslabel in labels
+    if size(predictions, 1) == 0
+        return [],[]
+    end
+    pnames = names(predictions)
+    if !(focuslabel in pnames)
+        return fill(0.0f0, size(predictions, 1)), fill(false, size(predictions, 1))
+    end
+    _, maxindex = maxpredictions(predictions, labels)
+    flix = 0
+    for (lix, label) in enumerate(labels)
+        flix = focuslabel == label ? lix : flix
+    end
+    ixvec = [flix == maxindex[i] for i in eachindex(maxindex)]
+    return predictions[:, focuslabel], ixvec
+end
+
 function smauc(scores, predlabels)
     y = categorical(predlabels, ordered=true)  # StatisticalMeasures package
     ŷ = UnivariateFinite([false, true], scores, augment=true, pool=y)   # StatisticalMeasures package
@@ -522,7 +700,7 @@ end
 
 function aucscores(pred, labels=Targets.all_labels)
     aucdict = Dict()
-    if size(pred, 2) > 0
+    if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
             scores, predlabels = binarypredictions(pred, focuslabel, labels)
             if length(unique(predlabels)) == 2
@@ -549,7 +727,7 @@ end
 "Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
 function roccurves(pred, labels=Targets.all_labels)
     rocdict = Dict()
-    if size(pred, 2) > 0
+    if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
             scores, predlabels = binarypredictions(pred, focuslabel, labels)
             if length(unique(predlabels)) == 2
@@ -586,7 +764,9 @@ end
 
 function confusionmatrix(pred, targets, labels=Targets.all_labels)
     _, maxindex = maxpredictions(pred, labels)
-    StatisticalMeasures.ConfusionMatrices.confmat(labelvec(maxindex, labels), targets)
+    targets = [String(targets[ix]) for ix in eachindex(targets)]
+    predlabels = labelvec(maxindex, labels)
+    StatisticalMeasures.ConfusionMatrices.confmat(predlabels, targets)
 end
 
 #endregion Evaluation

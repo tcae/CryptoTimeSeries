@@ -634,16 +634,21 @@ end
 # 1000, 100, 10, si = 991, ci = 891, l(t)=110
 # t 110 - 10
 
+function correctunworkablevolume(vv::Vector{T})::Vector{T} where {T <: AbstractFloat}
+    return map(x -> x <= 0.0 ? 0.0001 : x, vv)
+end
+
 function relativevolume(volumes, shortwindow, largewindow)
     # large = rollmedian(volumes, largewindow)
     # largelen = size(large, 1)
     # short = rollmedian(volumes, shortwindow)
     # shortlen = size(short, 1)
     # short = @view short[shortlen - largelen + 1: shortlen]
-        large = runmedian(volumes, largewindow)
-        largelen = size(large, 1)
-        short = runmedian(volumes, shortwindow)
-        shortlen = size(short, 1)
+    large = runmedian(volumes, largewindow)
+    large = correctunworkablevolume(large)
+    # largelen = size(large, 1)
+    short = runmedian(volumes, shortwindow)
+    # shortlen = size(short, 1)
     # println("short=$short, large=$large, short/large=$(short./large)")
     return short ./ large
 end
@@ -1159,8 +1164,9 @@ The feature vectors covering the ohlcv time range from f3.f2.startix + f3.maxloo
 Each feature vector is composed of:
 
 - Most recent `lookback` periods regression features for time windows as provided in `regrwindows` (e.g `[15, 60, 4*60]`). If `lookback = 0` then only the most recent regression features.
-  - Regression gradient
-  - (Y distance from regression line) / (2 * std deviation)
+  - `grad`: Regression gradient
+  - `disty`: Y distance from regression line   (not any longer related to std because std can be zero: / (2 * std deviation))
+  - both grad and disty are normalized as to pivot price if `normalize=true`
 """
 function regressionfeatures!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; regrwindows::Vector{<:Integer}, lookback, normalize=true::Bool)::DataFrame
     # debug = true
@@ -1194,9 +1200,12 @@ function regressionfeatures!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Fea
             # println("f3.f2.regr[regrwindow($(regrwindow))].regry: min=$(minimum(f3.f2.regr[regrwindow].regry)) mean=$(Statistics.mean(f3.f2.regr[regrwindow].regry)) max=$(maximum(f3.f2.regr[regrwindow].regry))")
             # println("ohlcvdf[firstoix:lastoix, :pivot]: min=$(minimum(ohlcvdf[firstoix:lastoix, :pivot])) mean=$(Statistics.mean(ohlcvdf[firstoix:lastoix, :pivot])) max=$(maximum(ohlcvdf[firstoix:lastoix, :pivot]))")
             # println("pivot - regr[regrwindow($(regrwindow))].regry: min=$(minimum(fvecdf[!, colname])) mean=$(Statistics.mean(fvecdf[!, colname])) max=$(maximum(fvecdf[!, colname]))")
-            fvecdf[!, colname] = fvecdf[!, colname] ./ f3.f2.regr[regrwindow].std[firstfix:lastfix]
+            #* no longer related to std because std can be zero: fvecdf[!, colname] = fvecdf[!, colname] ./ f3.f2.regr[regrwindow].std[firstfix:lastfix]
             # println("(pivot - regr[regrwindow($(regrwindow))].regry)/std: min=$(minimum(fvecdf[!, colname])) mean=$(Statistics.mean(fvecdf[!, colname])) max=$(maximum(fvecdf[!, colname]))")
             # debug ? fvecdf[!, "firstix" * Features.periodlabels(regrwindow) * ixstr] = [ix for ix in firstfix:lastfix] : 0
+            if normalize
+                fvecdf[!, colname] = fvecdf[!, colname] ./ ohlcvdf[f3.firstix:f3.f2.lastix, :pivot]
+            end
         end
     end
     return fvecdf
