@@ -195,9 +195,14 @@ function test_basecombitestpartitions()
     println(res)
 end
 
+function extendedconfusionmatrix(preddf::AbstractDataFrame, thresholdbins=10)
+
+
+end
+
 function predictionsfilename(fileprefix::String)
-prefix = splitext(fileprefix)[1]
-return prefix * ".jdf"
+    prefix = splitext(fileprefix)[1]
+    return prefix * ".jdf"
 end
 
 function loadpredictions(filename)
@@ -318,19 +323,21 @@ end
 #region LearningNetwork Flux
 
 """````
-   lay_in = featurecount
-    lay_out = length(labels)
-    lay1 = 2 * lay_in
-    lay2 = round(Int, (lay1 + lay_out) / 2)
-    model = Chain(
-        Dense(lay_in => lay1, tanh),   # activation function inside layer
-        BatchNorm(lay1),
-        Dense(lay1 => lay2, tanh),
-        BatchNorm(lay2),
-        Dense(lay2 => lay_out, tanh),
-        softmax)
-    optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
-    lossfunc = Flux.crossentropy```
+lay_in = featurecount
+lay_out = length(labels)
+lay1 = 2 * lay_in
+lay2 = round(Int, (lay1 + lay_out) / 2)
+model = Chain(
+    Dense(lay_in => lay1, relu),   # activation function inside layer
+    BatchNorm(lay1),
+    Dense(lay1 => lay2, relu),   # activation function inside layer
+    BatchNorm(lay2),
+    Dense(lay2 => lay_out),   # no activation function inside layer
+    softmax)
+optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
+description = (@doc model001);
+lossfunc = Flux.crossentropy
+```
 """
 function model001(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
@@ -338,11 +345,11 @@ function model001(featurecount, labels, mnemonic)::NN
     lay1 = 2 * lay_in
     lay2 = round(Int, (lay1 + lay_out) / 2)
     model = Chain(
-        Dense(lay_in => lay1, tanh),   # activation function inside layer
+        Dense(lay_in => lay1, relu),   # activation function inside layer
         BatchNorm(lay1),
-        Dense(lay1 => lay2, tanh),
+        Dense(lay1 => lay2, relu),   # activation function inside layer
         BatchNorm(lay2),
-        Dense(lay2 => lay_out, tanh),
+        Dense(lay2 => lay_out),   # no activation function inside layer
         softmax)
     optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
     description = (@doc model001);
@@ -364,6 +371,7 @@ function adaptmachine(features::AbstractMatrix, targets::AbstractVector, mnemoni
 
     # Training loop, using the whole data set 1000 times:
     losses = []
+    testmode!(nn, false)
     @showprogress for epoch in 1:200  # 1:1000
     # for epoch in 1:200  # 1:1000
         for (x, y) in loader
@@ -376,7 +384,7 @@ function adaptmachine(features::AbstractMatrix, targets::AbstractVector, mnemoni
             push!(losses, loss)  # logging, outside gradient context
         end
     end
-
+    testmode!(nn, true)
     nn.optim # parameters, momenta and output have all changed
     nn.losses = losses
     return nn

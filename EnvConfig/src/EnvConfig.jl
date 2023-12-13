@@ -39,7 +39,6 @@ authpath = joinpath(cryptopath, "exchanges")  # ".catalyst/data/exchanges/bybit/
 if !isdir(cryptopath)
     @error "missing auth folder $authpath"
 end
-logfilespath = joinpath(cryptopath, "logs")
 datafolder = "EnvConfig is not initialized"
 configmode = production
 authorization = nothing
@@ -72,7 +71,20 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 "returns string with timestamp and current git instance to reproduce the used source"
 runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
 
-logpath(file) = normpath(joinpath(logfilespath, file))
+logfilespath = "logs"
+
+"extends the log path with folder or resets to default if folder=`nothing`"
+function setlogpath(folder=nothing)
+    global logfilespath
+    if isnothing(folder)
+        logfilespath = "logs"
+    else
+        logfilespath = joinpath("logs", folder)
+    end
+    return mkpath(normpath(joinpath(cryptopath, logfilespath)))
+end
+
+logpath(file) = normpath(joinpath(cryptopath, logfilespath, file))
 
 "returns a full qualified log path with folder with a name constructed of runid()"
 uniquelogpath() = mkpath(normpath(joinpath(logfilespath, runid())))
