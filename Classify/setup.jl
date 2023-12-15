@@ -19,7 +19,7 @@ Pkg.add([
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", # "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
-    "PrettyPrinting",
+    "PrettyPrinting", "PrettyTables",
     "IJulia", "Plots", "PlotlyJS", "Colors"  # "WebIO", "Dash",   Regressionsim, CryptoCockpit, Notebooks
     ])
 

@@ -15,7 +15,7 @@ using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging
 
 "returns all possible labels (don't change sequence because index is used as class id)"
-const all_labels = ["invalid", "longbuy", "longhold", "close", "shorthold", "shortbuy"]
+const all_labels = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
 
 
 """

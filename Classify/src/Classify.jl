@@ -3,7 +3,7 @@ Train and evaluate the trading signal classifiers
 """
 module Classify
 
-using DataFrames, Logging, Dates, PrettyPrinting
+using DataFrames, Logging, Dates, PrettyPrinting, PrettyTables
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
 using CategoricalDistributions
@@ -195,10 +195,98 @@ function test_basecombitestpartitions()
     println(res)
 end
 
-function extendedconfusionmatrix(preddf::AbstractDataFrame, thresholdbins=10)
+score2bin(score, thresholdbins) = max(min(floor(Int, score / (1.0/thresholdbins)) + 1, thresholdbins), 1)
+bin2score(binix, thresholdbins) = round((binix-1)*1.0/thresholdbins; digits = 2), round(binix*1.0/thresholdbins; digits = 2)
+"""
+generates summary statistics from predictions
+"""
+function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=10)
+    scores, maxindex = maxpredictions(predictions)
+    labels = levels(predictions.targets)
+    confcatsyms = [:tp, :tn, :fp, :fn]
+    confcat = Dict(zip(confcatsyms, 1:length(confcatsyms)))
+    # preallocate collection matrices with columns TP, TN, FP, FN and rows as bins with lower separation value x/thresholdbins per label per set
+    setnames = levels(predictions.set)
+    cmc = zeros(Int, length(setnames), length(labels), length(confcatsyms), thresholdbins)
+    for ix in eachindex(maxindex)
+        labelix = maxindex[ix]  # label of maxscore
+        binix = score2bin(scores[ix], thresholdbins)
+        if labelix == levelcode(predictions.targets[ix])
+            cmc[levelcode(predictions.set[ix]), labelix, confcat[:tp], binix] += 1
+        else  # labelix != levelcode(predictions.targets[ix])
+            cmc[levelcode(predictions.set[ix]), labelix, confcat[:fp], binix] += 1
+        end
+    end
+    cm = zeros(Int, length(setnames), length(labels), length(confcatsyms), thresholdbins)
+    for six in eachindex(setnames)
+        for lix in eachindex(labels)
+            for bix in 1:thresholdbins
+                for bix2 in bix:thresholdbins
+                    cm[six, lix, confcat[:tp], bix] += cmc[six, lix, confcat[:tp], bix2]
+                    cm[six, lix, confcat[:fp], bix] += cmc[six, lix, confcat[:fp], bix2]
+                end
+                for bix2 in 1:(bix-1)
+                    cm[six, lix, confcat[:fn], bix] += cmc[six, lix, confcat[:tp], bix2]
+                    cm[six, lix, confcat[:tn], bix] += cmc[six, lix, confcat[:fp], bix2]
+                end
+            end
+        end
+    end
+    setnamevec = [setnames[six] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    sc = categorical(setnamevec; levels=setnames)
+    labelsvec = [labels[lix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    lc = categorical(labelsvec; levels=labels)
+    binvec = [(scr = bin2score(bix, thresholdbins); "$bix/[$(scr[1])-$(scr[2])]") for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    bc = categorical(binvec)
+    tpvec = [cm[six, lix, confcat[:tp], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    tnvec = [cm[six, lix, confcat[:tn], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    fpvec = [cm[six, lix, confcat[:fp], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    fnvec = [cm[six, lix, confcat[:fn], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    allvec = tpvec + tnvec + fpvec + fnvec
+    tpprc = round.(tpvec ./ allvec .* 100.0; digits=2)
+    tnprc = round.(tnvec ./ allvec .* 100.0; digits=2)
+    fpprc = round.(fpvec ./ allvec .* 100.0; digits=2)
+    fnprc = round.(fnvec ./ allvec .* 100.0; digits=2)
+    tpr = round.(tpvec ./ (tpvec + fnvec); digits=2)
+    fpr = round.(fpvec ./ (fpvec + tnvec); digits=2)
+    xcdf = DataFrame("set" => sc, "pred_label" => lc, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
+    # println(xcdf)
+    return xcdf
+    #TODO next step: take only first of a sequence according to threshold -> how often is a sequence missed?
+ end
 
-
-end
+ function confusionmatrix(predictions::AbstractDataFrame)
+    scores, maxindex = maxpredictions(predictions)
+    labels = levels(predictions.targets)
+    confcatsyms = [:tp, :tn, :fp, :fn]
+    confcat = Dict(zip(confcatsyms, 1:length(confcatsyms)))
+    # preallocate collection matrices with columns TP, TN, FP, FN and rows as bins with lower separation value x/thresholdbins per label per set
+    setnames = levels(predictions.set)
+    cm = zeros(Int, length(setnames), length(labels), length(labels))
+    for ix in eachindex(maxindex)
+        cm[levelcode(predictions.set[ix]), maxindex[ix], levelcode(predictions.targets[ix])] += 1
+    end
+    setnamevec = [setnames[six] for six in eachindex(setnames) for lix in eachindex(labels)]
+    sc = categorical(setnamevec; levels=setnames)
+    labelsvec = ["pred_"*labels[lix] for six in eachindex(setnames) for lix in eachindex(labels)]
+    plc = categorical(labelsvec)
+    cdf = DataFrame(:set => sc, :predlabel => plc)
+    pred_sum = zeros(Int, length(setnames) * length(labels))
+    for (ix, l) in enumerate(labels)
+        if l != "pred_invalid"
+            lvec = [cm[six, lix, ix] for six in eachindex(setnames) for lix in eachindex(labels)]
+            cdf[:, "truth_"*l] = lvec
+            pred_sum += lvec
+        end
+    end
+    cdf[:, "truth_other"] = pred_sum - [cm[six, lix, lix] for six in eachindex(setnames) for lix in eachindex(labels)]
+    cdf[:, "truth_all"] = pred_sum
+    for (ix, l) in enumerate(labels)
+        cdf[:, ("truth_"*l*"_%")] = round.(cdf[:, ("truth_"*l)] ./ pred_sum * 100; digits=2)
+    end
+    # println(cdf)
+    return cdf
+ end
 
 function predictionsfilename(fileprefix::String)
     prefix = splitext(fileprefix)[1]
@@ -460,15 +548,18 @@ end
 
 function evaluatepredictions(df::AbstractDataFrame, fileprefix)
     title = fileprefix
+    cdf = confusionmatrix(df)
+    xcdf = extendedconfusionmatrix(df)
     for s in levels(df.set)
         sdf = filter(row -> row.set == s, df, view=true)
         if size(sdf, 1) > 0
-            aucscores = Classify.aucscores(sdf)
-            println("auc[$s, $title]=$(aucscores)")
-            rc = Classify.roccurves(sdf)
-            Classify.plotroccurves(rc, "$s / $title")
-            # scores, labelindices = Classify.maxpredictions(pred)
+            # aucscores = Classify.aucscores(sdf)
+            # println("auc[$s, $title]=$(aucscores)")
+            # rc = Classify.roccurves(sdf)
+            # Classify.plotroccurves(rc, "$s / $title")
             show(stdout, MIME"text/plain"(), Classify.confusionmatrix(sdf, sdf.targets))  # prints the table
+            println(filter(row -> row.set == s, cdf, view=true))
+            println(filter(row -> row.set == s, xcdf, view=true))
         else
             @warn "no auc or roc data for [$s, $title] due to missing predictions"
         end
@@ -528,7 +619,7 @@ function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
     println("$(EnvConfig.now()) ready with adapting and evaluating classifier stack")
 end
 
-function evaluate(base::String, startdt::Dates.DateTime, period; select=nothing)
+function evaluate(base::String, startdt::Dates.DateTime=DateTime("2017-07-02T22:54:00"), period=Dates.Year(10); select=nothing)
     ohlcv = Ohlcv.defaultohlcv(base)
     enddt = startdt + period
     Ohlcv.read!(ohlcv)
@@ -538,14 +629,14 @@ function evaluate(base::String, startdt::Dates.DateTime, period; select=nothing)
     evaluate(ohlcv, labelthresholds, select=select);
 end
 
-function evaluate(base::String; select=nothing)
-    ohlcv = Ohlcv.defaultohlcv(base)
-    Ohlcv.read!(ohlcv)
-    println("loaded $ohlcv")
-    println(describe(Ohlcv.dataframe(ohlcv)))
-    labelthresholds = Targets.defaultlabelthresholds
-    evaluate(ohlcv, labelthresholds, select=select);
-end
+# function evaluate(base::String; select=nothing)
+#     ohlcv = Ohlcv.defaultohlcv(base)
+#     Ohlcv.read!(ohlcv)
+#     println("loaded $ohlcv")
+#     println(describe(Ohlcv.dataframe(ohlcv)))
+#     labelthresholds = Targets.defaultlabelthresholds
+#     evaluate(ohlcv, labelthresholds, select=select);
+# end
 
 function evaluatetest(startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, period=Dates.Day(40); select=nothing)
     enddt = startdt + period
@@ -581,7 +672,6 @@ end
 function savelosses(nn::NN)
     filename = lossesfilename(nn.fileprefix)
     df = DataFrame(reshape(nn.losses, (length(nn.losses), 1)), ["losses"])
-    df.dummy .= 0.0f0
     println("saving $filename losses dataframe of size=$(size(df))")
     try
         JDF.savejdf(EnvConfig.logpath(filename), df)
@@ -592,11 +682,10 @@ end
 
 function nnfilename(fileprefix::String)
     prefix = splitext(fileprefix)[1]
-    return "NN" * prefix * ".bson"
+    return prefix * ".bson"
 end
 
 function savenn(nn::NN)
-    # savelosses(nn)
     lvec = nn.losses
     gap = floor(Int, length(lvec) / 100)
     start = length(lvec) % 100
@@ -628,7 +717,7 @@ labelvec(labelindexvec, labels=Targets.all_labels) = [labels[i] for i in labelin
 
 labelindexvec(labelvec, labels=Targets.all_labels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
 
-"returns a (scores, labelindices) tuple of best predictions"
+"returns a (scores, labelindices) tuple of best predictions. Without labels the index is the index within levels(df.targets)."
 function maxpredictions end
 function maxpredictions(predictions::AbstractMatrix, labels=Targets.all_labels)
     @assert length(labels) == size(predictions, 1)
@@ -637,13 +726,38 @@ function maxpredictions(predictions::AbstractMatrix, labels=Targets.all_labels)
     return scores, maxindex
 end
 
+# function maxpredictions(predictions::AbstractDataFrame)
+#     if size(predictions, 1) == 0
+#         return [],[]
+#     end
+#     scores = zeros32(size(predictions, 1))
+#     maxindex = zeros(UInt32, size(predictions, 1))
+#     for (lix, label) in enumerate(names(predictions))
+#         if eltype(predictions[!, label]) <: AbstractFloat
+#             if !(label in Targets.all_labels)
+#                 @warn "unexpected predictions class: $label"
+#             end
+#             vec = predictions[!, label]
+#             for ix in eachindex(vec)
+#                 if scores[ix] < vec[ix]
+#                     scores[ix] = vec[ix]
+#                     maxindex[ix] = lix
+#                 end
+#             end
+#         end
+#     end
+#     return scores, maxindex
+# end
+
 function maxpredictions(predictions::AbstractDataFrame, labels=Targets.all_labels)
     if size(predictions, 1) == 0
         return [],[]
     end
+    # labels = levels(predictions.targets)
+    @assert labels == levels(predictions.targets) "labels=$labels != levels(predictions.targets)=$(levels(predictions.targets))"
     pnames = names(predictions)
     scores = zeros32(size(predictions, 1))
-    maxindex = ones(UInt32, size(predictions, 1))
+    maxindex = zeros(UInt32, size(predictions, 1))
     missinglabels = []
     for (lix, label) in enumerate(labels)
         if label in pnames
@@ -661,6 +775,8 @@ function maxpredictions(predictions::AbstractDataFrame, labels=Targets.all_label
     if length(missinglabels) > 0
         println("maxpredictions: no predictions for $missinglabels")
     end
+    # ts, tm = maxpredictionsfromcols(predictions)
+    # @assert all([pnames[tm[ix]] == labels[maxindex[ix]] for ix in eachindex(maxindex)]) && (ts == scores) "maxindex check = $(tm == maxindex)  scores check = $(ts == scores)"
     return scores, maxindex
 end
 

@@ -2,7 +2,7 @@
 
 julia_version = "1.9.2"
 manifest_format = "2.0"
-project_hash = "f7fbc21611e6aac4e922fe2cc2ec98aa570742ac"
+project_hash = "78239bc1dcd5dbd26ddc1cac02817afdb3c03d88"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -1358,7 +1358,7 @@ uuid = "e7412a2a-1a6e-54c0-be00-318e2571c051"
 version = "1.3.5+1"
 
 [[deps.Ohlcv]]
-deps = ["CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
+deps = ["CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
 path = "../Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
 version = "0.1.2"
