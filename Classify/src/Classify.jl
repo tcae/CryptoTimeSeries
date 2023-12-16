@@ -416,9 +416,9 @@ lay_out = length(labels)
 lay1 = 2 * lay_in
 lay2 = round(Int, (lay1 + lay_out) / 2)
 model = Chain(
-    Dense(lay_in => lay1, relu),   # activation function inside layer
+    Dense(lay_in => lay1, tanh),   # activation function inside layer
     BatchNorm(lay1),
-    Dense(lay1 => lay2, relu),   # activation function inside layer
+    Dense(lay1 => lay2, tanh),   # activation function inside layer
     BatchNorm(lay2),
     Dense(lay2 => lay_out),   # no activation function inside layer
     softmax)
@@ -433,9 +433,9 @@ function model001(featurecount, labels, mnemonic)::NN
     lay1 = 2 * lay_in
     lay2 = round(Int, (lay1 + lay_out) / 2)
     model = Chain(
-        Dense(lay_in => lay1, relu),   # activation function inside layer
+        Dense(lay_in => lay1, tanh),   # activation function inside layer
         BatchNorm(lay1),
-        Dense(lay1 => lay2, relu),   # activation function inside layer
+        Dense(lay1 => lay2, tanh),   # activation function inside layer
         BatchNorm(lay2),
         Dense(lay2 => lay_out),   # no activation function inside layer
         softmax)
