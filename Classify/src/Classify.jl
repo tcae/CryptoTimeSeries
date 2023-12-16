@@ -10,38 +10,6 @@ using CategoricalDistributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
 
-mutable struct AdaptSet
-    targets
-    predictions
-    setranges
-    symbol  #pair of base and quote
-    startdt
-    enddt
-    function AdaptSet(targets, pred, setranges, f3)
-        sym = Ohlcv.basesymbol(f3.f2.ohlcv) * Ohlcv.quotesymbol(f3.f2.ohlcv)
-        startdt = Ohlcv.dataframe(f3.f2.ohlcv).opentime[Features.ohlcvix(f3, 1)]
-        enddt = Ohlcv.dataframe(f3.f2.ohlcv).opentime[end]
-        return new(targets, pred, setranges, sym, startdt, enddt)
-    end
-end
-
-mutable struct AdaptContext
-    featuresdecription
-    targetsdecription
-    losses
-    adaptsets
-end
-
-function Base.show(io::IO, ac::AdaptContext)
-    println(io, "NN AdaptContext: featuresdecription=$(ac.featuresdecription) targetsdecription=$(ac.targetsdecription) #adaptsets=$(length(ac.adaptsets)) len(losses)=$(length(ac.losses))")
-    for ads in ac.adaptsets
-        println(io, "symbol=$(ads.symbol) start=$(ads.startdt) end=$(ads.enddt) #targets=$(size(ads.targets)) #predictions=$(size(ads.predictions)) ")
-        for (s,v) in ads.setranges
-            println(io,"$s: length=$(length(v))")
-        end
-    end
-end
-
 mutable struct NN
     model
     optim
@@ -68,33 +36,6 @@ function Base.show(io::IO, nn::NN)
     println(io, "NN: predictions=$(nn.predictions)")
     println(io, "NN: description=$(nn.description)")
 end
-
-"""
-Returns the trade performance percentage of trade sigals given in `signals` applied to `prices`.
-"""
-function tradeperformance(prices, signals)
-    fee = 0.002  # 0.2% fee for each trade
-    initialcash = cash = 100.0
-    startprice = 1.0
-    asset = 0.0
-
-    for ix in eachindex(prices)  # 1:size(prices, 1)
-        if (signals[ix] == "long") && (cash > 0)
-                asset = cash / prices[ix] * (1 - fee)
-                cash = 0.0
-        elseif (asset > 0) && ((signals[ix] == "close") || (signals[ix] == "short"))
-                cash = asset * prices[ix] * (1 - fee)
-                asset = 0.0
-        # elseif enableshort && (signals[ix] == "short") && (cash > 0)
-            # to be done
-        end
-    end
-    if asset > 0
-        cash = asset * prices[end] * (1 - fee)
-    end
-    return (cash - initialcash) / initialcash * 100
-end
-
 
 
 #region DataPrep
@@ -193,6 +134,77 @@ function test_basecombitestpartitions()
         # end
     end
     println(res)
+end
+
+"""
+Groups trading pairs and stores them with the corresponding gain in a DataFrame that is returned.
+Pairs that cross a set before closure are being forced closed at set border.
+"""
+function trades(predictions::AbstractDataFrame, thresholds::Vector)
+    df = DataFrame(set=CategoricalArray(undef, 0; levels=levels(predictions.set), ordered=false), opentrade=Int32[], openix=Int32[], closetrade=Int32[], closeix=Int32[], gain=Float32[])
+    if size(predictions, 1) == 0
+        return df
+    end
+    scores, maxindex = maxpredictions(predictions)
+    labels = levels(predictions.targets)
+    longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in ["longbuy", "longhold", "close", "shorthold", "shortbuy"])
+    buytrade = (tradeix=closeix, predix=0, set=predictions.set[begin])  # tradesignal, predictions index
+    holdtrade = (tradeix=closeix, predix=0, set=predictions.set[begin])  # tradesignal, predictions index
+
+    function closetrade!(tradetuple, closetrade, ix)
+        gain = (predictions.pivot[ix] - predictions.pivot[tradetuple.predix]) / predictions.pivot[tradetuple.predix] * 100
+        gain = tradetuple.tradeix in [longbuyix, longholdix] ? gain : -gain
+        push!(df, (tradetuple.set, tradetuple.tradeix, tradetuple.predix, closetrade, ix, gain))
+        return (tradeix=closeix, predix=ix, set=predictions.set[ix])
+    end
+
+    function closeifneeded!(buychecktrades, holdchecktrades, closetrade, ix)
+        buytrade = (buytrade.tradeix == buychecktrades) || ((buytrade.set != predictions.set[ix]) && (buytrade.tradeix in [longbuyix, shortbuyix])) ? closetrade!(buytrade, closetrade, ix) : buytrade
+        holdtrade = (holdtrade.tradeix == holdchecktrades) || ((buytrade.set != predictions.set[ix]) && (buytrade.tradeix in [longholdix, shortholdix])) ? closetrade!(holdtrade, closetrade, ix) : holdtrade
+        return buytrade, holdtrade
+    end
+
+    for ix in eachindex(maxindex)
+        labelix = maxindex[ix]
+        score = scores[ix]
+        if (labelix == longbuyix) && (thresholds[longbuyix] <= score)
+            buytrade, holdtrade = closeifneeded!(shortbuyix, shortholdix, longbuyix, ix)
+            buytrade = buytrade.tradeix == closeix ? (tradeix=longbuyix, predix=ix, set=predictions.set[ix]) : buytrade
+        elseif (labelix == longholdix) && (thresholds[longholdix] <= score)
+            buytrade, holdtrade = closeifneeded!(shortbuyix, shortholdix, longholdix, ix)
+            holdtrade = holdtrade.tradeix == closeix ? (tradeix=longholdix, predix=ix, set=predictions.set[ix]) : holdtrade
+        elseif (labelix == closeix) && (thresholds[closeix] <= score)
+            buytrade = buytrade.tradeix != closeix ? closetrade!(buytrade, closeix, ix) : buytrade
+            holdtrade = holdtrade.tradeix != closeix ? closetrade!(holdtrade, closeix, ix) : holdtrade
+        elseif (labelix == shortholdix) && (thresholds[shortholdix] <= score)
+            buytrade, holdtrade = closeifneeded!(longbuyix, longholdix, shortholdix, ix)
+            holdtrade = holdtrade.tradeix == closeix ? (tradeix=shortholdix, predix=ix, set=predictions.set[ix]) : holdtrade
+        elseif (labelix == shortbuyix) && (thresholds[shortbuyix] <= score)
+            buytrade, holdtrade = closeifneeded!(longbuyix, longholdix, shortbuyix, ix)
+            buytrade = buytrade.tradeix == closeix ? (tradeix=shortbuyix, predix=ix, set=predictions.set[ix]) : buytrade
+        end
+    end
+    return df
+end
+
+function tradeperformance(trades::AbstractDataFrame, labels::Vector)
+    df = DataFrame(set=CategoricalArray(undef, 0; levels=labels, ordered=false), trade=[], tradeix=[], gainpct=[], count=[], gainpctpertrade=[])
+    for tset in levels(trades.set)
+        for ix in eachindex(labels)
+            selectedtrades = filter(row -> (row.set == tset) && (row.opentrade == ix), trades, view=true)
+            if size(selectedtrades, 1) > 0
+                tcount = count(i-> !ismissing(i), selectedtrades.gain)
+                tsum = sum(selectedtrades.gain)
+                push!(df, (tset, labels[ix], ix, tsum, tcount, tsum/tcount))
+            end
+        end
+        selectedtrades = filter(row -> (row.set == tset), trades, view=true)
+        tcount = count(i-> !ismissing(i), selectedtrades.gain)
+        tsum = sum(selectedtrades.gain)
+        push!(df, (tset, "total", missing, tsum, tcount, tsum/tcount))
+    end
+    # println(df)
+    return df
 end
 
 score2bin(score, thresholdbins) = max(min(floor(Int, score / (1.0/thresholdbins)) + 1, thresholdbins), 1)
@@ -302,6 +314,28 @@ function loadpredictions(filename)
     catch e
         Logging.@warn "exception $e detected"
     end
+    if !("pivot" in names(df))
+        ix = findfirst("USDT", filename)
+        if isnothing(ix)
+            @warn "cannot repair pivot because no USDT found in filename"
+        else
+            # println("ix=$ix typeof(ix)=$(typeof(ix))")  # ix is and index range
+            base = SubString(filename, 1, (first(ix)-1))
+            ohlcv = Ohlcv.defaultohlcv(base)
+            startdt = minimum(df[!, "opentime"])
+            if startdt != df[begin, "opentime"]
+                @warn "startdt=$startdt != df[begin, opentime]=$(df[begin, "opentime"])"
+            end
+            enddt = maximum(df[!, "opentime"])
+            if enddt != df[end, "opentime"]
+                @warn "enddt=$enddt != df[begin, opentime]=$(df[end, "opentime"])"
+            end
+            Ohlcv.read!(ohlcv)
+            subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
+            df[:, "pivot"] = Ohlcv.dataframe(ohlcv).pivot
+            println("succesful repair of pivot")
+        end
+    end
     return df
 end
 
@@ -330,9 +364,10 @@ function predictionsdataframe(nn::NN, setranges, targets, predictions, f3::Featu
         end
     end
     sc = categorical(setlabels; compress=true)
-    df.set = sc
-    df.targets = categorical(targets; levels=nn.labels, compress=true)
-    df.opentime = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
+    df[:, "set"] = sc
+    df[:, "targets"] = categorical(targets; levels=nn.labels, compress=true)
+    df[:, "opentime"] = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
+    df[:, "pivot"] = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
     println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
     println(describe(df, :all))
     fileprefix = uppercase(Ohlcv.basesymbol(f3.f2.ohlcv) * Ohlcv.quotesymbol(f3.f2.ohlcv)) * "_" * nn.fileprefix
@@ -546,20 +581,35 @@ function adaptcombi(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict, setra
 end
 
 
-function evaluatepredictions(df::AbstractDataFrame, fileprefix)
-    title = fileprefix
-    cdf = confusionmatrix(df)
-    xcdf = extendedconfusionmatrix(df)
-    for s in levels(df.set)
-        sdf = filter(row -> row.set == s, df, view=true)
+function evaluatepredictions(predictions::AbstractDataFrame, fileprefix)
+    assetpair, nntitle = split(fileprefix, "_")[1:2]
+    title = assetpair * "_" * nntitle
+    # cdf = confusionmatrix(predictions)
+    # xcdf = extendedconfusionmatrix(predictions)
+    labels = levels(predictions.targets)
+    thresholds = [0.01f0 for l in labels]
+    tdf = trades(predictions, thresholds)
+    tpdf = tradeperformance(tdf, labels)
+
+    for s in levels(predictions.set)
+        if s == "unused"
+            continue
+        end
+        sdf = filter(row -> row.set == s, predictions, view=true)
         if size(sdf, 1) > 0
+            # println(title)
             # aucscores = Classify.aucscores(sdf)
             # println("auc[$s, $title]=$(aucscores)")
             # rc = Classify.roccurves(sdf)
             # Classify.plotroccurves(rc, "$s / $title")
-            show(stdout, MIME"text/plain"(), Classify.confusionmatrix(sdf, sdf.targets))  # prints the table
-            println(filter(row -> row.set == s, cdf, view=true))
-            println(filter(row -> row.set == s, xcdf, view=true))
+            # println(title)
+            # show(stdout, MIME"text/plain"(), Classify.confusionmatrix(sdf, sdf.targets))  # prints the table
+            # println(title)
+            # println(filter(row -> row.set == s, cdf, view=true))
+            # println(title)
+            # println(filter(row -> row.set == s, xcdf, view=true))
+            println(title)
+            println(filter(row -> row.set == s, tpdf, view=true))
         else
             @warn "no auc or roc data for [$s, $title] due to missing predictions"
         end
