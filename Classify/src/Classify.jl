@@ -6,7 +6,7 @@ module Classify
 using DataFrames, Logging, Dates, PrettyPrinting, PrettyTables
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
-using CategoricalDistributions
+using CategoricalDistributions, Distributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
 
@@ -367,7 +367,7 @@ function predictionsdataframe(nn::NN, setranges, targets, predictions, f3::Featu
     df[:, "set"] = sc
     df[:, "targets"] = categorical(targets; levels=nn.labels, compress=true)
     df[:, "opentime"] = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
-    df[:, "pivot"] = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
+    df[:, "pivot"] = Ohlcv.dataframe(f3.f2.ohlcv).pivot[f3.firstix:end]
     println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
     println(describe(df, :all))
     fileprefix = uppercase(Ohlcv.basesymbol(f3.f2.ohlcv) * Ohlcv.quotesymbol(f3.f2.ohlcv)) * "_" * nn.fileprefix
@@ -451,9 +451,9 @@ lay_out = length(labels)
 lay1 = 2 * lay_in
 lay2 = round(Int, (lay1 + lay_out) / 2)
 model = Chain(
-    Dense(lay_in => lay1, tanh),   # activation function inside layer
+    Dense(lay_in => lay1, relu),   # activation function inside layer
     BatchNorm(lay1),
-    Dense(lay1 => lay2, tanh),   # activation function inside layer
+    Dense(lay1 => lay2, relu),   # activation function inside layer
     BatchNorm(lay2),
     Dense(lay2 => lay_out),   # no activation function inside layer
     softmax)
@@ -468,9 +468,9 @@ function model001(featurecount, labels, mnemonic)::NN
     lay1 = 2 * lay_in
     lay2 = round(Int, (lay1 + lay_out) / 2)
     model = Chain(
-        Dense(lay_in => lay1, tanh),   # activation function inside layer
+        Dense(lay_in => lay1, relu),   # activation function inside layer
         BatchNorm(lay1),
-        Dense(lay1 => lay2, tanh),   # activation function inside layer
+        Dense(lay1 => lay2, relu),   # activation function inside layer
         BatchNorm(lay2),
         Dense(lay2 => lay_out),   # no activation function inside layer
         softmax)
@@ -483,24 +483,25 @@ function model001(featurecount, labels, mnemonic)::NN
     return nn
 end
 
-function adaptmachine(features::AbstractMatrix, targets::AbstractVector, mnemonic=nothing)
+function adaptmachine(features::AbstractMatrix, indices::AbstractVector, targets::AbstractVector, mnemonic=nothing)
     featurecount = size(features, 1)
     nn = model001(featurecount, Targets.all_labels, mnemonic)
 
     # The model encapsulates parameters, randomly initialised. Its initial output is:
     out1 = nn.model(features)  # size(classes, observations)
     onehottargets = Flux.onehotbatch(targets, Targets.all_labels)  # onehot class encoding of an observation as one column
-    loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
+    loader = Flux.DataLoader((features, indices, onehottargets), batchsize=64, shuffle=true);
 
     # Training loop, using the whole data set 1000 times:
     losses = []
     testmode!(nn, false)
     @showprogress for epoch in 1:200  # 1:1000
     # for epoch in 1:200  # 1:1000
-        for (x, y) in loader
+        for (x, ix, y) in loader
             loss, grads = Flux.withgradient(nn.model) do m
                 # Evaluate model and loss inside gradient context:
                 y_hat = m(x)
+                #y_hat, y are matrices of size (classes, batchsize) and ix is a vector of length batchsize
                 nn.lossfunc(y_hat, y)  #TODO here the real gain/loss can be considered
             end
             Flux.update!(nn.optim, nn.model, grads[1])
@@ -528,11 +529,14 @@ end
 function adaptmachine(regrwindow, f3::Features.Features003, pe::Dict, setranges::Dict)
     println("$(EnvConfig.now()) preparing features and targets for regressionwindow $regrwindow")
     features, targets, featuresdescription, targetsdescription = featurestargets(regrwindow, f3, pe)
+    trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["base"])
     trainfeatures = subsetdim2(features, setranges["base"])
     traintargets = subsetdim2(targets, setranges["base"])
-    trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
+    # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
+    (trainfeatures, trainix), traintargets = oversample((trainfeatures, trainix), traintargets)  # all classes are equally trained
+    # println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
-    nn = adaptmachine(trainfeatures, traintargets, Features.periodlabels(regrwindow))
+    nn = adaptmachine(trainfeatures, trainix, traintargets, Features.periodlabels(regrwindow))
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
@@ -554,11 +558,12 @@ end
 function adaptcombi(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict, setranges::Dict)
     println("$(EnvConfig.now()) preparing features and targets for combi classifier")
     features, targets, featuresdescription, targetsdescription = combifeaturestargets(nnvec, f3, pe)
+    trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["combi"])
     trainfeatures = subsetdim2(features, setranges["combi"])
     traintargets = subsetdim2(targets, setranges["combi"])
     trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
     println("$(EnvConfig.now()) adapting machine for combi classifier")
-    nn = adaptmachine(trainfeatures, traintargets, "combi")
+    nn = adaptmachine(trainfeatures, trainix, traintargets, "combi")
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
     nn.predecessors = [nn.fileprefix for nn in nnvec]
@@ -942,46 +947,5 @@ function confusionmatrix(pred, targets, labels=Targets.all_labels)
 end
 
 #endregion Evaluation
-
-function fluxstart()
-    noisy = rand(Float32, 2, 1000)                                    # 2×1000 Matrix{Float32}
-    truth = [xor(col[1]>0.5, col[2]>0.5) for col in eachcol(noisy)]   # 1000-element Vector{Bool}
-
-    # Define our model, a multi-layer perceptron with one hidden layer of size 3:
-    model = Chain(
-        Dense(2 => 3, tanh),   # activation function inside layer
-        BatchNorm(3),
-        Dense(3 => 2),
-        softmax) |> gpu        # move model to GPU, if available
-
-    # The model encapsulates parameters, randomly initialised. Its initial output is:
-    out1 = model(noisy |> gpu) |> cpu                                 # 2×1000 Matrix{Float32}
-
-    # To train the model, we use batches of 64 samples, and one-hot encoding:
-    target = Flux.onehotbatch(truth, [true, false])                   # 2×1000 OneHotMatrix
-    loader = Flux.DataLoader((noisy, target) |> gpu, batchsize=64, shuffle=true);
-    # 16-element DataLoader with first element: (2×64 Matrix{Float32}, 2×64 OneHotMatrix)
-
-    optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
-
-    # Training loop, using the whole data set 1000 times:
-    losses = []
-    @showprogress for epoch in 1:1_000
-        for (x, y) in loader
-            loss, grads = Flux.withgradient(model) do m
-                # Evaluate model and loss inside gradient context:
-                y_hat = m(x)
-                Flux.crossentropy(y_hat, y)
-            end
-            Flux.update!(optim, model, grads[1])
-            push!(losses, loss)  # logging, outside gradient context
-        end
-    end
-
-    optim # parameters, momenta and output have all changed
-    out2 = model(noisy |> gpu) |> cpu  # first row is prob. of true, second row p(false)
-
-    mean((out2[1,:] .> 0.5) .== truth)  # accuracy 94% so far!
-end
 
 end  # module

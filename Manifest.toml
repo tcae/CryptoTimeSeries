@@ -328,10 +328,10 @@ weakdeps = ["SparseArrays"]
     ChainRulesCoreSparseArraysExt = "SparseArrays"
 
 [[deps.Classify]]
-deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "Flux", "IJulia", "JDF", "JLSO", "JSON3", "Logging", "MLJBase", "MLJFlux", "MLUtils", "Ohlcv", "PartialLeastSquaresRegressor", "PlotlyJS", "Plots", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "ROC", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "cuDNN"]
+deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "CryptoXch", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "IJulia", "JDF", "JLSO", "JSON3", "Logging", "MLJBase", "MLJFlux", "MLUtils", "Ohlcv", "PartialLeastSquaresRegressor", "PlotlyJS", "Plots", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "ROC", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.1.7"
+version = "0.1.8"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]

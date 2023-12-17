@@ -15,7 +15,7 @@ using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging
 
 "returns all possible labels (don't change sequence because index is used as class id)"
-const all_labels = ["longbuy", "longhold", "close", "shorthold", "shortbuy"]
+const all_labels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy"]
 
 
 """
@@ -76,11 +76,36 @@ Because the trade signals are not independent classes but an ordered set of acti
 
 """
 function getlabels(relativedist, labelthresholds::LabelThresholds)
-    @assert all([lab in all_labels for lab in ["longbuy", "longhold", "shortbuy", "shorthold", "close"]])
+    @assert all([lab in all_labels for lab in ["ignore", "longbuy", "longhold", "shortbuy", "shorthold", "close"]])
     lt = labelthresholds
     rd = relativedist
-    labels = [(rd >= lt.longbuy ? "longbuy" : (rd > lt.longhold ? "longhold" :
-              (lt.shortbuy >= rd ? "shortbuy" : (lt.shorthold > rd ? "shorthold" : "close")))) for rd in relativedist]
+    lastbuy = "nobuy"
+
+    function settradestate(newstate)
+        if newstate == "longhold"
+            if lastbuy != "longbuy"
+                lastbuy = "nobuy"
+                newstate = "ignore"
+            end
+        elseif newstate == "longbuy"
+            lastbuy = "longbuy"
+        elseif newstate == "shortbuy"
+            lastbuy = "shortbuy"
+        elseif newstate == "shorthold"
+            if lastbuy != "shortbuy"
+                lastbuy = "nobuy"
+                newstate = "ignore"
+            end
+        elseif newstate == "close"
+            lastbuy = "nobuy"
+        else
+            @error "unexpected newstate=$newstate"
+        end
+        return newstate
+    end
+
+    labels = [(rd >= lt.longbuy ? settradestate("longbuy") : (rd > lt.longhold ? settradestate("longhold") :
+              (lt.shortbuy >= rd ? settradestate("shortbuy") : (lt.shorthold > rd ? settradestate("shorthold") : settradestate("close"))))) for rd in relativedist]
     return labels
 end
 
@@ -317,7 +342,7 @@ function ohlcvlabels(prices::Vector{T}, pe::PriceExtreme) where {T<:AbstractFloa
     pricediffs = zeros(Float32, length(prices))
     priceix = zeros(Int32, length(prices))
     pix = firstindex(pe.peakix)
-    for ix in eachindex(prices)
+    for ix in eachindex(prices)  # prepare priceix with the next relevant peak index within prices
         if (ix >= abs(pe.peakix[pix]) && (pix < lastindex(pe.peakix)))
             pix = pix + 1
             priceix[ix] = pe.peakix[pix]

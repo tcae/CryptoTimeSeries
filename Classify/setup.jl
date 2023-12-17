@@ -11,7 +11,7 @@ Pkg.add([
     "JSON3",
     "DataFrames",
     "CSV",
-    "CategoricalArrays", "CategoricalDistributions",
+    "CategoricalArrays", "CategoricalDistributions", "Distributions",
     "Logging", "ProfileView",
     "Statistics",
     # "MLJ", # "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
