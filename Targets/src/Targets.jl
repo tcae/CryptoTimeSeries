@@ -60,7 +60,7 @@ end
 - hold short below -0.01% loss potential from current price
 - close short position above -0.01% loss potential from current price
 """
-defaultlabelthresholds = LabelThresholds(0.03, 0.0001, -0.0001, -0.03)
+defaultlabelthresholds = LabelThresholds(0.03, 0.005, -0.005, -0.03)
 
 """
 Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
@@ -97,6 +97,9 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
                 newstate = "ignore"
             end
         elseif newstate == "close"
+            if !(lastbuy in ["shortbuy", "longbuy"])
+                newstate = "ignore"
+            end
             lastbuy = "nobuy"
         else
             @error "unexpected newstate=$newstate"
