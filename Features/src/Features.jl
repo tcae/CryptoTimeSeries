@@ -878,6 +878,12 @@ mutable struct Features002Regr
     # medianstd::Vector{Float32}  # deprecated; median standard deviation over requiredminutes; length == ohlcv - requiredminutes
 end
 
+"""
+Provides per regressionwindow gradient, regression line price, standard deviation, indices of regression extremes.
+A dictionary of relative volumes shortwindow/longwindow that can be accessed by (shortwindow, longwindow) tuple as key.
+These tuples are defined as module variable `relativevolumes002`.
+Features are generated starting `firstix` until and including `lastix`. `requiredminutes` indicates the number of required minutes necessary to calculate the features.
+"""
 mutable struct Features002
     ohlcv::OhlcvData
     regr::Dict  # dict with regression minutes as key -> value is Features002Regr

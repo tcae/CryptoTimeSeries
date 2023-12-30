@@ -100,7 +100,6 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
             if !(lastbuy in ["shortbuy", "longbuy"])
                 newstate = "ignore"
             end
-            lastbuy = "nobuy"
         else
             @error "unexpected newstate=$newstate"
         end
@@ -351,7 +350,7 @@ function ohlcvlabels(prices::Vector{T}, pe::PriceExtreme) where {T<:AbstractFloa
             priceix[ix] = pe.peakix[pix]
         elseif (pix <= lastindex(pe.peakix)) && (ix <= abs(pe.peakix[pix]))
             priceix[ix] = pe.peakix[pix]
-        else
+        else  # ix > abs(pe.peakix[pix])
             priceix[ix] = -sign(pe.peakix[pix]) * lastindex(priceix)
         end
         pricediffs[ix] = prices[abs(priceix[ix])]  - prices[ix]

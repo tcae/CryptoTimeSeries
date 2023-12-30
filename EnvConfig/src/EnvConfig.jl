@@ -76,7 +76,7 @@ logfilespath = "logs"
 "extends the log path with folder or resets to default if folder=`nothing`"
 function setlogpath(folder=nothing)
     global logfilespath
-    if isnothing(folder)
+    if isnothing(folder) || (folder == "")
         logfilespath = "logs"
     else
         logfilespath = joinpath("logs", folder)
@@ -85,10 +85,8 @@ function setlogpath(folder=nothing)
 end
 
 logpath(file) = normpath(joinpath(cryptopath, logfilespath, file))
-
-"returns a full qualified log path with folder with a name constructed of runid()"
-uniquelogpath() = mkpath(normpath(joinpath(logfilespath, runid())))
-
+logsubfolder() = logfilespath == "logs" ? "" : joinpath(splitpath(logfilespath)[2:end])
+logfolder() = logfilespath
 
 " set project dir as working dir "
 function setprojectdir()
