@@ -375,11 +375,9 @@ model = Chain(
     BatchNorm(lay1),
     Dense(lay1 => lay2, relu),   # activation function inside layer
     BatchNorm(lay2),
-    Dense(lay2 => lay_out),   # no activation function inside layer
-    softmax)
-optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
-description = (@doc model001);
-lossfunc = Flux.crossentropy
+    Dense(lay2 => lay_out))   # no activation function inside layer
+optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+lossfunc = Flux.logitcrossentropy
 ```
 """
 function model001(featurecount, labels, mnemonic)::NN
@@ -392,11 +390,12 @@ function model001(featurecount, labels, mnemonic)::NN
         BatchNorm(lay1),
         Dense(lay1 => lay2, relu),   # activation function inside layer
         BatchNorm(lay2),
-        Dense(lay2 => lay_out),   # no activation function inside layer
-        softmax)
-    optim = Flux.setup(Flux.Adam(0.01), model)  # will store optimiser momentum, etc.
-    description = (@doc model001);
+        # Dense(lay2 => lay_out),   # no activation function inside layer
+        # softmax)
+        Dense(lay2 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
+    description = (@doc model001);
     mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
     fileprefix = mnemonic * "_" * EnvConfig.runid()
     nn = NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix)
@@ -407,36 +406,27 @@ end
 creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
 relativedist is a vector
 """
-function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector, relativedist::AbstractVector, lth::Targets.LabelThresholds)
+function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     onehottargets = Flux.onehotbatch(targets, Targets.all_labels)  # onehot class encoding of an observation as one column
-    loader = Flux.DataLoader((features, onehottargets, relativedist), batchsize=64, shuffle=true);
+    loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
 
     # Training loop, using the whole data set 1000 times:
     nn.losses = Float32[]
     testmode!(nn, false)
-    initshow = (false, false)
-    # @showprogress for epoch in 1:1000
-    for epoch in 1:200  # 1:1000
+    @showprogress for epoch in 1:200
+    # for epoch in 1:200  # 1:1000
         losses = Float32[]
-        for (x, y, rd) in loader
+        for (x, y) in loader
             loss, grads = Flux.withgradient(nn.model) do m
                 # Evaluate model and loss inside gradient context:
                 y_hat = m(x)
-                if !initshow[1]
-                    # println("1) loss=$(nn.lossfunc(y_hat, y)), y=$y, y_hat=$y_hat")
-                    println("1) typeof(loss)=$(typeof(nn.lossfunc(y_hat, y))), size(y)=$(size(y)), size(y_hat)=$(size(y_hat))")
-                    initshow = (true, false)
-                # elseif !initshow[2]
-                #     println("2) loss=$(nn.lossfunc(y_hat, y)), y=$y, y_hat=$y_hat")
-                #     initshow = (true, true)
-                end
                 #y_hat is a Float32 matrix , y is a boolean matrix both of size (classes, batchsize). The loss function returns a single Float32 number
-                nn.lossfunc(y_hat, y)  #TODO here the real gain/loss can be considered
+                nn.lossfunc(y_hat, y)
             end
             Flux.update!(nn.optim, nn.model, grads[1])
             push!(losses, loss)  # logging, outside gradient context
         end
-        push!(nn.losses, mean(losses))
+        push!(nn.losses, mean(losses))  # register only mean(losses) over a whole epoch
     end
     testmode!(nn, true)
     nn.optim # parameters, momenta and output have all changed
@@ -461,13 +451,12 @@ function adaptbase(regrwindow, f3::Features.Features003, pe::Dict, setranges::Di
     # trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["base"])
     trainfeatures = subsetdim2(features, setranges["base"])
     traintargets = subsetdim2(targets, setranges["base"])
-    relativedist = subsetdim2(relativedist, setranges["base"])
     # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    (trainfeatures, relativedist), traintargets = oversample((trainfeatures, relativedist), traintargets)  # all classes are equally trained
+    (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
     nn = model001(size(trainfeatures, 1), Targets.all_labels, Features.periodlabels(regrwindow))
-    nn = adaptnn!(nn, trainfeatures, traintargets, relativedist, pe[regrwindow].labelthresholds)
+    nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
@@ -490,16 +479,15 @@ function adaptcombi(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict, setra
     println("$(EnvConfig.now()) preparing features and targets for combi classifier")
     features, targets, featuresdescription, targetsdescription, relativedist = combifeaturestargets(nnvec, f3, pe)
     # trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["combi"])
-    println("size(features)=$(size(features)), size(targets)=$(size(targets)), size(relativedist)=$(size(relativedist)), ")
+    # println("size(features)=$(size(features)), size(targets)=$(size(targets))")
     trainfeatures = subsetdim2(features, setranges["combi"])
     traintargets = subsetdim2(targets, setranges["combi"])
-    trainrelativedist = subsetdim2(relativedist, setranges["combi"])
-    println("before oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets)), size(trainrelativedist)=$(size(trainrelativedist)), ")
-    (trainfeatures, trainrelativedist), traintargets = oversample((trainfeatures, trainrelativedist), traintargets)  # all classes are equally trained
-    println("after oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets)), size(trainrelativedist)=$(size(trainrelativedist)), ")
+    # println("before oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
+    (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
+    # println("after oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
     println("$(EnvConfig.now()) adapting machine for combi classifier")
     nn = model001(size(trainfeatures, 1), Targets.all_labels, "combi")
-    nn = adaptnn!(nn, trainfeatures, traintargets, trainrelativedist, pe["combi"].labelthresholds)
+    nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
     nn.predecessors = [nn.fileprefix for nn in nnvec]
