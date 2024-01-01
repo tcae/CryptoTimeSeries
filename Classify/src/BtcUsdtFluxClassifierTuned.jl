@@ -4,7 +4,7 @@ using Dates
 using EnvConfig, Classify
 
 EnvConfig.init(production)
-EnvConfig.setlogpath("Relu_200epochs_morenodesperlayer_ignore_oversample_nostandardizer_nocv_losscrossentropy")
+EnvConfig.setlogpath("Relu_200epochs_3hiddenlayer_ignore_oversample_nostandardizer_nocv_losscrossentropy")
 # EnvConfig.setlogpath("Relu_noignore_oversample_nostandardizer_nocv_losscrossentropy")
 
 # for sc in 0.05:0.05:1.05

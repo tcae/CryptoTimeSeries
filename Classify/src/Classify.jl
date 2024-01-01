@@ -371,13 +371,16 @@ Neural Net description:
 lay_in = featurecount
 lay_out = length(labels)
 lay1 = 3 * lay_in
-lay2 = round(Int, (lay1 + lay_out) / 2)
+lay2 = round(Int, lay1 * 2 / 3)
+lay3 = round(Int, (lay2 + lay_out) / 2)
 model = Chain(
     Dense(lay_in => lay1, relu),   # activation function inside layer
     BatchNorm(lay1),
     Dense(lay1 => lay2, relu),   # activation function inside layer
     BatchNorm(lay2),
-    Dense(lay2 => lay_out))   # no activation function inside layer
+    Dense(lay2 => lay3, relu),   # activation function inside layer
+    BatchNorm(lay3),
+    Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
 optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
 lossfunc = Flux.logitcrossentropy
 ```
@@ -386,15 +389,19 @@ function model001(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
     lay_out = length(labels)
     lay1 = 3 * lay_in
-    lay2 = round(Int, (lay1 + lay_out) / 2)
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
     model = Chain(
         Dense(lay_in => lay1, relu),   # activation function inside layer
         BatchNorm(lay1),
         Dense(lay1 => lay2, relu),   # activation function inside layer
         BatchNorm(lay2),
-        Dense(lay2 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        BatchNorm(lay3),
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
+
     description = (@doc model001);
     mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
     fileprefix = mnemonic * "_" * EnvConfig.runid()
