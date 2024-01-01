@@ -145,6 +145,8 @@ function predictionlist()
     pf = EnvConfig.logpath(PREDICTIONLISTFILE)
     if isfile(pf)
         df = CSV.read(pf, DataFrame, decimal='.', delim=';')
+        # println(describe(df))
+        # println(df)
     end
     EnvConfig.setlogpath(sf)
     return df
@@ -368,7 +370,7 @@ end
 Neural Net description:
 lay_in = featurecount
 lay_out = length(labels)
-lay1 = 2 * lay_in
+lay1 = 3 * lay_in
 lay2 = round(Int, (lay1 + lay_out) / 2)
 model = Chain(
     Dense(lay_in => lay1, relu),   # activation function inside layer
@@ -383,15 +385,13 @@ lossfunc = Flux.logitcrossentropy
 function model001(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
     lay_out = length(labels)
-    lay1 = 2 * lay_in
+    lay1 = 3 * lay_in
     lay2 = round(Int, (lay1 + lay_out) / 2)
     model = Chain(
         Dense(lay_in => lay1, relu),   # activation function inside layer
         BatchNorm(lay1),
         Dense(lay1 => lay2, relu),   # activation function inside layer
         BatchNorm(lay2),
-        # Dense(lay2 => lay_out),   # no activation function inside layer
-        # softmax)
         Dense(lay2 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
@@ -413,6 +413,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     # Training loop, using the whole data set 1000 times:
     nn.losses = Float32[]
     testmode!(nn, false)
+    minloss = maxloss = missing
     @showprogress for epoch in 1:200
     # for epoch in 1:200  # 1:1000
         losses = Float32[]
@@ -423,6 +424,8 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
                 #y_hat is a Float32 matrix , y is a boolean matrix both of size (classes, batchsize). The loss function returns a single Float32 number
                 nn.lossfunc(y_hat, y)
             end
+            minloss = ismissing(minloss) ? loss : min(minloss, loss)
+            maxloss = ismissing(maxloss) ? loss : max(maxloss, loss)
             Flux.update!(nn.optim, nn.model, grads[1])
             push!(losses, loss)  # logging, outside gradient context
         end
@@ -430,6 +433,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     end
     testmode!(nn, true)
     nn.optim # parameters, momenta and output have all changed
+    println("minloss=$minloss  maxloss=$maxloss")
     return nn
 end
 

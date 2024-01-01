@@ -14,6 +14,6 @@ EnvConfig.setlogpath("Test_Relu_200epochs_noignore_oversample_nostandardizer_noc
 # Classify.evaluate("BTC", DateTime("2022-01-02T22:54:00"), Dates.Day(40); select=[5, "combi"]) # nothing)  #
 # Classify.evaluate("BTC", DateTime("2017-09-02T22:54:00"), Dates.Day(120); select=[5]) # nothing)  #
 # Classify.evaluate("BTC"; select=[5]) # nothing)  #
-Classify.evaluatetest(select=[5, "combi"]) #
+Classify.evaluatetest(select=[5]) #
 
 println("done")
