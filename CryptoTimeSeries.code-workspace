@@ -80,7 +80,8 @@
 			// "-Statistics.mean",
 			// "SparseArrays",
 			// "Mmap"
-		]
+		],
+		"csv-preview.numberFormat": "g3"
 	},
 	"launch": {
 		"version": "0.2.0",

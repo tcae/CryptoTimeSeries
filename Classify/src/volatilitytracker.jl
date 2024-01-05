@@ -6,10 +6,12 @@ using EnvConfig, TestOhlcv, Ohlcv, Features
 
 const VOLATILITYSTUDYFILE = "volatilitystudy.csv"
 
-emptytrackdf()::DataFrame = DataFrame(regr=[], direction=[], openix=[], closeix=[], tradelen=[], gain=[], gainthreshold=[], gap=[], dirregrwin=[])
+emptytrackdf()::DataFrame = DataFrame(regr=[], direction=[], openix=[], closeix=[], tradelen=[], gain=[], gainthreshold=[], gap=[], dirregrwin=[], cumgain=[], selfmonitor=[])
 
-function trackregression(gainthreshold, dirregrwin, regrwindow, gap, f2::Features.Features002)
-    df = emptytrackdf()
+function trackregression(f2::Features.Features002; gainthreshold, dirregrwin, regrwindow, gap, dircontrol, selfmonitor)
+    tradedf = emptytrackdf()
+    callcumgain = putcumgain = 0.0
+    calllastok = putlastok = true
     piv = Ohlcv.dataframe(Features.ohlcv(f2)).pivot[f2.firstix:f2.lastix]
     callopenix = Int32[]
     putopenix = Int32[]
@@ -20,9 +22,26 @@ function trackregression(gainthreshold, dirregrwin, regrwindow, gap, f2::Feature
     function closetrades!(openix, closeix, direction, handleall)
         while length(openix) > 0
             # handle open call positions
-            gain = direction == "call" ? Ohlcv.relativegain(piv, openix[begin], closeix) : -Ohlcv.relativegain(piv, openix[begin], closeix)
             tl = closeix - openix[begin]
-            push!(df, (regr=regrwindow, direction=direction, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, gainthreshold=gainthreshold, gap=gap, dirregrwin=dirregrwin))
+            if direction == "call"
+                gain = Ohlcv.relativegain(piv, openix[begin], closeix)
+                if calllastok
+                    calllastok = (gain >= selfmonitor)
+                    callcumgain += gain
+                    push!(tradedf, (regr=regrwindow, direction=direction, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, gainthreshold=gainthreshold, gap=gap, dirregrwin=dirregrwin, cumgain=callcumgain, selfmonitor=selfmonitor))
+                else
+                    calllastok = (gain >= selfmonitor)
+                end
+            else
+                gain = -Ohlcv.relativegain(piv, openix[begin], closeix)
+                if putlastok
+                    putlastok = (gain >= selfmonitor)
+                    putcumgain += gain
+                    push!(tradedf, (regr=regrwindow, direction=direction, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, gainthreshold=gainthreshold, gap=gap, dirregrwin=dirregrwin, cumgain=putcumgain, selfmonitor=selfmonitor))
+                else
+                    putlastok = (gain >= selfmonitor)
+                end
+            end
             openix = deleteat!(openix, 1)
             if !handleall
                 break
@@ -43,44 +62,45 @@ function trackregression(gainthreshold, dirregrwin, regrwindow, gap, f2::Feature
         relativedirgain = Features.relativegain(f2.regr[dirregrwin].regry[ix], f2.regr[dirregrwin].grad[ix], dirregrwin)
         if piv[ix] > f2.regr[regrwindow].regry[ix] + f2.regr[regrwindow].std[ix]
             if (relativedirgain < -gainthreshold) || (ix - putcloseix >= gap)
-                callopenix = closetrades!(callopenix, ix, "call", (relativedirgain < -gainthreshold))
+                callopenix = closetrades!(callopenix, ix, "call", (relativedirgain < -gainthreshold) && dircontrol)
                 callcloseix = ix
             end
-            if !(relativedirgain > gainthreshold)
+            if !(relativedirgain > gainthreshold) || !dircontrol
                 opentrades!(putopenix, ix)
             end
         elseif piv[ix] < f2.regr[regrwindow].regry[ix] - f2.regr[regrwindow].std[ix]
             if (relativedirgain > gainthreshold) || (ix - putcloseix >= gap)
-                putopenix = closetrades!(putopenix, ix, "put", (relativedirgain > gainthreshold))
+                putopenix = closetrades!(putopenix, ix, "put", (relativedirgain > gainthreshold) && dircontrol)
                 callcloseix = ix
             end
-            if !(relativedirgain < -gainthreshold)
+            if !(relativedirgain < -gainthreshold) || !dircontrol
                 opentrades!(callopenix, ix)
             end
         end
     end
-    return df
+    return tradedf
 end
 
-function kpi(df, regr, dirregrwin, direction, gainthreshold, gap)
-    # println(describe(df))
-    if size(df, 1) > 0
-        gainvec = df[!, :gain]
-        tlvec = df[!, :tradelen]
-        cumgain = round(sum(gainvec)*100, digits=3)
+function kpi(tradedf, regr, dirregrwin, direction, gainthreshold, gap, dircontrol=dircontrol, selfmonitor=selfmonitor)
+    # println(describe(tradedf))
+    if size(tradedf, 1) > 0
+        gainvec = tradedf[!, :gain]
+        tlvec = tradedf[!, :tradelen]
+        cumgain = round(tradedf[end, :cumgain]*100, digits=3)
         count = length(gainvec)
         meangain = round(mean(gainvec)*100, digits=3)
         mediangain = round(median(gainvec)*100, digits=3)
         mediantl = round(median(tlvec), digits=0)
         maxtl = round(maximum(tlvec), digits=0)
-        return (regr=regr, dir=direction, dirregrwin=dirregrwin, gap=gap, gainthreshold=gainthreshold, cumgain=cumgain, meangain=meangain, mediangain=mediangain, count=count, mediantradelen=mediantl, maxtradelen=maxtl)
+        return (regr=regr, dir=direction, dirregrwin=dirregrwin, gap=gap, gainthreshold=gainthreshold, dircontrol=dircontrol, selfmonitor=selfmonitor, cumgain=cumgain, meangain=meangain, mediangain=mediangain, count=count, mediantradelen=mediantl, maxtradelen=maxtl)
     else
-        return (regr=regr, dir=direction, dirregrwin=dirregrwin, gap=gap, gainthreshold=gainthreshold, cumgain=0.0, meangain=0.0, mediangain=0.0, count=0, mediantradelen=0.0, maxtradelen=0.0)
+        return (regr=regr, dir=direction, dirregrwin=dirregrwin, gap=gap, gainthreshold=gainthreshold, dircontrol=dircontrol, selfmonitor=selfmonitor, cumgain=0.0, meangain=0.0, mediangain=0.0, count=0, mediantradelen=0.0, maxtradelen=0.0)
     end
 end
 
-function trackohlc(ohlcv::Ohlcv.OhlcvData)::DataFrame
-    df = DataFrame()
+function trackohlc(ohlcv::Ohlcv.OhlcvData)
+    tradedf = emptytrackdf()
+    kpidf = DataFrame()
     println("$(EnvConfig.now()) calculating F002 features")
     f2 = Features.Features002(ohlcv)
     rkeys = sort(collect(keys(f2.regr)))
@@ -91,16 +111,22 @@ function trackohlc(ohlcv::Ohlcv.OhlcvData)::DataFrame
         if kix != firstindex(rkeys)
             for gainthreshold in [0.005, 0.01, 0.02]
                 for gap in [2, 5]
-                    # println("$(EnvConfig.now()) analyzing volatility performace of regression window $rw, gainthreshold=$gainthreshold, gap=$gap")
-                    kdf = trackregression(gainthreshold, rkeys[kix-1], rw, gap, f2)
-                    ckdf = filter(row -> row[:direction] == "call", kdf)
-                    push!(df, kpi(filter(row -> row[:direction] == "call", kdf), rw, rkeys[kix-1], "call", gainthreshold, gap))
-                    push!(df, kpi(filter(row -> row[:direction] == "put", kdf), rw, rkeys[kix-1], "put", gainthreshold, gap))
+                    for dircontrol in [true, false]
+                        for selfmonitor in [-Inf, 0.0]  # [-Inf, 0.0]
+                            # println("$(EnvConfig.now()) analyzing volatility performace of regression window $rw, gainthreshold=$gainthreshold, gap=$gap")
+                            tdf = trackregression(f2, gainthreshold=gainthreshold, dirregrwin=rkeys[kix-1], regrwindow=rw, gap=gap, dircontrol=dircontrol, selfmonitor=selfmonitor)
+                            push!(kpidf, kpi(filter(row -> row[:direction] == "call", tdf), rw, rkeys[kix-1], "call", gainthreshold, gap, dircontrol, selfmonitor))
+                            push!(kpidf, kpi(filter(row -> row[:direction] == "put", tdf), rw, rkeys[kix-1], "put", gainthreshold, gap, dircontrol, selfmonitor))
+                            if size(tradedf, 1) > 0
+                                tradedf = vcat(tradedf, tdf)
+                            end
+                        end
+                    end
                 end
             end
         end
     end
-    return df
+    return kpidf, tradedf
 end
 
 function trackasset(base::String, startdt::Dates.DateTime=DateTime("2017-07-02T22:54:00"), period=Dates.Year(10); select=nothing)
@@ -109,10 +135,10 @@ function trackasset(base::String, startdt::Dates.DateTime=DateTime("2017-07-02T2
     Ohlcv.read!(ohlcv)
     subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
     println("loaded $ohlcv")
-    df = trackohlc(ohlcv)
-    println(df)
+    kpidf, tradedf = trackohlc(ohlcv)
+    println(kpidf)
     pf = EnvConfig.logpath(VOLATILITYSTUDYFILE)
-    CSV.write(pf, df, decimal='.', delim=';')
+    CSV.write(pf, kpidf, decimal='.', delim=';')
     println("done")
 end
 
@@ -121,5 +147,6 @@ end  #of module
 using EnvConfig, Dates
 
 EnvConfig.init(production)
+EnvConfig.setlogpath("BTC_VolatilityTracker")
 VolatilityTracker.trackasset("BTC")
 # VolatilityTracker.trackasset("BTC", DateTime("2023-01-02T22:54:00"), Dates.Day(40))
