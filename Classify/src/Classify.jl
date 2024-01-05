@@ -421,7 +421,8 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     nn.losses = Float32[]
     testmode!(nn, false)
     minloss = maxloss = missing
-    @showprogress for epoch in 1:200
+    breakmsg = ""
+    @showprogress for epoch in 1:1000
     # for epoch in 1:200  # 1:1000
         losses = Float32[]
         for (x, y) in loader
@@ -436,10 +437,16 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
             Flux.update!(nn.optim, nn.model, grads[1])
             push!(losses, loss)  # logging, outside gradient context
         end
-        push!(nn.losses, mean(losses))  # register only mean(losses) over a whole epoch
+        epochloss = mean(losses)
+        push!(nn.losses, epochloss)  # register only mean(losses) over a whole epoch
+        if (epoch > 10) && (nn.losses[end-4] <= nn.losses[end-3] <= nn.losses[end-2] <= nn.losses[end-1] <= nn.losses[end])
+            breakmsg = "stopping adaptation after epoch $epoch due to no loss reduction ($(nn.losses[end-4:end])) in last 4 epochs"
+            break
+        end
     end
     testmode!(nn, true)
     nn.optim # parameters, momenta and output have all changed
+    println(breakmsg)  # print after showprogress loop to avoid cluttered text output
     println("minloss=$minloss  maxloss=$maxloss")
     return nn
 end
@@ -449,7 +456,7 @@ predict(nn::NN, features) = nn.model(features)  # size(classes, observations)
 
 function predictiondistribution(predictions, classifiertitle)
     maxindex = mapslices(argmax, predictions, dims=1)
-    dist = zeros(Int, maximum(unique(maxindex)))
+    dist = zeros(Int, maximum(unique(maxindex)))  # maximum == length
     for ix in maxindex
         dist[ix] += 1
     end
@@ -662,7 +669,10 @@ function tradeperformance(trades::AbstractDataFrame, labels::Vector)
     return df
 end
 
+"maps a 0.0 <= score <= 1.0  to one of `thresholdbins` bins"
 score2bin(score, thresholdbins) = max(min(floor(Int, score / (1.0/thresholdbins)) + 1, thresholdbins), 1)
+
+"maps the index of one of `thresholdbins` bins to a score"
 bin2score(binix, thresholdbins) = round((binix-1)*1.0/thresholdbins; digits = 2), round(binix*1.0/thresholdbins; digits = 2)
 
 """
@@ -1014,11 +1024,11 @@ function evaluateclassifier(nn::NN)
         evaluateclassifier(nnfileprefix)
     end
     println("$(EnvConfig.now()) evaluating classifier $title")
-    packetsize = length(nn.losses) / 20  # only display 20 lines of loss summary
+    packetsize = length(nn.losses) > 20 ? floor(Int, length(nn.losses) / 20) : 1  # only display 20 lines of loss summary
     startp = lastlosses = nothing
     for i in eachindex(nn.losses)
         if i > firstindex(nn.losses)
-            if i % packetsize == 0
+            if (i % packetsize == 0) || (i == lastindex(nn.losses))
                 plosses = mean(nn.losses[startp:i])
                 println("epoch $startp-$i loss: $plosses  lossdiff: $((plosses-lastlosses)/lastlosses*100)%")
                 startp = i+1

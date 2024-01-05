@@ -362,10 +362,19 @@ function prevextremeindex(regressions, startindex)
 end
 
 """
-Calculates `window` y coordinates of a regression line given by the last y of the line `regry` and the gradient `grad`.
-Returns the y coordinates as a vector of size `window` of equidistant x coordinates. The x distances shall match grad.
+Calculates the start y coordinate of a straight regression line given by the last y of the line `regry`, the gradient `grad` and the length `window`.
 """
-regressiony(regry, grad, window) = [regry - grad * (window - 1), regry]
+startregry(eregry, grad, window) = eregry - grad * (window - 1)
+
+"Returns the relative gain of the given regression relative to start y if `forward` (default) otherwise relative to given end regry"
+function relativegain(endregry, grad, window, forward=true)
+    sregry = startregry(endregry, grad, window)
+    if forward
+        return ((endregry - sregry) / sregry)
+    else
+        return ((endregry - sregry) / regry)
+    end
+end
 
 """
  This implementation ignores index and assumes an equidistant x values.
@@ -894,7 +903,7 @@ mutable struct Features002
     requiredminutes
 end
 
-function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)
+function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)::Features002
     df = Ohlcv.dataframe(ohlcv)
     reqmin = requiredminutes(regrwindows)
     @assert size(df, 1) >= reqmin
