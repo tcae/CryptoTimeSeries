@@ -9,7 +9,7 @@ println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 Pkg.add([
     "Test",
     "JSON3",
-    "DataFrames",
+    "DataFrames", "Tables",
     "CSV",
     "CategoricalArrays", "CategoricalDistributions", "Distributions",
     "Logging", "ProfileView",

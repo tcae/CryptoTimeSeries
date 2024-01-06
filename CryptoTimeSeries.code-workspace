@@ -81,7 +81,7 @@
 			// "SparseArrays",
 			// "Mmap"
 		],
-		"csv-preview.numberFormat": "g3"
+		"csv-preview.resizeColumns": "all"
 	},
 	"launch": {
 		"version": "0.2.0",
