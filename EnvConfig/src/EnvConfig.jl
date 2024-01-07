@@ -150,6 +150,23 @@ function setsplitfilename()::String
     end
 end
 
+function checkbackup(filename)
+    if isdir(filename) || isfile(filename)
+        backupfilename = filename * "_1"
+        sfn = split(filename, "_")
+        backupext = length(sfn) > 1 ? pop!(sfn) : nothing
+        if !isnothing(backupext)
+            backupnbr = tryparse(Int, backupext)
+            if !isnothing(backupnbr)
+                push!(sfn, string(backupnbr + 1))
+                backupfilename = join(sfn, "_")
+            end
+        end
+        checkbackup(backupfilename)
+        mv(filename, backupfilename)
+    end
+end
+
 end # module
 
 
