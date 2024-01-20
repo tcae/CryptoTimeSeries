@@ -1,7 +1,7 @@
 name = "EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.1.5"
+version = "0.1.7"
 
 [deps]
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"

@@ -1,16 +1,15 @@
-# using Pkg
-# Pkg.add(["SHA", "JSON", "Dates", "Printf", "HTTP"])
 module Bybit
 
-import HTTP, SHA, JSON, Dates, Printf, Logging
+using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, Formatting
+using EnvConfig
 
 # base URL of the ByBit API
 BYBIT_API_REST = "https://api.bybit.com"
-BYBIT_API_WS = "wss://stream.binance.com:9443/ws/"
+BYBIT_API_WS = "to be defined for Bybit"  # "wss://stream.binance.com:9443/ws/"
 BYBIT_API_USER_DATA_STREAM ="to be defined for Bybit"
 
 const recv_window = "5000"
-const kline_interval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "M", "W"]
+const kline_interval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
 const interval2bybitinterval = Dict(
     "1m" => "1",
     "3m" => "3",
@@ -23,9 +22,10 @@ const interval2bybitinterval = Dict(
     "6h" => "360",
     "12h" => "720",
     "1d" => "D",
-    "1w" => "W",
-    "1M" => "M"  # better to be able to calculate with this period
+    "1w" => "W"
 )
+
+syminfodf = nothing
 
 function apiKS()
     apiPublicKey = get(ENV, "BYBIT_APIKEY", "")
@@ -36,7 +36,7 @@ function apiKS()
     apiPublicKey, apiSecretKey
 end
 
-function dict2Params(dict::Union{Dict, Nothing})
+function dict2ParamsGet(dict::Union{Dict, Nothing})
     params = ""
     if isnothing(dict)
         return params
@@ -44,9 +44,11 @@ function dict2Params(dict::Union{Dict, Nothing})
         for kv in dict
             params = string(params, "&$(kv[1])=$(kv[2])")
         end
-        params[2:end]
+        return params[2:end]
     end
 end
+
+dict2ParamsPost(dict::Union{Dict, Nothing}) = isnothing(dict) ? "" : JSON3.write(dict)
 
 # signing with apiKey and apiSecret
 function timestamp()
@@ -81,9 +83,26 @@ function genSignature(time_stamp, payload, public_key, secret_key)
     return hash
 end
 
-function HttpPrivateRequest(method, endPoint, params, Info, public_key, secret_key)
+function checkresponse(response)
+    if response.status != 200  # response.status::Int16
+        println(response)
+    end
+    for header in response.headers  # response.headers::Vector{pair}
+        if (header[1] == "X-Bapi-Limit-Status") && (parse(Int, header[2]) == 1)
+            @info "h1=$(header[1]) h2=$(header[2]) fullheader=$(header) waiting for 1s"
+            sleep(1)
+        end
+        # if (header[1] == "X-Bapi-Limit-Status")
+        #     remaining = parse(Int, header[2])
+        #     println("remaining=$remaining")
+        # end
+    end
+end
+
+function HttpPrivateRequest(method, endPoint, params, Info, public_key=EnvConfig.authorization.key, secret_key=EnvConfig.authorization.secret)
+    methodpost = method == "POST"
     time_stamp = string(timestamp())
-    payload = dict2Params(params)
+    payload = methodpost ? dict2ParamsPost(params) : dict2ParamsGet(params)
     signature = genSignature(time_stamp, payload, public_key, secret_key)
     headers = Dict(
         "X-BAPI-API-KEY" => public_key,
@@ -91,58 +110,65 @@ function HttpPrivateRequest(method, endPoint, params, Info, public_key, secret_k
         "X-BAPI-SIGN-TYPE" => "2",
         "X-BAPI-TIMESTAMP" => time_stamp,
         "X-BAPI-RECV-WINDOW" => recv_window,
-        "Content-Type" => "application/json"
+        "Content-Type" => "application/json"  # ; charset=utf-8"
     )
     response = url = ""
+    body = Dict()
     try
-        if method == "POST"
+        if methodpost
+            # headers["Content-Type"] = "application/json; charset=utf-8"
             url = BYBIT_API_REST * endPoint
-            response = HTTP.request(method, url, headers=headers, data=payload)
+            response = HTTP.request(method, url, headers, payload)
         else
             url = BYBIT_API_REST * endPoint * "?" * payload
-            response = HTTP.request(method, url, headers=headers)
+            response = HTTP.request(method, url, headers)
         end
+        checkresponse(response)
         body = String(response.body)
-        # println(body)
-        parsed_body = JSON.parse(body)
-        if parsed_body["retCode"] != 0
-            println("HttpPrivateRequest $method, url=$url, headers=$headers, payload=$payload")
-            println("public_key=$public_key, secret_key=$secret_key")
-            println(body)
+        body = JSON3.read(body, Dict)
+        body = dictstring2values!(body)
+        if body["retCode"] != 0
+            @warn "HttpPrivateRequest $method reurn code != 0 \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
+            # println("public_key=$public_key, secret_key=$secret_key")
+            # "retCode" => 170193, "retMsg" => "Buy order price cannot be higher than 43183.1929USDT."
         end
-        result = parsed_body["result"]
-        # println(Info * " Elapsed Time : " * string(response.time))
-        return result
+        return body
     catch err
-        println("HttpPrivateRequest $method, url=$url, headers=$headers, payload=$payload")
-        println("public_key=$public_key, secret_key=$secret_key")
-        println(err)
-        rethrow()
+        @error "HttpPrivateRequest $method error $err" url=url headers=headers payload=payload response=body
+        # println("public_key=$public_key, secret_key=$secret_key")
+        # println(err)
+        # rethrow()
     end
+    return body
 end
 
 function HttpPublicRequest(method, endPoint, params::Union{Dict, Nothing}, Info)
-    payload = dict2Params(params)
+    methodpost = method == "POST"
+    payload = methodpost ? dict2ParamsPost(params) : dict2ParamsGet(params)
     response = url = ""
+    body = Dict()
     try
-        if method == "POST"
+        if methodpost
             url = BYBIT_API_REST * endPoint
-            response = HTTP.request(method, url, data=payload)
+            response = HTTP.request(method, url, payload)
+        elseif isnothing(params)
+            url = BYBIT_API_REST * endPoint
+            response = HTTP.request(method, url)
         else
             url = BYBIT_API_REST * endPoint * "?" * payload
             response = HTTP.request(method, url)
         end
-        # println("response status (typeof: $(typeof(response.status))): $(response.status)")
-        # println("response headers (typeof: $(typeof(response.headers))): $(response.headers)")
+        checkresponse(response)
         body = String(response.body)
-        # println("response body (typeof: $(typeof(response.body))): $(body)")
-        # println(body)
-        parsed_body = JSON.parse(body)
-        result = parsed_body["result"]
-        # println(Info * " Elapsed Time : " * string(response.time))
-        return result
+        body = JSON3.read(body, Dict)
+        body = dictstring2values!(body)
+        # println("conv: $body")
+        if body["retCode"] != 0
+            println("HttpPublicRequest $method, url=$url, payload=$payload, response=$body")
+        end
+        return body
     catch err
-        println("HttpPublicRequest $method, url=$url, payload=$payload")
+        println("HttpPublicRequest $method, url=$url, payload=$payload, response=$body")
         println(err)
         rethrow()
     end
@@ -150,100 +176,207 @@ end
 
 # function HTTP response 2 JSON
 function r2j(response)
-    JSON.parse(String(response))
+    JSON3.read(String(response), Dict)
+end
+
+function dictstring2values!(bybitdict::T) where T <: AbstractDict
+    f32keys = [
+        "price", "qty", "avgPrice", "leavesQty", "leavesValue", "cumExecQty",
+        "cumExecValue", "cumExecFee", "orderIv", "triggerPrice", "takeProfit",
+        "stopLoss", "tpLimitPrice", "slLimitPrice", "lastPriceOnCreated",
+        "ask1Price", "usdIndexPrice", "indexPrice", "markPrice", "lastPrice", "prevPrice24h", "ask1Size",
+        "highPrice24h", "turnover24h", "bid1Size", "price24hPcnt", "volume24h",
+        "lowPrice24h", "bid1Price", "prevPrice1h", "openInterest", "openInterestValue",
+        "turnover24h", "fundingRate", "predictedDeliveryPrice", "basisRate", "deliveryFeeRate",
+        "maxLeverage", "minLeverage", "leverageStep", "minPrice", "maxPrice", "tickSize",
+        "maxTradingQty", "minTradingQty", "qtyStep", "postOnlyMaxOrderQty", "maxOrderQty",
+        "minOrderQty", "minTradeQty", "basePrecision", "quotePrecision", "minTradeAmt",
+        "maxTradeQty", "maxTradeAmt", "minPricePrecision", "minOrderAmt", "o", "h", "l", "c", "v",
+        "price", "qty", "avgPrice", "leavesQty", "leavesValue", "cumExecQty", "cumExecValue",
+        "cumExecFee", "triggerPrice", "takeProfit", "stopLoss", "maxOrderAmt"]
+    datetimekeys = ["timeSecond"]
+    nostringdatetimemillikeys = ["time", "t"]
+    datetimemillikeys = ["createdTime", "updatedTime", "nextFundingTime", "deliveryTime", "launchTime"]
+    datetimenanokeys = ["timeNano"]
+    boolkeys = ["isLeverage"]
+    intkeys = ["showStatus", "innovation"]
+    for entry in keys(bybitdict)
+        if entry in f32keys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : parse(Float32, bybitdict[entry])
+        elseif entry in intkeys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : parse(Int, bybitdict[entry])
+        elseif entry in datetimekeys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : Dates.unix2datetime(parse(Int, bybitdict[entry]))
+        elseif entry in nostringdatetimemillikeys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : Dates.unix2datetime(bybitdict[entry] / 1000)
+        elseif entry in datetimemillikeys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : Dates.unix2datetime(parse(Int, bybitdict[entry]) / 1000)
+        elseif entry in datetimenanokeys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : Dates.unix2datetime(parse(Int, bybitdict[entry]) / 1000000000)
+        elseif entry in boolkeys
+            bybitdict[entry] = bybitdict[entry] == "" ? nothing : parse(Bool, bybitdict[entry])
+        elseif entry == "s"
+            bybitdict["base"] = lowercase(replace(bybitdict["s"], uppercase(EnvConfig.cryptoquote) => ""))
+            #TODO assumption that onlyUSDT quote is traded is containment - requires a more general approach
+        elseif (typeof(bybitdict[entry]) <: AbstractDict) || (typeof(bybitdict[entry]) <: AbstractVector)
+            bybitdict[entry] = dictstring2values!(bybitdict[entry])
+        end
+    end
+    # println("dict conv: $bybitdict")
+    return bybitdict
+end
+
+function dictstring2values!(bybitarray::T) where T <:AbstractVector
+    for bybitelem in bybitarray
+        if (typeof(bybitelem) <: AbstractDict) || (typeof(bybitelem) <: AbstractVector)
+            dictstring2values!(bybitelem)
+        end
+    end
+    # println("array conv: $bybitarray")
+    return bybitarray
 end
 
 ##################### PUBLIC CALL's #####################
 
-# ByBit servertime
-function serverTime() # Bybit tested
-    # at 2022-01-01 17:14 local MET received 2022-01-01T16:14:09.849
-    r = HTTP.request("GET", string(BYBIT_API_REST, "/v3/public/time"))
-    result = r2j(r.body)
-    Dates.unix2datetime(result["time"] / 1000)
+
+"""Returns the DateTime of the Bybit server time as UTC"""
+function servertime()
+    ret = HttpPublicRequest("GET", "/v3/public/time", nothing, "server time")
+    return ret["time"]
 end
 
-function get24HR() # Bybit tested
-    # 1869-element Vector{Any}:
-    # Dict{String, Any}("weightedAvgPrice" => "0.07925733", "askQty" => "1.90000000", "quoteVolume" => "3444.47417461", "priceChangePercent" => "0.077", "count" => 98593, "lastPrice" => "0.07887600", "openPrice" => "0.07881500", "firstId" => 317932287, "lastQty" => "0.06160000", "openTime" => 1640966508178…)
-    # return HttpPublicRequest("GET", "/spot/v3/public/quote/ticker/24hr", nothing, "ticker/24h")["list"]
-    return HttpPublicRequest("GET", "/v5/market/tickers", Dict("category" => "spot"), "ticker/24h")["list"]
-end
+"""
+Returns a DataFrame with trading information of the last 24h one row per symbol. If symbol is provided the returned DataFrame is limited to that symbol.
 
-function get24HR(symbol::String) # Bybit tested
-    # "category": "spot",
-    # "list": [
-    #     {
-    #         "symbol": "BTCUSDT",
-    #         "bid1Price": "20517.96",
-    #         "bid1Size": "2",
-    #         "ask1Price": "20527.77",
-    #         "ask1Size": "1.862172",
-    #         "lastPrice": "20533.13",
-    #         "prevPrice24h": "20393.48",
-    #         "price24hPcnt": "0.0068",
-    #         "highPrice24h": "21128.12",
-    #         "lowPrice24h": "20318.89",
-    #         "turnover24h": "243765620.65899866",
-    #         "volume24h": "11801.27771",
-    #         "usdIndexPrice": "20784.12009279"
-    #     }
-    try
-        response = HttpPublicRequest("GET", "/v5/market/tickers", Dict("category" => "spot", "symbol" => symbol), "ticker/24h")
-        return response["list"][1]
-    catch err
-        rethrow()
+- symbol
+- quotevolume24h
+- pricechangepercent
+- lastprice
+- askprice
+- bidprice
+
+"""
+function get24h(symbol=nothing)
+    if isnothing(symbol) || (symbol == "")
+        response = HttpPublicRequest("GET", "/v5/market/tickers", Dict("category" => "spot"), "ticker/24h")
+    else
+        response = HttpPublicRequest("GET", "/v5/market/tickers", Dict("category" => "spot", "symbol" => symbol), "ticker/24h for symbol=$symbol")
     end
-    # return HttpPublicRequest("GET", "/spot/v3/public/quote/ticker/24hr", Dict("symbol" => symbol), "ticker/24h")
-end
-
-function getExchangeInfo(symbol=nothing) # Bybit tested
-    # Dict{String, Any} with 5 entries:
-    # "symbols"         => Any[Dict{String, Any}("orderTypes"=>Any["LIMIT", "LIMIT_MAKER", "MARKET", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"], "ocoAllowed"=>true, "isSpotTradingAllowed"=>true, "baseAssetPrecision"=>8, "quoteAsset"=>"BTC", "status"=>"TRADING", "icebergAllowed…
-    # "rateLimits"      => Any[Dict{String, Any}("intervalNum"=>1, "interval"=>"MINUTE", "rateLimitType"=>"REQUEST_WEIGHT", "limit"=>1200), Dict{String, Any}("intervalNum"=>10, "interval"=>"SECOND", "rateLimitType"=>"ORDERS", "limit"=>50), Dict{String, Any}("intervalNum"=>1…
-    # "exchangeFilters" => Any[]
-    # "serverTime"      => 1641054370495
-    # "timezone"        => "UTC"
-
-
-    # GET /v5/market/instruments-info?category=spot&symbol=BTCUSDT HTTP/1.1    # "category": "spot",
-    # "list": [
-    #     {
-    #         "symbol": "BTCUSDT",
-    #         "baseCoin": "BTC",
-    #         "quoteCoin": "USDT",
-    #         "innovation": "0",
-    #         "status": "Trading",
-    #         "marginTrading": "both",
-    #         "lotSizeFilter": {
-    #TODO         "basePrecision": "0.000001",
-    #TODO         "quotePrecision": "0.00000001",
-    #TODO         "minOrderQty": "0.000048",
-    #         "maxOrderQty": "71.73956243",
-    #TODO         "minOrderAmt": "1",
-    #         "maxOrderAmt": "2000000"
-    #         },
-    #         "priceFilter": {
-    #TODO         "tickSize": "0.01"
-    #     }
-    # ]
-    try
-        if isnothing(symbol) || (symbol == "")
-            response = HttpPublicRequest("GET", "/v5/market/instruments-info", Dict("category" => "spot"), "instruments-info")
-        else
-            response = HttpPublicRequest("GET", "/v5/market/instruments-info", Dict("category" => "spot", "symbol" => symbol), "instruments-info")
+    # println(response["result"]["list"])
+    df = DataFrame()
+    if length(response["result"]["list"]) > 0
+        for col in keys(response["result"]["list"][1])
+            df[:, col] = [col in keys(entry) ? entry[col] : "" for entry in response["result"]["list"]]
         end
-        return response["list"]
-    catch err
-        rethrow()
+        # 485×12 DataFrame
+        # Row   │ ask1Price       lastPrice       prevPrice24h    ask1Size         highPrice24h    turnover24h     symbol        bid1Size        price24hPcnt  volume24h        lowPrice24h      bid1Price
+        #       │ Float32         Float32         Float32         Float32          Float32         Float32         String        Float32         Float32       Float32          Float32          Float32
+        # ──-───┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        #     1 │ 0.02003         0.02            0.02008      17494.4             0.02069         32411.5         RVNUSDT       52797.6         -0.004        1.59298e6        0.01995          0.02
+        # df = df[!, [:ask1Price, :bid1Price, :lastPrice, :turnover24h, :price24hPcnt, :symbol]]
+        df = select(df, :ask1Price => "askprice", :bid1Price => "bidprice", :lastPrice => "lastprice", :turnover24h => "quotevolume24h", :price24hPcnt => "pricechangepercent", :symbol)
     end
+    response["result"]["list"] = df
+    return response["result"]["list"]
 end
 
-# ByBit get candlesticks/klines data
-function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") # Bybit tested
-    # getKlines("BTCUSDT")
-    # 500-element Vector{Any}:
-    # Any[1641024600000, "47092.03000000", "47107.42000000", "47085.31000000", "47098.98000000", "7.44682000", 1641024659999, "350714.74503740", 319, "2.75790000", "129875.86140450", "0"]
+"""
+Returns a DataFrame with trading constraints one row per symbol. If symbol is provided the returned DataFrame is limited to that symbol.
+
+- symbol
+- status
+- basecoin
+- quotecoin
+- ticksize
+- baseprecision
+- quoteprecision
+- minbaseqty
+- minquoteqty
+"""
+function exchangeinfo(symbol=nothing)
+    global syminfodf
+    params = Dict("category" => "spot")
+    isnothing(symbol) ? nothing : params["symbol"] = uppercase(symbol)
+    response = HttpPublicRequest("GET", "/v5/market/instruments-info", params, "instruments-info")
+    df = DataFrame()
+    if length(response["result"]["list"]) > 0
+        for col in keys(response["result"]["list"][1])
+            if typeof(response["result"]["list"][1][col]) <: AbstractDict
+                for subcol in keys(response["result"]["list"][1][col])
+                    df[:, subcol] = [entry[col][subcol] for entry in response["result"]["list"]]
+                end
+            else
+                df[:, col] = [entry[col] for entry in response["result"]["list"]]
+            end
+        end
+
+        # 1×13 DataFrame
+        # Row  │ quoteCoin  status   innovation  marginTrading  symbol   tickSize  baseCoin  maxOrderAmt  quotePrecision  maxOrderQty  minOrderQty  basePrecision  minOrderAmt
+        #      │ String     String   Int64       String         String   Float32   String    Float32      Float32         Float32      Float32      Float32        Float32
+        # ─────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        #    1 │ USDT       Trading           0  both           BTCUSDT      0.01  BTC             2.0e6          1.0e-8      71.7396       4.8e-5         1.0e-6          1.0
+
+        # rename!(df, Dict(:quoteCoin => "quote", :baseCoin => "base", :tickSize => "ticksize", :quotePrecision => "quoteprecision", :basePrecision => "baseprecision", :minOrderQty => "minbaseqty", :minOrderAmt => "minquoteqty"))
+        df = select(df, :symbol, :status, :baseCoin => :basecoin, :quoteCoin => :quotecoin, :tickSize => :ticksize, :basePrecision => :baseprecision, :quotePrecision => :quoteprecision, :minOrderQty => :minbaseqty, :minOrderAmt => :minquoteqty)
+    end
+    syminfodf = df
+    return df
+end
+
+"""
+Returns a NamedTuple with trading constraints. If symbol is not found then `nothing` is returned.
+
+- symbol
+- status
+- basecoin
+- quotecoin
+- ticksize
+- baseprecision
+- quoteprecision
+- minbaseqty
+- minquoteqty
+"""
+function symbolinfo(symbol)
+    if isnothing(syminfodf)
+        exchangeinfo()
+    end
+    if isnothing(syminfodf)
+        @error "Bybit init failed"
+    end
+    symbol = uppercase(symbol)
+    df = syminfodf[syminfodf.symbol .== symbol, :]
+    if size(df, 1) == 0
+        @warn "symbol $symbol not found"
+        return nothing
+    end
+    if size(df, 1) > 1
+        @warn "more than one entry found for $symbol => using first\n$df"
+    end
+    return NamedTuple(df[1,:])
+end
+
+"Returns a Ohlcv row compatible row data (and skips intentionally turnover)"
+convertkline(kline) = [ix == firstindex(kline) ? Dates.unix2datetime(parse(Int, kline[ix]) / 1000) : parse(Float32, kline[ix]) for ix in eachindex(kline) if ix != lastindex(kline)]
+
+"Returns an Ohlcv compatible klines DataFrame from a Bybit klines structure"
+function convertklines(klines)
+    df = DataFrame(opentime=DateTime[], open=Float32[], high=Float32[], low=Float32[], close=Float32[], basevolume=Float32[])  # , quotevolume=Float32[])
+    for kix in eachindex(klines)
+        push!(df, convertkline(klines[reverseind(klines, kix)]))  # reverseind() ensures oldest first row sequence
+    end
+    return df
+end
+
+"""
+Returns ohlcv/klines data as DataFrame with oldest first rows (which is compatible to Ohlcv but in **contrast to the Bybit default!**)
+```
+1000×6 DataFrame
+  Row │ opentime             open     high     low      close    basevolume
+      │ DateTime             Float32  Float32  Float32  Float32  Float32
+──────┼─────────────────────────────────────────────────────────────────────
+    1 │ 2024-01-14T12:59:00  42758.0  42758.0  42735.1  42744.0  2.71146
+"""
+function getklines(symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
     @assert interval in keys(interval2bybitinterval) "$interval is unknown Bybit interval"
     @assert !isnothing(symbol) && (symbol != "") "missing symbol for Bybit klines"
     params = Dict("category" => "spot", "symbol" => symbol, "interval" => interval2bybitinterval[interval], "limit" => 1000)
@@ -251,163 +384,208 @@ function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval=
         params["start"] = Printf.@sprintf("%.0d",Dates.datetime2unix(startDateTime) * 1000)
         params["end"] = Printf.@sprintf("%.0d",Dates.datetime2unix(endDateTime) * 1000)
     end
-    try
-        response = HttpPublicRequest("GET", "/v5/market/kline", params, "instruments-info")
-        # r = HTTP.request("GET", string(BYBIT_API_KLINES, query))
-
-        return response["list"]
-    catch err
-        rethrow()
-    end
+    response = HttpPublicRequest("GET", "/v5/market/kline", params, "kline")
+    response["result"]["list"] = convertklines(response["result"]["list"])
+    return response["result"]["list"]
 end
 
 ##################### SECURED CALL's NEEDS apiKey / apiSecret #####################
-function openOrders(symbol, apiKey::String, apiSecret::String)
-    @assert false "not implemented for Bybit"
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    if (symbol === nothing) || (length(symbol) == 0)
-        query = string("recvWindow=50000&timestamp=", timestamp())
+
+"""
+Returns accout information, e.g.
+acc=Dict{String, Any}("unifiedMarginStatus" => 4, "marginMode" => "REGULAR_MARGIN", "timeWindow" => 10, "smpGroup" => 0, "dcpStatus" => "OFF", "updatedTime" => DateTime("2023-08-13T21:19:17"), "isMasterTrader" => false, "spotHedgingStatus" => "OFF")
+"""
+function account()
+    ret = HttpPrivateRequest("GET", "/v5/account/info", nothing, "AccountInfo")
+    return ret["result"]
+end
+
+"""
+Returns a DataFrame of open **spot** orders with columns:
+
+- orderid
+- symbol
+- side (Buy or Sell)
+- baseqty
+- ordertype
+- timeinforce
+- limitprice
+- executedqty  (to be executed qty = baseqty - executedqty)
+- status
+- created ::DateTime
+- updated ::DateTime
+- rejectreason ::String
+"""
+function openorders(;symbol=nothing, orderid=nothing, orderLinkId=nothing)
+    params = Dict("category" => "spot")
+    isnothing(symbol) ? nothing : params["symbol"] = symbol
+    isnothing(orderid) ? nothing : params["orderId"] = orderid
+    isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
+    oo = HttpPrivateRequest("GET", "/v5/order/realtime", params, "openorders")
+    while ("nextPageCursor" in keys(oo["result"])) && (length(oo["result"]["nextPageCursor"]) > 0)
+        params["cursor"] = oo["result"]["nextPageCursor"]
+        oo2 = HttpPrivateRequest("GET", "/v5/order/realtime", params, "openorders 2")
+        if length(oo2["result"]["list"]) > 0
+            oo["result"]["list"] = vcat(oo["result"]["list"], oo2["result"]["list"])
+            if "nextPageCursor" in keys(oo2["result"])
+                oo["result"]["nextPageCursor"] = oo2["result"]["nextPageCursor"]
+            end
+        else
+            delete!(oo["result"], "nextPageCursor")
+        end
+    end
+    df = DataFrame()
+    if length(oo["result"]["list"]) > 0
+        for col in keys(oo["result"]["list"][1])
+            df[:, col] = [entry[col] for entry in oo["result"]["list"]]
+        end
+        df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
+    end
+#     41×3 DataFrame
+#     Row │ variable            min                      eltype
+#         │ Symbol              Any                      DataType
+#    ─────┼───────────────────────────────────────────────────────
+#       1 │ blockTradeId                                 String
+#       2 │ price               39900.0                  Float32
+#       3 │ timeInForce         PostOnly                 String
+#       4 │ leavesQty           0.000116                 Float32
+#       5 │ triggerBy                                    String
+#       6 │ lastPriceOnCreated                           Nothing
+#       7 │ tpTriggerBy                                  String
+#       8 │ orderId             1598068305732831744      String
+#       9 │ qty                 0.000116                 Float32
+#      10 │ leavesValue         4.6284                   Float32
+#      11 │ positionIdx         0                        Int64
+#      12 │ triggerPrice        0.0                      Float32
+#      13 │ cancelType          UNKNOWN                  String
+#      14 │ cumExecFee          0.0                      Float32
+#      15 │ takeProfit          0.0                      Float32
+#      16 │ isLeverage          false                    Bool
+#      17 │ cumExecQty          0.0                      Float32
+#      18 │ smpOrderId                                   String
+#      19 │ slTriggerBy                                  String
+#      20 │ orderIv                                      Nothing
+#      21 │ avgPrice            0.0                      Float32
+#      22 │ smpType             None                     String
+#      23 │ stopLoss            0.0                      Float32
+#      24 │ marketUnit                                   String
+#      25 │ cumExecValue        0.0                      Float32
+#      26 │ smpGroup            0                        Int64
+#      27 │ reduceOnly          false                    Bool
+#      28 │ stopOrderType                                String
+#      29 │ symbol              BTCUSDT                  String
+#      30 │ orderType           Limit                    String
+#      31 │ closeOnTrigger      false                    Bool
+#      32 │ orderLinkId         1705240585143            String
+#      33 │ orderStatus         New                      String
+#      34 │ createdTime         2024-01-14T13:56:27.380  DateTime
+#      35 │ side                Buy                      String
+#      36 │ slLimitPrice        0.0                      Float32
+#      37 │ updatedTime         2024-01-14T13:56:27.382  DateTime
+#      38 │ placeType                                    String
+#      39 │ tpLimitPrice        0.0                      Float32
+#      40 │ rejectReason        EC_NoError               String
+#      41 │ triggerDirection    0                        Int64
+    return df
+end
+
+function order(orderid)
+    if !isnothing(orderid)
+        oo = openorders(orderid=orderid)
+        return size(oo, 1) > 0 ? NamedTuple(oo[1, :]) : nothing
     else
-        query = string("&symbol=", symbol, "&recvWindow=50000&timestamp=", timestamp())
+        return nothing
     end
-    r = HTTP.request("GET", string(BYBIT_API_REST, "api/v3/openOrders?", query, "&signature=", doSign(query, apiSecret)), headers)
-    if r.status != 200
-        println(r)
-        return r.status
-    end
-
-    r2j(r.body)
 end
 
-function order(symbol, orderid, apiKey::String, apiSecret::String)
-    @assert false "not implemented for Bybit"
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
-        query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
+"""Cancels an open spot order and returns the cancelled orderid"""
+function cancelorder(symbol, orderid)
+    params = Dict("category" => "spot", "symbol" => symbol, "orderId" => orderid)
+    oo = HttpPrivateRequest("POST", "/v5/order/cancel", params, "cancelorder")
+    if !(oo["result"]["orderId"] == orderid)
+        @warn "cancel order not confirmed by ByBit via returned orderid: posted=$orderid returned=$(oo["orderId"]) "
     end
-    r = HTTP.request("GET", string(BYBIT_API_REST, "api/v3/order?", query, "&signature=", doSign(query, apiSecret)), headers)
-    if r.status != 200
-        println(r)
-        return r.status
-    end
-
-    r2j(r.body)
+    return oo["result"]["orderId"]
 end
 
-function cancelOrder(symbol, orderid, apiKey::String, apiSecret::String)
-    @assert false "not implemented for Bybit"
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
-        query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
+function createorder(symbol::String, orderside::String, quantity::Real, price::Real)
+    @assert quantity > 0.0 "createorder $symbol quantity of $quantity cannot be <=0 for order type Limit"
+    @assert price > 0.0 "createorder $symbol price of $price cannot be <=0 for order type Limit"
+    @assert orderside in ["Buy", "Sell"] "createorder $symbol orderside=$orderside no in [Buy, Sell]"
+    syminfo = symbolinfo(symbol)
+    if isnothing(syminfo)
+        @warn "no instrument info for $symbol"
+        return nothing
     end
-    r = HTTP.request("DELETE", string(BYBIT_API_REST, "api/v3/order?", query, "&signature=", doSign(query, apiSecret)), headers)
-    if r.status != 200
-        println(r)
-        return r.status
+    if syminfo.status != "Trading"
+        @warn "$symbol status=$(syminfo.status) != Trading"
+        return nothing
     end
+    pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
+    price = round(price, digits=pricedigits)
+    quantity = quantity * price < syminfo.minquoteqty ? syminfo.minquoteqty / price : quantity
+    quantity = quantity < syminfo.minbaseqty ? syminfo.minbaseqty : quantity
+    qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
+    quantity = round(quantity, digits=qtydigits)
 
-    r2j(r.body)
+    params = Dict(
+        "category" => "spot",
+        "symbol" => symbol,
+        "side" => orderside,
+        "orderType" => "Limit",
+        "qty" => Formatting.format(quantity, precision=qtydigits),
+        "price" => Formatting.format(price, precision=pricedigits),
+        "timeInForce" => "PostOnly")
+    oo = HttpPrivateRequest("POST", "/v5/order/create", params, "create order")
+    if "orderId" in keys(oo["result"])
+        return oo["result"]["orderId"]
+    else
+        return nothing
+    end
 end
 
-# function cancelOrder(symbol,origClientOrderId)
-#     query = string("recvWindow=5000&timestamp=", timestamp(),"&symbol=", symbol,"&origClientOrderId=", origClientOrderId)
-#     r = HTTP.request("DELETE", string(BYBIT_API_REST, "api/v3/order?", query, "&signature=", doSign(query)), headers)
-#     r2j(r.body)
-# end
-
-function createOrder(symbol::String, orderSide::String;
-    quantity::Float64=0.0, orderType::String = "LIMIT",
-    price::Float64=0.0, stopPrice::Float64=0.0,
-    icebergQty::Float64=0.0, newClientOrderId::String="")
-    @assert false "not implemented for Bybit"
-
-      if quantity <= 0.0
-          error("Quantity cannot be <=0 for order type.")
-      end
-
-      println("$orderSide => $symbol q: $quantity, p: $price ")
-
-      order = Dict("symbol"           => symbol,
-                      "side"             => orderSide,
-                      "type"             => orderType,
-                      "quantity"         => Printf.@sprintf("%.8f", quantity),
-                      "newOrderRespType" => "FULL",
-                      "recvWindow"       => 10000)
-
-      if newClientOrderId != ""
-          order["newClientOrderId"] = newClientOrderId;
-      end
-
-      if orderType == "LIMIT" || orderType == "LIMIT_MAKER"
-          if price <= 0.0
-              error("Price cannot be <= 0 for order type.")
-          end
-          order["price"] =  Printf.@sprintf("%.8f", price)
-      end
-
-      if orderType == "STOP_LOSS" || orderType == "TAKE_PROFIT"
-          if stopPrice <= 0.0
-              error("StopPrice cannot be <= 0 for order type.")
-          end
-          order["stopPrice"] = Printf.@sprintf("%.8f", stopPrice)
-      end
-
-      if orderType == "STOP_LOSS_LIMIT" || orderType == "TAKE_PROFIT_LIMIT"
-          if price <= 0.0 || stopPrice <= 0.0
-              error("Price / StopPrice cannot be <= 0 for order type.")
-          end
-          order["price"] =  Printf.@sprintf("%.8f", price)
-          order["stopPrice"] =  Printf.@sprintf("%.8f", stopPrice)
-      end
-
-      if orderType == "TAKE_PROFIT"
-          if price <= 0.0 || stopPrice <= 0.0
-              error("Price / StopPrice cannot be <= 0 for STOP_LOSS_LIMIT order type.")
-          end
-          order["price"] =  Printf.@sprintf("%.8f", price)
-          order["stopPrice"] =  Printf.@sprintf("%.8f", stopPrice)
-      end
-
-      if orderType == "LIMIT"  || orderType == "STOP_LOSS_LIMIT" || orderType == "TAKE_PROFIT_LIMIT"
-          order["timeInForce"] = "GTC"
-      end
-
-      order
-  end
-
-# account call contains account status information - not yet used
-function account(apiKey::String, apiSecret::String) # Bybit tested
-    endpoint = "/v5/account/info"
-    method = "GET"
-    myresult = HttpPrivateRequest(method, endpoint, nothing, "AccountInfo", apiKey, apiSecret)
-end
-
-function executeOrder(order::Dict, apiKey, apiSecret; execute=false)
-    @assert false "not implemented for Bybit"
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    query = string(dict2Params(order), "&timestamp=", timestamp())
-    body = string(query, "&signature=", doSign(query, apiSecret))
-    println(body)
-
-    uri = "api/v3/order/test"
-    if execute
-        uri = "api/v3/order"
+"""
+Returns DataFrame with 18 columns of wallet positions of Unified Trade Account
+```
+   18×2 DataFrame
+   Row │ variable             min
+       │ Symbol               Any
+  ─────┼───────────────────────────────────────────
+     1 │ locked               0
+     2 │ accruedInterest      0
+     3 │ usdValue             2087.78289118
+     4 │ spotHedgingQty       0
+     5 │ cumRealisedPnl       -0.00000011
+     6 │ availableToBorrow
+     7 │ availableToWithdraw  0.00011588
+     8 │ bonus                0
+     9 │ unrealisedPnl        0
+    10 │ coin                 BTC
+    11 │ borrowAmount         0.000000000000000000
+    12 │ walletBalance        0.00011588
+    13 │ collateralSwitch     true
+    14 │ marginCollateral     true
+    15 │ equity               0.00011588
+    16 │ totalPositionMM      0
+    17 │ totalOrderIM         0
+    18 │ totalPositionIM      0
+     """
+function balances()
+    response = HttpPrivateRequest("GET", "/v5/account/wallet-balance", Dict("accountType" => "UNIFIED"), "wallet balance")
+    if length(response["result"]["list"]) > 1
+        @warn "unexpected more than 1 account type Bybit balance info: $response"
     end
-
-    r = HTTP.request("POST", string(BYBIT_API_REST, uri), headers, body)
-    r2j(r.body)
-end
-
-# returns default balances with amounts > 0
-function balances(apiKey::String, apiSecret::String; balanceFilter = x -> parse(Float64, x["walletBalance"]) > 0.0 || parse(Float64, x["locked"]) > 0.0) # Bybit tested
-
-    endpoint = "/v5/account/wallet-balance"
-    method = "GET"
-    params = Dict("accountType" => "UNIFIED")
-    walletbalance = HttpPrivateRequest(method, endpoint, params, "WalletBalance", apiKey, apiSecret)
-    balance = walletbalance["list"][1]
-    filteredbalance = filter(balanceFilter, balance["coin"])
-    return filteredbalance
+    df = DataFrame()
+    if length(response["result"]["list"]) > 0
+        if ("coin" in keys(response["result"]["list"][1])) && (length(response["result"]["list"][1]["coin"]) > 0)
+            for col in keys(response["result"]["list"][1]["coin"][1])
+                df[:, col] = [entry[col] for entry in response["result"]["list"][1]["coin"]]
+            end
+        end
+    else
+        @warn "unexpected missing Bybit balance info: $response"
+    end
+    return df
 end
 
 

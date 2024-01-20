@@ -4,7 +4,7 @@ module VolatilityTracker
 using DataFrames, Dates, Statistics, CSV, Logging, JDF
 using EnvConfig, TestOhlcv, Ohlcv, Features
 
-function trackregression!(tradedf, f2::Features.Features002; asset, gainthreshold, regrwindow, gap, selfmonitor)
+function trackregression!(tradedf, f2::Features.Features002; asset, trendminutes, gainthreshold, regrwindow, gap, selfmonitor)
     longlastok = shortlastok = true
     piv = Ohlcv.dataframe(Features.ohlcv(f2)).pivot[f2.firstix:f2.lastix]
     longopenix = Int32[]
@@ -12,10 +12,16 @@ function trackregression!(tradedf, f2::Features.Features002; asset, gainthreshol
     # gap = 5  # 5 minute gap between trades
     longcloseix = -gap
     shortcloseix = -gap
-    ctrades = otrades = otok = ootok = cltok = cstok = 0
+    ctrades = otrades = otok = ootok = cltok = cstok = trendlongstop = trendshortstop = 0
+    trendgainlong = zeros(trendminutes)
+    trendgainshort = zeros(trendminutes)
+    drawdownminutes = 30 * 24 * 60
+    drawdown30daysshort = zeros(drawdownminutes)
+    drawdown30dayslong = zeros(drawdownminutes)
 
     function closetrades!(openix, closeix, longshort, handleall)
         ctrades += 1
+        cumgain = 0.0
         while length(openix) > 0
             # handle open long positions
             tl = closeix - openix[begin]
@@ -23,21 +29,22 @@ function trackregression!(tradedf, f2::Features.Features002; asset, gainthreshol
                 gain = Ohlcv.relativegain(piv, openix[begin], closeix)
                 longlastok = (gain >= selfmonitor)
                 handleall = longlastok ? handleall : true
-                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor))
+                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, trendminutes=trendminutes, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
                 cltok += 1
             else
                 gain = -Ohlcv.relativegain(piv, openix[begin], closeix)
                 shortlastok = (gain >= selfmonitor)
                 handleall = shortlastok ? handleall : true
-                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor))
+                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, trendminutes=trendminutes, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
                 cstok += 1
             end
+            cumgain += gain
             openix = deleteat!(openix, 1)
             if !handleall
                 break
             end
         end
-        return openix
+        return cumgain
     end
 
     function opentrades!(openix, closeix)
@@ -52,49 +59,75 @@ function trackregression!(tradedf, f2::Features.Features002; asset, gainthreshol
         return openix
     end
 
-    #* idea: adapt gap with direction gradient
-    for ix in eachindex(piv)
-        absgradgain = f2.regr[regrwindow].regry[ix] - Features.startregry(f2.regr[regrwindow].regry[ix], f2.regr[regrwindow].grad[ix], regrwindow)
-        # if piv[ix] > f2.regr[regrwindow].regry[ix] + (f2.regr[regrwindow].std[ix] > absgradgain ? f2.regr[regrwindow].std[ix] : absgradgain)
-        if piv[ix] > f2.regr[regrwindow].regry[ix] + f2.regr[regrwindow].std[ix] + absgradgain
-            if (ix - longcloseix) >= gap
-                longopenix = closetrades!(longopenix, ix, "long", false)
-                longcloseix = ix
-            end
-            if shortlastok
-                opentrades!(shortopenix, ix)
-            end
-        # elseif piv[ix] < f2.regr[regrwindow].regry[ix] + (-f2.regr[regrwindow].std[ix] < absgradgain ? -f2.regr[regrwindow].std[ix] : absgradgain)
-        elseif piv[ix] < f2.regr[regrwindow].regry[ix] - f2.regr[regrwindow].std[ix] + absgradgain
-            if (ix - shortcloseix) >= gap
-                shortopenix = closetrades!(shortopenix, ix, "short", false)
-                shortcloseix = ix
-            end
-            if longlastok
-                opentrades!(longopenix, ix)
-            end
+    function preparerollinggain!(gainvector, index)
+        len = length(gainvector)
+        if len > 0
+            gainvector[index % len + 1] = 0.0  # will be updated in that cycle
         end
     end
-    println("trackregression!: $asset, $regrwindow, $gainthreshold, $gap, $selfmonitor size(tradedf)=$(size(tradedf))")
-    println("ctrades=$ctrades otrades=$otrades otok=$otok ootok=$ootok cltok=$cltok cstok=$cstok")
+
+    rollinggainupdate!(gainvector, index, gain) = (length(gainvector) > 0 ? gainvector[index % length(gainvector) + 1] = gain : 0.0)
+
+    #* idea: adapt gap with direction gradient
+    for ix in eachindex(piv)
+        preparerollinggain!(drawdown30daysshort, ix)
+        preparerollinggain!(drawdown30dayslong, ix)
+        preparerollinggain!(trendgainshort, ix)
+        preparerollinggain!(trendgainlong, ix)
+        if piv[ix] > f2.regr[regrwindow].regry[ix] + f2.regr[regrwindow].std[ix]
+            if (ix - longcloseix) >= gap
+                gain = closetrades!(longopenix, ix, "long", false)
+                rollinggainupdate!(drawdown30dayslong, ix, gain)
+                rollinggainupdate!(trendgainlong, ix, gain)
+                longcloseix = ix
+            end
+            if shortlastok && (trendminutes > 0 ? sum(trendgainlong) < gainthreshold : true)
+                opentrades!(shortopenix, ix)
+            else
+                trendshortstop += 1
+            end
+        elseif piv[ix] < f2.regr[regrwindow].regry[ix] - f2.regr[regrwindow].std[ix]
+            if (ix - shortcloseix) >= gap
+                gain = closetrades!(shortopenix, ix, "short", false)
+                rollinggainupdate!(drawdown30daysshort, ix, gain)
+                rollinggainupdate!(trendgainshort, ix, gain)
+                shortcloseix = ix
+            end
+            if longlastok && (trendminutes > 0 ? sum(trendgainshort) > -gainthreshold : true)
+                opentrades!(longopenix, ix)
+            else
+                trendlongstop += 1
+            end
+        end
+
+    end
+    # println("trackregression!: $asset, $regrwindow, $gainthreshold, $gap, $selfmonitor size(tradedf)=$(size(tradedf))")
+    # println("ctrades=$ctrades otrades=$otrades otok=$otok ootok=$ootok cltok=$cltok cstok=$cstok")
+    # println("trendrw=$trendrw: NOT(trendgain > -gainthreshold=-$gainthreshold) -> don't open long triggered $trendlongstop times")
+    # println("trendrw=$trendrw: NOT(trendgain < gainthreshold=$gainthreshold) -> don't open short triggered $trendshortstop times")
     return tradedf
 end
 
-function trackohlc(ohlcv::Ohlcv.OhlcvData, rkeys, gainthresholds, gaps, selfmonitorset)
+function trackohlc(ohlcv::Ohlcv.OhlcvData, rkeys, trendrwfactors, gainthresholds, gaps, selfmonitorset)
     tdf = DataFrame()
-    println("$(EnvConfig.now()) calculating F002 features")
+    asset = Ohlcv.basesymbol(ohlcv)
+    println("$(EnvConfig.now()) calculating F002 features for $asset")
     f2 = Features.Features002(ohlcv)
-    asset = Ohlcv.basesymbol(Features.ohlcv(f2))
     for kix in eachindex(rkeys)
         rw = rkeys[kix]
-        println("$(EnvConfig.now()) processing regression window $rw")
+        # println("$(EnvConfig.now()) processing regression window $rw")
         # println(describe(DataFrame(grad=f2.regr[rw].grad, regry=f2.regr[rw].regry, std=f2.regr[rw].std), :all))
         if kix != firstindex(rkeys)
             for gainthreshold in gainthresholds
                 for gap in gaps
                     for selfmonitor in selfmonitorset
-                        # println("$(EnvConfig.now()) analyzing volatility performace of regression window $rw, gainthreshold=$gainthreshold, gap=$gap")
-                        tdf = trackregression!(tdf, f2, asset=asset, gainthreshold=gainthreshold, regrwindow=rw, gap=gap, selfmonitor=selfmonitor)
+                        for trendrwfactor in trendrwfactors
+                            trendminutes = rw * trendrwfactor
+                            # trendrw = trenddircontrol ? (kix == lastindex(rkeys) ? 0 : rkeys[kix+1]) : 0
+                            # println("$(EnvConfig.now()) analyzing volatility performace of regression window $rw, gainthreshold=$gainthreshold, gap=$gap")
+                            println("$(EnvConfig.now()) assessing performance for asset=$asset, trendminutes=$trendminutes, gainthreshold=$gainthreshold, regrwindow=$rw, gap=$gap, selfmonitor=$selfmonitor")
+                            tdf = trackregression!(tdf, f2, asset=asset, trendminutes=trendminutes, gainthreshold=gainthreshold, regrwindow=rw, gap=gap, selfmonitor=selfmonitor)
+                        end
                     end
                 end
             end
@@ -113,9 +146,10 @@ function minmaxaccugain(nti)
     return round(maxgain*100, digits=3), round(mingain*100, digits=3)
 end
 
-function kpi(tradedf, asset, regr, longshort, gainthreshold, gap, selfmonitor)
-    println("kpi: $asset, $regr, $longshort, $gainthreshold, $gap, $selfmonitor")
-    println(describe(tradedf, :all))
+function kpi(tradedf, asset, regr, longshort, trendrw, gainthreshold, gap, selfmonitor)
+    # println("kpi: $asset, $regr, $longshort, $gainthreshold, $gap, $selfmonitor")
+    # println(describe(tradedf, :all))
+    cumgain=0.0; meangain=0.0; mediangain=0.0; maxgain=0.0; mingain=0.0; count=0; mediantl=0.0; maxtl=0.0; drawdown30dayslong=0.0; drawdown30daysshort=0.0
     if size(tradedf, 1) > 0
         maxgain, mingain = minmaxaccugain(Tables.namedtupleiterator(sort(tradedf, :closeix, view=true)))
         gainvec = tradedf[!, :gain]
@@ -126,13 +160,13 @@ function kpi(tradedf, asset, regr, longshort, gainthreshold, gap, selfmonitor)
         mediangain = round(median(gainvec)*100, digits=3)
         mediantl = round(median(tlvec), digits=0)
         maxtl = round(maximum(tlvec), digits=0)
-        return (asset=asset, regr=regr, longshort=longshort, gap=gap, gainthreshold=gainthreshold*100, selfmonitor=selfmonitor, cumgain=cumgain, meangain=meangain, mediangain=mediangain, maxgain=maxgain, mingain=mingain, count=count, mediantradelen=mediantl, maxtradelen=maxtl)
-    else
-        return (asset=asset, regr=regr, longshort=longshort, gap=gap, gainthreshold=gainthreshold*100, selfmonitor=selfmonitor, cumgain=0.0, meangain=0.0, mediangain=0.0, maxgain=0.0, mingain=0.0, count=0, mediantradelen=0.0, maxtradelen=0.0)
+        drawdown30dayslong = round(minimum(tradedf[!, :drawdown30dayslong]), digits=3)
+        drawdown30daysshort = round(minimum(tradedf[!, :drawdown30daysshort]), digits=3)
     end
+    return (asset=asset, regr=regr, longshort=longshort, gap=gap, trendrw=trendrw, gainthreshold=gainthreshold*100, selfmonitor=selfmonitor, cumgain=cumgain, meangain=meangain, mediangain=mediangain, maxgain=maxgain, mingain=mingain, count=count, mediantradelen=mediantl, maxtradelen=maxtl, drawdown30dayslong=drawdown30dayslong, drawdown30daysshort=drawdown30daysshort)
 end
 
-function calckpi!(kpidf, tradedf, assets, rkeys, gainthresholds, gaps, selfmonitorset, longshortset)
+function calckpi!(kpidf, tradedf, assets, rkeys, trendrwfactors, gainthresholds, gaps, selfmonitorset, longshortset)
     for asset in assets
         for kix in eachindex(rkeys)
             rw = rkeys[kix]
@@ -141,9 +175,14 @@ function calckpi!(kpidf, tradedf, assets, rkeys, gainthresholds, gaps, selfmonit
                     for gap in gaps
                         for selfmonitor in selfmonitorset
                             for longshort in longshortset
-                                # subdf = filter(row -> (row.asset == asset) && (row.regr == rw) && (row.longshort == longshort) && (row.gainthreshold == gainthreshold) && (row.gap==gap) && (row.selfmonitor==selfmonitor), tradedf, view=true)
-                                subdf = subset(tradedf, :asset => x -> x .== asset, :regr => x -> x .== rw, :longshort => x -> x .== longshort, :gainthreshold => x -> x .== gainthreshold, :gap => x -> x .== gap, :selfmonitor => x -> x .== selfmonitor, view=true)
-                                push!(kpidf, kpi(subdf, asset, rw, longshort, gainthreshold, gap, selfmonitor))
+                                for trendrwfactor in trendrwfactors
+                                    trendminutes = rw * trendrwfactor
+                                    # trendrw = trenddircontrol ? (kix == lastindex(rkeys) ? continue : rkeys[kix+1]) : 0
+                                    # subdf = filter(row -> (row.asset == asset) && (row.regr == rw) && (row.longshort == longshort) && (row.gainthreshold == gainthreshold) && (row.gap==gap) && (row.selfmonitor==selfmonitor), tradedf, view=true)
+                                    subdf = subset(tradedf, :asset => x -> x .== asset, :regr => x -> x .== rw, :longshort => x -> x .== longshort, :trendminutes => x -> x .== trendminutes, :gainthreshold => x -> x .== gainthreshold, :gap => x -> x .== gap, :selfmonitor => x -> x .== selfmonitor, view=true)
+                                    println("$(EnvConfig.now()) calculating kpi for asset=$asset, regrwindow=$rw, longshort=$longshort, trendminutes=$trendminutes, gainthreshold=$gainthreshold, gap=$gap, selfmonitor=$selfmonitor")
+                                    push!(kpidf, kpi(subdf, asset, rw, longshort, trendminutes, gainthreshold, gap, selfmonitor))
+                                end
                             end
                         end
                     end
@@ -155,7 +194,7 @@ function calckpi!(kpidf, tradedf, assets, rkeys, gainthresholds, gaps, selfmonit
 end
 
 function bestcombi(tradedf, asset, comparewindow, longshort, gainthreshold, gap, selfmonitor)
-    println("bestcombi: $asset, $longshort, $gainthreshold, $gap, $selfmonitor")
+    # println("bestcombi: $asset, $longshort, $gainthreshold, $gap, $selfmonitor")
     rwset = sort(unique(tradedf[!, :regr]), rev=true)
     bestgain = Dict()  # with openix as key
     tdf = sort(tradedf, :closeix, view=true)
@@ -243,9 +282,9 @@ function savestudy(tradedf)
     EnvConfig.checkbackup(tradefilename)
     try
         JDF.savejdf(tradefilename, tradedf)
-        println("saved tradedf as $tradefilename with size $(size(tradedf, 1)) of assets $(unique(tradedf[!, :asset]))")
+        println("$(EnvConfig.now()) saved tradedf as $tradefilename with size $(size(tradedf, 1)) of assets $(unique(tradedf[!, :asset]))")
     catch e
-        Logging.@warn "exception $e detected when saving $tradefilename with df size=$(size(tradedf))"
+        Logging.@warn "$(EnvConfig.now()) exception $e detected when saving $tradefilename with df size=$(size(tradedf))"
     end
 end
 
@@ -259,11 +298,12 @@ function trackasset(bases, startdt=nothing, period=nothing)
         println("loaded already studied assets $loadedbases")
     else
     end
-    rkeys = sort([rw for rw in Features.regressionwindows002])
-    gainthresholds = [0.005, 0.01, 0.02]
-    gaps = [2, 5]
-    selfmonitorset = [-Inf, 0.0]
-    longshortset = ["long"]  # ["long", "short"]
+    rkeys = sort([rw for rw in Features.regressionwindows002])  #  if 200 < rw
+    gainthresholds = [0.005, 0.01, 0.02]  # [0.02]  #
+    gaps = [2]  # , 5]
+    selfmonitorset = [-Inf]  # [-Inf, 0.0]
+    longshortset = ["long", "short"]
+    trendrwfactors = [0, 1, 2, 4]
     for base in bases
         if !(base in loadedbases)
             ohlcv = Ohlcv.defaultohlcv(base)
@@ -273,7 +313,7 @@ function trackasset(bases, startdt=nothing, period=nothing)
                 subset!(ohlcv.df, :opentime => t -> startdt .<= t .<= enddt)
             end
             println("loaded $ohlcv")
-            tdf = trackohlc(ohlcv, rkeys, gainthresholds, gaps, selfmonitorset)
+            tdf = trackohlc(ohlcv, rkeys, trendrwfactors, gainthresholds, gaps, selfmonitorset)
             if size(tdf, 1) > 0
                 tradedf = vcat(tradedf, tdf)
             else
@@ -284,9 +324,9 @@ function trackasset(bases, startdt=nothing, period=nothing)
             println("skipping $base because it was already studied and is loaded")
         end
     end
-    calckpi!(kpidf, tradedf, bases, rkeys, gainthresholds, gaps, selfmonitorset, longshortset)
+    calckpi!(kpidf, tradedf, bases, rkeys, trendrwfactors, gainthresholds, gaps, selfmonitorset, longshortset)
     comparewindows = [60 * 24]  # minutes
-    assesscombi!(kpidf, tradedf, bases, comparewindows, gainthresholds, gaps, selfmonitorset, longshortset)
+    # assesscombi!(kpidf, tradedf, bases, comparewindows, gainthresholds, gaps, selfmonitorset, longshortset)
     println(kpidf)
     kpifilename = EnvConfig.logpath(VOLATILITYSTUDYKPIFILE)
     EnvConfig.checkbackup(kpifilename)
@@ -299,7 +339,8 @@ end  #of module
 using EnvConfig, Dates
 
 EnvConfig.init(production)
-EnvConfig.setlogpath("CombiVolatilityTracker")
-# EnvConfig.setlogpath("TestVolatilityTracker")
-VolatilityTracker.trackasset(["BTC", "ETC"])
-# VolatilityTracker.trackasset(["BTC"], DateTime("2023-08-02T22:54:00"), Dates.Day(40))
+# EnvConfig.setlogpath("230802-240107_VolatilityTracker")
+EnvConfig.setlogpath("2402-5_TrendawareVolatilityTracker")
+# VolatilityTracker.trackasset(["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"])
+# VolatilityTracker.trackasset(["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"], DateTime("2023-08-02T22:54:00"), Dates.Day(400))
+VolatilityTracker.trackasset(["BTC"], DateTime("2022-05-15T22:54:00"), Dates.Day(100))

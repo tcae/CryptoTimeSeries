@@ -8,7 +8,7 @@ using Bybit
 # println(dirname(dirname(@__FILE__)))
 # println(pwd())
 
-# ei = Bybit.getExchangeInfo()
+# ei = Bybit.symbolinfo()
 # open(pwd() * "/HTTP-log.json","a") do io
 #     JSON.print(io, ei, 4)
 # end

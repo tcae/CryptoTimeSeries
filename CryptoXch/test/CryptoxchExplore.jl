@@ -19,7 +19,7 @@ EnvConfig.init(production)
 userdataChannel = Channel(10)
 startdt = DateTime("2020-08-11T22:45:00")
 enddt = DateTime("2020-09-11T22:49:00")
-# res = Binance.getKlines("BTCUSDT"; startDateTime=startdt, endDateTime=enddt, interval="1m")
+# res = Bybit.getklines("BTCUSDT"; startDateTime=startdt, endDateTime=enddt, interval="1m")
 # display(res)
 # display(last(res[:body], 3))
 # display(first(res[:body], 3))
@@ -37,8 +37,8 @@ function initialbtcdownload()
 end
 
 
-# oo1 = CryptoXch.createorder("btc", "BUY", 19001.0, 20.0)
-# println("createorder: $oo1")
+# oo1 = CryptoXch.createbuyorder("btc", 19001.0, 20.0)
+# println("createbuyorder: $oo1")
 # oo2 = CryptoXch.getorder("btc", oo1["orderId"])
 # println("getorder: $oo2")
 # ooarray = CryptoXch.getopenorders(nothing)
@@ -49,7 +49,7 @@ end
 # println("cancelorder: $oo2")
 
 function showxchinfo()
-    exchangeinfo = Bybit.getExchangeInfo()
+    exchangeinfo = Bybit.symbolinfo()
 
     println("Binance server time: $(Dates.unix2datetime(exchangeinfo["serverTime"]/1000)) $(exchangeinfo["timezone"]) - entries: $(keys(exchangeinfo))")
     println("Rate limits ($(length(exchangeinfo["rateLimits"]))):")
@@ -100,7 +100,7 @@ end
 function testorder(price, usdtvol)
     oo = nothing
     try
-        oo = CryptoXch.createorder("btc", "BUY", price, usdtvol)
+        oo = CryptoXch.createbuyorder("btc", price, usdtvol)
     catch err
         @error err
     end

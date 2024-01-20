@@ -205,14 +205,14 @@ function getKlines(symbol; startDateTime=nothing, endDateTime=nothing, interval=
 end
 
 ##################### SECURED CALL's NEEDS apiKey / apiSecret #####################
-function openOrders(symbol, apiKey::String, apiSecret::String)
+function openorders(symbol, apiKey::String, apiSecret::String)
     headers = Dict("X-MBX-APIKEY" => apiKey)
     if (symbol === nothing) || (length(symbol) == 0)
         query = string("recvWindow=50000&timestamp=", timestamp())
     else
         query = string("&symbol=", symbol, "&recvWindow=50000&timestamp=", timestamp())
     end
-    r = HTTP.request("GET", string(BINANCE_API_REST, "api/v3/openOrders?", query, "&signature=", doSign(query, apiSecret)), headers)
+    r = HTTP.request("GET", string(BINANCE_API_REST, "api/v3/openorders?", query, "&signature=", doSign(query, apiSecret)), headers)
     if r.status != 200
         println(r)
         return r.status
@@ -235,7 +235,7 @@ function order(symbol, orderid, apiKey::String, apiSecret::String)
     r2j(r.body)
 end
 
-function cancelOrder(symbol, orderid, apiKey::String, apiSecret::String)
+function cancelorder(symbol, orderid, apiKey::String, apiSecret::String)
     headers = Dict("X-MBX-APIKEY" => apiKey)
     if !(symbol === nothing) && !(length(symbol) == 0) && (orderid > 0)
         query = string("&symbol=", symbol, "&orderId=", orderid, "&recvWindow=50000&timestamp=", timestamp())
@@ -249,13 +249,13 @@ function cancelOrder(symbol, orderid, apiKey::String, apiSecret::String)
     r2j(r.body)
 end
 
-# function cancelOrder(symbol,origClientOrderId)
+# function cancelorder(symbol,origClientOrderId)
 #     query = string("recvWindow=5000&timestamp=", timestamp(),"&symbol=", symbol,"&origClientOrderId=", origClientOrderId)
 #     r = HTTP.request("DELETE", string(BINANCE_API_REST, "api/v3/order?", query, "&signature=", doSign(query)), headers)
 #     r2j(r.body)
 # end
 
-function createOrder(symbol::String, orderSide::String;
+function createorder(symbol::String, orderSide::String;
     quantity::Float64=0.0, orderType::String = "LIMIT",
     price::Float64=0.0, stopPrice::Float64=0.0,
     icebergQty::Float64=0.0, newClientOrderId::String="")

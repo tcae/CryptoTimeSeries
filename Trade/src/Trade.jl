@@ -3,7 +3,7 @@
 
 """
 *Trade* is the top level module that shall  follow the most profitable crypto currecncy at Binance, buy when an uptrend starts and sell when it ends.
-It generates the OHLCV data, executes the trades in a loop but delegates the trade startegy to *TradingStrategy*.
+It generates the OHLCV data, executes the trades in a loop but delegates the trade strategy to *TradingStrategy*.
 """
 module Trade
 
@@ -23,6 +23,8 @@ mutable struct BaseInfo
     currentix
     features
     symbolfilter
+    lastbuydt  # only long positions
+    lastselldt  # only long positions
 end
 
 """
@@ -43,7 +45,7 @@ mutable struct Cache
     bd  # dict[base] of BaseInfo
     tradechances  # ::TradingStrategy.TradeChances
     openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, opentime, closetime, message
-    orderlog  # DataFrame with cols like openorders
+    orderlog  # DataFrame with cols like openorders to log closed and rejected orders
     transactionlog  # DataFrame of transaction to fill orders
     messagelog  # fileid
     runid
@@ -54,8 +56,8 @@ mutable struct Cache
         tradechances = TradingStrategy.TradeChances000()
         # tradechances = TradingStrategy.TradeChances001()
         # tradechances = TradingStrategy.TradeChances002()
-        openorders = orderdataframex()
-        orderlog = orderdataframex()
+        openorders = orderdataframe()
+        orderlog = orderdataframe()
         transactionlog = filldataframe()
         baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
         runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
@@ -74,7 +76,7 @@ dummytime() = DateTime("2000-01-01T00:00:00")
 function concatstringarray(strarr)
 
 end
-function orderdataframex()
+function orderdataframe()
     return DataFrame(
         base=String[],
         orderId=Int64[],
@@ -99,7 +101,7 @@ function orderdataframex()
         )
 end
 
-function filldataframe()
+function filldataframe()  # a fill is a partial order execution
     return DataFrame(
         orderId=Int64[],
         tradeId=Int64[],
@@ -131,8 +133,8 @@ function loadopenorders!(cache::Cache)
         # println("openorders found $(typeof(csvoodf))")
         # println(csvoodf)
     end
-    ooarray = CryptoXch.getopenorders(nothing)
-    oodf = orderdataframex()
+    ooarray = CryptoXch.getopenorders()
+    oodf = orderdataframe()
     if length(ooarray) > 0
         for oo in ooarray
             opentime = oo["time"]
@@ -143,6 +145,7 @@ function loadopenorders!(cache::Cache)
                     opentime = row.opentime
                     closetime = row.closetime
                     message = row.message
+                    #TODO remove every found row and print no found rows as warning
                 end
             end
             push!(oodf, (
@@ -165,7 +168,7 @@ function loadopenorders!(cache::Cache)
         end
         # println(oodf)
         # println(ooarray)
-        CSV.write(EnvConfig.logpath("openorders.csv"), oodf)
+        CSV.write(EnvConfig.logpath("openorders.csv"), oodf)  # write in case orders outside the automation were created and should be logged
     end
     cache.openorders = oodf
 end
@@ -182,6 +185,7 @@ function preparetradecache!(cache::Cache)
     @assert startdt < enddt
     for base in usdtdf.base
         if (isnothing(cache.baseconstraint) ? true : (base in cache.baseconstraint)) && ((base in pdf.base) || (base in liquidusdtdf))
+            #TODO block new trades of bases with open orders but with insufficient liquidity
             # prepare data for all bases that qualified before
             ohlcv = Ohlcv.defaultohlcv(base)
             Ohlcv.read!(ohlcv)
@@ -191,7 +195,7 @@ function preparetradecache!(cache::Cache)
             # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
             if size(Ohlcv.dataframe(ohlcv), 1) < TradingStrategy.requiredminutes
                 @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=TradingStrategy.requiredminutes
-                continue
+                continue  # don't include such base in the cache = exclude from trading
             end
             currentix = backtest(cache) ? TradingStrategy.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
             free, locked = freelocked(pdf, base)
@@ -241,7 +245,7 @@ function appendmostrecent!(cache::Cache, base)
     global count = 0
     continuetrading = false
     df = ohlcvdf(cache, base)
-    if backtest(cache) # conume next backtest data
+    if backtest(cache) # consume next backtest data
         cache.bd[base].currentix += 1
         if cache.bd[base].currentix > cache.bd[base].features.lastix
             # calculate next chunk of features
@@ -366,10 +370,7 @@ function closeorder!(cache, order, side, status)
             status = xchorder["status"],
             timeInForce = xchorder["timeInForce"],
             type = xchorder["type"],
-            side = xchorder["side"],
-            opentime = order.opentime,
-            closetime = order.closetime,
-            message = order.message
+            side = xchorder["side"]
         )
         if "fills" in keys(xchorder)
             logfills!(cache, order.orderId, xchorder["fills"])
@@ -405,6 +406,7 @@ function closeorder!(cache, order, side, status)
         cache.bd[order.base].assetlocked = cache.bd[order.base].assetlocked < order.origQty ? 0.0 : cache.bd[order.base].assetlocked - order.origQty
         cache.bd[order.base].assetfree += order.origQty - order.executedQty
         cache.usdtfree += CryptoXch.floorbase("usdt", executedusdt * (1 - tradingfee)) #! TODO minus fee or fee is deducted from BNB
+        TradingStrategy.deletetradechanceoforder!(cache.tradechances, order.orderId)
     end
     cache.openorders = filter(row -> !(row.orderId == order.orderId), cache.openorders)
     totalusdt, _, _ = totalusdtliquidity(cache)
@@ -415,7 +417,6 @@ function closeorder!(cache, order, side, status)
     @info msg
 
     push!(cache.orderlog, order)
-    TradingStrategy.deletetradechanceoforder!(cache.tradechances, order.orderId)
 end
 
 function buyqty(cache, base)
@@ -490,7 +491,7 @@ function neworder!(cache, base, price, qty, side, tc)
             @warn msg
         else
             if !backtest(cache)
-                xchorder = CryptoXch.createorder(base, "BUY", price, qty)
+                xchorder = CryptoXch.createbuyorder(base, price, qty)
                 order = (
                     base = xchorder["base"],
                     orderId = xchorder["orderId"],
@@ -522,7 +523,7 @@ function neworder!(cache, base, price, qty, side, tc)
 
             qty = CryptoXch.floorbase(base, cache.bd[order.base].assetfree)
             if !backtest(cache)
-                xchorder = CryptoXch.createorder(base, "SELL", price, qty)
+                xchorder = CryptoXch.createsellorder(base, price, qty)
                 order = (
                     base = xchorder["base"],
                     orderId = xchorder["orderId"],
@@ -583,6 +584,15 @@ to be considered:
     - adapt buy chance with orderid
 """
 function trade!(cache)
+    #TODO this is the function that needs to be adapted to the new strategy
+    """
+    - need to introduce a sequence concept that varies the gap and amount according to free USDT, open orders, median order closure time, number of bases to be invested
+      - a function as asset allocator that
+        - returns USDT amount and minute gap and
+        - receives as input per tracked base the tracked regression length, median investment length, free USDT, open orders
+      - here the openorders have to be checked for orders for that base and the time gap to be considered
+
+    """
     for order in copy.(eachrow(cache.openorders))
         tc = TradingStrategy.tradechanceoforder(cache.tradechances, order.orderId)
         if isnothing(tc)
@@ -595,7 +605,7 @@ function trade!(cache)
             df = ohlcvdf(cache, order.base)
             if df.high[cache.bd[order.base].currentix] > order.price
                 closeorder!(cache, order, "SELL", "FILLED")
-            elseif significantsellpricechange(tc, order.price)  # including emergency sells
+            elseif significantsellpricechange(tc, order.price)
                 # set new limit price
                 closeorder!(cache, order, "SELL", "CANCELED")
                 neworder!(cache, order.base, tc.sellprice, order.origQty, "SELL", tc)
@@ -611,16 +621,13 @@ function trade!(cache)
                 neworder!(cache, order.base, tc.sellprice, qty, "SELL", tc)
                 # getorder and check that it is filled
             else
-                if order.base in keys(cache.tradechances.tcs.basedict)
+                if order.base in keys(cache.tradechances.tcs.basedict)  #TODO go through TradingStrategy function
                     # buy price not reached but other new buy chance available - hence, cancel old buy order and use new chance
-                    newtc = cache.tradechances.tcs.basedict[order.base]
+                    newtc = cache.tradechances.tcs.basedict[order.base]  #TODO go through TradingStrategy function
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
                     neworder!(cache, order.base, newtc.buyprice, buyqty(cache, order.base), "BUY", newtc)
                     TradingStrategy.deletenewbuychanceofbase!(cache.tradechances, order.base)
-                elseif tc.probability < 0.5
-                    closeorder!(cache, order, "BUY", "CANCELED")
-                    # buy order is closed because of low chance of buy success
                 elseif significantbuypricechange(tc, order.price)
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order with adapted price
@@ -630,7 +637,7 @@ function trade!(cache)
         end
     end
     # check remaining new base buy chances
-    for (base, tc) in cache.tradechances.tcs.basedict
+    for (base, tc) in cache.tradechances.tcs.basedict  #TODO go through TradingStrategy function
         usdttotal, _, _ = usdtliquidity(cache, base)
         if usdttotal <= CryptoXch.minimumquotevolume
             # no new order if asset is already in possession
@@ -695,7 +702,7 @@ function tradeloop(cache)
             end
         end
         # if !backtest && (Dates.now(Dates.UTC)-refreshtimestamp > Dates.Minute(12*60))
-        #     # TODO the read ohlcv data shall be from time to time appended to the historic data
+        #     # TODO the read ohlcv data shall be from time to time appended to the historic data and in cache data to be shortend (= cleanup)
         # end
         reportliquidity(cache, nothing)
         total, free, locked = totalusdtliquidity(cache)

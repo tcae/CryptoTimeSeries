@@ -366,7 +366,7 @@ end
 
 #region LearningNetwork Flux
 
-"""````
+"""```
 Neural Net description:
 lay_in = featurecount
 lay_out = length(labels)

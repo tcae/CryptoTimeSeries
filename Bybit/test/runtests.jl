@@ -1,42 +1,57 @@
-using Bybit, EnvConfig, Test, Dates
+using Bybit, EnvConfig, Test, Dates, DataFrames
 
 EnvConfig.init(production)
 
-@testset "CryptoXch tests" begin
+@testset "Bybit tests" begin
 
-    @test Bybit.serverTime() > DateTime("2023-08-18T20:07:54.209")
+    syminfo = Bybit.exchangeinfo()
+    @test isa(syminfo, AbstractDataFrame)
+    @test size(syminfo, 1) > 100
 
-    acc = Bybit.account(EnvConfig.authorization.key, EnvConfig.authorization.secret)
-    @test size([k for k in keys(acc)], 1) == 7
+    @test (Dates.now(UTC) + Dates.Second(15)) > Bybit.servertime() > (Dates.now(UTC) - Dates.Second(15))
 
-    xchinf = Bybit.getExchangeInfo()
-    @test typeof(xchinf) == Vector{Any}
-    @test size(xchinf) > (400,)
-    @test typeof(xchinf[1]) == Dict{String, Any}
-    @test size(xchinf) > (400,)
-    @test size([k for k in keys(xchinf[1])], 1) == 8
-    @test length([xchdict["symbol"] for xchdict in xchinf if xchdict["symbol"] == "BTCUSDT"]) == 1
+    acc = Bybit.account()
+    @test acc["marginMode"] == "REGULAR_MARGIN"
+    @test isa(acc, AbstractDict)
+    @test length(acc) > 1
 
-    dayresult = Bybit.get24HR("BTCUSDT")
-    @test size([k for k in keys(dayresult)], 1) == 13
-    @test dayresult["symbol"] == "BTCUSDT"
+    syminfo = Bybit.symbolinfo("BTCUSDT")
+    @test isa(syminfo, NamedTuple)
 
-    klines = Bybit.getKlines("BTCUSDT")
-    @test typeof(klines) == Vector{Any}
-    @test typeof(klines[1]) == Vector{Any}
-    @test size(klines[1]) == (7,)
-    @test size(klines) == (1000,)
+    dayresult = Bybit.get24h()
+    @test isa(dayresult, AbstractDataFrame)
+    @test size(dayresult, 1) > 100
+
+    dayresult = Bybit.get24h("BTCUSDT")
+    @test isa(dayresult, AbstractDataFrame)
+    @test size(dayresult, 2) >= 6
+    @test all([s in ["askprice", "bidprice", "lastprice", "quotevolume24h", "pricechangepercent", "symbol"] for s in names(dayresult)])
+    @test size(dayresult, 1) == 1
+
+    klines = Bybit.getklines("BTCUSDT")
+    @test isa(klines, AbstractDataFrame)
+
+
+    oid = Bybit.createorder("BTCUSDT", "Buy", 0.00001, 39899)
+
+    oo = Bybit.order(oid)
+    @test isa(oo, NamedTuple)
+    @test length(oo) == 12
+    @test oo.orderid == oid
+
+    oo = Bybit.openorders()
+    @test isa(oo, AbstractDataFrame)
+    @test (size(oo, 1) > 0)
+    @test (size(oo, 2) == 12)
+
+    coid = Bybit.cancelorder("BTCUSDT", oid)
+    @test coid == oid
+
+    oo = Bybit.order(oid)
+    @test oo.status == "Cancelled"
+
+    wb = Bybit.balances()
+    @test isa(wb, AbstractDataFrame)
+    @test size(wb, 2) >= 18
 
 end
-
-Bybit.balances(EnvConfig.authorization.key, EnvConfig.authorization.secret)
-# order = Bybit.createOrder("BTCUSDT", )
-# res = Bybit.openOrders(nothing, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-# res = Bybit.openOrders("CHZUSDT", EnvConfig.authorization.key, EnvConfig.authorization.secret)
-# println(res)
-# for o in res
-#     for dictentry in o
-#         println(dictentry)
-#     end
-#     println("=")
-# end

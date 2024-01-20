@@ -96,7 +96,19 @@ function setprojectdir()
     return pwd()
 end
 
-function init(mode::Mode)
+datafolderpath() = normpath(joinpath(cryptopath, datafolder))
+
+function getdatafolder(folder, newfolder=false)
+    folder = newfolder ? folder * runid() : folder
+    p = normpath(joinpath(cryptopath, folder))
+    if !isdir(p)
+        println("EnvConfig $(now()): creating folder $p")
+        mkpath(p)
+    end
+    return folder
+end
+
+function init(mode::Mode; newdatafolder=false)
     global configmode = mode
     global bases, trainingbases, datafolder
     global authorization
@@ -109,11 +121,11 @@ function init(mode::Mode)
             "theta"]
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx"]
-        datafolder = "Features"
+        datafolder = getdatafolder("Features", newdatafolder)
     elseif  configmode == training
         # trainingbases = bases = ["btc"]
         # trainingbases = bases = ["btc", "xrp", "eos"]
-        datafolder = "Features"
+        datafolder = getdatafolder("Features", newdatafolder)
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
             "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
@@ -129,7 +141,7 @@ function init(mode::Mode)
         trainingbases = bases = ["sine", "doublesine"]
         # trainingbases = ["sine", "doublesine"]
         # bases = ["sine", "doublesine"]
-        datafolder = "TestFeatures"
+        datafolder = getdatafolder("TestFeatures", newdatafolder)
         # datafolder = "Features"
     else
         Logging.@error("invalid Config mode $configmode")

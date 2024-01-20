@@ -3,6 +3,16 @@
 Trade chances are characterized by a buy and sell limit price as well as a stop loss price.
 A probabiity is also provided but the current approach considers it in scope of TradeStrategy to recommend a buy by identifying a buy chance.
 As soon as *Trade* assigns an order id a sell price and stop loss sell price is assigned.
+
+- TradingStrategy.requiredminutes
+- TradingStrategy.registerbuy!(...)
+- TradingStrategy.deletetradechanceoforder!(...)
+- TradingStrategy.tradechanceoforder(...)
+- TradingStrategy.registerbuyorder!(..)
+- TradingStrategy.registersellorder!(...)
+- TradingStrategy.deletenewbuychanceofbase!(...)
+- TradingStrategy.assesstrades!(...)
+
 """
 module TradingStrategy
 
@@ -31,20 +41,25 @@ mutable struct TradeChance
     buyorderid  # remains 0 until order issued
     sellprice
     sellorderid  # remains 0 until order issued
-    probability  # probability to reach sell price once bought
     regrminutes
-    stoplossprice
-    breakoutstd  # only relevant for traderules001! (not traderules002!); indices of extremes (<0 if min, >0 if max) that exceed std distance from regry
+    stoplossprice # not used by TradeChances004
+    breakoutstd  # only relevant for TradeChances001; indices of extremes (<0 if min, >0 if max) that exceed std distance from regry
 end
 
 mutable struct TradeChances
     basedict  # Dict of new buy orders
     orderdict  # Dict of open orders
+    holdlist  # array of TradeChance with closed buy but without sell order
+    #TODO closebuy order should place trade in holdlist and assess shall take it from there to issue a sell order
+    #TODO in trade remove automatic sell after buy. feedback to trade via basedict value
+    function TradeChances()
+        new(Dict(), Dict())
+    end
 end
 
 upperbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] + stdfactor * fr.std[ix]
 lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.std[ix]
-stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.std[ix]
+stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = isnothing(stdfactor) ? 0.0 : fr.regry[ix] - stdfactor * fr.std[ix]
 banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.std[ix]
 
 requiredtradehistory = Features.requiredminutes()
@@ -59,7 +74,9 @@ minutesgain(gradient, refprice, minutes) = minutes * gradient / refprice
 daygain(gradient, refprice) = minutesgain(gradient, refprice, 24 * 60)
 
 function Base.show(io::IO, tc::TradeChance)
-    print(io::IO, "tc: base=$(tc.base), buydt=$(EnvConfig.timestr(tc.buydt)), buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), prob=$(round(tc.probability*100; digits=2))%, window=$(tc.regrminutes), stop loss sell=$(round(tc.stoplossprice; digits=2)), breakoutstd=$(tc.breakoutstd)")
+    sl = isnothing(tc.stoplossprice) ? "n/a" : round(tc.stoplossprice; digits=2)
+    bo = isnothing(tc.breakoutstd) ? "n/a" : round(tc.breakoutstd; digits=2)
+    print(io::IO, "tc: base=$(tc.base), buydt=$(EnvConfig.timestr(tc.buydt)), buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid) sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), window=$(tc.regrminutes), stop loss sell=$sl, breakoutstd=$bo")
 end
 
 function Base.show(io::IO, tcs::TradeChances)
@@ -90,12 +107,12 @@ function registerbuy!(tradechances::TradeChances, buyix, buyprice, buyorderid, f
         tc.buydt = opentime[buyix]
         tc.buyprice = buyprice
         tc.buyorderid = buyorderid
-        tc.stoplossprice = stoplossprice(afr, fix, stoplossstd)
-        spread = banddeltaprice(afr, fix, tc.breakoutstd)
-        tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
+        tc.stoplossprice = isnothing(stoplossstd) ? 0.0 : stoplossprice(afr, fix, stoplossstd)
+        if !isnothing(tc.breakoutstd)
+            spread = banddeltaprice(afr, fix, tc.breakoutstd)
+            tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
+        end
         # tc.sellprice = afr.regry[fix] + halfband
-        # probability to reach sell price
-        tc.probability = max(min((1.5 * spread - (tc.sellprice - buyprice)) / spread, 1.0), 0.0)
     end
     return tc
 end
@@ -192,7 +209,7 @@ mutable struct TradeChances001
     function TradeChances001()
         new(
             TradeRules001(0.05, 0.02, 3.0, [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]),  # topper
-            TradeChances(Dict(), Dict())
+            TradeChances()
             )
     end
 end
@@ -317,20 +334,17 @@ function newbuychance001(f2::Features.Features002, ohlcvix, tr001)
             # spread = banddeltaprice(afr, fix, breakoutstd)
             buyprice = lowerbandprice(afr, fix, breakoutstd)
             sellprice = upperbandprice(afr, fix, breakoutstd)
-            # probability to reach buy price
-            # probability = max(min((spread - (df.low[ohlcvix] - buyprice)) / spread, 1.0), 0.0)
-            probability = 0.8
             tcstoplossprice = stoplossprice(afr, fix, tr001.stoplossstd)
-            tc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, breakoutstd)
+            tc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, regrminutes, tcstoplossprice, breakoutstd)
         end
     end
     return tc
 end
 
 """
-    traderules001!(tradechances, f2::Features.Features002, ohlcvix)
+traderules001!(tradechances, f2::Features.Features002, ohlcvix)
 
-returns the chance expressed in gain between currentprice and future sellprice * probability
+Returns the assessed tradechances to be executed by the trade loop
 if tradechances === nothing then an empty TradeChance array is created and with results returned
 
 """
@@ -350,13 +364,9 @@ function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, 
                 if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) && (tc.breakoutstd == newtc.breakoutstd)
                     # not yet bought -> adapt with latest insights
                     tc.buyprice = newtc.buyprice
-                    tc.probability = newtc.probability
                     tc.stoplossprice = newtc.stoplossprice
                     tc.sellprice = newtc.sellprice
                     newtc = nothing
-                else
-                    # outdated buy chance
-                    tc.probability = 0.1
                 end
             end
             afr = f2.regr[tc.regrminutes]
@@ -365,7 +375,6 @@ function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, 
             if (pivot[ohlcvix] < tc.stoplossprice) && (afr.grad[fix] < 0)
                 # stop loss exit due to plunge of price and negative regression line
                 tc.sellprice = df.low[ohlcvix]
-                tc.probability = 1.0
                 @info "stop loss sell for $base due to plunge out of spread ix=$ohlcvix time=$(opentime[ohlcvix]) at regression price of $(afr.regry[fix]) tc: $tc"
             elseif buycompliant001(f2, tc.regrminutes, tc.breakoutstd, ohlcvix, tradechances.tr)
                 tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
@@ -374,7 +383,6 @@ function assesstrades!(tradechances::TradeChances001, f2::Features.Features002, 
             else
                 tc.sellprice = afr.regry[fix]
             end
-            tc.probability = 0.8 # * (1 - max((tc.buyprice - pivot[ohlcvix])/(tc.buyprice - tc.stoplossprice), 0.0))  # probability to reach sell price
             # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$ohlcvix  time=$(opentime[ohlcvix])"
         end
     end
@@ -404,7 +412,7 @@ end
 
 """
 *TradeChances002* trading strategy:
-- buy if price if
+- buy if price
     - exceeds a minimum gradient after reaching a minimum
     - use regression window that performd best in the backtest time window and that satisfies minimum profit requirement
     - use different backtest time windows but shorter time windows have to outperform the longer ones by >20% to be considered
@@ -418,7 +426,7 @@ mutable struct TradeChances002
     function TradeChances002()
         new(
             TradeRules002(0.1, mingainminuterange(Features.regressionwindows002), 0.2, 3.0),
-            TradeChances(Dict(), Dict())
+            TradeChances()
             )
     end
 end
@@ -542,11 +550,8 @@ function newbuychance002(f2::Features.Features002, ohlcvix, tr002)
             # spread = banddeltaprice(afr, fix, breakoutstd)
             buyprice = df.pivot[ohlcvix]
             sellprice = buyprice * 1.02
-            # probability to reach buy price
-            # probability = max(min((spread - (df.low[ohlcvix] - buyprice)) / spread, 1.0), 0.0)
-            probability = 0.8
             tcstoplossprice = stoplossprice(afr, fix, 3.0)
-            tc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, probability, regrminutes, tcstoplossprice, 1.0)
+            tc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, regrminutes, tcstoplossprice, 1.0)
         end
     end
     return tc
@@ -555,9 +560,7 @@ end
 """
     traderules002!(tradechances, f2::Features.Features002, ohlcvix)
 
-returns the chance expressed in gain between currentprice and future sellprice * probability
 if tradechances === nothing then an empty TradeChance array is created and with results returned
-
 """
 function assesstrades!(tradechances::TradeChances002, f2::Features.Features002, ohlcvix)::TradeChances002
     @info "$(@doc TradeChances002)" tradechances.tr.minimumbacktestgain tradechances.tr.minimumbuygradientdict tradechances.tr.shorterwindowimprovement tradechances.tr.stoplossstd maxlog=1
@@ -575,13 +578,9 @@ function assesstrades!(tradechances::TradeChances002, f2::Features.Features002, 
                 if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) # && (tc.breakoutstd == newtc.breakoutstd)
                     # not yet bought -> adapt with latest insights
                     tc.buyprice = newtc.buyprice
-                    tc.probability = newtc.probability
                     tc.stoplossprice = newtc.stoplossprice
                     tc.sellprice = newtc.sellprice
                     newtc = nothing
-                else
-                    # outdated buy chance
-                    tc.probability = 0.1
                 end
             end
             afr = f2.regr[tc.regrminutes]
@@ -592,11 +591,8 @@ function assesstrades!(tradechances::TradeChances002, f2::Features.Features002, 
                 else
                     tc.sellprice = df.low[ohlcvix]
                 end
-                tc.probability = 1.0
             else  # if pivot[ohlcvix] > afr.regry[ohlcvix]  # above normal deviations
                 tc.sellprice = pivot[ohlcvix] * 1.02  # normally not reachable within a minute or we catch a peak
-                # probability to reach sell price
-                tc.probability = 0.8 # * (1 - max((tc.buyprice - pivot[ohlcvix])/(tc.buyprice - lowerbandprice(afr, fix, 2.0)), 0.0))  # disputable
                 # @info "sell signal $(base) regrminutes=$(tc.regrminutes) breakoutstd=$(tc.breakoutstd) at price=$(round(tc.sellprice;digits=3)) ix=$ohlcvix  time=$(opentime[ohlcvix])"
             end
         end
@@ -623,7 +619,7 @@ mutable struct TradeChances000
     function TradeChances000()
         new(
             3.0,
-            TradeChances(Dict(), Dict())
+            TradeChances()
             )
     end
 end
@@ -637,7 +633,6 @@ end
 """
     traderules000!(tradechances, f2::Features.Features002, ohlcvix)
 
-returns the chance expressed in gain between currentprice and future sellprice * probability
 if tradechances === nothing then an empty TradeChance array is created and with results returned
 
 Trading strategy:
@@ -662,9 +657,8 @@ function assesstrades!(tradechances::TradeChances000, f2::Features.Features002, 
         if (afr.grad[featureix-1] <= 0) && (afr.grad[featureix] > 0)
             buyprice = df.pivot[ohlcvix]
             sellprice = buyprice * 1.1
-            probability = 0.8
             tcstoplossprice = buyprice * 0.8
-            newtc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, probability, regressionminutes, tcstoplossprice, 1.0)
+            newtc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, regressionminutes, tcstoplossprice, 1.0)
         end
     end
 
@@ -674,19 +668,14 @@ function assesstrades!(tradechances::TradeChances000, f2::Features.Features002, 
                 if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) # && (tc.breakoutstd == newtc.breakoutstd)
                     # not yet bought -> adapt with latest insights
                     tc.buyprice = newtc.buyprice
-                    tc.probability = newtc.probability
                     tc.stoplossprice = newtc.stoplossprice
                     tc.sellprice = newtc.sellprice
                     newtc = nothing
-                else
-                    # outdated buy chance
-                    tc.probability = 0.1
                 end
             end
             afr = f2.regr[tc.regrminutes]
             if (afr.grad[featureix-1] >= 0) && (afr.grad[featureix] < 0)
-                    tc.sellprice = df.pivot[ohlcvix]
-                tc.probability = 1.0
+                tc.sellprice = df.pivot[ohlcvix]
             end
         end
     end
@@ -702,5 +691,86 @@ deletetradechanceoforder!(tradechances::TradeChances000, orderid) = deletetradec
 registerbuyorder!(tradechances::TradeChances000, orderid, tc::TradeChance) = registerbuyorder!(tradechances.tcs, orderid, tc)
 registersellorder!(tradechances::TradeChances000, orderid, tc::TradeChance) = registersellorder!(tradechances.tcs, orderid, tc)
 deletenewbuychanceofbase!(tradechances::TradeChances000, base) = deletenewbuychanceofbase!(tradechances.tcs, base)
+
+"""
+*TradeChances004* uses a given regression line to buy in regular intervals with low volume below std if std/regry is > gainthreshold and to sell in regular intervals above std if std/regry is > gainthreshold.
+"""
+mutable struct TradeChances004
+    baseconfig
+    tcs::TradeChances
+    function TradeChances004()
+        new(
+            Dict("BTC" => (regrwindow=720, gain=0.01, gap=2)),
+            # (regr=720, gain=1.0) = use regression window 720 minutes and trade when std/regry >= gain of 1% with a minimum gap of 2 minutes
+            TradeChances()
+            )
+    end
+end
+
+function Base.show(io::IO, tcs::TradeChances004)
+    cfg = ["$(p[1]): $(p[2])  " for p in tcs.baseconfig]...
+    show("io::IO, TradeChances004 - $cfg\n")
+    show(tcs.tcs)
+end
+
+
+"""
+Trading strategy:
+- buy if current price is below regression line - regression std and regression std / regression regry > gainthreshold of the resp. base
+- sell if current price is above regression line + regression std and regression std / regression regry > gainthreshold of the resp. base
+
+if tradechances === nothing then an empty TradeChance array is created and with results returned
+"""
+function assesstrades!(tradechances::TradeChances004, f2::Features.Features002, ohlcvix)::TradeChances004
+    @assert !isnothing(f2)
+    @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
+    df = Ohlcv.dataframe(Features.ohlcv(f2))
+    opentime = df[!, :opentime]
+    pivot = df[!, :pivot]
+    base = Ohlcv.basesymbol(Features.ohlcv(f2))
+    if !(base in keys(tradechances.baseconfig))
+        return nothing
+    end
+    @info "$(@doc TradeChances004)" tradechances.baseconfig[base] maxlog=1
+    cleanupnewbuychance!(tradechances.tcs, base)
+    fix = Features.featureix(f2, ohlcvix)
+    rw = tradechances.baseconfig[base].regrwindow
+    afr = f2.regr[rw]
+    newtc = nothing
+    if (pivot[ohlcvix] > f2.regr[rw].regry[fix] + f2.regr[rw].std[fix]) && ((f2.regr[rw].std[fix] / f2.regr[rw].regry[fix]) > tradechances.baseconfig[base].gain)
+        buyprice = pivot[ohlcvix]
+        sellprice = buyprice * (1 + 2 * tradechances.baseconfig[base].gain)
+        newtc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, rw, nothing, nothing) # stoplossprice = breakoutstd = nothing because both are disabled
+    end
+#TODO here to continue
+    for tc in values(tradechances.tcs.orderdict)
+        if tc.base == Ohlcv.basesymbol(Features.ohlcv(f2))
+            if isnothing(tc.buydt)
+                if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) # && (tc.breakoutstd == newtc.breakoutstd)
+                    # not yet bought -> adapt with latest insights
+                    tc.buyprice = newtc.buyprice
+                    tc.stoplossprice = newtc.stoplossprice
+                    tc.sellprice = newtc.sellprice
+                    newtc = nothing
+                end
+            end
+            afr = f2.regr[tc.regrminutes]
+            if (afr.grad[featureix-1] >= 0) && (afr.grad[featureix] < 0)
+                    tc.sellprice = df.pivot[ohlcvix]
+            end
+        end
+    end
+    if !isnothing(newtc)
+        tradechances.tcs.basedict[base] = newtc
+    end
+    return tradechances
+end
+
+registerbuy!(tradechances::TradeChances004, buyix, buyprice, buyorderid, f2::Features.Features002) = registerbuy!(tradechances.tcs, buyix, buyprice, buyorderid, f2, nothing)
+tradechanceoforder(tradechances::TradeChances004, orderid) = tradechanceoforder(tradechances.tcs, orderid)
+deletetradechanceoforder!(tradechances::TradeChances004, orderid) = deletetradechanceoforder!(tradechances.tcs, orderid)
+registerbuyorder!(tradechances::TradeChances004, orderid, tc::TradeChance) = registerbuyorder!(tradechances.tcs, orderid, tc)
+registersellorder!(tradechances::TradeChances004, orderid, tc::TradeChance) = registersellorder!(tradechances.tcs, orderid, tc)
+deletenewbuychanceofbase!(tradechances::TradeChances004, base) = deletenewbuychanceofbase!(tradechances.tcs, base)
 
 end # module
