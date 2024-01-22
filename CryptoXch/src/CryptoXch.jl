@@ -261,18 +261,6 @@ function downloadallUSDT(enddt, period=Dates.Year(4), minimumdayquotevolume = 10
         println("$(EnvConfig.now()) updating $base ($ix of $count)")
         startdt = enddt - period
         CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-        # ohlcv = Ohlcv.defaultohlcv(base)
-        # Ohlcv.setinterval!(ohlcv, "1m")
-        # Ohlcv.read!(ohlcv)
-        # olddf = Ohlcv.dataframe(ohlcv)
-        # if size(olddf, 1) > 0
-        #     startdt = olddf[end, :opentime]
-        #     cryptoupdate!(ohlcv, floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-        #     Ohlcv.write(ohlcv)
-        # else
-        #     startdt = enddt - period
-        #     CryptoXch.cryptodownload(base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-        # end
     end
     return df
 end

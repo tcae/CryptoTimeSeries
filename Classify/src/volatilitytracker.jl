@@ -19,23 +19,23 @@ function trackregression!(tradedf, f2::Features.Features002; asset, trendminutes
     drawdown30daysshort = zeros(drawdownminutes)
     drawdown30dayslong = zeros(drawdownminutes)
 
-    function closetrades!(openix, closeix, longshort, handleall)
+    function closetrades!(openix, currentix, longshort, handleall)
         ctrades += 1
         cumgain = 0.0
         while length(openix) > 0
             # handle open long positions
-            tl = closeix - openix[begin]
+            tl = currentix - openix[begin]
             if longshort == "long"
-                gain = Ohlcv.relativegain(piv, openix[begin], closeix)
+                gain = Ohlcv.relativegain(piv, openix[begin], currentix)
                 longlastok = (gain >= selfmonitor)
                 handleall = longlastok ? handleall : true
-                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, trendminutes=trendminutes, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
+                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=currentix, tradelen=tl, gain=gain, trendminutes=trendminutes, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
                 cltok += 1
             else
-                gain = -Ohlcv.relativegain(piv, openix[begin], closeix)
+                gain = -Ohlcv.relativegain(piv, openix[begin], currentix)
                 shortlastok = (gain >= selfmonitor)
                 handleall = shortlastok ? handleall : true
-                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=closeix, tradelen=tl, gain=gain, trendminutes=trendminutes, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
+                push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=currentix, tradelen=tl, gain=gain, trendminutes=trendminutes, gainthreshold=gainthreshold, gap=gap, selfmonitor=selfmonitor, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
                 cstok += 1
             end
             cumgain += gain
@@ -47,11 +47,11 @@ function trackregression!(tradedf, f2::Features.Features002; asset, trendminutes
         return cumgain
     end
 
-    function opentrades!(openix, closeix)
+    function opentrades!(openix, currentix)
         otrades += 1
-        if ((f2.regr[regrwindow].std[closeix] / f2.regr[regrwindow].regry[closeix]) > gainthreshold)
-            if ((length(openix) == 0) || ((closeix - openix[end]) >= gap))
-                push!(openix, closeix)
+        if ((f2.regr[regrwindow].std[currentix] / f2.regr[regrwindow].regry[currentix]) > gainthreshold)
+            if ((length(openix) == 0) || ((currentix - openix[end]) >= gap))
+                push!(openix, currentix)
                 ootok += 1
             end
             otok += 1

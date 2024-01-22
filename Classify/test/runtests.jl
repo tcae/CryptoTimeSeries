@@ -1,8 +1,7 @@
 
 module ClassifyTest
-using Dates, DataFrames, MLJ
+using Dates, DataFrames
 using Test
-
 using Classify
 
 @testset "Classify tests" begin

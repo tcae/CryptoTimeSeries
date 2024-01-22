@@ -1117,40 +1117,58 @@ end
 #endregion Evaluation
 
 #region Classifier-001
+
+
+"""
+Returns a `buy` recommendation if the standard deviation of a given regression window relative to price of the regression line exceeds a threshold and
+the current price is below regressionline minus standard deviation.
+Corresondingly returns a `sell` recommendation if std/price > threshold and price > std + price. In all other price cases a `hold` is returned.
+"""
 mutable struct Classifier001
-    base
-    regrwindow
-    gainthreshold
-    ohlcv
-    f2
+    base  # base coin (quotecoin is USDT fixed)
+    regrwindow  # regression window in minutes
+    gainthreshold  # std/price that must be higher than that threshold to consider a buy/sell
+    minutesgap  # number of minutes between 2 propsals of same type (applicable to buy/sell)
+    selldt  # timestamp of last sell proposal
+    buydt  # timestamp of last buy proposal
 end
 
-function init(base::String, regrwindow::Unsigned, gainthreshold::Real, ohlcv=nothing, f2=nothing)::Union{Classifier001, Nothing}
+function Classifier001(base::String, regrwindow::Unsigned, gainthreshold::Real, minutesgap::Real)::Union{Classifier001, Nothing}
     regrwindow = round(Int, regrwindow)
-    @assert regrwindow > 0
-    if length(regrwindow) == 0
-        @warn "Classifier001 init failure due to missing regression window"
-        return nothing
-    end
-    if !isnothing(ohlcv)
-        @assert base == Ohlcv.basecoin(ohlcv)
-        if isnothing(f2)
-            f2 = Features.Features002(ohlcv, regrwindows=[regrwindow])
-        else
-            if !(regrwindow in Features.regrwindows(f2))
-                @warn "Classifier001 init failure due to regression window $regrwindow not found in f2.rgr $(Features.regrwindows(f2))"
-                return nothing
-            end
+    @assert regrwindow > 0 "regrwindow=$regrwindow > 0"
+    @assert 0.1 > gainthreshold > 0 "0.1 > gainthreshold=$gainthreshold > 0"
+    @assert minutesgap > 0 "minutesgap=$minutesgap > 0"
+    return Classifier001(base, regrwindow, gainthreshold, minutesgap, Dates.now()-Dates.Minute(minutesgap), Dates.now()-Dates.Minute(minutesgap))
+end
+
+"Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
+function advise(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestProposal
+    @assert (f2.firstix <= ohlcvix <= lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1)) "advise index out of range f2.firstix=$(f2.firstix) <= ohlcvix=$ohlcvix <= lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1)=$(lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1))"
+    @assert Ohlcv.basecoin(Features.ohlcv(f2)) == cls.base "base(ohlcv(f2))=$(Ohlcv.basecoin(Features.ohlcv(f2))) != cls.base=$(cls.base)"
+    @assert (cls.regrwindow in Features.regrwindows(f2)) "cls.regrwindow=$(cls.regrwindow) not in Features.regrwindows(f2)=$(Features.regrwindows(f2))"
+
+    fix = Features.featureix(f2, ohlcvix)
+    dt = Ohlcv.dataframe(Features.ohlcv(f2)).opentime[ohlcvix]
+    if ((f2.regr[cls.regrwindow].std[fix] / f2.regr[cls.regrwindow].regry[fix]) > cls.gainthreshold)
+        if ((dt - cls.selldt) >= Dates.Minute(cls.minutesgap)) && (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] > f2.regr[cls.regrwindow].regry[fix] + f2.regr[cls.regrwindow].std[fix])
+            cls.selldt = dt
+            return sell
+        elseif ((dt - cls.buydt) >= Dates.Minute(cls.minutesgap)) && (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] < f2.regr[cls.regrwindow].regry[fix] - f2.regr[cls.regrwindow].std[fix])
+            cls.buydt = dt
+            return buy
         end
     end
-    cls = Classifier001(ohlcv, f2, base, regrwindow, gainthreshold)
+    return hold
 end
 
-function predict(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)
-    if cls.f2.lastix < ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)
-        cls.f2.update(cls.f2, )
-    end
+"Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
+function advise(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)::InvestProposal
+    @assert (cls.regrwindow <= ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)) "advise index out of range cls.regrwindow=$(cls.regrwindow) <= ohlcvix=$ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)=$(lastindex(Ohlcv.dataframe(ohlcv), 1))"
+    @assert Ohlcv.basecoin(ohlcv) == cls.base "base(ohlcv)=$(Ohlcv.basecoin(ohlcv)) != cls.base=$(cls.base)"
+    f2 = Features.Features002(ohlcv, firstix=ohlcvix, lastix=ohlcvix, regrwindows=[cls.regrwindow])
+    return advise(cls, f2, ohlcvix)
 end
+
 #endregion Classifier-001
 
 
