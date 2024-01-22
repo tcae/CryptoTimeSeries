@@ -33,15 +33,9 @@ Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> wee
 """
 function ohlcfromexchange(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     df = nothing
-    if EnvConfig.configmode == EnvConfig.test
-        println("ohlcfromexchange test mode: $base, $startdt, $enddt, $interval, $cryptoquote")
-        df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
-    end
-    if (EnvConfig.configmode != EnvConfig.test)
-        symbol = uppercase(base*cryptoquote)
-        df = Bybit.getklines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
-        Ohlcv.addpivot!(df)
-    end
+    symbol = uppercase(base*cryptoquote)
+    df = Bybit.getklines(symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
+    Ohlcv.addpivot!(df)
     return df
 end
 
@@ -228,65 +222,32 @@ Returns a dataframe with 24h values of all USDT quote bases with the following c
 
 """
 function getUSDTmarket()
-    if EnvConfig.configmode == EnvConfig.production
-        usdtdf = Bybit.get24h()
-        bq = [basequote(s) for s in usdtdf.symbol]
-        @assert length(bq) == size(usdtdf, 1)
-        nbq = [!isnothing(bqe) for bqe in bq]
-        usdtdf = usdtdf[nbq, :]
-        bq = [bqe.basecoin for bqe in bq if !isnothing(bqe)]
-        @assert length(bq) == size(usdtdf, 1)
-        usdtdf[!, :basecoin] = bq
-        usdtdf = usdtdf[!, Not(:symbol)]
-        # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :]
-        usdtdf = filter(row -> !(row.basecoin in baseignore), usdtdf)
-        return usdtdf
-    else  # test or training
-        df = DataFrame(names(["base", "quote", "quotevolume24h", "pricechangepercent", "lastprice", "askprice", "bidprice"]))
-        for base in EnvConfig.bases
-            push!(df, (
-                base,
-                lowercase(EnvConfig.cryptoquote),
-                15000000.0, # "quotevolume24h" = quote volume USDT
-                5.0,        # "pricechangepercent"
-                100.0,      # "lastprice"
-                101.0,      # "askprice"
-                99.7        # "bidprice"
-            ))
-        end
-    end
-    return df
+    usdtdf = Bybit.get24h()
+    bq = [basequote(s) for s in usdtdf.symbol]
+    @assert length(bq) == size(usdtdf, 1)
+    nbq = [!isnothing(bqe) for bqe in bq]
+    usdtdf = usdtdf[nbq, :]
+    bq = [bqe.basecoin for bqe in bq if !isnothing(bqe)]
+    @assert length(bq) == size(usdtdf, 1)
+    usdtdf[!, :basecoin] = bq
+    usdtdf = usdtdf[!, Not(:symbol)]
+    # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :]
+    usdtdf = filter(row -> !(row.basecoin in baseignore), usdtdf)
+    return usdtdf
 end
 
-"Returns a DataFrame[:base, :locked, :free] of wallet/portfolio balances"
-function balances()
-    df = DataFrame()
-    if EnvConfig.configmode == EnvConfig.production
-        bdf = Bybit.balances()[:, [:coin, :locked, :availableToWithdraw]]
-        df[:, :base] = lowercase.(bdf[!, :coin])
-        df[:, :locked] = bdf[!, :locked]
-        df[:, :free] = bdf[!, :availableToWithdraw]
-    else  # test or training
-        initialusdt = 10000.0
-        push!(df, ("usdt", 0.0, initialusdt))
-    end
-    return df
-end
+"Returns a DataFrame[:accounttype, :coin, :locked, :free] of wallet/portfolio balances"
+balances() = Bybit.balances()
 
 """
 Appends a balances DataFrame with the USDT value of the base asset using usdtdf[:lastprice] and returns it as DataFrame[:base, :locked, :free, :usdt].
 """
 function portfolio!(balancesdf, usdtdf)
-    if EnvConfig.configmode == EnvConfig.production
-        balancesdf[:, :sym] = [symbolusdt(b) for b in balancesdf[!, :base]]
-        balancesdf = leftjoin(balancesdf, usdtdf[!, [:symbol, :lastprice]], on = :sym => :symbol)
-        balancesdf.lastprice = coalesce.(balancesdf.lastprice, 1.0f0)
-        balancesdf[:, :usdt] = (balancesdf.locked + balancesdf.free) * balancesdf.lastprice
-        balancesdf = balancesdf[!, Not([:lastprice, :sym])]
-    else  # test or training
-        initialusdt = 10000.0
-        push!(balancesdf, ("usdt", 0.0, initialusdt, initialusdt))
-    end
+    balancesdf[:, :sym] = [symbolusdt(b) for b in balancesdf[!, :base]]
+    balancesdf = leftjoin(balancesdf, usdtdf[!, [:symbol, :lastprice]], on = :sym => :symbol)
+    balancesdf.lastprice = coalesce.(balancesdf.lastprice, 1.0f0)
+    balancesdf[:, :usdt] = (balancesdf.locked + balancesdf.free) * balancesdf.lastprice
+    balancesdf = balancesdf[!, Not([:lastprice, :sym])]
     return balancesdf
 end
 
@@ -336,5 +297,14 @@ Order is rejected (but order created) if `limitprice` < current price in order t
 Returns `nothing` in case order execution fails.
 """
 createsellorder(base::String; limitprice, usdtquantity) = Bybit.createorder(symbolusdt(base), "Sell", usdtquantity / limitprice, limitprice)
+
+function changeorder(base::String, orderid; limitprice=nothing, usdtquantity=nothing)
+    oo = Bybit.order(orderid)
+    if isnothing(oo)
+        return nothing
+    end
+
+    Bybit.amendorder(symbolusdt(base), orderid, quantity=(isnothing(usdtquantity) ? nothing : usdtquantity / (isnothing(limitprice) ? oo.limitprice : limitprice)), limitprice=limitprice)
+end
 
 end  # of module

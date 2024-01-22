@@ -69,8 +69,8 @@ function defaultohlcv(base, interval="1m", rows=0)::OhlcvData
     return ohlcv
 end
 
-basesymbol(ohlcv::OhlcvData) = ohlcv.base
-quotesymbol(ohlcv::OhlcvData) = ohlcv.qte
+basecoin(ohlcv::OhlcvData) = ohlcv.base
+quotecoin(ohlcv::OhlcvData) = ohlcv.qte
 exchange(ohlcv::OhlcvData) = ohlcv.xch
 interval(ohlcv::OhlcvData) = ohlcv.interval
 dataframe(ohlcv::OhlcvData) = ohlcv.df

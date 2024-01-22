@@ -1,6 +1,3 @@
-# using Pkg;
-# Pkg.add(["JSON"])
-
 """
 Provides
 
@@ -11,10 +8,8 @@ Provides
 
 """
 module EnvConfig
-using Logging, Dates, Pkg
+using Logging, Dates, Pkg, JSON3
 export authorization, test, production, training, now, timestr
-
-import JSON
 
 @enum Mode test production training
 cryptoquote = "usdt"
@@ -51,15 +46,15 @@ struct Authentication
 
     function Authentication()
         auth = Dict()
-        if configmode == production
+        if configmode != test
             filename = normpath(joinpath(authpath, "auth.json"))
         else  # must be test
-            filename = normpath(joinpath(authpath, "auth.json"))   # "auth_Tst1.json" no longer valid
+            filename = normpath(joinpath(authpath, "authtest.json"))
         end
         dicttxt = open(filename, "r") do f
             read(f, String)  # file information to string
         end
-        auth = JSON.parse(dicttxt)  # parse and transform data
+        auth = JSON3.read(dicttxt, Dict)  # parse and transform data
         # println(mode, auth)
         new(auth["name"], auth["key"], auth["secret"])
     end

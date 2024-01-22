@@ -110,7 +110,7 @@ end
 
 function trackohlc(ohlcv::Ohlcv.OhlcvData, rkeys, trendrwfactors, gainthresholds, gaps, selfmonitorset)
     tdf = DataFrame()
-    asset = Ohlcv.basesymbol(ohlcv)
+    asset = Ohlcv.basecoin(ohlcv)
     println("$(EnvConfig.now()) calculating F002 features for $asset")
     f2 = Features.Features002(ohlcv)
     for kix in eachindex(rkeys)

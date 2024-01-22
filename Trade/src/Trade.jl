@@ -53,9 +53,7 @@ mutable struct Cache
         @assert backtestchunk >= 0
         baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
         backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        tradechances = TradingStrategy.TradeChances000()
-        # tradechances = TradingStrategy.TradeChances001()
-        # tradechances = TradingStrategy.TradeChances002()
+        tradechances = TradingStrategy.TradeChances004()
         openorders = orderdataframe()
         orderlog = orderdataframe()
         transactionlog = filldataframe()
@@ -73,9 +71,6 @@ ohlcvdf(cache, base) = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
 backtest(cache) = cache.backtestchunk > 0
 dummytime() = DateTime("2000-01-01T00:00:00")
 
-function concatstringarray(strarr)
-
-end
 function orderdataframe()
     return DataFrame(
         base=String[],
@@ -621,9 +616,9 @@ function trade!(cache)
                 neworder!(cache, order.base, tc.sellprice, qty, "SELL", tc)
                 # getorder and check that it is filled
             else
-                if order.base in keys(cache.tradechances.tcs.basedict)  #TODO go through TradingStrategy function
+                newtc = TradingStrategy.tradechanceofbase(cache.tradechances, order.base)
+                if !isnothing(newtc)
                     # buy price not reached but other new buy chance available - hence, cancel old buy order and use new chance
-                    newtc = cache.tradechances.tcs.basedict[order.base]  #TODO go through TradingStrategy function
                     closeorder!(cache, order, "BUY", "CANCELED")
                     # buy order is closed, now issue a new buy order
                     neworder!(cache, order.base, newtc.buyprice, buyqty(cache, order.base), "BUY", newtc)
@@ -637,10 +632,11 @@ function trade!(cache)
         end
     end
     # check remaining new base buy chances
-    for (base, tc) in cache.tradechances.tcs.basedict  #TODO go through TradingStrategy function
+    for base in TradingStrategy.baseswithnewtradechances(cache.tradechances)
         usdttotal, _, _ = usdtliquidity(cache, base)
         if usdttotal <= CryptoXch.minimumquotevolume
             # no new order if asset is already in possession
+            tc = TradingStrategy.tradechanceofbase(cache.tradechances, order.base)
             neworder!(cache, base, tc.buyprice, buyqty(cache, base), "BUY", tc)
             TradingStrategy.deletenewbuychanceofbase!(cache.tradechances, base)
         end

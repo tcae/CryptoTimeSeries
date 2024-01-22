@@ -40,6 +40,8 @@ rm(dirname * "_2")
 # @test EnvConfig.datafile("btc_OHLCV", "_df.csv") == "/home/tor/crypto/Features/btc_OHLCV_df.csv"
 @test EnvConfig.Authentication().key == "vvUXlBGy67KRzHlLYJ"
 
+EnvConfig.init(test)
+@test EnvConfig.Authentication().key == "u3xKh7YRaqgP2PDnS8"
 
 
 end

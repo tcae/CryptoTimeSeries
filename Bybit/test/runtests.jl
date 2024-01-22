@@ -1,6 +1,6 @@
 using Bybit, EnvConfig, Test, Dates, DataFrames
 
-EnvConfig.init(production)
+EnvConfig.init(test)
 
 @testset "Bybit tests" begin
 
@@ -27,17 +27,24 @@ EnvConfig.init(production)
     @test size(dayresult, 2) >= 6
     @test all([s in ["askprice", "bidprice", "lastprice", "quotevolume24h", "pricechangepercent", "symbol"] for s in names(dayresult)])
     @test size(dayresult, 1) == 1
+    btcprice = dayresult[1, :lastprice][1,1]
 
     klines = Bybit.getklines("BTCUSDT")
     @test isa(klines, AbstractDataFrame)
 
 
-    oid = Bybit.createorder("BTCUSDT", "Buy", 0.00001, 39899)
+    oid = Bybit.createorder("BTCUSDT", "Buy", 0.00001, btcprice * 0.9)
 
     oo = Bybit.order(oid)
     @test isa(oo, NamedTuple)
     @test length(oo) == 12
     @test oo.orderid == oid
+
+    oidc = Bybit.amendorder("BTCUSDT", oid; quantity=0.00011)
+    @test oidc == oid
+
+    oidc = Bybit.amendorder("BTCUSDT", oid; limitprice=btcprice * 0.8)
+    @test oidc == oid
 
     oo = Bybit.openorders()
     @test isa(oo, AbstractDataFrame)
@@ -52,6 +59,6 @@ EnvConfig.init(production)
 
     wb = Bybit.balances()
     @test isa(wb, AbstractDataFrame)
-    @test size(wb, 2) >= 18
+    @test size(wb, 2) == 4
 
 end

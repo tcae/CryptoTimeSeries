@@ -120,19 +120,20 @@ enddt = DateTime("2020-09-11T22:49:00")
     # EnvConfig.init(EnvConfig.test)
     EnvConfig.init(EnvConfig.production)
     btcprice = mdf[mdf.basecoin .== "btc", :lastprice][1,1]
-    println("btcprice=$btcprice  (+1%=$(btcprice * 1.01))")
+    # println("btcprice=$btcprice  (+1%=$(btcprice * 1.01))")
 
     bdf = CryptoXch.balances()
-    @test size(bdf, 2) == 3
+    @test size(bdf, 2) == 4
     # println(bdf)
 
     oodf = CryptoXch.getopenorders(nothing)
-    println("getopenorders(nothing): $oodf")
+    @test isa(oodf, AbstractDataFrame)
+    # println("getopenorders(nothing): $oodf")
 
     oo2 = CryptoXch.getorder("invalid_or_unknown_id")
     @test isnothing(oo2)
 
-    oid = CryptoXch.createbuyorder("btc", limitprice=91001.03, usdtquantity=26.01) # limitprice out of allowed range
+    oid = CryptoXch.createbuyorder("btc", limitprice=btcprice*1.2, usdtquantity=26.01) # limitprice out of allowed range
     @test isnothing(oid)
     # println("createbuyorder: $(string(oid)) - error expected")
     oid = CryptoXch.createbuyorder("btc", limitprice=btcprice * 1.01, usdtquantity=26.01) # PostOnly will cause reject if price < limitprice due to taker order
@@ -143,13 +144,26 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test oo2.orderid == oid
     @test oo2.status == "Rejected"
 
-    oid = CryptoXch.createbuyorder("btc", limitprice=19001.0003, usdtquantity=26.01)
+    oid = CryptoXch.createbuyorder("btc", limitprice=btcprice * 0.9, usdtquantity=6.01)
     # println("createbuyorder: $(string(oid))")
     oo2 = CryptoXch.getorder(oid)
     # println("getorder: $oo2")
     @test oid == oo2.orderid
+    # println("getorder: $(CryptoXch.getorder(oid))")
+
+    oidc = CryptoXch.changeorder("btc", oid; usdtquantity=4.02)
+    @test oidc == oid
+    # println("getorder: $(CryptoXch.getorder(oid))")
+
+    oidc = CryptoXch.changeorder("btc", oid; limitprice=btcprice * 0.8)
+    @test oidc == oid
+    # println("getorder: $(CryptoXch.getorder(oid))")
+
 
     oodf = CryptoXch.getopenorders(nothing)
+    @test isa(oodf, AbstractDataFrame)
+    @test (size(oodf, 1) > 0)
+    @test (size(oodf, 2) == 12)
     # println("getopenorders(nothing): $oodf")
     oodf = CryptoXch.getopenorders("xrp")
     # println("getopenorders(\"xrp\"): $oodf")

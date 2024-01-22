@@ -69,28 +69,22 @@ end
 
 function portfolioselect(usdtdf)
     pdf = DataFrame()
-    if EnvConfig.configmode == EnvConfig.production
-        portfolio = CryptoXch.balances()
-        # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
-        # pdf[:, :basevolume] = [parse(Float32, d["WalletBalance"]) + parse(Float32, d["locked"]) for d in portfolio]
-        pdf[:, :basevolume] = [parse(Float32, d["walletBalance"]) for d in portfolio]
-        pdf[:, :base] = [lowercase(d["coin"]) for d in portfolio]
-        pdf = filter(r -> r.base in usdtdf.base, pdf)
-        pdf[:, :usdt] .= 0.0
-        pusdtdf = filter(r -> r.base in pdf.base, usdtdf)
-        sort!(pdf, [:base])
-        sort!(pusdtdf, [:base])
-        @assert length(pdf.base) == length(pusdtdf.base)
-        for ix in 1:length(pdf.base)
-            @assert pdf[ix, :base] == pusdtdf[ix, :base]
-            pdf[ix, :usdt] = pusdtdf[ix, :lastprice] * pdf[ix, :basevolume]
-        end
-        pdf = pdf[pdf.usdt .>= 10, :]
-    else
-        pdf[:, :basevolume] = [1.0 for base in EnvConfig.bases]
-        pdf[:, :base] = [base for base in EnvConfig.bases]
-        pdf[:, :usdt] .= 0.0
+    portfolio = CryptoXch.balances()
+    # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
+    # pdf[:, :basevolume] = [parse(Float32, d["WalletBalance"]) + parse(Float32, d["locked"]) for d in portfolio]
+    pdf[:, :basevolume] = [parse(Float32, d["walletBalance"]) for d in portfolio]
+    pdf[:, :base] = [lowercase(d["coin"]) for d in portfolio]
+    pdf = filter(r -> r.base in usdtdf.base, pdf)
+    pdf[:, :usdt] .= 0.0
+    pusdtdf = filter(r -> r.base in pdf.base, usdtdf)
+    sort!(pdf, [:base])
+    sort!(pusdtdf, [:base])
+    @assert length(pdf.base) == length(pusdtdf.base)
+    for ix in 1:length(pdf.base)
+        @assert pdf[ix, :base] == pusdtdf[ix, :base]
+        pdf[ix, :usdt] = pusdtdf[ix, :lastprice] * pdf[ix, :basevolume]
     end
+    pdf = pdf[pdf.usdt .>= 10, :]
     return pdf
 end
 

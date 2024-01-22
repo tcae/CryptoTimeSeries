@@ -4,9 +4,9 @@ using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, Formatting
 using EnvConfig
 
 # base URL of the ByBit API
-BYBIT_API_REST = "https://api.bybit.com"
-BYBIT_API_WS = "to be defined for Bybit"  # "wss://stream.binance.com:9443/ws/"
-BYBIT_API_USER_DATA_STREAM ="to be defined for Bybit"
+# BYBIT_API_REST = "https://api.bybit.com"
+# BYBIT_API_WS = "to be defined for Bybit"  # "wss://stream.binance.com:9443/ws/"
+# BYBIT_API_USER_DATA_STREAM ="to be defined for Bybit"
 
 const recv_window = "5000"
 const kline_interval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
@@ -85,7 +85,7 @@ end
 
 function checkresponse(response)
     if response.status != 200  # response.status::Int16
-        println(response)
+        @warn "HTTP response=$response"
     end
     for header in response.headers  # response.headers::Vector{pair}
         if (header[1] == "X-Bapi-Limit-Status") && (parse(Int, header[2]) == 1)
@@ -101,61 +101,80 @@ end
 
 function HttpPrivateRequest(method, endPoint, params, Info, public_key=EnvConfig.authorization.key, secret_key=EnvConfig.authorization.secret)
     methodpost = method == "POST"
-    time_stamp = string(timestamp())
-    payload = methodpost ? dict2ParamsPost(params) : dict2ParamsGet(params)
-    signature = genSignature(time_stamp, payload, public_key, secret_key)
-    headers = Dict(
-        "X-BAPI-API-KEY" => public_key,
-        "X-BAPI-SIGN" => signature,
-        "X-BAPI-SIGN-TYPE" => "2",
-        "X-BAPI-TIMESTAMP" => time_stamp,
-        "X-BAPI-RECV-WINDOW" => recv_window,
-        "Content-Type" => "application/json"  # ; charset=utf-8"
-    )
-    response = url = ""
-    body = Dict()
+    url = headers = payload = returnbody = body = nothing
+    nextrequestrequired = true
+    requestcount = 0
     try
-        if methodpost
-            # headers["Content-Type"] = "application/json; charset=utf-8"
-            url = BYBIT_API_REST * endPoint
-            response = HTTP.request(method, url, headers, payload)
-        else
-            url = BYBIT_API_REST * endPoint * "?" * payload
-            response = HTTP.request(method, url, headers)
+        while nextrequestrequired
+            payload = methodpost ? dict2ParamsPost(params) : dict2ParamsGet(params)
+            time_stamp = string(timestamp())
+            signature = genSignature(time_stamp, payload, public_key, secret_key)
+            headers = Dict(
+                "X-BAPI-API-KEY" => public_key,
+                "X-BAPI-SIGN" => signature,
+                "X-BAPI-SIGN-TYPE" => "2",
+                "X-BAPI-TIMESTAMP" => time_stamp,
+                "X-BAPI-RECV-WINDOW" => recv_window,
+                "Content-Type" => "application/json"  # ; charset=utf-8"
+            )
+            response = url = ""
+            bybitapirest = EnvConfig.configmode == EnvConfig.test ? "https://api-testnet.bybit.com" : "https://api.bybit.com"
+            if methodpost
+                # headers["Content-Type"] = "application/json; charset=utf-8"
+                url = bybitapirest * endPoint
+                response = HTTP.request(method, url, headers, payload)
+            else
+                url = bybitapirest * endPoint * "?" * payload
+                response = HTTP.request(method, url, headers)
+            end
+            requestcount += 1
+            checkresponse(response)
+            body = String(response.body)
+            body = JSON3.read(body, Dict)
+            body = dictstring2values!(body)
+            if body["retCode"] != 0
+                @warn "HttpPrivateRequest #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
+                # println("public_key=$public_key, secret_key=$secret_key")
+                # "retCode" => 170193, "retMsg" => "Buy order price cannot be higher than 43183.1929USDT."
+            end
+            # @info "$(Dates.now()) HttpPrivateRequest #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body \nreturnbody=$(string(returnbody))"
+            # println("$(EnvConfig.now()) body=$body \nreturnbody=$(string(returnbody))")
+            nextrequestrequired = (requestcount <=3) && ("result" in keys(body)) && ("nextPageCursor" in keys(body["result"])) && (length(body["result"]["nextPageCursor"]) > 0) && ("list" in keys(body["result"]))
+            if nextrequestrequired
+                params["cursor"] = body["result"]["nextPageCursor"]
+                if !isnothing(returnbody) && (length(returnbody["result"]["list"]) > 0)
+                    returnbody["result"]["list"] = vcat(returnbody["result"]["list"], body["result"]["list"])
+                end
+                delete!(body["result"], "nextPageCursor")
+            end
+            returnbody = isnothing(returnbody) ? body : returnbody
         end
-        checkresponse(response)
-        body = String(response.body)
-        body = JSON3.read(body, Dict)
-        body = dictstring2values!(body)
-        if body["retCode"] != 0
-            @warn "HttpPrivateRequest $method reurn code != 0 \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
-            # println("public_key=$public_key, secret_key=$secret_key")
-            # "retCode" => 170193, "retMsg" => "Buy order price cannot be higher than 43183.1929USDT."
-        end
-        return body
     catch err
-        @error "HttpPrivateRequest $method error $err" url=url headers=headers payload=payload response=body
+        @error "HttpPrivateRequest #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
         # println("public_key=$public_key, secret_key=$secret_key")
         # println(err)
         # rethrow()
     end
-    return body
+    return returnbody
 end
 
 function HttpPublicRequest(method, endPoint, params::Union{Dict, Nothing}, Info)
+    return HttpPrivateRequest(method, endPoint, params, Info)
+
     methodpost = method == "POST"
     payload = methodpost ? dict2ParamsPost(params) : dict2ParamsGet(params)
     response = url = ""
     body = Dict()
+    bybitapirest = EnvConfig.configmode == EnvConfig.test ? "https://api-testnet.bybit.com" : "https://api.bybit.com"
     try
         if methodpost
-            url = BYBIT_API_REST * endPoint
+            url = bybitapirest * endPoint
             response = HTTP.request(method, url, payload)
         elseif isnothing(params)
-            url = BYBIT_API_REST * endPoint
+            url = bybitapirest * endPoint
             response = HTTP.request(method, url)
         else
-            url = BYBIT_API_REST * endPoint * "?" * payload
+            url = bybitapirest * endPoint * "?" * payload
             response = HTTP.request(method, url)
         end
         checkresponse(response)
@@ -193,7 +212,8 @@ function dictstring2values!(bybitdict::T) where T <: AbstractDict
         "minOrderQty", "minTradeQty", "basePrecision", "quotePrecision", "minTradeAmt",
         "maxTradeQty", "maxTradeAmt", "minPricePrecision", "minOrderAmt", "o", "h", "l", "c", "v",
         "price", "qty", "avgPrice", "leavesQty", "leavesValue", "cumExecQty", "cumExecValue",
-        "cumExecFee", "triggerPrice", "takeProfit", "stopLoss", "maxOrderAmt"]
+        "cumExecFee", "triggerPrice", "takeProfit", "stopLoss", "maxOrderAmt",
+        "availableToWithdraw", "locked"]
     datetimekeys = ["timeSecond"]
     nostringdatetimemillikeys = ["time", "t"]
     datetimemillikeys = ["createdTime", "updatedTime", "nextFundingTime", "deliveryTime", "launchTime"]
@@ -422,18 +442,6 @@ function openorders(;symbol=nothing, orderid=nothing, orderLinkId=nothing)
     isnothing(orderid) ? nothing : params["orderId"] = orderid
     isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
     oo = HttpPrivateRequest("GET", "/v5/order/realtime", params, "openorders")
-    while ("nextPageCursor" in keys(oo["result"])) && (length(oo["result"]["nextPageCursor"]) > 0)
-        params["cursor"] = oo["result"]["nextPageCursor"]
-        oo2 = HttpPrivateRequest("GET", "/v5/order/realtime", params, "openorders 2")
-        if length(oo2["result"]["list"]) > 0
-            oo["result"]["list"] = vcat(oo["result"]["list"], oo2["result"]["list"])
-            if "nextPageCursor" in keys(oo2["result"])
-                oo["result"]["nextPageCursor"] = oo2["result"]["nextPageCursor"]
-            end
-        else
-            delete!(oo["result"], "nextPageCursor")
-        end
-    end
     df = DataFrame()
     if length(oo["result"]["list"]) > 0
         for col in keys(oo["result"]["list"][1])
@@ -544,6 +552,52 @@ function createorder(symbol::String, orderside::String, quantity::Real, price::R
     end
 end
 
+"Only provide *quantity* or *limitprice* if they have changed values."
+function amendorder(symbol::String, orderid::String; quantity=nothing::Union{Nothing, Real}, limitprice=nothing::Union{Nothing, Real})
+    @assert isnothing(quantity) ? true : quantity > 0.0 "changeorder $symbol quantity of $quantity cannot be <=0 for order type Limit"
+    @assert isnothing(limitprice) ? true : limitprice > 0.0 "changeorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
+    syminfo = symbolinfo(symbol)
+    if isnothing(syminfo)
+        @warn "no instrument info for $symbol"
+        return nothing
+    end
+    if syminfo.status != "Trading"
+        @warn "$symbol status=$(syminfo.status) != Trading"
+        return nothing
+    end
+    ont = order(orderid)
+    if isnothing(ont)
+        return nothing
+    end
+    params = Dict(
+        "category" => "spot",
+        "symbol" => symbol,
+        "orderId" => orderid
+    )
+    if isnothing(limitprice)
+        changeprice =  ont.limitprice
+    else
+        changeprice =  limitprice
+        pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
+        limitprice = round(limitprice, digits=pricedigits)
+        params["price"] = Formatting.format(limitprice, precision=pricedigits)
+    end
+    if !isnothing(quantity)
+        quantity = quantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : quantity
+        quantity = quantity < syminfo.minbaseqty ? syminfo.minbaseqty : quantity
+        qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
+        quantity = round(quantity, digits=qtydigits)
+        params["qty"] = Formatting.format(quantity, precision=qtydigits)
+    end
+
+    oo = HttpPrivateRequest("POST", "/v5/order/amend", params, "amend order")
+    if "orderId" in keys(oo["result"])
+        return oo["result"]["orderId"]
+    else
+        return nothing
+    end
+end
+
 """
 Returns DataFrame with 18 columns of wallet positions of Unified Trade Account
 ```
@@ -575,11 +629,17 @@ function balances()
     if length(response["result"]["list"]) > 1
         @warn "unexpected more than 1 account type Bybit balance info: $response"
     end
-    df = DataFrame()
-    if length(response["result"]["list"]) > 0
-        if ("coin" in keys(response["result"]["list"][1])) && (length(response["result"]["list"][1]["coin"]) > 0)
-            for col in keys(response["result"]["list"][1]["coin"][1])
-                df[:, col] = [entry[col] for entry in response["result"]["list"][1]["coin"]]
+    # println(response)
+    df = DataFrame(accounttype=String[], coin=String[], locked=Float32[], free=Float32[])
+    if "list" in keys(response["result"])
+        for account in response["result"]["list"]
+            if account["accountType"] != "UNIFIED"
+                @warn "unexpected account type $(account["accountType"])"
+            end
+            if "coin" in keys(account)
+                for coin in account["coin"]
+                    push!(df, (accounttype=account["accountType"], coin=coin["coin"], locked=coin["locked"], free=coin["availableToWithdraw"]))
+                end
             end
         end
     else

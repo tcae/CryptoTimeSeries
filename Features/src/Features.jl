@@ -82,7 +82,7 @@ The index array is either created if not present or is extended.
     - the first in case of forward == false or the last in case of forward == true will always be added
 
 """
-function regressionextremesix!(extremeix::Union{Nothing, Vector{T}}, regressiongradients, startindex; forward=true) where {T<:Integer}
+function regressionextremesix!(extremeix::Union{Nothing, Vector{T}}, regressiongradients, startindex=firstindex(regressiongradients); forward=true) where {T<:Integer}
     regend = lastindex(regressiongradients)
     regstart = firstindex(regressiongradients)
     @assert indexinrange(startindex, regstart, regend) "index: $startindex  len: $regend"
@@ -400,7 +400,7 @@ end
     intercept = (sum_y - gradient*(sum_x)) / windowsize
     regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
     gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
-    return regression_y, gradient
+    return regression_y[windowsize:end], gradient[windowsize:end]
 end
 
 """
@@ -418,7 +418,7 @@ function rollingregression(y, windowsize, startindex)
     intercept = (sum_y - gradient*(sum_x)) / windowsize
     regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
     gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
-    return regression_y, gradient
+    return regression_y[windowsize:end], gradient[windowsize:end]
 end
 
 """
@@ -463,23 +463,24 @@ Returns a tuple of vectors for each x calculated calculated back using the last 
 - y distance from regression line of last `window` points
 """
 function rollingregressionstd(y, regr_y, grad, window)
-    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
+    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
     normy = similar(y)
     std = similar(y)
     mean = similar(y)
     # normy .= 0
     # std .= 0
     # mean .= 0
-    for ix1 in size(y, 1):-1:1
+    for ix1 in size(y, 1):-1:window
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
-            normy[ix2] = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            normy[ix2] = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
         end
         mean[ix1] = Statistics.mean(normy[ix2min:ix1])
         std[ix1] = Statistics.stdm(normy[ix2min:ix1], mean[ix1])
     end
     std[1] = 0  # not avoid NaN
-    return std, mean, normy
+    return std[window:end], mean[window:end], normy[window:end]
 end
 
 """
@@ -487,7 +488,8 @@ Acts like rollingregressionstd(y, regr_y, grad, window) but starts calculation a
 In order to get only the std, mean, normy without padding use the subvectors *[windowsize:end]*
 """
 function rollingregressionstd(y, regr_y, grad, window, startindex)
-    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
+    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
     starty = max(1, startindex-window+1)
     offset = starty - 1
     normy = similar(y[starty:end])
@@ -496,10 +498,10 @@ function rollingregressionstd(y, regr_y, grad, window, startindex)
     # normy .= 0
     # std .= 0
     # mean .= 0
-    for ix1 in size(y, 1):-1:startindex
+    for ix1 in size(y, 1):-1:max(startindex, window)
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
-            normy[ix2-offset] = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            normy[ix2-offset] = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
         end
         ix3 = ix2min-offset
         ix4 = ix1-offset
@@ -507,14 +509,16 @@ function rollingregressionstd(y, regr_y, grad, window, startindex)
         std[ix4] = Statistics.stdm(normy[ix3:ix4], mean[ix4])
     end
     std[1] = 0  # not avoid NaN
-    return std, mean, normy
+    startindex = max(startindex, window)
+    return std[startindex:end], mean[startindex:end], normy[startindex:end]
 end
 
 """
 calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *y*
 """
 function rollingregressionstd!(std, y, regr_y, grad, window)
-    @assert size(y) == size(regr_y) == size(grad) "$(size(y)) == $(size(regr_y)) == $(size(grad))"
+    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
+    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
     if (length(y) > 0)
         startindex = isnothing(std) ? 1 : (length(std) < length(y)) ? length(std)+1 : length(y)
         stdnew, mean, normy = rollingregressionstd(y, regr_y, grad, window, startindex)
@@ -532,17 +536,18 @@ end
 
     """ don't use - this is a version for debug reasons """
 function rollingregressionstdxt(y, regr_y, grad, window)
-    @assert size(y, 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(y, 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
+    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
+    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
     normy = similar(y, (size(y, 1), window))
     std = similar(y)
     mean = similar(y)
-    for ix1 in size(y, 1):-1:1
+    for ix1 in size(y, 1):-1:window
         ix2min = max(1, ix1 - window + 1)
         for ix2 in ix2min:ix1
             # @assert 0<ix2<=window "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), window: $window"
             # @assert 0<ix1<=size(y, 1) "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), size(y, 1): $(size(y, 1))"
             ix3 = ix2-ix2min+1
-            ny = y[ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            ny = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
             # Logging.@info "check" ix1 ix2 ix2min ix3 ny
             normy[ix1, ix3] = ny
         end
@@ -551,12 +556,12 @@ function rollingregressionstdxt(y, regr_y, grad, window)
         std[1] = 0  # not avoid NaN
     end
     # Logging.@info "check" normy y regr_y grad std mean
-    return std, mean, normy
+    return std[window:end], mean[window:end], normy[window:end]
 end
 
 """
 
-For each x starting at *startindex-windowsize+1*:
+For each x starting at *startindex-windowsize+1*: (starindex is related to ymv)
 
 - expand regression to the length of window size
 - subtract regression from y to remove trend within window
@@ -572,16 +577,22 @@ In order to get only the std without padding use the subvector *[windowsize:end]
 """
 function rollingregressionstdmv(ymv, regr_y, grad, window, startindex)
     @assert size(ymv, 1) > 0
-    @assert size(ymv[1], 1) == size(regr_y, 1) == size(grad, 1) >= window > 0 "$(size(ymv[1], 1)), $(size(regr_y, 1)), $(size(grad, 1)), $window"
-    ymvlen = size(ymv, 1)
+    @assert size(ymv[1], 1) >= window  > 0 "$(size(ymv[1], 1)), $window"
+    @assert (size(ymv[1], 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(ymv[1], 1)=$(size(ymv[1], 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
+    ymvlen = size(ymv, 1) # number of ohlc == 4
     normy = repeat(similar([ymv[1][1]], window * ymvlen))
-    std = similar(regr_y[startindex:end])
-    for ix1 in startindex:size(regr_y, 1)
+    std = similar(regr_y)
+    startindex = max(startindex, window)
+    for ix1 in startindex:lastindex(ymv[1])
         ix2min = max(1, ix1 - window + 1)
         thiswindow = ix1 - ix2min + 1
+        normy .= 0.0
+        normyix = 1
         for ymvix in 1:ymvlen
-            for ix2 in ix2min:ix1
-                normy[ix2-ix2min+1 + (ymvix-1)*thiswindow] = ymv[ymvix][ix2] - (regr_y[ix1] - grad[ix1] * (ix1 - ix2))
+            for ix2 in (ix1 - window + 1):ix1
+                # println("normyix=$normyix length(normy)=$(length(normy)) ix1=$ix1 ymvix=$ymvix ix2=$ix2")
+                normy[normyix] = ymv[ymvix][ix2] - (regr_y[ix1-startindex+1] - grad[ix1-startindex+1] * (ix1 - ix2))
+                normyix += 1
             end
         end
         normylen = ymvlen*thiswindow
@@ -596,8 +607,9 @@ end
 calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *ymv*
 """
 function rollingregressionstdmv!(std, ymv, regr_y, grad, window)
+    @warn "broken regression test"
     @assert size(ymv, 1) > 0
-    @assert size(ymv[1]) == size(regr_y) == size(grad) "$(size(ymv)) == $(size(regr_y)) == $(size(grad))"
+    @assert size(ymv[1],1)-window+1 == size(regr_y,1) == size(grad,1) "$(size(ymv[1],1))-$window+1 == $(size(regr_y,1)) == $(size(grad,1))"
     ymvlen = size(ymv, 1)
     if (length(regr_y) > 0)
         startindex = isnothing(std) ? 1 : (length(std) < length(regr_y)) ? length(std)+1 : length(regr_y)
@@ -607,7 +619,7 @@ function rollingregressionstdmv!(std, ymv, regr_y, grad, window)
         elseif length(std) < length(regr_y)  # only change regression_y and gradient if it makes sense
             # std = append!(std, stdnew[startindex:end])
             std = append!(std, stdnew)
-            @assert length(std) == length(regr_y)
+            @assert length(std) == length(regr_y) "length(std)=$(length(std)) == length(regr_y)=$(length(regr_y))"
         else
             @warn "nothing to append when length(std) >= length(y)" length(std) ymvlen
         end
@@ -907,10 +919,12 @@ function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
     df = Ohlcv.dataframe(ohlcv)
     reqmin = requiredminutes(regrwindows)
     @assert size(df, 1) >= reqmin
-    lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
-    maxfirstix = max((lastix - reqmin + 1), firstindex(df, 1))
-    firstix = firstix < reqmin ? reqmin : firstix
-    firstix = firstix > maxfirstix ? maxfirstix : firstix
+    lastix = lastix > lastindex(df, 1) ? lastindex(df, 1) : lastix
+    firstix = firstix < (firstindex(df, 1) + reqmin - 1) ? (firstindex(df, 1) + reqmin - 1) : firstix
+    @assert firstix <= lastix
+    # maxfirstix = max((lastix - reqmin + 1), firstindex(df, 1))
+    # firstix = firstix < reqmin ? reqmin : firstix
+    # firstix = firstix > maxfirstix ? maxfirstix : firstix
     return Features002(ohlcv, getfeatures002regr(ohlcv, firstix, lastix, regrwindows), getrelvolumes002(ohlcv, firstix, lastix), getfeatures002!, firstix, lastix, reqmin)
 end
 
@@ -945,6 +959,7 @@ regry(f2::Features002, regrminutes) = f2.regr[regrminutes].regry[ohlcvix(f2, 1):
 std(f2::Features002, regrminutes) =   f2.regr[regrminutes].std[ohlcvix(f2, 1):end]
 ohlcvdataframe(f2::Features002) = Ohlcv.dataframe(f2.ohlcv)[ohlcvix(f2, 1):end, :]
 opentime(f2::Features002) = Ohlcv.dataframe(f2.ohlcv)[ohlcvix(f2, 1):end, :opentime]
+regrwindows(f2::Features002) = keys(f2.regr)
 
 """
 In general don't call this function directly but via Feature002 constructor `Features.Features002(ohlcv)`
@@ -959,7 +974,7 @@ Is called by Features002 constructor and returns a Dict of (short, long) => rela
 """
 function getrelvolumes002(ohlcv::OhlcvData, firstix, lastix)::Dict
     ohlcvdf = Ohlcv.dataframe(ohlcv)
-    relvols = [relativevolume(ohlcvdf[firstix:lastix, :basevolume], s, l) for (s, l) in relativevolumes002]
+    relvols = [relativevolume(ohlcvdf[((lastix-firstix) > l ? firstix : max((lastix-l+1), 1)):lastix, :basevolume], s, l) for (s, l) in relativevolumes002]
     rvd = Dict(zip(relativevolumes002, relvols))
     return rvd
 end
@@ -969,20 +984,23 @@ Is called by Features002 constructor and returns a Dict of regression calculatio
 """
 function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix, regrwindows)::Dict
     # println("getfeatures002 init")
+    Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
-    pivot = Ohlcv.pivot!(ohlcv)[firstix:lastix]
-    open = df.open[firstix:lastix]
-    high = df.high[firstix:lastix]
-    low = df.low[firstix:lastix]
-    close = df.close[firstix:lastix]
-    ymv = [open, high, low, close]
-    @assert length(pivot) >= (lastix - firstix + 1) >= requiredminutes(regrwindows) "length(pivot): $(length(pivot)) >= $(lastix - firstix + 1) >= $(requiredminutes(regrwindows)) (requiredminutes)"
-    @assert firstindex(ohlcv.df[!, :opentime]) <= firstix <= lastix <= lastindex(ohlcv.df[!, :opentime]) "$(firstindex(ohlcv.df[!, :opentime])) <= $firstix <= $lastix <= $(lastindex(ohlcv.df[!, :opentime]))"
     regr = Dict()
     for window in regrwindows
-        regry, grad = rollingregression(pivot, window)
-        std = rollingregressionstdmv(ymv, regry, grad, window, 1)
-        xtrmix = regressionextremesix!(nothing, grad, 1)
+        dfv = view(df, (firstix-window+1):lastix, :)
+        startix = window
+        open = dfv.open
+        high = dfv.high
+        low = dfv.low
+        close = dfv.close
+        ymv = [open, high, low, close]
+        pivot = dfv.pivot
+        # println("firstix=$firstix lastix=$lastix size(df)=$(size(df)) size(dfv)=$(size(dfv))")
+        @assert firstindex(dfv[!, :opentime]) <= startix <= lastindex(dfv[!, :opentime]) "$(firstindex(dfv[!, :opentime])) <= $startix <= $lastix <= $(lastindex(dfv[!, :opentime]))"
+        regry, grad = rollingregression(pivot, window, startix)
+        std = rollingregressionstdmv(ymv, regry, grad, window, startix) # startix is related to ymv
+        xtrmix = regressionextremesix!(nothing, grad)
         regr[window] = Features002Regr(grad, regry, std, xtrmix)
     end
     return regr
@@ -1000,9 +1018,9 @@ function getfeatures002!(f2::Features002, firstix=f2.firstix, lastix=lastindex(f
     if f2.lastix >= lastindex(df, 1)
         return f2
     end
-    lastix = lastix > lastindex(df, 1) ? lastix = lastindex(df, 1) : lastix
+    lastix = lastix > lastindex(df, 1) ? lastindex(df, 1) : lastix
     maxfirstix = max((lastix - requiredminutes(f2) + 1), firstindex(df, 1))
-    firstix = firstix > maxfirstix ? maxfirstix : firstix  # ? is that correct
+    firstix = firstix > maxfirstix ? maxfirstix : firstix
 
     pivot = df[!, :pivot][firstix:lastix]
     open = df.open[firstix:lastix]

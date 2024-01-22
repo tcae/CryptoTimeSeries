@@ -11,7 +11,10 @@ using CategoricalDistributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
 
+@enum InvestProposal hold, sell, buy
+
 const PREDICTIONLISTFILE = "predictionlist.csv"
+
 mutable struct NN
     model
     optim
@@ -245,7 +248,7 @@ function predictionsdataframe(nn::NN, setranges, targets, predictions, f3::Featu
     df[:, "pivot"] = Ohlcv.dataframe(f3.f2.ohlcv).pivot[f3.firstix:end]
     println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
     println(describe(df, :all))
-    fileprefix = uppercase(Ohlcv.basesymbol(f3.f2.ohlcv) * Ohlcv.quotesymbol(f3.f2.ohlcv)) * "_" * nn.fileprefix
+    fileprefix = uppercase(Ohlcv.basecoin(f3.f2.ohlcv) * Ohlcv.quotecoin(f3.f2.ohlcv)) * "_" * nn.fileprefix
     savepredictions(df, fileprefix)
     return fileprefix
 end
@@ -1112,5 +1115,43 @@ function evaluatetest(startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, p
 end
 
 #endregion Evaluation
+
+#region Classifier-001
+mutable struct Classifier001
+    base
+    regrwindow
+    gainthreshold
+    ohlcv
+    f2
+end
+
+function init(base::String, regrwindow::Unsigned, gainthreshold::Real, ohlcv=nothing, f2=nothing)::Union{Classifier001, Nothing}
+    regrwindow = round(Int, regrwindow)
+    @assert regrwindow > 0
+    if length(regrwindow) == 0
+        @warn "Classifier001 init failure due to missing regression window"
+        return nothing
+    end
+    if !isnothing(ohlcv)
+        @assert base == Ohlcv.basecoin(ohlcv)
+        if isnothing(f2)
+            f2 = Features.Features002(ohlcv, regrwindows=[regrwindow])
+        else
+            if !(regrwindow in Features.regrwindows(f2))
+                @warn "Classifier001 init failure due to regression window $regrwindow not found in f2.rgr $(Features.regrwindows(f2))"
+                return nothing
+            end
+        end
+    end
+    cls = Classifier001(ohlcv, f2, base, regrwindow, gainthreshold)
+end
+
+function predict(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)
+    if cls.f2.lastix < ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)
+        cls.f2.update(cls.f2, )
+    end
+end
+#endregion Classifier-001
+
 
 end  # module

@@ -24,7 +24,7 @@ function testohlcvinit(base::String)
 end
 
 function readwrite(ohlcv1)
-    ohlcv2 = Ohlcv.defaultohlcv(Ohlcv.basesymbol(ohlcv1))
+    ohlcv2 = Ohlcv.defaultohlcv(Ohlcv.basecoin(ohlcv1))
     ohlcv2 = Ohlcv.read!(ohlcv2)
     if Ohlcv.haspivot(Ohlcv.dataframe(ohlcv1))
         Ohlcv.dataframe(ohlcv1).pivot = Ohlcv.pivot(Ohlcv.dataframe(ohlcv1))
