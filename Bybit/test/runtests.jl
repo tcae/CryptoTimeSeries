@@ -1,9 +1,9 @@
 using Bybit, EnvConfig, Test, Dates, DataFrames
 
-EnvConfig.init(test)
+EnvConfig.init(test)  # test production
 
 @testset "Bybit tests" begin
-
+    Bybit.init()
     syminfo = Bybit.exchangeinfo()
     @test isa(syminfo, AbstractDataFrame)
     @test size(syminfo, 1) > 100
@@ -59,6 +59,6 @@ EnvConfig.init(test)
 
     wb = Bybit.balances()
     @test isa(wb, AbstractDataFrame)
-    @test size(wb, 2) == 4
+    @test size(wb, 2) == 3
 
 end

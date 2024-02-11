@@ -215,7 +215,7 @@ end
 #     return gains
 # end
 
-function maxgradient(regressions::DataFrame, bases, rowix)
+function maxgradient(regressions::AbstractDataFrame, bases, rowix)
     maxgrad = 0.0
     maxgradix = 1
     for (bix, base) in enumerate(bases)
@@ -233,7 +233,7 @@ prices, regressions are all dataframes with equal bases as columns. All regressi
 
 Idea: only switch when 1%, 5% 10% better than the current base (introduces a hysteresis and avoid high frequent changes)
 """
-function steepestbasegain(prices::DataFrame, regressions::DataFrame, bases)
+function steepestbasegain(prices::AbstractDataFrame, regressions::AbstractDataFrame, bases)
     gains = zeros(Float32, size(prices[!, bases[1]], 1))
     bestix = zeros(Int8, size(gains, 1))
     bestix[1], maxgrad = maxgradient(regressions, bases, 1)

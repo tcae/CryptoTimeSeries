@@ -3,7 +3,7 @@ module TestOhlcvTest
 using Dates, DataFrames, Plots, TimeSeries
 using Plots.PlotMeasures
 
-using EnvConfig, Ohlcv, Features, TestOhlcv
+using EnvConfig, Ohlcv, TestOhlcv
 
 function plotit(ohlcv::OhlcvData)
     df = Ohlcv.dataframe(ohlcv)[!, [:opentime, :open, :low, :high, :close]]
@@ -17,6 +17,7 @@ function plotit(ohlcv::OhlcvData)
         ylabel = "Price", bottom_margin=25mm)
 end
 
+# plotlyjs()
 ohlc1 = TestOhlcv.testohlcv(
     "sine", Dates.DateTime("2022-01-01T00:00", dateformat"yyyy-mm-ddTHH:MM"),
     Dates.DateTime("2022-01-01T09:31", dateformat"yyyy-mm-ddTHH:MM"), "1m")

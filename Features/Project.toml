@@ -1,16 +1,18 @@
 name = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "1.0.0"
+version = "1.0.2"
 
 [deps]
 Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+Indicators = "70c4c096-89a6-5ec6-8236-da8aa3bd86fd"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
 RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
 SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"

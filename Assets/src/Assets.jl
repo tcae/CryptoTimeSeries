@@ -16,7 +16,6 @@ using EnvConfig, Ohlcv, CryptoXch, Features
 AssetData.basedf holds the following persistent columns:
 
 - base = symbol of traded asset
-- xch = name of exchange, e.g. for crypto binance or for stocks and options nasdaq or aex
 - manual = manually selected
 - automatic = automatic (algorithmic) selected
 - portfolio = base is part of current portfolio
@@ -24,7 +23,7 @@ AssetData.basedf holds the following persistent columns:
 
 """
 struct AssetData
-    basedf::DataFrames.DataFrame
+    basedf::AbstractDataFrame
     usdtvolume
     backtest
     AssetData(basedf, usdtvolume=100.0, backtest=true) = new(basedf, usdtvolume, backtest)
@@ -95,7 +94,7 @@ function setdataframe!(ad::AssetData, df)
 end
 
 mnemonic() = "AssetData_v1"
-savecols = [:base, :manual, :automatic, :portfolio, :xch, :update, :quotevolume24h, :pricechangepercent]
+savecols = [:base, :manual, :automatic, :portfolio, :update, :quotevolume24h, :pricechangepercent]
 
 function write(ad::AssetData)
     mnm = mnemonic()
@@ -142,7 +141,6 @@ function loadassets(backtest=false)::AssetData
         ad.basedf[:, :manual] .= true
         ad.basedf[:, :automatic] .= false
         ad.basedf[:, :portfolio] .= false
-        ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
         ad.basedf[:, :basevolume] .= 0.0
         ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
         ad.basedf[:, :quotevolume24h] .= 10000000.0
@@ -174,7 +172,6 @@ function loadassets(backtest=false)::AssetData
         ad.basedf[:, :manual] = [ad.basedf[ix, :base] in manual ? true : false for ix in 1:size(ad.basedf, 1)]
         ad.basedf[:, :automatic] = [ad.basedf[ix, :base] in automatic ? true : false for ix in 1:size(ad.basedf, 1)]
         ad.basedf[:, :portfolio] = [ad.basedf[ix, :base] in portfolio ? true : false for ix in 1:size(ad.basedf, 1)]
-        ad.basedf[:, :xch] .= CryptoXch.defaultcryptoexchange
         ad.basedf[:, :basevolume] .= 0.0
         # TODO add portfolio basevolume
         ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")

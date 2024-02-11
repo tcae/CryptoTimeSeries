@@ -52,10 +52,10 @@ println(length(oo) == 12)
 println(oo)
 
 oidc = Bybit.amendorder("BTCUSDT", oid; quantity=0.00011)
-println("changeorder quantity: oidc=$oidc content: $(Bybit.order(oidc))")
+println("amendorder quantity: oidc=$oidc content: $(Bybit.order(oidc))")
 
 oidc = Bybit.amendorder("BTCUSDT", oid; limitprice=btcprice * 0.8)
-println("changeorder limit price: oidc=$oidc content: $(Bybit.order(oidc))")
+println("amendorder limit price: oidc=$oidc content: $(Bybit.order(oidc))")
 
 oo = Bybit.openorders()
 println(isa(oo, AbstractDataFrame))

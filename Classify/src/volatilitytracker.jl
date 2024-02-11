@@ -18,6 +18,8 @@ function trackregression!(tradedf, f2::Features.Features002; asset, trendminutes
     drawdownminutes = 30 * 24 * 60
     drawdown30daysshort = zeros(drawdownminutes)
     drawdown30dayslong = zeros(drawdownminutes)
+    #TODO maxnumber of concurrent positions (should be length of openix arrays)
+    #TODO monitor shortgain against long gain
 
     function closetrades!(openix, currentix, longshort, handleall)
         ctrades += 1

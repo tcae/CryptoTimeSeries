@@ -8,7 +8,7 @@ It generates the OHLCV data, executes the trades in a loop but delegates the tra
 module Trade
 
 using Dates, DataFrames, Profile, Logging, CSV
-using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Features
+using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Features, Classify
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
 
@@ -18,191 +18,87 @@ using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Features
 minimumdayusdtvolume = 10000000  # per day = 6944 per minute
 
 mutable struct BaseInfo
-    assetfree
-    assetlocked
-    currentix
-    features
-    symbolfilter
-    lastbuydt  # only long positions
-    lastselldt  # only long positions
+    ohlcv::Ohlcv.OhlcvData
+    classifier::Classify.AbstractClassifier
 end
 
 """
 *Cache* contains the recipe and state parameters for the **tradeloop** as parameter. Recipe parameters to create a *Cache* are
-+ *backtestchunk* 0 in case of no bcktest or the number of faeture OHLCV minutes to consume for optimizing the backtest
 + *backtestperiod* is the *Dates* period of the backtest (in case *backtestchunk* > 0)
 + *backtestenddt* specifies the last *DateTime* of the backtest
 + *baseconstraint* is an array of base crypto strings that constrains the crypto bases for trading else if *nothing* there is no constraint
 
 """
 mutable struct Cache
-    backtestchunk  # 0 if no backtest or in case of backtest nbr of minutes to process until next reload
-    backtestperiod  # only considered if backtestchunk > 0
-    backtestenddt  # only considered if backtestchunk > 0
-    baseconstraint  # if != nothing then only trade bases that are in baseconstraint
-    usdtfree
-    usdtlocked
-    bd  # dict[base] of BaseInfo
-    tradechances  # ::TradingStrategy.TradeChances
-    openorders  # DataFrame with cols: base, orderId, price, origQty, executedQty, status, timeInForce, type, side, opentime, closetime, message
-    orderlog  # DataFrame with cols like openorders to log closed and rejected orders
-    transactionlog  # DataFrame of transaction to fill orders
+    backtestperiod  # nothing or < Dates.Minute(1) in case of no backtest, otherwise execute backtest
+    backtestenddt  # only considered if backtestperiod >= Dates.Minute(1)
+    bd  # ::Dict{String, BaseInfo}
+    openorders  # DataFrame as provided by CryptoXch
+    portfolio  # DatFrame as provided by CryptoXch
     messagelog  # fileid
-    runid
-    function Cache(backtestchunk, backtestperiod, backtestenddt, baseconstraint)
-        @assert backtestchunk >= 0
-        baseconstraint = !isnothing(baseconstraint) && (length(baseconstraint) == 0) ? nothing : baseconstraint
-        backtestperiod = backtestchunk == 0 ? Dates.Minute(0) : backtestperiod
-        tradechances = TradingStrategy.TradeChances004()
-        openorders = orderdataframe()
-        orderlog = orderdataframe()
-        transactionlog = filldataframe()
-        baseconstraintstr = isnothing(baseconstraint) ? "" : "_" * join(baseconstraint, "-")
-        runid = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * baseconstraintstr * "_SHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
-        messagelog = open(EnvConfig.logpath("messagelog_$runid.txt"), "w")
-        new(backtestchunk, backtestperiod, backtestenddt, baseconstraint, 0.0, 0.0, Dict(), tradechances, openorders, orderlog, transactionlog, messagelog, runid)
+    function Cache(backtestperiod::Dates.Period=Dates.Minute(0), backtestenddt::Dates.DateTime=dummytime(), symbolclassifiers::Dict{String, Classify.AbstractClassifier})
+        bd = Dict()
+        for sc in symbolclassifiers
+            bq = CryptoXch.basequote(sc[1])
+            if isnothing(bq)
+                @warning "Don't recognize $(sc[1]) as valid symbol with quotecoin $(EnvConfig.cryptoquote) - not considered as valid symbol/classifier pair"
+            else
+                cls = bd[bq[1]] = sc[2]
+                base = sc[1]
+                enddt = floor(Dates.now(Dates.UTC), Dates.Minute(1))
+                initialperiod = Dates.Minute(Classify.requiredminutes(cls))
+                startbacktest = nothing
+                if backtestperiod >= Dates.Minute(1)  # this is a backtest session
+                    enddt = floor(backtestenddt, Dates.Minute(1))
+                    initialperiod += backtestperiod
+                    startbacktest = floor(enddt - backtestperiod, Dates.Minute(1))
+                end
+                startdt = floor(enddt - initialperiod, Dates.Minute)
+                ohlcv = CryptoXch.cryptodownload(base, "1m", startdt, enddt)
+                CryptoXch.timerangecut!(ohlcv, startdt, enddt)
+                Ohlcv.setix!(ohlcv, isnothing(startbacktest) ? nothing : Ohlcv.rowix(ohlcv, startbacktest))
+                bd[base] = BaseInfo(ohlcv, cls)
+            end
+        end
+        messagelog = open(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt"), "w")
+        new(backtestperiod, backtestenddt, bd, nothing, nothing, messagelog)
     end
 end
 
-makerfee = 0.075 / 100
-takerfee = 0.075 / 100
-tradingfee = max(makerfee, takerfee)
-ohlcvdf(cache, base) = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
-backtest(cache) = cache.backtestchunk > 0
+ohlcvdf(cache, base) = Ohlcv.dataframe(cache.bd[base].ohlcv)
+ohlcv(cache, base) = cache.bd[base].ohlcv
+classifier(cache, base) = cache.bd[base].classifier
+backtest(cache) = cache.backtestperiod >= Dates.Minute(1)
 dummytime() = DateTime("2000-01-01T00:00:00")
 
-function orderdataframe()
-    return DataFrame(
-        base=String[],
-        orderId=Int64[],
-        # clientOrderId=String[],
-        price=Float32[],
-        origQty=Float32[],
-        executedQty=Float32[],
-        # cummulativeQuoteQty=Float32[],
-        status=String[],
-        timeInForce=String[],
-        type=String[],
-        side=String[],
-        # stopPrice=Float32[],
-        # icebergQty=Float32[],
-        # time=Dates.DateTime[],
-        # updateTime=Dates.DateTime[],
-        # isWorking=Bool[],
-        # origQuoteOrderQty=Float32[],
-        opentime=Dates.DateTime[],
-        closetime=Dates.DateTime[],
-        message=String[]
-        )
-end
-
-function filldataframe()  # a fill is a partial order execution
-    return DataFrame(
-        orderId=Int64[],
-        tradeId=Int64[],
-        price=Float32[],
-        qty=Float32[],
-        commission=Float32[],
-        commissionAsset=String[],
-        )
-end
-
 function freelocked(portfoliodf, base)
-    portfoliodf = portfoliodf[portfoliodf.base .== base, :]
-    if size(portfoliodf, 1) > 0
-        return portfoliodf.free[begin], portfoliodf.locked[begin]
+    pdf = portfoliodf[portfoliodf.base .== base, :]
+    if size(pdf, 1) > 0
+        return sum(pdf.free), sum(pdf.locked)
     else
         return 0.0, 0.0
     end
 end
 
-"""
-Loads the last stored opoen orders and requests all open orders from the XCH.
-opentime, closetime and messages are taken over from stored open orders but XCH open orders are leading.
-As a result a dataframe of open orders is created in cache.
-"""
-function loadopenorders!(cache::Cache)
-    csvoodf = DataFrame()
-    if isfile(EnvConfig.logpath("openorders.csv"))
-        csvoodf = CSV.File(EnvConfig.logpath("openorders.csv")) |> DataFrame
-        # println("openorders found $(typeof(csvoodf))")
-        # println(csvoodf)
-    end
-    ooarray = CryptoXch.getopenorders()
-    oodf = orderdataframe()
-    if length(ooarray) > 0
-        for oo in ooarray
-            opentime = oo["time"]
-            closetime = dummytime()
-            message = "msg "
-            for row in eachrow(csvoodf)
-                if row.orderId == oo["orderId"]
-                    opentime = row.opentime
-                    closetime = row.closetime
-                    message = row.message
-                    #TODO remove every found row and print no found rows as warning
-                end
-            end
-            push!(oodf, (
-                oo["base"],
-                oo["orderId"],
-                oo["price"],
-                oo["origQty"],
-                oo["executedQty"],
-                oo["status"],
-                oo["timeInForce"],
-                oo["type"],
-                oo["side"],
-                opentime,
-                closetime,
-                message
-            ))
-            # for (k, v) in oo
-            #     println("k:$k v:$v")
-            # end
-        end
-        # println(oodf)
-        # println(ooarray)
-        CSV.write(EnvConfig.logpath("openorders.csv"), oodf)  # write in case orders outside the automation were created and should be logged
-    end
-    cache.openorders = oodf
-end
 
+"""
+Determines which bases (always with USDT as quotecoin) to trade, load their free and locked amounts, load their recent ohlcv.
+- bases that are in the wallet - traded only so far to close the open orders
+- bases that are in a prescriped list
+- bases that fullfill certain criteria to be selected, i.e. 24h USDT trade volume > 10million USDT and confirmation from Classifier
+"""
 function preparetradecache!(cache::Cache)
-    loadopenorders!(cache)
     usdtdf = CryptoXch.getUSDTmarket()
-    pdf = CryptoXch.portfolio(usdtdf) # consider all portfolio bases
-    cache.usdtfree, cache.usdtlocked = freelocked(pdf, "usdt")
-    liquidusdtdf = usdtdf[usdtdf.quotevolume24h .> 10000000, :base] # consider only symbols with a USDT daily volume > threshold
-    enddt = backtest(cache) ? cache.backtestenddt : floor(Dates.now(Dates.UTC), Dates.Minute)
-    initialperiod = backtest(cache) ? Dates.Minute(TradingStrategy.requiredminutes) + cache.backtestperiod : Dates.Minute(TradingStrategy.requiredminutes)
-    startdt = floor(enddt - initialperiod, Dates.Minute)
-    @assert startdt < enddt
-    for base in usdtdf.base
-        if (isnothing(cache.baseconstraint) ? true : (base in cache.baseconstraint)) && ((base in pdf.base) || (base in liquidusdtdf))
-            #TODO block new trades of bases with open orders but with insufficient liquidity
-            # prepare data for all bases that qualified before
-            ohlcv = Ohlcv.defaultohlcv(base)
-            Ohlcv.read!(ohlcv)
-            origlen = size(ohlcv.df, 1)
-            ohlcv.df = ohlcv.df[enddt .>= ohlcv.df.opentime .>= startdt, :]
-            println("cutting $base ohlcv from $origlen to $(size(ohlcv.df, 1)) minutes ($(EnvConfig.timestr(startdt)) - $(EnvConfig.timestr(enddt)))")
-            # CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)  # not required because loadassets will already update
-            if size(Ohlcv.dataframe(ohlcv), 1) < TradingStrategy.requiredminutes
-                @warn "insufficient ohlcv data returned for" base receivedminutes=size(Ohlcv.dataframe(ohlcv), 1) requiredminutes=TradingStrategy.requiredminutes
-                continue  # don't include such base in the cache = exclude from trading
-            end
-            currentix = backtest(cache) ? TradingStrategy.requiredminutes : lastindex(Ohlcv.dataframe(ohlcv), 1)
-            free, locked = freelocked(pdf, base)
-            cache.bd[base] = BaseInfo(free, locked, currentix, Features.Features002(ohlcv; firstix=1, lastix=TradingStrategy.requiredminutes+cache.backtestchunk), CryptoXch.SymbolFilter(base))
-            # @info "preparetradecache ohlcv.df=$(size(ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
-        end
-    end
+    cache.openorders = CryptoXch.getopenorders()
+    cache.portfolio = CryptoXch.balances()
+    cache.portfolio = CryptoXch.portfolio!(cache.portfolio, usdtdf)
+    usdtdf = isnothing(cache.baseconstraint) ? usdtdf : filter(row -> (row.basecoin in cache.baseconstraint), usdtdf)
+    # cache.usdtfree, cache.usdtlocked = freelocked(cache.portfolio, "usdt")
+
     println("trading $(keys(cache.bd))")
     @info "trading $(keys(cache.bd))"
     # no need to cache assets because they are implicitly stored via keys(bd)
     reportliquidity(cache, nothing)
-    reportliquidity(cache, "usdt")
     return cache
 end
 
@@ -223,7 +119,6 @@ end
 
 function writetradelogs(cache::Cache)
     CSV.write(EnvConfig.logpath("openorders.csv"), cache.openorders)
-    CSV.write(EnvConfig.logpath("orderlog_$(cache.runid).csv"), cache.orderlog)
     flush(cache.messagelog)
 end
 
@@ -240,39 +135,30 @@ function appendmostrecent!(cache::Cache, base)
     global count = 0
     continuetrading = false
     df = ohlcvdf(cache, base)
+    ohlcv = ohlcv(cache, base)
     if backtest(cache) # consume next backtest data
-        cache.bd[base].currentix += 1
-        if cache.bd[base].currentix > cache.bd[base].features.lastix
-            # calculate next chunk of features
-            lastix = min(cache.bd[base].currentix + cache.backtestchunk - 1, lastindex(df, 1))
-            firstix =  max(min(cache.bd[base].currentix, lastix) - TradingStrategy.requiredminutes, firstindex(df, 1))
-            cache.bd[base].features.update(cache.bd[base].features, firstix, lastix)
-            # @info "appendmostrecent! ohlcv.df=$(size(cache.bd[base].features.ohlcv.df, 1))  features: firstix=$(cache.bd[base].features.firstix) lastix=$(cache.bd[base].features.lastix)"
-            count+= 1
-        end
-        if cache.bd[base].currentix <= cache.bd[base].features.lastix
-            continuetrading = true
-            if (cache.bd[base].currentix % 1000) == 0
-                println("continue at ix=$(cache.bd[base].currentix) < size=$(size(ohlcvdf(cache, base), 1)) backtestchunk=$(cache.backtestchunk) continue=$continuetrading")
-                writetradelogs(cache)
-            end
-        else
+        ix = Ohlcv.setix!(ohlcv, Ohlcv.ix(ohlcv) + 1)
+        if (ix > lastindex(df, 1)) || (df.opentime[ix] > cache.backtestenddt)
             continuetrading = false
             @info "stop trading loop due to backtest ohlcv for $base exhausted - count = $count"
+            return continuetrading
+        end
+        continuetrading = true
+        if (Ohlcv.ix(ohlcv) % 1000) == 0
+            println("continue at ix=$(Ohlcv.ix(ohlcv)) < size=$(size(df, 1)) continue=$continuetrading")
+            writetradelogs(cache)
         end
     else  # no backtest
         lastdt = df.opentime[end]
         enddt = sleepuntilnextminute(lastdt)
-        # startdt = enddt - Dates.Minute(Features.requiredminutes)
         startdt = df.opentime[begin]  # stay with start until tradeloop cleanup
-        currentix = lastindex(df, 1)
-        CryptoXch.cryptoupdate!(Features.ohlcv(cache.bd[base].features), startdt, enddt)
+        ohlcvix = lastindex(df, 1)
+        CryptoXch.cryptoupdate!(ohlcv, startdt, enddt)
         df = ohlcvdf(cache, base)
         println("extended from $lastdt to $enddt -> check df: $(df.opentime[begin]) - $(df.opentime[end]) size=$(size(df,1))")
         # ! TODO implement error handling
-        @assert lastdt == df.opentime[currentix]  # make sure begin wasn't cut
-        cache.bd[base].currentix = lastindex(df, 1)
-        cache.bd[base].features.update(cache.bd[base].features, cache.bd[base].currentix - TradingStrategy.requiredminutes, cache.bd[base].currentix)
+        @assert lastdt == df.opentime[ohlcvix]  # make sure begin wasn't cut
+        ohlcvix = Ohlcv.setix!(ohlcv, lastindex(df, 1))
         if lastdt < df.opentime[end]
             continuetrading = true
         else
@@ -285,32 +171,24 @@ end
 
 "Returns the cumulated portfolio liquidity in USDT as (total, free, locked)"
 function totalusdtliquidity(cache)
-    usdtfree = cache.usdtfree
-    usdtlocked = cache.usdtlocked
-    for (b, binfo) in cache.bd
-        df = Ohlcv.dataframe(Features.ohlcv(binfo.features))
-        currentix = binfo.currentix > size(df, 1) ? size(df, 1) : binfo.currentix
-        usdtfree += binfo.assetfree * df.close[currentix]
-        usdtlocked += binfo.assetlocked * df.close[currentix]
-    end
+    cache.portfolio = isnothing(cache.portfolio) ? CryptoXch.portfolio!() : cache.portfolio
+    usdtfree = sum(cache.portfolio.free .* cache.portfolio.usdtprice)
+    usdtlocked = sum(cache.portfolio.locked .* cache.portfolio.usdtprice)
     usdttotal = usdtfree + usdtlocked
     return usdttotal, usdtfree, usdtlocked
 end
 
 "Returns the asset liquidity in USDT as (total, free, locked)"
 function usdtliquidity(cache, base)
-    if base == "usdt"
-        free = cache.usdtfree
-        locked = cache.usdtlocked
-    else
-        df = Ohlcv.dataframe(Features.ohlcv(cache.bd[base].features))
-        currentix = cache.bd[base].currentix > size(df, 1) ? size(df, 1) : cache.bd[base].currentix
-        lastprice = df.close[currentix]
-        free = cache.bd[base].assetfree * lastprice
-        locked = cache.bd[base].assetlocked * lastprice
+    cache.portfolio = isnothing(cache.portfolio) ? CryptoXch.portfolio!() : cache.portfolio
+    df = findfirst(x -> x == base, cache.portfolio)
+    if isnothing(df)
+        @warn "no $base found in portfolio"
+        return 0.0, 0.0, 0.0
     end
-    total = free + locked
-    return total, free, locked
+    free = df.free[begin] * df.usdtprice[begin]
+    locked = df.locked[begin] * df.usdtprice[begin]
+    return  free+locked, free, locked
 end
 
 "prints liquidity of `base` and USDT or of accumulated portfolio if `base === nothing`"
@@ -326,26 +204,12 @@ function reportliquidity(cache, base)
     end
 end
 
-ordertime(cache, base)  = Ohlcv.dataframe(cache.bd[base].features.ohlcv)[cache.bd[base].currentix, :opentime]
-
-function logfills!(cache, orderid, fillsarray)
-    for f in fillsarray
-        fill = (
-            price = f["price"],
-            qty = f["qty"],
-            commission = f["commission"],
-            commissionAsset = f["commissionAsset"],
-            tradeId = f["tradeId"],
-            orderId = orderid
-            )
-        push!(cache.transactionlog, fill)
-    end
-end
+ordertime(cache, base)  = Ohlcv.dataframe(cache.bd[base].features.ohlcv)[cache.bd[base].ohlcvix, :opentime]
 
 function closeorder!(cache, order, side, status)
     df = Ohlcv.dataframe(cache.bd[order.base].features.ohlcv)
     opentime = df[!, :opentime]
-    timeix = cache.bd[order.base].currentix
+    timeix = cache.bd[order.base].ohlcvix
     # @info "close $side order #$(order.orderId) of $(order.origQty) $(order.base) (executed $(order.executedQty) $(order.base)) because $status at $(round(order.price;digits=3))USDT on ix:$(timeix) / $(EnvConfig.timestr(opentime[timeix]))"
     order = (;order..., closetime=ordertime(cache, order.base))
     if backtest(cache)
@@ -367,9 +231,6 @@ function closeorder!(cache, order, side, status)
             type = xchorder["type"],
             side = xchorder["side"]
         )
-        if "fills" in keys(xchorder)
-            logfills!(cache, order.orderId, xchorder["fills"])
-        end
         # TODO read order and fill executedQty and confirm FILLED (if not CANCELED) and read order fills (=transactions) to get the right fee
     end
     executedusdt = CryptoXch.ceilbase("usdt", order.executedQty * order.price)
@@ -410,8 +271,6 @@ function closeorder!(cache, order, side, status)
     msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
     order = (;order..., message=msg);
     @info msg
-
-    push!(cache.orderlog, order)
 end
 
 function buyqty(cache, base)
@@ -421,7 +280,7 @@ function buyqty(cache, base)
     usdtqty = min((usdttotal * orderportfoliopercentage), usdtfree)
     usdtqty = max(usdtqty, usdtmin)
     df = ohlcvdf(cache, base)
-    baseqty = usdtqty / df.close[cache.bd[base].currentix]
+    baseqty = usdtqty / df.close[cache.bd[base].ohlcvix]
     baseqty = CryptoXch.floorbase(base, baseqty)
     return baseqty
 end
@@ -463,7 +322,6 @@ function neworder!(cache, base, price, qty, side, tc)
         msg = "neworder! $side order $qty $(order.base)=$qty $base is less than required minimum amount of $(cache.bd[base].symbolfilter.basemin) - order #$(order.orderId) is not executed"
         msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
         order = (;order..., status = "REJECTED", orderId=0, message=msg);
-        push!(cache.orderlog, order)
         @warn msg
         return
     end
@@ -473,7 +331,6 @@ function neworder!(cache, base, price, qty, side, tc)
         msg = "neworder! $side order $qty $(order.base)=$orderusdt USDT is less than required minimum volume $(cache.bd[base].symbolfilter.quotemin) USDT - order #$(order.orderId) is not executed"
         msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
         order = (;order..., status = "REJECTED", orderId=0, message=msg);
-        push!(cache.orderlog, order)
         @warn msg
         return
     end
@@ -482,11 +339,10 @@ function neworder!(cache, base, price, qty, side, tc)
             msg = "neworder! BUY order $qty $(order.base)=$orderusdt USDT has insufficient free coverage $(cache.usdtfree) USDT - order #$(order.orderId) is not executed"
             msg = length(order.message) > 0 ? msg = "$(order.message); $msg" : msg;
             order = (;order..., status = "REJECTED", orderId=0, message=msg);
-            push!(cache.orderlog, order)
             @warn msg
         else
             if !backtest(cache)
-                xchorder = CryptoXch.createbuyorder(base, price, qty)
+                xchorder = CryptoXch.createbuyorder(base, price, qty)  #! check
                 order = (
                     base = xchorder["base"],
                     orderId = xchorder["orderId"],
@@ -501,9 +357,6 @@ function neworder!(cache, base, price, qty, side, tc)
                     closetime = order.closetime,
                     message = order.message
                 )
-                if "fills" in keys(xchorder)
-                    logfills!(cache, order.orderId, xchorder["fills"])
-                end
             end
             cache.usdtfree -= orderusdt
             cache.usdtlocked += orderusdt
@@ -518,7 +371,7 @@ function neworder!(cache, base, price, qty, side, tc)
 
             qty = CryptoXch.floorbase(base, cache.bd[order.base].assetfree)
             if !backtest(cache)
-                xchorder = CryptoXch.createsellorder(base, price, qty)
+                xchorder = CryptoXch.createsellorder(base, price, qty)  #! check
                 order = (
                     base = xchorder["base"],
                     orderId = xchorder["orderId"],
@@ -533,9 +386,6 @@ function neworder!(cache, base, price, qty, side, tc)
                     closetime = order.closetime,
                     message = order.message
                 )
-                if "fills" in keys(xchorder)
-                    logfills!(cache, order.orderId, xchorder["fills"])
-                end
             else
                 order = (;order..., origQty=qty)
             end
@@ -598,7 +448,7 @@ function trade!(cache)
             # @info "trade! close order $tc"
 
             df = ohlcvdf(cache, order.base)
-            if df.high[cache.bd[order.base].currentix] > order.price
+            if df.high[cache.bd[order.base].ohlcvix] > order.price
                 closeorder!(cache, order, "SELL", "FILLED")
             elseif significantsellpricechange(tc, order.price)
                 # set new limit price
@@ -609,7 +459,7 @@ function trade!(cache)
         end
         if order.side == "BUY"
             df = ohlcvdf(cache, order.base)
-            if df.low[cache.bd[order.base].currentix] < order.price
+            if df.low[cache.bd[order.base].ohlcvix] < order.price
                 closeorder!(cache, order, "BUY", "FILLED")
                 # buy order is closed, now issue a sell order
                 qty = cache.bd[order.base].assetfree
@@ -654,7 +504,7 @@ function coretradeloop(cache::Cache)
         continuetrading = appendmostrecent!(cache, base) # add either next backtest data or wait until new realtime data
         if continuetrading
             # assess trade chances
-            cache.tradechances = TradingStrategy.assesstrades!(cache.tradechances, cache.bd[base].features, cache.bd[base].currentix)
+            cache.tradechances = TradingStrategy.assesstrades!(cache.tradechances, cache.bd[base].features, cache.bd[base].ohlcvix)
         else
             assetrefresh = true
             break
@@ -678,14 +528,12 @@ function tradeloop(cache)
     # TODO add hooks to enable coupling to the cockpit visualization
     logger = SimpleLogger(cache.messagelog)
     defaultlogger = global_logger(logger)
-    @info "run ID: $(cache.runid)"
-    @info "backtest chunk=$(cache.backtestchunk) period=$(cache.backtestperiod) enddt=$(cache.backtestenddt)"
-    println("run ID: $(cache.runid)")
+    @info "backtest period=$(cache.backtestperiod) enddt=$(cache.backtestenddt)"
     profileinit = false
     # Profile.clear()
     continuetrading = true
     while continuetrading
-        preparetradecache!(cache) # determine the bases to be considered for trading and prepare their initial data
+        preparetradecache!(cache) # determine the bases to be considered for trading and prepare their initial data, i.e. open orders and recent required minutes ohlcv
         assetrefresh = false
         refreshtimestamp = Dates.now(Dates.UTC)
         println("starting trading core loop")
@@ -706,10 +554,11 @@ function tradeloop(cache)
     end
     writetradelogs(cache)
     println("traded $(keys(cache.bd))")
-    println("finished trading core loop for run ID: $(cache.runid)")
+    println("finished trading core loop")
     # Profile.print()
     global_logger(defaultlogger)
     close(cache.messagelog)
 end
+
 
 end  # module

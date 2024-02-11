@@ -37,7 +37,7 @@ function initialbtcdownload()
 end
 
 
-# oo1 = CryptoXch.createbuyorder("btc", 19001.0, 20.0)
+# oo1 = CryptoXch.createbuyorder("btc", 19001.0, 20.0 / 19001)
 # println("createbuyorder: $oo1")
 # oo2 = CryptoXch.getorder("btc", oo1["orderId"])
 # println("getorder: $oo2")
@@ -70,7 +70,7 @@ function showxchinfo()
     count = 0
     for sym in exchangeinfo["symbols"]
         if (sym["quoteAsset"] == "USDT") && sym["isSpotTradingAllowed"] && ("LIMIT" in sym["orderTypes"]) && ("TRADING" == sym["status"])
-            println("\t$(sym["symbol"]) base: $(sym["baseAsset"]) with precision $(sym["baseAssetPrecision"]) quote: $(sym["quoteAsset"]) with precision $(sym["quoteAssetPrecision"])")
+            println("\t$(sym["symbol"]) base: $(sym["baseAsset"]) with precision $(sym["baseAssetPrecision"]) quotecoin: $(sym["quoteAsset"]) with precision $(sym["quoteAssetPrecision"])")
             if sym["baseAssetPrecision"] != sym["baseCommissionPrecision"]
                 @warn "baseAssetPrecision of $(sym["baseAssetPrecision"]) != baseCommissionPrecision of $(sym["baseCommissionPrecision"])"
             end
@@ -97,10 +97,10 @@ function showxchinfo()
     println("listed $count symbols")
 end
 
-function testorder(price, usdtvol)
+function testorder(price, basevol)
     oo = nothing
     try
-        oo = CryptoXch.createbuyorder("btc", price, usdtvol)
+        oo = CryptoXch.createbuyorder("btc", price, basevol)
     catch err
         @error err
     end
@@ -109,8 +109,26 @@ end
 
 # showxchinfo()
 
-testorder(19001.0, 20.0)
-testorder(19001.0001, 5.0)
-testorder(19001.00000000002, 20.00008)
+# testorder(19001.0, 20.0/19001.0)
+# testorder(19001.0001, 5.0/19001.0)
+# testorder(19001.00000000002, 20.00008/19001.0)
+allbb = Bybit.get24h()
+println(describe(allbb, :all))
+# println(allbb)
+
+allusdt = CryptoXch.getUSDTmarket()
+println(describe(allusdt, :all))
+# println(allusdt)
+
+bdf = CryptoXch.balances()
+println("balances():")
+println(bdf)
+bdf = CryptoXch.portfolio!(bdf, allusdt)
+println("portfolio():")
+println(bdf)
+
+bdf = CryptoXch.portfolio!()
+println("portfolio():")
+println(bdf)
 
 end  # module

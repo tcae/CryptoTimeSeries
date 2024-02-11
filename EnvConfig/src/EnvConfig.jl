@@ -12,8 +12,7 @@ using Logging, Dates, Pkg, JSON3
 export authorization, test, production, training, now, timestr
 
 @enum Mode test production training
-cryptoquote = "usdt"
-cryptoexchange = "binance"
+cryptoquote = "USDT"
 datetimeformat = "yymmdd HH:MM"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator

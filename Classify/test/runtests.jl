@@ -1,5 +1,8 @@
 
 module ClassifyTest
+using CategoricalArrays
+using CategoricalDistributions, StatisticalMeasures
+import CategoricalDistributions:classes
 using Dates, DataFrames
 using Test
 using Classify

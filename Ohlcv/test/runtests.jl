@@ -164,7 +164,7 @@ println(dfmin)
 
 @test names(Ohlcv.dataframe(ohlcv1)) == ["opentime", "open", "high", "low", "close", "basevolume", "pivot"]
 @test nrow(Ohlcv.dataframe(ohlcv1)) == 9
-@test Ohlcv.mnemonic(ohlcv1) == "test_usdt_binance_1m_OHLCV"
+@test Ohlcv.mnemonic(ohlcv1) == "test_usdt_1m_OHLCV"
 
 ohlcv2 = readwrite(ohlcv1)
 @test names(Ohlcv.dataframe(ohlcv1)) == ["opentime", "open", "high", "low", "close", "basevolume", "pivot"]

@@ -3,6 +3,8 @@ Train and evaluate the trading signal classifiers
 """
 module Classify
 
+abstract type AbstractClassifier end
+
 using CSV, DataFrames, Logging, Dates, PrettyPrinting, PrettyTables
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
@@ -11,7 +13,7 @@ using CategoricalDistributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
 
-@enum InvestProposal hold, sell, buy
+@enum InvestProposal hold sell buy
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
 
@@ -733,7 +735,7 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
     xcdf = DataFrame("set" => sc, "pred_label" => lc, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
     # println(xcdf)
     return xcdf
-    #TODO next step: take only first of a sequence according to threshold -> how often is a sequence missed?
+    #TODO next step: take only first of an equal trading signal sequence according to threshold -> how often is a sequence missed?
  end
 
  function confusionmatrix(predictions::AbstractDataFrame)
@@ -1124,22 +1126,25 @@ Returns a `buy` recommendation if the standard deviation of a given regression w
 the current price is below regressionline minus standard deviation.
 Corresondingly returns a `sell` recommendation if std/price > threshold and price > std + price. In all other price cases a `hold` is returned.
 """
-mutable struct Classifier001
+mutable struct Classifier001 <: AbstractClassifier
     base  # base coin (quotecoin is USDT fixed)
     regrwindow  # regression window in minutes
     gainthreshold  # std/price that must be higher than that threshold to consider a buy/sell
     minutesgap  # number of minutes between 2 propsals of same type (applicable to buy/sell)
     selldt  # timestamp of last sell proposal
     buydt  # timestamp of last buy proposal
+    function Classifier001(base::String, regrwindow::Unsigned, gainthreshold::Real, minutesgap::Real)::Union{Classifier001, Nothing}
+        regrwindow = round(Int, regrwindow)
+        @assert regrwindow > 0 "regrwindow=$regrwindow > 0"
+        @assert 0.1 > gainthreshold > 0 "0.1 > gainthreshold=$gainthreshold > 0"
+        @assert minutesgap > 0 "minutesgap=$minutesgap > 0"
+        new(base, regrwindow, gainthreshold, minutesgap, Dates.now()-Dates.Minute(minutesgap), Dates.now()-Dates.Minute(minutesgap))
+    end
 end
 
-function Classifier001(base::String, regrwindow::Unsigned, gainthreshold::Real, minutesgap::Real)::Union{Classifier001, Nothing}
-    regrwindow = round(Int, regrwindow)
-    @assert regrwindow > 0 "regrwindow=$regrwindow > 0"
-    @assert 0.1 > gainthreshold > 0 "0.1 > gainthreshold=$gainthreshold > 0"
-    @assert minutesgap > 0 "minutesgap=$minutesgap > 0"
-    return Classifier001(base, regrwindow, gainthreshold, minutesgap, Dates.now()-Dates.Minute(minutesgap), Dates.now()-Dates.Minute(minutesgap))
-end
+requiredminutes(cls::Classifier001) = cls.regrwindow
+registerlongbuy!(cls::Classifier001, buydt::Dates.DateTime) = (cls.buydt = buydt; cls)
+registerlongsell!(cls::Classifier001, selldt::Dates.DateTime) = (cls.selldt = selldt; cls)
 
 "Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
 function advise(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestProposal

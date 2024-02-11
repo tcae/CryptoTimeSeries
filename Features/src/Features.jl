@@ -7,7 +7,7 @@ module Features
 
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, runmedian, rolling
-import DataFrames: DataFrame, Statistics
+using DataFrames, Statistics, Indicators
 using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv
@@ -677,7 +677,7 @@ end
 """
 4 rolling features providing the current price distance and the time distance to the last maximum and minimum
 """
-function lastextremes(prices, regressions)::DataFrame
+function lastextremes(prices, regressions)::AbstractDataFrame
     tmax = 1
     tmin = 2
     pmax = 3
@@ -703,7 +703,7 @@ end
 2 rolling features providing the last forward looking relative gain and the last forward looking relative loss.
 The returned dataframe contains the columns `lastgain` and `lastloss`
 """
-function lastgainloss(prices, regressions)::DataFrame
+function lastgainloss(prices, regressions)::AbstractDataFrame
     gainix = 1  # const
     lossix = 2  # const
     lastmaxix = [1, 1]
@@ -753,7 +753,7 @@ ab ac ad bc bd cd
 abc abd acd bcd
 
 """
-function polynomialfeatures!(features::DataFrame, polynomialconnect::Int)
+function polynomialfeatures!(features::AbstractDataFrame, polynomialconnect::Int)
     featurenames = names(features)  # copy or ref to names? - copy is required
     for poly in 2:polynomialconnect
         for pcf in Combinatorics.combinations(featurenames, poly)
@@ -825,7 +825,7 @@ sortedregressionwindowkeys001 = [d[1] for d in sort(collect(regressionwindows001
 
 " Features001 is no longer used and replaced by Features002 "
 struct Features001
-    fdf::DataFrame
+    fdf::AbstractDataFrame
     featuremask::Vector{String}
     ohlcv::OhlcvData
 end
@@ -858,7 +858,7 @@ end
 - ration 4hour/9day volume to detect mid term rising volume
 - ration 5minute/4hour volume to detect short term rising volume
 """
-function getfeatures001(ohlcvdf::DataFrame)
+function getfeatures001(ohlcvdf::AbstractDataFrame)
     fdf, featuremask = getfeatures001(ohlcvdf.pivot)
     fdf[:, "4h/9dvol"] = relativevolume(ohlcvdf[!, :basevolume], 4*60, 9*24*60)
     fdf[:, "5m/4hvol"] = relativevolume(ohlcvdf[!, :basevolume], 5, 4*60)
@@ -1123,7 +1123,7 @@ Return a DataFrame column `df[firstix-lookback:lastix-lookback, col]` that repre
 Assumes that predecessors have lower row indices than the successor rows, i.e. newer values are appended at the end of the `df`.
 If lookback refers to elements out side of df the `fill` be used. If `fill` is `nothing` then df[begin, col] is used.
 """
-function lookbackrow!(rdf::Union{DataFrame, Nothing}, df::DataFrame, col::String,lookback, firstix=1, lastix=size(df,1); fill=nothing)
+function lookbackrow!(rdf::Union{DataFrame, Nothing}, df::AbstractDataFrame, col::String,lookback, firstix=1, lastix=size(df,1); fill=nothing)
     dfl = size(df,1)
     @assert lookback >= 0 "lookback ($lookback) >= 0"
     @assert dfl >= 1 "size(df,1) == $dfl < 1"
@@ -1167,7 +1167,7 @@ Each feature vector is composed of:
   - (OHLC- pivot) / pivot
 
 """
-function deltaOhlc!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; normalize=true::Bool)::DataFrame
+function deltaOhlc!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; normalize=true::Bool)::AbstractDataFrame
     #! not yet tested
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
     fvecdf = nothing
@@ -1201,7 +1201,7 @@ Each feature vector is composed of:
   - `disty`: Y distance from regression line   (not any longer related to std because std can be zero: / (2 * std deviation))
   - both grad and disty are normalized as to pivot price if `normalize=true`
 """
-function regressionfeatures!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; regrwindows::Vector{<:Integer}, lookback, normalize=true::Bool)::DataFrame
+function regressionfeatures!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003; regrwindows::Vector{<:Integer}, lookback, normalize=true::Bool)::AbstractDataFrame
     # debug = true
     @assert f3.maxlookback >= lookback
     fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
@@ -1251,7 +1251,7 @@ Each feature vector is composed of:
 
 - Relative median volume 1m/1h (just 1 element)
 """
-function relativevolume!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, shortvol, longvol)::DataFrame
+function relativevolume!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, shortvol, longvol)::AbstractDataFrame
     fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
     colname = Features.periodlabels(shortvol) * "/" * Features.periodlabels(longvol) * "vol"
@@ -1270,7 +1270,7 @@ Each feature vector is composed of:
   - "reldayofyear" => relativedayofyear
 
 """
-function relativetime!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, relativedatetime)::DataFrame
+function relativetime!(fvecdf::Union{DataFrame, Nothing}, f3::Features.Features003, relativedatetime)::AbstractDataFrame
     ohlcvdf = Ohlcv.dataframe(f3.f2.ohlcv)
     @assert !isnothing(ohlcvdf)
     fvecdf = isnothing(fvecdf) ? DataFrame() : fvecdf

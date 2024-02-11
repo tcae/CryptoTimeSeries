@@ -26,6 +26,12 @@ const interval2bybitinterval = Dict(
 )
 
 syminfodf = nothing
+BYBIT_APIREST = nothing
+
+function init()
+    global BYBIT_APIREST
+    BYBIT_APIREST = EnvConfig.configmode == EnvConfig.test ? "https://api-testnet.bybit.com" : "https://api.bybit.com"
+end
 
 function apiKS()
     apiPublicKey = get(ENV, "BYBIT_APIKEY", "")
@@ -100,6 +106,7 @@ function checkresponse(response)
 end
 
 function HttpPrivateRequest(method, endPoint, params, Info, public_key=EnvConfig.authorization.key, secret_key=EnvConfig.authorization.secret)
+    @assert !isnothing(BYBIT_APIREST) "Bybit.init() not yet done resulting in missing URL"
     methodpost = method == "POST"
     url = headers = payload = returnbody = body = nothing
     nextrequestrequired = true
@@ -118,13 +125,12 @@ function HttpPrivateRequest(method, endPoint, params, Info, public_key=EnvConfig
                 "Content-Type" => "application/json"  # ; charset=utf-8"
             )
             response = url = ""
-            bybitapirest = EnvConfig.configmode == EnvConfig.test ? "https://api-testnet.bybit.com" : "https://api.bybit.com"
             if methodpost
                 # headers["Content-Type"] = "application/json; charset=utf-8"
-                url = bybitapirest * endPoint
+                url = BYBIT_APIREST * endPoint
                 response = HTTP.request(method, url, headers, payload)
             else
-                url = bybitapirest * endPoint * "?" * payload
+                url = BYBIT_APIREST * endPoint * "?" * payload
                 response = HTTP.request(method, url, headers)
             end
             requestcount += 1
@@ -165,16 +171,15 @@ function HttpPublicRequest(method, endPoint, params::Union{Dict, Nothing}, Info)
     payload = methodpost ? dict2ParamsPost(params) : dict2ParamsGet(params)
     response = url = ""
     body = Dict()
-    bybitapirest = EnvConfig.configmode == EnvConfig.test ? "https://api-testnet.bybit.com" : "https://api.bybit.com"
     try
         if methodpost
-            url = bybitapirest * endPoint
+            url = BYBIT_APIREST * endPoint
             response = HTTP.request(method, url, payload)
         elseif isnothing(params)
-            url = bybitapirest * endPoint
+            url = BYBIT_APIREST * endPoint
             response = HTTP.request(method, url)
         else
-            url = bybitapirest * endPoint * "?" * payload
+            url = BYBIT_APIREST * endPoint * "?" * payload
             response = HTTP.request(method, url)
         end
         checkresponse(response)
@@ -237,7 +242,7 @@ function dictstring2values!(bybitdict::T) where T <: AbstractDict
             bybitdict[entry] = bybitdict[entry] == "" ? nothing : parse(Bool, bybitdict[entry])
         elseif entry == "s"
             bybitdict["base"] = lowercase(replace(bybitdict["s"], uppercase(EnvConfig.cryptoquote) => ""))
-            #TODO assumption that onlyUSDT quote is traded is containment - requires a more general approach
+            #TODO assumption that only USDT quotecoin is traded is containment - requires a more general approach
         elseif (typeof(bybitdict[entry]) <: AbstractDict) || (typeof(bybitdict[entry]) <: AbstractVector)
             bybitdict[entry] = dictstring2values!(bybitdict[entry])
         end
@@ -336,7 +341,7 @@ function exchangeinfo(symbol=nothing)
         # ─────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
         #    1 │ USDT       Trading           0  both           BTCUSDT      0.01  BTC             2.0e6          1.0e-8      71.7396       4.8e-5         1.0e-6          1.0
 
-        # rename!(df, Dict(:quoteCoin => "quote", :baseCoin => "base", :tickSize => "ticksize", :quotePrecision => "quoteprecision", :basePrecision => "baseprecision", :minOrderQty => "minbaseqty", :minOrderAmt => "minquoteqty"))
+        # rename!(df, Dict(:quoteCoin => "quotecoin", :baseCoin => "base", :tickSize => "ticksize", :quotePrecision => "quoteprecision", :basePrecision => "baseprecision", :minOrderQty => "minbaseqty", :minOrderAmt => "minquoteqty"))
         df = select(df, :symbol, :status, :baseCoin => :basecoin, :quoteCoin => :quotecoin, :tickSize => :ticksize, :basePrecision => :baseprecision, :quotePrecision => :quoteprecision, :minOrderQty => :minbaseqty, :minOrderAmt => :minquoteqty)
     end
     syminfodf = df
@@ -359,9 +364,6 @@ Returns a NamedTuple with trading constraints. If symbol is not found then `noth
 function symbolinfo(symbol)
     if isnothing(syminfodf)
         exchangeinfo()
-    end
-    if isnothing(syminfodf)
-        @error "Bybit init failed"
     end
     symbol = uppercase(symbol)
     df = syminfodf[syminfodf.symbol .== symbol, :]
@@ -423,15 +425,15 @@ end
 """
 Returns a DataFrame of open **spot** orders with columns:
 
-- orderid
-- symbol
-- side (Buy or Sell)
-- baseqty
-- ordertype
-- timeinforce
-- limitprice
-- executedqty  (to be executed qty = baseqty - executedqty)
-- status
+- orderid ::String
+- symbol ::String
+- side ::String (`Buy` or `Sell`)
+- baseqty ::Float32
+- ordertype ::String  `Market`, `Limit`
+- timeinforce ::String      `GTC` GoodTillCancel, `IOC` ImmediateOrCancel, `FOK` FillOrKill, `PostOnly`
+- limitprice ::Float32
+- executedqty ::Float32  (to be executed qty = baseqty - executedqty)
+- status ::String      `New`, `PartiallyFilled`, `Untriggered`, `Rejected`, `PartiallyFilledCanceled`, `Filled`, `Cancelled`, `Triggered`, `Deactivated`
 - created ::DateTime
 - updated ::DateTime
 - rejectreason ::String
@@ -497,6 +499,7 @@ function openorders(;symbol=nothing, orderid=nothing, orderLinkId=nothing)
     return df
 end
 
+"Returns a named tuple of the identified order or `nothing` if order is not found"
 function order(orderid)
     if !isnothing(orderid)
         oo = openorders(orderid=orderid)
@@ -554,8 +557,8 @@ end
 
 "Only provide *quantity* or *limitprice* if they have changed values."
 function amendorder(symbol::String, orderid::String; quantity=nothing::Union{Nothing, Real}, limitprice=nothing::Union{Nothing, Real})
-    @assert isnothing(quantity) ? true : quantity > 0.0 "changeorder $symbol quantity of $quantity cannot be <=0 for order type Limit"
-    @assert isnothing(limitprice) ? true : limitprice > 0.0 "changeorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
+    @assert isnothing(quantity) ? true : quantity > 0.0 "amendorder $symbol quantity of $quantity cannot be <=0 for order type Limit"
+    @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
     syminfo = symbolinfo(symbol)
     if isnothing(syminfo)
         @warn "no instrument info for $symbol"
@@ -567,6 +570,7 @@ function amendorder(symbol::String, orderid::String; quantity=nothing::Union{Not
     end
     ont = order(orderid)
     if isnothing(ont)
+        @warn "cannot amend order because orderid $orderid not found"
         return nothing
     end
     params = Dict(
@@ -599,30 +603,13 @@ function amendorder(symbol::String, orderid::String; quantity=nothing::Union{Not
 end
 
 """
-Returns DataFrame with 18 columns of wallet positions of Unified Trade Account
+Returns DataFrame with 3 columns of wallet positions of Unified Trade Account
 ```
    18×2 DataFrame
-   Row │ variable             min
-       │ Symbol               Any
   ─────┼───────────────────────────────────────────
-     1 │ locked               0
-     2 │ accruedInterest      0
-     3 │ usdValue             2087.78289118
-     4 │ spotHedgingQty       0
-     5 │ cumRealisedPnl       -0.00000011
-     6 │ availableToBorrow
-     7 │ availableToWithdraw  0.00011588
-     8 │ bonus                0
-     9 │ unrealisedPnl        0
-    10 │ coin                 BTC
-    11 │ borrowAmount         0.000000000000000000
-    12 │ walletBalance        0.00011588
-    13 │ collateralSwitch     true
-    14 │ marginCollateral     true
-    15 │ equity               0.00011588
-    16 │ totalPositionMM      0
-    17 │ totalOrderIM         0
-    18 │ totalPositionIM      0
+     1 │ coin                 BTC
+     2 │ locked               0
+     3 │ free                 0.00011588
      """
 function balances()
     response = HttpPrivateRequest("GET", "/v5/account/wallet-balance", Dict("accountType" => "UNIFIED"), "wallet balance")
@@ -630,7 +617,27 @@ function balances()
         @warn "unexpected more than 1 account type Bybit balance info: $response"
     end
     # println(response)
-    df = DataFrame(accounttype=String[], coin=String[], locked=Float32[], free=Float32[])
+    # Dict:
+    #    ─────┼───────────────────────────────────────────
+    #       1 │ locked               0
+    #       2 │ accruedInterest      0
+    #       3 │ usdValue             2087.78289118
+    #       4 │ spotHedgingQty       0
+    #       5 │ cumRealisedPnl       -0.00000011
+    #       6 │ availableToBorrow
+    #       7 │ availableToWithdraw  0.00011588
+    #       8 │ bonus                0
+    #       9 │ unrealisedPnl        0
+    #      10 │ coin                 BTC
+    #      11 │ borrowAmount         0.000000000000000000
+    #      12 │ walletBalance        0.00011588
+    #      13 │ collateralSwitch     true
+    #      14 │ marginCollateral     true
+    #      15 │ equity               0.00011588
+    #      16 │ totalPositionMM      0
+    #      17 │ totalOrderIM         0
+    #      18 │ totalPositionIM      0
+     df = DataFrame(coin=String[], locked=Float32[], free=Float32[])
     if "list" in keys(response["result"])
         for account in response["result"]["list"]
             if account["accountType"] != "UNIFIED"
@@ -638,7 +645,7 @@ function balances()
             end
             if "coin" in keys(account)
                 for coin in account["coin"]
-                    push!(df, (accounttype=account["accountType"], coin=coin["coin"], locked=coin["locked"], free=coin["availableToWithdraw"]))
+                    push!(df, (coin=coin["coin"], locked=coin["locked"], free=coin["availableToWithdraw"]))
                 end
             end
         end

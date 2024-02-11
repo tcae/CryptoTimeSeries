@@ -9,7 +9,7 @@ In future to add new OHLCV data from Binance.
 """
 module Ohlcv
 
-using Dates, DataFrames, CategoricalArrays, JDF, CSV, Logging, Statistics
+using Dates, DataFrames, CategoricalArrays, JDF, CSV, Logging, Statistics, Base
 using EnvConfig
 
 export write, read!, OhlcvData
@@ -20,13 +20,13 @@ Ohlcv data starts in the first row with the oldest data and adds new data at the
 mutable struct OhlcvData
     df::DataFrames.DataFrame
     base::String
-    qte::String  # instead of quote because *quote* is a Julia keyword
-    xch::String  # exchange - also implies whether the asset type is crypto or stocks
+    quotecoin::String  # instead of quotecoin because *quotecoin* is a Julia keyword
     interval::String
+    ix::Integer  # can be used to sync the current index between modules for a backtest
 end
 
 function Base.show(io::IO, ohlcv::OhlcvData)
-    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df))")  # pivot: max=$(maximum(ohlcv.df[!, :pivot])) median=$(Statistics.median(ohlcv.df[!, :pivot])) min=$(minimum(ohlcv.df[!, :pivot]))")
+    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) intervals=$(size(ohlcv.df, 1) > 0 ? round(Int, (ohlcv.df.opentime[end] - (ohlcv.df.opentime[begin] + Dates.Minute(1)))/intervalperiod(ohlcv.interval)) : 0) start=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[begin] : "no start datetime)") end=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[end] : "no end datetime)") ix=$(ohlcv.ix)")
 end
 
 
@@ -51,7 +51,7 @@ periods = Dict(
 )
 
 "Returns a Dates.Period that corresponds to a period string"
-function intervalperiod(interval)
+function intervalperiod(interval)::Dates.Period
     @assert interval in keys(periods) "unknown $interval"
     return periods[interval]
 end
@@ -63,24 +63,25 @@ function defaultohlcvdataframe(rows=0)::DataFrames.DataFrame
     return df
 end
 
-" Returns an empty default crypto OhlcvData with quote=usdt, xch=binance, interval=1m"
+" Returns an empty default crypto OhlcvData with quotecoin=usdt, interval=1m"
 function defaultohlcv(base, interval="1m", rows=0)::OhlcvData
-    ohlcv = OhlcvData(defaultohlcvdataframe(rows), base, EnvConfig.cryptoquote, EnvConfig.cryptoexchange, interval)
+    ohlcv = OhlcvData(defaultohlcvdataframe(rows), uppercase(base), uppercase(EnvConfig.cryptoquote), interval, 1)
     return ohlcv
 end
 
 basecoin(ohlcv::OhlcvData) = ohlcv.base
-quotecoin(ohlcv::OhlcvData) = ohlcv.qte
-exchange(ohlcv::OhlcvData) = ohlcv.xch
+quotecoin(ohlcv::OhlcvData) = ohlcv.quotecoin
 interval(ohlcv::OhlcvData) = ohlcv.interval
 dataframe(ohlcv::OhlcvData) = ohlcv.df
+ix(ohlcv::OhlcvData) = ohlcv.ix
+setix!(ohlcv::OhlcvData, ix::Integer) = (ohlcv.ix = ix; ix)
 
 # function copy(ohlcv::OhlcvData)
-#     return OhlcvData(ohlcv.df, ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
+#     return OhlcvData(ohlcv.df, ohlcv.base, ohlcv.quotecoin, ohlcv.interval)
 # end
 
 function copy(ohlcv::OhlcvData)
-    ohlcvcopy = OhlcvData(DataFrames.copy(ohlcv.df), ohlcv.base, ohlcv.qte, ohlcv.xch, ohlcv.interval)
+    ohlcvcopy = OhlcvData(DataFrames.copy(ohlcv.df), ohlcv.base, ohlcv.quotecoin, ohlcv.interval, ohlcv.ix)
     return ohlcvcopy
 end
 
@@ -120,17 +121,12 @@ function merge!(ohlcv::OhlcvData, addohlcv::OhlcvData)
 end
 
 function setbasesymbol!(ohlcv::OhlcvData, base::String)
-    ohlcv.base = base
+    ohlcv.base = uppercase(base)
     return ohlcv
 end
 
-function setquotesymbol!(ohlcv::OhlcvData, qte::String)
-    ohlcv.qte = qte
-    return ohlcv
-end
-
-function setexchange!(ohlcv::OhlcvData, exchange::String)
-    ohlcv.xch = exchange
+function setquotesymbol!(ohlcv::OhlcvData, quotecoin::String)
+    ohlcv.quotecoin = uppercase(quotecoin)
     return ohlcv
 end
 
@@ -141,6 +137,7 @@ end
 
 function setdataframe!(ohlcv::OhlcvData, df)
     ohlcv.df = df
+    ohlcv.ix = lastindex(df, 1)
     return ohlcv
 end
 
@@ -246,7 +243,7 @@ If ``percent==true`` then the result is multiplied by 100
 """
 normalize(ydata; ynormref=ydata[end], percent=false) = percent ? (ydata ./ ynormref .- 1) .* 100 : (ydata ./ ynormref .- 1)
 
-function pivot(df::DataFrame)
+function pivot(df::AbstractDataFrame)
     cols = names(df)
     p::Vector{Float32} = []
     if all([c in cols for c in ["open", "high", "low", "close"]])
@@ -255,10 +252,10 @@ function pivot(df::DataFrame)
     return p
 end
 
-haspivot(df::DataFrame) = "pivot" in names(df)
+haspivot(df::AbstractDataFrame) = "pivot" in names(df)
 haspivot(ohlcv::OhlcvData) = haspivot(ohlcv.df)
 
-function addpivot!(df::DataFrame)
+function addpivot!(df::AbstractDataFrame)
     if haspivot(df)
         return df
     else
@@ -272,7 +269,7 @@ function addpivot!(df::DataFrame)
     end
 end
 
-pivot!(df::DataFrame) = addpivot!(df)[!, :pivot]
+pivot!(df::AbstractDataFrame) = addpivot!(df)[!, :pivot]
 
 function addpivot!(ohlcv::OhlcvData)
     addpivot!(ohlcv.df)
@@ -296,8 +293,11 @@ function pivot_test()
 
 end
 
+"Returns the row index within the ohlcv DataFrame of the given DateTime or nothing if not found"
+rowix(ohlcv::OhlcvData, dt::Dates.DateTime) = findfirst(x -> x == floor(dt, intervalperiod(interval(ohlcv))), dataframe(ohlcv).opentime)
+
 "accumulates minute interval ohlcv dataframe into larger interval dataframe"
-function accumulate(df::DataFrame, interval)
+function accumulate(df::AbstractDataFrame, interval)
     # accumulates to day/hour/5min borders
     # e.g. 2022-04-25T21:50:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(5))
     # e.g. 2022-04-25T21:51:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(3))
@@ -351,7 +351,7 @@ end
 Reads OHLCV data generated by python FollowUpward
 """
 function readcsv!(ohlcv::OhlcvData)::OhlcvData
-    io = CSV.File(EnvConfig.datafile(ohlcv.base * "_OHLCV", "_df.csv"), types=Dict(1=>String, 2=>Float32, 3=>Float32, 4=>Float32, 5=>Float32, 6=>Float32, 7=>Float32))
+    io = CSV.File(EnvConfig.datafile(lowercase(ohlcv.base) * "_OHLCV", "_df.csv"), types=Dict(1=>String, 2=>Float32, 3=>Float32, 4=>Float32, 5=>Float32, 6=>Float32, 7=>Float32))
     df = DataFrame(io)
     df[!, :opentime] = DateTime.(DateTime.(df[!, :Column1], "y-m-d H:M:s+z"), UTC)
     df = df[!, Not(:Column1)]
@@ -364,7 +364,7 @@ function readcsv!(ohlcv::OhlcvData)::OhlcvData
 
 end
 
-function setsplit()::DataFrame
+function setsplit()::AbstractDataFrame
     io = CSV.File(EnvConfig.setsplitfilename())
     iodf = DataFrame(io)
     len = size(iodf, 1)
@@ -403,7 +403,7 @@ end
 
 """
 Selects the given columns and returns them as transposed array, i.e. values of one column belong to one sample and rows represent samples.
-setname selects one of several disjunct subsets, e.g. :training, : test, as defined in the sets split csv file.
+setname selects one of several disjunct subsets, e.g. : , : test, as defined in the sets split csv file.
 """
 function columnarray(ohlcv::OhlcvData, setname::String, cols::Array{Symbol,1})::Array{Float32,2}
     setassign!(ohlcv)
@@ -418,18 +418,22 @@ function columnarray(ohlcv::OhlcvData, setname::String, cols::Array{Symbol,1})::
     return colarray
 end
 
-mnemonic(ohlcv::OhlcvData) = ohlcv.base * "_" * ohlcv.qte * "_" * ohlcv.xch * "_" * ohlcv.interval * "_OHLCV"
+mnemonic(ohlcv::OhlcvData) = lowercase(ohlcv.base) * "_" * lowercase(ohlcv.quotecoin) * "_" * ohlcv.interval * "_OHLCV"
 
 function write(ohlcv::OhlcvData)
-    mnm = mnemonic(ohlcv)
-    filename = EnvConfig.datafile(mnm)
-    # println(filename)
-    try
-        JDF.savejdf(filename, ohlcv.df[!, save_cols])  # without :pivot
-        df = ohlcv.df
-        println("saved $filename of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
-    catch e
-        Logging.@warn "exception $e detected"
+    if EnvConfig.configmode == production
+        mnm = mnemonic(ohlcv)
+        filename = EnvConfig.datafile(mnm)
+        # println(filename)
+        try
+            JDF.savejdf(filename, ohlcv.df[!, save_cols])  # without :pivot
+            df = ohlcv.df
+            println("saved $filename of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+        catch e
+            Logging.@warn "exception $e detected"
+        end
+    else
+        @warn "no Ohlcv.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data"
     end
 end
 
@@ -562,15 +566,92 @@ function check(base::String; cure=false)
 end
 
 function delete(ohlcv::OhlcvData)
-    mnm = mnemonic(ohlcv)
-    filename = EnvConfig.datafile(mnm)
-    # println(filename)
-    if isdir(filename)
-        rm(filename; force=true, recursive=true)
+    if EnvConfig.configmode == production
+        mnm = mnemonic(ohlcv)
+        filename = EnvConfig.datafile(mnm)
+        # println(filename)
+        if isdir(filename)
+            rm(filename; force=true, recursive=true)
+        end
+    else
+        @warn "no Ohlcv.delete() if EnvConfig.configmode != production to prevent loosing accidentially real canned data"
+    end
+end
+
+mutable struct OhlcvFiles
+    filenames
+    OhlcvFiles() = new(nothing)
+end
+
+# function Base.iterate(of::OhlcvFiles, state=1)
+# end
+
+function Base.iterate(of::OhlcvFiles, state=1)
+    if isnothing(of.filenames)
+        allff = readdir(EnvConfig.datafolderpath(), join=false, sort=false)
+        ohlcvlist = findall(f -> endswith(f, "OHLCV.jdf"), allff)
+        of.filenames = [allff[ix] for ix in ohlcvlist]
+        if length(of.filenames) > 0
+            state = firstindex(of.filenames)
+        else
+            return nothing
+        end
+    end
+    if state > lastindex(of.filenames)
+        return nothing
+    end
+    # fn = split(of.filenames[state], "/")[end]
+    fnparts = split(of.filenames[state], "_")
+    # return (basecoin=fnparts[1], quotecoin=fnparts[2], interval=fnparts[3]), state+1
+    basecoin=fnparts[1]
+    # quotecoin=fnparts[2]
+    interval=fnparts[3]
+    ohlcv = defaultohlcv(basecoin, interval)
+    read!(ohlcv)
+    return ohlcv, state+1
+end
+
+function ohlcvrename()
+    for m in [test]  #[test, production, training]
+        EnvConfig.init(m)
+        allff = readdir(EnvConfig.datafolderpath(), join=false, sort=false)
+        ohlcvlist = findall(f -> endswith(f, "OHLCV.jdf"), allff)
+        for ix in ohlcvlist
+            println("$m $(allff[ix]) $(replace(allff[ix], "binance_" => ""))")
+        end
+        allff = readdir(EnvConfig.datafolderpath(), join=true, sort=false)
+        ohlcvlist = findall(f -> endswith(f, "OHLCV.jdf"), allff)
+        for ix in ohlcvlist
+            # println("$m $(allff[ix]) $(replace(allff[ix], "binance_" => ""))")
+            mv(allff[ix], replace(allff[ix], "binance_" => ""))
+        end
+        allff = readdir(EnvConfig.datafolderpath(), join=false, sort=false)
+        ohlcvlist = findall(f -> endswith(f, "OHLCV.jdf"), allff)
+        for ix in ohlcvlist
+            println("$m $(allff[ix]) $(replace(allff[ix], "binance_" => ""))")
+        end
     end
 end
 
 # pivot_test()
+function testiterate()
+    EnvConfig.init(test)
+    # for (ix, fnp) in enumerate(OhlcvFiles)
+    #     println("$ix: base=$(fnp.base) quote=$(fnp.quotecoin) interval=$(fnp.interval)")
+    # for fnp in OhlcvFiles()
+    #     println("base=$(fnp.basecoin) quote=$(fnp.quotecoin) interval=$(fnp.interval)")
+    # end
+    s=nothing
+    for ohlcv in OhlcvFiles()
+        println(ohlcv)
+        # if s != size(ohlcv.df, 1)
+        #     println("old size:$s new size:$(size(ohlcv.df, 1))")
+        # end
+        s = size(ohlcv.df, 1)
+    end
+end
 
 end  # Ohlcv
 
+# Ohlcv.ohlcvrename()
+# Ohlcv.testiterate()
