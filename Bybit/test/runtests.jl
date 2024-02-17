@@ -3,61 +3,61 @@ using Bybit, EnvConfig, Test, Dates, DataFrames
 EnvConfig.init(test)  # test production
 
 @testset "Bybit tests" begin
-    Bybit.init()
-    syminfo = Bybit.exchangeinfo()
+    bc = Bybit.BybitCache()
+    syminfo = Bybit.exchangeinfo(bc)
     @test isa(syminfo, AbstractDataFrame)
     @test size(syminfo, 1) > 100
 
-    @test (Dates.now(UTC) + Dates.Second(15)) > Bybit.servertime() > (Dates.now(UTC) - Dates.Second(15))
+    @test (Dates.now(UTC) + Dates.Second(15)) > Bybit.servertime(bc) > (Dates.now(UTC) - Dates.Second(15))
 
-    acc = Bybit.account()
+    acc = Bybit.account(bc)
     @test acc["marginMode"] == "REGULAR_MARGIN"
     @test isa(acc, AbstractDict)
     @test length(acc) > 1
 
-    syminfo = Bybit.symbolinfo("BTCUSDT")
+    syminfo = Bybit.symbolinfo(bc, "BTCUSDT")
     @test isa(syminfo, NamedTuple)
 
-    dayresult = Bybit.get24h()
+    dayresult = Bybit.get24h(bc)
     @test isa(dayresult, AbstractDataFrame)
     @test size(dayresult, 1) > 100
 
-    dayresult = Bybit.get24h("BTCUSDT")
+    dayresult = Bybit.get24h(bc, "BTCUSDT")
     @test isa(dayresult, AbstractDataFrame)
     @test size(dayresult, 2) >= 6
     @test all([s in ["askprice", "bidprice", "lastprice", "quotevolume24h", "pricechangepercent", "symbol"] for s in names(dayresult)])
     @test size(dayresult, 1) == 1
     btcprice = dayresult[1, :lastprice][1,1]
 
-    klines = Bybit.getklines("BTCUSDT")
+    klines = Bybit.getklines(bc, "BTCUSDT")
     @test isa(klines, AbstractDataFrame)
 
 
-    oid = Bybit.createorder("BTCUSDT", "Buy", 0.00001, btcprice * 0.9)
+    oid = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9)
 
-    oo = Bybit.order(oid)
+    oo = Bybit.order(bc, oid)
     @test isa(oo, NamedTuple)
-    @test length(oo) == 12
+    @test length(oo) >= 13
     @test oo.orderid == oid
 
-    oidc = Bybit.amendorder("BTCUSDT", oid; quantity=0.00011)
+    oidc = Bybit.amendorder(bc, "BTCUSDT", oid; quantity=0.00011)
     @test oidc == oid
 
-    oidc = Bybit.amendorder("BTCUSDT", oid; limitprice=btcprice * 0.8)
+    oidc = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
     @test oidc == oid
 
-    oo = Bybit.openorders()
+    oo = Bybit.openorders(bc)
     @test isa(oo, AbstractDataFrame)
     @test (size(oo, 1) > 0)
-    @test (size(oo, 2) == 12)
+    @test (size(oo, 2) >= 13)
 
-    coid = Bybit.cancelorder("BTCUSDT", oid)
+    coid = Bybit.cancelorder(bc, "BTCUSDT", oid)
     @test coid == oid
 
-    oo = Bybit.order(oid)
+    oo = Bybit.order(bc, oid)
     @test oo.status == "Cancelled"
 
-    wb = Bybit.balances()
+    wb = Bybit.balances(bc)
     @test isa(wb, AbstractDataFrame)
     @test size(wb, 2) == 3
 

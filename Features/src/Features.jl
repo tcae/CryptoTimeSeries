@@ -921,7 +921,7 @@ function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
     @assert size(df, 1) >= reqmin
     lastix = lastix > lastindex(df, 1) ? lastindex(df, 1) : lastix
     firstix = firstix < (firstindex(df, 1) + reqmin - 1) ? (firstindex(df, 1) + reqmin - 1) : firstix
-    @assert firstix <= lastix
+    @assert firstix <= lastix "firstix=$firstix <= lastix=$lastix ohlcv=$ohlcv"
     # maxfirstix = max((lastix - reqmin + 1), firstindex(df, 1))
     # firstix = firstix < reqmin ? reqmin : firstix
     # firstix = firstix > maxfirstix ? maxfirstix : firstix

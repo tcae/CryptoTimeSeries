@@ -1,7 +1,7 @@
 name = "CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "1.0.1"
+version = "0.8.0"
 
 [deps]
 Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"

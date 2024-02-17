@@ -156,6 +156,10 @@ EnvConfig.init(test)
 @testset "Ohlcv tests" begin
 
 ohlcv1 = testohlcvinit("test")
+@test Ohlcv.rowix(ohlcv1, Ohlcv.dataframe(ohlcv1).opentime[begin] - Minute(10)) == firstindex(Ohlcv.dataframe(ohlcv1).opentime)
+@test Ohlcv.rowix(ohlcv1, Ohlcv.dataframe(ohlcv1).opentime[end] + Minute(10)) == lastindex(Ohlcv.dataframe(ohlcv1).opentime)
+@test Ohlcv.rowix(ohlcv1, Ohlcv.dataframe(ohlcv1).opentime[3]) == 3
+@test Ohlcv.rowix(ohlcv1, Ohlcv.dataframe(ohlcv1).opentime[3] + Second(10)) == 3
 
 dfmin, dfmin3, dfmin5 = ohlcvaccumulate()
 println(dfmin)

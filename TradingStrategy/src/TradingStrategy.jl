@@ -18,7 +18,7 @@ module TradingStrategy
 
 using DataFrames, Logging
 using Dates, DataFrames
-using EnvConfig, Ohlcv, Features, Targets, Classify, CryptoXch
+using EnvConfig, Ohlcv, Features
 export requiredminutes
 
 combinedbuysellfee = 0.002
@@ -224,7 +224,7 @@ mutable struct TradeChances004
 end
 
 function Base.show(io::IO, tcs::TradeChances004)
-    cfg = ["$(p[1]): $(p[2])  " for p in tcs.baseconfig]...
+    cfg = ["$(p[1]): $(p[2])  " for p in tcs.baseconfig]
     show("io::IO, TradeChances004 - $cfg\n")
     show(tcs.tcs)
 end

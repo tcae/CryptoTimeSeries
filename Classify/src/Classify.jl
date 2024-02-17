@@ -12,6 +12,7 @@ using CategoricalDistributions
 # using Distributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 using Plots
+export hold, sell, buy
 
 @enum InvestProposal hold sell buy
 
@@ -1120,46 +1121,107 @@ end
 
 #region Classifier-001
 
+"cache and config: 1) receive ohlcv, 2) read config, 3) calculate f2"
+mutable struct BaseClassifier1
+    ohlcv          # ohlcv cache
+    f2             # f2 cache
+    regrwindow     # regression window in minutes
+    gainthreshold  # default std/price that must be higher than that threshold to consider a buy/sell
+end
 
+STDREGRWINDOW = maximum(Features.regressionwindows002)
+STDGAINTHRSHLD = 1.0f0
 """
 Returns a `buy` recommendation if the standard deviation of a given regression window relative to price of the regression line exceeds a threshold and
 the current price is below regressionline minus standard deviation.
 Corresondingly returns a `sell` recommendation if std/price > threshold and price > std + price. In all other price cases a `hold` is returned.
 """
 mutable struct Classifier001 <: AbstractClassifier
-    base  # base coin (quotecoin is USDT fixed)
-    regrwindow  # regression window in minutes
-    gainthreshold  # std/price that must be higher than that threshold to consider a buy/sell
-    minutesgap  # number of minutes between 2 propsals of same type (applicable to buy/sell)
-    selldt  # timestamp of last sell proposal
-    buydt  # timestamp of last buy proposal
-    function Classifier001(base::String, regrwindow::Unsigned, gainthreshold::Real, minutesgap::Real)::Union{Classifier001, Nothing}
+    bc             # Dict{basecoin::String, BaseClassifier} (quotecoin is USDT fixed)
+    # regrwindow     # max of all base classifiers regression window in minutes
+    # gainthreshold  # default std/price that must be higher than that threshold to consider a buy/sell
+    function Classifier001(regrwindow::Integer, gainthreshold::Real)::Classifier001
         regrwindow = round(Int, regrwindow)
         @assert regrwindow > 0 "regrwindow=$regrwindow > 0"
         @assert 0.1 > gainthreshold > 0 "0.1 > gainthreshold=$gainthreshold > 0"
-        @assert minutesgap > 0 "minutesgap=$minutesgap > 0"
-        new(base, regrwindow, gainthreshold, minutesgap, Dates.now()-Dates.Minute(minutesgap), Dates.now()-Dates.Minute(minutesgap))
+        new(Dict())  # , regrwindow, gainthreshold)
     end
 end
 
-requiredminutes(cls::Classifier001) = cls.regrwindow
-registerlongbuy!(cls::Classifier001, buydt::Dates.DateTime) = (cls.buydt = buydt; cls)
-registerlongsell!(cls::Classifier001, selldt::Dates.DateTime) = (cls.selldt = selldt; cls)
+Classifier001() = Classifier001(Features.requiredminutes(Features.regressionwindows002), 0.01)
+CLASSIFIER001_CONFIGFILE = "Classifier001.csv"
+
+requiredminutes(cls::Classifier001) = STDREGRWINDOW
+
+emptyconfigdf() = DataFrame(basecoin=String[], regrwindow=Int16[], gainthreshold=Float32[])
+
+function read(cls::Classifier001)
+    df = nothing
+    sf = EnvConfig.logsubfolder()
+    EnvConfig.setlogpath(nothing)
+    pf = EnvConfig.logpath(CLASSIFIER001_CONFIGFILE)
+    if isfile(pf)
+        df = CSV.read(pf, DataFrame, decimal='.', delim=';')
+        # println(describe(df))
+        # println(df)
+    else
+        df = emptyconfigdf()
+    end
+    EnvConfig.setlogpath(sf)
+    return df
+end
+
+"Replaces config content of base classifiers and saves it"
+function save(cls::Classifier001)
+    df = read(cls)
+    unknownbases = setdiff(keys(cls.bc), df.basecoin)
+    df = df[df.basecoin .== unknownbases, :]  # remove previous entries of bases that shall be saved
+    for (base, bc) in cls.bc
+        push!(df, (base, bc.regrwindow, bc.gainthreshold))
+    end
+    sf = EnvConfig.logsubfolder()
+    EnvConfig.setlogpath(nothing)
+    fn = EnvConfig.logpath(CLASSIFIER001_CONFIGFILE)
+    EnvConfig.checkbackup(fn)
+    CSV.write(fn, df, decimal=',', delim=';')  # decimal as , to consume with European locale
+    EnvConfig.setlogpath(sf)
+end
+
+"prepares advice in batch processing between ohlcv.ix and ohlcv.lastindex"
+function preparebacktest!(cls::Classifier001, ohlcviter)
+    for ohlcv in ohlcviter
+        cls.bc[ohlcv.base] = BaseClassifier1(ohlcv, nothing, STDREGRWINDOW, STDGAINTHRSHLD)
+    end
+    cdf = read(cls)
+    for (base, bc) in cls.bc
+        bix = findfirst(b -> b == base, cdf.basecoin)
+        if !isnothing(bix)
+            bc.regrwindow = cdf[bix, :regrwindow]
+            bc.gainthreshold = cdf[bix, :gainthreshold]
+        else
+            @info "no saved Classifier001 config found for $base -> using standard config"
+        end
+        @info "$(EnvConfig.now()) Classifier001 config for $base: regrwindow=$(bc.regrwindow), gainthreshold=$(bc.gainthreshold)"
+        bc.f2 = Features.Features002(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=[bc.regrwindow])
+    end
+end
 
 "Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
-function advise(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestProposal
-    @assert (f2.firstix <= ohlcvix <= lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1)) "advise index out of range f2.firstix=$(f2.firstix) <= ohlcvix=$ohlcvix <= lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1)=$(lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1))"
-    @assert Ohlcv.basecoin(Features.ohlcv(f2)) == cls.base "base(ohlcv(f2))=$(Ohlcv.basecoin(Features.ohlcv(f2))) != cls.base=$(cls.base)"
-    @assert (cls.regrwindow in Features.regrwindows(f2)) "cls.regrwindow=$(cls.regrwindow) not in Features.regrwindows(f2)=$(Features.regrwindows(f2))"
+function advice(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestProposal
+    ohlcv = Features.ohlcv(f2)
+    bc = ohlcv.base in keys(cls.bc) ? bc = cls.bc[ohlcv.base] : BaseClassifier1(ohlcv, nothing, STDREGRWINDOW, STDGAINTHRSHLD)
+    @assert (f2.firstix <= ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)) "advice index out of range f2.firstix=$(f2.firstix) <= ohlcvix=$ohlcvix <= lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1)=$(lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1))"
+    @assert Ohlcv.basecoin(Features.ohlcv(f2)) in keys(cls.bc) "base(ohlcv(f2))=$(Ohlcv.basecoin(Features.ohlcv(f2))) not in keys(cls.bc)=$(keys(cls.bc))"
+    @assert (bc.regrwindow in Features.regrwindows(f2)) "cls.regrwindow=$(bc.regrwindow) not in Features.regrwindows(f2)=$(Features.regrwindows(f2))"
 
     fix = Features.featureix(f2, ohlcvix)
     dt = Ohlcv.dataframe(Features.ohlcv(f2)).opentime[ohlcvix]
-    if ((f2.regr[cls.regrwindow].std[fix] / f2.regr[cls.regrwindow].regry[fix]) > cls.gainthreshold)
-        if ((dt - cls.selldt) >= Dates.Minute(cls.minutesgap)) && (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] > f2.regr[cls.regrwindow].regry[fix] + f2.regr[cls.regrwindow].std[fix])
-            cls.selldt = dt
+    if ((f2.regr[bc.regrwindow].std[fix] / f2.regr[bc.regrwindow].regry[fix]) > bc.gainthreshold)
+        if (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] > f2.regr[bc.regrwindow].regry[fix] + f2.regr[bc.regrwindow].std[fix])
+            # println("$(dt): sell at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
             return sell
-        elseif ((dt - cls.buydt) >= Dates.Minute(cls.minutesgap)) && (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] < f2.regr[cls.regrwindow].regry[fix] - f2.regr[cls.regrwindow].std[fix])
-            cls.buydt = dt
+        elseif (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] < f2.regr[bc.regrwindow].regry[fix] - f2.regr[bc.regrwindow].std[fix])
+            # println("$(dt): buy at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
             return buy
         end
     end
@@ -1167,11 +1229,23 @@ function advise(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestPr
 end
 
 "Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
-function advise(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)::InvestProposal
-    @assert (cls.regrwindow <= ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)) "advise index out of range cls.regrwindow=$(cls.regrwindow) <= ohlcvix=$ohlcvix <= lastindex(Ohlcv.dataframe(ohlcv), 1)=$(lastindex(Ohlcv.dataframe(ohlcv), 1))"
-    @assert Ohlcv.basecoin(ohlcv) == cls.base "base(ohlcv)=$(Ohlcv.basecoin(ohlcv)) != cls.base=$(cls.base)"
-    f2 = Features.Features002(ohlcv, firstix=ohlcvix, lastix=ohlcvix, regrwindows=[cls.regrwindow])
-    return advise(cls, f2, ohlcvix)
+function advice(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)::InvestProposal
+    if ohlcv.base in keys(cls.bc)
+        bc = cls.bc[ohlcv.base]
+        if !isnothing(bc.f2) && (Features.ohlcvix(bc.f2, 1) <= ohlcvix <= bc.f2.lastix)
+            # println("reuse for $ohlcv at $(Features.ohlcvix(bc.f2, 1)) <= ohlcvix=$ohlcvix <= $(bc.f2.lastix)")
+            f2 = bc.f2
+        else
+            # println("no reuse for $ohlcv at ohlcvix=$ohlcvix")
+            @error "no base classifier found"
+            return hold
+        end
+    else
+        ohlcv.ix = ohlcvix
+        preparebacktest!(cls, [ohlcv])
+        f2 = cls.bc[ohlcv.base].f2
+    end
+    return advice(cls, f2, ohlcvix)
 end
 
 #endregion Classifier-001

@@ -26,7 +26,7 @@ mutable struct OhlcvData
 end
 
 function Base.show(io::IO, ohlcv::OhlcvData)
-    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) intervals=$(size(ohlcv.df, 1) > 0 ? round(Int, (ohlcv.df.opentime[end] - (ohlcv.df.opentime[begin] + Dates.Minute(1)))/intervalperiod(ohlcv.interval)) : 0) start=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[begin] : "no start datetime)") end=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[end] : "no end datetime)") ix=$(ohlcv.ix)")
+    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) intervals=$(size(ohlcv.df, 1) > 0 ? round(Int, (ohlcv.df.opentime[end] - (ohlcv.df.opentime[begin] - Dates.Minute(1)))/intervalperiod(ohlcv.interval)) : 0) start=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[begin] : "no start datetime)") end=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[end] : "no end datetime)") ix=$(ohlcv.ix)")
 end
 
 
@@ -293,8 +293,34 @@ function pivot_test()
 
 end
 
-"Returns the row index within the ohlcv DataFrame of the given DateTime or nothing if not found"
-rowix(ohlcv::OhlcvData, dt::Dates.DateTime) = findfirst(x -> x == floor(dt, intervalperiod(interval(ohlcv))), dataframe(ohlcv).opentime)
+"Returns the row index within the ohlcv DataFrame of the given DateTime or the closest ix if not found"
+function rowix(ohlcv::OhlcvData, dt::Dates.DateTime)
+    p = intervalperiod(interval(ohlcv))
+    dt = floor(dt, p)
+    ot = dataframe(ohlcv).opentime
+    if length(ot) == 0
+        return 0
+    end
+    if dt < ot[begin]
+        return firstindex(ot)
+    elseif dt > ot[end]
+        return lastindex(ot)
+    else
+        ix = max(firstindex(ot), round(Int, ((dt - ot[begin]) / p + 1)))
+        # ix should be very close unless there are missing minutes - hence a second try
+        ix = dt == ot[ix] ? ix : max(firstindex(ot), round(Int, ((dt - ot[ix]) / p + 1)))
+        if dt > ot[ix]
+            while ((ix + 1) <= lastindex(ot)) && (dt > ot[ix + 1])
+                ix += 1
+            end
+        elseif dt < ot[ix]
+            while ((ix - 1) >= firstindex(ot)) && (dt <= ot[ix - 1])
+                ix -= 1
+            end
+        end
+        return ix
+    end
+end
 
 "accumulates minute interval ohlcv dataframe into larger interval dataframe"
 function accumulate(df::AbstractDataFrame, interval)

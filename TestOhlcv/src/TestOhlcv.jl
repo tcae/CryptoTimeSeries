@@ -151,11 +151,14 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     return df
 end
 
+dispatch = Dict(
+    "SINE" => singlesine,
+    "DOUBLESINE" => doublesine
+)
+
+testbasecoin() = keys(dispatch)
+
 function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
-    dispatch = Dict(
-        "sine" => singlesine,
-        "doublesine" => doublesine
-    )
     testbase = base
     if base in keys(dispatch)
         df = dispatch[testbase](startdt, enddt, interval)
