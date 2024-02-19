@@ -1,7 +1,7 @@
 name = "Assets"
 uuid = "e4c5a7f8-51b3-4a40-8507-79544143629b"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.1.1"
+version = "0.3.1"
 
 [deps]
 CryptoXch = "377c31d0-5293-4e5d-923f-2b5362fd66a9"

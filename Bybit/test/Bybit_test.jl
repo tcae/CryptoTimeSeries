@@ -5,6 +5,9 @@ bc = Bybit.BybitCache()
 
 println(Bybit.servertime(bc)) # > DateTime("2023-08-18T20:07:54.209")
 
+oo = Bybit.allorders(bc)
+println(oo)
+
 acc = Bybit.account(bc)
 println(acc["marginMode"] == "REGULAR_MARGIN")
 println(isa(acc, AbstractDict))

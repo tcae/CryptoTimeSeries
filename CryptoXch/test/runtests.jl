@@ -166,7 +166,6 @@ enddt = DateTime("2020-09-11T22:49:00")
 
     # println("test IP with CLI: wget -qO- http://ipecho.net/plain | xargs echo")
 
-
     println("Now testing CryptoXch simulation mode")
 
     EnvConfig.init(training)

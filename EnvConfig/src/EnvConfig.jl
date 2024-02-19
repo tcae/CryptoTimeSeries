@@ -111,7 +111,7 @@ function init(mode::Mode; newdatafolder=false)
     if configmode == production
         bases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
-            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
+            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm",
             "theta"]
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx"]
@@ -122,11 +122,11 @@ function init(mode::Mode; newdatafolder=false)
         datafolder = getdatafolder("Features", newdatafolder)
         trainingbases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
-            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm", "zec",
+            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm",
             "theta"]
         bases = [
             "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx",
-            "link", "ada", "matic", "omg", "zec", "xlm",
+            "link", "ada", "matic", "omg", "xlm",
             "theta"]
         # trainingbases = [
         #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
@@ -140,6 +140,8 @@ function init(mode::Mode; newdatafolder=false)
     else
         Logging.@error("invalid Config mode $configmode")
     end
+    bases = uppercase.(bases)
+    trainingbases = uppercase.(trainingbases)
 end
 
 function datafile(mnemonic::String, extension=".jdf")

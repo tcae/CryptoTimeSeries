@@ -6,7 +6,7 @@ using Test
 using Ohlcv, EnvConfig, Assets, CryptoXch
 
 EnvConfig.init(production)
-# ad2 = Assets.read()
+# ad2 = Assets.read!(Assets.AssetData())
 # sort!(ad2.df, [:base])
 # usdtdf = CryptoXch.getUSDTmarket()
 # sort!(usdtdf, [:base])
@@ -19,13 +19,13 @@ EnvConfig.init(production)
 
 # println(Assets.portfolioselect(CryptoXch.getUSDTmarket()))
 @testset "Assets tests" begin
-    ad1 = Assets.read()
-    # ad1 = Assets.loadassets()
+    ad1 = Assets.read!(Assets.AssetData())
+    # ad1 = Assets.loadassets!(Assets.AssetData())
     # @test size(ad1.df, 1) > 0
     nsyms = Symbol.(names(ad1.basedf))
     @test all([col in nsyms for col in Assets.savecols])
     Assets.write(ad1)
-    ad2 = Assets.read()
+    ad2 = Assets.read!(Assets.AssetData())
     @test ad1.basedf==ad2.basedf
     # println("ad2.df")
     # println(ad2.df)

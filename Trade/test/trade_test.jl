@@ -15,20 +15,31 @@ messagelog = open(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt"), "w")
 logger = SimpleLogger(messagelog)
 defaultlogger = global_logger(logger)
 
-# EnvConfig.init(production)
-EnvConfig.init(training)
+EnvConfig.init(production)
+# EnvConfig.init(training)
 
-cache = Trade.TradeCache(bases=["BTC"], startdt=DateTime("2022-01-01T00:00:00"), enddt=DateTime("2022-02-01T10:00:00"), messagelog=messagelog)
-Trade.tradeloop(cache)
-# Trade.tradeloop(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
-# Trade.tradeloop(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=nothing))
+# startdt = DateTime("2022-01-01T00:00:00")
+# enddt = DateTime("2022-02-01T10:00:00")
+startdt = Dates.now(UTC)
+enddt = nothing
+cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
+try
+    Trade.tradeloop(cache)
+    # Trade.tradeloop(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
+    # Trade.tradeloop(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=nothing))
 
-# Trade.tradelooptest(Trade.TradeCache(bases=["BTC"], startdt=DateTime("2022-01-01T00:00:00"), enddt=DateTime("2022-02-01T01:00:00")))
-# Trade.tradelooptest(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
-# Trade.tradelooptest(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=nothing))
-@info "$(EnvConfig.now()): finished"
-global_logger(defaultlogger)
-close(cache.messagelog)
-println("$(EnvConfig.now()): finished")
+    # Trade.tradelooptest(Trade.TradeCache(bases=["BTC"], startdt=DateTime("2022-01-01T00:00:00"), enddt=DateTime("2022-02-01T01:00:00")))
+    # Trade.tradelooptest(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
+    # Trade.tradelooptest(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=nothing))
+# catch ex
+#     if isa(ex, InterruptException)
+#         println("Ctrl+C pressed by trade_test")
+#     end
+finally
+    @info "$(EnvConfig.now()): finished"
+    global_logger(defaultlogger)
+    close(cache.messagelog)
+    println("$(EnvConfig.now()): finished")
+end
 
 end  # module

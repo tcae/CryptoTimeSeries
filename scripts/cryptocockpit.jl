@@ -19,13 +19,14 @@ import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Assets, Classify
+using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch
 
 include("../scripts/cockpitdatatablecolors.jl")
 
 dtf = "yyyy-mm-dd HH:MM"
 # EnvConfig.init(EnvConfig.production)
-EnvConfig.init(EnvConfig.test)
+EnvConfig.init(training)
+xc = CryptoXch.XchCache(true)
 
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 cssdir = EnvConfig.setprojectdir()  * "/scripts/"
@@ -59,14 +60,12 @@ function updateassets(download=false)
     global ohlcvcache
 
     if !download
-        a = Assets.read()
+        a = Assets.read!(Assets.AssetData())
     end
     if download || (size(a.basedf, 1) == 0)
         ohlcvcache = Dict()
-        a = Assets.loadassets()
+        a = Assets.loadassets!(Assets.AssetData())
         println(a)
-    else
-        a = Assets.read()
     end
     if !(a === nothing) && (size(a.basedf, 1) > 0)
         sort!(a.basedf, [:portfolio], rev=true)

@@ -469,7 +469,7 @@ function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=no
         params["end"] = Printf.@sprintf("%.0d",Dates.datetime2unix(endDateTime) * 1000)
     end
     response = HttpPublicRequest(bc, "GET", "/v5/market/kline", params, "kline")
-    response["result"]["list"] = _convertklines(response["result"]["list"])
+    response["result"]["list"] = length(response["result"]) == 0 ? _convertklines(Dict()) : _convertklines(response["result"]["list"])
     return response["result"]["list"]
 end
 
@@ -483,6 +483,8 @@ function account(bc::BybitCache)
     ret = HttpPrivateRequest(bc, "GET", "/v5/account/info", nothing, "AccountInfo")
     return ret["result"]
 end
+
+emptyorders()::DataFrame = EnvConfig.configmode == production ? DataFrame() : DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
 
 """
 Returns a DataFrame of open **spot** orders with columns:
@@ -559,6 +561,40 @@ function openorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId
 #      39 │ tpLimitPrice        0.0                      Float32
 #      40 │ rejectReason        EC_NoError               String
 #      41 │ triggerDirection    0                        Int64
+    return df
+end
+
+function allorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
+    params = Dict("category" => "spot")
+    isnothing(symbol) ? nothing : params["symbol"] = symbol
+    isnothing(orderid) ? nothing : params["orderId"] = orderid
+    isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
+    oo = HttpPrivateRequest(bc, "GET", "/v5/order/history", params, "allorders")
+    df = DataFrame()
+    if length(oo["result"]["list"]) > 0
+        # return oo["result"]["list"]
+        for col in keys(oo["result"]["list"][1])
+            df[:, col] = [entry[col] for entry in oo["result"]["list"]]
+        end
+        # df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
+    end
+    return df
+end
+
+function alltransactions(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
+    params = Dict("category" => "spot")
+    isnothing(symbol) ? nothing : params["symbol"] = symbol
+    isnothing(orderid) ? nothing : params["orderId"] = orderid
+    isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
+    oo = HttpPrivateRequest(bc, "GET", "/v5/execution/list", params, "alltransactions")
+    df = DataFrame()
+    if length(oo["result"]["list"]) > 0
+        # return oo["result"]["list"]
+        for col in keys(oo["result"]["list"][1])
+            df[:, col] = [entry[col] for entry in oo["result"]["list"]]
+        end
+        # df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
+    end
     return df
 end
 

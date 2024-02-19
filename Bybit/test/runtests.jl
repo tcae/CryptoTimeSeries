@@ -1,6 +1,6 @@
 using Bybit, EnvConfig, Test, Dates, DataFrames
 
-EnvConfig.init(test)  # test production
+EnvConfig.init(production)  # test production
 
 @testset "Bybit tests" begin
     bc = Bybit.BybitCache()

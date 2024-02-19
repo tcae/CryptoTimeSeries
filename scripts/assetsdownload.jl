@@ -6,11 +6,10 @@
 module AssetsTest
 using Dates
 
-using EnvConfig, Assets
+using EnvConfig, Assets, CryptoXch
 
 
 EnvConfig.init(production)
-# EnvConfig.init(test)
-ad1 = Assets.loadassets()
-
+ad1 = Assets.loadassets!(Assets.AssetData())
+println(ad1.basedf)
 end  # module

@@ -19,4 +19,4 @@ function test()
 end
 
 EnvConfig.init(EnvConfig.production)
-Assets.loadassets()
+Assets.loadassets!(Assets.AssetData())

@@ -1190,7 +1190,7 @@ end
 "prepares advice in batch processing between ohlcv.ix and ohlcv.lastindex"
 function preparebacktest!(cls::Classifier001, ohlcviter)
     for ohlcv in ohlcviter
-        cls.bc[ohlcv.base] = BaseClassifier1(ohlcv, nothing, STDREGRWINDOW, STDGAINTHRSHLD)
+        cls.bc[ohlcv.base] = ohlcv.base in keys(cls.bc) ? cls.bc[ohlcv.base] : BaseClassifier1(ohlcv, nothing, STDREGRWINDOW, STDGAINTHRSHLD)
     end
     cdf = read(cls)
     for (base, bc) in cls.bc
@@ -1216,14 +1216,12 @@ function advice(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestPr
 
     fix = Features.featureix(f2, ohlcvix)
     dt = Ohlcv.dataframe(Features.ohlcv(f2)).opentime[ohlcvix]
-    if ((f2.regr[bc.regrwindow].std[fix] / f2.regr[bc.regrwindow].regry[fix]) > bc.gainthreshold)
-        if (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] > f2.regr[bc.regrwindow].regry[fix] + f2.regr[bc.regrwindow].std[fix])
-            # println("$(dt): sell at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
-            return sell
-        elseif (Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] < f2.regr[bc.regrwindow].regry[fix] - f2.regr[bc.regrwindow].std[fix])
-            # println("$(dt): buy at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
-            return buy
-        end
+    if Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] > f2.regr[bc.regrwindow].regry[fix] * (1 + bc.gainthreshold)  # + f2.regr[bc.regrwindow].std[fix]
+        # println("$(dt): sell at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
+        return sell
+    elseif Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] < f2.regr[bc.regrwindow].regry[fix] * (1 - bc.gainthreshold)  # - f2.regr[bc.regrwindow].std[fix]
+        # println("$(dt): buy at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
+        return buy
     end
     return hold
 end
@@ -1232,13 +1230,22 @@ end
 function advice(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)::InvestProposal
     if ohlcv.base in keys(cls.bc)
         bc = cls.bc[ohlcv.base]
-        if !isnothing(bc.f2) && (Features.ohlcvix(bc.f2, 1) <= ohlcvix <= bc.f2.lastix)
-            # println("reuse for $ohlcv at $(Features.ohlcvix(bc.f2, 1)) <= ohlcvix=$ohlcvix <= $(bc.f2.lastix)")
-            f2 = bc.f2
-        else
-            # println("no reuse for $ohlcv at ohlcvix=$ohlcvix")
-            @error "no base classifier found"
+        if isnothing(bc)
+            @error "no base classifier ffor $(ohlcv.base) found: $(string(bc))"
             return hold
+        else
+            if Features.ohlcvix(bc.f2, 1) <= ohlcvix <= bc.f2.lastix
+                # println("reuse for $ohlcv at $(Features.ohlcvix(bc.f2, 1)) <= ohlcvix=$ohlcvix <= $(bc.f2.lastix)")
+                f2 = bc.f2
+            elseif ohlcvix > bc.f2.lastix
+                ohlcv.ix = ohlcvix
+                bc.f2 = Features.Features002(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=[bc.regrwindow])
+                f2 = cls.bc[ohlcv.base].f2
+            else
+                # println("no reuse for $ohlcv at ohlcvix=$ohlcvix")
+                @error "no features found for base classifier of $(ohlcv.base) found: $(string(bc.f2))"
+                return hold
+            end
         end
     else
         ohlcv.ix = ohlcvix
