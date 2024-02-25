@@ -74,7 +74,13 @@ quotecoin(ohlcv::OhlcvData) = ohlcv.quotecoin
 interval(ohlcv::OhlcvData) = ohlcv.interval
 dataframe(ohlcv::OhlcvData) = ohlcv.df
 ix(ohlcv::OhlcvData) = ohlcv.ix
-setix!(ohlcv::OhlcvData, ix::Integer) = (ohlcv.ix = ix; ix)
+function setix!(ohlcv::OhlcvData, ix::Integer)
+    ix = size(ohlcv.df, 1) == 0 ? 0 : ix
+    ix = ix < firstindex(ohlcv.df[!,:opentime]) ? firstindex(ohlcv.df[!,:opentime]) : ix
+    ix = ix > lastindex(ohlcv.df[!,:opentime]) ? lastindex(ohlcv.df[!,:opentime]) : ix
+    ohlcv.ix = ix
+    return ix
+end
 
 # function copy(ohlcv::OhlcvData)
 #     return OhlcvData(ohlcv.df, ohlcv.base, ohlcv.quotecoin, ohlcv.interval)
@@ -293,11 +299,12 @@ function pivot_test()
 
 end
 
-"Returns the row index within the ohlcv DataFrame of the given DateTime or the closest ix if not found"
-function rowix(ohlcv::OhlcvData, dt::Dates.DateTime)
-    p = intervalperiod(interval(ohlcv))
+"Returns the row index within the timestamps vector or the closest ix if not found"
+function rowix(timestamps::AbstractVector{DateTime}, dt::DateTime, interval::Period=nothing)
+    #TODO regression tests to be added
+    ot = timestamps
+    p = isnothing(interval) ? (lastindex(ot) - firstindex(ot) > 1 ? ot[firstindex(ot) + 1] - ot[firstindex(ot)] : intervalperiod("1m")) : interval
     dt = floor(dt, p)
-    ot = dataframe(ohlcv).opentime
     if length(ot) == 0
         return 0
     end
@@ -321,6 +328,9 @@ function rowix(ohlcv::OhlcvData, dt::Dates.DateTime)
         return ix
     end
 end
+
+"Returns the row index within the ohlcv DataFrame of the given DateTime or the closest ix if not found"
+rowix(ohlcv::OhlcvData, dt::Dates.DateTime) = rowix(dataframe(ohlcv).opentime, dt, intervalperiod(interval(ohlcv)))
 
 "accumulates minute interval ohlcv dataframe into larger interval dataframe"
 function accumulate(df::AbstractDataFrame, interval)

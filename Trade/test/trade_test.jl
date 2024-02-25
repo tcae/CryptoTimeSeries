@@ -15,14 +15,16 @@ messagelog = open(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt"), "w")
 logger = SimpleLogger(messagelog)
 defaultlogger = global_logger(logger)
 
-EnvConfig.init(production)
-# EnvConfig.init(training)
 
-# startdt = DateTime("2022-01-01T00:00:00")
-# enddt = DateTime("2022-02-01T10:00:00")
-startdt = Dates.now(UTC)
-enddt = nothing
-cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
+EnvConfig.init(training)
+startdt = DateTime("2022-01-01T00:00:00")
+enddt = DateTime("2022-02-01T10:00:00")
+cache = Trade.TradeCache(bases=["BTC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
+
+# EnvConfig.init(production)
+# startdt = Dates.now(UTC)
+# enddt = nothing
+# cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
 try
     Trade.tradeloop(cache)
     # Trade.tradeloop(Trade.TradeCache(bases=["BTC"], startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))

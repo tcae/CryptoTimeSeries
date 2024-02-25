@@ -40,7 +40,7 @@ function emptyassetdataframe()::DataFrames.DataFrame
 end
 
 manualselect() = EnvConfig.bases
-minimumdayquotevolume = 10000000  # per day = 6944 per minute
+minimumdayquotevolume = 1000000
 
 "deprecated"
 function automaticselect(usdtdf, volumecheckdays, minimumdayquotevolume)
@@ -96,7 +96,7 @@ function setdataframe!(ad::AssetData, df)
 end
 
 mnemonic() = "AssetData_v1"
-savecols = [:base, :manual, :automatic, :portfolio, :update, :quotevolume24h, :pricechangepercent]
+savecols = [:base, :manual, :automatic, :portfolio, :update, :quotevolume24h_M, :pricechangepercent]
 
 function write(ad::AssetData)
     mnm = mnemonic()
@@ -168,8 +168,9 @@ function loadassets!(ad::AssetData)::AssetData
     # println("usdtdf")
     # println(usdtdf)
     sort!(usdtdf, [:basecoin])
-    ad.basedf[:, :quotevolume24h] = usdtdf[in.(usdtdf[!,:basecoin], Ref([base for base in ad.basedf[!, :base]])), :quotevolume24h]
+    ad.basedf[:, :quotevolume24h_M] = usdtdf[in.(usdtdf[!,:basecoin], Ref([base for base in ad.basedf[!, :base]])), :quotevolume24h] / 1000000
     ad.basedf[:, :pricechangepercent] = usdtdf[in.(usdtdf[!,:basecoin], Ref([base for base in ad.basedf[!, :base]])), :pricechangepercent]
+    #TODO add column with std in percent for 24h regression
 
     write(ad)
     return ad

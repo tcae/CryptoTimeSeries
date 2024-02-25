@@ -39,8 +39,6 @@ mutable struct TradeCache
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         xc = CryptoXch.XchCache(bases, isnothing(startdt) ? nothing : startdt - Minute(Classify.requiredminutes(classifier)), enddt)
         Classify.preparebacktest!(classifier, CryptoXch.ohlcv(xc))
-        # oldf = DataFrame(usdttotal=[], asset=[], afree=[], alocked=[], oid=[], action=[], base=[], baseqty=[], limitprice=[], orderUSDTvalue=[])
-        oldf = DataFrame(usdttotal=Float32[], asset=String[], afree=Float32[], alocked=Float32[], oid=String[], action=String[], base=String[], baseqty=Float32[], limitprice=Float32[], orderUSDTvalue=Float32[])
         new(xc, classifier, startdt, nothing, enddt, tradegapminutes, messagelog, Dict(), Dict())
     end
 end
@@ -101,6 +99,7 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
         @error "more than 1 open order for base $base"
     end
     asset = tp == sell ? base : EnvConfig.cryptoquote
+    totalusdt = sum(assets.usdtvalue)
     assets = assets[assets.coin .== asset, :]
     assetfree = sum(assets.free)
     syminfo = CryptoXch.minimumqty(cache.xc, sym)
@@ -118,35 +117,41 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
         if size(oo, 1) == 1
             if oo[1, :side] == "Buy"
                 oid = CryptoXch.cancelorder(cache.xc, base, oo[1, :orderid])
+                println("$(tradetime(cache)) cancel $base buy order with oid $oid, total USDT=$(totalusdt)")
             else  # open order on Sell side
                 if basefree < syminfo.minbaseqty
                     basequantity = basefree + oo[1, :baseqty]
                     oid = CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice, basequantity=basequantity)
+                    println("$(tradetime(cache)) change $base sell order with oid $oid to limitprice=$limitprice and basequantity=$basequantity, total USDT=$(totalusdt)")
                 else
                     oid = CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice)
+                    println("$(tradetime(cache)) change $base sell order with oid $oid to limitprice=$limitprice, total USDT=$(totalusdt)")
                 end
             end
         elseif (basequantity >= minimumbasequantity) && (!(base in keys(cache.lastsell)) || (cache.lastsell[base] + Minute(cache.tradegapminutes) <= dtnow))
             cache.lastsell[base] = dtnow
             oid = CryptoXch.createsellorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity)
-            println("$(EnvConfig.now()) created sell order with oid $oid, total USDT=$(sum(assets.usdtvalue))")
+            println("$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$limitprice and basequantity=$basequantity, total USDT=$(totalusdt)")
         end
     elseif tp == buy
         if size(oo, 1) == 1
             if oo[1, :side] == "Sell"
                 oid = CryptoXch.cancelorder(cache.xc, base, oo[1, :orderid])
+                println("$(tradetime(cache)) cancel $base sell order with oid $oid, total USDT=$(totalusdt)")
             else  # open order on Buy side
                 if basefree < syminfo.minquoteqty
                     basequantity = basefree + oo[1, :baseqty]
                     oid = CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice, basequantity=basequantity)
+                    println("$(tradetime(cache)) change $base buy order with oid $oid to limitprice=$limitprice and basequantity=$basequantity, total USDT=$(totalusdt)")
                 else
                     oid = (CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice))
+                    println("$(tradetime(cache)) change $base buy order with oid $oid to limitprice=$limitprice , total USDT=$(totalusdt)")
                 end
             end
         elseif (basequantity >= minimumbasequantity) && (!(base in keys(cache.lastbuy)) || (cache.lastbuy[base] + Minute(cache.tradegapminutes) <= dtnow))
             cache.lastbuy[base] = dtnow
             oid = CryptoXch.createbuyorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity)
-            println("$(EnvConfig.now()) created buy order with oid $oid, total USDT=$(sum(assets.usdtvalue))")
+            println("$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$limitprice and basequantity=$basequantity, total USDT=$(totalusdt)")
         end
     end
 end
@@ -164,6 +169,8 @@ function Base.iterate(cache::TradeCache, currentdt=nothing)
     cache.currentdt = currentdt
     return cache, currentdt + Minute(1)
 end
+
+tradetime(cache::TradeCache) = Dates.format(cache.currentdt, EnvConfig.datetimeformat)
 
 """
 **`tradeloop`** has to
@@ -192,7 +199,7 @@ function tradeloop(cache::TradeCache)
             assets = CryptoXch.portfolio!(cache.xc)
             ensureorderbase!(cache, oo)
             advice = tradingadvice(cache)
-            print("\r$(EnvConfig.now()): total USDT=$(sum(assets.usdtvalue)) trading=$([k for k in keys(advice)]) ")
+            print("\r$(tradetime(cache)): total USDT=$(sum(assets.usdtvalue)) trading=$([k for k in keys(advice)]) ")
             for (base, tp) in advice
                 trade!(cache, base, tp, oo, assets)
             end

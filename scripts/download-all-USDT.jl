@@ -1,5 +1,6 @@
-using CryptoXch, Dates
+using CryptoXch, Dates, EnvConfig
 
+EnvConfig.init(production)
 println("download all USDT crypto but those on CryptoXch.baseignore list")
-CryptoXch.downloadallUSDT(Dates.now(Dates.UTC), Dates.Year(4))
+CryptoXch.downloadallUSDT(CryptoXch.XchCache(true), Dates.now(UTC), Year(10), 1000000)
 

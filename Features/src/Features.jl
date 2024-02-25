@@ -885,6 +885,65 @@ end
 
 #endregion Features001
 
+#region Features004
+"Features004 is a simplified subset of Features002 without regression extremes and relative volume but with save and read functions and implemented as DataFrame"
+
+regressionwindows004 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
+
+"""
+Provides per regressionwindow gradient, regression line price, standard deviation.
+"""
+mutable struct Features004
+    base::String
+    rw::Dict{Integer, AbstractDataFrame}  # keys: regression window in minutes, values: dataframe with columns :opentime, :regry, :grad, :std
+    # opentime::Vector{DateTime}
+    # grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
+    # regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
+    # std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
+    Features004(base::String) = new(base, Dict())
+end
+#TODO add regression test
+
+function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)::Features004
+    f4 = Features004(ohlcv.base)
+    Ohlcv.pivot!(ohlcv)
+    df = Ohlcv.dataframe(ohlcv)
+    for window in regrwindows
+        dfv = view(df, (firstix-window+1):lastix, :)
+        startix = window
+        open = dfv.open
+        high = dfv.high
+        low = dfv.low
+        close = dfv.close
+        ymv = [open, high, low, close]
+        pivot = dfv.pivot
+        # println("firstix=$firstix lastix=$lastix size(df)=$(size(df)) size(dfv)=$(size(dfv))")
+        @assert firstindex(dfv[!, :opentime]) <= startix <= lastindex(dfv[!, :opentime]) "$(firstindex(dfv[!, :opentime])) <= $startix <= $lastix <= $(lastindex(dfv[!, :opentime]))"
+        regry, grad = rollingregression(pivot, window, startix)
+        std = rollingregressionstdmv(ymv, regry, grad, window, startix) # startix is related to ymv
+        f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
+    end
+    return f4
+end
+
+requiredminutes(f4::Features004) = maximum(regrwindows(f4))
+
+function Base.show(io::IO, f4::Features004)
+    println(io, "Features004 base=$(f4.base) regrwindows=$(keys(f4.rw))")
+    for (key, value) in f4.rw
+        println(io, "Features004 base=$(f4.base), regr key: $key of size=size($value)")
+        println(io, describe(value, :first, :last, :min, :mean, :max, :nuniqueall, :nnonmissing, :nmissing, :eltype))
+    end
+end
+
+grad(f4::Features004, regrminutes) =     f4.rw[regrminutes][!, :grad]
+regry(f4::Features004, regrminutes) =    f4.rw[regrminutes][!, :regry]
+std(f4::Features004, regrminutes) =      f4.rw[regrminutes][!, :std]
+opentime(f4::Features004, regrminutes) = f4.rw[regrminutes][!, :opentime]
+regrwindows(f4::Features004) = keys(f4.rw)
+
+#endregion Features004
+
 #region Features002
 "Features002 is a feature set used in trading strategy"
 
@@ -918,7 +977,7 @@ end
 function Features002(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)::Features002
     df = Ohlcv.dataframe(ohlcv)
     reqmin = requiredminutes(regrwindows)
-    @assert size(df, 1) >= reqmin
+    @assert size(df, 1) >= reqmin "size(df, 1)=$(size(df, 1)) >= reqmin=$reqmin"
     lastix = lastix > lastindex(df, 1) ? lastindex(df, 1) : lastix
     firstix = firstix < (firstindex(df, 1) + reqmin - 1) ? (firstindex(df, 1) + reqmin - 1) : firstix
     @assert firstix <= lastix "firstix=$firstix <= lastix=$lastix ohlcv=$ohlcv"

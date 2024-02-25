@@ -27,17 +27,13 @@ ohlcv(xc::XchCache) = values(xc.bases)
 ohlcv(xc::XchCache, base::String) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
-basenottradable = ["boba",
-    "btt", "bcc", "ven", "pax", "bchabc", "bchsv", "usds", "nano", "usdsb", "erd", "npxs", "storm", "hc", "mco",
-    "bull", "bear", "ethbull", "ethbear", "eosbull", "eosbear", "xrpbull", "xrpbear", "strat", "bnbbull", "bnbbear",
-    "xzc", "gxs", "lend", "bkrw", "dai", "xtzup", "xtzdown", "bzrx", "eosup", "eosdown", "ltcup", "ltcdown"]
-basestablecoin = ["usdt", "tusd", "busd", "usdc", "eur"]
+basenottradable = []
+basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "EUR"]
 baseignore = [""]
 baseignore = uppercase.(append!(baseignore, basestablecoin, basenottradable))
 minimumquotevolume = 10  # USDT
 
 MAXLIMITDELTA = 0.1
-defaultcryptoexchange = "bybit"  # "binance"
 
 function minimumqty(xc::XchCache, sym::String)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
@@ -102,7 +98,7 @@ Initializes the undrelying exchange.
 function XchCache(bases::Vector, startdt=nothing, enddt=nothing, usdtbudget=10000)::XchCache
     xc = XchCache(true)
     bases = uppercase.(bases)
-    sellbases = union(bases, assetbases(xc))
+    sellbases = union(bases, setdiff(assetbases(xc), basestablecoin))
     oo = CryptoXch.getopenorders(xc)
     if size(oo, 1) > 0
         oo = DataFrame(CryptoXch.basequote.(oo.symbol))
@@ -111,6 +107,7 @@ function XchCache(bases::Vector, startdt=nothing, enddt=nothing, usdtbudget=1000
     sellbases = setdiff(sellbases, [EnvConfig.cryptoquote])
     for base in sellbases  # sellbases is superset of bases
         addbase!(xc, base, startdt, enddt)
+        println("startdt=$startdt enddt=$enddt xc.bases[base]=$(xc.bases[base])")
     end
     if EnvConfig.configmode != production
         # push startbudget onto balance wallet for backtesting/simulation
@@ -119,8 +116,10 @@ function XchCache(bases::Vector, startdt=nothing, enddt=nothing, usdtbudget=1000
     return xc
 end
 
+tradetime(xc::XchCache) = EnvConfig.configmode == production ? Bybit.servertime(xc.bc) : Dates.now(UTC)
+
 function _sleepuntil(xc::XchCache, dt::DateTime)
-    sleepperiod = dt - Bybit.servertime(xc.bc)
+    sleepperiod = dt - tradetime(xc)
     if sleepperiod <= Dates.Second(0)
         return
     end
@@ -129,10 +128,6 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
     end
     # println("sleeping $(floor(sleepperiod, Second))")
     sleep(sleepperiod)
-    sdt = Bybit.servertime(xc.bc)
-    if dt > sdt
-        println("\nsleepuntil: dt=$dt server time = $sdt")
-    end
 end
 
 "Sleeps until `datetime` if reached if `datetime` is in the future, set the *current* time and updates ohlcv if required"
@@ -140,14 +135,14 @@ function setcurrenttime!(xc::XchCache, base::String, datetime::DateTime)
     ohlcv = xc.bases[base]
     ohlcvdf = Ohlcv.dataframe(ohlcv)
     dt = floor(datetime, intervalperiod(ohlcv.interval))
-    if dt > ohlcvdf.opentime[ohlcv.ix]
+    if (size(ohlcvdf, 1)) == 0 || (dt > ohlcvdf.opentime[ohlcv.ix])
         _sleepuntil(xc, dt + Minute(1))  #  + Minute(1) to get data of the full minute and not the partial last minute
     end
     if (size(ohlcvdf, 1) == 0) || (dt > ohlcvdf.opentime[end])
-        cryptoupdate!(xc, ohlcv, ohlcvdf.opentime[begin], dt)
+        cryptoupdate!(xc, ohlcv, (size(ohlcvdf, 1) == 0 ? dt : ohlcvdf.opentime[begin]), dt)
     end
     Ohlcv.setix!(ohlcv, Ohlcv.rowix(ohlcv, dt))
-    if Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)] != dt
+    if (size(Ohlcv.dataframe(ohlcv), 1) > 0) && (Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)] != dt)
         @warn "setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])"
         println("setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])")
     end
@@ -364,6 +359,8 @@ function basequote(symbol)
 end
 
 _emptymarkets()::DataFrame = DataFrame(basecoin=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[])
+_isleveraged(token) = (token[end] in ['S', 'L']) && isdigit(token[end-1])
+
 """
 Returns a dataframe with 24h values of all USDT quotecoin bases that are not in baseignore list with the following columns:
 
@@ -388,6 +385,8 @@ function getUSDTmarket(xc::XchCache)
         usdtdf = usdtdf[!, Not(:symbol)]
         # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :]
         usdtdf = filter(row -> !(row.basecoin in baseignore), usdtdf)
+        usdtdf = filter(row -> !_isleveraged(row.basecoin), usdtdf)
+        #TODO remove all entries with a base that end <unsigned digit>L/S because those are leveraged tokens
     else  # simulation
         #TODO get all canned data with common latest update and use those. For that purpose the OHLCV.OhlcvFiles iterator was created.
         usdtdf = _emptymarkets()
@@ -432,17 +431,12 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc), usdtdf=getUSDTmarket(
 end
 
 "Downloads all basecoins with USDT quote that shows a minimumdayquotevolume and saves it as canned data"
-function downloadallUSDT(xc::XchCache, enddt, period=Dates.Year(4), minimumdayquotevolume = 10000000)
+function downloadallUSDT(xc::XchCache, enddt, period=Dates.Year(10), minimumdayquotevolume = 10000000)
     df = getUSDTmarket(xc)
     df = df[df.quotevolume24h .> minimumdayquotevolume , :]
-    count = size(df, 1)
-    for (ix, base) in enumerate(df[!, :base])
-        break
-        println()
-        println("$(EnvConfig.now()) updating $base ($ix of $count)")
-        startdt = enddt - period
-        CryptoXch.cryptodownload(xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
-    end
+    bases = sort!(setdiff(df[!, :basecoin], baseignore))
+    println("$(EnvConfig.now())downloading the following bases bases with $(EnvConfig.cryptoquote) quote: $bases")
+    downloadupdate!(xc, bases, enddt, period)
     return df
 end
 
