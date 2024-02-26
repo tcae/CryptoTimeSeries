@@ -431,7 +431,7 @@ function symbolinfo(bc::BybitCache, symbol)
     symbol = uppercase(symbol)
     df = bc.syminfodf[bc.syminfodf.symbol .== symbol, :]
     if size(df, 1) == 0
-        @warn "symbol $symbol not found"
+        # @warn "symbol $symbol not found"
         return nothing
     end
     if size(df, 1) > 1

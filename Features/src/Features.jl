@@ -909,7 +909,7 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
     Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
     for window in regrwindows
-        dfv = view(df, (firstix-window+1):lastix, :)
+        dfv = view(df, (max(firstix, window)-window+1):lastix, :)
         startix = window
         open = dfv.open
         high = dfv.high

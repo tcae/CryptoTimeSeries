@@ -1124,7 +1124,7 @@ end
 "cache and config: 1) receive ohlcv, 2) read config, 3) calculate f2"
 mutable struct BaseClassifier1
     ohlcv::Union{Nothing, Ohlcv.OhlcvData}    # ohlcv cache
-    f2::Union{Nothing, Features.Features002}  # f4 cache that is shared with all regressionwindows
+    f4::Union{Nothing, Features.Features004}  # f4 cache that is shared with all regressionwindows
     config::AbstractDataFrame                 # :: DataFrame(regrwindow, gainthreshold, enabled::Bool)
     # regression window in minutes
     # gainthreshold  # default std/price that must be higher than that threshold to consider a buy/sell
@@ -1208,11 +1208,13 @@ function addbaseclassifierconfig!(cls::Classifier001, base, regrwindow, gainthre
             push!(cls.bc[base].config, (base, regrwindow, gainthreshold, active, comment))
             sort!(cls.bc[base].config, [:regrwindow, :gainthreshold])
         else
-            for ix in reverse(cfg)
+            for ix in reverse(cfg) # use reverse to maintain correct index in loop
                 if ix == firstindex(cfg)
+                    # leave first entry
                     cls.bc[base].config[ix, :active] = active
                     cls.bc[base].config[ix, :comment] = comment
                 else
+                    #remove all other entries
                     deleteat!(cls.bc[base].config, ix)
                 end
             end
@@ -1225,78 +1227,56 @@ function addbaseclassifierconfig!(cls::Classifier001, base, regrwindow, gainthre
     return cls.bc[base]
 end
 
-regrwindows(bc::BaseClassifier1) = unique(bc.config[bc.config.active .== true, :regrwindow])
-regrwindows(cls::Classifier001, base) = base in keys(cls.bc) ? regrwindows(cls.bc[base]) : []
+regrwindows(bc::BaseClassifier1, activeonly=true) = activeonly ? unique(bc.config[bc.config.active .== true, :regrwindow]) : unique(bc.config[!, :regrwindow])
+regrwindows(cls::Classifier001, base, activeonly=true) = base in keys(cls.bc) ? regrwindows(cls.bc[base], activeonly) : []
 
 "prepares advice in batch processing between ohlcv.ix and ohlcv.lastindex"
-function preparebacktest!(cls::Classifier001, ohlcviter)
+function preparefeatures!(cls::Classifier001, ohlcviter)
     for ohlcv in ohlcviter
         if ohlcv.base in keys(cls.bc)
             bc = cls.bc[ohlcv.base]
-            rw = regrwindows(bc)
-            if length(rw) > 0
-                bc.f2 = Features.Features002(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=rw)
-            else
-                bc.f2 = nothing
-                @warn "no active Classifier001 configuration for $ohlcv" config=bc.config
-            end
+            rw = unique(bc.config[!, :regrwindow])
             bc.ohlcv = ohlcv
+            if length(rw) > 0
+                bc.f4 = Features.Features004(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=rw)
+            else
+                bc.f4 = nothing
+                @warn "no Classifier001 configuration for $ohlcv" config=bc.config
+            end
         end
-        # println("preparebacktest! $(ohlcv)")
+        # println("preparefeatures! $(ohlcv)")
     end
 end
 
-"Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
-function advice(cls::Classifier001, f2::Features.Features002, ohlcvix)::InvestProposal
-    ohlcv = Features.ohlcv(f2)
-    # @assert ohlcv.base in keys(cls.bc) "missing base $(ohlcv.base) in Classifier001"
+"Returns a single `InvestProposal` recommendation for the timestamp given by `ohlcv.ix`"
+function advice(cls::Classifier001, ohlcv::Ohlcv.OhlcvData)::InvestProposal
     bc = cls.bc[ohlcv.base]
-    @assert (f2.firstix <= ohlcvix <= f2.lastix <= lastindex(Ohlcv.dataframe(ohlcv), 1)) "advice index out of range f2.firstix=$(f2.firstix) <= ohlcvix=$ohlcvix <= f2.lastix=$(f2.lastix) <= lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1)=$(lastindex(Ohlcv.dataframe(Features.ohlcv(f2)), 1))"
-    # @assert Ohlcv.basecoin(Features.ohlcv(f2)) in keys(cls.bc) "base(ohlcv(f2))=$(Ohlcv.basecoin(Features.ohlcv(f2))) not in keys(cls.bc)=$(keys(cls.bc))"
-
-    fix = Features.featureix(f2, ohlcvix)
-    dt = Ohlcv.dataframe(Features.ohlcv(f2)).opentime[ohlcvix]
+    ohlcv = bc.ohlcv
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
+    dt = ohlcvdf[ohlcv.ix, :opentime]
     cdf = baseclassifieractiveconfigs(cls, ohlcv.base)
+    if (size(cdf, 1) > 0) && (isnothing(bc.f4) || (bc.f4.rw[first(collect(keys(bc.f4.rw)))].opentime[end] < dt))
+        preparefeatures!(cls, [ohlcv])  # calculates f4 for all regrwindows
+    end
     for ix in eachindex(cdf[!, 1])
+        regrwindow = cdf[ix, :regrwindow]
+        gainthreshold = cdf[ix, :gainthreshold]
+        fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
         # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
-        @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config of $(ohlcv.base) $cdf"
-        if Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] > f2.regr[bc.regrwindow].regry[fix] * (1 + bc.gainthreshold)  # + f2.regr[bc.regrwindow].std[fix]
-            # println("$(dt): sell at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
+        @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $cdf"
+        if ohlcvdf[ohlcv.ix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
+            # println("$(dt): sell at $dt price: ohlcvdf[ohlcv.ix, :high]")
             return sell
-        elseif Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix] < f2.regr[bc.regrwindow].regry[fix] * (1 - bc.gainthreshold)  # - f2.regr[bc.regrwindow].std[fix]
-            # println("$(dt): buy at $(Ohlcv.dataframe(Features.ohlcv(f2)).pivot[ohlcvix])")
+        elseif ohlcvdf[ohlcv.ix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
+            # println("$(dt): buy at $dt price: ohlcvdf[ohlcv.ix, :low]")
             return buy
         end
     end
     return hold
 end
 
-"Returns a single `InvestProposal` recommendation for the timestamp given by ohlcvix"
-function advice(cls::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix)::InvestProposal
-    f2 = nothing
-    if ohlcv.base in keys(cls.bc) && !isnothing(cls.bc[ohlcv.base].ohlcv) && !isnothing(cls.bc[ohlcv.base].f2)
-        bc = cls.bc[ohlcv.base]
-        if Features.ohlcvix(bc.f2, 1) <= ohlcvix <= bc.f2.lastix
-            # println("reuse for $ohlcv at $(Features.ohlcvix(bc.f2, 1)) <= ohlcvix=$ohlcvix <= $(bc.f2.lastix)")
-            f2 = bc.f2
-        elseif ohlcvix > bc.f2.lastix
-            ohlcv.ix = ohlcvix
-            f2 = bc.f2 = Features.Features002(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=[bc.regrwindow])
-        else
-            # println("no reuse for $ohlcv at ohlcvix=$ohlcvix")
-            @error "ohlcvix=$ohlcvix < f2.firstix=$(Features.ohlcvix(bc.f2, 1)) -> no features can be provided for base classifier of $(ohlcv.base)"
-            return noop
-        end
-    else
-        ohlcv.ix = ohlcvix
-        preparebacktest!(cls, [ohlcv])
-        f2 = cls.bc[ohlcv.base].f2
-    end
-    return isnothing(f2) ? noop : advice(cls, f2, ohlcvix)
-end
-
 function assesstradingcondition(cls::Classifier001, ohlcviter)
-    preparebacktest!(cls, ohlcviter)
+    preparefeatures!(cls, ohlcviter)
     for ohlcv in ohlcviter
     end
 end
