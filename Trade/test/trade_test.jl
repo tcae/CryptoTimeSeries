@@ -19,7 +19,7 @@ defaultlogger = global_logger(logger)
 EnvConfig.init(training)
 startdt = DateTime("2022-01-01T00:00:00")
 enddt = DateTime("2022-02-01T10:00:00")
-cache = Trade.TradeCache(bases=["BTC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
+cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

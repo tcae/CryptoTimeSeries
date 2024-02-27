@@ -531,7 +531,7 @@ function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
             @error "cannot simulate getopenorders() with uninitialized CryptoXch cache"
             return DataFrame()
         end
-        for oix in eachindex(xc.orders[!, :orderid])
+        for oix in reverse(eachindex(xc.orders[!, :orderid]))
              _updateorder!(xc, oix)
         end
         # orders = subset(xc.orders, :status => st -> openstatus(st), view=true)  # not necessary since closed orders are moved to xc.closedorders
@@ -546,7 +546,7 @@ function _orderrefresh(xc::XchCache, orderid)
         @error "cannot simulate getorder() with uninitialized CryptoXch cache"
         return nothing
     end
-    for oix in eachindex(xc.orders[!, :orderid])
+    for oix in reverse(eachindex(xc.orders[!, :orderid]))
         _updateorder!(xc, oix)
     end
     return findlast(x -> x == orderid, xc.orders[!, :orderid])

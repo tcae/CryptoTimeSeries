@@ -38,7 +38,7 @@ mutable struct TradeCache
         startdt = isnothing(startdt) ? nothing : floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         xc = CryptoXch.XchCache(bases, isnothing(startdt) ? nothing : startdt - Minute(Classify.requiredminutes(classifier)), enddt)
-        Classify.preparefeatures!(classifier, CryptoXch.ohlcv(xc))
+        # Classify.preparefeatures!(classifier, CryptoXch.ohlcv(xc))
         new(xc, classifier, startdt, nothing, enddt, tradegapminutes, messagelog, Dict(), Dict())
     end
 end
@@ -70,14 +70,14 @@ function ensureohlcvorderbase!(cache::TradeCache, oo::AbstractDataFrame)
     end
 end
 
-"Returns a Dict(base, InvestProposal)"
-function tradingadvice(cache::TradeCache)
-    ad = Dict()
-    for (base, ohlcv) in CryptoXch.baseohlcvdict(cache.xc)
-        ad[base] = Classify.advice(cache.cls, ohlcv)
-    end
-    return ad
-end
+# "Returns a Dict(base, InvestProposal)"
+# function tradingadvice(cache::TradeCache)
+#     ad = Dict()
+#     for (base, ohlcv) in CryptoXch.baseohlcvdict(cache.xc)
+#         ad[base] = Classify.advice(cache.cls, ohlcv)
+#     end
+#     return ad
+# end
 
 MAKER_CORRECTION = 0.0005
 makerfeeprice(ohlcv::Ohlcv.OhlcvData, tp::Classify.InvestProposal) = Ohlcv.dataframe(ohlcv).close[ohlcv.ix] * (1 + (tp == sell ? MAKER_CORRECTION : -MAKER_CORRECTION))
@@ -198,7 +198,7 @@ function tradeloop(cache::TradeCache)
             oo = CryptoXch.getopenorders(cache.xc)
             assets = CryptoXch.portfolio!(cache.xc)
             ensureohlcvorderbase!(cache, oo)
-            advice = tradingadvice(cache)
+            advice = Classify.advice(cache.cls, values(CryptoXch.baseohlcvdict(cache.xc)))  # Returns a Dict(base, InvestProposal)
             print("\r$(tradetime(cache)): total USDT=$(sum(assets.usdtvalue))")  # trading=$([k for k in advice]) ")
             for (base, tp) in advice
                 trade!(cache, base, tp, oo, assets)

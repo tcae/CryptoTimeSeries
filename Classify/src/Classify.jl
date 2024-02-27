@@ -1130,9 +1130,10 @@ mutable struct BaseClassifier1
     # gainthreshold  # default std/price that must be higher than that threshold to consider a buy/sell
     BaseClassifier1() = new(nothing, nothing, emptyconfigdf())
 end
-
-STDREGRWINDOW = maximum(Features.regressionwindows002)
-STDGAINTHRSHLD = 0.01f0
+STDREGRWINDOW = 1440
+STDREGRWINDOWSET = [rw for rw in Features.regressionwindows004 if rw > 500]
+STDGAINTHRSHLD = 0.02f0
+STDGAINTHRSHLDSET = [0.005f0, 0.01f0, 0.02f0]
 """
 Returns a `buy` recommendation if the standard deviation of a given regression window relative to price of the regression line exceeds a threshold and
 the current price is below regressionline minus standard deviation.
@@ -1148,15 +1149,20 @@ end
 
 CLASSIFIER001_CONFIGFILE = "Classifier001.csv"
 
+function Base.show(io::IO, bc::BaseClassifier1)
+    println(io, "Classifier001[$(bc.ohlcv.base)]: \n$(bc.config)")  # \n$(bc.ohlcv) \n$(bc.f4)")
+end
+
+
 function requiredminutes(cls)
     if isnothing(cls) || (length(cls.bc) == 0)
-        return STDREGRWINDOW
+        return maximum(STDREGRWINDOW)
     else
         return maximum([regrwindow for bc in values(cls.bc) for regrwindow in bc.config[!, :regrwindow]])
     end
 end
 
-emptyconfigdf() = DataFrame() # basecoin=String[], regrwindow=Int16[], gainthreshold=Float32[], used=Bool[], comment=String[])
+emptyconfigdf() = DataFrame(basecoin=String[], regrwindow=[], gainthreshold=Float32[], active=Bool[], comment=String[])
 
 "reads the config file and returns a filled Dict of BaseClassifier1 with ohlcv and f2 set to nothing"
 function readclassifier001config()
@@ -1221,6 +1227,7 @@ function addbaseclassifierconfig!(cls::Classifier001, base, regrwindow, gainthre
         end
     else
         cls.bc[base] = BaseClassifier1()
+        println(describe(cls.bc[base].config))
         push!(cls.bc[base].config, (base, regrwindow, gainthreshold, active, comment))
         sort!(cls.bc[base].config, [:regrwindow, :gainthreshold])
     end
@@ -1230,49 +1237,66 @@ end
 regrwindows(bc::BaseClassifier1, activeonly=true) = activeonly ? unique(bc.config[bc.config.active .== true, :regrwindow]) : unique(bc.config[!, :regrwindow])
 regrwindows(cls::Classifier001, base, activeonly=true) = base in keys(cls.bc) ? regrwindows(cls.bc[base], activeonly) : []
 
-"prepares advice in batch processing between ohlcv.ix and ohlcv.lastindex"
-function preparefeatures!(cls::Classifier001, ohlcviter)
-    for ohlcv in ohlcviter
-        if ohlcv.base in keys(cls.bc)
-            bc = cls.bc[ohlcv.base]
-            rw = unique(bc.config[!, :regrwindow])
-            bc.ohlcv = ohlcv
-            if length(rw) > 0
-                bc.f4 = Features.Features004(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=rw)
-            else
-                bc.f4 = nothing
-                @warn "no Classifier001 configuration for $ohlcv" config=bc.config
+"calculates Features004 between ohlcv.ix and ohlcv.lastindex for all (active and inactive) regression windows"
+function preparefeatures!(cls::Classifier001, ohlcv::OhlcvData)
+    # relevant use cases: 1) backtest -> on time assign ohlcv and calc f4 or 2) production -> ohlcv is already assigned f4[end, :opentime] < dt
+    if !(ohlcv.base in keys(cls.bc))
+        for rw in STDREGRWINDOWSET
+            for gt in STDGAINTHRSHLDSET
+                active = (rw == STDREGRWINDOW) && (gt == STDGAINTHRSHLD) ? true : false
+                addbaseclassifierconfig!(cls, ohlcv.base, rw, gt, active, "standard")
             end
         end
-        # println("preparefeatures! $(ohlcv)")
+    end
+    bc = cls.bc[ohlcv.base]
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
+    dt = ohlcvdf[ohlcv.ix, :opentime]
+    if isnothing(bc.ohlcv) || isnothing(bc.f4) || (dt > first(values(bc.f4.rw))[end, :opentime])
+        @assert !isnothing(bc.ohlcv) ? (ohlcv == bc.ohlcv) : true "bc.ohlcv=$(string(bc.ohlcv)) ohlcv=$(string(ohlcv)) (ohlcv == bc.ohlcv)=$(ohlcv == bc.ohlcv)"
+        bc.ohlcv = ohlcv
+        rw = unique(bc.config[!, :regrwindow])
+        if length(rw) > 0
+            bc.f4 = Features.Features004(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=rw)
+        else
+            bc.f4 = nothing
+            @warn "no Classifier001 configuration for $ohlcv" config=bc.config
+        end
+        println("preparefeatures! $(bc)")
     end
 end
 
 "Returns a single `InvestProposal` recommendation for the timestamp given by `ohlcv.ix`"
-function advice(cls::Classifier001, ohlcv::Ohlcv.OhlcvData)::InvestProposal
-    bc = cls.bc[ohlcv.base]
-    ohlcv = bc.ohlcv
-    ohlcvdf = Ohlcv.dataframe(ohlcv)
-    dt = ohlcvdf[ohlcv.ix, :opentime]
-    cdf = baseclassifieractiveconfigs(cls, ohlcv.base)
-    if (size(cdf, 1) > 0) && (isnothing(bc.f4) || (bc.f4.rw[first(collect(keys(bc.f4.rw)))].opentime[end] < dt))
-        preparefeatures!(cls, [ohlcv])  # calculates f4 for all regrwindows
-    end
-    for ix in eachindex(cdf[!, 1])
-        regrwindow = cdf[ix, :regrwindow]
-        gainthreshold = cdf[ix, :gainthreshold]
-        fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
-        # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
-        @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $cdf"
-        if ohlcvdf[ohlcv.ix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
-            # println("$(dt): sell at $dt price: ohlcvdf[ohlcv.ix, :high]")
-            return sell
-        elseif ohlcvdf[ohlcv.ix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
-            # println("$(dt): buy at $dt price: ohlcvdf[ohlcv.ix, :low]")
-            return buy
+function advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal}
+    ad = Dict()
+    for ohlcv in ohlcviter
+        preparefeatures!(cls, ohlcv)  # calculates f4 for all regrwindows
+        bc = cls.bc[ohlcv.base]
+        ohlcvdf = Ohlcv.dataframe(ohlcv)
+        dt = ohlcvdf[ohlcv.ix, :opentime]
+        cdf = baseclassifieractiveconfigs(cls, ohlcv.base)
+        for ix in eachindex(cdf[!, 1])
+            regrwindow = cdf[ix, :regrwindow]
+            gainthreshold = cdf[ix, :gainthreshold]
+            fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
+            if bc.f4.rw[regrwindow][fix, :opentime] != dt
+                ad[ohlcv.base] = noop
+                break
+            end
+            # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
+            @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $cdf"
+            if ohlcvdf[ohlcv.ix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
+                # println("$(dt): sell at $dt price: ohlcvdf[ohlcv.ix, :high]")
+                ad[ohlcv.base] = sell
+                break
+            elseif ohlcvdf[ohlcv.ix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
+                # println("$(dt): buy at $dt price: ohlcvdf[ohlcv.ix, :low]")
+                ad[ohlcv.base] = buy
+                break
+            end
         end
+        ad[ohlcv.base] = ohlcv.base in keys(ad) ? ad[ohlcv.base] : hold
     end
-    return hold
+    return ad
 end
 
 function assesstradingcondition(cls::Classifier001, ohlcviter)
