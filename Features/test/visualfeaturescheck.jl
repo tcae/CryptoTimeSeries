@@ -4,7 +4,7 @@ using Ohlcv, TestOhlcv, Features
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Day(20)
-ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
 df = Ohlcv.dataframe(ohlcv)
 ol = size(df,1)
 f2 = Features.Features002(ohlcv)

@@ -108,7 +108,7 @@ EnvConfig.init(test)
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Minute(Features.requiredminutes() + 3)
-ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
 ol = size(Ohlcv.dataframe(ohlcv),1)
 f2 = Features.Features002(ohlcv)
 
@@ -263,7 +263,7 @@ md = DateTime("2022-06-02T12:54:00")
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Day(20)
-ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
 df = Ohlcv.dataframe(ohlcv)
 f2 = Features.Features002(ohlcv)
 # f12x = Features.features12x1m01(f2)
@@ -298,7 +298,7 @@ rdf, colname = Features.lookbackrow!(nothing, df, "colA",0, 1, size(df,1); fill=
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Day(40)
-ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
 f12x, f3 = Features.regressionfeatures01(ohlcv,  11, 5, [5, 15, 60, 240], 5, 4*60, "relminuteofday")
 # println("regressionfeatures01(ohlcv)")
 # println("size(f12x)=$(size(f12x))")

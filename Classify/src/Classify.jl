@@ -1112,7 +1112,7 @@ end
 
 function evaluatetest(startdt=DateTime("2022-01-02T22:54:00")::Dates.DateTime, period=Dates.Day(40); select=nothing)
     enddt = startdt + period
-    ohlcv = TestOhlcv.testohlcv("sine", startdt, enddt)
+    ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
     labelthresholds = Targets.defaultlabelthresholds
     evaluate( ohlcv, labelthresholds, select=select)
 end
@@ -1278,20 +1278,20 @@ function advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal}
             regrwindow = cdf[ix, :regrwindow]
             gainthreshold = cdf[ix, :gainthreshold]
             fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
-            if bc.f4.rw[regrwindow][fix, :opentime] != dt
-                ad[ohlcv.base] = noop
-                break
-            end
-            # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
-            @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $cdf"
-            if ohlcvdf[ohlcv.ix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
-                # println("$(dt): sell at $dt price: ohlcvdf[ohlcv.ix, :high]")
-                ad[ohlcv.base] = sell
-                break
-            elseif ohlcvdf[ohlcv.ix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
-                # println("$(dt): buy at $dt price: ohlcvdf[ohlcv.ix, :low]")
-                ad[ohlcv.base] = buy
-                break
+            if bc.f4.rw[regrwindow][fix, :opentime] == dt
+                # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
+                @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $cdf"
+                if ohlcvdf[ohlcv.ix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
+                    # println("$(dt): sell at $dt price: ohlcvdf[ohlcv.ix, :high]")
+                    ad[ohlcv.base] = sell
+                    break
+                elseif ohlcvdf[ohlcv.ix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
+                    # println("$(dt): buy at $dt price: ohlcvdf[ohlcv.ix, :low]")
+                    ad[ohlcv.base] = buy
+                    break
+                end
+            elseif bc.f4.rw[regrwindow][begin, :opentime] < dt
+                @warn "expected $(ohlcv.base) ohlcv opentime[ohlcv.ix]=$dt not found in f4[$regrwindow] with start=$(bc.f4.rw[regrwindow][begin, :opentime]) end=$(bc.f4.rw[regrwindow][end, :opentime])"
             end
         end
         ad[ohlcv.base] = ohlcv.base in keys(ad) ? ad[ohlcv.base] : hold
@@ -1299,7 +1299,14 @@ function advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal}
     return ad
 end
 
+"""
+Assessment of best tokens and best regressioin window per token backward from ohlcv.ix backwards for given period
+"""
 function assesstradingcondition(cls::Classifier001, ohlcviter)
+    #TODO which tokens to use for trading?
+    #TODO which regression windows to use? there should be only 1 at the same time active to avoid losses due to mixed strategies
+    #TODO to be evaluated when all but less than minquantity of a token is sold to avoid losses in sell due to trading strategy change
+    #TODO assess period as parameter
     preparefeatures!(cls, ohlcviter)
     for ohlcv in ohlcviter
     end

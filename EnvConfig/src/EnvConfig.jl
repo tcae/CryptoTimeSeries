@@ -132,9 +132,9 @@ function init(mode::Mode; newdatafolder=false)
         #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
         # datafolder = "TrainingOHLCV"
     elseif configmode == test
-        trainingbases = bases = ["sine", "doublesine"]
-        # trainingbases = ["sine", "doublesine"]
-        # bases = ["sine", "doublesine"]
+        trainingbases = bases = ["SINEUSDT", "DOUBLESINEUSDT"]
+        # trainingbases = ["SINEUSDT", "DOUBLESINEUSDT"]
+        # bases = ["SINEUSDT", "DOUBLESINEUSDT"]
         datafolder = getdatafolder("TestFeatures", newdatafolder)
         # datafolder = "Features"
     else

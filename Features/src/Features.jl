@@ -908,6 +908,7 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
     f4 = Features004(ohlcv.base)
     Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
+    lateststart = nothing
     for window in regrwindows
         dfv = view(df, (max(firstix, window)-window+1):lastix, :)
         startix = window
@@ -922,7 +923,12 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
         regry, grad = rollingregression(pivot, window, startix)
         std = rollingregressionstdmv(ymv, regry, grad, window, startix) # startix is related to ymv
         f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
+        lateststart = isnothing(lateststart) ? dfv[startix, :opentime] : max(lateststart, dfv[startix, :opentime])
     end
+    for window in regrwindows
+        f4.rw[window] = f4.rw[window][f4.rw[window].opentime .>= lateststart, :]  # cut all dataframes to the same start to make performance comparable
+    end
+    @assert all([length(f4.rw[first(regrwindows)][f4.rw[first(regrwindows)].opentime]) == length(f4.rw[window][f4.rw[window].opentime]) for window in regrwindows]) "len mismatch: $([length(f4.rw[window][f4.rw[window].opentime]) for window in regrwindows])"
     return f4
 end
 
