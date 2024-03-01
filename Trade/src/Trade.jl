@@ -159,7 +159,9 @@ end
 function Base.iterate(cache::TradeCache, currentdt=nothing)
     if isnothing(currentdt)
         ov = CryptoXch.ohlcv(cache.xc)
-        currentdt = isnothing(cache.startdt) ? minimum([Ohlcv.dataframe(o).opentime[begin] for o in ov]) +  - Minute(Classify.requiredminutes(cache.cls)) : cache.startdt
+        currentdt = isnothing(cache.startdt) ? minimum([Ohlcv.dataframe(o).opentime[begin] for o in ov]) + Minute(Classify.requiredminutes(cache.cls)) : cache.startdt
+    else
+        currentdt += Minute(1)
     end
     # println("\rcurrentdt=$(string(currentdt)) cache.enddt=$(string(cache.enddt)) ")
     if !isnothing(cache.enddt) && (currentdt > cache.enddt)
@@ -167,7 +169,7 @@ function Base.iterate(cache::TradeCache, currentdt=nothing)
     end
     CryptoXch.setcurrenttime!(cache.xc, currentdt)
     cache.currentdt = currentdt
-    return cache, currentdt + Minute(1)
+    return cache, currentdt
 end
 
 tradetime(cache::TradeCache) = Dates.format(cache.currentdt, EnvConfig.datetimeformat)

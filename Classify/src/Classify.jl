@@ -1257,46 +1257,92 @@ function preparefeatures!(cls::Classifier001, ohlcv::OhlcvData)
         rw = unique(bc.config[!, :regrwindow])
         if length(rw) > 0
             bc.f4 = Features.Features004(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=rw)
+            if bc.f4.rw[first(keys(bc.f4.rw))].opentime[begin] > dt
+                bc.ohlcv.ix = Ohlcv.rowix(ohlcv, bc.f4.rw[first(keys(bc.f4.rw))].opentime[begin])
+            end
         else
             bc.f4 = nothing
             @warn "no Classifier001 configuration for $ohlcv" config=bc.config
         end
-        println("preparefeatures! $(bc)")
+        # println("preparefeatures! $(bc)")
     end
 end
 
-"Returns a single `InvestProposal` recommendation for the timestamp given by `ohlcv.ix`"
-function advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal}
+function Base.iterate(ohlcv::OhlcvData, ix=nothing)
+    if isnothing(ix)
+        ix = ohlcv.ix
+    else
+        ix += 1
+    end
+    if ix > lastindex(Ohlcv.dataframe(ohlcv).opentime)
+        return nothing
+    end
+    return ix, ix
+end
+
+# "Iterates over the rows of the ohlcv dataframe starting at ix(ohlcv) until the end of the dataframe"
+# Base.iterate(ohlcv::OhlcvData, ix=nothing) = (ix = isnothing(ix) ? (firstindex(Ohlcv.dataframe(ohlcv).opentime) <= ohlcv.ix <= lastindex(Ohlcv.dataframe(ohlcv).opentime) ? ohlcv.ix : nothing) : ix+1; ix > lastindex(Ohlcv.dataframe(ohlcv).opentime) ? nothing : (ix, ix))
+
+function _advice(bc::BaseClassifier1, ohlcv::OhlcvData, configdf::AbstractDataFrame, oix, f4deltaix)
+    ohlcvdf = Ohlcv.dataframe(ohlcv)
+    fix = oix + f4deltaix
+    dt = ohlcvdf[oix, :opentime]
+    for ix in eachindex(configdf[!, 1])
+        regrwindow = configdf[ix, :regrwindow]
+        gainthreshold = configdf[ix, :gainthreshold]
+        try
+            if fix <= 0
+                return noop
+            end
+            if bc.f4.rw[regrwindow][fix, :opentime] == dt
+            # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
+            # @assert ix > firstindex(configdf[!, 1]) ? (configdf[ix, :gainthreshold] > configdf[ix-1, :gainthreshold]) || (configdf[ix, :regrwindow] > configdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $configdf"
+            if ohlcvdf[oix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
+                # println("$(dt): sell at $dt price: ohlcvdf[oix, :high]")
+                return sell
+            elseif ohlcvdf[oix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
+                # println("$(dt): buy at $dt price: ohlcvdf[oix, :low]")
+                return buy
+            end
+        elseif bc.f4.rw[regrwindow][begin, :opentime] < dt
+            @warn "expected $(ohlcv.base) ohlcv opentime[oix]=$dt not found in f4[$regrwindow] with start=$(bc.f4.rw[regrwindow][begin, :opentime]) end=$(bc.f4.rw[regrwindow][end, :opentime])"
+        end
+    catch e
+        println("oix=$oix fix=$fix f4deltaix=$f4deltaix size(ohlcv.df)=$(size(ohlcv.df)) size(bc.f4.rw[regrwindow])=$(size(bc.f4.rw[regrwindow]))")
+        rethrow(e)
+
+    end
+    end
+    return hold
+end
+
+"Returns a vector of `InvestProposal` recommendations for the timestamp given by `ohlcv.ix` and all following until end of the ohlcv dataframe"
+function advices(cls::Classifier001, ohlcviter)::Dict{String, Vector{InvestProposal}}
     ad = Dict()
     for ohlcv in ohlcviter
         preparefeatures!(cls, ohlcv)  # calculates f4 for all regrwindows
         bc = cls.bc[ohlcv.base]
-        ohlcvdf = Ohlcv.dataframe(ohlcv)
-        dt = ohlcvdf[ohlcv.ix, :opentime]
         cdf = baseclassifieractiveconfigs(cls, ohlcv.base)
-        for ix in eachindex(cdf[!, 1])
-            regrwindow = cdf[ix, :regrwindow]
-            gainthreshold = cdf[ix, :gainthreshold]
-            fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
-            if bc.f4.rw[regrwindow][fix, :opentime] == dt
-                # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
-                @assert ix > firstindex(cdf[!, 1]) ? (cdf[ix, :gainthreshold] > cdf[ix-1, :gainthreshold]) || (cdf[ix, :regrwindow] > cdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $cdf"
-                if ohlcvdf[ohlcv.ix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
-                    # println("$(dt): sell at $dt price: ohlcvdf[ohlcv.ix, :high]")
-                    ad[ohlcv.base] = sell
-                    break
-                elseif ohlcvdf[ohlcv.ix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
-                    # println("$(dt): buy at $dt price: ohlcvdf[ohlcv.ix, :low]")
-                    ad[ohlcv.base] = buy
-                    break
-                end
-            elseif bc.f4.rw[regrwindow][begin, :opentime] < dt
-                @warn "expected $(ohlcv.base) ohlcv opentime[ohlcv.ix]=$dt not found in f4[$regrwindow] with start=$(bc.f4.rw[regrwindow][begin, :opentime]) end=$(bc.f4.rw[regrwindow][end, :opentime])"
-            end
+        if size(cdf, 1) > 0
+            # fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
+            f4deltaix = length(bc.f4.rw[cdf[1, :regrwindow]].opentime) - size(Ohlcv.dataframe(ohlcv), 1)
+            @assert bc.f4.rw[cdf[1, :regrwindow]].opentime[size(Ohlcv.dataframe(ohlcv), 1) + f4deltaix] == Ohlcv.dataframe(ohlcv).opentime[end] "bc.f4.rw[$(cdf[1, :regrwindow])].opentime[size(Ohlcv.dataframe(ohlcv), 1) + $f4deltaix]=$(bc.f4.rw[cdf[1, :regrwindow]].opentime[size(Ohlcv.dataframe(ohlcv), 1) + f4deltaix]) != Ohlcv.dataframe(ohlcv).opentime[end]=$(Ohlcv.dataframe(ohlcv).opentime[end])"
+            ad[ohlcv.base] = [_advice(bc, ohlcv, cdf, oix, f4deltaix) for oix in ohlcv.ix:size(ohlcv.df, 1)]
+        else
+            @warn "no advices for ohlcv.base due to missing configuration"
         end
-        ad[ohlcv.base] = ohlcv.base in keys(ad) ? ad[ohlcv.base] : hold
     end
     return ad
+end
+
+"Returns a single `InvestProposal` recommendations for the timestamp given by `ohlcv.ix`"
+function advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal}
+    ad = advices(cls, ohlcviter)
+    singlead = Dict()
+    for (base, tpv) in ad
+        singlead[base] = length(tpv) > 0 ? first(tpv) : noop
+    end
+    return singlead
 end
 
 """

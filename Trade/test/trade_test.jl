@@ -1,14 +1,7 @@
-using Pkg
-
-
 module TradeTest
 
 using Test, Dates, Logging
-using EnvConfig
-using Trade
-
-#
-using Dates, EnvConfig, Trade
+using EnvConfig, Trade
 
 println("$(EnvConfig.now()): started")
 messagelog = open(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt"), "w")
@@ -18,7 +11,7 @@ defaultlogger = global_logger(logger)
 
 EnvConfig.init(training)
 startdt = DateTime("2022-01-01T00:00:00")
-enddt = DateTime("2022-02-01T10:00:00")
+enddt = DateTime("2022-01-12T10:00:00")
 cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
 
 # EnvConfig.init(production)
