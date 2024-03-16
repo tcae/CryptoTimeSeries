@@ -93,7 +93,6 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 6
 
     Ohlcv.delete(ohlcv)
-    @test size(Ohlcv.dataframe(Ohlcv.read!(ohlcv)), 1) == 0  # will result in no data found message
     rm(EnvConfig.datafolderpath())
 
     @test CryptoXch.onlyconfiguredsymbols("BTCUSDT")

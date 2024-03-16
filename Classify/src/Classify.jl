@@ -1316,8 +1316,10 @@ function _advice(bc::BaseClassifier1, ohlcv::OhlcvData, configdf::AbstractDataFr
     return hold
 end
 
-"Returns a vector of `InvestProposal` recommendations for the timestamp given by `ohlcv.ix` and all following until end of the ohlcv dataframe"
-function advices(cls::Classifier001, ohlcviter)::Dict{String, Vector{InvestProposal}}
+"Returns `InvestProposal` recommendations for the timestamp given by `ohlcv.ix`
+and all following until end of the ohlcv dataframe if singleadvice==false
+or only a single advice if singeladvice==true"
+function advices(cls::Classifier001, ohlcviter, singleadvice=false)::Dict{String, Union{InvestProposal, Vector{InvestProposal}}}
     ad = Dict()
     for ohlcv in ohlcviter
         preparefeatures!(cls, ohlcv)  # calculates f4 for all regrwindows
@@ -1327,7 +1329,11 @@ function advices(cls::Classifier001, ohlcviter)::Dict{String, Vector{InvestPropo
             # fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
             f4deltaix = length(bc.f4.rw[cdf[1, :regrwindow]].opentime) - size(Ohlcv.dataframe(ohlcv), 1)
             @assert bc.f4.rw[cdf[1, :regrwindow]].opentime[size(Ohlcv.dataframe(ohlcv), 1) + f4deltaix] == Ohlcv.dataframe(ohlcv).opentime[end] "bc.f4.rw[$(cdf[1, :regrwindow])].opentime[size(Ohlcv.dataframe(ohlcv), 1) + $f4deltaix]=$(bc.f4.rw[cdf[1, :regrwindow]].opentime[size(Ohlcv.dataframe(ohlcv), 1) + f4deltaix]) != Ohlcv.dataframe(ohlcv).opentime[end]=$(Ohlcv.dataframe(ohlcv).opentime[end])"
-            ad[ohlcv.base] = [_advice(bc, ohlcv, cdf, oix, f4deltaix) for oix in ohlcv.ix:size(ohlcv.df, 1)]
+            if singleadvice
+                ad[ohlcv.base] = _advice(bc, ohlcv, cdf, ohlcv.ix, f4deltaix)
+            else
+                ad[ohlcv.base] = [_advice(bc, ohlcv, cdf, oix, f4deltaix) for oix in ohlcv.ix:size(ohlcv.df, 1)]
+            end
         else
             @warn "no advices for ohlcv.base due to missing configuration"
         end
@@ -1336,14 +1342,7 @@ function advices(cls::Classifier001, ohlcviter)::Dict{String, Vector{InvestPropo
 end
 
 "Returns a single `InvestProposal` recommendations for the timestamp given by `ohlcv.ix`"
-function advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal}
-    ad = advices(cls, ohlcviter)
-    singlead = Dict()
-    for (base, tpv) in ad
-        singlead[base] = length(tpv) > 0 ? first(tpv) : noop
-    end
-    return singlead
-end
+advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal} = advices(cls, ohlcviter, true)
 
 """
 Assessment of best tokens and best regressioin window per token backward from ohlcv.ix backwards for given period

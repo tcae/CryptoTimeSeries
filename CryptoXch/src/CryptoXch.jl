@@ -28,13 +28,15 @@ ohlcv(xc::XchCache, base::String) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
 basenottradable = []
-basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "EUR"]
-quotecoins = ["USDT", "USDC"]
+basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "EUR", "DAI"]
+quotecoins = ["USDT"]  # , "USDC"]
 baseignore = [""]
 baseignore = uppercase.(append!(baseignore, basestablecoin, basenottradable))
 minimumquotevolume = 10  # USDT
 
 MAXLIMITDELTA = 0.1
+
+validsymbol(xc::XchCache, sym::String) = !isnothing(Bybit.symbolinfo(xc.bc, sym)) || (sym in TestOhlcv.testbasecoin())
 
 function minimumqty(xc::XchCache, sym::String)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
@@ -323,7 +325,9 @@ function cryptodownload(xc::XchCache, base, interval, startdt, enddt)::OhlcvData
     if isnothing(Bybit.symbolinfo(xc.bc, symboltoken(base))) && !(base in TestOhlcv.testbasecoin())
         @warn "symbol $(symboltoken(base)) of base=$base is unknown"
     else
-        Ohlcv.read!(ohlcv)
+        if Ohlcv.file(ohlcv).existing
+            Ohlcv.read!(ohlcv)
+        end
         cryptoupdate!(xc, ohlcv, startdt, enddt)
         ohlcv.ix = firstindex(ohlcv.df, 1)
     end

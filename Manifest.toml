@@ -685,10 +685,10 @@ uuid = "7034ab61-46d4-4ed7-9d0f-46aef9175898"
 version = "0.2.8"
 
 [[deps.Features]]
-deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
+deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "JDF", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.1.2"
+version = "1.2.2"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]

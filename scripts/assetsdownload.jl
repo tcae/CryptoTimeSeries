@@ -6,10 +6,19 @@
 module AssetsTest
 using Dates
 
-using EnvConfig, Assets, CryptoXch
+using EnvConfig, Assets, CryptoXch, Features, Ohlcv
 
 
 EnvConfig.init(production)
+Ohlcv.verbosity = 2
 ad1 = Assets.loadassets!(Assets.AssetData())
 println(ad1.basedf)
+# for coin in eachrow(ad1.basedf)
+#     ohlcv = Ohlcv.defaultohlcv(coin)
+#     ohlcv = Ohlcv.read!(ohlcv)
+#     f4 = Features.Features004(ohlcv, usecache=true)
+#     println(f4)
+#     Features.write(f4)
+# end
+
 end  # module

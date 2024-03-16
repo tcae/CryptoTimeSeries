@@ -2,7 +2,7 @@ module FeaturesTest
 using Dates, DataFrames
 using Test
 
-using EnvConfig, Ohlcv, Features, TestOhlcv
+using EnvConfig, Ohlcv, Features, CryptoXch, TestOhlcv
 
 
 
@@ -205,16 +205,6 @@ smv = Features.rollingregressionstdmv(ymv, regr, grad, 5, 1)
 
 regr,grad = Features.rollingregression(yvec, 3)
 s1, m1, n1 = Features.rollingregressionstd(yvec, regr, grad, 3)
-s2, m2, n2 = Features.rollingregressionstd!(nothing, yvec[1:4], regr[3:4], grad[3:4], 3)
-# s2, m2, n2 = Features.rollingregressionstd(yvec[1:4], regr[1:4], grad[1:4], 3)
-@test s1[1:4] == s2 broken=true
-@test m1[1:4] == m2 broken=true
-@test n1[1:4] == n2 broken=true
-
-s2, m2, n2 = Features.rollingregressionstd!(s2, yvec, regr, grad, 3)
-@test s1 == s2 broken=true
-@test m1[5:7] == m2 broken=true
-@test n1[5:7] == n2 broken=true
 
 ymv = [yvec]
 smv1 = Features.rollingregressionstdmv(ymv, regr, grad, 3, 1)
@@ -323,6 +313,28 @@ f12xd = describe(f12x)
 @test minimum(f12xd[!, :min]) > -3.2
 @test maximum(f12xd[!, :max]) < 3.2
 @test all(y-> eltype(y) == Float32, eachcol(f12x))
+
+# Features004 storage tests
+enddt = DateTime("2023-02-18T13:29:00")
+period = Day(1)
+startdt = enddt - period
+EnvConfig.init(production)
+EnvConfig.setlogpath("F4StorageTest")
+xc = CryptoXch.XchCache(true)
+ohlcv = CryptoXch.cryptodownload(xc, "SINEUSDT", "1m", startdt, enddt)
+# f4 is larger reference
+f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=false)
+# f4s is smaller f4 subset with some f4 data before and after f4s
+f4s = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-4, lastix=lastindex(ohlcv.df[!, "opentime"])-3, regrwindows=[15, 60], usecache=false)
+Features.write(f4s)
+@test Features.file(f4s).existing == true
+f4r = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=true)
+# Features.Features004 should read the stored f4s data and supplement missing data before and after
+for (regr, df) in f4r.rw
+    @test f4.rw[regr]==select!(f4r.rw[regr], names(f4.rw[regr]))  # select! is required to match sequence of columns after read from file
+end
+Features.delete(f4s)
+@test Features.file(f4s).existing == false
 
 end # testset
 

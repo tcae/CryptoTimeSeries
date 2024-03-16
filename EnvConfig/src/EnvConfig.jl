@@ -90,7 +90,17 @@ function setprojectdir()
     return pwd()
 end
 
-datafolderpath() = normpath(joinpath(cryptopath, datafolder))
+datafolderpath(subfolder=nothing) = isnothing(subfolder) ? normpath(joinpath(cryptopath, datafolder)) : normpath(joinpath(cryptopath, datafolder, subfolder))
+
+function datafile(mnemonic::String, subfolder=nothing, extension=".jdf")
+    p = datafolderpath(subfolder)
+    if !isdir(p)
+        println("EnvConfig $(now()): creating folder $p")
+        mkpath(p)
+    end
+    # no file existence checks here because it may be new file
+    return isnothing(subfolder) ? normpath(joinpath(cryptopath, datafolder, mnemonic * extension)) : normpath(joinpath(cryptopath, datafolder, subfolder, mnemonic * extension))
+end
 
 function getdatafolder(folder, newfolder=false)
     folder = newfolder ? folder * runid() : folder
@@ -142,11 +152,6 @@ function init(mode::Mode; newdatafolder=false)
     end
     bases = uppercase.(bases)
     trainingbases = uppercase.(trainingbases)
-end
-
-function datafile(mnemonic::String, extension=".jdf")
-    # no file existence checks here because it may be new file
-    return normpath(joinpath(cryptopath, datafolder, mnemonic * extension))
 end
 
 function setsplitfilename()::String

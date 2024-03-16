@@ -7,12 +7,21 @@ module Features
 
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, runmedian, rolling
-using DataFrames, Statistics, Indicators
+using DataFrames, Statistics, Indicators, JDF
 using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv
 
 #region FeatureUtilities
+
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
+"""
+verbosity = 1
 
 periodlabels(p) = typeof(p) <: Integer ? (p%(24*60) == 0 ? ("$(round(Int, p/(24*60)))d") : (p%60 == 0 ? "$(round(Int, p/60))h" : "$(p)m")) : p
 
@@ -513,28 +522,7 @@ function rollingregressionstd(y, regr_y, grad, window, startindex)
     return std[startindex:end], mean[startindex:end], normy[startindex:end]
 end
 
-"""
-calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *y*
-"""
-function rollingregressionstd!(std, y, regr_y, grad, window)
-    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
-    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
-    if (length(y) > 0)
-        startindex = isnothing(std) ? 1 : (length(std) < length(y)) ? length(std)+1 : length(y)
-        stdnew, mean, normy = rollingregressionstd(y, regr_y, grad, window, startindex)
-        if isnothing(std) || isnothing(mean) || isnothing(normy)
-            std = stdnew
-        elseif length(std) < length(y)  # only change regression_y and gradient if it makes sense
-            startindex = min(startindex, window)
-            std = append!(std, stdnew[startindex:end])
-        else
-            @warn "nothing to append when length(std) >= length(y)" length(std) length(y)
-        end
-    end
-    return std, mean[startindex:end], normy[startindex:end]
-end
-
-    """ don't use - this is a version for debug reasons """
+""" don't use - this is a version for debug reasons """
 function rollingregressionstdxt(y, regr_y, grad, window)
     @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
     @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
@@ -575,15 +563,15 @@ In multiple vectors *mv* version, ymv is an array of ymv vectors all of the same
 
 In order to get only the std without padding use the subvector *[windowsize:end]*
 """
-function rollingregressionstdmv(ymv, regr_y, grad, window, startindex)
+function rollingregressionstdmv(ymv, regr_y, grad, window, ymvstartindex)
+    ymvstartindex = max(ymvstartindex, window)
     @assert size(ymv, 1) > 0
-    @assert size(ymv[1], 1) >= window  > 0 "$(size(ymv[1], 1)), $window"
-    @assert (size(ymv[1], 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(ymv[1], 1)=$(size(ymv[1], 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
+    @assert size(ymv[1], 1) >= window > 0 "size(ymv[1], 1)=$(size(ymv[1], 1)), ymvstartindex=$ymvstartindex, window=$window"
+    @assert (size(ymv[1], 1) - ymvstartindex + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(ymv[1], 1)=$(size(ymv[1], 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1)) ymvstartindex=$ymvstartindex"
     ymvlen = size(ymv, 1) # number of ohlc == 4
     normy = repeat(similar([ymv[1][1]], window * ymvlen))
     std = similar(regr_y)
-    startindex = max(startindex, window)
-    for ix1 in startindex:lastindex(ymv[1])
+    for ix1 in ymvstartindex:lastindex(ymv[1])
         ix2min = max(1, ix1 - window + 1)
         thiswindow = ix1 - ix2min + 1
         normy .= 0.0
@@ -591,13 +579,13 @@ function rollingregressionstdmv(ymv, regr_y, grad, window, startindex)
         for ymvix in 1:ymvlen
             for ix2 in (ix1 - window + 1):ix1
                 # println("normyix=$normyix length(normy)=$(length(normy)) ix1=$ix1 ymvix=$ymvix ix2=$ix2")
-                normy[normyix] = ymv[ymvix][ix2] - (regr_y[ix1-startindex+1] - grad[ix1-startindex+1] * (ix1 - ix2))
+                normy[normyix] = ymv[ymvix][ix2] - (regr_y[ix1-ymvstartindex+1] - grad[ix1-ymvstartindex+1] * (ix1 - ix2))
                 normyix += 1
             end
         end
         normylen = ymvlen*thiswindow
         ymvmean = Statistics.mean(normy[1:normylen])
-        std[ix1-startindex+1] = Statistics.stdm(normy[1:normylen], ymvmean)
+        std[ix1-ymvstartindex+1] = Statistics.stdm(normy[1:normylen], ymvmean)
     end
     std[1] = isnan(std[1]) ? 0 : std[1]
     return std
@@ -888,62 +876,191 @@ end
 #region Features004
 "Features004 is a simplified subset of Features002 without regression extremes and relative volume but with save and read functions and implemented as DataFrame"
 
-regressionwindows004 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
+regressionwindows004 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
 
 """
 Provides per regressionwindow gradient, regression line price, standard deviation.
 """
 mutable struct Features004
-    base::String
+    basecoin::String
+    quotecoin::String
     rw::Dict{Integer, AbstractDataFrame}  # keys: regression window in minutes, values: dataframe with columns :opentime, :regry, :grad, :std
     # opentime::Vector{DateTime}
     # grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
     # regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
     # std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
-    Features004(base::String) = new(base, Dict())
+    Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, Dict())
 end
 #TODO add regression test
+mnemonic(f4::Features004) = uppercase(f4.basecoin) * "_" * uppercase(f4.quotecoin) * "_" * "_F4"
 
-function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows002)::Features004
-    f4 = Features004(ohlcv.base)
+function _equaltimes(f4)
+    times = [(df[begin, :opentime], size(df, 1), df[end, :opentime]) for df in values(f4.rw)]
+    if length(times) > 0
+        if all([times[1] == t for t in times])
+            return true
+        else
+            times = [(regr=regr, first=df[begin, :opentime], length=size(df, 1), last=df[end, :opentime]) for (regr, df) in f4.rw]
+            @warn "F4 dataframes not equal: $times"
+            return false
+        end
+    else
+        @warn "F4 dataframes missing"
+        return false
+    end
+end
+
+function _join(f4)
+    df = DataFrame()
+    for (regr, rdf) in f4.rw
+        for cname in names(rdf)
+            if cname == "opentime"
+                df[:, cname] = rdf[!, cname]
+            else
+                df[:, join([string(regr), cname], "_")] = rdf[!, cname]
+            end
+        end
+    end
+    return df
+end
+
+function _split!(f4, df)
+    @assert length(f4.rw) == 0
+    ot = nothing
+    for cname in names(df)
+        if cname == "opentime"
+            ot = df[!, cname]
+        else
+            cnamevec = split(cname, "_")
+            if length(cnamevec) != 2
+                @error "unexpected f4.rw dataframe column name: $cnamevec"
+            end
+            regr = parse(Int, cnamevec[1])
+            if !(regr in keys(f4.rw))
+                f4.rw[regr] = DataFrame()
+            end
+            f4.rw[regr][:, cnamevec[2]] = df[!, cname]
+        end
+    end
+    for (regr, rdf) in f4.rw
+        rdf[:, "opentime"] = ot
+    end
+    return f4
+end
+
+function file(f4::Features004)
+    mnm = mnemonic(f4)
+    filename = EnvConfig.datafile(mnm, "Features004")
+    if isdir(filename)
+        return (filename=filename, existing=true)
+    else
+        return (filename=filename, existing=false)
+    end
+end
+
+function write(f4::Features004)
+    if EnvConfig.configmode == production
+        @assert _equaltimes(f4)
+        df = _join(f4)
+        fn = file(f4)
+        try
+            JDF.savejdf(fn.filename, df[!, :])
+            println("saved $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and columns: $(names(df)) to $(fn.filename)")
+        catch e
+            Logging.@warn "exception $e detected when writing $(fn.filename)"
+        end
+    else
+        @warn "no F4.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data"
+    end
+end
+
+function read!(f4::Features004, startdt, enddt)::Features004
+    fn = file(f4)
+    # try
+        if fn.existing
+            df = DataFrame(JDF.loadjdf(fn.filename))
+            println("loaded F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
+            if (size(df, 1) > 0) && (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
+                # df = df[startdt .<= df[!, opentime] .<= enddt, :]
+                startix = Ohlcv.rowix(df[!, :opentime], startdt)
+                startix = df[startix, :opentime] < startdt ? min(lastindex(df[!, :opentime]), startix+1) : startix
+                endix = Ohlcv.rowix(df[!, :opentime], enddt)
+                endix = df[endix, :opentime] > enddt ? max(firstindex(df[!, :opentime]), endix-1) : endix
+                df = df[startix:endix, :]
+                f4 = _split!(f4, df)
+            end
+        else
+            println("no data found for $(fn.filename)")
+        end
+    # catch e
+    #     Logging.@warn "exception $e detected"
+    # end
+    return f4
+end
+
+function delete(f4::Features004)
+    fn = file(f4)
+    if fn.existing
+        rm(fn.filename; force=true, recursive=true)
+    end
+end
+
+function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows004, usecache=false)::Features004
+    f4 = Features004(ohlcv.base, ohlcv.quotecoin)
     Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
-    lateststart = lateststartix = nothing
-    for window in regrwindows
-        dfv = view(df, (max(firstix, window)-window+1):lastix, :)
-        startix = window
-        open = dfv.open
-        high = dfv.high
-        low = dfv.low
-        close = dfv.close
-        ymv = [open, high, low, close]
-        pivot = dfv.pivot
-        # println("firstix=$firstix lastix=$lastix size(df)=$(size(df)) size(dfv)=$(size(dfv))")
-        @assert firstindex(dfv[!, :opentime]) <= startix <= lastindex(dfv[!, :opentime]) "$(firstindex(dfv[!, :opentime])) <= $startix <= $lastix <= $(lastindex(dfv[!, :opentime]))"
-        regry, grad = rollingregression(pivot, window, startix)
-        std = rollingregressionstdmv(ymv, regry, grad, window, startix) # startix is related to ymv
-        f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
-        lateststartix = isnothing(lateststartix) ? startix : max(lateststartix, startix)
-        lateststart = dfv[lateststartix, :opentime]
+    startix = maxregrwindow = maximum(regrwindows)  # all dataframes to start at the same time to make performance comparable and f4 handling easier
+    @assert firstindex(df[!, :opentime]) <= startix <= lastix <= lastindex(df[!, :opentime]) "$(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime]))"
+    dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
+    @assert size(dfv, 1) >= maxregrwindow "size(dfv, 1)=$(size(dfv, 1)) < maxregrwindow=$maxregrwindow"
+    pivot = dfv.pivot
+    startafterix = endbeforeix = nothing
+    if usecache
+        f4 = read!(f4, dfv[startix, :opentime], dfv[end, :opentime])
+        if (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0)
+            ot = dfv[!, "opentime"]
+            otstored = first(values(f4.rw))[!, "opentime"]
+            endbeforeix = Ohlcv.rowix(ot, otstored[begin]) - 1
+            endbeforeix = endbeforeix < startix ? nothing : endbeforeix
+            startafterix = Ohlcv.rowix(ot, otstored[end]) + 1
+            startafterix = startafterix > lastindex(ot) ? nothing : startafterix
+            usecache = !isnothing(endbeforeix) || !isnothing(startafterix)
+        else
+            usecache = false
+        end
     end
     for window in regrwindows
-        f4.rw[window] = f4.rw[window][f4.rw[window].opentime .>= lateststart, :]  # cut all dataframes to the same start to make performance comparable
+        if usecache
+            if !isnothing(endbeforeix)
+                (verbosity >= 3) && println("$(EnvConfig.now()) F4 endbeforeix=$endbeforeix with window=$window and startix=$startix for $(endbeforeix-startix+1) rows")
+                regry, grad = rollingregression(pivot[begin:endbeforeix], window, startix)
+                std = rollingregressionstdmv([dfv.open[begin:endbeforeix], dfv.high[begin:endbeforeix], dfv.low[begin:endbeforeix], dfv.close[begin:endbeforeix]], regry, grad, window, startix)
+                dft = DataFrame(opentime=dfv[startix:endbeforeix, :opentime], regry=regry, grad=grad, std=std)
+                prepend!(f4.rw[window], dft)
+            end
+            if !isnothing(startafterix)
+                (verbosity >= 3) && println("$(EnvConfig.now()) F4 startafterix=$startafterix with window=$window for $(length(pivot)-startix+1) rows")
+                regry, grad = rollingregression(pivot, window, startafterix)
+                std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, startafterix)
+                dft = DataFrame(opentime=dfv[startafterix:end, :opentime], regry=regry, grad=grad, std=std)
+                append!(f4.rw[window], dft)
+            end
+        else
+            (verbosity >= 3) && println("$(EnvConfig.now()) F4 full calc startix=$startix with window=$window for $(length(pivot)-startix+1) rows")
+            regry, grad = rollingregression(pivot, window, startix)
+            std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, startix)
+            f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
+        end
     end
-    @assert all([length(f4.rw[first(regrwindows)].opentime) == length(f4.rw[window].opentime) for window in regrwindows]) "len mismatch: $([length(f4.rw[window].opentime) for window in regrwindows])"
-    @assert all([f4.rw[first(regrwindows)].opentime[begin] == f4.rw[window].opentime[begin] for window in regrwindows]) "start time mismatch: $([f4.rw[window].opentime[begin] for window in regrwindows])"
-    @assert all([f4.rw[first(regrwindows)].opentime[end] == f4.rw[window].opentime[end] for window in regrwindows]) "end time mismatch: $([f4.rw[window].opentime[end] for window in regrwindows])"
-    @assert length(f4.rw[first(regrwindows)].opentime) == length(df.opentime[max(firstix, lateststartix):end]) "length(f4.rw[$(first(regrwindows))].opentime)=$(length(f4.rw[first(regrwindows)].opentime)) == length(df.opentime[max($firstix, $lateststartix):end])=$(length(df.opentime[max(firstix, lateststartix):end]))"
-    @assert f4.rw[first(regrwindows)].opentime[begin] == df[max(firstix, lateststartix), :opentime] "f4.rw[$(first(regrwindows)).opentime[begin]]=$(f4.rw[first(regrwindows)].opentime[begin]) != df[max($firstix, $lateststartix), :opentime]=$(df[max(firstix, lateststartix), :opentime])"
-    @assert f4.rw[first(regrwindows)].opentime[end] == df.opentime[end] "f4.rw[$(first(regrwindows)).opentime[end]]=$(f4.rw[first(regrwindows)].opentime[end]) != df.opentime[end]=$(df.opentime[end])"
     return f4
 end
 
 requiredminutes(f4::Features004) = maximum(regrwindows(f4))
 
 function Base.show(io::IO, f4::Features004)
-    println(io, "Features004 base=$(f4.base) regrwindows=$(keys(f4.rw))")
+    println(io, "Features004 base=$(f4.basecoin) regrwindows=$(keys(f4.rw))")
     for (key, value) in f4.rw
-        println(io, "Features004 base=$(f4.base), regr key: $key of size=size($value)")
+        println(io, "Features004 base=$(f4.basecoin), regr key: $key of size=$(size(value))")
         println(io, describe(value, :first, :last, :min, :mean, :max, :nuniqueall, :nnonmissing, :nmissing, :eltype))
     end
 end
