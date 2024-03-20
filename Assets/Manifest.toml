@@ -12,9 +12,9 @@ version = "0.3.8"
 
 [[deps.Adapt]]
 deps = ["LinearAlgebra", "Requires"]
-git-tree-sha1 = "cea4ac3f5b4bc4b3000aa55afb6e5626518948fa"
+git-tree-sha1 = "6a55b747d1812e699320963ffde36f1ebdda4099"
 uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
-version = "4.0.3"
+version = "4.0.4"
 
     [deps.Adapt.extensions]
     AdaptStaticArraysExt = "StaticArrays"
@@ -220,7 +220,7 @@ version = "4.1.1"
 deps = ["Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "../CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "0.10.0"
+version = "0.11.0"
 
 [[deps.DataAPI]]
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
@@ -273,7 +273,7 @@ version = "1.6.0"
 deps = ["Dates", "JSON3", "Logging", "Pkg", "Test"]
 path = "../EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.1.7"
+version = "0.2.7"
 
 [[deps.EpollShim_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -314,7 +314,7 @@ version = "0.2.8"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "JDF", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.2.2"
+version = "1.4.2"
 
 [[deps.FilePathsBase]]
 deps = ["Compat", "Dates", "Mmap", "Printf", "Test", "UUIDs"]
@@ -804,7 +804,7 @@ version = "1.3.5+1"
 deps = ["CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
 path = "../Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
-version = "1.3.0"
+version = "1.4.0"
 
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
@@ -936,9 +936,9 @@ version = "1.39.0"
 
 [[deps.Polyester]]
 deps = ["ArrayInterface", "BitTwiddlingConvenienceFunctions", "CPUSummary", "IfElse", "ManualMemory", "PolyesterWeave", "Requires", "Static", "StaticArrayInterface", "StrideArraysCore", "ThreadingUtilities"]
-git-tree-sha1 = "fca25670784a1ae44546bcb17288218310af2778"
+git-tree-sha1 = "8df43bbe60029526dd628af7e9951f5af680d4d7"
 uuid = "f517fe37-dbe3-4b94-8317-1923a5111588"
-version = "0.7.9"
+version = "0.7.10"
 
 [[deps.PolyesterWeave]]
 deps = ["BitTwiddlingConvenienceFunctions", "CPUSummary", "IfElse", "Static", "ThreadingUtilities"]
@@ -1215,9 +1215,9 @@ weakdeps = ["RecipesBase"]
     TimeZonesRecipesBaseExt = "RecipesBase"
 
 [[deps.TranscodingStreams]]
-git-tree-sha1 = "3caa21522e7efac1ba21834a03734c57b4611c7e"
+git-tree-sha1 = "a09c933bebed12501890d8e92946bbab6a1690f1"
 uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
-version = "0.10.4"
+version = "0.10.5"
 weakdeps = ["Random", "Test"]
 
     [deps.TranscodingStreams.extensions]

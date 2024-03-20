@@ -66,7 +66,7 @@ function _updateasset!(xc::XchCache, coin::String, lockedqty, freeqty)
 end
 
 function updatecache(xc::XchCache; ohlcv=nothing, orders=nothing, assets=nothing)
-    xc = isnothing(xc) ? XchCache(bybitinit=false) : xc
+    xc = isnothing(xc) ? XchCache(false) : xc
     if !isnothing(ohlcv)
         xc.bases[ohlcv.base] = ohlcv
     end
@@ -293,7 +293,6 @@ function timerangecut!(ohlcv, startdt, enddt)
         return
     end
     ixdt = ohlcv.df.opentime[ohlcv.ix]
-    ix = ohlcv.ix
     if !isnothing(startdt) && !isnothing(enddt)
         subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t .<= floor(enddt, intervalperiod(ohlcv.interval)))
     elseif !isnothing(startdt)
@@ -301,15 +300,7 @@ function timerangecut!(ohlcv, startdt, enddt)
     elseif !isnothing(enddt)
         subset!(ohlcv.df, :opentime => t -> t .<= floor(enddt, intervalperiod(ohlcv.interval)))
     end
-    if !isnothing(startdt) && (ixdt <= ohlcv.df.opentime[begin])
-        ohlcv.ix = firstindex(ohlcv.df.opentime)
-    end
-    if !isnothing(enddt) &  (ixdt >= ohlcv.df.opentime[end])
-        ohlcv.ix = lastindex(ohlcv.df.opentime)
-    end
-    if ohlcv.df.opentime[begin] < ixdt < ohlcv.df.opentime[end]
-        ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
-    end
+    ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
 end
 
 """
@@ -334,7 +325,7 @@ function cryptodownload(xc::XchCache, base, interval, startdt, enddt)::OhlcvData
     return ohlcv
 end
 
-"downloads mising data and merges with canned data then saves it as supplemented canned data"
+"downloads missing data and merges with canned data then saves it as supplemented canned data"
 function downloadupdate!(xc::XchCache, bases, enddt, period=Dates.Year(10))
     count = length(bases)
     for (ix, base) in enumerate(bases)

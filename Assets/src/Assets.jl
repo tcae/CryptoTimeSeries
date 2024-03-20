@@ -134,6 +134,10 @@ function delete(ad::AssetData)
     end
 end
 
+function checkedok(ohlcv)
+    return size(ohlcv.df, 1) > (11 * 24 * 60)  # data for at least 11 days
+end
+
 function loadassets!(ad::AssetData)::AssetData
     enddt = Dates.now(Dates.UTC)
     usdtdf = CryptoXch.getUSDTmarket(ad.xc)
@@ -146,7 +150,23 @@ function loadassets!(ad::AssetData)::AssetData
     println("portfolio: $(portfolio)")
     println("manual: $(manual)")
     println("allbases: $(allbases)")
-    CryptoXch.downloadupdate!(ad.xc, allbases, enddt, Dates.Year(10))
+    # CryptoXch.downloadupdate!(ad.xc, allbases, enddt, Dates.Year(10))
+
+    count = length(allbases)
+    for (ix, base) in enumerate(allbases)
+        # break
+        println()
+        println("$(EnvConfig.now()) start updating $base ($ix of $count)")
+        startdt = enddt - Dates.Year(10)
+        ohlcv = CryptoXch.cryptodownload(ad.xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        if checkedok(ohlcv)
+            Ohlcv.write(ohlcv)
+        else
+            #remove from allbases
+            allbases = setdiff(allbases, [ohlcv.base])
+        end
+    end
+
     usdtdf = filter(r -> r.basecoin in allbases, usdtdf)
     checkbases = filter(!(el -> el in usdtdf.basecoin), allbases)
     if length(checkbases) > 0

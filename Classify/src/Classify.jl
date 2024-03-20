@@ -1122,239 +1122,320 @@ end
 #region Classifier-001
 
 "cache and config: 1) receive ohlcv, 2) read config, 3) calculate f2"
-mutable struct BaseClassifier1
+mutable struct Cls001Cache
     ohlcv::Union{Nothing, Ohlcv.OhlcvData}    # ohlcv cache
     f4::Union{Nothing, Features.Features004}  # f4 cache that is shared with all regressionwindows
-    config::AbstractDataFrame                 # :: DataFrame(regrwindow, gainthreshold, enabled::Bool)
-    # regression window in minutes
-    # gainthreshold  # default std/price that must be higher than that threshold to consider a buy/sell
-    BaseClassifier1() = new(nothing, nothing, emptyconfigdf())
+    regrwindow
+    gainthreshold
 end
 STDREGRWINDOW = 1440
 STDREGRWINDOWSET = [rw for rw in Features.regressionwindows004 if rw > 500]
 STDGAINTHRSHLD = 0.02f0
 STDGAINTHRSHLDSET = [0.005f0, 0.01f0, 0.02f0]
+FEE = 0.1f0 / 100f0  # 0.1%
+# FEE = 0f0  # no fee
+
 """
 Returns a `buy` recommendation if the standard deviation of a given regression window relative to price of the regression line exceeds a threshold and
 the current price is below regressionline minus standard deviation.
 Corresondingly returns a `sell` recommendation if std/price > threshold and price > std + price. In all other price cases a `hold` is returned.
 """
 mutable struct Classifier001 <: AbstractClassifier
-    bc             # Dict{basecoin::String, BaseClassifier} (quotecoin is USDT fixed)
+    cfg::DataFrame  # configuration dataframe
     function Classifier001()::Classifier001
-        clsconfig = readclassifier001config()
-        return new(clsconfig)
+        return new(emptyconfigdf())
     end
 end
 
 CLASSIFIER001_CONFIGFILE = "Classifier001.csv"
 
-function Base.show(io::IO, bc::BaseClassifier1)
-    println(io, "Classifier001[$(bc.ohlcv.base)]: \n$(bc.config)")  # \n$(bc.ohlcv) \n$(bc.f4)")
+function Base.show(io::IO, bc::Cls001Cache)
+    println(io, "Classifier001[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4))")  # \n$(bc.ohlcv) \n$(bc.f4)")
+end
+
+function Base.show(io::IO, cls::Classifier001)
+    if size(cls.cfg, 1) > 0
+        activedf = @view cls.cfg[cls.cfg[!, :active] .== true, :]
+    else
+        activedf = cls.cfg
+    end
+    println(io, "Classifier001: active config: $activedf")  # \n$(bc.ohlcv) \n$(bc.f4)")
 end
 
 
-function requiredminutes(cls)
-    if isnothing(cls) || (length(cls.bc) == 0)
+function requiredminutes(cls::Union{Classifier001, Nothing})
+    if isnothing(cls) || (size(cls.cfg, 1) == 0)
         return maximum(STDREGRWINDOW)
     else
-        return maximum([regrwindow for bc in values(cls.bc) for regrwindow in bc.config[!, :regrwindow]])
+        return maximum(cls.cfg[!, :regrwindow])
     end
 end
 
-emptyconfigdf() = DataFrame(basecoin=String[], regrwindow=[], gainthreshold=Float32[], active=Bool[], comment=String[])
+"config DataFrame with columns: basecoin, regrwindow, gainthreshold, active, startdt, enddt, totalcnt, sellcnt, buycnt, maxccbuycnt, medianccbuycnt, unresolvedcnt, totalgain, mediangain, meangain, cumgain, maxcumgain, mincumgain, maxgap, mediangap, usd10000, minusd10000, maxusd10000"
+emptyconfigdf() = DataFrame(basecoin=String[], regrwindow=Int16[], gainthreshold=Float32[], active=Bool[], startdt=DateTime[], enddt=DateTime[], totalcnt=Int32[], sellcnt=Int32[], buycnt=Int32[], maxccbuycnt=Int32[], medianccbuycnt=Float32[], unresolvedcnt=Int32[], totalgain=Float32[], mediangain=Float32[], meangain=Float32[], cumgain=Float32[], maxcumgain=Float32[], mincumgain=Float32[], maxgap=Int32[], mediangap=Float32[], usd10000=Float32[], minusd10000=Float32[], maxusd10000=Float32[])
+dummyconfig = (basecoin="dummy", regrwindow=0, gainthreshold=0f0, active=false, startdt=DateTime("2020-01-01T01:00:00"), enddt=DateTime("2020-01-01T01:00:00"), totalcnt=0, sellcnt=0, buycnt=0, maxccbuycnt=0, medianccbuycnt=0f0, unresolvedcnt=0, totalgain=0f0, mediangain=0f0, meangain=0f0, cumgain=0f0, maxcumgain=0f0, mincumgain=0f0, maxgap=0, mediangap=0f0, usd10000=10000f0, minusd10000=10000f0, maxusd10000=10000f0)
 
-"reads the config file and returns a filled Dict of BaseClassifier1 with ohlcv and f2 set to nothing"
-function readclassifier001config()
-    df = nothing
-    sf = EnvConfig.logsubfolder()
-    EnvConfig.setlogpath(nothing)
-    pf = EnvConfig.logpath(CLASSIFIER001_CONFIGFILE)
-    if isfile(pf)
-        df = CSV.read(pf, DataFrame, decimal='.', delim=';')
-        # println(describe(df))
-        println("Classifier001 config: $df")
+function _addconfig!(cls::Classifier001, base, regrwindow, gainthreshold, active)
+    push!(cls.cfg, dummyconfig)
+    cls.cfg[end, :basecoin] = base
+    cls.cfg[end, :regrwindow] = regrwindow
+    cls.cfg[end, :gainthreshold] = gainthreshold
+    cls.cfg[end, :active] = active
+    return cls.cfg[size(cls.cfg, 1), :]
+end
+
+_active(row, base) = (row.basecoin == base) && row.active
+
+# cfg is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
+"Returns a DataFrameRow with the first active config or nothing if nothing is found"
+baseclassifieractiveconfigs(cls::Classifier001, base) = (ix = findfirst(row -> _active(row, base), eachrow(cls.cfg)); isnothing(ix) ? nothing : cls.cfg[ix, :])
+
+function addconfig!(cls::Classifier001, base, regrwindow, gainthreshold, active)
+    @assert regrwindow in Features.regressionwindows004
+    cfgix = findall((cls.cfg[!, :basecoin] .== base) .&& (cls.cfg[!, :regrwindow] .== regrwindow) .&& (cls.cfg[!, :gainthreshold] .== gainthreshold))
+    cfg = nothing
+    if length(cfgix) == 0
+        cfg = _addconfig!(cls, base, regrwindow, gainthreshold, active)
+        # sort!(cls.cfg, [:basecoin, :regrwindow, :gainthreshold])
     else
-        df = emptyconfigdf()
-    end
-    EnvConfig.setlogpath(sf)
-    clsconfig = Dict()
-    for row in eachrow(df)
-        if !(row.basecoin in keys(clsconfig))
-            clsconfig[row.basecoin] = BaseClassifier1()
-            clsconfig[row.basecoin].config = df[df.basecoin .== row.basecoin, :]
-            sort!(clsconfig[row.basecoin].config, [:regrwindow, :gainthreshold])
-            # @info "$(EnvConfig.now()) Classifier001 config for $(row.basecoin): regrwindow=$(row.regrwindow), gainthreshold=$(row.gainthreshold)"
-        end
-    end
-    return clsconfig
-end
-
-"Replaces config content of base classifiers and saves it"
-function save(cls::Classifier001)
-    df = emptyconfigdf()
-    for (base, bc) in cls.bc
-        df = vcat(df, bc.config)
-    end
-    sf = EnvConfig.logsubfolder()
-    EnvConfig.setlogpath(nothing)
-    fn = EnvConfig.logpath(CLASSIFIER001_CONFIGFILE)
-    EnvConfig.checkbackup(fn)
-    CSV.write(fn, df, decimal=',', delim=';')  # decimal as , to consume with European locale
-    EnvConfig.setlogpath(sf)
-end
-
-"Returns a DataFrame with active configs"
-baseclassifieractiveconfigs(cls::Classifier001, base) = base in keys(cls.bc) ? subset(cls.bc[base].config, :active => a -> a .== true, view=true) : emptyconfigdf()
-
-function addbaseclassifierconfig!(cls::Classifier001, base, regrwindow, gainthreshold, active, comment)
-    if base in keys(cls.bc)
-        cfg = findall((cls.bc[base].config.regrwindow .== regrwindow) .&& (cls.bc[base].config.gainthreshold .== gainthreshold))
-        if length(cfg) == 0
-            push!(cls.bc[base].config, (base, regrwindow, gainthreshold, active, comment))
-            sort!(cls.bc[base].config, [:regrwindow, :gainthreshold])
-        else
-            for ix in reverse(cfg) # use reverse to maintain correct index in loop
-                if ix == firstindex(cfg)
-                    # leave first entry
-                    cls.bc[base].config[ix, :active] = active
-                    cls.bc[base].config[ix, :comment] = comment
-                else
-                    #remove all other entries
-                    deleteat!(cls.bc[base].config, ix)
-                end
-            end
-        end
-    else
-        cls.bc[base] = BaseClassifier1()
-        println(describe(cls.bc[base].config))
-        push!(cls.bc[base].config, (base, regrwindow, gainthreshold, active, comment))
-        sort!(cls.bc[base].config, [:regrwindow, :gainthreshold])
-    end
-    return cls.bc[base]
-end
-
-regrwindows(bc::BaseClassifier1, activeonly=true) = activeonly ? unique(bc.config[bc.config.active .== true, :regrwindow]) : unique(bc.config[!, :regrwindow])
-regrwindows(cls::Classifier001, base, activeonly=true) = base in keys(cls.bc) ? regrwindows(cls.bc[base], activeonly) : []
-
-"calculates Features004 between ohlcv.ix and ohlcv.lastindex for all (active and inactive) regression windows"
-function preparefeatures!(cls::Classifier001, ohlcv::OhlcvData)
-    # relevant use cases: 1) backtest -> on time assign ohlcv and calc f4 or 2) production -> ohlcv is already assigned f4[end, :opentime] < dt
-    if !(ohlcv.base in keys(cls.bc))
-        for rw in STDREGRWINDOWSET
-            for gt in STDGAINTHRSHLDSET
-                active = (rw == STDREGRWINDOW) && (gt == STDGAINTHRSHLD) ? true : false
-                addbaseclassifierconfig!(cls, ohlcv.base, rw, gt, active, "standard")
+        for ix in reverse(cfgix) # use reverse to maintain correct index in loop
+            if ix == firstindex(cfgix)
+                # leave first entry
+                cls.cfg[ix, :active] = active
+                cfg = cls.cfg[ix, :]
+            else
+                #remove all other entries
+                deleteat!(cls.cfg, ix)
             end
         end
     end
-    bc = cls.bc[ohlcv.base]
+    return cfg
+end
+
+function removeconfig!(cls::Classifier001, base, regrwindow, gainthreshold)
+    cfgix = findall((cls.cfg[!, :basecoin] .== base) .&& (cls.cfg[!, :regrwindow] .== regrwindow) .&& (cls.cfg[!, :gainthreshold] .== gainthreshold))
+    if length(cfgix) > 0
+        for ix in reverse(cfgix) # use reverse to maintain correct index in loop
+            deleteat!(cls.cfg, ix)
+        end
+    end
+end
+
+regrwindows(cls::Classifier001, base, activeonly=true) = activeonly ? unique(cls.cfg[cls.cfg[!, :basecoin] .== base .&& cls.cfg[!, :active] .== true, :regrwindow]) : unique(cls.cfg[cls.cfg[!, :basecoin] .== base, :regrwindow])
+
+function _advice(bc::Cls001Cache, ohlcv::OhlcvData, oix)
     ohlcvdf = Ohlcv.dataframe(ohlcv)
-    dt = ohlcvdf[ohlcv.ix, :opentime]
-    if isnothing(bc.ohlcv) || isnothing(bc.f4) || (dt > first(values(bc.f4.rw))[end, :opentime])
-        @assert !isnothing(bc.ohlcv) ? (ohlcv == bc.ohlcv) : true "bc.ohlcv=$(string(bc.ohlcv)) ohlcv=$(string(ohlcv)) (ohlcv == bc.ohlcv)=$(ohlcv == bc.ohlcv)"
-        bc.ohlcv = ohlcv
-        rw = unique(bc.config[!, :regrwindow])
-        if length(rw) > 0
-            bc.f4 = Features.Features004(bc.ohlcv, firstix=bc.ohlcv.ix, regrwindows=rw)
-            if bc.f4.rw[first(keys(bc.f4.rw))].opentime[begin] > dt
-                bc.ohlcv.ix = Ohlcv.rowix(ohlcv, bc.f4.rw[first(keys(bc.f4.rw))].opentime[begin])
-            end
-        else
-            bc.f4 = nothing
-            @warn "no Classifier001 configuration for $ohlcv" config=bc.config
-        end
-        # println("preparefeatures! $(bc)")
-    end
-end
-
-function Base.iterate(ohlcv::OhlcvData, ix=nothing)
-    if isnothing(ix)
-        ix = ohlcv.ix
-    else
-        ix += 1
-    end
-    if ix > lastindex(Ohlcv.dataframe(ohlcv).opentime)
-        return nothing
-    end
-    return ix, ix
-end
-
-# "Iterates over the rows of the ohlcv dataframe starting at ix(ohlcv) until the end of the dataframe"
-# Base.iterate(ohlcv::OhlcvData, ix=nothing) = (ix = isnothing(ix) ? (firstindex(Ohlcv.dataframe(ohlcv).opentime) <= ohlcv.ix <= lastindex(Ohlcv.dataframe(ohlcv).opentime) ? ohlcv.ix : nothing) : ix+1; ix > lastindex(Ohlcv.dataframe(ohlcv).opentime) ? nothing : (ix, ix))
-
-function _advice(bc::BaseClassifier1, ohlcv::OhlcvData, configdf::AbstractDataFrame, oix, f4deltaix)
-    ohlcvdf = Ohlcv.dataframe(ohlcv)
-    fix = oix + f4deltaix
+    fix = Features.f4ix(bc.f4, oix)
     dt = ohlcvdf[oix, :opentime]
-    for ix in eachindex(configdf[!, 1])
-        regrwindow = configdf[ix, :regrwindow]
-        gainthreshold = configdf[ix, :gainthreshold]
-        try
-            if fix <= 0
-                return noop
-            end
-            if bc.f4.rw[regrwindow][fix, :opentime] == dt
-            # configdf is sorted 1) ascending for regrwindow 2) ascending for gainthreshold -> return the first buy/sell advice or hold if no such buy/sell signalled is identified
-            # @assert ix > firstindex(configdf[!, 1]) ? (configdf[ix, :gainthreshold] > configdf[ix-1, :gainthreshold]) || (configdf[ix, :regrwindow] > configdf[ix-1, :regrwindow]) : true "config df error of $(ohlcv.base) $configdf"
-            if ohlcvdf[oix, :high] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
-                # println("$(dt): sell at $dt price: ohlcvdf[oix, :high]")
-                return sell
-            elseif ohlcvdf[oix, :low] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
-                # println("$(dt): buy at $dt price: ohlcvdf[oix, :low]")
+    regrwindow = bc.regrwindow
+    gainthreshold = bc.gainthreshold
+    if fix <= 0
+        return noop
+    end
+    if bc.f4.rw[regrwindow][fix, :opentime] == dt
+        if ohlcvdf[oix, :pivot] > bc.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
+            return sell
+        elseif ohlcvdf[oix, :pivot] < bc.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
+            if bc.f4.rw[14400][fix, :grad] >= 0f0
                 return buy
             end
-        elseif bc.f4.rw[regrwindow][begin, :opentime] < dt
-            @warn "expected $(ohlcv.base) ohlcv opentime[oix]=$dt not found in f4[$regrwindow] with start=$(bc.f4.rw[regrwindow][begin, :opentime]) end=$(bc.f4.rw[regrwindow][end, :opentime])"
         end
-    catch e
-        println("oix=$oix fix=$fix f4deltaix=$f4deltaix size(ohlcv.df)=$(size(ohlcv.df)) size(bc.f4.rw[regrwindow])=$(size(bc.f4.rw[regrwindow]))")
-        rethrow(e)
-
-    end
+    elseif bc.f4.rw[regrwindow][begin, :opentime] < dt
+        @warn "expected $(ohlcv.base) ohlcv opentime[oix]=$dt not found in f4[$regrwindow] with start=$(bc.f4.rw[regrwindow][begin, :opentime]) end=$(bc.f4.rw[regrwindow][end, :opentime])"
     end
     return hold
 end
 
 "Returns `InvestProposal` recommendations for the timestamp given by `ohlcv.ix`
-and all following until end of the ohlcv dataframe if singleadvice==false
-or only a single advice if singeladvice==true"
-function advices(cls::Classifier001, ohlcviter, singleadvice=false)::Dict{String, Union{InvestProposal, Vector{InvestProposal}}}
-    ad = Dict()
-    for ohlcv in ohlcviter
-        preparefeatures!(cls, ohlcv)  # calculates f4 for all regrwindows
-        bc = cls.bc[ohlcv.base]
-        cdf = baseclassifieractiveconfigs(cls, ohlcv.base)
-        if size(cdf, 1) > 0
-            # fix = Ohlcv.rowix(bc.f4.rw[regrwindow].opentime, dt, Ohlcv.intervalperiod(Ohlcv.interval(ohlcv)))
-            f4deltaix = length(bc.f4.rw[cdf[1, :regrwindow]].opentime) - size(Ohlcv.dataframe(ohlcv), 1)
-            @assert bc.f4.rw[cdf[1, :regrwindow]].opentime[size(Ohlcv.dataframe(ohlcv), 1) + f4deltaix] == Ohlcv.dataframe(ohlcv).opentime[end] "bc.f4.rw[$(cdf[1, :regrwindow])].opentime[size(Ohlcv.dataframe(ohlcv), 1) + $f4deltaix]=$(bc.f4.rw[cdf[1, :regrwindow]].opentime[size(Ohlcv.dataframe(ohlcv), 1) + f4deltaix]) != Ohlcv.dataframe(ohlcv).opentime[end]=$(Ohlcv.dataframe(ohlcv).opentime[end])"
-            if singleadvice
-                ad[ohlcv.base] = _advice(bc, ohlcv, cdf, ohlcv.ix, f4deltaix)
-            else
-                ad[ohlcv.base] = [_advice(bc, ohlcv, cdf, oix, f4deltaix) for oix in ohlcv.ix:size(ohlcv.df, 1)]
-            end
-        else
-            @warn "no advices for ohlcv.base due to missing configuration"
-        end
-    end
-    return ad
+and all following until end of the ohlcv dataframe"
+function advices(cls::Classifier001, ohlcv, regrwindow, gainthreshold)::Tuple{Vector{InvestProposal}, Union{Cls001Cache, Nothing}}
+    f4 = Features.Features004(ohlcv, firstix=ohlcv.ix, usecache=true)
+    bc = Cls001Cache(ohlcv, f4, regrwindow, gainthreshold)
+    # @assert bc.f4.rw[bc.regrwindow][Features.f4ix(bc.f4, ohlcv.ix), :opentime] == ohlcv.df[ohlcv.ix, :opentime] "ohlcv.ix=$(ohlcv.ix) bc.f4.rw[$(bc.regrwindow)][$(Features.f4ix(bc.f4, ohlcv.ix))]=$(bc.f4.rw[bc.regrwindow][Features.f4ix(bc.f4, ohlcv.ix), :opentime]) ohlcv.df[ohlcv.ix, :opentime]=$(ohlcv.df[ohlcv.ix, :opentime])"
+    ip = [_advice(bc, ohlcv, oix) for oix in ohlcv.ix:size(ohlcv.df, 1)]
+    return ip, bc
 end
 
 "Returns a single `InvestProposal` recommendations for the timestamp given by `ohlcv.ix`"
-advice(cls::Classifier001, ohlcviter)::Dict{String, InvestProposal} = advices(cls, ohlcviter, true)
+function advice(cls::Classifier001, ohlcv)::InvestProposal
+    ip = noop
+    if ohlcv.ix < maximum(Features.regressionwindows004)
+        return ip
+    end
+    f4 = Features.Features004(ohlcv, firstix=ohlcv.ix, lastix=ohlcv.ix)
+    cdf = baseclassifieractiveconfigs(cls, ohlcv.base)
+    if !isnothing(cdf)
+        bc = Cls001Cache(ohlcv, f4, cdf.regrwindow, cdf.gainthreshold)
+        @assert bc.f4.rw[bc.regrwindow][Features.f4ix(bc.f4, ohlcv.ix), :opentime] == ohlcv.df[ohlcv.ix, :opentime] "ohlcv.ix=$(ohlcv.ix) bc.f4.rw[$(bc.regrwindow)][$(Features.f4ix(bc.f4, ohlcv.ix))]=$(bc.f4.rw[bc.regrwindow][Features.f4ix(bc.f4, ohlcv.ix), :opentime]) ohlcv.df[ohlcv.ix, :opentime]=$(ohlcv.df[ohlcv.ix, :opentime])"
+        ip = _advice(bc, ohlcv, ohlcv.ix)
+    else
+        @error "no advices for $(ohlcv.base) due to missing configuration"
+    end
+    return ip
+end
+
+_ohlcvix(ohlcvstartix, adviceix) = adviceix + ohlcvstartix - 1
+
+function _tradepairs(ipvec::Vector{InvestProposal}, bc::Cls001Cache, startix)
+    ot = bc.ohlcv.df[!, :opentime]
+    piv = Ohlcv.pivot!(bc.ohlcv)
+    buystack = []
+    usd10000stack = []
+    usd10000 = (free=10000f0, used=0f0)
+    usd10000rate = 1/1000
+    tradepairs = DataFrame()
+    for ipix in eachindex(ipvec)
+        if ipvec[ipix] == buy
+
+            usd10000part = sum(usd10000)*usd10000rate
+            if usd10000part < usd10000.free
+                push!(usd10000stack, usd10000part)
+                usd10000 = (free=usd10000.free-usd10000part, used=usd10000.used+usd10000part)
+            end
+
+            push!(buystack, ipix)
+        elseif ipvec[ipix] == sell
+            sellix = _ohlcvix(startix, ipix)
+            sellprice = piv[sellix]*(1-FEE)
+            if length(buystack) > 0
+                buyix = _ohlcvix(startix, popfirst!(buystack))
+                buyprice = piv[buyix]*(1+FEE)
+                gain = (sellprice - buyprice) / buyprice * 100
+
+                if length(usd10000stack) > 0
+                    usd10000part = popfirst!(usd10000stack)
+                    usd10000 = (free=usd10000.free+usd10000part * (1 + gain/100), used=usd10000.used-usd10000part)
+                end
+
+                push!(tradepairs, (buyix=buyix, buydt=ot[buyix], buyprice=buyprice, buycnt=length(buystack), sellix=sellix, selldt=ot[sellix], sellprice=sellprice, gain=gain, gap=sellix-buyix, usd10000=sum(usd10000)), promote=true)
+            else  # buyix = missing
+                push!(tradepairs, (buyix=missing, buydt=missing, buyprice=missing, buycnt=0, sellix=sellix, selldt=ot[sellix], sellprice=sellprice, gain=missing, gap=missing, usd10000=sum(usd10000)), promote=true)
+            end
+        end
+    end
+    while length(buystack) > 0  # sellix = missing
+        buyix = _ohlcvix(startix, popfirst!(buystack))
+        buyprice = piv[buyix]*(1+FEE)
+        push!(tradepairs, (buyix=buyix, buydt=ot[buyix], buyprice=buyprice, buycnt=length(buystack), sellix=missing, selldt=missing, sellprice=missing, gain=missing, gap=missing, usd10000=sum(usd10000)), promote=true)
+    end
+    return tradepairs
+end
+
+function _timecut(tradepairs::AbstractDataFrame, column, sellcheck::Bool, buycheck::Bool, startix, endix, invert::Bool=false)
+    sellfilter = sellcheck ? coalesce.(startix .<= tradepairs[!, :sellix] .<= endix, false) : nothing
+    buyfilter = buycheck ? coalesce.(startix .<= tradepairs[!, :buyix] .<= endix, false) : nothing
+    filter = isnothing(sellfilter) ? buyfilter : isnothing(buyfilter) ? sellfilter : buyfilter .&& sellfilter
+    filter = invert ? xor.(filter, trues(length(filter))) : filter
+    if isnothing(column)
+        return @view tradepairs[filter, :]
+    else
+        return @view tradepairs[filter, column]
+    end
+end
+
+function _extremes(gains)
+    cumgain = maxcumgain = mincumgain = 0.0f0
+    # maxdrawdown = maxgaintmp = maxgain = mingaintmp = mingain = 0.0f0
+    # maxgaintmpix = maxgainix = mingaintmpix = mingainix = firstindex(gains)
+    for ix in eachindex(gains)
+        cumgain += gains[ix]
+        maxcumgain = max(maxcumgain, cumgain)
+        mincumgain = min(mincumgain, cumgain)
+        #=
+        # now the maxdrawdown:
+        if maxgaintmp < cumgain
+            maxgaintmp = cumgain
+            maxgaintmpix = ix
+            # mingaintmp is reestablished with every maxgaintmp change -> mingaintmp is always equal or newer than maxgaintmp
+            mingaintmp = cumgain
+            mingaintmpix = ix
+            if maxgain < maxgaintmp
+                # safe drawdown before establishing a new candidate
+                maxdrawdown = max(maxdrawdown, maxgain - mingain)
+                maxgain = maxgaintmp
+                maxgainix = maxgaintmpix
+                # mingain is reestablished with every maxgain change -> mingain is always equal or newer than maxgain
+                mingain = cumgain
+                mingainix = ix
+            end
+        end
+        if mingaintmp > cumgain
+            mingaintmp = cumgain
+            mingaintmpix = ix
+            if mingain > mingaintmp
+                mingain = cumgain
+                mingainix = ix
+            end
+        end
+        =#
+    end
+    return (cumgain=cumgain, maxcumgain=maxcumgain, mincumgain=mincumgain)
+end
+
+function _addconfig!(cls::Classifier001, bc::Cls001Cache, startix, endix, tradepairs)
+    cfg = _addconfig!(cls, bc.ohlcv.base, bc.regrwindow, bc.gainthreshold, false) # returned cfg is a DataFrameRow and elements can be changed like a mutable NamedTuple
+    cfg.startdt = bc.ohlcv.df[startix, :opentime]
+    cfg.enddt = bc.ohlcv.df[endix, :opentime]
+    cfg.totalcnt = endix - startix + 1
+
+    cfg.sellcnt = count(>(0), _timecut(tradepairs, :sellix, true, false, startix, endix))
+    cfg.buycnt = count(>(0), _timecut(tradepairs, :buyix, false, true, startix, endix))
+    cfg.maxccbuycnt = maximum(_timecut(tradepairs, :buycnt, false, true, startix, endix))
+    cfg.medianccbuycnt = median(_timecut(tradepairs, :buycnt, false, true, startix, endix))
+    cfg.unresolvedcnt = count(ismissing, _timecut(tradepairs, :sellix, true, false, startix, endix, true)) + count(ismissing, _timecut(tradepairs, :buyix, false, true, startix, endix, true))
+    cfg.totalgain = sum(_timecut(tradepairs, :gain, true, true, startix, endix))
+    cfg.mediangain = median(_timecut(tradepairs, :gain, true, true, startix, endix))
+    cfg.meangain = mean(_timecut(tradepairs, :gain, true, true, startix, endix))
+    cfg.cumgain, cfg.maxcumgain, cfg.mincumgain = _extremes(_timecut(tradepairs, :gain, true, true, startix, endix))
+    cfg.maxgap = maximum(_timecut(tradepairs, :gap, true, true, startix, endix))
+    cfg.mediangap = median(_timecut(tradepairs, :gap, true, true, startix, endix))
+    cfg.usd10000 = last(_timecut(tradepairs, :usd10000, true, true, startix, endix))
+    cfg.minusd10000 = minimum(_timecut(tradepairs, :usd10000, true, true, startix, endix))
+    cfg.maxusd10000 = maximum(_timecut(tradepairs, :usd10000, true, true, startix, endix))
+
+    # cfg.sellcnt = count(i -> !ismissing(i), tradepairs[!, :sellix])
+    # cfg.buycnt = count(i -> !ismissing(i), tradepairs[!, :buyix])
+    # cfg.unresolvedcnt = count(i -> ismissing(i), tradepairs[!, :sellix]) + count(i -> ismissing(i), tradepairs[!, :buyix])
+    # cfg.totalgain = sum(skipmissing(tradepairs[!, :gain]))
+    # cfg.mediangain = median(skipmissing(tradepairs[!, :gain]))
+    # cfg.meangain = mean(skipmissing(tradepairs[!, :gain]))
+    # cfg.maxgap = maximum(skipmissing(tradepairs[!, :gap]))
+    # cfg.mediangap = median(skipmissing(tradepairs[!, :gap]))
+    return cfg
+end
 
 """
 Assessment of best tokens and best regressioin window per token backward from ohlcv.ix backwards for given period
+- creates a data frame with rows of the cartesian product of bases, regrwindows, gainthresholds as rows of cls.cfg (any previous cls.cfg dataframe is dropped)
+- adds to each row the calculated evaluations
+- all config rows are set to active=false
 """
-function assesstradingcondition(cls::Classifier001, ohlcviter)
+function evaluate!(cls::Classifier001, xc::CryptoXch.XchCache, bases, regrwindows, gainthresholds, startdt, enddt)
     #TODO which tokens to use for trading?
     #TODO which regression windows to use? there should be only 1 at the same time active to avoid losses due to mixed strategies
     #TODO to be evaluated when all but less than minquantity of a token is sold to avoid losses in sell due to trading strategy change
     #TODO assess period as parameter
-    preparefeatures!(cls, ohlcviter)
-    for ohlcv in ohlcviter
+    @assert (length(bases) > 0) && (length(regrwindows) > 0) && (length(gainthresholds) > 0) "(length(bases) > 0)=$(length(bases) > 0) && (length(regrwindows) > 0)=$(length(regrwindows) > 0) && (length(gainthresholds) > 0)=$(length(gainthresholds) > 0)"
+    @assert all([rw in Features.regressionwindows004 for rw in regrwindows]) "not all $regrwindows in $(Features.regressionwindows004)"
+    cls.cfg = emptyconfigdf()
+    for base in bases
+        for regr in regrwindows
+            for gth in gainthresholds
+                ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt, enddt)
+                CryptoXch.timerangecut!(ohlcv, startdt, enddt)
+                startix = Ohlcv.rowix(ohlcv.df.opentime, startdt, Ohlcv.intervalperiod("1m"))
+                endix = Ohlcv.rowix(ohlcv.df.opentime, enddt, Ohlcv.intervalperiod("1m"))
+                ohlcvlen = endix - startix + 1
+                print("\r$(ohlcv.base), $regr, $gth  ")
+                ipvec, bc = advices(cls, ohlcv, regr, gth)
+                @assert length(ipvec) == ohlcvlen "length(ipvec)=$(length(ipvec)) == ohlcvlen=$ohlcvlen"
+                tradepairs = _tradepairs(ipvec, bc, startix)
+                _addconfig!(cls, bc, startix, endix, tradepairs)
+            end
+        end
     end
+    sort!(cls.cfg, [:basecoin, :regrwindow, :gainthreshold])  # beauty only
+    println()
 end
 
 #endregion Classifier-001

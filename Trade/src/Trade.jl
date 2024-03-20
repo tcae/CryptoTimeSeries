@@ -159,7 +159,7 @@ end
 function Base.iterate(cache::TradeCache, currentdt=nothing)
     if isnothing(currentdt)
         ov = CryptoXch.ohlcv(cache.xc)
-        currentdt = isnothing(cache.startdt) ? minimum([Ohlcv.dataframe(o).opentime[begin] for o in ov]) + Minute(Classify.requiredminutes(cache.cls)) : cache.startdt
+        currentdt = isnothing(cache.startdt) ? minimum([Ohlcv.dataframe(o).opentime[begin] for o in ov]) + Minute(Classify.requiredminutes(cache.cls) - Minute(1)) : cache.startdt
     else
         currentdt += Minute(1)
     end
@@ -167,7 +167,7 @@ function Base.iterate(cache::TradeCache, currentdt=nothing)
     if !isnothing(cache.enddt) && (currentdt > cache.enddt)
         return nothing
     end
-    CryptoXch.setcurrenttime!(cache.xc, currentdt)
+    CryptoXch.setcurrenttime!(cache.xc, currentdt)  # also updates bases if current time is > last time of cache
     cache.currentdt = currentdt
     return cache, currentdt
 end
@@ -200,10 +200,10 @@ function tradeloop(cache::TradeCache)
             oo = CryptoXch.getopenorders(cache.xc)
             assets = CryptoXch.portfolio!(cache.xc)
             ensureohlcvorderbase!(cache, oo)
-            advice = Classify.advice(cache.cls, values(CryptoXch.baseohlcvdict(cache.xc)))  # Returns a Dict(base, InvestProposal)
-            print("\r$(tradetime(cache)): total USDT=$(sum(assets.usdtvalue))")  # trading=$([k for k in advice]) ")
-            for (base, tp) in advice
-                trade!(cache, base, tp, oo, assets)
+            for ohlcv in values(CryptoXch.baseohlcvdict(cache.xc))
+                tp = Classify.advice(cache.cls, ohlcv)  # Returns a Dict(base, InvestProposal)
+                print("\r$(tradetime(cache)): total USDT=$(sum(assets.usdtvalue))")  # trading=$([k for k in advice]) ")
+                trade!(cache, ohlcv.base, tp, oo, assets)
             end
             #TODO low prio: for closed orders check fees
             #TODO low prio: aggregate orders and transactions in bookkeeping

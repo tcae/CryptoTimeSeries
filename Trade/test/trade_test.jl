@@ -1,7 +1,7 @@
 module TradeTest
 
 using Test, Dates, Logging
-using EnvConfig, Trade
+using EnvConfig, Trade, Classify
 
 println("$(EnvConfig.now()): started")
 messagelog = open(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt"), "w")
@@ -12,7 +12,11 @@ defaultlogger = global_logger(logger)
 EnvConfig.init(training)
 startdt = DateTime("2022-01-01T00:00:00")
 enddt = DateTime("2022-01-12T10:00:00")
-cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)
+cls = Classify.Classifier001()
+Classify.addconfig!(cls, "BTC", 1440, 0.02, true)
+Classify.addconfig!(cls, "MATIC", 1440, 0.02, true)
+cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, classifier=cls, messagelog=messagelog)
+println(cache.cls)
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

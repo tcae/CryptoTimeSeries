@@ -489,7 +489,7 @@ function write(ohlcv::OhlcvData)
         try
             JDF.savejdf(fn.filename, ohlcv.df[!, save_cols])  # without :pivot
             df = ohlcv.df
-            (verbosity >= 2) && println("saved $(fn.filename) of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+            (verbosity >= 2) && println("$(EnvConfig.now()) saved $(fn.filename) of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
         catch e
             Logging.@error "exception $e detected"
         end
@@ -501,13 +501,12 @@ end
 function read!(ohlcv::OhlcvData)::OhlcvData
     fn = file(ohlcv)
     df = DataFrame()
-    (verbosity >= 3) && println("loading $(fn.filename)")
     try
         if fn.existing
             df = DataFrame(JDF.loadjdf(fn.filename))
-            (verbosity >= 2) && println("loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
         else
-            (verbosity >= 2) && println("no data found for $(fn.filename)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
         end
     catch e
         Logging.@error "exception $e detected"
