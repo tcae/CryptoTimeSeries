@@ -503,6 +503,7 @@ function read!(ohlcv::OhlcvData)::OhlcvData
     df = DataFrame()
     try
         if fn.existing
+            (verbosity >= 3) && println("$(EnvConfig.now()) loading OHLCV data of $(ohlcv.base) from  $(fn.filename)")
             df = DataFrame(JDF.loadjdf(fn.filename))
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
         else

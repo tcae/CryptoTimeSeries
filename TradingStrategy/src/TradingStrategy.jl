@@ -19,7 +19,7 @@ module TradingStrategy
 using DataFrames, Logging
 using Dates, DataFrames
 using EnvConfig, Ohlcv, Features
-export requiredminutes
+# export requiredminutes
 
 combinedbuysellfee = 0.002
 

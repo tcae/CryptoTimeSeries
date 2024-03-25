@@ -83,7 +83,11 @@ emptyassets()::DataFrame = DataFrame(coin=String[], locked=Float32[], free=Float
 "provides an empty dataframe for simulation (with lastcheck as extra column)"
 emptyorders()::DataFrame = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
 
+removebase!(xc::XchCache, base) = delete!(xc.bases, base)
+removeallbases(xc::XchCache) = xc.bases = Dict()
+
 function addbase!(xc::XchCache, base, startdt, enddt)
+    base = String(base)
     enddt = isnothing(enddt) ? floor(Dates.now(UTC), Minute(1)) : floor(enddt, Minute(1))
     startdt = isnothing(startdt) ? enddt : floor(startdt, Minute(1))
     ohlcv = cryptodownload(xc, base, "1m", startdt, enddt)
@@ -91,6 +95,12 @@ function addbase!(xc::XchCache, base, startdt, enddt)
     ohlcv.ix = firstindex(ohlcv.df, 1)
     xc.bases[base] = ohlcv
     setcurrenttime!(xc, base, startdt)
+end
+
+function addbases!(xc::XchCache, bases, startdt, enddt)
+    for base in bases
+        addbase!(xc, base, startdt, enddt)
+    end
 end
 
 assetbases(xc::XchCache) = uppercase.(CryptoXch.balances(xc)[!, :coin])
@@ -110,7 +120,7 @@ function XchCache(bases::Vector, startdt=nothing, enddt=nothing, usdtbudget=1000
     sellbases = setdiff(sellbases, [EnvConfig.cryptoquote])
     for base in sellbases  # sellbases is superset of bases
         addbase!(xc, base, startdt, enddt)
-        println("startdt=$startdt enddt=$enddt xc.bases[base]=$(xc.bases[base])")
+        # println("startdt=$startdt enddt=$enddt xc.bases[base]=$(xc.bases[base])")
     end
     if EnvConfig.configmode != production
         # push startbudget onto balance wallet for backtesting/simulation
@@ -398,9 +408,11 @@ function getUSDTmarket(xc::XchCache)
         end
         for base in keys(xc.bases)
             ohlcv = xc.bases[base]
-            ohlcvdf = subset(ohlcv.df, :opentime => t -> (ohlcv.df.opentime[ohlcv.ix] - Dates.Day(1)) .<= t .<= ohlcv.df.opentime[ohlcv.ix], view=true)
-            # println("usdtdf:$(typeof(usdtdf)), base:$(typeof(base)), $(sum(ohlcvdf.basevolume) * ohlcvdf.close[end]), $((ohlcvdf.close[end] - ohlcvdf.open[begin]) / ohlcvdf.open[begin] * 100), $(ohlcvdf.close[end]), $(ohlcvdf.high[end]), $(ohlcvdf.low[end])")
-            push!(usdtdf, (base, sum(ohlcvdf.basevolume) * ohlcvdf.close[end], (ohlcvdf.close[end] - ohlcvdf.open[begin]) / ohlcvdf.open[begin] * 100, ohlcvdf.close[end], ohlcvdf.high[end], ohlcvdf.low[end]))
+            if size(ohlcv.df, 1) > 0
+                ohlcvdf = subset(ohlcv.df, :opentime => t -> (ohlcv.df.opentime[ohlcv.ix] - Dates.Day(1)) .<= t .<= ohlcv.df.opentime[ohlcv.ix], view=true)
+                # println("usdtdf:$(typeof(usdtdf)), base:$(typeof(base)), $(sum(ohlcvdf.basevolume) * ohlcvdf.close[end]), $((ohlcvdf.close[end] - ohlcvdf.open[begin]) / ohlcvdf.open[begin] * 100), $(ohlcvdf.close[end]), $(ohlcvdf.high[end]), $(ohlcvdf.low[end])")
+                push!(usdtdf, (base, sum(ohlcvdf.basevolume) * ohlcvdf.close[end], (ohlcvdf.close[end] - ohlcvdf.open[begin]) / ohlcvdf.open[begin] * 100, ohlcvdf.close[end], ohlcvdf.high[end], ohlcvdf.low[end]))
+            end
         end
     end
     return usdtdf

@@ -11,6 +11,14 @@ module Assets
 using Dates, DataFrames, Logging, JDF, Statistics
 using EnvConfig, Ohlcv, CryptoXch, Features
 
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info, e.g. number of steps in rowix
+"""
+verbosity = 2
 
 """
 AssetData.basedf holds the following persistent columns:
@@ -102,7 +110,7 @@ function write(ad::AssetData)
     mnm = mnemonic()
     filename = EnvConfig.datafile(mnm)
     if size(ad.basedf, 1) > 0
-        println("writing asset data to $filename")
+        (verbosity == 2) && println("$(EnvConfig.timestr(maximum(ad.basedf[!, :update]))) writing asset data of $(size(ad.basedf, 1)) base candidates to $filename")
         JDF.savejdf(filename, ad.basedf[!, savecols])  # without :pivot
     else
         @warn "missing asset data to write to $filename"
@@ -113,7 +121,7 @@ function read!(ad::AssetData)
     mnm = mnemonic()
     filename = EnvConfig.datafile(mnm)
     df = emptyassetdataframe()
-    # println(filename)
+    (verbosity == 3) && println("$(EnvConfig.now()) loading asset info from $filename")
     if isdir(filename)
         try
             df = DataFrame(JDF.loadjdf(filename))
@@ -122,13 +130,14 @@ function read!(ad::AssetData)
         end
     end
     ad.basedf = df
+    (verbosity == 3) && println("$(EnvConfig.now()) $df")
     return ad
 end
 
 function delete(ad::AssetData)
     mnm = mnemonic()
     filename = EnvConfig.datafile(mnm)
-    # println(filename)
+    (verbosity == 3) && println("$(EnvConfig.now()) deleting asset data of $filename")
     if isdir(filename)
         rm(filename; force=true, recursive=true)
     end
@@ -138,25 +147,24 @@ function checkedok(ohlcv)
     return size(ohlcv.df, 1) > (11 * 24 * 60)  # data for at least 11 days
 end
 
-function loadassets!(ad::AssetData)::AssetData
+function loadassets!(ad::AssetData, neededbases=EnvConfig.bases)::AssetData
     enddt = Dates.now(Dates.UTC)
     usdtdf = CryptoXch.getUSDTmarket(ad.xc)
-    manual = manualselect()
+    manual = neededbases
     portfolio = CryptoXch.assetbases(ad.xc)
     automatic = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :basecoin]
     allbases = union(automatic, manual, portfolio)
     allbases = setdiff(allbases, CryptoXch.baseignore)
-    println("usdt bases: $(automatic)")
-    println("portfolio: $(portfolio)")
-    println("manual: $(manual)")
-    println("allbases: $(allbases)")
+    (verbosity == 3) && println("usdt bases: $(automatic)")
+    (verbosity == 3) && println("portfolio: $(portfolio)")
+    (verbosity == 3) && println("manual: $(manual)")
+    (verbosity == 3) && println("allbases: $(allbases)")
     # CryptoXch.downloadupdate!(ad.xc, allbases, enddt, Dates.Year(10))
 
     count = length(allbases)
     for (ix, base) in enumerate(allbases)
         # break
-        println()
-        println("$(EnvConfig.now()) start updating $base ($ix of $count)")
+        (verbosity >= 2) && print("\r$(EnvConfig.now()) start updating $base ($ix of $count)      ")
         startdt = enddt - Dates.Year(10)
         ohlcv = CryptoXch.cryptodownload(ad.xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
         if checkedok(ohlcv)
@@ -166,6 +174,7 @@ function loadassets!(ad::AssetData)::AssetData
             allbases = setdiff(allbases, [ohlcv.base])
         end
     end
+    (verbosity == 2) && print("\r")
 
     usdtdf = filter(r -> r.basecoin in allbases, usdtdf)
     checkbases = filter(!(el -> el in usdtdf.basecoin), allbases)
@@ -181,7 +190,7 @@ function loadassets!(ad::AssetData)::AssetData
     ad.basedf[:, :portfolio] = [ad.basedf[ix, :base] in portfolio ? true : false for ix in 1:size(ad.basedf, 1)]
     ad.basedf[:, :basevolume] .= 0.0
     # TODO add portfolio basevolume
-    ad.basedf[:, :update] .= Dates.format(enddt,"yyyy-mm-dd HH:MM")
+    ad.basedf[:, :update] .= enddt  # Dates.format(enddt,"yyyy-mm-ddTHH:MM")
     # println("ad.basedf")
     # println(ad.basedf)
     sort!(ad.basedf, [:base])
