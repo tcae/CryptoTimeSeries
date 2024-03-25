@@ -40,7 +40,7 @@ mutable struct TradeCache
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         xc = CryptoXch.XchCache(bases, isnothing(startdt) ? nothing : startdt - Minute(Classify.requiredminutes(classifier)), enddt, 100000)
         # Classify.preparefeatures!(classifier, CryptoXch.ohlcv(xc))
-        tradeassetfraction = 1/20000 # 10 coins in parallel * each 2000 concurrent buys = 1/20000 -> 5 qouteqty per trade at 100000 quoteunits
+        tradeassetfraction = 1/2000 # 10 coins in parallel * each 200 concurrent buys = 1/2000 -> 50 qouteqty per trade at 100000 quoteunits
         new(xc, classifier, startdt, nothing, enddt, tradegapminutes, topx, tradeassetfraction, Dict(), Dict())
     end
 end
@@ -128,14 +128,14 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
     end
     asset = tp == sell ? base : EnvConfig.cryptoquote
     totalusdt = sum(assets.usdtvalue)
-    quotequantity = totalusdt/20000  # 10 coins in parallel * each 2000 concurrent buys = 20000 quotequantities
+    quotequantity = totalusdt * cache.tradeassetfraction
     assets = assets[assets.coin .== asset, :]
     assetfree = sum(assets.free)
     syminfo = CryptoXch.minimumqty(cache.xc, sym)
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
     dtnow = Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)]
     price = currentprice(ohlcv)
-    minimumbasequantity = max(syminfo.minbaseqty, syminfo.minquoteqty/price)
+    minimumbasequantity = 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
     # limitprice = makerfeeprice(ohlcv, tp)  # preliminary check shows worse number for makerfeeprice approach -> stick to takerfee
     limitprice = takerfeeprice(ohlcv, tp)
     basequantity = max(quotequantity/price, minimumbasequantity)
@@ -215,6 +215,7 @@ function _refreshtradecoins!(cache::TradeCache)
             Classify.read!(cache.cls, cache.startdt)
         end
         if (size(cache.cls.cfg, 1) > 0)
+            print("assets: $(CryptoXch.portfolio!(cache.xc))")
             CryptoXch.removeallbases(cache.xc)
             CryptoXch.addbases!(cache.xc, cache.cls.cfg[cache.cls.cfg[!, :active], :basecoin], (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt) - Minute(Classify.requiredminutes(cache.cls)), cache.enddt)
             return
@@ -225,6 +226,7 @@ function _refreshtradecoins!(cache::TradeCache)
     if isnothing(cache.currentdt) || (Time(cache.currentdt) == Time("20:00:00"))
         oo = CryptoXch.getopenorders(cache.xc)
         assets = CryptoXch.portfolio!(cache.xc)
+        print("assets: $assets")
         buyorders = oo[oo[!, :side] .== "Buy", :]
         for order in eachrow(buyorders)
             oid = CryptoXch.cancelorder(cache.xc, CryptoXch.basequote(order.symbol).basecoin, order.orderid)

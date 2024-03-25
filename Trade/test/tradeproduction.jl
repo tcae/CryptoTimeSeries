@@ -3,9 +3,10 @@ module TradeTest
 using Test, Dates, Logging, LoggingExtras
 using EnvConfig, Trade, Classify
 
-println("$(EnvConfig.now()): started")
+messagelogfn = EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")
+println("$(EnvConfig.now()): started - messages are logged in $messagelogfn")
 demux_logger = TeeLogger(
-    MinLevelLogger(FileLogger(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")), Logging.Info),
+    MinLevelLogger(FileLogger(messagelogfn, always_flush=true), Logging.Info),
     MinLevelLogger(ConsoleLogger(stdout), Logging.Info)
 )
 defaultlogger = global_logger(demux_logger)
@@ -14,7 +15,7 @@ Classify.verbosity = 2
 EnvConfig.init(production)
 startdt = Dates.now(UTC)  # DateTime("2022-01-01T00:00:00")
 enddt = nothing  # == continue endless
-cache = Trade.TradeCache(bases=[], startdt=startdt, enddt=enddt, tradegapminutes=2, topx=10)
+cache = Trade.TradeCache(bases=[], startdt=startdt, enddt=enddt, tradegapminutes=1, topx=10)
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

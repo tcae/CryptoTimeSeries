@@ -637,7 +637,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, quantity
     quantity = quantity * price < syminfo.minquoteqty ? syminfo.minquoteqty / price : quantity
     quantity = quantity < syminfo.minbaseqty ? syminfo.minbaseqty : quantity
     qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-    quantity = round(quantity, digits=qtydigits)
+    quantity = floor(quantity, digits=qtydigits)
 
     params = Dict(
         "category" => "spot",
