@@ -619,8 +619,8 @@ function cancelorder(bc::BybitCache, symbol, orderid)
     return oo["result"]["orderId"]
 end
 
-function createorder(bc::BybitCache, symbol::String, orderside::String, quantity::Real, price::Real)
-    @assert quantity > 0.0 "createorder $symbol quantity of $quantity cannot be <=0 for order type Limit"
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Real, maker::Bool=true)
+    @assert basequantity > 0.0 "createorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert price > 0.0 "createorder $symbol price of $price cannot be <=0 for order type Limit"
     @assert orderside in ["Buy", "Sell"] "createorder $symbol orderside=$orderside no in [Buy, Sell]"
     syminfo = symbolinfo(bc, symbol)
@@ -634,17 +634,19 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, quantity
     end
     pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
     price = round(price, digits=pricedigits)
-    quantity = quantity * price < syminfo.minquoteqty ? syminfo.minquoteqty / price : quantity
-    quantity = quantity < syminfo.minbaseqty ? syminfo.minbaseqty : quantity
+    basequantity = (basequantity * price) < syminfo.minquoteqty ? syminfo.minquoteqty / price : basequantity
+    basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
     qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-    quantity = floor(quantity, digits=qtydigits)
+    basequantity = floor(basequantity, digits=qtydigits)
+    #TODO limit of PostOnly maker orders shall be changed accordingly
+    #TODO PostOnly retry until no longer rejected
 
     params = Dict(
         "category" => "spot",
         "symbol" => symbol,
         "side" => orderside,
         "orderType" => "Limit",
-        "qty" => Formatting.format(quantity, precision=qtydigits),
+        "qty" => Formatting.format(basequantity, precision=qtydigits),
         "price" => Formatting.format(price, precision=pricedigits),
         "timeInForce" => "GTC")  # "PostOnly" does not help as long as not VIP status because maker fee = taker fee 0.1%
     oo = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
@@ -655,9 +657,9 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, quantity
     end
 end
 
-"Only provide *quantity* or *limitprice* if they have changed values."
-function amendorder(bc::BybitCache, symbol::String, orderid::String; quantity=nothing::Union{Nothing, Real}, limitprice=nothing::Union{Nothing, Real})
-    @assert isnothing(quantity) ? true : quantity > 0.0 "amendorder $symbol quantity of $quantity cannot be <=0 for order type Limit"
+"Only provide *basequantity* or *limitprice* if they have changed values."
+function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity=nothing::Union{Nothing, Real}, limitprice=nothing::Union{Nothing, Real})
+    @assert isnothing(basequantity) ? true : basequantity > 0.0 "amendorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
     syminfo = symbolinfo(bc, symbol)
     if isnothing(syminfo)
@@ -686,13 +688,16 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; quantity=no
         limitprice = round(limitprice, digits=pricedigits)
         params["price"] = Formatting.format(limitprice, precision=pricedigits)
     end
-    if !isnothing(quantity)
-        quantity = quantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : quantity
-        quantity = quantity < syminfo.minbaseqty ? syminfo.minbaseqty : quantity
+    if !isnothing(basequantity)
+        basequantity = basequantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : basequantity
+        basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
         qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-        quantity = round(quantity, digits=qtydigits)
-        params["qty"] = Formatting.format(quantity, precision=qtydigits)
+        basequantity = round(basequantity, digits=qtydigits)
+        params["qty"] = Formatting.format(basequantity, precision=qtydigits)
     end
+    #TODO check whether anything really changes after precision rounding
+    #TODO limit of PostOnly maker orders shall be changed accordingly
+    #TODO PostOnly retry until no longer rejected
 
     oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
     if "orderId" in keys(oo["result"])

@@ -27,7 +27,7 @@ ohlcv(xc::XchCache) = values(xc.bases)
 ohlcv(xc::XchCache, base::String) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
-basenottradable = []
+basenottradable = ["SUI"]
 basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "EUR", "DAI"]
 quotecoins = ["USDT"]  # , "USDC"]
 baseignore = [""]
@@ -45,6 +45,15 @@ function minimumqty(xc::XchCache, sym::String)
         return nothing
     end
     return (minbaseqty=syminfo.minbaseqty, minquoteqty=syminfo.minquoteqty)
+end
+
+function precision(xc::XchCache, sym::String)
+    syminfo = Bybit.symbolinfo(xc.bc, sym)
+    if isnothing(syminfo)
+        @error "cannot find symbol $sym in Bybit exchange info"
+        return nothing
+    end
+    return (baseprecision=syminfo.baseprecision, quoteprecision=syminfo.quoteprecision)
 end
 
 "Returns a `(free, locked)` named tuple with the amount of `free` and `locked` amounts of coin in portfolio assets"
@@ -644,10 +653,10 @@ Adapts `limitprice` and `basequantity` according to symbol rules and executes or
 Order is rejected (but order created) if `limitprice` > current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createbuyorder(xc::XchCache, base::String; limitprice, basequantity)
+function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true)
     base = uppercase(base)
     if EnvConfig.configmode == production
-        return Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice)
+        return Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker)
     else  # simulation
         return _createordersimulation(xc, base, "Buy", basequantity, limitprice, EnvConfig.cryptoquote, basequantity * limitprice)
     end
@@ -658,10 +667,10 @@ Adapts `limitprice` and `basequantity` according to symbol rules and executes or
 Order is rejected (but order created) if `limitprice` < current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createsellorder(xc::XchCache, base::String; limitprice, basequantity)
+function createsellorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true)
     base = uppercase(base)
     if EnvConfig.configmode == production
-        return Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice)
+        return Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker)
     else  # simulation
         return _createordersimulation(xc, base, "Sell", basequantity, limitprice, base, basequantity)
     end
@@ -669,7 +678,7 @@ end
 
 function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing)
     if EnvConfig.configmode == production
-        oo = Bybit.order(xc.bc, orderid)
+        oo = Bybit.order(xc.bc, orderid) #TODO in order to avoid this unnecessary order request the interface of Bybit.amendorder need to remove symbol param
         if isnothing(oo)
             return nothing
         end

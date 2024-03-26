@@ -2,7 +2,7 @@
 
 julia_version = "1.9.2"
 manifest_format = "2.0"
-project_hash = "8a828ff6764c165792effe0715d97d9a4bb8ced8"
+project_hash = "bd13ae8c2b65875f9677347a2aed32972e380ba7"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -202,7 +202,7 @@ version = "1.2.1"
 deps = ["DataFrames", "Dates", "EnvConfig", "Formatting", "HTTP", "JSON3", "Logging", "Printf", "SHA", "Test"]
 path = "Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "2.0.0"
+version = "3.0.0"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
@@ -476,7 +476,7 @@ version = "4.1.1"
 deps = ["Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "0.12.0"
+version = "1.0.0"
 
 [[deps.CustomUnitRanges]]
 git-tree-sha1 = "1a3f97f907e6dd8983b744d2642651bb162a3f7a"
@@ -753,10 +753,10 @@ uuid = "a3f928ae-7b40-5064-980b-68af3947d34b"
 version = "2.13.93+0"
 
 [[deps.Formatting]]
-deps = ["Printf"]
-git-tree-sha1 = "8339d61043228fdd3eb658d86c926cb282ae72a8"
+deps = ["Logging", "Printf"]
+git-tree-sha1 = "fb409abab2caf118986fc597ba84b50cbaf00b87"
 uuid = "59287772-0a20-5a39-b81b-1366585eb4c0"
-version = "0.4.2"
+version = "0.4.3"
 
 [[deps.ForwardDiff]]
 deps = ["CommonSubexpressions", "DiffResults", "DiffRules", "LinearAlgebra", "LogExpFunctions", "NaNMath", "Preferences", "Printf", "Random", "SpecialFunctions"]
@@ -2491,7 +2491,7 @@ version = "0.5.23"
 deps = ["Assets", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "TradingStrategy"]
 path = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.8.0"
+version = "0.10.0"
 
 [[deps.TradingStrategy]]
 deps = ["DataFrames", "Dates", "EnvConfig", "Features", "JuliaInterpreter", "Logging", "Ohlcv", "Test"]

@@ -33,15 +33,14 @@ mutable struct TradeCache
     tradegapminutes::Integer  # required to buy/sell in > Minute(tradegapminutes) time gaps
     topx::Integer  # defines how many best candidates are considered for trading
     tradeassetfraction # defines the default trade fraction of total assets
+    maxassetfraction # defines the maximum ration of (a specific asset) / ( total assets) - sell only if this is exceeded
     lastbuy::Dict  # Dict(base, DateTime) required to buy in > Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in > Minute(tradegapminutes) time gaps
-    function TradeCache(; bases=[], startdt=nothing, enddt=nothing, classifier=Classify.Classifier001(), tradegapminutes=5, topx=5)
+    function TradeCache(; bases=[], startdt=nothing, enddt=nothing, classifier=Classify.Classifier001(), tradegapminutes=5, topx=20, tradeassetfraction=1/2000, maxassetfraction=0.1)
         startdt = isnothing(startdt) ? nothing : floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         xc = CryptoXch.XchCache(bases, isnothing(startdt) ? nothing : startdt - Minute(Classify.requiredminutes(classifier)), enddt, 100000)
-        # Classify.preparefeatures!(classifier, CryptoXch.ohlcv(xc))
-        tradeassetfraction = 1/2000 # 10 coins in parallel * each 200 concurrent buys = 1/2000 -> 50 qouteqty per trade at 100000 quoteunits
-        new(xc, classifier, startdt, nothing, enddt, tradegapminutes, topx, tradeassetfraction, Dict(), Dict())
+        new(xc, classifier, startdt, nothing, enddt, tradegapminutes, topx, tradeassetfraction, maxassetfraction, Dict(), Dict())
     end
 end
 
@@ -126,11 +125,8 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
     if size(oo, 1) > 1
         @error "more than 1 open order for base $base"
     end
-    asset = tp == sell ? base : EnvConfig.cryptoquote
     totalusdt = sum(assets.usdtvalue)
-    quotequantity = totalusdt * cache.tradeassetfraction
-    assets = assets[assets.coin .== asset, :]
-    assetfree = sum(assets.free)
+    quotequantity = totalusdt * cache.tradeassetfraction  # target amount to buy or sell - that will be slightly corrected below due to constraints
     syminfo = CryptoXch.minimumqty(cache.xc, sym)
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
     dtnow = Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)]
@@ -139,12 +135,17 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
     # limitprice = makerfeeprice(ohlcv, tp)  # preliminary check shows worse number for makerfeeprice approach -> stick to takerfee
     limitprice = takerfeeprice(ohlcv, tp)
     basequantity = max(quotequantity/price, minimumbasequantity)
-    basefree = tp == sell ? assetfree : assetfree / limitprice
-    basequantity = basefree - basequantity < minimumbasequantity ? basefree : basequantity  # if remaining free is below minimum then add it to quantity
+    basefree = tp == sell ? sum(assets[assets[!, :coin] .== base, :free]) : sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]) / limitprice
+    basequantity = (basefree - basequantity) < minimumbasequantity ? basefree : basequantity  # if remaining free is below minimum then add it to quantity
     basequantity = basequantity > basefree ? basefree : basequantity
-    minqteratio = round(Int, max(syminfo.minbaseqty * price, syminfo.minquoteqty) / quotequantity)
+    minqteratio = round(Int, max(syminfo.minbaseqty * price, syminfo.minquoteqty) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
     tradegapminutes = minqteratio > 1 ? cache.tradegapminutes * minqteratio : cache.tradegapminutes
+    sufficientbuybalance = ((basequantity*limitprice) < sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]))
+    sufficientsellbalance = (basequantity) < sum(assets[assets[!, :coin] .== base, :free])
+    exceedsminimumbasequantity = basequantity > minimumbasequantity
+    basedominatesassets = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > cache.maxassetfraction
     if tp == sell
+        tradegapminutes = basedominatesassets ? 1 : tradegapminutes  # accelerate selloff if basedominatesassets
         if size(oo, 1) == 1
             if oo[1, :side] == "Buy"
                 oid = CryptoXch.cancelorder(cache.xc, base, oo[1, :orderid])
@@ -160,12 +161,17 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
                     println("\r$(tradetime(cache)) change $base sell order with oid $oid to limitprice=$limitprice * unchanged basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt)")
                 end
             end
-        elseif (basequantity >= minimumbasequantity) && (!(base in keys(cache.lastsell)) || (cache.lastsell[base] + Minute(tradegapminutes) <= dtnow))
+        elseif sufficientsellbalance && exceedsminimumbasequantity && (!(base in keys(cache.lastsell)) || (cache.lastsell[base] + Minute(tradegapminutes) <= dtnow))
             cache.lastsell[base] = dtnow
-            oid = CryptoXch.createsellorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity)
+            oid = CryptoXch.createsellorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity, maker=true)
             println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt), tgm=$tradegapminutes, $(sellonly ? ", sell only" : "")")
         end
     elseif (tp == buy) && !sellonly
+        basefraction = sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt
+        if basedominatesassets
+            # println("\r$(tradetime(cache)) skip $base buy due to basefraction=$basefraction > maxassetfraction=$(cache.maxassetfraction)")
+            return
+        end
         if size(oo, 1) == 1
             if oo[1, :side] == "Sell"
                 oid = CryptoXch.cancelorder(cache.xc, base, oo[1, :orderid])
@@ -181,9 +187,9 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
                     println("\r$(tradetime(cache)) change $base buy order with oid $oid to limitprice=$limitprice * unchanged basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt)")
                 end
             end
-        elseif (basequantity >= minimumbasequantity) && (!(base in keys(cache.lastbuy)) || (cache.lastbuy[base] + Minute(tradegapminutes) <= dtnow))
+        elseif sufficientbuybalance && exceedsminimumbasequantity && (!(base in keys(cache.lastbuy)) || (cache.lastbuy[base] + Minute(tradegapminutes) <= dtnow))
             cache.lastbuy[base] = dtnow
-            oid = CryptoXch.createbuyorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity)
+            oid = CryptoXch.createbuyorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity, maker=true)
             println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt), tgm=$tradegapminutes")
         end
     end
@@ -223,7 +229,7 @@ function _refreshtradecoins!(cache::TradeCache)
             println("no read of config")
         end
     end
-    if isnothing(cache.currentdt) || (Time(cache.currentdt) == Time("20:00:00"))
+    if isnothing(cache.currentdt) || (Time(cache.currentdt) == Time("04:00:00"))
         oo = CryptoXch.getopenorders(cache.xc)
         assets = CryptoXch.portfolio!(cache.xc)
         print("assets: $assets")
@@ -272,7 +278,7 @@ function tradeloop(cache::TradeCache)
     #     syminfo = CryptoXch.minimumqty(cache.xc, CryptoXch.symboltoken(base))
     #     @info "$syminfo"
     # end
-    # try
+    try
         _refreshtradecoins!(cache::TradeCache)
         for c in cache
             activebases = cache.cls.cfg[cache.cls.cfg[!, :active], :basecoin]
@@ -298,12 +304,13 @@ function tradeloop(cache::TradeCache)
             #TODO low prio: aggregate orders and transactions in bookkeeping
 
         end
-    # catch ex
+    catch ex
     #     showerror(stdout, ex, backtrace())
-    #     if isa(ex, InterruptException)
-    #         println("Ctrl+C pressed by tradeloop")
-    #     end
-    # finally
+        if isa(ex, InterruptException)
+            println("Ctrl+C pressed by tradeloop")
+        end
+        rethrow()
+    finally
         println("finished trading core loop")
         @info "$(EnvConfig.now()): closed orders log" cache.xc.closedorders
         @info "$(EnvConfig.now()): open orders log" cache.xc.orders
@@ -327,7 +334,7 @@ function tradeloop(cache::TradeCache)
         # EnvConfig.setlogpath(sf)
 
         # Profile.print()
-    # end
+    end
 end
 
 function tradelooptest(cache::TradeCache)

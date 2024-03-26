@@ -15,7 +15,7 @@ Classify.verbosity = 2
 EnvConfig.init(production)
 startdt = Dates.now(UTC)  # DateTime("2022-01-01T00:00:00")
 enddt = nothing  # == continue endless
-cache = Trade.TradeCache(bases=[], startdt=startdt, enddt=enddt, tradegapminutes=1, topx=10)
+cache = Trade.TradeCache(bases=[], startdt=startdt, enddt=enddt)
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

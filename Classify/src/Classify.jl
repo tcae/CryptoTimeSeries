@@ -5,7 +5,7 @@ module Classify
 
 abstract type AbstractClassifier end
 
-using CSV, DataFrames, Logging, Dates, PrettyPrinting, PrettyTables
+using CSV, DataFrames, Logging, Dates, PrettyPrinting, PrettyTables, Plots
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
 using CategoricalDistributions
@@ -1534,7 +1534,7 @@ function best!(cls::Classifier001, xc::CryptoXch.XchCache, topx, period, enddt=n
     sort!(cls.cfg, [:usd10000], rev=true)  # prio1 in descending order
     activebases = []
     for row in eachrow(cls.cfg)
-        if (row.usd10000 > 10100) && !(row.basecoin in activebases)  # at least 1% added and each coin only once active
+        if (row.usd10000 > 10500) && !(row.basecoin in activebases)  # at least 5% within 10 days added and each coin only with one config active
             row.active = true
             push!(activebases, row.basecoin)
             if length(activebases) >= topx
