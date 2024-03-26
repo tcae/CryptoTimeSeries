@@ -636,29 +636,55 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         @warn "$symbol status=$(syminfo.status) != Trading"
         return nothing
     end
-    pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
-    price = round(price, digits=pricedigits)
-    basequantity = (basequantity * price) < syminfo.minquoteqty ? syminfo.minquoteqty / price : basequantity
-    basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
-    qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-    basequantity = floor(basequantity, digits=qtydigits)
-    #TODO limit of PostOnly maker orders shall be changed accordingly
-    #TODO PostOnly retry until no longer rejected
+    attempts = 5
+    oo = orderid = nothing
+    while attempts > 0
+        now = Bybit.get24h(bc, symbol)
+        devratio = round(abs(now.lastprice - price) / price * 100)
+        if devratio > 0.01
+            @warn "limitprice=$price deviates $(devratio)% > 1% of currentprice=$(now.lastprice)"
+            return nothing
+        end
+        pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
+        # println("pricedigits=$pricedigits, ticksize=$(syminfo.ticksize)")
+        if maker
+            price = orderside == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
+            timeinforce = "PostOnly"
+        else # taker
+            price = orderside == "Buy" ? now.askprice : now.bidprice
+            timeinforce = "GTC"
+        end
+        # price = round(price, digits=pricedigits)
+        basequantity = (basequantity * price) < syminfo.minquoteqty ? syminfo.minquoteqty / price : basequantity
+        basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
+        qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
+        basequantity = floor(basequantity, digits=qtydigits)
 
-    params = Dict(
-        "category" => "spot",
-        "symbol" => symbol,
-        "side" => orderside,
-        "orderType" => "Limit",
-        "qty" => Formatting.format(basequantity, precision=qtydigits),
-        "price" => Formatting.format(price, precision=pricedigits),
-        "timeInForce" => "GTC")  # "PostOnly" does not help as long as not VIP status because maker fee = taker fee 0.1%
-    oo = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
-    if "orderId" in keys(oo["result"])
-        return oo["result"]["orderId"]
-    else
-        return nothing
+        params = Dict(
+            "category" => "spot",
+            "symbol" => symbol,
+            "side" => orderside,
+            "orderType" => "Limit",
+            "qty" => Formatting.format(basequantity, precision=qtydigits),
+            "price" => Formatting.format(price, precision=pricedigits),
+            "timeInForce" => timeinforce)  # "PostOnly" "GTC
+        oo = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
+        if "orderId" in keys(oo["result"])
+            orderid = oo["result"]["orderId"]
+            if maker
+                oo = Bybit.order(bc, oo["result"]["orderId"])
+                if oo.status == "Rejected"
+                    attempts = attempts - 1
+                    println("PostOnly order for $symbol is rejected")
+                else
+                    attempts = 0
+                end
+            else
+                attempts = 0
+            end
+        end
     end
+    return orderid
 end
 
 "Only provide *basequantity* or *limitprice* if they have changed values."
@@ -679,40 +705,66 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         @warn "cannot amend order because orderid $orderid not found"
         return nothing
     end
+    maker = ont.timeinforce == "PostOnly"
     params = Dict(
         "category" => "spot",
         "symbol" => ont.symbol,
         "orderId" => orderid
     )
-    limitchanged = quantitychanged = false
-    if isnothing(limitprice)
-        changeprice =  ont.limitprice
-    else
-        pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
-        limitprice = Float32(round(limitprice, digits=pricedigits))
-        changeprice =  limitprice
-        limitchanged = limitprice != ont.limitprice
-        params["price"] = Formatting.format(limitprice, precision=pricedigits)
-    end
-    if !isnothing(basequantity)
-        basequantity = basequantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : basequantity
-        basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
-        qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-        basequantity = Float32(round(basequantity, digits=qtydigits))
-        quantitychanged = basequantity != ont.baseqty
-        params["qty"] = Formatting.format(basequantity, precision=qtydigits)
-    end
-    #TODO limit of PostOnly maker orders shall be changed accordingly
-    #TODO PostOnly retry until no longer rejected
-    if limitchanged || quantitychanged
-        oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
-        if "orderId" in keys(oo["result"])
-            return oo["result"]["orderId"]
+    attempts = 5
+    oo = orderid = nothing
+    while attempts > 0
+        now = Bybit.get24h(bc, symbol)
+        limitchanged = quantitychanged = false
+        if isnothing(limitprice)
+            changeprice =  ont.limitprice
         else
-            return nothing
+            devratio = round(abs(now.lastprice - limitprice) / limitprice * 100)
+            if devratio > 0.01
+                @warn "limitprice=$limitprice deviates $(devratio)% > 1% of currentprice=$(now.lastprice)"
+                return nothing
+            end
+            if maker
+                limitprice =  ont.side == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
+                timeinforce = "PostOnly"
+            else # taker
+                limitprice =  ont.side == "Buy" ? now.askprice : now.bidprice
+                timeinforce = "GTC"
+            end
+            pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
+            limitprice = Float32(round(limitprice, digits=pricedigits))
+            changeprice =  limitprice
+            limitchanged = limitprice != ont.limitprice
+            params["price"] = Formatting.format(limitprice, precision=pricedigits)
         end
-    else # no change
-        return orderid
+        if !isnothing(basequantity)
+            basequantity = basequantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : basequantity
+            basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
+            qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
+            basequantity = Float32(round(basequantity, digits=qtydigits))
+            quantitychanged = basequantity != ont.baseqty
+            params["qty"] = Formatting.format(basequantity, precision=qtydigits)
+        end
+
+        if limitchanged || quantitychanged
+            oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
+            if "orderId" in keys(oo["result"])
+                orderid = oo["result"]["orderId"]
+                if maker
+                    oo = Bybit.order(bc, oo["result"]["orderId"])
+                    if oo.status == "Rejected"
+                        attempts = attempts - 1
+                        println("PostOnly order for $symbol is rejected")
+                    else
+                        attempts = 0
+                    end
+                else
+                    attempts = 0
+                end
+            end
+        else # no change
+            return orderid
+        end
     end
 end
 
