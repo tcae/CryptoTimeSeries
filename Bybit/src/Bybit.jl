@@ -370,7 +370,11 @@ function get24h(bc::BybitCache, symbol=nothing)
         df = select(df, :ask1Price => "askprice", :bid1Price => "bidprice", :lastPrice => "lastprice", :turnover24h => "quotevolume24h", :price24hPcnt => "pricechangepercent", :symbol)
     end
     response["result"]["list"] = df
-    return response["result"]["list"]
+    if size(df, 1) == 1
+        return df[1, :]  # should be a DataFrameRow
+    else
+        return df
+    end
 end
 
 """
@@ -603,7 +607,7 @@ end
 function order(bc::BybitCache, orderid)
     if !isnothing(orderid)
         oo = openorders(bc, orderid=orderid)
-        return size(oo, 1) > 0 ? NamedTuple(oo[1, :]) : nothing
+        return size(oo, 1) > 0 ? oo[1, :] : nothing
     else
         return nothing
     end
@@ -677,33 +681,38 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
     end
     params = Dict(
         "category" => "spot",
-        "symbol" => symbol,
+        "symbol" => ont.symbol,
         "orderId" => orderid
     )
+    limitchanged = quantitychanged = false
     if isnothing(limitprice)
         changeprice =  ont.limitprice
     else
-        changeprice =  limitprice
         pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
-        limitprice = round(limitprice, digits=pricedigits)
+        limitprice = Float32(round(limitprice, digits=pricedigits))
+        changeprice =  limitprice
+        limitchanged = limitprice != ont.limitprice
         params["price"] = Formatting.format(limitprice, precision=pricedigits)
     end
     if !isnothing(basequantity)
         basequantity = basequantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : basequantity
         basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
         qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-        basequantity = round(basequantity, digits=qtydigits)
+        basequantity = Float32(round(basequantity, digits=qtydigits))
+        quantitychanged = basequantity != ont.baseqty
         params["qty"] = Formatting.format(basequantity, precision=qtydigits)
     end
-    #TODO check whether anything really changes after precision rounding
     #TODO limit of PostOnly maker orders shall be changed accordingly
     #TODO PostOnly retry until no longer rejected
-
-    oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
-    if "orderId" in keys(oo["result"])
-        return oo["result"]["orderId"]
-    else
-        return nothing
+    if limitchanged || quantitychanged
+        oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
+        if "orderId" in keys(oo["result"])
+            return oo["result"]["orderId"]
+        else
+            return nothing
+        end
+    else # no change
+        return orderid
     end
 end
 

@@ -72,9 +72,11 @@ function ensureohlcvorderbase!(cache::TradeCache, oo::AbstractDataFrame)
 end
 
 """
-looks for the base configuration in teh last configuration dataframe to activate it in the current one
+looks for the base configuration in the last configuration dataframe to activate it in the current one if those have minimal free quantity
 """
-function activatesellonlyconfigs!(cache::TradeCache, bases, prevconfig)
+function activatesellonlyconfigs!(cache::TradeCache, bases, prevconfig, assets)
+    added = []
+    notadded = []
     for base in bases
         # ix = findfirst(row -> row.basecoin == base, eachrow(cache.cls.cfg))
         oldbasecfg = Classify.baseclassifieractiveconfigs(prevconfig, base)
@@ -84,9 +86,20 @@ function activatesellonlyconfigs!(cache::TradeCache, bases, prevconfig)
             if isnothing(ix)
                 @warn "unexpected: missing base $base in current config"
             else
-                cache.cls.cfg[ix, :active] = true
-                cache.cls.cfg[ix, :sellonly] = true
-                continue
+                aix = findfirst(row -> (row.basecoin == base), eachrow(assets))
+                if !isnothing(aix)
+                    price = assets[aix, :usdtprice]
+                    syminfo = CryptoXch.minimumqty(cache.xc, CryptoXch.symboltoken(base))
+                    minimumbasequantity = 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
+                    if assets[aix, :free] > minimumbasequantity
+                        cache.cls.cfg[ix, :active] = true
+                        cache.cls.cfg[ix, :sellonly] = true
+                        push!(added, base)
+                        continue
+                    end
+                else
+                    @error "missing $base in $assets"
+                end
             end
         else
             cfg = Classify.addreplaceconfig!(cache.cls, base, oldbasecfg.regrwindow, oldbasecfg.gainthreshold, true, true)
@@ -94,7 +107,9 @@ function activatesellonlyconfigs!(cache::TradeCache, bases, prevconfig)
                 @warn "unexpected: missing base $base in last config, lastconfig=$oldbasecfg, current cfg=$cfg"
             end
         end
+        push!(notadded, base)
     end
+    return added, notadded
 end
 
 # "Returns a Dict(base, InvestProposal)"
@@ -126,6 +141,8 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
         @error "more than 1 open order for base $base"
     end
     totalusdt = sum(assets.usdtvalue)
+    freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])
+    freebase = sum(assets[assets[!, :coin] .== base, :free])
     quotequantity = totalusdt * cache.tradeassetfraction  # target amount to buy or sell - that will be slightly corrected below due to constraints
     syminfo = CryptoXch.minimumqty(cache.xc, sym)
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
@@ -135,13 +152,14 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
     # limitprice = makerfeeprice(ohlcv, tp)  # preliminary check shows worse number for makerfeeprice approach -> stick to takerfee
     limitprice = takerfeeprice(ohlcv, tp)
     basequantity = max(quotequantity/price, minimumbasequantity)
-    basefree = tp == sell ? sum(assets[assets[!, :coin] .== base, :free]) : sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]) / limitprice
-    basequantity = (basefree - basequantity) < minimumbasequantity ? basefree : basequantity  # if remaining free is below minimum then add it to quantity
-    basequantity = basequantity > basefree ? basefree : basequantity
-    minqteratio = round(Int, max(syminfo.minbaseqty * price, syminfo.minquoteqty) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
+
+    # basefree = tp == sell ? sum(assets[assets[!, :coin] .== base, :free]) : freeusdt / limitprice
+    # basequantity = (basefree - basequantity) < minimumbasequantity ? basefree : basequantity  # if remaining free is below minimum then add it to quantity
+    # basequantity = basequantity > basefree ? basefree : basequantity
+    minqteratio = round(Int, (minimumbasequantity * price) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
     tradegapminutes = minqteratio > 1 ? cache.tradegapminutes * minqteratio : cache.tradegapminutes
-    sufficientbuybalance = ((basequantity*limitprice) < sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]))
-    sufficientsellbalance = (basequantity) < sum(assets[assets[!, :coin] .== base, :free])
+    sufficientbuybalance = ((basequantity * limitprice * (1 + cache.xc.feerate + 0.001)) < freeusdt) && (0.01 * totalusdt <= freeusdt)
+    sufficientsellbalance = basequantity < freebase
     exceedsminimumbasequantity = basequantity > minimumbasequantity
     basedominatesassets = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > cache.maxassetfraction
     if tp == sell
@@ -151,8 +169,8 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
                 oid = CryptoXch.cancelorder(cache.xc, base, oo[1, :orderid])
                 println("\r$(tradetime(cache)) cancel $base buy order with oid $oid, total USDT=$(totalusdt)")
             else  # open order on Sell side
-                if basefree < syminfo.minbaseqty
-                    basequantity = basefree + oo[1, :baseqty]
+                if freebase < minimumbasequantity
+                    basequantity = freebase + oo[1, :baseqty]
                     oid = CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice, basequantity=basequantity)
                     println("\r$(tradetime(cache)) change $base sell order with oid $oid to limitprice=$limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt)")
                 else
@@ -167,7 +185,6 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
             println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt), tgm=$tradegapminutes, $(sellonly ? ", sell only" : "")")
         end
     elseif (tp == buy) && !sellonly
-        basefraction = sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt
         if basedominatesassets
             # println("\r$(tradetime(cache)) skip $base buy due to basefraction=$basefraction > maxassetfraction=$(cache.maxassetfraction)")
             return
@@ -176,21 +193,19 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
             if oo[1, :side] == "Sell"
                 oid = CryptoXch.cancelorder(cache.xc, base, oo[1, :orderid])
                 println("\r$(tradetime(cache)) cancel $base sell order with oid $oid, total USDT=$(totalusdt)")
-            else  # open order on Buy side
-                if basefree < syminfo.minquoteqty
-                    basequantity = basefree + oo[1, :baseqty]
-                    oid = CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice, basequantity=basequantity)
-                    println("\r$(tradetime(cache)) change $base buy order with oid $oid to limitprice=$limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt)")
-                else
-                    basequantity = oo[1, :baseqty]
-                    oid = (CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice))
-                    println("\r$(tradetime(cache)) change $base buy order with oid $oid to limitprice=$limitprice * unchanged basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt)")
-                end
+            else  # open order on Buy side -> adapt limitprice
+                basequantity = oo[1, :baseqty]
+                oid = (CryptoXch.changeorder(cache.xc, oo[1, :orderid]; limitprice=limitprice))
+                println("\r$(tradetime(cache)) change $base buy order with oid $oid to limitprice=$limitprice * unchanged basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt)")
             end
         elseif sufficientbuybalance && exceedsminimumbasequantity && (!(base in keys(cache.lastbuy)) || (cache.lastbuy[base] + Minute(tradegapminutes) <= dtnow))
             cache.lastbuy[base] = dtnow
             oid = CryptoXch.createbuyorder(cache.xc, base; limitprice=limitprice, basequantity=basequantity, maker=true)
             println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*limitprice), total USDT=$(totalusdt), tgm=$tradegapminutes")
+            if isnothing(oid)
+                println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $limitprice * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
+                println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
+            end
         end
     end
 end
@@ -211,7 +226,7 @@ function Base.iterate(cache::TradeCache, currentdt=nothing)
     return cache, currentdt
 end
 
-tradetime(cache::TradeCache) = Dates.format((isnothing(cache.currentdt) ? Dates.now(UTC) : cache.currentdt), EnvConfig.datetimeformat)
+tradetime(cache::TradeCache) = "TT" * Dates.format((isnothing(cache.currentdt) ? Dates.now(UTC) : cache.currentdt), EnvConfig.datetimeformat)
 
 function _refreshtradecoins!(cache::TradeCache)
     if isnothing(cache.currentdt) || (size(cache.cls.cfg, 1) == 0)
@@ -221,7 +236,7 @@ function _refreshtradecoins!(cache::TradeCache)
             Classify.read!(cache.cls, cache.startdt)
         end
         if (size(cache.cls.cfg, 1) > 0)
-            print("assets: $(CryptoXch.portfolio!(cache.xc))")
+            println("assets: $(CryptoXch.portfolio!(cache.xc))")
             CryptoXch.removeallbases(cache.xc)
             CryptoXch.addbases!(cache.xc, cache.cls.cfg[cache.cls.cfg[!, :active], :basecoin], (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt) - Minute(Classify.requiredminutes(cache.cls)), cache.enddt)
             return
@@ -232,7 +247,7 @@ function _refreshtradecoins!(cache::TradeCache)
     if isnothing(cache.currentdt) || (Time(cache.currentdt) == Time("04:00:00"))
         oo = CryptoXch.getopenorders(cache.xc)
         assets = CryptoXch.portfolio!(cache.xc)
-        print("assets: $assets")
+        println("assets: $assets")
         buyorders = oo[oo[!, :side] .== "Buy", :]
         for order in eachrow(buyorders)
             oid = CryptoXch.cancelorder(cache.xc, CryptoXch.basequote(order.symbol).basecoin, order.orderid)
@@ -251,13 +266,12 @@ function _refreshtradecoins!(cache::TradeCache)
         end
         metadata!(cache.cls.cfg, "tradegapminutes", "$(cache.tradegapminutes)", style=:note)
         sellonlybases = setdiff(assetbases, topxdf[!, :basecoin])
-        #TODO add only those sellonly bases that have a freeqty > minqty
-        activatesellonlyconfigs!(cache, sellonlybases, oldcfg)
+        added, notadded = activatesellonlyconfigs!(cache, sellonlybases, oldcfg, assets) # but only those with minimal free assets
 
         CryptoXch.removeallbases(cache.xc)
         CryptoXch.addbases!(cache.xc, cache.cls.cfg[cache.cls.cfg[!, :active], :basecoin], (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt) - Minute(Classify.requiredminutes(cache.cls)), cache.enddt)
 
-        println("$(tradetime(cache))  sell only=$sellonlybases, assetbases=$assetbases, active coin trading config: $(cache.cls.cfg[cache.cls.cfg[!, :active] .== true, :])")
+        println("$(tradetime(cache))  sell only=$added (excluding=$notadded), assetbases=$assetbases, active coin trading config: $(cache.cls.cfg[cache.cls.cfg[!, :active] .== true, :])")
     end
 end
 

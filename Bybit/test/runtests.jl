@@ -11,7 +11,7 @@ EnvConfig.init(production)  # test production
     @test (Dates.now(UTC) + Dates.Second(15)) > Bybit.servertime(bc) > (Dates.now(UTC) - Dates.Second(15))
 
     acc = Bybit.account(bc)
-    @test acc["marginMode"] == "REGULAR_MARGIN"
+    @test acc["marginMode"] == "ISOLATED_MARGIN"  # "REGULAR_MARGIN"
     @test isa(acc, AbstractDict)
     @test length(acc) > 1
 
@@ -40,7 +40,7 @@ EnvConfig.init(production)  # test production
     @test length(oo) >= 13
     @test oo.orderid == oid
 
-    oidc = Bybit.amendorder(bc, "BTCUSDT", oid; quantity=0.00011)
+    oidc = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
     @test oidc == oid
 
     oidc = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)

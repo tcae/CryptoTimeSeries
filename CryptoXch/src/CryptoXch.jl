@@ -682,7 +682,7 @@ function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=not
         if isnothing(oo)
             return nothing
         end
-        return Bybit.amendorder(xc.bc, oo.symbol, orderid; quantity=basequantity, limitprice=limitprice)
+        return Bybit.amendorder(xc.bc, oo.symbol, orderid; basequantity=basequantity, limitprice=limitprice)
     else  # simulation
         oix = _orderrefresh(xc, orderid)
         # if isnothing(oix) || !openstatus(xc.orders[oix, :status]) || (xc.orders[oix, :baseqty] <= xc.orders[oix, :executedqty])

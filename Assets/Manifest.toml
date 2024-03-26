@@ -99,7 +99,7 @@ version = "1.2.1"
 deps = ["DataFrames", "Dates", "EnvConfig", "Formatting", "HTTP", "JSON3", "Logging", "Printf", "SHA", "Test"]
 path = "../Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "3.0.0"
+version = "4.0.0"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]

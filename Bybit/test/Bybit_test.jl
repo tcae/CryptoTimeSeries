@@ -55,7 +55,7 @@ println(length(oo) == 12)
 # println(describe(oo, :min, :eltype))
 println(oo)
 
-oidc = Bybit.amendorder(bc, "BTCUSDT", oid; quantity=0.00011)
+oidc = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
 println("amendorder quantity: oidc=$oidc content: $(Bybit.order(bc, oidc))")
 
 oidc = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
