@@ -8,6 +8,15 @@ using EnvConfig
 # BYBIT_API_WS = "to be defined for Bybit"  # "wss://stream.binance.com:9443/ws/"
 # BYBIT_API_USER_DATA_STREAM ="to be defined for Bybit"
 
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
+"""
+verbosity = 1
+
 const _recvwindow = "5000"
 const _klineinterval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
 const interval2bybitinterval = Dict(
@@ -159,7 +168,7 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
                 end
                 delete!(body["result"], "nextPageCursor")
             end
-            returnbody = isnothing(returnbody) ? body : returnbody
+            returnbody = isnothing(returnbody) ? body : returnbody  # 1st time in the loop returnbody=body, in following loops body is appended
         end
     catch err
         @error "HttpPrivateRequest $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload"
@@ -669,19 +678,22 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             "price" => Formatting.format(price, precision=pricedigits),
             "timeInForce" => timeinforce)  # "PostOnly" "GTC
         oo = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
+        attempts = oo["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
         if "orderId" in keys(oo["result"])
             orderid = oo["result"]["orderId"]
             if maker
                 oo = Bybit.order(bc, oo["result"]["orderId"])
                 if oo.status == "Rejected"
                     attempts = attempts - 1
-                    println("PostOnly order for $symbol is rejected")
+                    (verbosity >= 3) && println("PostOnly order for $symbol is rejected")
                 else
                     attempts = 0
                 end
             else
                 attempts = 0
             end
+        else
+            attempts = 0
         end
     end
     return orderid
@@ -748,24 +760,26 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
 
         if limitchanged || quantitychanged
             oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
+            attempts = oo["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
             if "orderId" in keys(oo["result"])
                 orderid = oo["result"]["orderId"]
                 if maker
                     oo = Bybit.order(bc, oo["result"]["orderId"])
                     if oo.status == "Rejected"
                         attempts = attempts - 1
-                        println("PostOnly order for $symbol is rejected")
+                        (verbosity >= 3) && println("PostOnly order for $symbol is rejected")
                     else
                         attempts = 0
                     end
                 else
                     attempts = 0
                 end
+            else
+                attempts = 0
             end
-        else # no change
-            return orderid
         end
     end
+    return orderid
 end
 
 """

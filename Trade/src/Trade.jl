@@ -86,7 +86,7 @@ function activatesellonlyconfigs!(cache::TradeCache, bases, prevconfig, assets)
             if isnothing(ix)
                 @warn "unexpected: missing base $base in current config"
             else
-                aix = findfirst(row -> (row.basecoin == base), eachrow(assets))
+                aix = findfirst(row -> (row.coin == base), eachrow(assets))
                 if !isnothing(aix)
                     price = assets[aix, :usdtprice]
                     syminfo = CryptoXch.minimumqty(cache.xc, CryptoXch.symboltoken(base))

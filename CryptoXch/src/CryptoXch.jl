@@ -9,6 +9,15 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging
 using Bybit, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
+"""
+verbosity = 1
+
 mutable struct XchCache
     orders  # ::DataFrame
     closedorders  # ::DataFrame
