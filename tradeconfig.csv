@@ -1,0 +1,5 @@
+# kommentar
+parameter;value;type
+tgm; 9 ; Int32
+comment;das it ein test;String
+gain;    0.255;   Float32

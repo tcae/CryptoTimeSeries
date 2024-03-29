@@ -10,8 +10,7 @@ function deleteoutdateohlcv()
     latest = oldest = nothing
     deadline = DateTime("2024-01-01T01:00:00")
     for ohlcv in Ohlcv.OhlcvFiles()
-        sym = CryptoXch.symboltoken(ohlcv.base, ohlcv.quotecoin)
-        if CryptoXch.validsymbol(xc, sym)
+        if CryptoXch.validbase(xc, ohlcv.base)
             valid += 1
             if length(ohlcv.df[!, :opentime]) == 0
                 println("empty ohlcv: $(Ohlcv.file(ohlcv))")

@@ -1200,7 +1200,7 @@ function read!(cls::Classifier001, timestamp::Union{Nothing, DateTime}=nothing)
     if isdir(cfgfilename)
         df = DataFrame(JDF.loadjdf(cfgfilename))
         # df = CSV.read(cfgfilename, DataFrame, decimal='.', delim=';')
-        println("config df: $df, metadata: $(collect(metadatakeys(df)))")
+        println("config df: $df")
     end
     EnvConfig.setlogpath(sf)
     if isnothing(df)
@@ -1503,7 +1503,6 @@ function evaluate!(cls::Classifier001, xc::CryptoXch.XchCache, bases, regrwindow
         end
     end
     sort!(cls.cfg, [:basecoin, :regrwindow, :gainthreshold])  # beauty only
-    metadata!(cls.cfg, "created", "$enddt", style=:note)
     (verbosity >= 2) && print("\r")
     return cls
 end

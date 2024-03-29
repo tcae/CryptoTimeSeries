@@ -378,8 +378,10 @@ function get24h(bc::BybitCache, symbol=nothing)
         # df = df[!, [:ask1Price, :bid1Price, :lastPrice, :turnover24h, :price24hPcnt, :symbol]]
         df = select(df, :ask1Price => "askprice", :bid1Price => "bidprice", :lastPrice => "lastprice", :turnover24h => "quotevolume24h", :price24hPcnt => "pricechangepercent", :symbol)
     end
-    response["result"]["list"] = df
-    if size(df, 1) == 1
+    validvec = [!isnothing(symbolinfo(bc, df[ix, :symbol])) && (symbolinfo(bc, df[ix, :symbol]).innovation == 0) for ix in eachindex(df[!, :symbol])]
+    df = df[validvec, :]
+    if !isnothing(symbol) && (size(df, 1)> 0)
+        (size(df, 1)> 1) && @error "unexpected multiple entries for $(symbol)"
         return df[1, :]  # should be a DataFrameRow
     else
         return df
@@ -422,7 +424,7 @@ function exchangeinfo(bc::BybitCache, symbol=nothing)
         #    1 │ USDT       Trading           0  both           BTCUSDT      0.01  BTC             2.0e6          1.0e-8      71.7396       4.8e-5         1.0e-6          1.0
 
         # rename!(df, Dict(:quoteCoin => "quotecoin", :baseCoin => "base", :tickSize => "ticksize", :quotePrecision => "quoteprecision", :basePrecision => "baseprecision", :minOrderQty => "minbaseqty", :minOrderAmt => "minquoteqty"))
-        df = select(df, :symbol, :status, :baseCoin => :basecoin, :quoteCoin => :quotecoin, :tickSize => :ticksize, :basePrecision => :baseprecision, :quotePrecision => :quoteprecision, :minOrderQty => :minbaseqty, :minOrderAmt => :minquoteqty)
+        df = select(df, :symbol, :status, :baseCoin => :basecoin, :quoteCoin => :quotecoin, :tickSize => :ticksize, :basePrecision => :baseprecision, :quotePrecision => :quoteprecision, :minOrderQty => :minbaseqty, :minOrderAmt => :minquoteqty, :innovation)
     end
     return df
 end
@@ -522,11 +524,11 @@ function openorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId
     isnothing(symbol) ? nothing : params["symbol"] = symbol
     isnothing(orderid) ? nothing : params["orderId"] = orderid
     isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
-    oo = HttpPrivateRequest(bc, "GET", "/v5/order/realtime", params, "openorders")
+    httpresponse = HttpPrivateRequest(bc, "GET", "/v5/order/realtime", params, "openorders")
     df = DataFrame()
-    if length(oo["result"]["list"]) > 0
-        for col in keys(oo["result"]["list"][1])
-            df[:, col] = [entry[col] for entry in oo["result"]["list"]]
+    if ("list" in keys(httpresponse["result"])) && (length(httpresponse["result"]["list"]) > 0)
+        for col in keys(httpresponse["result"]["list"][1])
+            df[:, col] = [entry[col] for entry in httpresponse["result"]["list"]]
         end
         df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
     end
@@ -583,12 +585,12 @@ function allorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId=
     isnothing(symbol) ? nothing : params["symbol"] = symbol
     isnothing(orderid) ? nothing : params["orderId"] = orderid
     isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
-    oo = HttpPrivateRequest(bc, "GET", "/v5/order/history", params, "allorders")
+    httpresponse = HttpPrivateRequest(bc, "GET", "/v5/order/history", params, "allorders")
     df = DataFrame()
-    if length(oo["result"]["list"]) > 0
-        # return oo["result"]["list"]
-        for col in keys(oo["result"]["list"][1])
-            df[:, col] = [entry[col] for entry in oo["result"]["list"]]
+    if ("list" in keys(httpresponse["result"])) && (length(httpresponse["result"]["list"]) > 0)
+        # return httpresponse["result"]["list"]
+        for col in keys(httpresponse["result"]["list"][1])
+            df[:, col] = [entry[col] for entry in httpresponse["result"]["list"]]
         end
         # df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
     end
@@ -600,12 +602,12 @@ function alltransactions(bc::BybitCache; symbol=nothing, orderid=nothing, orderL
     isnothing(symbol) ? nothing : params["symbol"] = symbol
     isnothing(orderid) ? nothing : params["orderId"] = orderid
     isnothing(orderLinkId) ? nothing : params["orderLinkId"] = orderLinkId
-    oo = HttpPrivateRequest(bc, "GET", "/v5/execution/list", params, "alltransactions")
+    httpresponse = HttpPrivateRequest(bc, "GET", "/v5/execution/list", params, "alltransactions")
     df = DataFrame()
-    if length(oo["result"]["list"]) > 0
-        # return oo["result"]["list"]
-        for col in keys(oo["result"]["list"][1])
-            df[:, col] = [entry[col] for entry in oo["result"]["list"]]
+    if length(httpresponse["result"]["list"]) > 0
+        # return httpresponse["result"]["list"]
+        for col in keys(httpresponse["result"]["list"][1])
+            df[:, col] = [entry[col] for entry in httpresponse["result"]["list"]]
         end
         # df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
     end
@@ -625,16 +627,16 @@ end
 """Cancels an open spot order and returns the cancelled orderid"""
 function cancelorder(bc::BybitCache, symbol, orderid)
     params = Dict("category" => "spot", "symbol" => symbol, "orderId" => orderid)
-    oo = HttpPrivateRequest(bc, "POST", "/v5/order/cancel", params, "cancelorder")
-    if !(oo["result"]["orderId"] == orderid)
-        @warn "cancel order not confirmed by ByBit via returned orderid: posted=$orderid returned=$(oo["orderId"]) "
+    httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/cancel", params, "cancelorder")
+    if !("orderId" in keys(httpresponse["result"])) || (httpresponse["result"]["orderId"] != orderid)
+        @warn "cancel order not confirmed by ByBit via returned orderid: posted=$orderid returned=$(!("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]) "
     end
-    return oo["result"]["orderId"]
+    return !("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]
 end
 
-function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Real, maker::Bool=true)
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true)
     @assert basequantity > 0.0 "createorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
-    @assert price > 0.0 "createorder $symbol price of $price cannot be <=0 for order type Limit"
+    @assert isnothing(price) || price > 0.0 "createorder $symbol price of $price cannot be <=0 for order type Limit"
     @assert orderside in ["Buy", "Sell"] "createorder $symbol orderside=$orderside no in [Buy, Sell]"
     syminfo = symbolinfo(bc, symbol)
     if isnothing(syminfo)
@@ -646,25 +648,30 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         return nothing
     end
     attempts = 5
-    oo = orderid = nothing
+    httpresponse = orderid = nothing
+    pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
     while attempts > 0
-        now = Bybit.get24h(bc, symbol)
-        devratio = round(abs(now.lastprice - price) / price * 100)
-        if devratio > 0.01
-            @warn "limitprice=$price deviates $(devratio)% > 1% of currentprice=$(now.lastprice)"
-            return nothing
+        if isnothing(price) # == market order
+            now = Bybit.get24h(bc, symbol)
+            # devratio = round(abs(now.lastprice - price) / price * 100)
+            # if devratio > 0.01
+            #     @warn "limitprice=$price deviates $(devratio)% > 1% of currentprice=$(now.lastprice)"
+            #     return nothing
+            # end
+            # println("pricedigits=$pricedigits, ticksize=$(syminfo.ticksize)")
+            if maker
+                limitprice = orderside == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
+                timeinforce = "PostOnly"
+            else # taker
+                limitprice = orderside == "Buy" ? now.askprice : now.bidprice
+                timeinforce = "GTC"
+            end
+        else
+            limitprice = round(price, digits=pricedigits)
+            attempts = 0
+            timeinforce = maker ? "PostOnly" : "GTC"
         end
-        pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
-        # println("pricedigits=$pricedigits, ticksize=$(syminfo.ticksize)")
-        if maker
-            price = orderside == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
-            timeinforce = "PostOnly"
-        else # taker
-            price = orderside == "Buy" ? now.askprice : now.bidprice
-            timeinforce = "GTC"
-        end
-        # price = round(price, digits=pricedigits)
-        basequantity = (basequantity * price) < syminfo.minquoteqty ? syminfo.minquoteqty / price : basequantity
+        basequantity = (basequantity * limitprice) < syminfo.minquoteqty ? syminfo.minquoteqty / limitprice : basequantity
         basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
         qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
         basequantity = floor(basequantity, digits=qtydigits)
@@ -675,17 +682,21 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             "side" => orderside,
             "orderType" => "Limit",
             "qty" => Formatting.format(basequantity, precision=qtydigits),
-            "price" => Formatting.format(price, precision=pricedigits),
+            "price" => Formatting.format(limitprice, precision=pricedigits),
             "timeInForce" => timeinforce)  # "PostOnly" "GTC
-        oo = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
-        attempts = oo["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
-        if "orderId" in keys(oo["result"])
-            orderid = oo["result"]["orderId"]
+        httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
+        attempts = httpresponse["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
+        if "orderId" in keys(httpresponse["result"])
+            orderid = httpresponse["result"]["orderId"]
             if maker
-                oo = Bybit.order(bc, oo["result"]["orderId"])
-                if oo.status == "Rejected"
+                order = Bybit.order(bc, httpresponse["result"]["orderId"])
+                if !isnothing(order) && (order.status == "Rejected")
+                    (verbosity >= 3) && println("$(attempts) PostOnly order for $symbol is rejected")
                     attempts = attempts - 1
-                    (verbosity >= 3) && println("PostOnly order for $symbol is rejected")
+                    if attempts == 0
+                        @warn "exhausted retry attempts for PostOnly order $httpresponse with input price=$(isnothing(price) ? "marketprice" : price)"
+                        orderid = nothing
+                    end
                 else
                     attempts = 0
                 end
@@ -700,7 +711,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
 end
 
 "Only provide *basequantity* or *limitprice* if they have changed values."
-function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity=nothing::Union{Nothing, Real}, limitprice=nothing::Union{Nothing, Real})
+function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
     @assert isnothing(basequantity) ? true : basequantity > 0.0 "amendorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
     syminfo = symbolinfo(bc, symbol)
@@ -712,72 +723,88 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         @warn "$symbol status=$(syminfo.status) != Trading"
         return nothing
     end
-    ont = order(bc, orderid)
-    if isnothing(ont)
+    orderatentry = order(bc, orderid)
+    if isnothing(orderatentry)
         @warn "cannot amend order because orderid $orderid not found"
         return nothing
     end
-    maker = ont.timeinforce == "PostOnly"
+    maker = orderatentry.timeinforce == "PostOnly"
     params = Dict(
         "category" => "spot",
-        "symbol" => ont.symbol,
+        "symbol" => orderatentry.symbol,
         "orderId" => orderid
     )
-    attempts = 5
-    oo = orderid = nothing
+    attempts = 1
+    changedprice = httpresponse = orderid = orderafterattempt = orderpreviousattempt = nothing
     while attempts > 0
         now = Bybit.get24h(bc, symbol)
         limitchanged = quantitychanged = false
-        if isnothing(limitprice)
-            changeprice =  ont.limitprice
-        else
-            devratio = round(abs(now.lastprice - limitprice) / limitprice * 100)
-            if devratio > 0.01
-                @warn "limitprice=$limitprice deviates $(devratio)% > 1% of currentprice=$(now.lastprice)"
-                return nothing
-            end
+        pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
+        if !isnothing(limitprice)
             if maker
-                limitprice =  ont.side == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
-                timeinforce = "PostOnly"
-            else # taker
-                limitprice =  ont.side == "Buy" ? now.askprice : now.bidprice
-                timeinforce = "GTC"
+                # use changedprice instead of changing limitprice because original value of limitprice is also checked in successive loop rounds
+                changedprice =  orderatentry.side == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
+                attempts = 10
+            else # take input limitprice
+                changedprice = limitprice
             end
-            pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
-            limitprice = Float32(round(limitprice, digits=pricedigits))
-            changeprice =  limitprice
-            limitchanged = limitprice != ont.limitprice
-            params["price"] = Formatting.format(limitprice, precision=pricedigits)
+            changedprice = Float32(round(changedprice, digits=pricedigits))
+            if changedprice != orderatentry.limitprice
+                limitchanged = true
+                params["price"] = Formatting.format(changedprice, precision=pricedigits)
+            end
+        else
+            changedprice = orderatentry.limitprice
         end
         if !isnothing(basequantity)
-            basequantity = basequantity * changeprice < syminfo.minquoteqty ? syminfo.minquoteqty / changeprice : basequantity
+            basequantity = basequantity * changedprice < syminfo.minquoteqty ? syminfo.minquoteqty / changedprice : basequantity
             basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
             qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
             basequantity = Float32(round(basequantity, digits=qtydigits))
-            quantitychanged = basequantity != ont.baseqty
-            params["qty"] = Formatting.format(basequantity, precision=qtydigits)
+            if basequantity != orderatentry.baseqty
+                quantitychanged = true
+                params["qty"] = Formatting.format(basequantity, precision=qtydigits)
+            end
         end
 
         if limitchanged || quantitychanged
-            oo = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
-            attempts = oo["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
-            if "orderId" in keys(oo["result"])
-                orderid = oo["result"]["orderId"]
+            httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/amend", params, "amend order")
+            orderafterattempt = Bybit.order(bc, orderid)
+            # if httpresponse["retCode"] == 10001
+            #     println("previous order values: $orderatentry")
+            #     println("changed order values $params")
+            #     println("input: limitchanged=$limitchanged, limitprice=$limitprice, changedprice=$changedprice, quantitychanged=$quantitychanged, basequantity=$basequantity")
+            # end
+            # if httpresponse["retCode"] == 170213
+            # end
+            if "orderId" in keys(httpresponse["result"])
+                orderid = httpresponse["result"]["orderId"]
                 if maker
-                    oo = Bybit.order(bc, oo["result"]["orderId"])
-                    if oo.status == "Rejected"
-                        attempts = attempts - 1
+                    if !isnothing(orderafterattempt) && (orderafterattempt.status == "Rejected")
                         (verbosity >= 3) && println("PostOnly order for $symbol is rejected")
-                    else
-                        attempts = 0
+                        if attempts == 1
+                            @warn "exhausted retry attempts for PostOnly order $orderafterattempt"
+                            orderid = nothing
+                        end
                     end
-                else
-                    attempts = 0
                 end
-            else
-                attempts = 0
+            end
+            if (httpresponse["retCode"] != 0)
+                if (httpresponse["retCode"] == 10001)  # ignore 10001
+                    break
+                end
+                println("entry order: $orderatentry")
+                println("changed order values $params")
+                println("HTTP response: $httpresponse")
+                println("order after attempt: $orderafterattempt")
+                println("order previous attempt: $orderpreviousattempt")
+                println("attempts=$attempts")
+                println("leaving amendorder due to returned error code $(httpresponse["retCode"]), attempts=$attempts")
+                break
             end
         end
+        attempts -= 1
+        orderpreviousattempt = orderafterattempt
     end
     return orderid
 end

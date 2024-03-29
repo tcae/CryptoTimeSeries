@@ -23,26 +23,26 @@ EnvConfig.init(production)  # test production
     @test size(dayresult, 1) > 100
 
     dayresult = Bybit.get24h(bc, "BTCUSDT")
-    @test isa(dayresult, AbstractDataFrame)
-    @test size(dayresult, 2) >= 6
+    @test isa(dayresult, DataFrameRow)
+    @test length(dayresult) >= 6
     @test all([s in ["askprice", "bidprice", "lastprice", "quotevolume24h", "pricechangepercent", "symbol"] for s in names(dayresult)])
-    @test size(dayresult, 1) == 1
-    btcprice = dayresult[1, :lastprice][1,1]
+    btcprice = dayresult.lastprice
 
     klines = Bybit.getklines(bc, "BTCUSDT")
     @test isa(klines, AbstractDataFrame)
 
 
-    oid = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9)
+    oid = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9, false)
 
     oo = Bybit.order(bc, oid)
-    @test isa(oo, NamedTuple)
+    @test isa(oo, DataFrameRow)
     @test length(oo) >= 13
     @test oo.orderid == oid
 
     oidc = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
     @test oidc == oid
 
+    println("runtests $(Bybit.order(bc, oid))")
     oidc = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
     @test oidc == oid
 

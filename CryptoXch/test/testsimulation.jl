@@ -31,10 +31,10 @@ using Ohlcv, EnvConfig, CryptoXch, Bybit
     @test size(pdf, 2) == 4
     println(pdf)
 
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice*1.2, basequantity=26.01/btcprice) # limitprice out of allowed range
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false) # limitprice out of allowed range
     @test isnothing(oid)
     println("createbuyorder: $(string(oid)) - error expected")
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 1.01, basequantity=26.01/btcprice) # PostOnly will cause reject if price < limitprice due to taker order
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 1.01, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
     @test !isnothing(oid)
     println("createbuyorder: $(string(oid)) - reject expected")
     oo2 = CryptoXch.getorder(xc, oid)
@@ -45,8 +45,8 @@ using Ohlcv, EnvConfig, CryptoXch, Bybit
     oo2 = CryptoXch.getorder(xc, "invalid_or_unknown_id")
     @test isnothing(oo2)
 
-    oidx = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.9, basequantity=8.01/btcprice)
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.999, basequantity=6.01/btcprice)
+    oidx = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.9, basequantity=8.01/btcprice, maker=false)
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.999, basequantity=6.01/btcprice, maker=false)
     oodf = CryptoXch.getopenorders(xc)
     println("getopenorders(nothing): $oodf")
     println("createbuyorder: $(string(oid))")
@@ -79,7 +79,7 @@ using Ohlcv, EnvConfig, CryptoXch, Bybit
     println("portfolio with btcqty=$btcqty $pdf")
 
     btcprice = CryptoXch._ordercurrentprice(xc, oid)
-    oid = CryptoXch.createsellorder(xc, "BTC", limitprice=btcprice * 1.005, basequantity=btcqty)
+    oid = CryptoXch.createsellorder(xc, "BTC", limitprice=btcprice * 1.005, basequantity=btcqty, maker=false)
 
     oodf = CryptoXch.getopenorders(xc, "BTC")
     @test isa(oodf, AbstractDataFrame)

@@ -17,7 +17,7 @@ enddt = DateTime("2020-09-11T22:49:00")
 
     # EnvConfig.init(test)  # test production
     EnvConfig.init(production)  # test production
-    xc = CryptoXch.XchCache(["BTC"])
+    xc = CryptoXch.XchCache(true)
     # df = CryptoXch.klines2jdf(xc, missing)
     # @test nrow(df) == 0
     mdf = CryptoXch.getUSDTmarket(xc)
@@ -93,7 +93,8 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 6
 
     Ohlcv.delete(ohlcv)
-    rm(EnvConfig.datafolderpath())
+    sleep(1)
+    rm(EnvConfig.datafolderpath(); force=true, recursive=true)
 
     @test CryptoXch.onlyconfiguredsymbols("BTCUSDT")
     @test !CryptoXch.onlyconfiguredsymbols("BTCBNB")
@@ -120,10 +121,10 @@ enddt = DateTime("2020-09-11T22:49:00")
     oo2 = CryptoXch.getorder(xc, "invalid_or_unknown_id")
     @test isnothing(oo2)
 
-    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice*1.2, basequantity=26.01/btcprice) # limitprice out of allowed range
+    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false) # limitprice out of allowed range
     @test isnothing(oid)
     # println("createbuyorder: $(string(oid)) - error expected")
-    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 1.01, basequantity=26.01/btcprice) # PostOnly will cause reject if price < limitprice due to taker order
+    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 1.01, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
     @test !isnothing(oid)
     # println("createbuyorder: $(string(oid)) - reject expected")
     oo2 = CryptoXch.getorder(xc, oid)
@@ -132,7 +133,7 @@ enddt = DateTime("2020-09-11T22:49:00")
     # @test oo2.status == "Rejected"  # applicable for PostOnly as soon as taker fee > maker fee
     @test oo2.status == "Filled"  # due to GTC as long as taker fee == maker fee
 
-    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 0.9, basequantity=6.01/btcprice)
+    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 0.9, basequantity=6.01/btcprice, maker=false)
     # println("createbuyorder: $(string(oid))")
     oo2 = CryptoXch.getorder(xc, oid)
     # println("getorder: $oo2")
@@ -193,12 +194,12 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test size(pdf, 2) == 5
     # println(pdf)
 
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice*1.2, basequantity=26.01/btcprice) # limitprice out of allowed range
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false) # limitprice out of allowed range
     @test isnothing(oid)
     # println("createbuyorder: $(string(oid)) - error expected")
     # println("limitprice=$(btcprice * 1.01)")
 
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 1.01, basequantity=26.01/btcprice) # PostOnly will cause reject if price < limitprice due to taker order
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 1.01, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
     @test !isnothing(oid)
     # println("createbuyorder: $(string(oid)) - reject expected")  # not applicable anymore because timeinforce is by default changed from PostOnly to GTC
     oo2 = CryptoXch.getorder(xc, oid)
@@ -210,8 +211,8 @@ enddt = DateTime("2020-09-11T22:49:00")
     oo2 = CryptoXch.getorder(xc, "invalid_or_unknown_id")
     @test isnothing(oo2)
 
-    oidx = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.9, basequantity=8.01/btcprice)
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.999, basequantity=6.01/btcprice)
+    oidx = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.9, basequantity=8.01/btcprice, maker=false)
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.999, basequantity=6.01/btcprice, maker=false)
     oodf = CryptoXch.getopenorders(xc)
     # println("getopenorders(nothing): $oodf")
     # println("createbuyorder: $(string(oid))")
@@ -244,7 +245,7 @@ enddt = DateTime("2020-09-11T22:49:00")
     # println("portfolio with btcqty=$btcqty $pdf")
 
     btcprice = CryptoXch._ordercurrentprice(xc, oid)
-    oid = CryptoXch.createsellorder(xc, "BTC", limitprice=btcprice * 1.005, basequantity=btcqty)
+    oid = CryptoXch.createsellorder(xc, "BTC", limitprice=btcprice * 1.005, basequantity=btcqty, maker=false)
 
     oodf = CryptoXch.getopenorders(xc, "BTC")
     @test isa(oodf, AbstractDataFrame)
@@ -255,7 +256,6 @@ enddt = DateTime("2020-09-11T22:49:00")
     # println("getopenorders(\"XRP\"): $oodf")
 
     CryptoXch.setcurrenttime!(xc, currenttime + Minute(990))
-    # println("createsellorder: $(DataFrame([CryptoXch.getorder(oid)]))")
 
     oodf = CryptoXch.getopenorders(xc)
     # println("getopenorders(nothing) - expect 2 open orders: $oodf")

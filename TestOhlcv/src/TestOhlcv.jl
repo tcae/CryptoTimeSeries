@@ -152,8 +152,8 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
 end
 
 dispatch = Dict(
-    "SINEUSDT" => singlesine,
-    "DOUBLESINEUSDT" => doublesine
+    "SINE" => singlesine,
+    "DOUBLESINE" => doublesine
 )
 
 testbasecoin() = keys(dispatch)

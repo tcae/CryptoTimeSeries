@@ -45,7 +45,15 @@ minimumquotevolume = 10  # USDT
 
 MAXLIMITDELTA = 0.1
 
-validsymbol(xc::XchCache, sym::String) = !isnothing(Bybit.symbolinfo(xc.bc, sym)) || (sym in TestOhlcv.testbasecoin())
+_isleveraged(token) = (token[end] in ['S', 'L']) && isdigit(token[end-1])
+
+function validbase(xc::XchCache, base::String)
+    r = !isnothing(Bybit.symbolinfo(xc.bc, symboltoken(base))) &&
+        (Bybit.symbolinfo(xc.bc, symboltoken(base)).innovation == 0) && # no Bybit innovation coins #TODO should placed in Bybit
+        !(base in baseignore) &&
+        !_isleveraged(base)
+    return r || (base in TestOhlcv.testbasecoin())
+end
 
 function minimumqty(xc::XchCache, sym::String)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
@@ -341,14 +349,14 @@ Returns the OHLCV data of the requested time range by first checking the stored 
 function cryptodownload(xc::XchCache, base, interval, startdt, enddt)::OhlcvData
     ohlcv = Ohlcv.defaultohlcv(base)
     Ohlcv.setinterval!(ohlcv, interval)
-    if isnothing(Bybit.symbolinfo(xc.bc, symboltoken(base))) && !(base in TestOhlcv.testbasecoin())
-        @warn "symbol $(symboltoken(base)) of base=$base is unknown"
-    else
+    if validbase(xc, base)
         if Ohlcv.file(ohlcv).existing
             Ohlcv.read!(ohlcv)
         end
         cryptoupdate!(xc, ohlcv, startdt, enddt)
         ohlcv.ix = firstindex(ohlcv.df, 1)
+    else
+        @warn "base=$base is unknown or invalid"
     end
     return ohlcv
 end
@@ -389,7 +397,6 @@ function basequote(symbol)
 end
 
 _emptymarkets()::DataFrame = DataFrame(basecoin=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[])
-_isleveraged(token) = (token[end] in ['S', 'L']) && isdigit(token[end-1])
 
 """
 Returns a dataframe with 24h values of all USDT quotecoin bases that are not in baseignore list with the following columns:
@@ -410,12 +417,10 @@ function getUSDTmarket(xc::XchCache)
         nbq = [!isnothing(bqe) for bqe in bq]
         usdtdf = usdtdf[nbq, :]
         bq = [bqe.basecoin for bqe in bq if !isnothing(bqe)]
-        @assert length(bq) == size(usdtdf, 1)
         usdtdf[!, :basecoin] = bq
         usdtdf = usdtdf[!, Not(:symbol)]
         # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :]
-        usdtdf = filter(row -> !(row.basecoin in baseignore), usdtdf)
-        usdtdf = filter(row -> !_isleveraged(row.basecoin), usdtdf)
+        usdtdf = filter(row -> validbase(xc, row.basecoin), usdtdf)
         #TODO remove all entries with a base that end <unsigned digit>L/S because those are leveraged tokens
     else  # simulation
         #TODO get all canned data with common latest update and use those. For that purpose the OHLCV.OhlcvFiles iterator was created.
@@ -662,7 +667,7 @@ Adapts `limitprice` and `basequantity` according to symbol rules and executes or
 Order is rejected (but order created) if `limitprice` > current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true)
+function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=false)
     base = uppercase(base)
     if EnvConfig.configmode == production
         return Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker)

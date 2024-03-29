@@ -5,7 +5,7 @@ using Dates, DataFrames
 using Ohlcv, EnvConfig, CryptoXch, Bybit
 
 function balances_test()
-    result = CryptoXch.balances()
+    result = CryptoXch.balances(xc)
     display(result)
     display(EnvConfig.bases)
     display(EnvConfig.trainingbases)
@@ -14,6 +14,7 @@ end
 
 # EnvConfig.init(test)
 EnvConfig.init(production)
+xc = CryptoXch.XchCache(true)
 # balances_test()
 
 userdataChannel = Channel(10)
@@ -29,105 +30,45 @@ enddt = DateTime("2020-09-11T22:49:00")
 # Binance.wsKlineStreams(cb, ["BTCUSDT", "XRPUSDT"])
 
 
-function initialbtcdownload()
+function initialbtcdownload(xc)
     startdt = DateTime("2022-01-02T22:45:03")
     enddt = DateTime("2022-01-02T22:49:35")
-    ohlcv = CryptoXch.cryptodownload("btc", "1m", startdt, enddt)
+    ohlcv = CryptoXch.cryptodownload(xc, "btc", "1m", startdt, enddt)
     return ohlcv
 end
 
 
-# oo1 = CryptoXch.createbuyorder("btc", 19001.0, 20.0 / 19001)
-# println("createbuyorder: $oo1")
-# oo2 = CryptoXch.getorder("btc", oo1["orderId"])
-# println("getorder: $oo2")
-# ooarray = CryptoXch.getopenorders(nothing)
-# println("getopenorders(nothing): $ooarray")
-# ooarray = CryptoXch.getopenorders("btc")
-# println("getopenorders(\"btc\"): $ooarray")
-# oo2 = CryptoXch.cancelorder("btc", oo1["orderId"])
-# println("cancelorder: $oo2")
 
-function showxchinfo()
-    exchangeinfo = Bybit.symbolinfo()
-
-    println("Binance server time: $(Dates.unix2datetime(exchangeinfo["serverTime"]/1000)) $(exchangeinfo["timezone"]) - entries: $(keys(exchangeinfo))")
-    println("Rate limits ($(length(exchangeinfo["rateLimits"]))):")
-    for ratelimit in exchangeinfo["rateLimits"]
-        println("\t---")
-        for (rl, rlvalue) in ratelimit
-            println("\t\t $rl : $rlvalue")
-        end
-    end
-    println("Exchange Filters ($(length(exchangeinfo["exchangeFilters"]))):")
-    for xchfilter in exchangeinfo["exchangeFilters"]
-        println("\t---")
-        for (xf, xfvalue) in xchfilter
-            println("\t\t $xf : $xfvalue")
-        end
-    end
-    println("Symbols ($(length(exchangeinfo["symbols"]))):")
-    count = 0
-    for sym in exchangeinfo["symbols"]
-        if (sym["quoteAsset"] == "USDT") && sym["isSpotTradingAllowed"] && ("LIMIT" in sym["orderTypes"]) && ("TRADING" == sym["status"])
-            println("\t$(sym["symbol"]) base: $(sym["baseAsset"]) with precision $(sym["baseAssetPrecision"]) quotecoin: $(sym["quoteAsset"]) with precision $(sym["quoteAssetPrecision"])")
-            if sym["baseAssetPrecision"] != sym["baseCommissionPrecision"]
-                @warn "baseAssetPrecision of $(sym["baseAssetPrecision"]) != baseCommissionPrecision of $(sym["baseCommissionPrecision"])"
-            end
-            if sym["quoteAssetPrecision"] != sym["quoteCommissionPrecision"]
-                @warn "quoteAssetPrecision of $(sym["quoteAssetPrecision"]) != quoteCommissionPrecision of $(sym["quoteCommissionPrecision"])"
-            end
-            count += 1
-            for filter in sym["filters"]
-                println("\t\t filterType $(filter["filterType"])")
-                for (fek, fev) in filter
-                    if fek != "filterType"
-                        println("\t\t\t $fek : $fev")
-                    end
-                end
-            end
-            for (sk, sv) in sym
-                println("\t\t $sk : $sv ($(typeof(sv)))")
-            end
-            if count > 3
-                break
-            end
-        end
-    end
-    println("listed $count symbols")
-end
-
-function testorder(price, basevol)
+function testorder(xc, price, basevol)
     oo = nothing
     try
-        oo = CryptoXch.createbuyorder("btc", price, basevol)
+        oo = CryptoXch.createbuyorder("btc", limitprice=price, basequantity=basevol, maker=false)
     catch err
         @error err
     end
     !isnothing(oo) && @info oo
 end
 
-# showxchinfo()
 
-# testorder(19001.0, 20.0/19001.0)
-# testorder(19001.0001, 5.0/19001.0)
-# testorder(19001.00000000002, 20.00008/19001.0)
-allbb = Bybit.get24h()
+# testorder(xc, 19001.0, 20.0/19001.0)
+# testorder(xc, 19001.0001, 5.0/19001.0)
+# testorder(xc, 19001.00000000002, 20.00008/19001.0)
+allbb = Bybit.get24h(xc.bc)
 println(describe(allbb, :all))
 # println(allbb)
 
-allusdt = CryptoXch.getUSDTmarket()
+allusdt = CryptoXch.getUSDTmarket(xc)
 println(describe(allusdt, :all))
 # println(allusdt)
 
-bdf = CryptoXch.balances()
+bdf = CryptoXch.balances(xc)
 println("balances():")
 println(bdf)
-bdf = CryptoXch.portfolio!(bdf, allusdt)
+bdf = CryptoXch.portfolio!(xc, bdf, allusdt)
 println("portfolio():")
 println(bdf)
 
-bdf = CryptoXch.portfolio!()
+bdf = CryptoXch.portfolio!(xc)
 println("portfolio():")
 println(bdf)
 

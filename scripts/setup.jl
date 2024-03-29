@@ -68,7 +68,8 @@ Pkg.add([
     "IJulia", "Plots", "Dash", "PlotlyJS", "Colors", "ProfileView",  # Regressionsim, CryptoCockpit, Notebooks
     # "Flux", "ProgressMeter", "MLUtils", # ML
     "SortingAlgorithms",  # Targets
-    "Profile"  # Trade
+    "Profile",  # Trade
+    "BetterFileWatching"
     ])
 
 # Pkg.resolve()
