@@ -170,8 +170,10 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
             oid = CryptoXch.createsellorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true)
             if !isnothing(oid)
                 cache.lastsell[base] = dtnow
+                println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), total USDT=$(totalusdt), tgm=$tradegapminutes, $(sellonly ? "sell only" : "")")
+            else
+                println("\r$(tradetime(cache)) failed to create $base maker sell order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), total USDT=$(totalusdt), tgm=$tradegapminutes, $(sellonly ? "sell only" : "")")
             end
-            println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), total USDT=$(totalusdt), tgm=$tradegapminutes, $(sellonly ? "sell only" : "")")
         end
     elseif (tp == buy) && !sellonly
         basequantity = min(max(quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price # keep 1% * totalusdt as head room
@@ -185,11 +187,11 @@ function trade!(cache::TradeCache, base, tp::Classify.InvestProposal, openorders
             oid = CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true)
             if !isnothing(oid)
                 cache.lastbuy[base] = dtnow
-            end
-            println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), total USDT=$(totalusdt), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
-            if isnothing(oid)
-                println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $price * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
-                println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
+                println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), total USDT=$(totalusdt), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
+            else
+                println("\r$(tradetime(cache)) failed to create $base maker buy order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), total USDT=$(totalusdt), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
+                # println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $price * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
+                # println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
             end
         end
     end

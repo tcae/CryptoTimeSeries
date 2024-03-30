@@ -629,9 +629,9 @@ end
 function cancelorder(bc::BybitCache, symbol, orderid)
     params = Dict("category" => "spot", "symbol" => symbol, "orderId" => orderid)
     httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/cancel", params, "cancelorder")
-    if !("orderId" in keys(httpresponse["result"])) || (httpresponse["result"]["orderId"] != orderid)
-        @warn "cancel order not confirmed by ByBit via returned orderid: posted=$orderid returned=$(!("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]) "
-    end
+    # if !("orderId" in keys(httpresponse["result"])) || (httpresponse["result"]["orderId"] != orderid)
+    #     @warn "cancel order not confirmed by ByBit via returned orderid: posted=$orderid returned=$(!("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]) "
+    # end
     return !("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]
 end
 
@@ -695,7 +695,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
                     (verbosity >= 3) && println("$(attempts) PostOnly order for $symbol is rejected")
                     attempts = attempts - 1
                     if attempts == 0
-                        @warn "exhausted retry attempts for PostOnly order $httpresponse with input price=$(isnothing(price) ? "marketprice" : price)"
+                        (verbosity >= 3) && @warn "exhausted retry attempts for PostOnly order $httpresponse with input price=$(isnothing(price) ? "marketprice" : price)"
                         orderid = nothing
                     end
                 else

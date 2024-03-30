@@ -1333,10 +1333,10 @@ _ohlcvix(ohlcvstartix, adviceix) = adviceix + ohlcvstartix - 1
 function _tradepairs(ipvec::Vector{InvestProposal}, bc::Cls001Cache, startix)
     ot = bc.ohlcv.df[!, :opentime]
     piv = Ohlcv.pivot!(bc.ohlcv)
-    buystack = []
-    usd10000stack = []
+    buystack = []  # used to stack the buy index of an open trade pair
+    usd10000stack = []  # used to identify the locked usdt due to an open trade pair = usdt amount is not availbel for other trades
     usd10000 = (free=10000f0, used=0f0)
-    usd10000rate = 1/1000
+    usd10000rate = 1/1000  # fraction of total capital for one trade
     tradepairs = DataFrame([name => [] for name in ["buyix", "buydt", "buyprice", "buycnt", "sellix", "selldt", "sellprice", "gain", "gap", "usd10000"]])
     for ipix in eachindex(ipvec)
         if ipvec[ipix] == buy
@@ -1366,10 +1366,22 @@ function _tradepairs(ipvec::Vector{InvestProposal}, bc::Cls001Cache, startix)
             end
         end
     end
+    ipix = lastindex(ipvec)
+    sellix = _ohlcvix(startix, ipix)
+    sellprice = piv[sellix]*(1-FEE)
     while length(buystack) > 0  # sellix = missing
         buyix = _ohlcvix(startix, popfirst!(buystack))
         buyprice = piv[buyix]*(1+FEE)
-        push!(tradepairs, (buyix=buyix, buydt=ot[buyix], buyprice=buyprice, buycnt=length(buystack), sellix=missing, selldt=missing, sellprice=missing, gain=missing, gap=missing, usd10000=sum(usd10000)), promote=true)
+        #* all open trade pairs are treated like the last price is the closing price of the trade, which cam significantly influence performance at recent strong decrease
+        #* also impacts medianccbuycnt that is used to calculate quotetarget per trade
+        gain = (sellprice - buyprice) / buyprice * 100
+
+        if length(usd10000stack) > 0
+            usd10000part = popfirst!(usd10000stack)
+            usd10000 = (free=usd10000.free+usd10000part * (1 + gain/100), used=usd10000.used-usd10000part)
+        end
+        push!(tradepairs, (buyix=buyix, buydt=ot[buyix], buyprice=buyprice, buycnt=length(buystack), sellix=sellix, selldt=ot[sellix], sellprice=sellprice, gain=gain, gap=sellix-buyix, usd10000=sum(usd10000)), promote=true)
+        # unclosed trades as open trades without gain: push!(tradepairs, (buyix=buyix, buydt=ot[buyix], buyprice=buyprice, buycnt=length(buystack), sellix=missing, selldt=missing, sellprice=missing, gain=missing, gap=missing, usd10000=sum(usd10000)), promote=true)
     end
     return tradepairs
 end
@@ -1388,39 +1400,10 @@ end
 
 function _extremes(gains)
     cumgain = maxcumgain = mincumgain = 0.0f0
-    # maxdrawdown = maxgaintmp = maxgain = mingaintmp = mingain = 0.0f0
-    # maxgaintmpix = maxgainix = mingaintmpix = mingainix = firstindex(gains)
     for ix in eachindex(gains)
         cumgain += gains[ix]
         maxcumgain = max(maxcumgain, cumgain)
         mincumgain = min(mincumgain, cumgain)
-        #=
-        # now the maxdrawdown:
-        if maxgaintmp < cumgain
-            maxgaintmp = cumgain
-            maxgaintmpix = ix
-            # mingaintmp is reestablished with every maxgaintmp change -> mingaintmp is always equal or newer than maxgaintmp
-            mingaintmp = cumgain
-            mingaintmpix = ix
-            if maxgain < maxgaintmp
-                # safe drawdown before establishing a new candidate
-                maxdrawdown = max(maxdrawdown, maxgain - mingain)
-                maxgain = maxgaintmp
-                maxgainix = maxgaintmpix
-                # mingain is reestablished with every maxgain change -> mingain is always equal or newer than maxgain
-                mingain = cumgain
-                mingainix = ix
-            end
-        end
-        if mingaintmp > cumgain
-            mingaintmp = cumgain
-            mingaintmpix = ix
-            if mingain > mingaintmp
-                mingain = cumgain
-                mingainix = ix
-            end
-        end
-        =#
     end
     return (cumgain=cumgain, maxcumgain=maxcumgain, mincumgain=mincumgain)
 end
