@@ -40,7 +40,7 @@ function loadohlcv(base, interval)
     if !(k in keys(ohlcvcache))
         k1m = base * "1m"
         if !(k1m in keys(ohlcvcache))
-            println("ohlcv: $(k1m)")
+            # println("ohlcv: $(k1m)")
             ohlcv = Ohlcv.defaultohlcv(base)
             Ohlcv.setinterval!(ohlcv, "1m")
             Ohlcv.read!(ohlcv)
@@ -261,7 +261,7 @@ callback!(
     res = (graph_id === nothing) ? "no click selection" : "$graph_id: "
     if graph_id == "reset_selection"
         updates = assets.basedf[assets.basedf[!, :base] .== focus, :update]
-        clickdt = length(updates) > 0 ? updates[1] : ""
+        clickdt = length(updates) > 0 ? Dates.format(updates[1], dtf) : ""
         # println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
     else
         clickdt = clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
@@ -276,6 +276,7 @@ callback!(
         "reset_selection" => (clickdt, clickdt, clickdt, clickdt, clickdt, res),
         nothing => (enddt4h, enddt1d, enddt10d, enddt6M, enddtall, res)
     )
+    println(result[graph_id])
     return result[graph_id]
 end
 
@@ -582,6 +583,7 @@ callback!(
     regression = "regression1d" in indicator
     heatmap = "features" in indicator
 
+    # println("enddt4h($(typeof(enddt4h)))=$(enddt4h) dtf=$dtf")
     fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap, spread)
     targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)) : nothing
     # fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),

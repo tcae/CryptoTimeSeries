@@ -160,7 +160,8 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
             end
             # @info "$(Dates.now()) HttpPrivateRequest #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body \nreturnbody=$(string(returnbody))"
             # println("$(EnvConfig.now()) body=$body \nreturnbody=$(string(returnbody))")
-            nextrequestrequired = (requestcount <=3) && ("result" in keys(body)) && ("nextPageCursor" in keys(body["result"])) && (length(body["result"]["nextPageCursor"]) > 0) && ("list" in keys(body["result"]))
+            nextrequestrequired = ("result" in keys(body)) && ("nextPageCursor" in keys(body["result"])) && (length(body["result"]["nextPageCursor"]) > 0) && ("list" in keys(body["result"]))
+            # nextrequestrequired = (requestcount <=3) && ("result" in keys(body)) && ("nextPageCursor" in keys(body["result"])) && (length(body["result"]["nextPageCursor"]) > 0) && ("list" in keys(body["result"]))
             if nextrequestrequired
                 params["cursor"] = body["result"]["nextPageCursor"]
                 if !isnothing(returnbody) && (length(returnbody["result"]["list"]) > 0)
@@ -737,6 +738,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
     attempts = 1
     changedprice = httpresponse = orderid = orderafterattempt = orderpreviousattempt = nothing
     while attempts > 0
+        #TODO retry loop in amend fails because the order - once rejected - cannot be changed and is therefore not found anymore
         now = Bybit.get24h(bc, symbol)
         limitchanged = quantitychanged = false
         pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
