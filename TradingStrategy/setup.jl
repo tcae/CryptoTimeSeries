@@ -8,13 +8,13 @@ cd(@__DIR__)
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.upgrade_manifest()
 Pkg.add([
-    "Test", "JuliaInterpreter",
+    "Test", "JDF",
     "DataFrames",
     "Dates",
     "Logging"
     ])
 
-mypackages = ["EnvConfig", "Ohlcv", "Features"]
+mypackages = ["EnvConfig", "Ohlcv", "Features", "CryptoXch", "Classify"]
 rootpath = ".."
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)

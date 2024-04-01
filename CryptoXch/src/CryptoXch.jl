@@ -47,13 +47,16 @@ MAXLIMITDELTA = 0.1
 
 _isleveraged(token) = (token[end] in ['S', 'L']) && isdigit(token[end-1])
 
-function validbase(xc::XchCache, base::String)
-    r = !isnothing(Bybit.symbolinfo(xc.bc, symboltoken(base))) &&
-        (Bybit.symbolinfo(xc.bc, symboltoken(base)).innovation == 0) && # no Bybit innovation coins #TODO should placed in Bybit
-        !(base in baseignore) &&
-        !_isleveraged(base)
-    return r || (base in TestOhlcv.testbasecoin())
+validbase(xc::XchCache, base::String) = validsymbol(xc, symboltoken(base))
+
+function validsymbol(xc::XchCache, symbol::String)
+    sym = Bybit.symbolinfo(xc.bc, symbol)
+    r = Bybit.validsymbol(xc.bc, sym) &&
+        !(sym.basecoin in baseignore) &&
+        !_isleveraged(sym.basecoin)
+    return r || (basequote(symbol) in TestOhlcv.testbasecoin())
 end
+
 
 function minimumqty(xc::XchCache, sym::String)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
@@ -412,12 +415,12 @@ Returns a dataframe with 24h values of all USDT quotecoin bases that are not in 
 function getUSDTmarket(xc::XchCache)
     if EnvConfig.configmode == production
         usdtdf = Bybit.get24h(xc.bc)
-        bq = [basequote(s) for s in usdtdf.symbol]
+        bq = [basequote(s) for s in usdtdf.symbol]  # create vector of pairs (basecoin, quotecoin)
         @assert length(bq) == size(usdtdf, 1)
-        nbq = [!isnothing(bqe) for bqe in bq]
+        usdtdf[!, :basecoin] = [isnothing(bqe) ? missing : bqe.basecoin for bqe in bq]
+        nbq = [!isnothing(bqe) && validbase(xc, bqe.basecoin) && (bqe.quotecoin == EnvConfig.cryptoquote) for bqe in bq]  # create binary vector as DataFrame filter
         usdtdf = usdtdf[nbq, :]
         bq = [bqe.basecoin for bqe in bq if !isnothing(bqe)]
-        usdtdf[!, :basecoin] = bq
         usdtdf = usdtdf[!, Not(:symbol)]
         # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :]
         usdtdf = filter(row -> validbase(xc, row.basecoin), usdtdf)

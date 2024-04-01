@@ -886,11 +886,12 @@ mutable struct Features004
     quotecoin::String
     ohlcvoffset
     rw::Dict{Integer, AbstractDataFrame}  # keys: regression window in minutes, values: dataframe with columns :opentime, :regry, :grad, :std
+    latestloadeddt  # nothing or latest DateTime of loaded data
     # opentime::Vector{DateTime}
     # grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
     # regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
     # std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
-    Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, 0, Dict())
+    Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, 0, Dict(), nothing)
 end
 #TODO add regression test
 mnemonic(f4::Features004) = uppercase(f4.basecoin) * "_" * uppercase(f4.quotecoin) * "_" * "_F4"
@@ -939,6 +940,21 @@ function _join(f4)
     return df
 end
 
+function timerangecut!(f4::Features004, startdt, enddt)
+    for rdf in values(f4.rw)
+        if isnothing(rdf) || (size(rdf, 1) == 0)
+            return
+        end
+        if !isnothing(startdt) && !isnothing(enddt)
+            subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t .<= floor(enddt, Minute(1)))
+        elseif !isnothing(startdt)
+            subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t)
+        elseif !isnothing(enddt)
+            subset!(rdf, :opentime => t -> t .<= floor(enddt, Minute(1)))
+        end
+    end
+end
+
 function _split!(f4, df)
     @assert length(f4.rw) == 0
     ot = nothing
@@ -977,6 +993,10 @@ function write(f4::Features004)
     if EnvConfig.configmode == production
         @assert _equaltimes(f4)
         df = _join(f4)
+        if !isnothing(f4.latestloadeddt) && (f4.latestloadeddt >= df[end, :opentime])
+            (verbosity >= 3) && println("$(EnvConfig.now()) F4 not written due to missing supplementations of already stored data")
+            return
+        end
         fn = file(f4)
         try
             JDF.savejdf(fn.filename, df[!, :])
@@ -996,6 +1016,7 @@ function read!(f4::Features004, startdt, enddt)::Features004
             df = DataFrame(JDF.loadjdf(fn.filename))
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
             if (size(df, 1) > 0) && (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
+                f4.latestloadeddt = df[end, :opentime]
                 # df = df[startdt .<= df[!, opentime] .<= enddt, :]
                 startix = Ohlcv.rowix(df[!, :opentime], startdt)
                 startix = df[startix, :opentime] < startdt ? min(lastindex(df[!, :opentime]), startix+1) : startix

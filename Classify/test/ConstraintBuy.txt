@@ -1,7 +1,7 @@
 ConstraintBuy.txt
 the following results are calculated with unconstraint buy
 evaluate! result: 12×24 DataFrame
- Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt   maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain       mediangain  meangain  cumgain         maxcumgain      mincumgain       maxdrawdown      maxgap  mediangap  usd10000         minusd10000  maxusd10000
+ Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt   maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain       mediangain  meangain  cumgain         maxcumgain      mincumgain       maxdrawdown      maxgap  mediangap  simbudget         minsimbudget  maxsimbudget
      │ String    Int16       Float32        Bool    DateTime             DateTime             Int32     Int32    Int32    Int32        Float32         Int32          Float32         Float32     Float32   Float32         Float32         Float32          Float32          Int32   Float32    Float32          Float32      Float32
 ─────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
    1 │ BTC              720          0.005   false  2017-08-17T04:00:00  2024-03-20T21:20:00   3467041   704667   698425         5821          1110.0          11332       4.6253e5     0.412915  0.664669       4.6253e5        4.75555e5   -93641.9        -565421.0         79987     4633.0       1.0173e6       3911.89        1.15883e6
@@ -23,7 +23,7 @@ the following results are calculated with buy only if 3d grad >= 0
 240320 23:21: started
 BTC, 14400, 0.025
 evaluate! result: 12×24 DataFrame
- Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt  maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain       mediangain  meangain    cumgain         maxcumgain      mincumgain      maxdrawdown     maxgap  mediangap  usd10000       minusd10000  maxusd10000
+ Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt  maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain       mediangain  meangain    cumgain         maxcumgain      mincumgain      maxdrawdown     maxgap  mediangap  simbudget       minsimbudget  maxsimbudget
      │ String    Int16       Float32        Bool    DateTime             DateTime             Int32     Int32    Int32   Int32        Float32         Int32          Float32         Float32     Float32     Float32         Float32         Float32         Float32         Int32   Float32    Float32        Float32      Float32
 ─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
    1 │ BTC              720          0.005   false  2017-08-17T04:00:00  2024-03-20T21:20:00   3467041   704667  387015         1516           267.0         317652   46185.4          0.218042   0.119337    46185.4         70539.8         -3197.23       -26758.8         17809     1161.0  15866.1            9685.31  20242.5
@@ -45,7 +45,7 @@ the following results are calculated with buy only if 10d grad >= 0
 240320 23:25: started
 BTC, 14400, 0.025
 evaluate! result: 12×24 DataFrame
- Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt  maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain      mediangain  meangain    cumgain        maxcumgain     mincumgain      maxdrawdown      maxgap  mediangap  usd10000       minusd10000  maxusd10000
+ Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt  maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain      mediangain  meangain    cumgain        maxcumgain     mincumgain      maxdrawdown      maxgap  mediangap  simbudget       minsimbudget  maxsimbudget
      │ String    Int16       Float32        Bool    DateTime             DateTime             Int32     Int32    Int32   Int32        Float32         Int32          Float32        Float32     Float32     Float32        Float32        Float32         Float32          Int32   Float32    Float32        Float32      Float32
 ─────┼──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
    1 │ BTC              720          0.005   false  2017-08-17T04:00:00  2024-03-20T21:20:00   3467041   704667  368457         2022           317.0         336210  44999.7          0.190326   0.12213    44999.7        83819.9          -131.844       -32136.8         19684     1303.0  15678.8            9986.82  23118.1

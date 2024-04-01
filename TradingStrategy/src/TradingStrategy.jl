@@ -1,292 +1,183 @@
-"""
-*TradingStrategy* assesses trade chances of a crypto base.
-Trade chances are characterized by a buy and sell limit price as well as a stop loss price.
-A probabiity is also provided but the current approach considers it in scope of TradeStrategy to recommend a buy by identifying a buy chance.
-As soon as *Trade* assigns an order id a sell price and stop loss sell price is assigned.
-
-- TradingStrategy.requiredminutes
-- TradingStrategy.registerbuy!(...)
-- TradingStrategy.deletetradechanceoforder!(...)
-- TradingStrategy.tradechanceoforder(...)
-- TradingStrategy.registerbuyorder!(..)
-- TradingStrategy.registersellorder!(...)
-- TradingStrategy.deletenewbuychanceofbase!(...)
-- TradingStrategy.assesstrades!(...)
-
-"""
 module TradingStrategy
 
-using DataFrames, Logging
+using DataFrames, Logging, JDF
 using Dates, DataFrames
-using EnvConfig, Ohlcv, Features
-# export requiredminutes
-
-combinedbuysellfee = 0.002
-
-"Interpolate a 2% gain for 24h and 0.1% for 5min as straight line gx+b = deltapercentage/deltaminutes * requestedminutes + percentage at start"
-interpolateminpercentage(minutes) = (0.02 - 0.001) / (24*60 - 5) * (minutes - 5) + 0.001
-
-function mingainminuterange(minutesarray)
-    mingains = Dict()
-    for minutes in minutesarray
-        mingains[minutes] = interpolateminpercentage(minutes)
-    end
-    return mingains
-end
-
-mutable struct TradeChance
-    base::String
-    buydt  # buy datetime remains "missing" until completely bought
-    buyprice
-    buyorderid  # remains "missing" until order issued
-    selldt  # sell datetime remains "missing" until completely bought
-    sellprice
-    sellorderid  # remains "missing" until order issued
-    regrminutes
-    stoplossprice # not used by TradeChances004
-end
-
-mutable struct TradingStrategyCache
-    features
-    targets
-    classifier
-    currentohlcvix
-end
-
-mutable struct TradeChances
-    basedict  # Dict of new buy orders
-    orderdict  # Dict of open orders
-    holdlist  # array of TradeChance with closed buy but without sell order
-    #TODO closebuy order should place trade in holdlist and assess shall take it from there to issue a sell order
-    #TODO in trade remove automatic sell after buy. feedback to trade via basedict value
-    function TradeChances()
-        new(Dict(), Dict())
-    end
-end
-
-upperbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] + stdfactor * fr.std[ix]
-lowerbandprice(fr::Features.Features002Regr, ix, stdfactor) = fr.regry[ix] - stdfactor * fr.std[ix]
-stoplossprice(fr::Features.Features002Regr, ix, stdfactor) = isnothing(stdfactor) ? 0.0 : fr.regry[ix] - stdfactor * fr.std[ix]
-banddeltaprice(fr::Features.Features002Regr, ix, stdfactor) = 2 * stdfactor * fr.std[ix]
-
-requiredtradehistory = Features.requiredminutes()
-requiredminutes = requiredtradehistory + Features.requiredminutes()
+using EnvConfig, Ohlcv, CryptoXch, Classify
 
 """
-- grad = deltaprice / deltaminutes
-- deltaprice per day = grad * 24 * 60
-- (deltaprice / reference_price) per day = grad * 24 * 60 / reference_price
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
 """
-minutesgain(gradient, refprice, minutes) = minutes * gradient / refprice
-daygain(gradient, refprice) = minutesgain(gradient, refprice, 24 * 60)
+verbosity = 3
 
-function Base.show(io::IO, tc::TradeChance)
-    sl = isnothing(tc.stoplossprice) ? "n/a" : round(tc.stoplossprice; digits=2)
-    bo = isnothing(tc.breakoutstd) ? "n/a" : round(tc.breakoutstd; digits=2)
-    buydt = isa(tc.buydt, Dates.DateTime) ? EnvConfig.timestr(tc.buydt) : string(tc.buydt)
-    selldt = isa(tc.selldt, Dates.DateTime) ? EnvConfig.timestr(tc.selldt) : string(tc.selldt)
-    print(io::IO, "tc: base=$(tc.base), buydt=$buydt, buy=$(round(tc.buyprice; digits=2)), buyid=$(tc.buyorderid), selldt=$selldt, sell=$(round(tc.sellprice; digits=2)), sellid=$(tc.sellorderid), window=$(tc.regrminutes), stop loss sell=$sl, breakoutstd=$bo")
-end
-
-function Base.show(io::IO, tcs::TradeChances)
-    println("tradechances: new buy chances")
-    for (ix, tc) in enumerate(values(tcs.basedict))
-        if isa(tc[2], AbstractVector)
-            for (vix, tce) in tc[2]
-                println("$ix: basecoin: $(tc[1]), $vix: $tce")
-            end
-        else
-            println("$ix: basecoin: $(tc[1]), tradechance: $(tc[2])")
-        end
-    end
-    println("tradechances: open order chances")
-    for (ix, tc) in enumerate(values(tcs.orderdict))
-        if isa(tc[2], AbstractVector)
-            for (vix, tce) in tc[2]
-                println("$ix: order: $(tc[1]), $vix: $tce")
-            end
-        else
-            println("$ix: order: $(tc[1]), tradechance: $(tc[2])")
-        end
+mutable struct TradeConfig
+    cfg::AbstractDataFrame
+    xc::Union{Nothing, CryptoXch.XchCache}
+    function TradeConfig(xc::CryptoXch.XchCache)
+        return new(DataFrame(), xc)
     end
 end
 
-Base.length(tcs::TradeChances) = length(keys(tcs.basedict)) + length(keys(tcs.orderdict))
+MINIMUMDAYUSDTVOLUME = 10*1000000
+TRADECONFIG_CONFIGFILE = "TradeConfig"
 
-function init(ohlcv::Ohlcv.OhlcvData, classifier)::Union{Nothing, TradingStrategyCache}
-    println("$(EnvConfig.now()) start generating features002")
-    f2 = Features.Features002(ohlcv)
-end
+emptytradeconfig() = DataFrame(basecoin=String[], buysell=Bool[], sellonly=Bool[], update=DateTime[])
 
-"Used by Trade.closeorder! if buy order is executed"
-function registerbuy!(tradechances::TradeChances, buyix, buyprice, buyorderid, f2::Features.Features002, stoplossstd)
-    @assert buyix > 0
-    @assert buyprice > 0
-    tc = tradechanceoforder(tradechances, buyorderid)
-    if isnothing(tc)
-        @warn "missing order #$buyorderid in tradechances"
+function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, enddt::Union{DateTime, Nothing}, checkperiod=Day(1), accumulateperiod=Minute(5), minimumaccumulatequotevolume=1000f0)::Bool
+    enddt = isnothing(enddt) ? ohlcv.df[end, :opentime] : enddt
+    endix = Ohlcv.rowix(ohlcv, enddt)
+    startdt = enddt - checkperiod
+    startix = Ohlcv.rowix(ohlcv, startdt)
+    df = @view ohlcv.df[startix:endix, :]
+    adf = Ohlcv.accumulate(df, accumulateperiod)
+    accquotevol = adf[!, :basevolume] .* adf[!, :pivot]
+    accquotevoltest = accquotevol .>= minimumaccumulatequotevolume
+    if all(accquotevoltest)
+        return true
     else
-        df = Ohlcv.dataframe(f2.ohlcv)
-        opentime = df[!, :opentime]
-        afr = f2.regr[tc.regrminutes]
-        fix = Features.featureix(f2, buyix)
-        tc.buydt = opentime[buyix]
-        tc.buyprice = buyprice
-        tc.buyorderid = buyorderid
-        tc.stoplossprice = isnothing(stoplossstd) ? 0.0 : stoplossprice(afr, fix, stoplossstd)
-        if !isnothing(tc.breakoutstd)
-            spread = banddeltaprice(afr, fix, tc.breakoutstd)
-            tc.sellprice = upperbandprice(afr, fix, tc.breakoutstd)
-        end
-        # tc.sellprice = afr.regry[fix] + halfband
+        (verbosity >= 3) && println("$(ohlcv.base) has in $(round((1 - (count(accquotevoltest)/length(accquotevoltest)))*100))% insuficient continuous $(accumulateperiod) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $enddt")
+        return false
     end
+end
+
+"""
+Loads all USDT coins, checks last24h volume, checks minimum volume of every aggregated 5minutes, removes risk coins.
+If isnothing(enddt) or enddt > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
+The resulting DataFrame table of tradable coins is stored.
+assetbases is an input parameter to enable backtesting.
+"""
+function train!(tc::TradeConfig, assetbases::Vector; enddt=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME)
+    read!(tc, enddt)
+    if size(tc.cfg, 1) > 0
+        (verbosity >= 2) && println("read trade config from file")
+        (verbosity >= 3) && println(tc.cfg)
+        return
+    end
+    usdtdf = CryptoXch.getUSDTmarket(tc.xc)
+    (verbosity >= 3) && println("USDT market: $usdtdf at $enddt")
+    # assetbases = CryptoXch.assetbases(tc.xc)
+    tradablebases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :basecoin]
+    tradablebases = [base for base in tradablebases if CryptoXch.validbase(tc.xc, base)]
+    allbases = union(tradablebases, assetbases)
+    allbases = setdiff(allbases, CryptoXch.baseignore)
+    count = length(allbases)
+    cld = Dict()
+    for (ix, base) in enumerate(allbases)
+        (verbosity >= 2) && print("\r$(EnvConfig.now()) start updating $base ($ix of $count)      ")
+        startdt = enddt - Year(10)
+        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        Ohlcv.write(ohlcv)
+        cl = Classify.Classifier001(ohlcv)
+        if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+            cld[base] = cl
+            Classify.write(cld[base])
+        elseif base in assetbases
+            @warn "skipping asset $base because classifier features cannot be calculated"
+        end
+    end
+    startdt = enddt - Day(10)
+    (verbosity >= 2) && print("\r$(EnvConfig.now()) start classifier set training")
+    cfg = Classify.trainset!(collect(values(cld)), startdt, enddt, true)
+    tradablebases = intersect(Classify.trainsetminperf(cfg)[!, :basecoin], tradablebases)
+    # tradablebases = [base for base in tradablebases if continuousminimumvolume(cld[base].ohlcv, enddt)]
+    sellonlybases = setdiff(assetbases, tradablebases)
+    allbases = union(tradablebases, sellonlybases)
+    usdtdf = filter(row -> row.basecoin in allbases, usdtdf)
+    tc.cfg = select(usdtdf, :basecoin, :quotevolume24h => (x -> x ./ 1000000) => :quotevolume24h_M, :pricechangepercent)
+    tc.cfg[:, :buysell] = [base in tradablebases for base in tc.cfg[!, :basecoin]]
+    tc.cfg[:, :sellonly] = [base in sellonlybases for base in tc.cfg[!, :basecoin]]
+    tc.cfg[:, :regrwindow] .= missing
+    tc.cfg[:, :gainthreshold] .= missing
+    tc.cfg[:, :update] .= enddt
+    tc.cfg[:, :classifier] .= missing
+    for tcix in eachindex(tc.cfg[!, :basecoin])
+        if tc.cfg[tcix, :basecoin] in keys(cld)
+            cl = cld[tc.cfg[tcix, :basecoin]]
+            tc.cfg[tcix, :regrwindow] = cl.regrwindow
+            tc.cfg[tcix, :gainthreshold] = cl.gainthreshold
+            tc.cfg[tcix, :classifier] = cl
+        else
+            @warn "unexpected missing classifier for basecoin $(tc.cfg[tcix, :basecoin])"
+        end
+    end
+    # (verbosity >= 3) && println(describe(tc.cfg, :all))
+    write(tc, enddt)
     return tc
 end
 
-"Delivers the tradechance based on orderid. E.g. used in TradingStrategy.registerbuy!, Trade.trade!, Trade.neorder"
-function tradechanceoforder(tradechances::TradeChances, orderid)
-    tc = nothing
-    if orderid in keys(tradechances.orderdict)
-        tc = tradechances.orderdict[orderid]
+"""
+train! loads all data up to enddt. This function will reduce the memory starting from startdt plus OHLCV data required for feature calculation.
+"""
+function timerangecut!(tc::TradeConfig, startdt, enddt)
+    for ohlcv in CryptoXch.ohlcv(tc.xc)
+        tcix = findfirst(x -> x == ohlcv.base, tc.cfg[!, :basecoin])
+        if isnothing(tcix)
+            CryptoXch.removebase!(tc.xc, ohlcv.base)
+        else
+            cl = tc.cfg[tcix, :classifier]
+            Classify.timerangecut!(cl, startdt, enddt)
+        end
     end
+end
+
+
+function _cfgfilename(timestamp::Union{Nothing, DateTime}, ext="jdf")
+    cfgfilename = EnvConfig.logpath(TRADECONFIG_CONFIGFILE)
+    if isnothing(timestamp)
+        cfgfilename = join([cfgfilename, ext], ".")
+    else
+        cfgfilename = join([cfgfilename, Dates.format(timestamp, "yy-mm-dd"), ext], "_", ".")
+    end
+    return cfgfilename
+end
+
+"if timestamp=nothing then no extension otherwise timestamp extension"
+function write(tc::TradeConfig, timestamp::Union{Nothing, DateTime}=nothing)
+    if (size(tc.cfg, 1) == 0) || (tc.cfg[tc.cfg[!, :active] .== true, :] == 0)
+        @warn "trade config is empty or without active bases - not stored"
+        return
+    end
+    sf = EnvConfig.logsubfolder()
+    EnvConfig.setlogpath(nothing)
+    cfgfilename = _cfgfilename(timestamp)
+    # EnvConfig.checkbackup(cfgfilename)
+    (verbosity >=3) && println("cfgfilename=$cfgfilename  tc.cfg=$(tc.cfg)")
+    JDF.savejdf(cfgfilename, tc.cfg[!, Not(:classifer)])
+    if isnothing(timestamp)
+        cfgfilename = _cfgfilename(Dates.now(UTC))
+        JDF.savejdf(cfgfilename, tc.cfg[!, Not(:classifer)])
+    end
+    EnvConfig.setlogpath(sf)
+end
+
+function read!(tc::TradeConfig, startdt, enddt)
+    df = DataFrame()
+    sf = EnvConfig.logsubfolder()
+    EnvConfig.setlogpath(nothing)
+    cfgfilename = _cfgfilename(timestamp, "jdf")
+    if isdir(cfgfilename)
+        df = DataFrame(JDF.loadjdf(cfgfilename))
+        println("config df: $df")
+        if isnothing(df)
+            (verbosity >=2) && println("Loading $cfgfilename failed")
+        end
+    end
+    EnvConfig.setlogpath(sf)
+    df[:, :classifier] .= missing
+    for ix in df[!, :basecoin]
+        ohlcv = CryptoXch.cryptodownload(tc.xc, df[ix, :basecoin], "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        cl = Classify.Classifier001(ohlcv)
+        if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+            df[ix, :classifier] = cl
+        else
+            @warn "skipping asset $(df[ix, :basecoin]) because classifier features cannot be calculated"
+        end
+    end
+    tc.cfg = df
     return tc
 end
-
-"Used by Trade.trade!"
-function tradechanceofbase(tradechances::TradeChances, base)
-    tc = nothing
-    if base in keys(tradechances.basedict)
-        tc = tradechances.basedict[base]
-    end
-    return tc
-end
-
-"Used by Trade.trade!"
-baseswithnewtradechances(tradechances::TradeChances) = keys(tradechances.basedict)
-
-"Used by Trade.closeorder!"
-function deletetradechanceoforder!(tradechances::TradeChances, orderid)
-    if orderid in keys(tradechances.orderdict)
-        delete!(tradechances.orderdict, orderid)
-    end
-end
-
-"Used by Trade.trade!"
-function deletenewbuychanceofbase!(tradechances::TradeChances, base)
-    if base in keys(tradechances.basedict)
-        delete!(tradechances.basedict, base)
-    end
-end
-
-"Used by Trade.neworder!"
-function registerbuyorder!(tradechances::TradeChances, orderid, tc::TradeChance)
-    tc.buyorderid = orderid
-    tradechances.orderdict[orderid] = tc
-end
-
-"Used by Trade.neworder!"
-function registersellorder!(tradechances::TradeChances, orderid, tc::TradeChance)
-    tc.sellorderid = orderid
-    tradechances.orderdict[orderid] = tc
-end
-
-"Remove all new buy chances. Those that were issued as orders are moved to the open order dict, Used by TradingStrategy.assesstrades!"
-function cleanupnewbuychance!(tradechances::TradeChances, base)
-    if (base in keys(tradechances.basedict))
-        tc = tradechances.basedict[base]
-        delete!(tradechances.basedict, base)
-        if (tc.buyorderid > 0)
-            tradechances.orderdict[tc.buyorderid] = tc
-        end
-        if (tc.sellorderid > 0)
-            # it is possible that a buy order is partially executed and buy and sell orders are open
-            tradechances.orderdict[tc.sellorderid] = tc
-        end
-    end
-    return tradechances
-end
-
-
-
-"""
-*TradeChances004* uses a given regression line to buy in regular intervals with low volume below std if std/regry is > gainthreshold and to sell in regular intervals above std if std/regry is > gainthreshold.
-"""
-mutable struct TradeChances004
-    baseconfig
-    tcs::TradeChances
-    function TradeChances004()
-        new(
-            Dict("BTC" => (regrwindow=720, gain=0.01, gap=2)),
-            # (regr=720, gain=1.0) = use regression window 720 minutes and trade when std/regry >= gain of 1% with a minimum gap of 2 minutes
-            TradeChances()
-            )
-    end
-end
-
-function Base.show(io::IO, tcs::TradeChances004)
-    cfg = ["$(p[1]): $(p[2])  " for p in tcs.baseconfig]
-    show("io::IO, TradeChances004 - $cfg\n")
-    show(tcs.tcs)
-end
-
-
-"""
-Trading strategy:
-- buy if current price is below regression line - regression std and regression std / regression regry > gainthreshold of the resp. base
-- sell if current price is above regression line + regression std and regression std / regression regry > gainthreshold of the resp. base
-
-if tradechances === nothing then an empty TradeChance array is created and with results returned
-"""
-function assesstrades!(tradechances::TradeChances004, f2::Features.Features002, ohlcvix)::TradeChances004
-    @assert !isnothing(f2)
-    @assert f2.firstix < ohlcvix <= f2.lastix "$(f2.firstix) < $ohlcvix <= $(f2.lastix)"
-    df = Ohlcv.dataframe(Features.ohlcv(f2))
-    opentime = df[!, :opentime]
-    pivot = df[!, :pivot]
-    base = Ohlcv.basecoin(Features.ohlcv(f2))
-    if !(base in keys(tradechances.baseconfig))
-        return nothing
-    end
-    @info "$(@doc TradeChances004)" tradechances.baseconfig[base] maxlog=1
-    cleanupnewbuychance!(tradechances.tcs, base)
-    fix = Features.featureix(f2, ohlcvix)
-    rw = tradechances.baseconfig[base].regrwindow
-    afr = f2.regr[rw]
-    newtc = nothing
-    if (pivot[ohlcvix] > f2.regr[rw].regry[fix] + f2.regr[rw].std[fix]) && ((f2.regr[rw].std[fix] / f2.regr[rw].regry[fix]) > tradechances.baseconfig[base].gain)
-        buyprice = pivot[ohlcvix]
-        sellprice = buyprice * (1 + 2 * tradechances.baseconfig[base].gain)
-        newtc = TradeChance(base, nothing, buyprice, 0, sellprice, 0, rw, nothing, nothing) # stoplossprice = breakoutstd = nothing because both are disabled
-    end
-#TODO here to continue
-    for tc in values(tradechances.tcs.orderdict)
-        if tc.base == Ohlcv.basecoin(Features.ohlcv(f2))
-            if isnothing(tc.buydt)
-                if !isnothing(newtc) && (tc.regrminutes == newtc.regrminutes) # && (tc.breakoutstd == newtc.breakoutstd)
-                    # not yet bought -> adapt with latest insights
-                    tc.buyprice = newtc.buyprice
-                    tc.stoplossprice = newtc.stoplossprice
-                    tc.sellprice = newtc.sellprice
-                    newtc = nothing
-                end
-            end
-            afr = f2.regr[tc.regrminutes]
-            if (afr.grad[featureix-1] >= 0) && (afr.grad[featureix] < 0)
-                    tc.sellprice = df.pivot[ohlcvix]
-            end
-        end
-    end
-    if !isnothing(newtc)
-        tradechances.tcs.basedict[base] = newtc
-    end
-    return tradechances
-end
-
-registerbuy!(tradechances::TradeChances004, buyix, buyprice, buyorderid, f2::Features.Features002) = registerbuy!(tradechances.tcs, buyix, buyprice, buyorderid, f2, nothing)
-tradechanceoforder(tradechances::TradeChances004, orderid) = tradechanceoforder(tradechances.tcs, orderid)
-deletetradechanceoforder!(tradechances::TradeChances004, orderid) = deletetradechanceoforder!(tradechances.tcs, orderid)
-registerbuyorder!(tradechances::TradeChances004, orderid, tc::TradeChance) = registerbuyorder!(tradechances.tcs, orderid, tc)
-registersellorder!(tradechances::TradeChances004, orderid, tc::TradeChance) = registersellorder!(tradechances.tcs, orderid, tc)
-deletenewbuychanceofbase!(tradechances::TradeChances004, base) = deletenewbuychanceofbase!(tradechances.tcs, base)
 
 end # module

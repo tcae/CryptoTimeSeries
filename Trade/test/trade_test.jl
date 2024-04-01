@@ -1,7 +1,7 @@
 module TradeTest
 
 using Test, Dates, Logging, LoggingExtras
-using EnvConfig, Trade, Classify, Assets
+using EnvConfig, Trade, Classify, Assets, Ohlcv
 
 println("$(EnvConfig.now()): started")
 demux_logger = TeeLogger(
@@ -11,13 +11,14 @@ demux_logger = TeeLogger(
 defaultlogger = global_logger(demux_logger)
 
 Assets.verbosity = 2
-Classify.verbosity = 2
+Classify.verbosity = 3
+Ohlcv.verbosity = 1
 EnvConfig.init(training)
-startdt = DateTime("2022-01-01T00:00:00")
-enddt = DateTime("2022-01-12T10:00:00")
+# EnvConfig.init(production)
+startdt = DateTime("2024-03-19T00:00:00")
+enddt = DateTime("2024-03-29T10:00:00")
 cache = Trade.TradeCache(bases=["BTC"], startdt=startdt, enddt=enddt, tradegapminutes=5, topx=6)
 
-# EnvConfig.init(production)
 # startdt = Dates.now(UTC)
 # enddt = nothing
 # cache = Trade.TradeCache(bases=["BTC", "MATIC"], startdt=startdt, enddt=enddt, messagelog=messagelog)

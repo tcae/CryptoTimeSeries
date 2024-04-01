@@ -17,14 +17,14 @@ println("$(EnvConfig.now()): started")
 
 update=true
 
-cls = Classify.Classifier001()
+cls = Classify.ClassifierSet001()
 xc= CryptoXch.XchCache(true)
 
 enddt = nothing # nothing == latest;   DateTime("2024-03-22T20:40:00")
 period = Day(10)  # Year(20)
 
-bestdf = Classify.best!(cls, xc, 10, period, enddt, update, ["BTC"])
-println("$(EnvConfig.now()) best! $bestdf")
+bestdf = Classify.train!(cls, xc, 10, period, enddt, update, ["BTC"])
+println("$(EnvConfig.now()) train! $bestdf")
 println("$(EnvConfig.now()) size(cls.cfg))=$(size(cls.cfg))")
 
 

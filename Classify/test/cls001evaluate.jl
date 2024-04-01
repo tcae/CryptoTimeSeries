@@ -16,7 +16,7 @@ println("$(EnvConfig.now()): started")
 
 test=false
 
-cls = Classify.Classifier001()
+cls = Classify.ClassifierSet001()
 xc= CryptoXch.XchCache(true)
 if test
     enddt = DateTime("2022-01-12T10:00:00")

@@ -431,7 +431,7 @@ function exchangeinfo(bc::BybitCache, symbol=nothing)
 end
 
 """
-Returns a NamedTuple with trading constraints. If symbol is not found then `nothing` is returned.
+Returns a DataFrameRow with trading constraints. If symbol is not found then `nothing` is returned.
 
 - symbol
 - status
@@ -443,18 +443,15 @@ Returns a NamedTuple with trading constraints. If symbol is not found then `noth
 - minbaseqty
 - minquoteqty
 """
-function symbolinfo(bc::BybitCache, symbol)
+function symbolinfo(bc::BybitCache, symbol::AbstractString)::Union{Nothing, DataFrameRow}
     symbol = uppercase(symbol)
-    df = bc.syminfodf[bc.syminfodf.symbol .== symbol, :]
-    if size(df, 1) == 0
-        # @warn "symbol $symbol not found"
-        return nothing
-    end
-    if size(df, 1) > 1
-        @warn "more than one entry found for $symbol => using first\n$df"
-    end
-    return NamedTuple(df[1,:])
+    symix = findfirst(x -> x == symbol, bc.syminfodf[!, :symbol])
+    return isnothing(symix) ? nothing : bc.syminfodf[symix, :]
 end
+
+validsymbol(bc::BybitCache, sym::Union{Nothing, DataFrameRow}) = !isnothing(sym) && (sym.quotecoin == EnvConfig.cryptoquote) && (sym.innovation == 0) && (sym.status == "Trading") # no Bybit innovation coins
+validsymbol(bc::BybitCache, symbol::AbstractString) = validsymbol(bc, symbolinfo(bc, symbol))
+
 
 "Returns a Ohlcv row compatible row data (and skips intentionally turnover)"
 _convertkline(kline) = [ix == firstindex(kline) ? Dates.unix2datetime(parse(Int, kline[ix]) / 1000) : parse(Float32, kline[ix]) for ix in eachindex(kline) if ix != lastindex(kline)]

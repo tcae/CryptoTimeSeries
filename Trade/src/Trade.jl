@@ -15,7 +15,14 @@ using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Classify, Assets
 # cancelled by trader, rejected by exchange, order change = cancelled+new order opened
 @enum OrderStatus opened cancelled rejected closed
 
-minimumdayusdtvolume = 10000000  # per day = 6944 per minute
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
+"""
+verbosity = 1
 
 """
 *TradeCache* contains the recipe and state parameters for the **tradeloop** as parameter. Recipe parameters to create a *TradeCache* are
@@ -26,7 +33,7 @@ minimumdayusdtvolume = 10000000  # per day = 6944 per minute
 """
 mutable struct TradeCache
     xc::CryptoXch.XchCache  # required to connect to exchange
-    cls::Classify.AbstractClassifier  # required to get trade signal
+    cls # required to get trade signal
     startdt::Union{Nothing, Dates.DateTime}  # start time back testing; nothing == start of canned data
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
@@ -36,7 +43,7 @@ mutable struct TradeCache
     maxassetfraction # defines the maximum ration of (a specific asset) / ( total assets) - sell only if this is exceeded
     lastbuy::Dict  # Dict(base, DateTime) required to buy in = Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in = Minute(tradegapminutes) time gaps
-    function TradeCache(; bases=[], startdt=nothing, enddt=nothing, classifier=Classify.Classifier001(), tradegapminutes=1, topx=50, tradeassetfraction=1/2000, maxassetfraction=0.05)
+    function TradeCache(; bases=[], startdt=nothing, enddt=nothing, classifier=Classify.ClassifierSet001(), tradegapminutes=1, topx=50, tradeassetfraction=1/2000, maxassetfraction=0.05)
         startdt = isnothing(startdt) ? nothing : floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         xc = CryptoXch.XchCache(bases, isnothing(startdt) ? nothing : startdt - Minute(Classify.requiredminutes(classifier)), enddt, 100000)
@@ -57,19 +64,6 @@ dummytime() = DateTime("2000-01-01T00:00:00")
 
 significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.2
 significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.2
-
-
-"DEPRECATED: check all orders have a loaded base - if not add or warning"
-function ensureohlcvorderbase!(cache::TradeCache, oo::AbstractDataFrame)
-    if size(oo, 1) == 0
-        return
-    end
-    bases = unique(DataFrame(CryptoXch.basequote.(oo.symbol))[!, :basecoin]) # basequote returns a named tuple to define the DataFrame columns
-    missingbases = setdiff(bases, keys(cache.xc.bases))
-    for base in missingbases
-        CryptoXch.addbase!(cache.xc, base, cache.currentdt, cache.enddt)
-    end
-end
 
 """
 looks for the base configuration in the last configuration dataframe to activate it in the current one if those have minimal free quantity
@@ -106,7 +100,7 @@ function activatesellonlyconfigs!(cache::TradeCache, bases, prevconfig, assets)
                         push!(added, base)
                         continue
                     else
-                        println("asset coin $base not added due to lwo asset value $(assets[aix, :free]) versus minimum base quatity $(minimumbasequantity) ")
+                        println("asset coin $base not added due to low asset value $(assets[aix, :free]) versus minimum base quatity $(minimumbasequantity) ")
                     end
                 else
                     @error "missing $base in $assets"
@@ -243,13 +237,10 @@ function _refreshtradecoins!(cache::TradeCache)
         assetbases = setdiff(assets[!, :coin], CryptoXch.basestablecoin)
         oldcfg = cache.cls.cfg
         # enforce to add existing asset coins to evalation
-        topxdf = Classify.best!(cache.cls, cache.xc, cache.topx, Day(10), (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt), true, assetbases)
+        topxdf = Classify.train!(cache.cls, cache.xc, cache.topx, Day(10), (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt), true, assetbases)
         # now identify all assetbases that are not in topX, register them as sell only and activate their config
         sellonlybases = setdiff(assetbases, topxdf[!, :basecoin])
         added, notadded = activatesellonlyconfigs!(cache, sellonlybases, oldcfg, assets) # but only those with minimal free assets
-
-        CryptoXch.removeallbases(cache.xc)
-        CryptoXch.addbases!(cache.xc, cache.cls.cfg[cache.cls.cfg[!, :active], :basecoin], (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt) - Minute(Classify.requiredminutes(cache.cls)), cache.enddt)
 
         if isnothing(cache.enddt) # nothing = for most current data
             Classify.write(cache.cls, nothing)
@@ -257,6 +248,9 @@ function _refreshtradecoins!(cache::TradeCache)
             println("cache.startdt=$(cache.startdt), cache.currentdt=$(cache.currentdt)")
             Classify.write(cache.cls, (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt))
         end
+
+        CryptoXch.removeallbases(cache.xc)
+        CryptoXch.addbases!(cache.xc, cache.cls.cfg[cache.cls.cfg[!, :active], :basecoin], (isnothing(cache.currentdt) ? cache.startdt : cache.currentdt) - Minute(Classify.requiredminutes(cache.cls)), cache.enddt)
 
         println("$(tradetime(cache))  sell only=$added (excluding=$notadded), assetbases=$assetbases, active coin trading config: $(cache.cls.cfg[cache.cls.cfg[!, :active] .== true, :])")
     end

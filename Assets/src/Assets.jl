@@ -48,54 +48,7 @@ function emptyassetdataframe()::DataFrames.DataFrame
 end
 
 manualselect() = EnvConfig.bases
-minimumdayquotevolume = 1000000
-
-"deprecated"
-function automaticselect(usdtdf, volumecheckdays, minimumdayquotevolume)
-    bases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :base]
-    volumecheckminutes = volumecheckdays * 24 * 60
-    deletebases = [false for _ in bases]
-    for (ix, base) in enumerate(bases)
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, "1m")
-        Ohlcv.read!(ohlcv)
-        olddf = Ohlcv.dataframe(ohlcv)
-        if size(olddf, 1) >= volumecheckminutes
-            odf = Ohlcv.dataframe(ohlcv)
-            quotevolume = odf.basevolume .* odf.close
-            minimumminutequotevolume = minimumdayquotevolume / 24 / 60
-            medianminutequotevolume = median(quotevolume)
-            deletebases[ix] = medianminutequotevolume < minimumminutequotevolume
-        else
-            # insufficient data for base
-            deletebases[ix] = true
-        end
-    end
-    deleteat!(bases, deletebases)
-    return [lowercase(base) for base in bases]
-end
-
-"deprecated"
-function portfolioselect(ad::AssetData, usdtdf)
-    pdf = DataFrame()
-    portfolio = CryptoXch.balances(ad.xc)
-    # [println("locked: $(d["locked"]), free: $(d["free"]), asset: $(d["asset"])") for d in portfolio]
-    # pdf[:, :basevolume] = [parse(Float32, d["WalletBalance"]) + parse(Float32, d["locked"]) for d in portfolio]
-    pdf[:, :basevolume] = [parse(Float32, d["walletBalance"]) for d in portfolio]
-    pdf[:, :base] = [lowercase(d["coin"]) for d in portfolio]
-    pdf = filter(r -> r.base in usdtdf.base, pdf)
-    pdf[:, :usdt] .= 0.0
-    pusdtdf = filter(r -> r.base in pdf.base, usdtdf)
-    sort!(pdf, [:base])
-    sort!(pusdtdf, [:base])
-    @assert length(pdf.base) == length(pusdtdf.base)
-    for ix in 1:length(pdf.base)
-        @assert pdf[ix, :base] == pusdtdf[ix, :base]
-        pdf[ix, :usdt] = pusdtdf[ix, :lastprice] * pdf[ix, :basevolume]
-    end
-    pdf = pdf[pdf.usdt .>= 10, :]
-    return pdf
-end
+minimumdayquotevolume = 10000000 # was lowered to 1 million but resulted in many volatile coins
 
 dataframe(ad::AssetData) = ad.basedf
 
@@ -161,6 +114,7 @@ function loadassets!(ad::AssetData, neededbases=EnvConfig.bases)::AssetData
     (verbosity == 3) && println("allbases: $(allbases)")
     # CryptoXch.downloadupdate!(ad.xc, allbases, enddt, Dates.Year(10))
 
+    removebases = []
     count = length(allbases)
     for (ix, base) in enumerate(allbases)
         # break
@@ -171,11 +125,10 @@ function loadassets!(ad::AssetData, neededbases=EnvConfig.bases)::AssetData
             Ohlcv.write(ohlcv)
         else
             #remove from allbases
-            allbases = setdiff(allbases, [ohlcv.base])
+            push!(removebases, ohlcv.base)
         end
     end
-    (verbosity == 2) && print("\r")
-
+    allbases = setdiff(allbases, removebases)
     usdtdf = filter(r -> r.basecoin in allbases, usdtdf)
     checkbases = filter(!(el -> el in usdtdf.basecoin), allbases)
     if length(checkbases) > 0
@@ -191,11 +144,7 @@ function loadassets!(ad::AssetData, neededbases=EnvConfig.bases)::AssetData
     ad.basedf[:, :basevolume] .= 0.0
     # TODO add portfolio basevolume
     ad.basedf[:, :update] .= enddt  # Dates.format(enddt,"yyyy-mm-ddTHH:MM")
-    # println("ad.basedf")
-    # println(ad.basedf)
     sort!(ad.basedf, [:base])
-    # println("usdtdf")
-    # println(usdtdf)
     sort!(usdtdf, [:basecoin])
     ad.basedf[:, :quotevolume24h_M] = usdtdf[in.(usdtdf[!,:basecoin], Ref([base for base in ad.basedf[!, :base]])), :quotevolume24h] / 1000000
     ad.basedf[:, :pricechangepercent] = usdtdf[in.(usdtdf[!,:basecoin], Ref([base for base in ad.basedf[!, :base]])), :pricechangepercent]

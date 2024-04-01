@@ -23,6 +23,7 @@ mutable struct OhlcvData
     quotecoin::String  # instead of quotecoin because *quotecoin* is a Julia keyword
     interval::String
     ix::Integer  # can be used to sync the current index between modules for a backtest
+    latestloadeddt
 end
 
 function Base.show(io::IO, ohlcv::OhlcvData)
@@ -73,7 +74,7 @@ end
 
 " Returns an empty default crypto OhlcvData with quotecoin=usdt, interval=1m"
 function defaultohlcv(base, interval="1m", rows=0)::OhlcvData
-    ohlcv = OhlcvData(defaultohlcvdataframe(rows), uppercase(base), uppercase(EnvConfig.cryptoquote), interval, 1)
+    ohlcv = OhlcvData(defaultohlcvdataframe(rows), uppercase(base), uppercase(EnvConfig.cryptoquote), interval, 1, nothing)
     return ohlcv
 end
 
@@ -95,7 +96,7 @@ end
 # end
 
 function copy(ohlcv::OhlcvData)
-    ohlcvcopy = OhlcvData(DataFrames.copy(ohlcv.df), ohlcv.base, ohlcv.quotecoin, ohlcv.interval, ohlcv.ix)
+    ohlcvcopy = OhlcvData(DataFrames.copy(ohlcv.df), ohlcv.base, ohlcv.quotecoin, ohlcv.interval, ohlcv.ix, ohlcv.latestloadeddt)
     return ohlcvcopy
 end
 
@@ -350,7 +351,7 @@ end
 rowix(ohlcv::OhlcvData, dt::Dates.DateTime) = rowix(dataframe(ohlcv).opentime, dt, intervalperiod(interval(ohlcv)))
 
 "accumulates minute interval ohlcv dataframe into larger interval dataframe"
-function accumulate(df::AbstractDataFrame, interval)
+function accumulate(df::AbstractDataFrame, interval::AbstractString)
     # accumulates to day/hour/5min borders
     # e.g. 2022-04-25T21:50:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(5))
     # e.g. 2022-04-25T21:51:00 == floor(2022-04-25T21:52:38.109, Dates.Minute(3))
@@ -359,6 +360,10 @@ function accumulate(df::AbstractDataFrame, interval)
         return df  # no accumulation required because this is the smallest supported period
     end
     period = Ohlcv.intervalperiod(interval)
+    return accumulate(df, period)
+end
+
+function accumulate(df::AbstractDataFrame, period::Period)
     periodm = Dates.Minute(period).value
     rows1m = size(df, 1)
     # adf = defaultohlcvdataframe()
@@ -485,6 +490,10 @@ end
 
 function write(ohlcv::OhlcvData)
     if EnvConfig.configmode == production
+        if !isnothing(ohlcv.latestloadeddt) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
+            (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
+            return
+        end
         fn = file(ohlcv)
         try
             JDF.savejdf(fn.filename, ohlcv.df[!, save_cols])  # without :pivot
@@ -506,6 +515,7 @@ function read!(ohlcv::OhlcvData)::OhlcvData
             (verbosity >= 3) && println("$(EnvConfig.now()) loading OHLCV data of $(ohlcv.base) from  $(fn.filename)")
             df = DataFrame(JDF.loadjdf(fn.filename))
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
+            ohlcv.latestloadeddt = df[end, :opentime]
         else
             (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
         end

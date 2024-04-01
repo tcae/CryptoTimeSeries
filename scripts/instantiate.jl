@@ -26,9 +26,9 @@ for mypackage in mypackages
     Pkg.develop(path=folderpath)
     Pkg.activate(folderpath)
     Pkg.update()
-    Pkg.precompile()
     Pkg.resolve()
     Pkg.instantiate()
+    Pkg.precompile()
     Pkg.activate(rootpath)
     # Pkg.gc()
 end
