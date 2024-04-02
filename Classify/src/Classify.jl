@@ -1162,7 +1162,7 @@ end
 
 function timerangecut!(cl::Classifier001, startdt, enddt)
     ohlcvstartdt = isnothing(startdt) ? startdt : startdt - Minute(Classify.requiredminutes())
-    CryptoXch.timerangecut!(cl.ohlcv, ohlcvstartdt, enddt)
+    Ohlcv.timerangecut!(cl.ohlcv, ohlcvstartdt, enddt)
     Features.timerangecut!(cl.f4, startdt, enddt)
 end
 
@@ -1471,7 +1471,7 @@ function evaluate!(cls::ClassifierSet001, xc::CryptoXch.XchCache, bases, regrwin
     f4offset = Minute(requiredminutes(cls))
     for base in bases
         ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt-f4offset, enddt)
-        CryptoXch.timerangecut!(ohlcv, startdt-f4offset, enddt)
+        Ohlcv.timerangecut!(ohlcv, startdt-f4offset, enddt)
         if size(ohlcv.df, 1) < requiredminutes(cls)
             # @warn "ohlcv size=$(size(ohlcv.df, 1)) of $base insufficient for required minutes $(requiredminutes(cls)) - $base will be skipped"
             continue

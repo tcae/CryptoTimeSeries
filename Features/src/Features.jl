@@ -945,13 +945,18 @@ function timerangecut!(f4::Features004, startdt, enddt)
         if isnothing(rdf) || (size(rdf, 1) == 0)
             return
         end
-        if !isnothing(startdt) && !isnothing(enddt)
-            subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t .<= floor(enddt, Minute(1)))
-        elseif !isnothing(startdt)
-            subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t)
-        elseif !isnothing(enddt)
-            subset!(rdf, :opentime => t -> t .<= floor(enddt, Minute(1)))
-        end
+        startdt = isnothing(startdt) ? firstindex(rdf[!, :opentime]) : startdt
+        startix = Ohlcv.rowix(rdf[!, :opentime], startdt)
+        enddt = isnothing(enddt) ? lastindex(rdf[!, :opentime]) : enddt
+        endix = Ohlcv.rowix(rdf[!, :opentime], enddt)
+        rdf = rdf[startix:endix, :]
+        # if !isnothing(startdt) && !isnothing(enddt)
+        #     subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t .<= floor(enddt, Minute(1)))
+        # elseif !isnothing(startdt)
+        #     subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t)
+        # elseif !isnothing(enddt)
+        #     subset!(rdf, :opentime => t -> t .<= floor(enddt, Minute(1)))
+        # end
     end
 end
 

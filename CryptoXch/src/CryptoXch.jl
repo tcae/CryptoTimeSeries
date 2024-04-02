@@ -120,7 +120,7 @@ function addbase!(xc::XchCache, base, startdt, enddt)
     enddt = isnothing(enddt) ? floor(Dates.now(UTC), Minute(1)) : floor(enddt, Minute(1))
     startdt = isnothing(startdt) ? enddt : floor(startdt, Minute(1))
     ohlcv = cryptodownload(xc, base, "1m", startdt, enddt)
-    timerangecut!(ohlcv, startdt, enddt)
+    Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     ohlcv.ix = firstindex(ohlcv.df, 1)
     xc.bases[base] = ohlcv
     setcurrenttime!(xc, base, startdt)
@@ -327,19 +327,10 @@ end
 """
 Removes ohlcv data rows that are outside the date boundaries (nothing= no boundary) and adjusts ohlcv.ix to stay within the new data range.
 """
-function timerangecut!(ohlcv, startdt, enddt)
-    if isnothing(ohlcv) || isnothing(ohlcv.df) || (size(ohlcv.df, 1) == 0)
-        return
+function timerangecut!(xc::XchCache, startdt, enddt)
+    for ohlcv in CryptoXch.ohlcv(xc)
+        Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     end
-    ixdt = ohlcv.df.opentime[ohlcv.ix]
-    if !isnothing(startdt) && !isnothing(enddt)
-        subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t .<= floor(enddt, intervalperiod(ohlcv.interval)))
-    elseif !isnothing(startdt)
-        subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t)
-    elseif !isnothing(enddt)
-        subset!(ohlcv.df, :opentime => t -> t .<= floor(enddt, intervalperiod(ohlcv.interval)))
-    end
-    ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
 end
 
 """

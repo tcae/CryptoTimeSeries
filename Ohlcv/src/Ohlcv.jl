@@ -490,7 +490,7 @@ end
 
 function write(ohlcv::OhlcvData)
     if EnvConfig.configmode == production
-        if !isnothing(ohlcv.latestloadeddt) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
+        if !isnothing(ohlcv.latestloadeddt) && (size(ohlcv.df, 1) > 0) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
             (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
             return
         end
@@ -514,8 +514,8 @@ function read!(ohlcv::OhlcvData)::OhlcvData
         if fn.existing
             (verbosity >= 3) && println("$(EnvConfig.now()) loading OHLCV data of $(ohlcv.base) from  $(fn.filename)")
             df = DataFrame(JDF.loadjdf(fn.filename))
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
-            ohlcv.latestloadeddt = df[end, :opentime]
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(size(df, 1) > 0 ? df[1, :opentime] : "N/A due to empty") until $(size(df, 1) > 0 ? df[end, :opentime] : "N/A due to empty") with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
+            ohlcv.latestloadeddt = size(df, 1) > 0 ? df[end, :opentime] : nothing
         else
             (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
         end
@@ -536,6 +536,29 @@ function delete(ohlcv::OhlcvData)
     else
         (verbosity >= 1) && @warn "no Ohlcv.delete() if EnvConfig.configmode != production to prevent loosing accidentially real canned data"
     end
+end
+
+"""
+Removes ohlcv data rows that are outside the date boundaries (nothing= no boundary) and adjusts ohlcv.ix to stay within the new data range.
+"""
+function timerangecut!(ohlcv::OhlcvData, startdt, enddt)
+    if isnothing(ohlcv) || isnothing(ohlcv.df) || (size(ohlcv.df, 1) == 0)
+        return
+    end
+    ixdt = ohlcv.df[ohlcv.ix, :opentime]
+    startdt = isnothing(startdt) ? firstindex(ohlcv.df[!, :opentime]) : startdt
+    startix = Ohlcv.rowix(ohlcv.df[!, :opentime], startdt)
+    enddt = isnothing(enddt) ? lastindex(ohlcv.df[!, :opentime]) : enddt
+    endix = Ohlcv.rowix(ohlcv.df[!, :opentime], enddt)
+    ohlcv.df = ohlcv.df[startix:endix, :]
+    # if !isnothing(startdt) && !isnothing(enddt)
+    #     subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t .<= floor(enddt, intervalperiod(ohlcv.interval)))
+    # elseif !isnothing(startdt)
+    #     subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t)
+    # elseif !isnothing(enddt)
+    #     subset!(ohlcv.df, :opentime => t -> t .<= floor(enddt, intervalperiod(ohlcv.interval)))
+    # end
+    ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
 end
 
 function curetime!(ohlcvdf, rn)
