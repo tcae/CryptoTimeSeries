@@ -341,7 +341,6 @@ end
 
 ##################### PUBLIC CALL's #####################
 
-
 """Returns the DateTime of the Bybit server time as UTC"""
 function servertime(bc::BybitCache)
     ret = HttpPublicRequest(bc, "GET", "/v3/public/time", nothing, "server time")

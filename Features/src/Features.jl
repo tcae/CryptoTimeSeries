@@ -796,14 +796,6 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
-# function last3extremes(pivot, regrgrad)
-#     l1xtrm = similar(pivot); l2xtrm = similar(pivot); l3xtrm = similar(pivot)
-#     regressiongains = zeros(Float32, pricelen)
-#     # may be it is beneficial for later incremental addition during production to use indices in order to recognize what was filled
-#     # work consistently backward to treat initial fill and incremental fill alike
-#     return l1xtrm, l2xtrm, l3xtrm
-# end
-
 #endregion FeatureUtilities
 
 #region Features001
@@ -891,20 +883,70 @@ mutable struct Features004
     # grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
     # regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
     # std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
-    Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, 0, Dict(), nothing)
+    Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, nothing, Dict(), nothing)
 end
 #TODO add regression test
 mnemonic(f4::Features004) = uppercase(f4.basecoin) * "_" * uppercase(f4.quotecoin) * "_" * "_F4"
 ohlcvix(f4::Features004, f4ix) = f4ix + f4.ohlcvoffset
 f4ix(f4::Features004, ohlcvix) = ohlcvix - f4.ohlcvoffset
 
+function consistent(f4::Features004, ohlcv::Ohlcv.OhlcvData)
+    checkok = true
+    if ohlcv.base != f4.basecoin
+        @warn "bases of ohlcv=$(ohlcv.base) != f4=$(f4.basecoin)"
+        checkok = false
+    end
+    for (rw, rwdf) in f4.rw
+        if rwdf[end,:opentime] != ohlcv.df[end, :opentime]
+            @warn "f4 of $(ohlcv.base) rw[$rw][end,:opentime]=$(rwdf[end,:opentime]) != ohlcv.df[end, :opentime]=$(ohlcv.df[end, :opentime])"
+            checkok = false
+        end
+        if rwdf[begin,:opentime] - Minute(requiredminutes(f4)-1) != ohlcv.df[begin, :opentime]
+            @warn "f4 of $(ohlcv.base) rw[$rw][begin,:opentime]-requiredminutes(f4)+1=$(rwdf[begin,:opentime]-Minute(requiredminutes(f4)-1)) != ohlcv.df[begin, :opentime]=$(ohlcv.df[begin, :opentime])"
+            checkok = false
+        end
+        if isnothing(f4.ohlcvoffset)
+            @warn "isnothing(f4.ohlcvoffset) of $(ohlcv.base) "
+            checkok = false
+        elseif rwdf[begin,:opentime] != ohlcv.df[ohlcvix(f4, firstindex(rwdf[!,:opentime])), :opentime]
+            @warn "f4 of $(ohlcv.base) rw[$rw][begin,:opentime]=$(rwdf[begin,:opentime]) != ohlcv.df[ohlcvix(f4, firstindex(rwdf[!,:opentime])), :opentime]=$(ohlcv.df[ohlcvix(f4, firstindex(rwdf[!,:opentime])), :opentime])"
+            checkok = false
+        end
+    end
+    startequal = all([rwdf[begin,:opentime] == first(values(f4.rw))[begin,:opentime] for (rw, rwdf) in f4.rw])
+    if !startequal
+        @warn "different F4 start dates: $([(regr=rw, startdt=rwdf[begin,:opentime]) for (rw, rwdf) in f4.rw])"
+        checkok = false
+    end
+    endequal = all([rwdf[end,:opentime] == first(values(f4.rw))[end,:opentime] for (rw, rwdf) in f4.rw])
+    if !endequal
+        @warn "different F4 end dates: $([(regr=rw, enddt=rwdf[end,:opentime]) for (rw, rwdf) in f4.rw])"
+        checkok = false
+    end
+    lengthequal = all([size(rwdf, 1) == size(first(values(f4.rw)), 1) for (rw, rwdf) in f4.rw])
+    if !lengthequal
+        @warn "different F4 data length: $([(regr=rw, length=size(rwdf, 1)) for (rw, rwdf) in f4.rw])"
+        checkok = false
+    end
+    return checkok
+end
+
 function f4offset!(f4::Features004, ohlcv::Ohlcv.OhlcvData)
+    f4.ohlcvoffset = nothing
     if (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0) && (size(ohlcv.df, 1) > 0)
+        fix = nothing
         f4df = first(values(f4.rw))
-        fix = (ohlcv.df[begin,:opentime] <= f4df[begin, :opentime]) && (ohlcv.df[end,:opentime] >= f4df[begin, :opentime]) ? firstindex(f4df[!, :opentime]) : (ohlcv.df[begin,:opentime] <= f4df[end, :opentime] && ohlcv.df[end,:opentime] >= f4df[end, :opentime] ?  lastindex(f4df[!, :opentime]) : nothing)
+        # fix = (ohlcv.df[begin,:opentime] <= f4df[begin, :opentime]) && (ohlcv.df[end,:opentime] >= f4df[begin, :opentime]) ? firstindex(f4df[!, :opentime]) : (ohlcv.df[begin,:opentime] <= f4df[end, :opentime] && ohlcv.df[end,:opentime] >= f4df[end, :opentime] ?  lastindex(f4df[!, :opentime]) : nothing)
+        if ohlcv.df[begin,:opentime] <= f4df[begin, :opentime] <= ohlcv.df[end,:opentime]
+            fix = firstindex(f4df[!, :opentime])
+        elseif ohlcv.df[begin,:opentime] <= f4df[end, :opentime] <= ohlcv.df[end,:opentime]
+            fix = lastindex(f4df[!, :opentime])
+        end
         if !isnothing(fix)
             oix = Ohlcv.rowix(ohlcv.df[!,:opentime], f4df[fix, :opentime])
-            f4.ohlcvoffset = f4df[fix, :opentime] == ohlcv.df[oix, :opentime] ? oix - fix : f4.ohlcvoffset
+            if f4df[fix, :opentime] == ohlcv.df[oix, :opentime]
+                f4.ohlcvoffset = oix - fix
+            end
         end
     end
     return f4.ohlcvoffset
@@ -941,15 +983,18 @@ function _join(f4)
 end
 
 function timerangecut!(f4::Features004, startdt, enddt)
-    for rdf in values(f4.rw)
+    (length(f4.rw) == 0) && @warn "empty f4 for $(f4.basecoin)"
+    for (regr, rdf) in f4.rw
         if isnothing(rdf) || (size(rdf, 1) == 0)
+            @warn "unexpected missing f4 data $f4"
             return
         end
-        startdt = isnothing(startdt) ? firstindex(rdf[!, :opentime]) : startdt
+        startdt = isnothing(startdt) ? rdf[begin, :opentime] : startdt
         startix = Ohlcv.rowix(rdf[!, :opentime], startdt)
-        enddt = isnothing(enddt) ? lastindex(rdf[!, :opentime]) : enddt
+        enddt = isnothing(enddt) ? rdf[end, :opentime] : enddt
         endix = Ohlcv.rowix(rdf[!, :opentime], enddt)
-        rdf = rdf[startix:endix, :]
+        f4.rw[regr] = rdf[startix:endix, :]
+        # println("startdt=$startdt enddt=$enddt size(rdf)=$(size(rdf)) rdf=$(describe(rdf, :all)) ")
         # if !isnothing(startdt) && !isnothing(enddt)
         #     subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t .<= floor(enddt, Minute(1)))
         # elseif !isnothing(startdt)
@@ -1089,6 +1134,7 @@ function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df.opentim
             f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
         end
     end
+    f4offset!(f4, ohlcv)
     return f4
 end
 
@@ -1110,7 +1156,6 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
         end
     end
     supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)
-    f4offset!(f4, ohlcv)
     return f4
 end
 
