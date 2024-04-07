@@ -100,7 +100,7 @@ function train!(tc::TradeConfig, assetbases::Vector; enddt=floor(Dates.now(Dates
     usdtdf = filter(row -> row.basecoin in allbases, usdtdf)
     tc.cfg = select(usdtdf, :basecoin, :quotevolume24h => (x -> x ./ 1000000) => :quotevolume24h_M, :pricechangepercent)
     if size(tc.cfg, 1) == 0
-        @warn "no basecoins selected - empty result tc.cfg=$(tc.cfg)"
+        (verbosity >= 1) && @warn "no basecoins selected - empty result tc.cfg=$(tc.cfg)"
         return tc
     end
     tc.cfg[:, :buysell] = [base in tradablebases for base in tc.cfg[!, :basecoin]]

@@ -91,6 +91,9 @@ function setix!(ohlcv::OhlcvData, ix::Integer)
     return ix
 end
 
+"Returns the current ohlcv dataframe row of ohlcv.ix or nothing if no data."
+current(ohlcv::OhlcvData) = size(ohlcv.df, 1) > 0 ? ohlcv.df[ohlcv.ix, :] : nothing
+
 # function copy(ohlcv::OhlcvData)
 #     return OhlcvData(ohlcv.df, ohlcv.base, ohlcv.quotecoin, ohlcv.interval)
 # end
@@ -503,7 +506,7 @@ function write(ohlcv::OhlcvData)
             Logging.@error "exception $e detected"
         end
     else
-        (verbosity >= 1) && @warn "no Ohlcv.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data"
+        (verbosity >= 2) && println("no Ohlcv.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data")
     end
 end
 

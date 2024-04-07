@@ -3,6 +3,7 @@ module TradingStrategyTest
 using Test, Dates, Logging, LoggingExtras, DataFrames
 using EnvConfig, TradingStrategy, Classify, Features, Ohlcv, CryptoXch
 
+println("TradingStrategyTest tradestrategy_test")
 println("$(EnvConfig.now()): started")
 
 Classify.verbosity = 2

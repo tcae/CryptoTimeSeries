@@ -41,8 +41,12 @@ struct BybitCache
     secretkey
 end
 
+BYBIT_APIREST = "https://api.bybit.com"
+BYBIT_TESTNET_APIREST = "https://api-testnet.bybit.com"
+
+"Initializes Bybit if testnet==true then the Bybit Testnet is used"
 function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test)::BybitCache
-    apirest = testnet ? "https://api-testnet.bybit.com" : "https://api.bybit.com"
+    apirest = testnet ? BYBIT_TESTNET_APIREST : BYBIT_APIREST
     bc = BybitCache(nothing, apirest, EnvConfig.authorization.key, EnvConfig.authorization.secret)
     xchinfo = exchangeinfo(bc)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"

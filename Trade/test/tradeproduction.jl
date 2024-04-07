@@ -1,7 +1,8 @@
-module TradeTest
+module TradeProduction
 
 using Test, Dates, Logging, LoggingExtras
 using EnvConfig, Trade, Classify, CryptoXch
+println("TradeProduction tradeproduction")
 
 messagelogfn = EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")
 println("$(EnvConfig.now()): started - messages are logged in $messagelogfn")
@@ -11,14 +12,15 @@ demux_logger = TeeLogger(
 )
 defaultlogger = global_logger(demux_logger)
 
-CryptoXch.verbosity = 3
+CryptoXch.verbosity = 1
 Classify.verbosity = 2
 Trade.verbosity = 2
 EnvConfig.init(production)
 enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(true; enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
-cache = Trade.TradeCache(xc=xc)
+reloadtimes = [Time("04:00:00")]
+cache = Trade.TradeCache(xc=xc, reloadtimes=reloadtimes)
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

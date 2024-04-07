@@ -12,8 +12,9 @@ EnvConfig.init(test)
 userdataChannel = Channel(10)
 startdt = DateTime("2020-08-11T22:45:00")
 enddt = DateTime("2020-09-11T22:49:00")
-
+println("CryptoXchTest runtests")
 @testset "CryptoXch tests" begin
+    CryptoXch.verbosity =3
 
     # EnvConfig.init(test)  # test production
     EnvConfig.init(production)  # test production
@@ -32,6 +33,7 @@ enddt = DateTime("2020-09-11T22:49:00")
 
     testcoins = CryptoXch.testbasecoin()
     for tc in testcoins
+        @test CryptoXch.validbase(xc, tc)
         ohlcv = CryptoXch.cryptodownload(xc, tc, "1m", DateTime("2022-01-02T22:38:03"), DateTime("2022-01-02T22:57:45"))
         # println(ohlcv)
         @test size(Ohlcv.dataframe(ohlcv), 1) == 20
@@ -73,7 +75,7 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test size(Ohlcv.dataframe(ohlcv), 1) == 20
 
     ohlcv1 = Ohlcv.copy(ohlcv)
-    CryptoXch.timerangecut!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:46:45"))
+    Ohlcv.timerangecut!(ohlcv1, DateTime("2022-01-02T22:43:03"), DateTime("2022-01-02T22:46:45"))
     # println(Ohlcv.dataframe(ohlcv1))
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 4
 
@@ -89,7 +91,7 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 8
 
     CryptoXch.cryptoupdate!(xc, ohlcv1, DateTime("2022-01-02T22:50:03"), DateTime("2022-01-02T22:55:45"))
-    CryptoXch.timerangecut!(ohlcv1, DateTime("2022-01-02T22:50:03"), DateTime("2022-01-02T22:55:45"))
+    Ohlcv.timerangecut!(ohlcv1, DateTime("2022-01-02T22:50:03"), DateTime("2022-01-02T22:55:45"))
     @test size(Ohlcv.dataframe(ohlcv1), 1) == 6
 
     Ohlcv.delete(ohlcv)
@@ -166,14 +168,20 @@ enddt = DateTime("2020-09-11T22:49:00")
 
     # println("test IP with CLI: wget -qO- http://ipecho.net/plain | xargs echo")
 
-    println("Now testing CryptoXch simulation mode")
+end
+
+@testset "CryptoXch simulation tests" begin
 
     EnvConfig.init(training)
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(20)
-    xc = CryptoXch.XchCache([], startdt, enddt, 1000)
+    xc = CryptoXch.XchCache(true; startdt=startdt, enddt=enddt)
+    usdtbudget = 10000f0
+    btcbudget = 0f0
+    CryptoXch.updateasset!(xc, "USDT", 0f0, usdtbudget)
+    CryptoXch.setcurrenttime!(xc, startdt)
     ohlcv = CryptoXch.cryptodownload(xc, "BTC", "1m", startdt, enddt)
-    CryptoXch.timerangecut!(ohlcv, startdt, enddt)
+    Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     Ohlcv.setix!(ohlcv, 1)
     # println(ohlcv)
 
@@ -194,12 +202,18 @@ enddt = DateTime("2020-09-11T22:49:00")
     @test size(pdf, 2) == 5
     # println(pdf)
 
+    ohlcv = CryptoXch.ohlcv(xc, "BTC")
+    btcprice = Ohlcv.dataframe(ohlcv)[Ohlcv.ix(ohlcv), :close]
     oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false) # limitprice out of allowed range
     @test isnothing(oid)
     # println("createbuyorder: $(string(oid)) - error expected")
     # println("limitprice=$(btcprice * 1.01)")
 
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 1.01, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
+    adf = CryptoXch.balances(xc)
+    println("0) baseline $btcprice, $adf")
+
+    qteqty = 26.01
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 1.01, basequantity=qteqty/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
     @test !isnothing(oid)
     # println("createbuyorder: $(string(oid)) - reject expected")  # not applicable anymore because timeinforce is by default changed from PostOnly to GTC
     oo2 = CryptoXch.getorder(xc, oid)
@@ -208,27 +222,74 @@ enddt = DateTime("2020-09-11T22:49:00")
     # @test oo2.status == "Rejected"  - not Rejected because default was changed from PostOnly to GTC
     @test oo2.status == "Filled"
 
+    usdtbudget = usdtbudget - qteqty
+    btcbudget = Float32(qteqty/btcprice*(1-xc.feerate))
+    println("1) btc.free=$btcbudget usdt.free=$usdtbudget")
+    adf = CryptoXch.portfolio!(xc)
+    println("1) $btcprice, $adf")
+
     oo2 = CryptoXch.getorder(xc, "invalid_or_unknown_id")
     @test isnothing(oo2)
 
-    oidx = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.9, basequantity=8.01/btcprice, maker=false)
-    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.999, basequantity=6.01/btcprice, maker=false)
+    qteqty = 8.01
+    oidx = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.9, basequantity=qteqty/btcprice, maker=false)
+
+    qteqty = Float32(qteqty/btcprice*(btcprice * 0.9))
+    usdtbudget = usdtbudget - qteqty
+    usdtlocked = qteqty
+    println("2) usdt.locked=$usdtlocked usdt.free=$usdtbudget  usdtqty=$qteqty")
+    adf = CryptoXch.balances(xc)
+    println("2) $adf")
+
+    qteqty = 6.01
+    oid = CryptoXch.createbuyorder(xc, "BTC", limitprice=btcprice * 0.999, basequantity=qteqty/btcprice, maker=false)
+
+    qteqty = Float32(qteqty/btcprice*(btcprice * 0.999))
+    usdtbudget -= qteqty
+    usdtlocked += qteqty
+    println("3) usdt.locked=$usdtlocked usdt.free=$usdtbudget  usdtqty=$qteqty")
+    adf = CryptoXch.balances(xc)
+    println("3) $adf")
+
     oodf = CryptoXch.getopenorders(xc)
-    # println("getopenorders(nothing): $oodf")
+    println("getopenorders(nothing): $oodf")
     # println("createbuyorder: $(string(oid))")
     oo2 = CryptoXch.getorder(xc, oid)
     # println("getorder: $oo2")
     @test oid == oo2.orderid
 
     currenttime = CryptoXch._ordercurrenttime(xc, oid)
-    oidc = CryptoXch.changeorder(xc, oid; basequantity=4.02/btcprice)
+    qteqty = 4.02
+    oidc = CryptoXch.changeorder(xc, oid; basequantity=qteqty/btcprice)  #TODO delta analysis
     @test oidc == oid
     # println("changeorder after basequatity change: $(DataFrame([CryptoXch.getorder(oid)]))")
+    baseqty= Float32(qteqty/btcprice - oo2.baseqty)
+    qteqty = Float32(baseqty * oo2.limitprice)
+    usdtbudget -= qteqty
+    usdtlocked += qteqty
+    println("4) changeorder usdt.locked=$usdtlocked usdt.free=$usdtbudget  usdtqty=$qteqty baseqty=$baseqty")
+    adf = CryptoXch.balances(xc)
+    println("4) $adf")
+
+    oodf = CryptoXch.getopenorders(xc)
+    println("4) getopenorders(nothing): $oodf")
 
     CryptoXch.setcurrenttime!(xc, currenttime + Minute(4))
+    oodf = CryptoXch.getopenorders(xc)
+    println("5) getopenorders(nothing): $oodf")
+
+    adf = CryptoXch.portfolio!(xc)
+    println("5) $adf")
+
     oidc = CryptoXch.changeorder(xc, oidx; limitprice=btcprice * 0.998)
     @test oidc == oidx
     # println("changeorder after limitprice change: $(DataFrame([CryptoXch.getorder(oidx)]))")
+    oodf = CryptoXch.getopenorders(xc)
+    println("6) getopenorders(nothing): $oodf")
+
+
+    adf = CryptoXch.portfolio!(xc)
+    println("6) $adf")
 
     CryptoXch.setcurrenttime!(xc, currenttime + Minute(10))
     oo2 = CryptoXch.getorder(xc, oid)
@@ -237,15 +298,19 @@ enddt = DateTime("2020-09-11T22:49:00")
     # println("getorder after fill: $(DataFrame([oo2]))")
 
     oodf = CryptoXch.getopenorders(xc, "BTC")
-    # println("getopenorders(BTC) after fill: $oodf")
+    println("getopenorders(BTC) after fill: $oodf")
 
-    pdf = CryptoXch.balances(xc)
+    pdf = CryptoXch.portfolio!(xc)
     @test size(pdf, 1) == 2
     btcqty = sum(pdf[pdf.coin .== "BTC", :free])
-    # println("portfolio with btcqty=$btcqty $pdf")
+    println("portfolio with btcqty=$btcqty $pdf")
 
     btcprice = CryptoXch._ordercurrentprice(xc, oid)
     oid = CryptoXch.createsellorder(xc, "BTC", limitprice=btcprice * 1.005, basequantity=btcqty, maker=false)
+
+
+    adf = CryptoXch.portfolio!(xc)
+    println("7) $adf")
 
     oodf = CryptoXch.getopenorders(xc, "BTC")
     @test isa(oodf, AbstractDataFrame)
@@ -257,16 +322,24 @@ enddt = DateTime("2020-09-11T22:49:00")
 
     CryptoXch.setcurrenttime!(xc, currenttime + Minute(990))
 
+    adf = CryptoXch.portfolio!(xc)
+    println("8) $adf")
+
     oodf = CryptoXch.getopenorders(xc)
-    # println("getopenorders(nothing) - expect 2 open orders: $oodf")
+    println("getopenorders(nothing) - expect 2 open orders: $oodf")
 
     oid2 = CryptoXch.cancelorder(xc, "BTC", oidx)
     # println("cancelorder: $(string(oid2))")
     @test oidx == oid2
+
+
+    adf = CryptoXch.portfolio!(xc)
+    println("9) $adf")
+
     oo2 = CryptoXch.getorder(xc, oidx)
     # println("get cancelled order: $(DataFrame([oo2]))")
     oodf = CryptoXch.getopenorders(xc)
-    # println("getopenorders(nothing) - expect no open order: $oodf")
+    println("getopenorders(nothing) - expect no open order: $oodf")
 
 end
 

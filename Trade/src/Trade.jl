@@ -40,8 +40,9 @@ mutable struct TradeCache
     maxassetfraction # defines the maximum ration of (a specific asset) / ( total assets) - sell only if this is exceeded
     lastbuy::Dict  # Dict(base, DateTime) required to buy in = Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in = Minute(tradegapminutes) time gaps
-    function TradeCache(; tradegapminutes=1, topx=50, tradeassetfraction=1/2000, maxassetfraction=0.05, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc))
-        new(xc, tc, tradegapminutes, topx, tradeassetfraction, maxassetfraction, Dict(), Dict())
+    reloadtimes::Vector{Time}  # provides time info when the portfolio of coin candidates shall be reassessed
+    function TradeCache(; tradegapminutes=1, topx=50, tradeassetfraction=1/2000, maxassetfraction=0.05, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[])
+        new(xc, tc, tradegapminutes, topx, tradeassetfraction, maxassetfraction, Dict(), Dict(), reloadtimes)
     end
 end
 
@@ -141,7 +142,7 @@ function tradeloop(cache::TradeCache)
     #     @info "$syminfo"
     # end
     try
-        assets = CryptoXch.portfolio!(cache.xc)
+        assets = CryptoXch.balances(cache.xc)
         TradingStrategy.train!(cache.tc, assets[!, :coin]; enddt=cache.xc.startdt)
         TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
         for c in cache.xc
@@ -160,7 +161,8 @@ function tradeloop(cache::TradeCache)
                 print("\r$(tradetime(cache)): $(USDTmsg(assets))")  # trading=$([k for k in advice]) ")
                 trade!(cache, basecfg, tp, assets)
             end
-            if (Time(cache.xc.currentdt) == Time("04:00:00"))
+            if Time(cache.xc.currentdt) in cache.reloadtimes  # Time("04:00:00"))
+                println()
                 @info "$(tradetime(cache)): daily loading" cache.tc.cfg
                 TradingStrategy.train!(cache.tc, assets[!, :coin]; enddt=cache.xc.currentdt)
                 TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)

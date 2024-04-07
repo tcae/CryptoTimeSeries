@@ -1055,7 +1055,7 @@ function write(f4::Features004)
             Logging.@error "exception $e detected when writing $(fn.filename)"
         end
     else
-        (verbosity >= 1) && @warn "no F4.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data"
+        (verbosity >= 2) && println("no F4.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data")
     end
 end
 
