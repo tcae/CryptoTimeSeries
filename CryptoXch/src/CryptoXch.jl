@@ -212,7 +212,7 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
     if !isnothing(xc.enddt)  # then backtest
         return
     end
-    sleepperiod = dt - Bybit.servertime(xc.bc)
+    sleepperiod = (dt + Second(2)) - Bybit.servertime(xc.bc)
     if sleepperiod <= Dates.Second(0)
         return
     end

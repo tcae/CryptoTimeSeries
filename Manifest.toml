@@ -700,7 +700,7 @@ version = "0.2.8"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "JDF", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.6.3"
+version = "1.6.5"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]

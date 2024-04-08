@@ -49,7 +49,13 @@ If isnothing(enddt) or enddt > last update then uploads latest OHLCV and calcula
 The resulting DataFrame table of tradable coins is stored.
 assetbases is an input parameter to enable backtesting.
 """
-function train!(tc::TradeConfig, assetbases::Vector; enddt=floor(Dates.now(Dates.UTC), Minute(1)), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false)
+function train!(tc::TradeConfig, assetbases::Vector; enddt=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false)
+    enddt = floor(enddt, Minute(1))
+
+    # make memory available
+    tc.cfg = DataFrame()
+    CryptoXch.removeallbases(tc.xc)
+
     read!(tc, enddt, enddt)
     if size(tc.cfg, 1) > 0
         (verbosity >= 3) && println(tc.cfg)
@@ -70,13 +76,13 @@ function train!(tc::TradeConfig, assetbases::Vector; enddt=floor(Dates.now(Dates
     skippedbases = []
     for (ix, base) in enumerate(allbases)
         (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count)                                                  ")
-        startdt = enddt - Year(10)
-        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", enddt - Year(10), enddt)
         Ohlcv.write(ohlcv)
         cl = Classify.Classifier001(ohlcv)
         if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+            Classify.write(cl)
+            Classify.timerangecut!(cl, enddt - Day(10), enddt)
             cld[base] = cl
-            Classify.write(cld[base])
         elseif base in assetbases
             @warn "skipping asset $base because classifier features cannot be calculated"
             push!(skippedbases, base)
@@ -105,28 +111,17 @@ function train!(tc::TradeConfig, assetbases::Vector; enddt=floor(Dates.now(Dates
     end
     tc.cfg[:, :buysell] = [base in tradablebases for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :sellonly] = [base in sellonlybases for base in tc.cfg[!, :basecoin]]
-    # cldf = DataFrame(regrwindow=Int16[], gainthreshold=Float32[], model=String[], medianccbuycnt=Float32[], simgain=Float32[], update=DateTime[], classifier=Classify.Classifier001[])
-    # for tcix in eachindex(tc.cfg[!, :basecoin])
-    #     if tc.cfg[tcix, :basecoin] in keys(cld)
-    #         cl = cld[tc.cfg[tcix, :basecoin]]
-    #         push!(cldf, (cl.cfg[cl.bestix, :regrwindow], cl.cfg[cl.bestix, :gainthreshold], cl.cfg[cl.bestix, :model], cl.cfg[cl.bestix, :medianccbuycnt], cl.cfg[cl.bestix, :simgain], enddt, cl))
-    #     else
-    #         @error "unexpected missing classifier for basecoin $(tc.cfg[tcix, :basecoin])"
-    #     end
-    # end
     cldf1 = DataFrame()
     cldf2 = DataFrame()
     for cl in values(cld)
         push!(cldf1, cl.cfg[cl.bestix, :])
         push!(cldf2, (basecoin=cl.cfg[cl.bestix, :basecoin], classifier=cl))
     end
-    (verbosity >= 3) && println("tc.cfg=$(tc.cfg)")
-    (verbosity >= 3) && println("cldf1=$cldf1")
-    (verbosity >= 3) && println("cldf2=$cldf2")
     tc.cfg = leftjoin(tc.cfg, cldf1, on = :basecoin)
     tc.cfg = leftjoin(tc.cfg, cldf2, on = :basecoin)
-    (verbosity >= 3) && println(describe(tc.cfg, :all))
+    (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of TrainingStrategy.train! $(tc.cfg)")
     write(tc, enddt)
+    (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
     return tc
 end
 
@@ -153,13 +148,6 @@ function _cfgfilename(timestamp::Union{Nothing, DateTime}, ext="jdf")
         cfgfilename = join([TRADECONFIG_CONFIGFILE, Dates.format(timestamp, "yy-mm-dd")], "_")
     end
     return EnvConfig.datafile(cfgfilename, "TradeConfig", ".jdf")
-    # cfgfilename = EnvConfig.logpath(TRADECONFIG_CONFIGFILE)
-    # if isnothing(timestamp)
-    #     cfgfilename = join([cfgfilename, ext], ".")
-    # else
-    #     cfgfilename = join([cfgfilename, Dates.format(timestamp, "yy-mm-dd"), ext], "_", ".")
-    # end
-    # return cfgfilename
 end
 
 "if timestamp=nothing then no extension otherwise timestamp extension"
@@ -204,7 +192,7 @@ function read!(tc::TradeConfig, startdt, enddt)
                     @warn "skipping asset $(df[ix, :basecoin]) because classifier features cannot be calculated" cl=cl ohlcv=ohlcv f4=cl.f4
                 end
             end
-            (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
+            (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
             df[:, :classifier] = clvec
         end
     end
