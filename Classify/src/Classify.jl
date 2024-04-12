@@ -17,6 +17,7 @@ export noop, hold, sell, buy, strongsell, strongbuy
 @enum InvestProposal noop hold sell buy strongsell strongbuy # noop = no statement possible, e.g. due to error, trading shall go on save side
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
+DEBUG = false
 
 """
 verbosity =
@@ -1138,12 +1139,13 @@ mutable struct Classifier001 <: AbstractClassifier
     makerfee
     takerfee
     cfg::AbstractDataFrame
+    dbgdf
 end
 
 STDREGRWINDOW = 1440
 STDREGRWINDOWSET = [rw for rw in Features.regressionwindows004 if  (12*60) <= rw <= (3*24*60)]
 STDGAINTHRSHLD = 0.01f0
-STDGAINTHRSHLDSET = [0.005f0, 0.01f0, 0.02f0]
+STDGAINTHRSHLDSET = [0.01f0, 0.02f0]  # excluding 0.005f0,
 FEE = 0.1f0 / 100f0  # 0.1%
 # FEE = 0f0  # no fee
 MINSIMGAINPCT = 5  # 5% is standard minimum simulation gain
@@ -1153,7 +1155,7 @@ STDMODEL = "baseline"
 STDMODELSET = [STDMODEL]
 
 function Classifier001(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true), makerfee=FEE, takerfee=FEE)
-    cl = Classifier001(ohlcv, f4, nothing, makerfee, takerfee, emptyconfigdf())
+    cl = Classifier001(ohlcv, f4, nothing, makerfee, takerfee, emptyconfigdf(), nothing)
     return cl
 end
 
@@ -1202,7 +1204,7 @@ requiredminutes() = maximum(Features.regressionwindows004)
 emptyconfigdf() = DataFrame(basecoin=String[], regrwindow=Int16[], gainthreshold=Float32[], model=String[], minqteqty=Float32[], startdt=DateTime[], enddt=DateTime[], totalcnt=Int32[], sellcnt=Int32[], buycnt=Int32[], maxccbuycnt=Int32[], medianccbuycnt=Float32[], unresolvedcnt=Int32[], totalgain=Float32[], mediangain=Float32[], meangain=Float32[], cumgain=Float32[], maxcumgain=Float32[], mincumgain=Float32[], maxgap=Int32[], mediangap=Float32[], simgain=Float32[], minsimgain=Float32[], maxsimgain=Float32[])
 dummyconfig = (basecoin="dummy", regrwindow=0, gainthreshold=0f0, model=STDMODEL, minqteqty=0f0, startdt=DateTime("2020-01-01T01:00:00"), enddt=DateTime("2020-01-01T01:00:00"), totalcnt=0, sellcnt=0, buycnt=0, maxccbuycnt=0, medianccbuycnt=0f0, unresolvedcnt=0, totalgain=0f0, mediangain=0f0, meangain=0f0, cumgain=0f0, maxcumgain=0f0, mincumgain=0f0, maxgap=0, mediangap=0f0, simgain=0f0, minsimgain=0f0, maxsimgain=0f0)
 
-function _addconfig!(cl::Classifier001, base::String, regrwindow, gainthreshold, model)
+function addconfig!(cl::Classifier001, base::String, regrwindow, gainthreshold, model)
     push!(cl.cfg, dummyconfig)
     cl.cfg[end, :basecoin] = base
     cl.cfg[end, :regrwindow] = regrwindow
@@ -1216,7 +1218,7 @@ function addreplaceconfig!(cl::Classifier001, base, regrwindow, gainthreshold, m
     cfgix = findall((cl.cfg[!, :basecoin] .== base) .&& (cl.cfg[!, :regrwindow] .== regrwindow) .&& (cl.cfg[!, :gainthreshold] .== gainthreshold) .&& (cl.cfg[!, :model] .== model))
     cfg = nothing
     if length(cfgix) == 0
-        cfg = _addconfig!(cl, base, regrwindow, gainthreshold, model)
+        cfg = addconfig!(cl, base, regrwindow, gainthreshold, model)
         # sort!(cl.cfg, [:basecoin, :regrwindow, :gainthreshold])
     else
         for ix in reverse(cfgix) # use reverse to maintain correct index in loop
@@ -1385,11 +1387,20 @@ function train!(cl::Classifier001; regrwindows=STDREGRWINDOWSET, gainthresholds=
         for gth in gainthresholds
             for model in models
                 # (verbosity >= 3) && print("\r$(EnvConfig.timestr(enddt)) $(cl.ohlcv.base), $regr, $gth                                ")
-                cfgrow = _addconfig!(cl, cl.ohlcv.base, regr, gth, model)
+                cfgrow = addconfig!(cl, cl.ohlcv.base, regr, gth, model)
                 if size(cl.ohlcv.df, 1) > 0
                     # ipvec = [advice(cl, oix, regr, gth, model) for oix in cl.ohlcv.ix:size(cl.ohlcv.df, 1)]
                     ipvec = [advice(cl, oix, regr, gth, model) for oix in startix:endix]
-
+                    if DEBUG
+                        cl.dbgdf = DataFrame()
+                        for oix in startix:endix
+                            #TODO add gain calc into dbgdf to directly compare to trade log
+                            tp = advice(cl, oix, regr, gth, model)
+                            if !isnothing(tp) # in [sell, buy]
+                                push!(cl.dbgdf, (opentime=cl.ohlcv.df[oix, :opentime], simtp=tp, simclose=cl.ohlcv.df[oix, :close]))
+                            end
+                        end
+                    end
                     @assert length(ipvec) == ohlcvlen "length(ipvec)=$(length(ipvec)) == ohlcvlen=$ohlcvlen, ohlcv=$(cl.ohlcv)"
                     tradepairs = _tradepairs(cl, ipvec, startix)
                     _evalconfig(cl, cfgrow, startix, endix, tradepairs)

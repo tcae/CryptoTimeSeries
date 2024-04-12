@@ -70,17 +70,15 @@ currentprice(ohlcv::Ohlcv.OhlcvData) = Ohlcv.dataframe(ohlcv).close[ohlcv.ix]
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
     base = basecfg.basecoin
-    sym = CryptoXch.symboltoken(base)
     totalusdt = sum(assets.usdtvalue)
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])
     freebase = sum(assets[assets[!, :coin] .== base, :free])
     # quotequantity = totalusdt * cache.tradeassetfraction  # target amount to buy or sell - that will be slightly corrected below due to constraints
     quotequantity = cache.maxassetfraction * totalusdt / basecfg.medianccbuycnt
-    syminfo = CryptoXch.minimumqty(cache.xc, sym)
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
     dtnow = Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)]
     price = currentprice(ohlcv)
-    minimumbasequantity = 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
+    minimumbasequantity = CryptoXch.minimumbasequantity(cache.xc, base, price)
     minqteratio = round(Int, (minimumbasequantity * price) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
     tradegapminutes = minqteratio > 1 ? cache.tradegapminutes * minqteratio : cache.tradegapminutes
     basedominatesassets = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > cache.maxassetfraction
@@ -127,6 +125,7 @@ USDTmsg(assets) = string("USDT: total=$(round(Int, sum(assets.usdtvalue))), lock
 
 """
 **`tradeloop`** has to
++ get initial TradinStrategy config (if not present at entry) and refresh daily according to `reloadtimes`
 + get new exchange data (preferably non blocking)
 + evaluate new exchange data and derive trade signals
 + place new orders (preferably non blocking)
@@ -142,8 +141,16 @@ function tradeloop(cache::TradeCache)
     #     @info "$syminfo"
     # end
     try
-        assets = CryptoXch.balances(cache.xc)
-        TradingStrategy.train!(cache.tc, assets[!, :coin]; enddt=cache.xc.startdt)
+        if size(cache.tc.cfg, 1) == 0
+            assets = CryptoXch.balances(cache.xc)
+            print("\r$(tradetime(cache)): start loading trading strategy")
+            if isnothing(TradingStrategy.read!(cache.tc, cache.xc.startdt))
+                print("\r$(tradetime(cache)): start reassessing trading strategy")
+                TradingStrategy.train!(cache.tc, assets[!, :coin]; datetime=cache.xc.startdt)
+            end
+            @info "$(tradetime(cache)) initial trading strategy: $(cache.tc.cfg)"
+            # else TradingStrategy was created outside tradeloop - take it as is
+        end
         TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
         for c in cache.xc
             (verbosity == 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
@@ -161,10 +168,11 @@ function tradeloop(cache::TradeCache)
                 print("\r$(tradetime(cache)): $(USDTmsg(assets))")  # trading=$([k for k in advice]) ")
                 trade!(cache, basecfg, tp, assets)
             end
-            if Time(cache.xc.currentdt) in cache.reloadtimes  # Time("04:00:00"))
-                println()
-                @info "$(tradetime(cache)): daily loading" cache.tc.cfg
-                TradingStrategy.train!(cache.tc, assets[!, :coin]; enddt=cache.xc.currentdt)
+            if Time(cache.xc.currentdt) in cache.reloadtimes  # e.g. [Time("04:00:00"))]
+                assets = CryptoXch.portfolio!(cache.xc)
+                print("\r$(tradetime(cache)): start reassessing trading strategy")
+                TradingStrategy.train!(cache.tc, assets[!, :coin]; datetime=cache.xc.currentdt)
+                @info "$(tradetime(cache)) reassessed trading strategy: $(cache.tc.cfg)"
                 TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
             end
             #TODO low prio: for closed orders check fees

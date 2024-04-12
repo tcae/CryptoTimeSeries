@@ -14,7 +14,7 @@ EnvConfig.init(production)
 xc = CryptoXch.XchCache(true)
 
 
-# tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), []; enddt=dt, assetonly=true)
+# tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), []; datetime=dt, assetonly=true)
 function ohlcv2df()
     df = DataFrame()
     stopafter = 3000

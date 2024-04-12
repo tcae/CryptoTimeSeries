@@ -337,7 +337,7 @@ weakdeps = ["SparseArrays"]
 deps = ["Assets", "BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "CryptoXch", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "IJulia", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "Ohlcv", "PlotlyJS", "Plots", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.16.3"
+version = "0.16.4"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]
@@ -482,7 +482,7 @@ version = "4.1.1"
 deps = ["Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.5.1"
+version = "1.5.5"
 
 [[deps.CustomUnitRanges]]
 git-tree-sha1 = "1a3f97f907e6dd8983b744d2642651bb162a3f7a"
@@ -2503,13 +2503,13 @@ version = "0.5.23"
 deps = ["Assets", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "TradingStrategy"]
 path = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.11.0"
+version = "0.12.0"
 
 [[deps.TradingStrategy]]
 deps = ["Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JuliaInterpreter", "Logging", "Ohlcv", "Test"]
 path = "TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.6.0"
+version = "0.7.1"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "1fbeaaca45801b4ba17c251dd8603ef24801dd84"
