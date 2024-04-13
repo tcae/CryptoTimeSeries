@@ -1,7 +1,7 @@
 module TradeTest
 
 using Test, Dates, Logging, LoggingExtras
-using EnvConfig, Trade, Classify, Assets, Ohlcv, CryptoXch, Features
+using EnvConfig, Trade, Classify, Assets, Ohlcv, CryptoXch, TradingStrategy
 
 println("TradeTest trade_test")
 println("$(EnvConfig.now()): started")
@@ -12,16 +12,21 @@ demux_logger = TeeLogger(
 defaultlogger = global_logger(demux_logger)
 
 CryptoXch.verbosity = 1
+TradingStrategy.verbosity = 1
 Assets.verbosity = 2
 Classify.verbosity = 2
 Ohlcv.verbosity = 2
-Features.verbosity = 2
 EnvConfig.init(training)
 # EnvConfig.init(production)
 startdt = DateTime("2024-03-19T00:00:00")
 enddt = DateTime("2024-03-29T10:00:00")
-reloadtimes = [Time("04:00:00")]
-cache = Trade.TradeCache(xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt), reloadtimes=reloadtimes)
+reloadtimes = []  # [Time("04:00:00")]
+xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), ["BTC"], datetime=startdt, assetonly=true)
+tc.cfg[1, :regrwindow] = 24*60
+tc.cfg[1, :gainthreshold] = 0.01
+@info "backtest trading config: $(tc.cfg)"
+cache = Trade.TradeCache(xc=xc, tc=tc, reloadtimes=reloadtimes)
 CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
 
 # startdt = Dates.now(UTC)

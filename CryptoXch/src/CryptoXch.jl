@@ -644,6 +644,16 @@ end
 
 #region simulation
 
+#TODO add to buy orders flags that indicate why a buy advice is not followed:
+#TODO exceedsmaxassetfraction = fraction of an asset exceed configured maximum
+#TODO insufficientbuybalance = not enough USDT availble
+#TODO withintradegap = trade is not executed because trade gap has notpassed yet
+#
+#TODO add to buy and sell orders flags that indicate why an advice is not followed:
+#TODO belowminimumbasequantity = buy/sell amount too low
+#TODO add comment with additional info
+
+
 ASSETSFILENAME = "XchCacheAssets"
 ORDERSFILENAME = "XchCacheOrders"
 CLOSEDORDERSFILENAME = "XchCacheClosedorders"

@@ -948,6 +948,8 @@ function f4offset!(f4::Features004, ohlcv::Ohlcv.OhlcvData)
             if f4df[fix, :opentime] == ohlcv.df[oix, :opentime]
                 f4.ohlcvoffset = oix - fix
             end
+        else
+            (verbosity >= 3) && @warn "could not calc $(ohlcv.base) f4offset ohlcv.begin=$(ohlcv.df[begin,:opentime]), ohlcv.end=$(ohlcv.df[end,:opentime]), f4df.begin=$(f4df[begin, :opentime]), f4df.end=$(f4df[end, :opentime])"
         end
     end
     return f4.ohlcvoffset
@@ -1171,8 +1173,7 @@ function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df.opentim
             f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
         end
     end
-    f4offset!(f4, ohlcv)
-    return f4
+    return isnothing(f4offset!(f4, ohlcv)) ? nothing : f4
 end
 
 function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows004, usecache=false)::Union{Nothing, Features004}
@@ -1192,8 +1193,7 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
             f4.rw[window] = DataFrame(opentime=DateTime[], regry=Float32[], grad=Float32[], std=Float32[])
         end
     end
-    supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)
-    return f4
+    return isnothing(supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)) ? nothing : f4
 end
 
 requiredminutes(f4::Features004) = maximum(regrwindows(f4))

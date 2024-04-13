@@ -18,8 +18,8 @@ dummy = DateTime("2000-01-01T00:00:00")
 startdt = Dates.now(UTC)  # DateTime("2024-03-19T00:00:00")
 enddt = nothing  # DateTime("2024-03-30T10:03:00")
 assets = CryptoXch.portfolio!(xc)
-# tc = TradingStrategy.read!(TradingStrategy.TradeConfig(xc), startdt)
-tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=startdt)
+tc = TradingStrategy.read!(TradingStrategy.TradeConfig(xc), startdt)
+# tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=startdt)
 # tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), ["BTC", "MATIC"]; datetime=startdt, assetonly=true)
 
 

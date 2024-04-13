@@ -69,7 +69,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     if assetonly
         usdtdf = filter(row -> row.basecoin in assetbases, usdtdf)
     end
-    (verbosity >= 3) && println("USDT market: $(describe(usdtdf, :all)) of size=$(size(usdtdf, 1)) at $datetime")
+    (verbosity >= 3) && println("USDT market of size=$(size(usdtdf, 1)) at $datetime")
     tradablebases = usdtdf[usdtdf.quotevolume24h .>= minimumdayquotevolume, :basecoin]
     tradablebases = [base for base in tradablebases if CryptoXch.validbase(tc.xc, base)]
     allbases = union(tradablebases, assetbases)
@@ -81,15 +81,16 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     skippedbases = []
     for (ix, base) in enumerate(allbases)
         (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count)                                                  ")
-        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Year(10), datetime)
-        Ohlcv.write(ohlcv)
-        cl = Classify.Classifier001(ohlcv)
-        if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
-            Classify.write(cl)
-            Classify.timerangecut!(cl, datetime - Day(10), datetime)
-            cld[base] = cl
-        elseif base in assetbases
-            @warn "skipping asset $base because classifier features cannot be calculated"
+        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Minute(Classify.requiredminutes()-1), datetime)
+        if continuousminimumvolume(ohlcv, datetime)
+            cl = Classify.Classifier001(ohlcv)
+            if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+                cld[base] = cl
+            elseif base in assetbases
+                @warn "skipping asset $base because classifier features cannot be calculated"
+                push!(skippedbases, base)
+            end
+        else
             push!(skippedbases, base)
         end
     end
@@ -104,8 +105,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     else
         trainsetminperfdf = Classify.trainsetminperf(cfg)
         (verbosity >= 4) && println("trainsetminperfdf=$trainsetminperfdf")
-        performerbases = size(trainsetminperfdf, 1) > 0 ? intersect(trainsetminperfdf[!, :basecoin], tradablebases) : []
-        tradablebases = [base for base in performerbases if continuousminimumvolume(cld[base].ohlcv, datetime)]
+        tradablebases = size(trainsetminperfdf, 1) > 0 ? intersect(trainsetminperfdf[!, :basecoin], tradablebases) : []
         (verbosity >= 4) && println("tradablebases=$tradablebases = setdiff(performerbases=$performerbases, insufficientcontinuousvolume=$(setdiff(performerbases, tradablebases))")
     end
 
@@ -132,7 +132,9 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     tc.cfg = leftjoin(tc.cfg, cldf1, on = :basecoin)
     tc.cfg = leftjoin(tc.cfg, cldf2, on = :basecoin)
     (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of TrainingStrategy.train! $(tc.cfg)")
-    write(tc, datetime)
+    if !assetonly
+        write(tc, datetime)
+    end
     (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
     return tc
 end
@@ -186,7 +188,7 @@ function write(tc::TradeConfig, timestamp::Union{Nothing, DateTime}=nothing)
     EnvConfig.setlogpath(nothing)
     cfgfilename = _cfgfilename(timestamp)
     # EnvConfig.checkbackup(cfgfilename)
-    (verbosity >=3) && println("cfgfilename=$cfgfilename  tc.cfg=$(tc.cfg)")
+    (verbosity >=3) && println("saved trading config in cfgfilename=$cfgfilename")
     JDF.savejdf(cfgfilename, tc.cfg[!, Not(:classifier)])
     if isnothing(timestamp)
         cfgfilename = _cfgfilename(Dates.now(UTC))
