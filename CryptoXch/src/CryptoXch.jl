@@ -176,7 +176,6 @@ function setcurrenttime!(xc::XchCache, base::String, datetime::DateTime)
     Ohlcv.setix!(ohlcv, Ohlcv.rowix(ohlcv, dt))
     if (size(Ohlcv.dataframe(ohlcv), 1) > 0) && (Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)] != dt)
         (verbosity => 1) && @warn "setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])"
-        (verbosity => 2) && println("setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])")
     end
     return ohlcv
 end
@@ -432,7 +431,7 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
             (verbosity >= 3) && println("Start loading USDT market data from $cfgfilename for $dt ")
             usdtdf = DataFrame(JDF.loadjdf(cfgfilename))
             if isnothing(usdtdf)
-                (verbosity >=2) && println("Loading USDT market data from $cfgfilename for $dt failed")
+                (verbosity >=1) && @warn "Loading USDT market data from $cfgfilename for $dt failed"
             else
                 (verbosity >=2) && println("Loaded USDT market data for $(size(usdtdf, 1)) coins from $cfgfilename for $dt")
                 # for row in eachrow(usdtdf)
@@ -652,6 +651,11 @@ end
 #TODO add to buy and sell orders flags that indicate why an advice is not followed:
 #TODO belowminimumbasequantity = buy/sell amount too low
 #TODO add comment with additional info
+#
+#TODO 3 order lists: openbuy (will only be moved to closed when sell order is issued), opensell, closed
+#TODO buy/sell order records receive the sell/buy counterpartprder id that links buy with sell and a classifier id
+#TODO a classifier remains active as long as there are open investments with its classifier id
+#TODO 1 file with open and closed orders. buy orders without a sell order id are open investments, orders withan executed qty are open orders
 
 
 ASSETSFILENAME = "XchCacheAssets"
@@ -819,7 +823,7 @@ function _createordersimulation(xc::XchCache, base, side, baseqty, limitprice, f
     orderid = "$side$baseqty*$(round(limitprice, sigdigits=5))$base$(Dates.format(dtnow, "yymmddTHH:MM"))"
     if (side == "Buy")
         if (limitprice > (1+MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])
-            (verbosity >= 1) && @warn "limitprice $limitprice > max delta $((1+MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])"
+            (verbosity >= 2) && @info "limitprice $limitprice > max delta $((1+MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])"
             return nothing
         else
             limitprice = min(limitprice, ohlcv.df.close[ohlcv.ix])

@@ -6,7 +6,6 @@ using EnvConfig, Trade, TradingStrategy, Classify, Assets, Ohlcv, CryptoXch
 println("$(EnvConfig.now()): TradeCorrelation started")
 
 CryptoXch.verbosity = 1
-Assets.verbosity = 2
 Classify.verbosity = 2
 Ohlcv.verbosity = 1
 EnvConfig.init(training)

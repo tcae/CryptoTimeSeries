@@ -25,6 +25,10 @@ MINIMUMDAYUSDTVOLUME = 2*1000000
 TRADECONFIG_CONFIGFILE = "TradeConfig"
 
 function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTime, Nothing}, checkperiod=Day(1), accumulateminutes=5, minimumaccumulatequotevolume=1000f0)::Bool
+    if size(ohlcv.df, 1) == 0
+        (verbosity >= 4) && println("$(ohlcv.base) has an empty dataframe")
+        return false
+    end
     datetime = isnothing(datetime) ? ohlcv.df[end, :opentime] : datetime
     endix = Ohlcv.rowix(ohlcv, datetime)
     startdt = datetime - checkperiod
@@ -100,13 +104,14 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     startdt = datetime - Day(10)
     (verbosity >= 2) && print("\r$(EnvConfig.now()) start classifier set training                                             ")
     cfg = Classify.trainset!(collect(values(cld)), startdt, datetime, true)
+    (verbosity >= 4) && println("cld=$(collect(values(cld))) trainset! cfg=$cfg")
     if assetonly
         tradablebases = size(cfg, 1) > 0 ? intersect(cfg[!, :basecoin], tradablebases) : []
     else
         trainsetminperfdf = Classify.trainsetminperf(cfg)
         (verbosity >= 4) && println("trainsetminperfdf=$trainsetminperfdf")
         tradablebases = size(trainsetminperfdf, 1) > 0 ? intersect(trainsetminperfdf[!, :basecoin], tradablebases) : []
-        (verbosity >= 4) && println("tradablebases=$tradablebases = setdiff(performerbases=$performerbases, insufficientcontinuousvolume=$(setdiff(performerbases, tradablebases))")
+        (verbosity >= 4) && println("tradablebases=$tradablebases")
     end
 
     sellonlybases = setdiff(assetbases, tradablebases, skippedbases)
@@ -123,14 +128,11 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     end
     tc.cfg[:, :buysell] = [base in tradablebases for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :sellonly] = [base in sellonlybases for base in tc.cfg[!, :basecoin]]
-    cldf1 = DataFrame()
-    cldf2 = DataFrame()
+    cldf = DataFrame()
     for cl in values(cld)
-        push!(cldf1, cl.cfg[cl.bestix, :])
-        push!(cldf2, (basecoin=cl.cfg[cl.bestix, :basecoin], classifier=cl))
+        push!(cldf, (Classify.configuration(cl)..., cl.cfg[cl.bestix, :]..., classifier=cl))
     end
-    tc.cfg = leftjoin(tc.cfg, cldf1, on = :basecoin)
-    tc.cfg = leftjoin(tc.cfg, cldf2, on = :basecoin)
+    tc.cfg = leftjoin(tc.cfg, cldf, on = :basecoin)
     (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of TrainingStrategy.train! $(tc.cfg)")
     if !assetonly
         write(tc, datetime)
@@ -145,12 +147,8 @@ function emptytradeconfig()
 end
 
 function addtradeconfig(tc::TradeConfig, cl::Classify.AbstractClassifier)
-    tcfg = DataFrame([(basecoin=cl.ohlcv.base, quotevolume24h_M=1f0, pricechangepercent=10f0, buysell=true, sellonly=false)])
-    clcfg1 = DataFrame(cl.cfg[cl.bestix, :])  # Classify.addconfig!(cl, cl.ohlc.base, regrwindow, gainthreshold, model)
-    tcfg = leftjoin(tcfg, clcfg1, on = :basecoin)
-    clcfg2 = DataFrame([(basecoin=cl.ohlcv.base, classifier=cl)])
-    tcfg = leftjoin(tcfg, clcfg2, on = :basecoin)
-    push!(tc.cfg, tcfg[1, :])
+    tcfg = (basecoin=cl.ohlcv.base, quotevolume24h_M=1f0, pricechangepercent=10f0, buysell=true, sellonly=false, Classify.configuration(cl)..., classifier=cl)
+    push!(tc.cfg, tcfg)
 end
 
 """

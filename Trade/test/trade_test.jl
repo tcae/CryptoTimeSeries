@@ -12,7 +12,6 @@ demux_logger = TeeLogger(
 defaultlogger = global_logger(demux_logger)
 
 CryptoXch.verbosity = 1
-Assets.verbosity = 2
 Classify.verbosity = 2
 Ohlcv.verbosity = 2
 Features.verbosity = 2

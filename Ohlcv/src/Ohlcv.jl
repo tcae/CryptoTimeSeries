@@ -127,7 +127,7 @@ function merge!(ohlcv::OhlcvData, addohlcv::OhlcvData)
         # ohlcv is complete subset of addohlcv
         ohlcv.df = DataFrames.copy(addohlcv.df)
     elseif (df1[begin, :opentime] < df2[begin, :opentime]) && (df2[end, :opentime] < df1[end, :opentime])
-        (verbosity >= 1) && @warn "addohlcv is full subset of ohlcv - no action"
+        (verbosity >= 3) && @info "addohlcv is full subset of ohlcv - no action"
     elseif df2[begin, :opentime] <= df1[begin, :opentime] <= (df2[end, :opentime] + Dates.Minute(1)) <= df1[end, :opentime]
         startoverlap = Int(Dates.Minute(df2[end, :opentime] - df1[begin, :opentime])/Dates.Minute(1)) + 1
         ohlcv.df = vcat(df2[!, :], df1[begin+startoverlap:end, :])
