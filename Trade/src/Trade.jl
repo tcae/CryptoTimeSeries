@@ -66,6 +66,7 @@ makerfeeprice(ohlcv::Ohlcv.OhlcvData, tp::Classify.InvestProposal) = Ohlcv.dataf
 TAKER_CORRECTION = 0.0001
 takerfeeprice(ohlcv::Ohlcv.OhlcvData, tp::Classify.InvestProposal) = Ohlcv.dataframe(ohlcv).close[ohlcv.ix] * (1 + (tp == sell ? -TAKER_CORRECTION : TAKER_CORRECTION))
 currentprice(ohlcv::Ohlcv.OhlcvData) = Ohlcv.dataframe(ohlcv).close[ohlcv.ix]
+maxconcurrentbuycount(regrwindow) = regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
@@ -73,7 +74,8 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestPro
     totalusdt = sum(assets.usdtvalue)
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])
     freebase = sum(assets[assets[!, :coin] .== base, :free])
-    quotequantity = cache.tradeassetfraction * totalusdt / (3 * basecfg.medianccbuycnt)  # 3 * basecfg.medianccbuycnt covers with high probability the largest concurrent trades
+    # 1800 = likely maxccbuycount
+    quotequantity = cache.tradeassetfraction * totalusdt / maxconcurrentbuycount(basecfg.regrwindow)
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
     dtnow = Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)]
     price = currentprice(ohlcv)

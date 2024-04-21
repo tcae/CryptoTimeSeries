@@ -43,15 +43,15 @@ function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTim
                     countok += 1
                 end
             end
-            vol = ohlcv.df[end, :basevolume] * ohlcv.df[end, :pivot]
+            vol = ohlcv.df[ix, :basevolume] * ohlcv.df[ix, :pivot]
         else
-            vol += ohlcv.df[end, :basevolume] * ohlcv.df[end, :pivot]
+            vol += ohlcv.df[ix, :basevolume] * ohlcv.df[ix, :pivot]
         end
     end
     if count == countok
         return true
     else
-        (verbosity >= 3) && println("$(ohlcv.base) has in $(round((1 - (countok / count)) * 100))% insuficient continuous $(accumulateminutes) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $datetime")
+        (verbosity >= 3) && println("$(ohlcv.base) has ($(count - countok) of $count) in $(round(((count - countok) / count) * 100.0))% insuficient continuous $(accumulateminutes) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $datetime")
         return false
     end
 end
@@ -86,15 +86,14 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     for (ix, base) in enumerate(allbases)
         (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count)                                                  ")
         ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Minute(Classify.requiredminutes()-1), datetime)
-        if continuousminimumvolume(ohlcv, datetime)
-            cl = Classify.Classifier001(ohlcv)
-            if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
-                cld[base] = cl
-            elseif base in assetbases
-                @warn "skipping asset $base because classifier features cannot be calculated"
-                push!(skippedbases, base)
-            end
-        else
+        cl = Classify.Classifier001(ohlcv)
+        if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+            cld[base] = cl
+        elseif base in assetbases
+            @warn "skipping asset $base because classifier features cannot be calculated"
+            push!(skippedbases, base)
+        end
+        if !continuousminimumvolume(ohlcv, datetime)
             push!(skippedbases, base)
         end
     end
@@ -106,16 +105,19 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     cfg = Classify.trainset!(collect(values(cld)), startdt, datetime, true)
     (verbosity >= 4) && println("cld=$(collect(values(cld))) trainset! cfg=$cfg")
     if assetonly
+        (verbosity >= 4) && println("tradablebases=$(size(cfg, 1) > 0 ? intersect(cfg[!, :basecoin], tradablebases) : []) = intersect($(cfg[!, :basecoin]), tradablebases=$tradablebases)")
         tradablebases = size(cfg, 1) > 0 ? intersect(cfg[!, :basecoin], tradablebases) : []
     else
+        (verbosity >= 4) && println("tradablebases=$(setdiff(tradablebases, skippedbases)) = setdiff(tradablebases=$tradablebases, skippedbases=$skippedbases)")
+        tradablebases = setdiff(tradablebases, skippedbases)
         trainsetminperfdf = Classify.trainsetminperf(cfg)
         (verbosity >= 4) && println("trainsetminperfdf=$trainsetminperfdf")
         tradablebases = size(trainsetminperfdf, 1) > 0 ? intersect(trainsetminperfdf[!, :basecoin], tradablebases) : []
         (verbosity >= 4) && println("tradablebases=$tradablebases")
     end
 
-    sellonlybases = setdiff(assetbases, tradablebases, skippedbases)
-    (verbosity >= 4) && println("sellonlybases=$sellonlybases = setdiff(assetbases=$assetbases, tradablebases=$tradablebases, skippedbases=$skippedbases)")
+    sellonlybases = setdiff(assetbases, tradablebases)
+    (verbosity >= 4) && println("sellonlybases=$sellonlybases = setdiff(assetbases=$assetbases, tradablebases=$tradablebases)")
 
     # create config DataFrame
     allbases = union(tradablebases, sellonlybases)

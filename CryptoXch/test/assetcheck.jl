@@ -24,10 +24,15 @@ xc = CryptoXch.XchCache(true)
 # println("balances: $assets")
 assets = CryptoXch.portfolio!(xc)
 sort!(assets, [:coin])
-println("portfolio: $assets")
 startdt = Dates.now(UTC)
 tc = TradingStrategy.readconfig!(TradingStrategy.TradeConfig(xc), startdt)
+
 sort!(tc.cfg, [:basecoin])
+tc.cfg = tc.cfg[!, Not([:startdt, :enddt, :totalgain, :mediangain, :meangain, :cumgain, :maxcumgain, :mincumgain])]
+tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
+println("portfolio: $assets")
 println("trading strategy: tc=$(tc.cfg)")
 println("buysell coins=$(count(tc.cfg[!, :buysell]))")
+println("coins to trade without assets: $(setdiff(tc.cfg[!, :basecoin], assets[!, :coin]))")
+println("assets that are not listed as tradable coins: $(setdiff(assets[!, :coin], tc.cfg[!, :basecoin]))")
 end
