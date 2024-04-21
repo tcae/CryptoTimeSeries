@@ -48,7 +48,7 @@ function emptyassetdataframe()::DataFrames.DataFrame
 end
 
 manualselect() = EnvConfig.bases
-minimumdayquotevolume = 10000000 # was lowered to 1 million but resulted in many volatile coins
+minimumdayquotevolume = 2 * 1000000 # was lowered to 2 million with in many volatile coins
 
 dataframe(ad::AssetData) = ad.basedf
 

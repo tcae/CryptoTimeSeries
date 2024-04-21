@@ -176,11 +176,8 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
             returnbody = isnothing(returnbody) ? body : returnbody  # 1st time in the loop returnbody=body, in following loops body is appended
         end
     catch err
-        @error "HttpPrivateRequest $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload"
-        # @error "HttpPrivateRequest $info #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
-        # println("public_key=$public_key, secret_key=$secret_key")
-        # println(err)
-        # rethrow()
+        @error "HttpPrivateRequest $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload \nexception=$err \nbacktrace=$(catch_backtrace())"
+        rethrow()
     end
     return returnbody
 end

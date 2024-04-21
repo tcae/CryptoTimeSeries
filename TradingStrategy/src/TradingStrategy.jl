@@ -196,39 +196,53 @@ function write(tc::TradeConfig, timestamp::Union{Nothing, DateTime}=nothing)
 end
 
 """
-Will return the already stored trade strategy config, if filename from the same date exists. Also loads the ohlcv and classifier features.
+Will return the already stored trade strategy config, if filename from the same date exists but does not load the ohlcv and classifier features.
 If no trade strategy config can be loaded then `nothing` is returned.
 """
-function read!(tc::TradeConfig, datetime)
+function readconfig!(tc::TradeConfig, datetime)
     df = DataFrame()
     sf = EnvConfig.logsubfolder()
     EnvConfig.setlogpath(nothing)
     cfgfilename = _cfgfilename(datetime, "jdf")
     if isdir(cfgfilename)
         df = DataFrame(JDF.loadjdf(cfgfilename))
-        if isnothing(df)
-            (verbosity >=2) && println("Loading $cfgfilename failed")
-        else
-            (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config from $cfgfilename")
-            clvec = []
-            rows = size(df, 1)
-            for ix in eachindex(df[!, :basecoin])
-                (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(df[ix, :basecoin]) from trade config ($ix of $rows)                                                  ")
-                ohlcv = CryptoXch.cryptodownload(tc.xc, df[ix, :basecoin], "1m", floor(datetime-Minute(Classify.requiredminutes()), Dates.Minute), floor(datetime, Dates.Minute))
-                cl = Classify.Classifier001(ohlcv)
-                if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
-                    push!(clvec, cl)
-                else
-                    @warn "skipping asset $(df[ix, :basecoin]) because classifier features cannot be calculated" cl=cl ohlcv=ohlcv f4=cl.f4
-                end
-            end
-            (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
-            df[:, :classifier] = clvec
-        end
     end
     EnvConfig.setlogpath(sf)
-    tc.cfg = df
-    return size(df, 1) > 0 ? tc : nothing
+    if !isnothing(df) && (size(df, 1) > 0 )
+        (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config from $cfgfilename")
+        tc.cfg = df
+        return tc
+    else
+        (verbosity >=2) && !isnothing(df) && println("Loading $cfgfilename failed")
+        return nothing
+    end
+end
+
+"""
+Will return the already stored trade strategy config, if filename from the same date exists. Also loads the ohlcv and classifier features.
+If no trade strategy config can be loaded then `nothing` is returned.
+"""
+function read!(tc::TradeConfig, datetime)
+    tc = readconfig!(tc, datetime)
+    df = nothing
+    if !isnothing(tc) && !isnothing(tc.cfg) && (size(tc.cfg, 1) > 0)
+        clvec = []
+        df = tc.cfg
+        rows = size(df, 1)
+        for ix in eachindex(df[!, :basecoin])
+            (verbosity >= 2) && println("\r$(EnvConfig.now()) loading $(df[ix, :basecoin]) from trade config ($ix of $rows)                                                  ")
+            ohlcv = CryptoXch.cryptodownload(tc.xc, df[ix, :basecoin], "1m", floor(datetime-Minute(Classify.requiredminutes()), Dates.Minute), floor(datetime, Dates.Minute))
+            cl = Classify.Classifier001(ohlcv)
+            if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+                push!(clvec, cl)
+            else
+                @warn "skipping asset $(df[ix, :basecoin]) because classifier features cannot be calculated" cl=cl ohlcv=ohlcv f4=cl.f4
+            end
+        end
+        (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
+        df[:, :classifier] = clvec
+    end
+    return !isnothing(df) && (size(df, 1) > 0) ? tc : nothing
 end
 
 end # module

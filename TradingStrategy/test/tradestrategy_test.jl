@@ -16,12 +16,12 @@ xc = CryptoXch.XchCache(true)
 
 dummy = DateTime("2000-01-01T00:00:00")
 # startdt = DateTime("2024-03-19T00:00:00")
-# startdt = Dates.now(UTC)
-startdt = DateTime("2024-04-15T06:00:00")
+startdt = Dates.now(UTC)-Hour(1)
+# startdt = DateTime("2024-04-15T06:00:00")
 enddt = nothing  # DateTime("2024-03-30T10:03:00")
 assets = CryptoXch.portfolio!(xc)
 # tc = TradingStrategy.read!(TradingStrategy.TradeConfig(xc), startdt)
-tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=40*1000000)
+tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=2*1000000)
 # tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), ["BTC", "MATIC"]; datetime=startdt, assetonly=true)
 
 

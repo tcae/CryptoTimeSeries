@@ -1,7 +1,7 @@
 module CryptoXchTest
 using Dates, DataFrames
 
-using Ohlcv, EnvConfig, CryptoXch, Bybit
+using Ohlcv, EnvConfig, CryptoXch, Bybit, TradingStrategy
 
 # EnvConfig.init(training)
 # xc = CryptoXch.XchCache(true)
@@ -23,5 +23,11 @@ xc = CryptoXch.XchCache(true)
 # assets = CryptoXch.balances(xc)
 # println("balances: $assets")
 assets = CryptoXch.portfolio!(xc)
+sort!(assets, [:coin])
 println("portfolio: $assets")
+startdt = Dates.now(UTC)
+tc = TradingStrategy.readconfig!(TradingStrategy.TradeConfig(xc), startdt)
+sort!(tc.cfg, [:basecoin])
+println("trading strategy: tc=$(tc.cfg)")
+println("buysell coins=$(count(tc.cfg[!, :buysell]))")
 end

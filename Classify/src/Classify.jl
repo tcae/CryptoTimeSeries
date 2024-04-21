@@ -1174,7 +1174,7 @@ function read!(cls::Classifier001Set)
             @error "Loading $fn failed"
             cls.cfg = emptyclsdf()
         else
-            (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded trade config from $fn")
+            (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded classifier config from $fn")
         end
     else
         (verbosity >= 2) && println("\r$(EnvConfig.now()) No classifier001 set file $fn found")
@@ -1225,6 +1225,7 @@ STDGAINTHRSHLDSET = [0.01f0, 0.02f0]  # excluding 0.005f0,
 FEE = 0.1f0 / 100f0  # 0.1%
 # FEE = 0f0  # no fee
 MINSIMGAINPCT = 5  # 5% is standard minimum simulation gain
+MINGAINLOSSRATIO = 2 # minimum gain versus max loss ratio
 SIMSTART = 10000f0  # simulation budget
 SIMTRADEFRACTION = 1/1000  # fraction of total simulation budget for one trade
 STDMODEL = "baseline"
@@ -1493,6 +1494,10 @@ function train!(cl::Classifier001; regrwindows=STDREGRWINDOWSET, gainthresholds=
                 end
             end
         end
+    end
+    for ix in eachindex(cl.cfg[!, :simgain])
+        cl.cfg[ix, :simgain] = cl.cfg[ix, :simgain] > 2 * (-cl.cfg[ix, :minsimgain]) ? cl.cfg[ix, :simgain] : 0f0
+        # set simgain = 0 if simgain is not more than double the loss
     end
     if size(cl.cfg, 1) > 0
         cl.bestix = argmax(cl.cfg[!, :simgain])

@@ -120,24 +120,18 @@ function init(mode::Mode; newdatafolder=false)
     authorization = Authentication()
     if configmode == production
         bases = [
-            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
-            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm",
-            "theta"]
+            "btc"]
         trainingbases = [
-            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx"]
+            "btc"]
         datafolder = getdatafolder("Features", newdatafolder)
     elseif  configmode == training
         # trainingbases = bases = ["btc"]
         # trainingbases = bases = ["btc", "xrp", "eos"]
         datafolder = getdatafolder("Features", newdatafolder)
         trainingbases = [
-            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "zrx", "bch",
-            "etc", "link", "ada", "matic", "xtz", "zil", "omg", "xlm",
-            "theta"]
+            "btc"]
         bases = [
-            "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx",
-            "link", "ada", "matic", "omg", "xlm",
-            "theta"]
+            "btc"]
         # trainingbases = [
         #     "btc", "xrp", "eos", "bnb", "eth", "ltc", "trx", "matic", "link", "theta"]
         # datafolder = "TrainingOHLCV"
