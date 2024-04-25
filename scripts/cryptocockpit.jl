@@ -19,7 +19,7 @@ import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch
+using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch, TradingStrategy
 
 include("../scripts/cockpitdatatablecolors.jl")
 
@@ -60,20 +60,25 @@ function updateassets(download=false)
     global ohlcvcache
 
     if !download
-        a = Assets.read!(Assets.AssetData())
+        adf = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(xc))[1] # read latest from file merged with assets in correct format
     end
-    if download || (size(a.basedf, 1) == 0)
+    if download || (size(adf, 1) == 0)
         ohlcvcache = Dict()
-        a = Assets.loadassets!(Assets.AssetData())
-        println(a)
-    end
-    if !(a === nothing) && (size(a.basedf, 1) > 0)
-        sort!(a.basedf, [:portfolio], rev=true)
-        a.basedf.id = a.basedf.base
-        println("updating table data of size: $(size(a.basedf))")
+        assets = CryptoXch.portfolio!(xc)
+        TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=Dates.now(UTC)) # revised config is saved
+        adf = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(xc))[1]
+        println(adf)
 
-        # initial delay but quick switching?
-        for base in a.basedf.base
+    end
+    if !isnothing(adf) && (size(adf, 1) > 0)
+        adf.id = adf.basecoin
+        println("config + assets: $(adf)")
+        # println("updating table data of size: $(size(adf))")
+        rows = size(adf, 1)
+
+        # initial delay but quick switching between coins
+        for (ix, base) in enumerate(adf.basecoin)
+            println("$(EnvConfig.now()) ($ix of $rows) loading $base")
             loadohlcv(base, "1m")
             Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
                 loadohlcv(base, interval)
@@ -81,15 +86,15 @@ function updateassets(download=false)
             # loadohlcv(base, "5m")
             # loadohlcv(base, "1h")
             # loadohlcv(base, "1d")
-            println("$(EnvConfig.now()) loading $base")
         end
+        println("$(EnvConfig.now()) all $rows coins loaded")
     end
-    return a
+    return adf
 end
 
-assets = updateassets(false)
-# println(assets)
-println("last assets update: $(assets.basedf[1, :update]) type $(typeof(assets.basedf[1, :update]))")
+assetsconfig = updateassets(false)
+# println(assetsconfig)
+println("last assetsconfig update: $(assetsconfig[1, :update]) type $(typeof(assetsconfig[1, :update]))")
 app.layout = html_div() do
     html_div(id="leftside", [
         html_div(id="select_buttons", [
@@ -99,21 +104,21 @@ app.layout = html_div() do
             # html_button("reload data", id="reload_data"),
             html_button("reset selection", id="reset_selection")
         ]),
-        html_div(id="graph1day_endtime", children=assets.basedf[1, :update]),
+        html_div(id="graph1day_endtime", children=assetsconfig[1, :update]),
         dcc_graph(id="graph1day"),
-        html_div(id="graph10day_endtime", children=assets.basedf[1, :update]),
+        html_div(id="graph10day_endtime", children=assetsconfig[1, :update]),
         dcc_graph(id="graph10day"),
-        html_div(id="graph6month_endtime", children=assets.basedf[1, :update]),
+        html_div(id="graph6month_endtime", children=assetsconfig[1, :update]),
         dcc_graph(id="graph6month"),
-        html_div(id="graph_all_endtime", children=assets.basedf[1, :update]),
+        html_div(id="graph_all_endtime", children=assetsconfig[1, :update]),
         dcc_graph(id="graph_all"),
     ]),
 
     html_div(id="rightside", [
         dcc_dropdown(
             id="crypto_focus",
-            options=[(label = i, value = i) for i in assets.basedf.base],
-            value=assets.basedf[1, :base]
+            options=[(label = i, value = i) for i in assetsconfig.basecoin],
+            value=assetsconfig[1, :basecoin]
         ),
         dcc_checklist(
             id="indicator_select",
@@ -134,20 +139,18 @@ app.layout = html_div() do
                 # value=[60],
                 labelStyle=(:display => "inline-block")
         ),
-        html_div(id="graph4h_endtime", children=assets.basedf[1, :update]),
+        html_div(id="graph4h_endtime", children=assetsconfig[1, :update]),
         html_div(id="targets4h"),
         dcc_graph(id="graph4h"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assets.basedf) if i != "id"],  # exclude "id" to not display it
-            data = Dict.(pairs.(eachrow(assets.basedf))),
-            style_data_conditional=discrete_background_color_bins(assets.basedf, n_bins=length(names(assets.basedf)), columns="pricechangepercent"),
+            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assetsconfig) if i != "id"],  # exclude "id" to not display it
+            data = Dict.(pairs.(eachrow(assetsconfig))),
+            style_data_conditional=discrete_background_color_bins(assetsconfig, n_bins=length(names(assetsconfig)), columns="pricechangepercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
             sort_mode="multi",
             fixed_rows=Dict("headers" => true),
-            # selected_rows = [ix-1 for ix in 1:size(assets.basedf, 1) if assets.basedf[ix, :portfolio]],
-            # selected_row_ids = [assets.basedf[ix, :base] for ix in 1:size(assets.basedf, 1) if assets.basedf[ix, :portfolio]],
             style_table=Dict("height" => "700px", "overflowY" => "auto")),
         html_div(id="graph_action"),
         html_div(id="click_action")
@@ -260,7 +263,7 @@ callback!(
     graph_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : nothing
     res = (graph_id === nothing) ? "no click selection" : "$graph_id: "
     if graph_id == "reset_selection"
-        updates = assets.basedf[assets.basedf[!, :base] .== focus, :update]
+        updates = assetsconfig[assetsconfig[!, :basecoin] .== focus, :update]
         clickdt = length(updates) > 0 ? Dates.format(updates[1], dtf) : ""
         # println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
     else
@@ -616,7 +619,7 @@ callback!(
         State("crypto_focus", "options")
         # prevent_initial_call=true
     ) do active_cell, update, indicator, olddata, currentfocus, options
-        global assets, donormalize
+        global assetsconfig, donormalize
 
         ctx = callback_context()
         button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : "nothing"
@@ -630,24 +633,24 @@ callback!(
         # if button_id == "indicator_select"
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
-                assets = updateassets(false)
-                active_row_id = assets.basedf[1, :base]
+                assetsconfig = updateassets(false)
+                active_row_id = assetsconfig[1, :basecoin]
             elseif (EnvConfig.configmode == EnvConfig.test) && !("test" in indicator)  # switch from test to prodcution data
                 EnvConfig.init(EnvConfig.production)
-                assets = updateassets(false)
-                active_row_id = assets.basedf[1, :base]
+                assetsconfig = updateassets(false)
+                active_row_id = assetsconfig[1, :basecoin]
             end
 
         if button_id == "update_data"
-            assets = updateassets(true)
+            assetsconfig = updateassets(true)
         # else
         #     return 0, olddata, active_row_id, options
         end
-        if !(assets === nothing)
-            # println("data update assets.basedf.size: $(size(assets.basedf))")
-            return 1, Dict.(pairs.(eachrow(assets.basedf))), active_row_id, [(label = i, value = i) for i in assets.basedf.base]
+        if !isnothing(assetsconfig)
+            # println("data update assetsconfig.size: $(size(assetsconfig))")
+            return 1, Dict.(pairs.(eachrow(assetsconfig))), active_row_id, [(label = i, value = i) for i in assetsconfig.basecoin]
         else
-            @warn "found no assets"
+            @warn "found no assetsconfig"
             return 0, olddata, active_row_id, options
         end
     end
@@ -669,7 +672,7 @@ callback!(
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
         res = Dict(
-            "all_button" => (0:(size(assets.basedf.base, 1)-1), assets.basedf.base),
+            "all_button" => (0:(size(assetsconfig.basecoin, 1)-1), assetsconfig.basecoin),
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))
