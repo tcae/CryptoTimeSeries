@@ -94,6 +94,15 @@
 				"stopOnEntry": false,
 				"cwd": "${workspaceFolder}",
 				"juliaEnv": "${command:activeJuliaEnvironment}"
+			},
+			{
+				"type": "julia",
+				"request": "launch",
+				"name": "Run trade production",
+				"program": "./Trade/test/tradeproduction.jl",
+				"stopOnEntry": false,
+				"cwd": "${workspaceFolder}",
+				"juliaEnv": "."
 			}
 		]
 	}

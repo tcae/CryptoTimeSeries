@@ -2,6 +2,13 @@ module TradeProduction
 
 using Test, Dates, Logging, LoggingExtras
 using EnvConfig, Trade, Classify, CryptoXch
+
+# # Disable the default behavior of exiting on Ctrl+C
+# Base.exit_on_sigint(false)
+
+# Redirect sigint to julia exception handling
+ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
+
 println("TradeProduction tradeproduction")
 
 messagelogfn = EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")

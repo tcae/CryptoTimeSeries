@@ -658,6 +658,9 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             # end
             # println("pricedigits=$pricedigits, ticksize=$(syminfo.ticksize)")
             if maker
+                # The ask price is typically higher than the bid price.
+                # The bid price is the price at which a buyer is willing to purchase a security.
+                # The ask price is the price at which a seller is willing to sell a security.
                 limitprice = orderside == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
                 timeinforce = "PostOnly"
             else # taker

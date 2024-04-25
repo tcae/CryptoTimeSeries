@@ -3,6 +3,9 @@ module TradeTest
 using Test, Dates, Logging, LoggingExtras
 using EnvConfig, Trade, Classify, Assets, Ohlcv, CryptoXch, TradingStrategy
 
+# Redirect sigint to julia exception handling
+ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
+
 println("TradeTest trade_test")
 println("$(EnvConfig.now()): started")
 demux_logger = TeeLogger(

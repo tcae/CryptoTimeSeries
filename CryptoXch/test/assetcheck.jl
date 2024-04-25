@@ -1,7 +1,7 @@
 module CryptoXchTest
 using Dates, DataFrames
 
-using Ohlcv, EnvConfig, CryptoXch, Bybit, TradingStrategy
+using Ohlcv, EnvConfig, CryptoXch, Bybit, TradingStrategy, Trade
 
 # EnvConfig.init(training)
 # xc = CryptoXch.XchCache(true)
@@ -12,27 +12,11 @@ using Ohlcv, EnvConfig, CryptoXch, Bybit, TradingStrategy
 EnvConfig.init(production)
 xc = CryptoXch.XchCache(true)
 
-# assets = CryptoXch.balances(xc,ignoresmallvolume=false)
-# println("balances1: $assets")
-# assets = CryptoXch.portfolio!(xc, ignoresmallvolume=false)
-# println("portfolio1: $assets")
-# assets = CryptoXch.balances(xc,ignoresmallvolume=true)
-# println("balances2: $assets")
-# assets = CryptoXch.portfolio!(xc, ignoresmallvolume=true)
-# println("portfolio2: $assets")
-# assets = CryptoXch.balances(xc)
-# println("balances: $assets")
-assets = CryptoXch.portfolio!(xc)
-sort!(assets, [:coin])
-startdt = Dates.now(UTC)
-tc = TradingStrategy.readconfig!(TradingStrategy.TradeConfig(xc), startdt)
-
-sort!(tc.cfg, [:basecoin])
-tc.cfg = tc.cfg[!, Not([:startdt, :enddt, :totalgain, :mediangain, :meangain, :cumgain, :maxcumgain, :mincumgain])]
-tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
+tcdf, assets = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(xc))
 println("portfolio: $assets")
-println("trading strategy: tc=$(tc.cfg)")
-println("buysell coins=$(count(tc.cfg[!, :buysell]))")
-println("coins to trade without assets: $(setdiff(tc.cfg[!, :basecoin], assets[!, :coin]))")
-println("assets that are not listed as tradable coins: $(setdiff(assets[!, :coin], tc.cfg[!, :basecoin]))")
+println("trading strategy: tc=$(tcdf)")
+println("buysell coins=$(count(tcdf[!, :buysell]))")
+println("coins to trade without assets: $(setdiff(tcdf[!, :basecoin], assets[!, :coin]))")
+println("assets that are not listed as tradable coins: $(setdiff(assets[!, :coin], tcdf[!, :basecoin]))")
+println("$(CryptoXch.ttstr(xc)): $(Trade.USDTmsg(assets))")
 end

@@ -41,7 +41,7 @@ mutable struct TradeCache
     lastbuy::Dict  # Dict(base, DateTime) required to buy in = Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in = Minute(tradegapminutes) time gaps
     reloadtimes::Vector{Time}  # provides time info when the portfolio of coin candidates shall be reassessed
-    function TradeCache(; tradegapminutes=1, topx=50, maxassetfraction=0.10, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[])
+    function TradeCache(; tradegapminutes=1, topx=50, maxassetfraction=0.15, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[])
         new(xc, tc, tradegapminutes, topx, 1f0, maxassetfraction, Dict(), Dict(), reloadtimes)
     end
 end
@@ -153,8 +153,8 @@ function tradeloop(cache::TradeCache)
     end
     cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.tc.cfg[!, :buysell]) > 0 ? count(cache.tc.cfg[!, :buysell]) : 1))
     TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
-    for c in cache.xc
-        try
+    try
+        for c in cache.xc
             (verbosity == 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
             oo = CryptoXch.getopenorders(cache.xc)
             for ooe in eachrow(oo)  # all orders to be cancelled because amending maker orders will lead to rejections and "Order does not exist" returns
@@ -181,14 +181,21 @@ function tradeloop(cache::TradeCache)
             end
             #TODO low prio: for closed orders check fees
             #TODO low prio: aggregate orders and transactions in bookkeeping
-        catch ex
-            if isa(ex, InterruptException)
-                println("Ctrl+C pressed within tradeloop")
-                break
-            else
-                println("tradeloop retry")
-                @error "exception=$ex \nbacktrace=$(catch_backtrace())"
-                continue
+        end
+    catch ex
+        if isa(ex, InterruptException)
+            println("\nCtrl+C pressed within tradeloop")
+        else
+            println("tradeloop retry")
+            @error "exception=$ex"
+        end
+        bt = catch_backtrace()
+        for ptr in bt
+            frame = StackTraces.lookup(ptr)
+            for fr in frame
+                if occursin("CryptoTimeSeries", string(fr.file))
+                    println("fr.func=$(fr.func) fr.linfo=$(fr.linfo) fr.file=$(fr.file) fr.line=$(fr.line) fr.from_c=$(fr.from_c) fr.inlined=$(fr.inlined) fr.pointer=$(fr.pointer)")
+                end
             end
         end
     end

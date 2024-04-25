@@ -1255,7 +1255,7 @@ end
 
 function configuration(cl::Classifier001)
     if !isnothing(cl.bestix) && (size(cl.cfg, 1) > 0)
-        return merge(clcfg(Classifier001Set(), cl.cfg[cl.bestix, :clid]), cl.cfg[cl.bestix, :])
+        return merge(clcfg(Classifier001Set(), cl.cfg[cl.bestix, :clid]), (basecoin=cl.cfg[cl.bestix, :basecoin], simgain=cl.cfg[cl.bestix, :simgain], minsimgain=cl.cfg[cl.bestix, :minsimgain],))
     else
         return nothing
     end

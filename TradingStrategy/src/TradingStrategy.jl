@@ -100,7 +100,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
 
     # qualify buy+sell coins as tradablebases
     (verbosity >= 2) && print("\r$(EnvConfig.now()) finished updating $count bases                                                  ")
-    startdt = datetime - Day(10)
+    startdt = datetime - Day(3)  # Day(10)
     (verbosity >= 2) && print("\r$(EnvConfig.now()) start classifier set training                                             ")
     cfg = Classify.trainset!(collect(values(cld)), startdt, datetime, true)
     (verbosity >= 4) && println("cld=$(collect(values(cld))) trainset! cfg=$cfg")
@@ -110,7 +110,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     else
         (verbosity >= 4) && println("tradablebases=$(setdiff(tradablebases, skippedbases)) = setdiff(tradablebases=$tradablebases, skippedbases=$skippedbases)")
         tradablebases = setdiff(tradablebases, skippedbases)
-        trainsetminperfdf = Classify.trainsetminperf(cfg)
+        trainsetminperfdf = Classify.trainsetminperf(cfg, 1.5)  # 0.5% gain per day
         (verbosity >= 4) && println("trainsetminperfdf=$trainsetminperfdf")
         tradablebases = size(trainsetminperfdf, 1) > 0 ? intersect(trainsetminperfdf[!, :basecoin], tradablebases) : []
         (verbosity >= 4) && println("tradablebases=$tradablebases")
@@ -132,7 +132,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     tc.cfg[:, :sellonly] = [base in sellonlybases for base in tc.cfg[!, :basecoin]]
     cldf = DataFrame()
     for cl in values(cld)
-        push!(cldf, (Classify.configuration(cl)..., cl.cfg[cl.bestix, :]..., classifier=cl))
+        push!(cldf, (Classify.configuration(cl)..., simgain=cl.cfg[cl.bestix, :simgain], minsimgain=cl.cfg[cl.bestix, :minsimgain], medianccbuycnt=cl.cfg[cl.bestix, :medianccbuycnt], update=cl.cfg[cl.bestix, :enddt], classifier=cl))
     end
     tc.cfg = leftjoin(tc.cfg, cldf, on = :basecoin)
     (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of TrainingStrategy.train! $(tc.cfg)")
@@ -141,11 +141,6 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     end
     (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
     return tc
-end
-
-function emptytradeconfig()
-    #TODO does not work with double column basecoin but leftjoin without data also not possible
-    cfg = hcat(DataFrame(basecoin=String[], quotevolume24h_M=Float32[], pricechangepercent=Float32[]), Classify.emptyconfigdf(), DataFrame(classifier=[]))
 end
 
 function addtradeconfig(tc::TradeConfig, cl::Classify.AbstractClassifier)
@@ -245,6 +240,20 @@ function read!(tc::TradeConfig, datetime)
         df[:, :classifier] = clvec
     end
     return !isnothing(df) && (size(df, 1) > 0) ? tc : nothing
+end
+
+"Returns the current TradeConfig dataframe with usdtprice and usdtvalue added as well as the portfolio dataframe as a tuple"
+function assetsconfig!(tc::TradeConfig)
+    assets = CryptoXch.portfolio!(tc.xc)
+    sort!(assets, [:coin])
+    startdt = Dates.now(UTC)
+    tc = TradingStrategy.readconfig!(tc, startdt)
+
+    tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
+    tc.cfg = tc.cfg[!, Not([:locked, :free])]
+    sort!(tc.cfg, [:basecoin])
+    sort!(tc.cfg, rev=true, [:buysell])
+    return tc.cfg, assets
 end
 
 end # module
