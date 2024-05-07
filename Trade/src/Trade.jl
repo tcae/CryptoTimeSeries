@@ -19,10 +19,10 @@ using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Classify, Assets, Features
 verbosity =
 - 0: suppress all output if not an error
 - 1: log warnings
-- 2: load and save messages are reported
+- 2: essential status messages, e.g. load and save messages, are reported
 - 3: print debug info
 """
-verbosity = 1
+verbosity = 2
 
 """
 *TradeCache* contains the recipe and state parameters for the **tradeloop** as parameter. Recipe parameters to create a *TradeCache* are
@@ -41,7 +41,7 @@ mutable struct TradeCache
     lastbuy::Dict  # Dict(base, DateTime) required to buy in = Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in = Minute(tradegapminutes) time gaps
     reloadtimes::Vector{Time}  # provides time info when the portfolio of coin candidates shall be reassessed
-    function TradeCache(; tradegapminutes=1, topx=50, maxassetfraction=0.15, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[])
+    function TradeCache(; tradegapminutes=1, topx=50, maxassetfraction=0.10, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[])
         new(xc, tc, tradegapminutes, topx, 1f0, maxassetfraction, Dict(), Dict(), reloadtimes)
     end
 end
@@ -70,6 +70,8 @@ maxconcurrentbuycount(regrwindow) = regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
+    stopbuying = true
+    executed = noop
     base = basecfg.basecoin
     totalusdt = sum(assets.usdtvalue)
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])
@@ -94,35 +96,39 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestPro
             oid = CryptoXch.createsellorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true)
             if !isnothing(oid)
                 cache.lastsell[base] = dtnow
-                println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
+                executed = sell
+                (verbosity > 2) && println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
             else
-                println("\r$(tradetime(cache)) failed to create $base maker sell order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
+                (verbosity > 2) && println("\r$(tradetime(cache)) failed to create $base maker sell order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
             end
         end
-    elseif (tp == buy) && !basecfg.sellonly
+    elseif !stopbuying && (tp == buy) && !basecfg.sellonly
         basequantity = min(max(quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price #* keep 1% * totalusdt as head room
         sufficientbuybalance = (basequantity * price < freeusdt) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         if basedominatesassets
-            # println("\r$(tradetime(cache)) skip $base buy due to basefraction=$basefraction > maxassetfraction=$(cache.maxassetfraction)")
+            (verbosity > 2) && println("\r$(tradetime(cache)) skip $base buy due to basefraction=$(sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > maxassetfraction=$(cache.maxassetfraction)")
             return
         end
         if sufficientbuybalance && exceedsminimumbasequantity && (!(base in keys(cache.lastbuy)) || (cache.lastbuy[base] + Minute(tradegapminutes) <= dtnow))
             oid = CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true)
             if !isnothing(oid)
                 cache.lastbuy[base] = dtnow
-                println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
+                executed = buy
+                (verbosity > 2) && println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
             else
-                println("\r$(tradetime(cache)) failed to create $base maker buy order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
+                (verbosity > 2) && println("\r$(tradetime(cache)) failed to create $base maker buy order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
                 # println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $price * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
                 # println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
             end
         end
     end
+    return executed
 end
 
 tradetime(cache::TradeCache) = CryptoXch.ttstr(cache.xc)
-USDTmsg(assets) = string("USDT: total=$(round(Int, sum(assets.usdtvalue))), locked=$(round(Int, sum(assets.locked .* assets.usdtprice))), free=$(round(Int, sum(assets.free .* assets.usdtprice)))")
+# USDTmsg(assets) = string("USDT: total=$(round(Int, sum(assets.usdtvalue))), locked=$(round(Int, sum(assets.locked .* assets.usdtprice))), free=$(round(Int, sum(assets.free .* assets.usdtprice)))")
+USDTmsg(assets) = string("USDT: total=$(round(Int, sum(assets.usdtvalue))), free=$(round(Int, sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])/sum(assets.usdtvalue)*100))%")
 
 """
 **`tradeloop`** has to
@@ -143,19 +149,19 @@ function tradeloop(cache::TradeCache)
     # end
     if size(cache.tc.cfg, 1) == 0
         assets = CryptoXch.balances(cache.xc)
-        print("\r$(tradetime(cache)): start loading trading strategy")
+        (verbosity >= 2) && print("\r$(tradetime(cache)): start loading trading strategy")
         if isnothing(TradingStrategy.read!(cache.tc, cache.xc.startdt))
-            print("\r$(tradetime(cache)): start reassessing trading strategy")
+            (verbosity >= 2) && print("\r$(tradetime(cache)): start reassessing trading strategy")
             TradingStrategy.train!(cache.tc, assets[!, :coin]; datetime=cache.xc.startdt)
         end
-        @info "$(tradetime(cache)) initial trading strategy: $(cache.tc.cfg)"
+        (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.tc.cfg)"
         # else TradingStrategy was created outside tradeloop - take it as is
     end
     cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.tc.cfg[!, :buysell]) > 0 ? count(cache.tc.cfg[!, :buysell]) : 1))
     TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
     try
         for c in cache.xc
-            (verbosity == 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
+            (verbosity > 2) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
             oo = CryptoXch.getopenorders(cache.xc)
             for ooe in eachrow(oo)  # all orders to be cancelled because amending maker orders will lead to rejections and "Order does not exist" returns
                 if CryptoXch.openstatus(ooe.status)
@@ -163,19 +169,26 @@ function tradeloop(cache::TradeCache)
                 end
             end
             assets = CryptoXch.portfolio!(cache.xc)
+            sellbases = []
+            buybases = []
             for basecfg in eachrow(cache.tc.cfg)
                 Classify.supplement!(basecfg.classifier)
                 ohlcvix = Ohlcv.rowix(basecfg.classifier.ohlcv.df[!, :opentime], cache.xc.currentdt)
                 tp = basecfg.classifier.ohlcv.df[ohlcvix, :opentime] == cache.xc.currentdt ? Classify.advice(basecfg.classifier, ohlcvix, basecfg.regrwindow, basecfg.gainthreshold, basecfg.headwindow, basecfg.trendwindow) : Classify.noop
-                print("\r$(tradetime(cache)): $(USDTmsg(assets))")
-                trade!(cache, basecfg, tp, assets)
+                # print("\r$(tradetime(cache)): $(USDTmsg(assets))")
+                executed = trade!(cache, basecfg, tp, assets)
+                if executed == buy
+                    push!(buybases, basecfg.basecoin)
+                elseif executed == sell
+                    push!(sellbases, basecfg.basecoin)
+                end
             end
-            print("\r$(tradetime(cache)): $(USDTmsg(assets))")
+            (verbosity >= 2) && print("\r$(tradetime(cache)): $(USDTmsg(assets)), bought: $(buybases), sold: $(sellbases)                                                                    ")
             if Time(cache.xc.currentdt) in cache.reloadtimes  # e.g. [Time("04:00:00"))]
                 assets = CryptoXch.portfolio!(cache.xc)
-                print("\r$(tradetime(cache)): start reassessing trading strategy")
+                (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
                 TradingStrategy.train!(cache.tc, assets[!, :coin]; datetime=cache.xc.currentdt)
-                @info "$(tradetime(cache)) reassessed trading strategy: $(cache.tc.cfg)"
+                (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.tc.cfg)"
                 TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
                 cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.tc.cfg[!, :buysell]) > 0 ? count(cache.tc.cfg[!, :buysell]) : 1))
             end
@@ -184,37 +197,34 @@ function tradeloop(cache::TradeCache)
         end
     catch ex
         if isa(ex, InterruptException)
-            println("\nCtrl+C pressed within tradeloop")
+            (verbosity >= 0) && println("\nCtrl+C pressed within tradeloop")
         else
-            println("tradeloop retry")
-            @error "exception=$ex"
+            (verbosity >= 2) && println("tradeloop retry")
+            (verbosity >= 0) && @error "exception=$ex"
         end
         bt = catch_backtrace()
         for ptr in bt
             frame = StackTraces.lookup(ptr)
             for fr in frame
                 if occursin("CryptoTimeSeries", string(fr.file))
-                    println("fr.func=$(fr.func) fr.linfo=$(fr.linfo) fr.file=$(fr.file) fr.line=$(fr.line) fr.from_c=$(fr.from_c) fr.inlined=$(fr.inlined) fr.pointer=$(fr.pointer)")
+                    (verbosity >= 1) && println("fr.func=$(fr.func) fr.linfo=$(fr.linfo) fr.file=$(fr.file) fr.line=$(fr.line) fr.from_c=$(fr.from_c) fr.inlined=$(fr.inlined) fr.pointer=$(fr.pointer)")
                 end
             end
         end
     end
-    println("$(tradetime(cache)): finished trading core loop")
-    @info "$(EnvConfig.now()): closed orders log" cache.xc.closedorders
-    @info "$(EnvConfig.now()): open orders log" cache.xc.orders
+    (verbosity >= 2) && println("$(tradetime(cache)): finished trading core loop")
+    (verbosity >= 2) && @info "$(EnvConfig.now()): closed orders log" cache.xc.closedorders
+    (verbosity >= 2) && @info "$(EnvConfig.now()): open orders log" cache.xc.orders
     assets = CryptoXch.portfolio!(cache.xc)
-    @info "assets = $assets"
+    (verbosity >= 2) && @info "assets = $assets"
     totalusdt = sum(assets.usdtvalue)
-    @info "total USDT = $totalusdt"
+    (verbosity >= 2) && @info "total USDT = $totalusdt"
     #TODO save investlog
 end
 
 function tradelooptest(cache::TradeCache)
     for c in cache
         println("$(Dates.now(UTC)) $c  $(CryptoXch.ohlcv(c.xc, "BTC"))")
-        # reportliquidity(cache, nothing)
-        # total, free, locked = totalusdtliquidity(cache)
-        # println("liquidity portfolio total free: $(round(free;digits=3)) USDT, locked: $(round(locked;digits=3)) USDT, total: $(round(total;digits=3)) USDT")
     end
 end
 

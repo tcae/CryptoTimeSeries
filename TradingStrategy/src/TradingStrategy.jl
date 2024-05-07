@@ -22,7 +22,7 @@ mutable struct TradeConfig
 end
 
 MINIMUMDAYUSDTVOLUME = 2*1000000
-TRADECONFIG_CONFIGFILE = "TradeConfig"
+TRADECONFIGFILE = "TradeConfig"
 
 function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTime, Nothing}, checkperiod=Day(1), accumulateminutes=5, minimumaccumulatequotevolume=1000f0)::Bool
     if size(ohlcv.df, 1) == 0
@@ -166,14 +166,14 @@ end
 
 function _cfgfilename(timestamp::Union{Nothing, DateTime}, ext="jdf")
     if isnothing(timestamp)
-        cfgfilename = TRADECONFIG_CONFIGFILE
+        cfgfilename = TRADECONFIGFILE
     else
-        cfgfilename = join([TRADECONFIG_CONFIGFILE, Dates.format(timestamp, "yy-mm-dd")], "_")
+        cfgfilename = join([TRADECONFIGFILE, Dates.format(timestamp, "yy-mm-dd")], "_")
     end
-    return EnvConfig.datafile(cfgfilename, "TradeConfig", ".jdf")
+    return EnvConfig.datafile(cfgfilename, TRADECONFIGFILE, ".jdf")
 end
 
-"if timestamp=nothing then no extension otherwise timestamp extension"
+"Saves the trade configuration. If timestamp!=nothing then save 2x with and without timestamp in filename otherwise only without timestamp"
 function write(tc::TradeConfig, timestamp::Union{Nothing, DateTime}=nothing)
     if (size(tc.cfg, 1) == 0)
         @warn "trade config is empty - not stored"
@@ -181,12 +181,16 @@ function write(tc::TradeConfig, timestamp::Union{Nothing, DateTime}=nothing)
     end
     sf = EnvConfig.logsubfolder()
     EnvConfig.setlogpath(nothing)
-    cfgfilename = _cfgfilename(timestamp)
+    cfgfilename = _cfgfilename(nothing)
     # EnvConfig.checkbackup(cfgfilename)
-    (verbosity >=3) && println("saved trading config in cfgfilename=$cfgfilename")
+    if isdir(cfgfilename)
+        rm(cfgfilename; force=true, recursive=true)
+    end
+    (verbosity >=3) && println("saving trade config in cfgfilename=$cfgfilename")
     JDF.savejdf(cfgfilename, tc.cfg[!, Not(:classifier)])
-    if isnothing(timestamp)
-        cfgfilename = _cfgfilename(Dates.now(UTC))
+    if !isnothing(timestamp)
+        cfgfilename = _cfgfilename(timestamp)
+        (verbosity >=3) && println("saving trade config in cfgfilename=$cfgfilename")
         JDF.savejdf(cfgfilename, tc.cfg[!, Not(:classifier)])
     end
     EnvConfig.setlogpath(sf)
@@ -219,7 +223,7 @@ end
 Will return the already stored trade strategy config, if filename from the same date exists. Also loads the ohlcv and classifier features.
 If no trade strategy config can be loaded then `nothing` is returned.
 """
-function read!(tc::TradeConfig, datetime)
+function read!(tc::TradeConfig, datetime=nothing)
     tc = readconfig!(tc, datetime)
     df = nothing
     if !isnothing(tc) && !isnothing(tc.cfg) && (size(tc.cfg, 1) > 0)
@@ -227,7 +231,7 @@ function read!(tc::TradeConfig, datetime)
         df = tc.cfg
         rows = size(df, 1)
         for ix in eachindex(df[!, :basecoin])
-            (verbosity >= 2) && println("\r$(EnvConfig.now()) loading $(df[ix, :basecoin]) from trade config ($ix of $rows)                                                  ")
+            (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(df[ix, :basecoin]) from trade config ($ix of $rows)                                                  ")
             ohlcv = CryptoXch.cryptodownload(tc.xc, df[ix, :basecoin], "1m", floor(datetime-Minute(Classify.requiredminutes()), Dates.Minute), floor(datetime, Dates.Minute))
             cl = Classify.Classifier001(ohlcv)
             if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
@@ -243,11 +247,10 @@ function read!(tc::TradeConfig, datetime)
 end
 
 "Returns the current TradeConfig dataframe with usdtprice and usdtvalue added as well as the portfolio dataframe as a tuple"
-function assetsconfig!(tc::TradeConfig)
+function assetsconfig!(tc::TradeConfig, datetime=nothing)
     assets = CryptoXch.portfolio!(tc.xc)
     sort!(assets, [:coin])
-    startdt = Dates.now(UTC)
-    tc = TradingStrategy.readconfig!(tc, startdt)
+    tc = TradingStrategy.readconfig!(tc, datetime)
 
     tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
     tc.cfg = tc.cfg[!, Not([:locked, :free])]

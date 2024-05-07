@@ -647,7 +647,16 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     end
     attempts = 5
     httpresponse = orderid = nothing
+    limitprice = 0f0
     pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
+    params = Dict(
+        "category" => "spot",
+        "symbol" => symbol,
+        "side" => orderside,
+        "orderType" => "Limit",
+        "qty" => "undefined",
+        "price" => "undefined",
+        "timeInForce" => "undefined")  # "PostOnly" "GTC
     while attempts > 0
         if isnothing(price) # == market order
             now = Bybit.get24h(bc, symbol)
@@ -662,29 +671,22 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
                 # The bid price is the price at which a buyer is willing to purchase a security.
                 # The ask price is the price at which a seller is willing to sell a security.
                 limitprice = orderside == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
-                timeinforce = "PostOnly"
+                params["timeinforce"] = "PostOnly"
             else # taker
                 limitprice = orderside == "Buy" ? now.askprice : now.bidprice
-                timeinforce = "GTC"
+                params["timeinforce"] = "GTC"
             end
         else
             limitprice = round(price, digits=pricedigits)
             attempts = 0
-            timeinforce = maker ? "PostOnly" : "GTC"
+            params["timeinforce"] = maker ? "PostOnly" : "GTC"
         end
         basequantity = (basequantity * limitprice) < syminfo.minquoteqty ? syminfo.minquoteqty / limitprice : basequantity
         basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
         qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
         basequantity = floor(basequantity, digits=qtydigits)
-
-        params = Dict(
-            "category" => "spot",
-            "symbol" => symbol,
-            "side" => orderside,
-            "orderType" => "Limit",
-            "qty" => Formatting.format(basequantity, precision=qtydigits),
-            "price" => Formatting.format(limitprice, precision=pricedigits),
-            "timeInForce" => timeinforce)  # "PostOnly" "GTC
+        params["qty"] = Formatting.format(basequantity, precision=qtydigits)
+        params["price"] = Formatting.format(limitprice, precision=pricedigits)
         httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
         attempts = httpresponse["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
         if "orderId" in keys(httpresponse["result"])
@@ -708,7 +710,29 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             attempts = 0
         end
     end
-    return orderid
+    """
+    Returns a DataFrame of open **spot** orders with columns:
+
+    - orderid ::String
+    - symbol ::String
+    - side ::String (`Buy` or `Sell`)
+    - baseqty ::Float32
+    - ordertype ::String  `Market`, `Limit`
+    - timeinforce ::String      `GTC` GoodTillCancel, `IOC` ImmediateOrCancel, `FOK` FillOrKill, `PostOnly`
+    - limitprice ::Float32
+    - avgprice ::Float32
+    - executedqty ::Float32  (to be executed qty = baseqty - executedqty)
+    - status ::String      `New`, `PartiallyFilled`, `Untriggered`, `Rejected`, `PartiallyFilledCanceled`, `Filled`, `Cancelled`, `Triggered`, `Deactivated`
+    - created ::DateTime
+    - updated ::DateTime
+    - rejectreason ::String
+    """
+    if !isnothing(orderid)
+        dt = servertime(bc)
+        order = (orderid=orderid, symbol=symbol, side=orderside, baseqty=Float32(basequantity), ordertype=params["orderType"], timeinforce=params["timeinforce"], limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="SIM_NoError")
+        return order
+    end
+    return orderid  # == nothing
 end
 
 "Only provide *basequantity* or *limitprice* if they have changed values."
@@ -808,7 +832,12 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         attempts -= 1
         orderpreviousattempt = orderafterattempt
     end
-    return orderid
+    if !isnothing(orderid)
+        dt = servertime(bc)
+        amendorder = (orderatentry..., baseqty=Float32(isnothing(basequantity) ? orderatentry.baseqty : basequantity),  limitprice=changedprice, updated=dt)
+        return amendorder
+    end
+    return orderid  # == nothing
 end
 
 """

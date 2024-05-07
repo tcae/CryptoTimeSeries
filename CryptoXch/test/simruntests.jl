@@ -122,7 +122,8 @@ println("CryptoXchSimTest simruntests")
 
     qteqty = 4.02
     o4 = (o3..., qteqty = qteqty, baseqty = qteqty / assetbtc.price)
-    oidc = CryptoXch.changeorder(xc, o4.id; basequantity=o4.baseqty)  #TODO delta analysis
+    (verbosity  >= 3) && println("4) changeorder assetbtc.price=$(assetbtc.price) \no4=$o4 \no3=$o3")
+    oidc = CryptoXch.changeorder(xc, o4.id; basequantity=o4.baseqty)
     @test oidc == o4.id
     # println("changeorder after basequatity change: $(DataFrame([CryptoXch.getorder(oid)]))")
     assetusdt = (assetusdt..., locked = assetusdt.locked + (o4.baseqty - o3.baseqty) * o4.limit, free = assetusdt.free + (o3.baseqty - o4.baseqty) * o4.limit)

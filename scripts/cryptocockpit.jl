@@ -21,80 +21,99 @@ import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, 
 using Dates, DataFrames, Logging
 using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch, TradingStrategy
 
-include("../scripts/cockpitdatatablecolors.jl")
 
-dtf = "yyyy-mm-dd HH:MM"
-# EnvConfig.init(EnvConfig.production)
-EnvConfig.init(training)
-xc = CryptoXch.XchCache(true)
-
-# app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
-cssdir = EnvConfig.setprojectdir()  * "/scripts/"
-println("css dir: $cssdir")
-app = dash(external_stylesheets = ["dashboard.css"], assets_folder=cssdir)
-ohlcvcache = Dict()
-
-function loadohlcv(base, interval)
-    global ohlcvcache
-    k = base * interval
-    if !(k in keys(ohlcvcache))
-        k1m = base * "1m"
-        if !(k1m in keys(ohlcvcache))
-            # println("ohlcv: $(k1m)")
-            ohlcv = Ohlcv.defaultohlcv(base)
-            Ohlcv.setinterval!(ohlcv, "1m")
-            Ohlcv.read!(ohlcv)
-            ohlcvcache[k1m] = ohlcv
-        end
-        if (k != k1m)
-            ohlcv = Ohlcv.defaultohlcv(base)
-            Ohlcv.setdataframe!(ohlcv, Ohlcv.accumulate(Ohlcv.dataframe(ohlcvcache[k1m]), interval))
-            Ohlcv.setinterval!(ohlcv, interval)
-            ohlcvcache[k] = ohlcv
-        end
+function loadohlcv!(cp, base, interval)
+    if !(base in keys(cp.coin))
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setinterval!(ohlcv, "1m")
+        ohlcv = CryptoXch.cryptodownload(cp.xc, base, "1m", cp.update - Year(10), cp.update)
+        # Ohlcv.read!(ohlcv)
+        cp.coin[base] = CoinData(Dict(), nothing)
+        cp.coin[base].ohlcv["1m"] = ohlcv
+        cp.coin[base].f4 = Features.Features004(ohlcv, usecache=true)
     end
-    return ohlcvcache[k]
+    if interval != "1m"
+        ohlcv = Ohlcv.defaultohlcv(base)
+        Ohlcv.setdataframe!(ohlcv, Ohlcv.accumulate(Ohlcv.dataframe(cp.coin[base].ohlcv["1m"]), interval))
+        Ohlcv.setinterval!(ohlcv, interval)
+        cp.coin[base].ohlcv[interval] = ohlcv
+    end
+    return cp.coin[base].ohlcv[interval]
 end
 
-function updateassets(download=false)
-    global ohlcvcache
-
-    if !download
-        adf = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(xc))[1] # read latest from file merged with assets in correct format
+function updateassets!(cp, download=false)
+    if isnothing(cp.xc)
+        cp.xc = CryptoXch.XchCache(true)
     end
-    if download || (size(adf, 1) == 0)
-        ohlcvcache = Dict()
-        assets = CryptoXch.portfolio!(xc)
-        TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=Dates.now(UTC)) # revised config is saved
-        adf = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(xc))[1]
-        println(adf)
-
+    cp.coin = Dict()
+    CryptoXch.removeallbases(cp.xc)
+    if download
+        assets = CryptoXch.portfolio!(cp.xc)
+        tc = TradingStrategy.train!(TradingStrategy.TradeConfig(cp.xc), assets[!, :coin]; datetime=Dates.now(UTC)) # revised config is saved
     end
-    if !isnothing(adf) && (size(adf, 1) > 0)
-        adf.id = adf.basecoin
-        println("config + assets: $(adf)")
+    cp.assetsconfig, assets = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(cp.xc)) # read latest from file merged with assets in correct format
+    cp.update = cp.assetsconfig[1, :update]
+    select!(cp.assetsconfig, Not(:update))
+    if !isnothing(cp.assetsconfig) && (size(cp.assetsconfig, 1) > 0)
+        cp.assetsconfig.id = cp.assetsconfig[!, :basecoin]
+        println("portfolio: $assets")
+        println("config + assets: $(cp.assetsconfig)")
         # println("updating table data of size: $(size(adf))")
-        rows = size(adf, 1)
+        rows = size(cp.assetsconfig, 1)
 
         # initial delay but quick switching between coins
-        for (ix, base) in enumerate(adf.basecoin)
+        for (ix, base) in enumerate(cp.assetsconfig[!, :basecoin])
             println("$(EnvConfig.now()) ($ix of $rows) loading $base")
-            loadohlcv(base, "1m")
+            loadohlcv!(cp, base, "1m")
             Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
-                loadohlcv(base, interval)
+                loadohlcv!(cp, base, interval)
             end
-            # loadohlcv(base, "5m")
-            # loadohlcv(base, "1h")
-            # loadohlcv(base, "1d")
+            # loadohlcv!(cp, base, "5m")
+            # loadohlcv!(cp, base, "1h")
+            # loadohlcv!(cp, base, "1d")
         end
         println("$(EnvConfig.now()) all $rows coins loaded")
+    else
+        @warn "no config + assets found"
     end
-    return adf
+    return cp.assetsconfig
 end
 
-assetsconfig = updateassets(false)
-# println(assetsconfig)
-println("last assetsconfig update: $(assetsconfig[1, :update]) type $(typeof(assetsconfig[1, :update]))")
+mutable struct CoinData
+    ohlcv  # Dict interval => OhlcvData
+    f4     # Features004
+end
+
+mutable struct CockpitData
+    xc               # CryptoXch.XchCache
+    coin             # Dict of coin => CoinData
+    update           # DateTime
+    assetsconfig     # AbstractDataFrame
+    donormalize::Bool
+    dtf::String      # DateTime display format
+    cssdir::String
+    function CockpitData()
+        global cp
+        dtf = "yyyy-mm-dd HH:MM"
+        cssdir = EnvConfig.setprojectdir()  * "/scripts/"
+        cp = new(nothing, Dict(), nothing, nothing, true, dtf, cssdir)
+        updateassets!(cp, false)
+        return cp
+    end
+end
+
+include("../scripts/cockpitdatatablecolors.jl")
+
+# EnvConfig.init(EnvConfig.production)
+EnvConfig.init(production)
+const CP = CockpitData()
+# app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
+println("css dir: $(CP.cssdir)")
+app = dash(external_stylesheets = ["dashboard.css"], assets_folder=CP.cssdir)
+
+
+# println(CP.assetsconfig)
+println("last assetsconfig update: $(CP.update)")
 app.layout = html_div() do
     html_div(id="leftside", [
         html_div(id="select_buttons", [
@@ -104,21 +123,21 @@ app.layout = html_div() do
             # html_button("reload data", id="reload_data"),
             html_button("reset selection", id="reset_selection")
         ]),
-        html_div(id="graph1day_endtime", children=assetsconfig[1, :update]),
+        html_div(id="graph1day_endtime", children=CP.update),
         dcc_graph(id="graph1day"),
-        html_div(id="graph10day_endtime", children=assetsconfig[1, :update]),
+        html_div(id="graph10day_endtime", children=CP.update),
         dcc_graph(id="graph10day"),
-        html_div(id="graph6month_endtime", children=assetsconfig[1, :update]),
+        html_div(id="graph6month_endtime", children=CP.update),
         dcc_graph(id="graph6month"),
-        html_div(id="graph_all_endtime", children=assetsconfig[1, :update]),
+        html_div(id="graph_all_endtime", children=CP.update),
         dcc_graph(id="graph_all"),
     ]),
 
     html_div(id="rightside", [
         dcc_dropdown(
             id="crypto_focus",
-            options=[(label = i, value = i) for i in assetsconfig.basecoin],
-            value=assetsconfig[1, :basecoin]
+            options=[(label = i, value = i) for i in CP.assetsconfig[!, :basecoin]],
+            value=CP.assetsconfig[1, :basecoin]
         ),
         dcc_checklist(
             id="indicator_select",
@@ -134,18 +153,18 @@ app.layout = html_div() do
         ),
         dcc_checklist(
             id="spread_select",
-            options=[(label = Features.periodlabels(window), value = window) for window in Features.regressionwindows002],
+            options=[(label = label, value = value) for (label, value) in Features.regressionwindows004dict],
                 # value=["test"],
                 # value=[60],
                 labelStyle=(:display => "inline-block")
         ),
-        html_div(id="graph4h_endtime", children=assetsconfig[1, :update]),
+        html_div(id="graph4h_endtime", children=CP.update),
         html_div(id="targets4h"),
         dcc_graph(id="graph4h"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(assetsconfig) if i != "id"],  # exclude "id" to not display it
-            data = Dict.(pairs.(eachrow(assetsconfig))),
-            style_data_conditional=discrete_background_color_bins(assetsconfig, n_bins=length(names(assetsconfig)), columns="pricechangepercent"),
+            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(CP.assetsconfig) if !(i in ["id", "update"])],  # exclude "id" to not display it
+            data = Dict.(pairs.(eachrow(CP.assetsconfig))),
+            style_data_conditional=discrete_background_color_bins(CP.assetsconfig, n_bins=length(names(CP.assetsconfig)), columns="pricechangepercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
@@ -156,6 +175,7 @@ app.layout = html_div() do
         html_div(id="click_action")
     ])
 end
+println("spread list: $([(label = label, value = value) for (label, value) in Features.regressionwindows004dict])")
 
 # function rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
 #     ctx = callback_context()
@@ -263,8 +283,7 @@ callback!(
     graph_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : nothing
     res = (graph_id === nothing) ? "no click selection" : "$graph_id: "
     if graph_id == "reset_selection"
-        updates = assetsconfig[assetsconfig[!, :basecoin] .== focus, :update]
-        clickdt = length(updates) > 0 ? Dates.format(updates[1], dtf) : ""
+        clickdt = Dates.format(CP.update, CP.dtf)
         # println("reset_selection n_clicks value: $(ctx.triggered[1].value)")
     else
         clickdt = clickx(graph_id, clk1d, clk10d, clk6M, clkall, clk4h)
@@ -287,19 +306,18 @@ end
 Returns normalized percentage values related to `normref`, if `normref` is not `nothing`.
 Otherwise the ydata input is returned.
 """
-# normpercent(ydata, ynormref) = (ynormref === nothing ) ? ydata : (ydata ./ ynormref .- 1) .* 100
-normpercent(ydata, ynormref) = donormalize ? Ohlcv.normalize(ydata, ynormref=ynormref, percent=true) : ydata
-donormalize = true
+# normpercent(cp, ydata, ynormref) = (ynormref === nothing ) ? ydata : (ydata ./ ynormref .- 1) .* 100
+normpercent(cp, ydata, ynormref) = cp.donormalize ? Ohlcv.normalize(ydata, ynormref=ynormref, percent=true) : ydata
 
 """
 Returns start and end y coordinates of an input y coordinate vector or equidistant x coordinates.
 These coordinates are retunred as normalized percentage values related to `normref`, if `normref` is not `nothing`.
 """
-function regressionline(equiy, normref)
+function regressionline(cp, equiy, normref)
     regrwindow = size(equiy, 1)
     regry, grad = Features.rollingregression(equiy, regrwindow)
     regrliney = [regry[end] - grad[end] * (regrwindow - 1), regry[end]]
-    return normpercent(regrliney, normref)
+    return normpercent(cp, regrliney, normref)
 end
 
 linegraphlayout() =
@@ -322,7 +340,7 @@ function linegraph!(traces, select, interval, period, enddt, regression)
     end
 
     for base in select
-        df = Ohlcv.dataframe(loadohlcv(base, interval))
+        df = Ohlcv.dataframe(loadohlcv!(cp, base, interval))
         startdt = enddt - period
         days = Dates.Day(enddt - startdt)
         if size(df, 1) == 0
@@ -340,14 +358,14 @@ function linegraph!(traces, select, interval, period, enddt, regression)
         normref = df[end, :pivot]
         # normref = nothing
         xarr = df[:, :opentime]
-        yarr = normpercent(df[:, :pivot], normref)
+        yarr = normpercent(cp, df[:, :pivot], normref)
         # append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base, legendgroup=base)])
         if regression
             # xarr = [enddt, startdt]
-            # yarr = reverse(regressionline(df[!, :pivot], normref))
+            # yarr = reverse(regressionline(cp, df[!, :pivot], normref))
             # append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base, legendgroup=base)])
             append!(xarr, [enddt, startdt])
-            append!(yarr, reverse(regressionline(df[!, :pivot], normref)))
+            append!(yarr, reverse(regressionline(cp, df[!, :pivot], normref)))
         end
         append!(traces, [scatter(x=xarr, y=yarr, mode="lines", name=base)])
     end
@@ -359,7 +377,7 @@ function targetfigure(base, period, enddt)
     if base === nothing
         return fig
     end
-    ohlcv = loadohlcv(base, "1m")
+    ohlcv = loadohlcv!(cp, base, "1m")
     df = Ohlcv.dataframe(ohlcv)
     startdt = enddt - period
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
@@ -368,8 +386,8 @@ function targetfigure(base, period, enddt)
     normref = subdf[end, :pivot]
     if size(subdf,1) > 0
         pivot = Ohlcv.pivot!(subdf)
-        pivot = normpercent(pivot, normref)
-        _, grad = Features.rollingregression(pivot, Features.regressionwindows001["1h"])
+        pivot = normpercent(cp, pivot, normref)
+        _, grad = Features.rollingregression(pivot, Features.regressionwindows004dict["1h"])
         labels, relativedistances, distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad, Targets.defaultlabelthresholds)
         x = subdf[!, :opentime]
         y = ["distpeak4h"]
@@ -389,10 +407,10 @@ end
 
 function addheatmap!(traces, ohlcv, subdf, normref)
     @assert size(subdf, 1) >= 1
-    firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(values(Features.regressionwindows001)))
+    firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(Features.regressionwindows004))
     calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
     pivot = Ohlcv.pivot!(calcdf)
-    pivot = normpercent(pivot, normref)
+    pivot = normpercent(cp, pivot, normref)
     fdf, featuremask = Features.getfeatures001(pivot)
     fdf = fdf[(end-size(subdf,1)+1):end, :]  # resize fdf to meet size of subdf
     x = subdf[!, :opentime]
@@ -417,87 +435,50 @@ function addheatmap!(traces, ohlcv, subdf, normref)
     return fig
 end
 
-function featureset002(ohlcv, period, enddt)
-    df = Ohlcv.dataframe(ohlcv)
-    startdt = enddt - period - Dates.Minute(Features.requiredminutes())
-    subdf = copy(df[startdt .< df.opentime .<= enddt, :], copycols=true)
-    subohlcv = Ohlcv.copy(ohlcv)
-    # println("len(subohlcv): $(size(subdf, 1)) len(ohlcv): $(size(df, 1))")
-    # println("subohlcv===ohlcv?$(subohlcv===ohlcv) subdf===df?$(subdf===df)")
-    subohlcv.df = subdf
-    @assert size(subdf,1) > 0
-    # pivot = Ohlcv.pivot!(calcdf)
-    # pivot = normpercent(pivot, normref)
-    f2 = Features.Features002(subohlcv)
-    # println("F2=$f2")
-    return f2
-end
-
-function logbreakix(df, brix)
-    return
-    dflen = size(df,1)
-    println()
-    println("df len=$dflen all in: $(all([1<=abs(bix)<=dflen  for bix in brix]))")
-    println([(bix, df[abs(bix), :opentime]) for bix in brix])
-end
-
-function spreadtraces(f2, window, normref, period, enddt)
-    startdt = enddt - period
-    ohlcv = Features.ohlcv(f2)
-    df = Ohlcv.dataframe(ohlcv)
-    pivot = Ohlcv.pivot!(ohlcv)
-    ftr = f2.regr[window]
-    startix = endix = 0
-    for ix in length(df.opentime):-1:1
-        if (startix == 0) && (startdt > df[ix, :opentime])
-            startix = ix
-        end
-        if (endix == 0) && (enddt > df[ix, :opentime])
-            endix = ix
-        end
+function spreadtraces(cp, base, ohlcvdf, window, normref)
+    traces = []
+    regr = (base in keys(cp.coin)) && (window in keys(cp.coin[base].f4.rw)) ? cp.coin[base].f4.rw[window] : nothing
+    if isnothing(regr)
+        @warn "no f4 regression data found for $base"
+        return []
     end
-    # println("spreadtraces window=$window")
-    @assert (startix > 0) && (endix > 0) && (startix <= endix)
-    startix = startix < Features.ohlcvix(f2, 1) ? Features.ohlcvix(f2, 1) : startix  #! containment for access at index 0 error - needs to be assessed
-    # println("startdt: $startdt, startix:$startix, enddt:$enddt, endix:$endix")
-    x = [df[ix, :opentime] for ix in startix:endix]
-    xarea = vcat(x, reverse(x))
-    yarea = vcat([ftr.regry[Features.featureix(f2, ix)] + ftr.std[Features.featureix(f2, ix)] for ix in startix:endix], [ftr.regry[Features.featureix(f2, ix)] - ftr.std[Features.featureix(f2, ix)] for ix in endix:-1:startix])
-    # println("regry x: size=$(size(xarea)) max=$(maximum(xarea)) min=$(minimum(xarea)) y: size=$(size(yarea)) max=$(maximum(yarea)) min=$(minimum(yarea)) ")
-    s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
-    # x = [df[ix, :opentime] for ix in startix:endix]
+    filter = falses(length(regr[!, :opentime]))
+    ix = Ohlcv.rowix(regr[!, :opentime], ohlcvdf[begin, :opentime])
+    for ts in ohlcvdf[!, :opentime]
+        while regr[ix, :opentime] < ts
+            ix += 1
+        end
+        filter[ix] = regr[ix, :opentime] == ts
+    end
+    if length(ohlcvdf[!, :opentime]) != count(filter)
+        @warn "unexpected mismatch of length(ohlcvdf[!, :opentime])=$(length(ohlcvdf[!, :opentime])) != count(filter)=$(count(filter))"
+        return []
+    end
+    regr = @view regr[filter, :]
+    @assert size(ohlcvdf, 1) == size(regr, 1) "size(ohlcvdf, 1)=$(size(ohlcvdf, 1)) != size(regr, 1)=$(size(regr, 1))"
 
-    # yarea = vcat([ftr.regry[Features.featureix(f2, ix)] + ftr.std[Features.featureix(f2, ix)] for ix in startix:endix], [ftr.regry[Features.featureix(f2, ix)] - ftr.std[Features.featureix(f2, ix)] for ix in endix:-1:startix])
-    # s2 = scatter(x=xarea, y=normpercent(yarea, normref), fill="toself", fillcolor="rgba(20,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
+    xarea = vcat(ohlcvdf[!, :opentime], reverse(ohlcvdf[!, :opentime]))
+    yarea = vcat(regr[!, :regry] * 1.01f0, reverse(regr[!, :regry] * 0.99f0))
+    s2 = scatter(x=xarea, y=normpercent(cp, yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
+    yarea = vcat(regr[!, :regry] * 1.02f0, reverse(regr[!, :regry] * 0.98f0))
+    s3 = scatter(x=xarea, y=normpercent(cp, yarea, normref), fill="toself", fillcolor="rgba(0,80,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
 
-    y = [ftr.regry[Features.featureix(f2, ix)] for ix in startix:endix]
-    # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
-    s1 = scatter(name="regry", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(31, 119, 180)", width=1))
+    y = regr[!, :regry]
+    s1 = scatter(name="regry", x=ohlcvdf[!, :opentime], y=normpercent(cp, y, normref), mode="lines", line=attr(color="rgb(31, 119, 180)", width=1))
 
-    y = [pivot[ix] for ix in startix:endix]
-    # println("regry x: size=$(size(x)) max=$(maximum(x)) min=$(minimum(x)) y: size=$(size(y)) max=$(maximum(y)) min=$(minimum(y)) ")
-    s5 = scatter(name="pivot", x=x, y=normpercent(y, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
+    pivot = Ohlcv.pivot!(ohlcvdf)
+    s5 = scatter(name="pivot", x=ohlcvdf[!, :opentime], y=normpercent(cp, pivot, normref), mode="lines", line=attr(color="rgb(250, 250, 250)", width=1))
 
-    # breakoutix = Classify.breakoutextremesix001!(f2, window, 1.0, startix)
-    # logbreakix(df, breakoutix)
-    # xix = [ix for ix in breakoutix if startdt <= df[abs(ix), :opentime]  <= enddt]
-    # y = [df.high[ix] for ix in xix if ix > 0]
-    # x = [df[ix, :opentime] for ix in xix if ix > 0]
-    # s3 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-down"))
-    # y = [df.low[abs(ix)] for ix in xix if ix < 0]
-    # x = [df[abs(ix), :opentime] for ix in xix if ix < 0]
-    # s4 = scatter(name="breakout", x=x, y=normpercent(y, normref), mode="markers", marker=attr(size=10, line_width=2, symbol="arrow-up"))
-    # return [s2, s1, s5, s3, s4]
-    return [s2, s1, s5]
+    return [s3, s2, s1, s5]
 end
 
-function candlestickgraph(traces, base, interval, period, enddt, regression, heatmap, spread)
+function candlestickgraph(cp, traces, base, interval, period, enddt, regression, heatmap, spread)
     traces = traces === nothing ? PlotlyBase.GenericTrace{Dict{Symbol, Any}}[] : traces
     fig = Plot([scatter(x=[], y=[], mode="lines", name="no select")])  # return an empty graph on failing asserts
     if base === nothing
         return fig
     end
-    ohlcv = loadohlcv(base, interval)
+    ohlcv = loadohlcv!(cp, base, interval)
     df = Ohlcv.dataframe(ohlcv)
     if !("opentime" in names(df))
         println("candlestickgraph $base len(df): $(size(df,1)) names: $(names(df))")
@@ -506,7 +487,7 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
     startdt = enddt - period
     enddt = enddt < df[begin, :opentime] ? df[begin, :opentime] : enddt
     startdt = startdt > df[end, :opentime] ? df[end, :opentime] : startdt
-    subdf = df[startdt .< df.opentime .<= enddt, :]
+    subdf = @view df[startdt .< df.opentime .<= enddt, :]
     # startdt = startdt < df[begin, :opentime] ? df[begin, :opentime] : startdt
     # period = (enddt - startdt) + Dates.Minute(1)
     if size(subdf,1) > 0
@@ -514,32 +495,30 @@ function candlestickgraph(traces, base, interval, period, enddt, regression, hea
         traces = append!([
             candlestick(
                 x=subdf[!, :opentime],
-                open=normpercent(subdf[!, :open], normref),
-                high=normpercent(subdf[!, :high], normref),
-                low=normpercent(subdf[!, :low], normref),
-                close=normpercent(subdf[!, :close], normref),
+                open=normpercent(cp, subdf[!, :open], normref),
+                high=normpercent(cp, subdf[!, :high], normref),
+                low=normpercent(cp, subdf[!, :low], normref),
+                close=normpercent(cp, subdf[!, :close], normref),
                 name="$base OHLC")], traces)
         if regression
             traces = append!([
                 scatter(
                     x=[startdt, enddt],
-                    y=regressionline(subdf[!, :pivot], normref),
+                    y=regressionline(cp, subdf[!, :pivot], normref),
                     mode="lines", showlegend=false)], traces)
         end
 
-        intervalminutes = interval == "1m" ? 1 : Features.regressionwindows001[interval]
+        intervalminutes = interval == "1m" ? 1 : floor(Int, Ohlcv.periods[interval] / Minute(1))
         spread = isnothing(spread) ? [] : spread
         # println("typeof(spread): $(typeof(spread)) = $spread isempty(spread)=$(isempty(spread)); period=$period ")
         if !isempty(spread)
-            f2 = nothing
             # println("period=$period, enddt=$enddt")
             for win in spread
-                # winminutes = win == "1m" ? 1 : Features.regressionwindows001[win]
+                # winminutes = win == "1m" ? 1 : Features.regressionwindows004dict[win]
                 if win > intervalminutes
                     # win = parse(Int64, window)
                     #  visualization spreads
-                    f2 = isnothing(f2) ? featureset002(loadohlcv(base, "1m"), period, enddt) : f2
-                    traces = append!(spreadtraces(f2, win, normref, period, enddt), traces)
+                    traces = append!(spreadtraces(cp, base, subdf, win, normref), traces)
                 end
             end
             # println("length(traces)=$(length(traces))")
@@ -586,21 +565,21 @@ callback!(
     regression = "regression1d" in indicator
     heatmap = "features" in indicator
 
-    # println("enddt4h($(typeof(enddt4h)))=$(enddt4h) dtf=$dtf")
-    fig4h = candlestickgraph(nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, dtf), regression, heatmap, spread)
-    targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)) : nothing
-    # fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)),
-    #     drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression)
-    fig1d = candlestickgraph(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, dtf)), focus, "5m", Dates.Hour(24), Dates.DateTime(enddt1d, dtf), regression, false, spread)
-    # fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)),
-    #     drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression)
-    fig10d = candlestickgraph(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, dtf)), focus, "1h", Dates.Day(10), Dates.DateTime(enddt10d, dtf), regression, false, spread)
-    # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)),
-    #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, dtf), regression)
-    fig6M = candlestickgraph(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, dtf)), focus, "1d", Dates.Month(8), Dates.DateTime(enddt6M, dtf), regression, false, spread)
-    # figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, dtf)),
-    #     drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, dtf), regression)
-    figall = candlestickgraph(timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, dtf)), focus, "3d", Dates.Year(4), Dates.DateTime(enddtall, dtf), false, false, nothing)
+    # println("enddt4h($(typeof(enddt4h)))=$(enddt4h) dtf=$(CP.dtf)")
+    fig4h = candlestickgraph(CP, nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf), regression, heatmap, spread)
+    targets4h = "targets" in indicator ? targetfigure(focus, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf)) : nothing
+    # fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf)),
+    #     drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, CP.dtf), regression)
+    fig1d = candlestickgraph(CP, timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf)), focus, "5m", Dates.Hour(24), Dates.DateTime(enddt1d, CP.dtf), regression, false, spread)
+    # fig10d = linegraph!(timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, CP.dtf)),
+    #     drawbases, "1m", Dates.Day(10), Dates.DateTime(enddt10d, CP.dtf), regression)
+    fig10d = candlestickgraph(CP, timebox!(nothing, Dates.Hour(24), Dates.DateTime(enddt1d, CP.dtf)), focus, "1h", Dates.Day(10), Dates.DateTime(enddt10d, CP.dtf), regression, false, spread)
+    # fig6M = linegraph!(timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, CP.dtf)),
+    #     drawbases, "1d", Dates.Month(6), Dates.DateTime(enddt6M, CP.dtf), regression)
+    fig6M = candlestickgraph(CP, timebox!(nothing, Dates.Day(10), Dates.DateTime(enddt10d, CP.dtf)), focus, "1d", Dates.Month(8), Dates.DateTime(enddt6M, CP.dtf), regression, false, spread)
+    # figall = linegraph!(timebox!(nothing, Dates.Month(6), Dates.DateTime(enddt6M, CP.dtf)),
+    #     drawbases, "1d", Dates.Year(3), Dates.DateTime(enddtall, CP.dtf), regression)
+    figall = candlestickgraph(CP, timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, CP.dtf)), focus, "3d", Dates.Year(4), Dates.DateTime(enddtall, CP.dtf), false, false, nothing)
 
     return fig1d, fig10d, fig6M, figall, fig4h, targets4h
 end
@@ -619,7 +598,6 @@ callback!(
         State("crypto_focus", "options")
         # prevent_initial_call=true
     ) do active_cell, update, indicator, olddata, currentfocus, options
-        global assetsconfig, donormalize
 
         ctx = callback_context()
         button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : "nothing"
@@ -629,26 +607,26 @@ callback!(
         else
             active_row_id = active_cell.row_id
         end
-        donormalize = "normalize" in indicator
+        CP.donormalize = "normalize" in indicator
         # if button_id == "indicator_select"
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
-                assetsconfig = updateassets(false)
-                active_row_id = assetsconfig[1, :basecoin]
+                updateassets!(CP, false)
+                active_row_id = CP.assetsconfig[1, :basecoin]
             elseif (EnvConfig.configmode == EnvConfig.test) && !("test" in indicator)  # switch from test to prodcution data
                 EnvConfig.init(EnvConfig.production)
-                assetsconfig = updateassets(false)
-                active_row_id = assetsconfig[1, :basecoin]
+                updateassets!(CP, false)
+                active_row_id = CP.assetsconfig[1, :basecoin]
             end
 
         if button_id == "update_data"
-            assetsconfig = updateassets(true)
+            updateassets!(CP, true)
         # else
         #     return 0, olddata, active_row_id, options
         end
-        if !isnothing(assetsconfig)
-            # println("data update assetsconfig.size: $(size(assetsconfig))")
-            return 1, Dict.(pairs.(eachrow(assetsconfig))), active_row_id, [(label = i, value = i) for i in assetsconfig.basecoin]
+        if !isnothing(CP.assetsconfig)
+            # println("data update CP.assetsconfig.size: $(size(CP.assetsconfig))")
+            return 1, Dict.(pairs.(eachrow(CP.assetsconfig))), active_row_id, [(label = i, value = i) for i in CP.assetsconfig[!, :basecoin]]
         else
             @warn "found no assetsconfig"
             return 0, olddata, active_row_id, options
@@ -672,7 +650,7 @@ callback!(
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
         res = Dict(
-            "all_button" => (0:(size(assetsconfig.basecoin, 1)-1), assetsconfig.basecoin),
+            "all_button" => (0:(size(CP.assetsconfig[!, :basecoin], 1)-1), CP.assetsconfig[!, :basecoin]),
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))

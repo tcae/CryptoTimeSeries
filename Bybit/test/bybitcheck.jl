@@ -5,10 +5,10 @@ bc = Bybit.BybitCache()
 
 now = Bybit.get24h(bc, "BTCUSDT")
 println("$now")
-oid = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, now.lastprice)
-println("create order id = $(string(oid))")
+oocreate = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, now.lastprice)
+println("create order = $(isnothing(oocreate) ? string(oocreate) : oocreate)")
 
-oo = Bybit.order(bc, oid)
+oo = Bybit.order(bc, oocreate.orderid)
 println(oo)
 
 # println("balances: $(Bybit.balances(bc))")

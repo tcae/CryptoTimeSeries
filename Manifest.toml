@@ -208,7 +208,7 @@ version = "1.2.1"
 deps = ["DataFrames", "Dates", "EnvConfig", "Formatting", "HTTP", "JSON3", "Logging", "Printf", "SHA", "Test"]
 path = "Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.1.0"
+version = "4.2.0"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
@@ -482,7 +482,7 @@ version = "4.1.1"
 deps = ["Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.5.5"
+version = "1.5.6"
 
 [[deps.CustomUnitRanges]]
 git-tree-sha1 = "1a3f97f907e6dd8983b744d2642651bb162a3f7a"
@@ -700,7 +700,7 @@ version = "0.2.8"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "JDF", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.6.5"
+version = "1.6.6"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]

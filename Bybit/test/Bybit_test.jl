@@ -32,10 +32,10 @@ btcprice = dayresult[dayresult.symbol .== "BTCUSDT", :lastprice][1,1]
 println("btcprice=$btcprice  (+1%=$(btcprice * 1.01))")
 
 dayresult = Bybit.get24h(bc, "BTCUSDT")
-println(isa(dayresult, AbstractDataFrame))
-println(size(dayresult, 2) >= 6)
-println(size(dayresult, 1) == 1)
-println("dayresult = Bybit.get24h(BTCUSDT)")
+println(isa(dayresult, DataFrameRow))
+# println("typeof(dayresult)=$(typeof(dayresult)) size(dayresult)=$(size(dayresult)), content=$(dayresult)")
+println(size(dayresult, 1) >= 6)
+println("dayresult = Bybit.get24h(BTCUSDT) = $dayresult")
 
 klines = Bybit.getklines(bc, "BTCUSDT")
 println(isa(klines, AbstractDataFrame))
@@ -46,8 +46,9 @@ println("klines = Bybit.getklines(BTCUSDT) size(klines)=$(size(klines))")
 oo = Bybit.openorders(bc)
 println(oo)
 
-oid = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9)
-println("create order id = $(string(oid))")
+oocreate = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9)
+oid = isnothing(oocreate) ? nothing : oocreate.orderid
+println("create order id = $(string(oid)), order: oocreate")
 
 oo = Bybit.order(bc, oid)
 println(isa(oo, NamedTuple))
@@ -55,11 +56,11 @@ println(length(oo) == 12)
 # println(describe(oo, :min, :eltype))
 println(oo)
 
-oidc = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
-println("amendorder quantity: oidc=$oidc content: $(Bybit.order(bc, oidc))")
+ooamend = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
+println("amendorder quantity: order=$ooamend")
 
-oidc = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
-println("amendorder limit price: oidc=$oidc content: $(Bybit.order(bc, oidc))")
+ooamend = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
+println("amendorder limit price: order=$ooamend")
 
 oo = Bybit.openorders(bc)
 println(isa(oo, AbstractDataFrame))

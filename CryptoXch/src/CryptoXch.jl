@@ -408,7 +408,7 @@ function _usdtmarketfilename(fileprefix, timestamp::Union{Nothing, DateTime}, ex
     else
         cfgfilename = join([fileprefix, Dates.format(timestamp, "yy-mm-dd")], "_")
     end
-    return EnvConfig.datafile(cfgfilename, "TradeConfig", ".jdf")
+    return EnvConfig.datafile(cfgfilename, fileprefix, ".jdf")
 end
 
 """
@@ -607,7 +607,9 @@ Returns `nothing` in case order execution fails.
 function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=false)
     base = uppercase(base)
     if EnvConfig.configmode == production
-        return Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker)
+        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker)
+        oid = isnothing(oocreate) ? nothing : oocreate.orderid
+        return oid
     else  # simulation
         return _createordersimulation(xc, base, "Buy", basequantity, limitprice, EnvConfig.cryptoquote)
     end
@@ -621,7 +623,9 @@ Returns `nothing` in case order execution fails.
 function createsellorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true)
     base = uppercase(base)
     if EnvConfig.configmode == production
-        return Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker)
+        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker)
+        oid = isnothing(oocreate) ? nothing : oocreate.orderid
+        return oid
     else  # simulation
         return _createordersimulation(xc, base, "Sell", basequantity, limitprice, base)
     end
@@ -633,9 +637,10 @@ function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=not
         if isnothing(oo)
             return nothing
         end
-        return Bybit.amendorder(xc.bc, oo.symbol, orderid; basequantity=basequantity, limitprice=limitprice)
+        ooamend = Bybit.amendorder(xc.bc, oo.symbol, orderid; basequantity=basequantity, limitprice=limitprice)
+        return isnothing(ooamend) ? nothing : ooamend.orderid
     else  # simulation
-        return _changeordersimulation(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing)
+        return _changeordersimulation(xc::XchCache, orderid; limitprice=limitprice, basequantity=basequantity)
     end
 end
 
@@ -916,6 +921,56 @@ emptyassets()::DataFrame = DataFrame(coin=String[], locked=Float32[], free=Float
 
 "provides an empty dataframe for simulation (with lastcheck as extra column)"
 emptyorders()::DataFrame = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
+
+
+function _ordersfilename(xc::XchCache)
+    ORDERPREFIX = "Orders"
+    fnvec = [ORDERPREFIX]
+    push!(fnvec, string(EnvConfig.configmode))
+    symbols = unique(xc.closedorders[!, :symbol])
+    bases = [basequote(s).basecoin for s in symbols]
+    fnvec = vcat(fnvec, bases)
+    push!(fnvec, Dates.format(xc.startdt, "yy-mm-dd"))
+    enddt = isnothing(xc.enddt) ? (size(xc.orders, 1) > 0 ? xc.orders[end, :created] : (size(xc.closedorders, 1) > 0 ? xc.closedorders[end, :created] : xc.startdt)) : xc.enddt
+    push!(fnvec, Dates.format(enddt, "yy-mm-dd"))
+    push!(fnvec, "jdf")
+    fn = join(fnvec, "_", ".")
+    return EnvConfig.logpath(fn)
+end
+
+function writeorders(xc::XchCache)
+    fn = _ordersfilename(xc)
+    (verbosity >=3) && println("saving order log in filename=$fn")
+    df = nothing
+    if size(xc.closedorders, 1) > 0
+        df = xc.closedorders
+        if size(xc.orders, 1) > 0
+            df = vcat(df, xc.orders)
+        end
+    elseif size(xc.orders, 1) > 0
+        df = xc.orders
+    else
+        df = emptyorders()
+    end
+    JDF.savejdf(fn, df)
+end
+
+function _assetsfilename(xc::XchCache)
+    ASSETPREFIX = "Assets"
+    fnvec = [ASSETPREFIX]
+    push!(fnvec, string(EnvConfig.configmode))
+    dt = isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
+    push!(fnvec, Dates.format(dt, "yy-mm-dd"))
+    push!(fnvec, "jdf")
+    fn = join(fnvec, "_", ".")
+    return EnvConfig.logpath(fn)
+end
+
+function writeassets(xc::XchCache)
+    fn = _assetsfilename(xc)
+    (verbosity >=3) && println("saving asset snapshot in filename=$fn")
+    JDF.savejdf(fn, xc.assets)
+end
 
 #endregion simulation
 

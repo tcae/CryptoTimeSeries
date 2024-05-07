@@ -27,7 +27,7 @@ mutable struct OhlcvData
 end
 
 function Base.show(io::IO, ohlcv::OhlcvData)
-    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) intervals=$(size(ohlcv.df, 1) > 0 ? round(Int, (ohlcv.df.opentime[end] - (ohlcv.df.opentime[begin] - Dates.Minute(1)))/intervalperiod(ohlcv.interval)) : 0) start=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[begin] : "no start datetime)") end=$(size(ohlcv.df, 1) > 0 ? ohlcv.df.opentime[end] : "no end datetime)") ix=$(ohlcv.ix)")
+    print(io::IO, "ohlcv: base=$(ohlcv.base) interval=$(ohlcv.interval) size=$(size(ohlcv.df)) intervals=$(size(ohlcv.df, 1) > 0 ? round(Int, (ohlcv.df[end, :opentime] - (ohlcv.df[begin, :opentime] - Dates.Minute(1)))/intervalperiod(ohlcv.interval)) : 0) start=$(size(ohlcv.df, 1) > 0 ? ohlcv.df[begin, :opentime] : "no start datetime)") end=$(size(ohlcv.df, 1) > 0 ? ohlcv.df[end, :opentime] : "no end datetime)") ix=$(ohlcv.ix)")
 end
 
 """

@@ -869,6 +869,7 @@ end
 "Features004 is a simplified subset of Features002 without regression extremes and relative volume but with save and read functions and implemented as DataFrame"
 
 regressionwindows004 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
+regressionwindows004dict = Dict("1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
 
 """
 Provides per regressionwindow gradient, regression line price, standard deviation.
@@ -884,6 +885,27 @@ mutable struct Features004
     # regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
     # std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
     Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, nothing, Dict(), nothing)
+end
+
+"Provides Features004 of the given ohlcv within the requested time range. Canned data will be read and supplemented with calculated data."
+function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows004, usecache=false)::Union{Nothing, Features004}
+    startix = maxregrwindow = maximum(regrwindows)  # all dataframes to start at the same time to make performance comparable and f4 handling easier
+    f4 = Features004(ohlcv.base, ohlcv.quotecoin)
+    df = Ohlcv.dataframe(ohlcv)
+    if !(firstindex(df[!, :opentime]) <= startix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
+        (verbosity >= 1) && @warn "$(ohlcv.base): $(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
+        return nothing
+    end
+    dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
+    if usecache
+        f4 = read!(f4, dfv[startix, :opentime], dfv[end, :opentime])
+    end
+    for window in regrwindows
+        if !(window in keys(f4.rw))
+            f4.rw[window] = DataFrame(opentime=DateTime[], regry=Float32[], grad=Float32[], std=Float32[])
+        end
+    end
+    return isnothing(supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)) ? nothing : f4
 end
 
 #TODO add regression test
@@ -1130,7 +1152,7 @@ function Base.iterate(f4f::Features004Files, state=1)
     return f4, state+1
 end
 
-function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
+function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
     usecache = (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0)
     Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
@@ -1151,7 +1173,7 @@ function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df.opentim
         startafterix = startafterix > lastindex(ot) ? nothing : startafterix
     end
     for window in regrwindows(f4)
-        if usecache && (size(f4.rw[window], 1) > 0)
+        if usecache && (window in keys(f4.rw)) && (size(f4.rw[window], 1) > 0)
             if !isnothing(endbeforeix)
                 (verbosity >= 3) && println("$(EnvConfig.now()) F4 endbeforeix=$endbeforeix with window=$window and startix=$startix for $(endbeforeix-startix+1) rows")
                 regry, grad = rollingregression(pivot[begin:endbeforeix], window, startix)
@@ -1174,26 +1196,6 @@ function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df.opentim
         end
     end
     return isnothing(f4offset!(f4, ohlcv)) ? nothing : f4
-end
-
-function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows004, usecache=false)::Union{Nothing, Features004}
-    startix = maxregrwindow = maximum(regrwindows)  # all dataframes to start at the same time to make performance comparable and f4 handling easier
-    f4 = Features004(ohlcv.base, ohlcv.quotecoin)
-    df = Ohlcv.dataframe(ohlcv)
-    if !(firstindex(df[!, :opentime]) <= startix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
-        (verbosity >= 1) && @warn "$(ohlcv.base): $(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
-        return nothing
-    end
-    dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
-    if usecache
-        f4 = read!(f4, dfv[startix, :opentime], dfv[end, :opentime])
-    end
-    for window in regrwindows
-        if !(window in keys(f4.rw))
-            f4.rw[window] = DataFrame(opentime=DateTime[], regry=Float32[], grad=Float32[], std=Float32[])
-        end
-    end
-    return isnothing(supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)) ? nothing : f4
 end
 
 requiredminutes(f4::Features004) = maximum(regrwindows(f4))

@@ -16,7 +16,7 @@ EnvConfig.init(production)  # test production
     @test length(acc) > 1
 
     syminfo = Bybit.symbolinfo(bc, "BTCUSDT")
-    @test isa(syminfo, NamedTuple)
+    @test isa(syminfo, DataFrameRow)
 
     dayresult = Bybit.get24h(bc)
     @test isa(dayresult, AbstractDataFrame)
@@ -32,19 +32,19 @@ EnvConfig.init(production)  # test production
     @test isa(klines, AbstractDataFrame)
 
 
-    oid = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9, false)
+    oocreate = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9, false)
+    oid = isnothing(oocreate) ? nothing : oocreate.orderid
 
     oo = Bybit.order(bc, oid)
     @test isa(oo, DataFrameRow)
     @test length(oo) >= 13
     @test oo.orderid == oid
 
-    oidc = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
-    @test oidc == oid
+    ooamend = Bybit.amendorder(bc, "BTCUSDT", oid; basequantity=0.00011)
+    @test ooamend.orderid == oid
 
-    println("runtests $(Bybit.order(bc, oid))")
-    oidc = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
-    @test oidc == oid
+    ooamend = Bybit.amendorder(bc, "BTCUSDT", oid; limitprice=btcprice * 0.8)
+    @test ooamend.orderid == oid
 
     oo = Bybit.openorders(bc)
     @test isa(oo, AbstractDataFrame)
