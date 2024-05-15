@@ -9,19 +9,19 @@ println("$(EnvConfig.now()): started")
 Classify.verbosity = 2
 Ohlcv.verbosity = 1
 Features.verbosity = 1
-TradingStrategy.verbosity = 4
+TradingStrategy.verbosity = 2
 # EnvConfig.init(training)
 EnvConfig.init(production)
 xc = CryptoXch.XchCache(true)
 
 dummy = DateTime("2000-01-01T00:00:00")
 # startdt = DateTime("2024-03-19T00:00:00")
-startdt = Dates.now(UTC)-Hour(1)
+startdt = Dates.now(UTC) - Hour(1)
 # startdt = DateTime("2024-04-15T06:00:00")
 enddt = nothing  # DateTime("2024-03-30T10:03:00")
 assets = CryptoXch.portfolio!(xc)
 # tc = TradingStrategy.read!(TradingStrategy.TradeConfig(xc), startdt)
-tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=2*1000000)
+tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=2*1000000, updatecache=false)
 # tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), ["BTC", "MATIC"]; datetime=startdt, assetonly=true)
 
 

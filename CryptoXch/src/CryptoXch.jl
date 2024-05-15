@@ -28,10 +28,11 @@ mutable struct XchCache
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
-    function XchCache(bybitinit::Bool=true; startdt::DateTime=Dates.now(UTC), enddt=nothing)
+    mnemonic  # String or nothing
+    function XchCache(bybitinit::Bool=true; startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        return new(emptyorders(), emptyorders(), emptyassets(), Dict(), bybitinit ? Bybit.BybitCache() : nothing, 0.001, startdt, nothing, enddt)
+        return new(emptyorders(), emptyorders(), emptyassets(), Dict(), bybitinit ? Bybit.BybitCache() : nothing, 0.001, startdt, nothing, enddt, mnemonic)
     end
 end
 
@@ -144,7 +145,8 @@ end
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
 tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(Bybit.servertime(xc.bc), Minute(1)) : xc.currentdt
 # tradetime(xc::XchCache) = EnvConfig.configmode == production ? Bybit.servertime(xc.bc) : Dates.now(UTC)
-ttstr(xc::XchCache) = "TT" * Dates.format(tradetime(xc), EnvConfig.datetimeformat)
+ttstr(dt::DateTime) = "TT" * Dates.format(dt, EnvConfig.datetimeformat)
+ttstr(xc::XchCache) = ttstr(tradetime(xc))
 
 function _sleepuntil(xc::XchCache, dt::DateTime)
     if !isnothing(xc.enddt)  # then backtest
@@ -926,9 +928,13 @@ emptyorders()::DataFrame = DataFrame(orderid=String[], symbol=String[], side=Str
 function _ordersfilename(xc::XchCache)
     ORDERPREFIX = "Orders"
     fnvec = [ORDERPREFIX]
+    if !isnothing(xc.mnemonic)
+        push!(fnvec, xc.mnemonic)
+    end
     push!(fnvec, string(EnvConfig.configmode))
-    symbols = unique(xc.closedorders[!, :symbol])
-    bases = [basequote(s).basecoin for s in symbols]
+    # symbols = unique(xc.closedorders[!, :symbol])
+    # bases = [basequote(s).basecoin for s in symbols]
+    bases = sort(keys(xc.bases))
     fnvec = vcat(fnvec, bases)
     push!(fnvec, Dates.format(xc.startdt, "yy-mm-dd"))
     enddt = isnothing(xc.enddt) ? (size(xc.orders, 1) > 0 ? xc.orders[end, :created] : (size(xc.closedorders, 1) > 0 ? xc.closedorders[end, :created] : xc.startdt)) : xc.enddt
@@ -958,6 +964,9 @@ end
 function _assetsfilename(xc::XchCache)
     ASSETPREFIX = "Assets"
     fnvec = [ASSETPREFIX]
+    if !isnothing(xc.mnemonic)
+        push!(fnvec, xc.mnemonic)
+    end
     push!(fnvec, string(EnvConfig.configmode))
     dt = isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
     push!(fnvec, Dates.format(dt, "yy-mm-dd"))

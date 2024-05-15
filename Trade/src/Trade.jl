@@ -70,7 +70,9 @@ maxconcurrentbuycount(regrwindow) = regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
-    stopbuying = true
+    stopbuying = false
+    sellbuyqtyratio = 2 # sell qty / buy qty per order, if > 1 sell quicker than buying it
+    qtyacceleration = 2 # if > 1 then increase buy and sell order qty by this factor
     executed = noop
     base = basecfg.basecoin
     totalusdt = sum(assets.usdtvalue)
@@ -88,7 +90,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestPro
     if tp == sell
         # now adapt minimum, if otherwise a too small remainder would be left
         minimumbasequantity = freebase <= 2 * minimumbasequantity ? (freebase >= minimumbasequantity ? freebase : minimumbasequantity) : minimumbasequantity
-        basequantity = min(max(quotequantity/price, minimumbasequantity), freebase)
+        basequantity = min(max(sellbuyqtyratio * qtyacceleration * quotequantity/price, minimumbasequantity), freebase)
         sufficientsellbalance = (basequantity <= freebase) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         tradegapminutes = basedominatesassets ? 1 : tradegapminutes  # accelerate selloff if basedominatesassets
@@ -103,7 +105,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestPro
             end
         end
     elseif !stopbuying && (tp == buy) && !basecfg.sellonly
-        basequantity = min(max(quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price #* keep 1% * totalusdt as head room
+        basequantity = min(max(qtyacceleration * quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price #* keep 1% * totalusdt as head room
         sufficientbuybalance = (basequantity * price < freeusdt) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         if basedominatesassets
@@ -187,7 +189,7 @@ function tradeloop(cache::TradeCache)
             if Time(cache.xc.currentdt) in cache.reloadtimes  # e.g. [Time("04:00:00"))]
                 assets = CryptoXch.portfolio!(cache.xc)
                 (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
-                TradingStrategy.train!(cache.tc, assets[!, :coin]; datetime=cache.xc.currentdt)
+                TradingStrategy.train!(cache.tc, assets[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
                 (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.tc.cfg)"
                 TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
                 cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.tc.cfg[!, :buysell]) > 0 ? count(cache.tc.cfg[!, :buysell]) : 1))
@@ -199,22 +201,21 @@ function tradeloop(cache::TradeCache)
         if isa(ex, InterruptException)
             (verbosity >= 0) && println("\nCtrl+C pressed within tradeloop")
         else
-            (verbosity >= 2) && println("tradeloop retry")
             (verbosity >= 0) && @error "exception=$ex"
-        end
-        bt = catch_backtrace()
-        for ptr in bt
-            frame = StackTraces.lookup(ptr)
-            for fr in frame
-                if occursin("CryptoTimeSeries", string(fr.file))
-                    (verbosity >= 1) && println("fr.func=$(fr.func) fr.linfo=$(fr.linfo) fr.file=$(fr.file) fr.line=$(fr.line) fr.from_c=$(fr.from_c) fr.inlined=$(fr.inlined) fr.pointer=$(fr.pointer)")
+            bt = catch_backtrace()
+            for ptr in bt
+                frame = StackTraces.lookup(ptr)
+                for fr in frame
+                    if occursin("CryptoTimeSeries", string(fr.file))
+                        (verbosity >= 1) && println("fr.func=$(fr.func) fr.linfo=$(fr.linfo) fr.file=$(fr.file) fr.line=$(fr.line) fr.from_c=$(fr.from_c) fr.inlined=$(fr.inlined) fr.pointer=$(fr.pointer)")
+                    end
                 end
             end
         end
     end
     (verbosity >= 2) && println("$(tradetime(cache)): finished trading core loop")
-    (verbosity >= 2) && @info "$(EnvConfig.now()): closed orders log" cache.xc.closedorders
-    (verbosity >= 2) && @info "$(EnvConfig.now()): open orders log" cache.xc.orders
+    (verbosity >= 2) && @info (size(cache.xc.closedorders, 1) > 0) ? "$(EnvConfig.now()): closed orders log $(cache.xc.closedorders)" : "$(EnvConfig.now()): no closed orders"
+    (verbosity >= 2) && @info (size(cache.xc.orders, 1) > 0) ? "$(EnvConfig.now()): open orders log $(cache.xc.orders)" : "$(EnvConfig.now()): no open orders"
     assets = CryptoXch.portfolio!(cache.xc)
     (verbosity >= 2) && @info "assets = $assets"
     totalusdt = sum(assets.usdtvalue)
@@ -223,7 +224,7 @@ function tradeloop(cache::TradeCache)
 end
 
 function tradelooptest(cache::TradeCache)
-    for c in cache
+    for c in cache.xc
         println("$(Dates.now(UTC)) $c  $(CryptoXch.ohlcv(c.xc, "BTC"))")
     end
 end

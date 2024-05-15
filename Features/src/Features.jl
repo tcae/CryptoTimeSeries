@@ -893,7 +893,7 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
     f4 = Features004(ohlcv.base, ohlcv.quotecoin)
     df = Ohlcv.dataframe(ohlcv)
     if !(firstindex(df[!, :opentime]) <= startix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
-        (verbosity >= 1) && @warn "$(ohlcv.base): $(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
+        (verbosity >= 2) && @warn "$(ohlcv.base): $(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
         return nothing
     end
     dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)

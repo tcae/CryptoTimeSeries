@@ -51,7 +51,7 @@ function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTim
     if count == countok
         return true
     else
-        (verbosity >= 3) && println("$(ohlcv.base) has ($(count - countok) of $count) in $(round(((count - countok) / count) * 100.0))% insuficient continuous $(accumulateminutes) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $datetime")
+        (verbosity >= 3) && println("\r$(ohlcv.base) has ($(count - countok) of $count) in $(round(((count - countok) / count) * 100.0))% insuficient continuous $(accumulateminutes) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $datetime")
         return false
     end
 end
@@ -62,7 +62,7 @@ If isnothing(datetime) or datetime > last update then uploads latest OHLCV and c
 The resulting DataFrame table of tradable coins is stored.
 `assetonly` is an input parameter to enable backtesting.
 """
-function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false)
+function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false)
     datetime = floor(datetime, Minute(1))
 
     # make memory available
@@ -84,10 +84,21 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     cld = Dict()
     skippedbases = []
     for (ix, base) in enumerate(allbases)
-        (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count)                                                  ")
-        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Minute(Classify.requiredminutes()-1), datetime)
-        cl = Classify.Classifier001(ohlcv)
-        if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+        if updatecache
+            (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count) including cache update                           ")
+            ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Year(10), datetime)
+            Ohlcv.write(ohlcv)
+            cl = Classify.Classifier001(ohlcv)
+            if !isnothing(cl)
+                Classify.write(cl)
+                Classify.timerangecut!(cl, datetime - Minute(Classify.requiredminutes()-1), datetime)
+            end
+        else
+            (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count)                                                  ")
+            ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Minute(Classify.requiredminutes()-1), datetime)
+            cl = Classify.Classifier001(ohlcv)
+        end
+        if !isnothing(cl) # else Ohlcv history may be too short to calculate sufficient features
             cld[base] = cl
         elseif base in assetbases
             @warn "skipping asset $base because classifier features cannot be calculated"
@@ -99,7 +110,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     end
 
     # qualify buy+sell coins as tradablebases
-    (verbosity >= 2) && print("\r$(EnvConfig.now()) finished updating $count bases                                                  ")
+    (verbosity >= 2) && print("\r$(EnvConfig.now()) finished updating $count bases                                            ")
     startdt = datetime - Day(3)  # Day(10)
     (verbosity >= 2) && print("\r$(EnvConfig.now()) start classifier set training                                             ")
     cfg = Classify.trainset!(collect(values(cld)), startdt, datetime, true)
@@ -234,7 +245,7 @@ function read!(tc::TradeConfig, datetime=nothing)
             (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(df[ix, :basecoin]) from trade config ($ix of $rows)                                                  ")
             ohlcv = CryptoXch.cryptodownload(tc.xc, df[ix, :basecoin], "1m", floor(datetime-Minute(Classify.requiredminutes()), Dates.Minute), floor(datetime, Dates.Minute))
             cl = Classify.Classifier001(ohlcv)
-            if !isnothing(cl.f4) # else Ohlcv history may be too short to calculate sufficient features
+            if !isnothing(cl) # else Ohlcv history may be too short to calculate sufficient features
                 push!(clvec, cl)
             else
                 @warn "skipping asset $(df[ix, :basecoin]) because classifier features cannot be calculated" cl=cl ohlcv=ohlcv f4=cl.f4

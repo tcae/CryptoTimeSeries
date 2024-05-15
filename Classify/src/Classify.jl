@@ -1232,7 +1232,7 @@ STDMODEL = "baseline"
 STDMODELSET = [STDMODEL]
 
 function Classifier001(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true), makerfee=FEE, takerfee=FEE)
-    cl = Classifier001(ohlcv, f4, nothing, makerfee, takerfee, emptyconfigdf(), nothing)
+    cl = isnothing(f4) ? nothing : Classifier001(ohlcv, f4, nothing, makerfee, takerfee, emptyconfigdf(), nothing)
     return cl
 end
 
@@ -1241,10 +1241,12 @@ function Base.show(io::IO, cl::Classifier001)
 end
 
 function timerangecut!(cl::Classifier001, startdt, enddt)
-    ohlcvstartdt = startdt - Minute(Classify.requiredminutes()-1)
-    Ohlcv.timerangecut!(cl.ohlcv, ohlcvstartdt, enddt)
-    Features.timerangecut!(cl.f4, startdt, enddt)
-    Features.f4offset!(cl.f4, cl.ohlcv)
+    if !isnothing(cl.f4)
+        ohlcvstartdt = startdt - Minute(Classify.requiredminutes()-1)
+        Ohlcv.timerangecut!(cl.ohlcv, ohlcvstartdt, enddt)
+        Features.timerangecut!(cl.f4, startdt, enddt)
+        Features.f4offset!(cl.f4, cl.ohlcv)
+    end
 end
 
 function write(cl::Classifier001)
@@ -1521,7 +1523,7 @@ function trainset!(clvec::AbstractArray, startdt, enddt, traincls::Bool)
         end
     end
     # sort!(tsdf, [:basecoin], rev=true)  # beauty only and easier visual search of bases
-    (verbosity >= 2) && println("\r$(EnvConfig.timestr(enddt)) trained $count base clasifiers                      ")
+    (verbosity >= 2) && println("\rtrained $count base clasifiers at $(CryptoXch.ttstr(enddt))                      ")
     return tsdf
 end
 

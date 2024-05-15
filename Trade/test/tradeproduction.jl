@@ -48,7 +48,6 @@ try
 finally
     @info "$(EnvConfig.now()): finished"
     global_logger(defaultlogger)
-    println("$(EnvConfig.now()): finished")
 end
 
 end  # module

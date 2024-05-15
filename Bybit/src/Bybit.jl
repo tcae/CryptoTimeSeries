@@ -1,6 +1,6 @@
 module Bybit
 
-using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, Formatting
+using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, Format
 using EnvConfig
 
 # base URL of the ByBit API
@@ -144,20 +144,35 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
                 "Content-Type" => "application/json"  # ; charset=utf-8"
             )
             response = url = ""
-            if methodpost
-                # headers["Content-Type"] = "application/json; charset=utf-8"
-                url = bc.apirest * endPoint
-                response = HTTP.request(method, url, headers, payload)
-            else
-                url = bc.apirest * endPoint * "?" * payload
-                response = HTTP.request(method, url, headers)
+            httptry = 1
+            while httptry > 0
+                try
+                    if methodpost
+                        # headers["Content-Type"] = "application/json; charset=utf-8"
+                        url = bc.apirest * endPoint
+                        response = HTTP.request(method, url, headers, payload)
+                    else
+                        url = bc.apirest * endPoint * "?" * payload
+                        response = HTTP.request(method, url, headers)
+                    end
+                    httptry -= 1
+                catch httperr
+                    if occursin("DNSError", string(httperr)) && (5 >= httptry > 0)
+                        (verbosity >= 1) && @info "HttpPrivateRequest httptry=$httptry $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload \nexception=$httperr"
+                        sleep(5 * httptry) # sleep (5 seconds x number of retry) then retry = sleep with every retry longer
+                        httptry += 1
+                        continue
+                    end
+                    (verbosity >= 1) && @info "exception=$httperr within core HttpPrivateRequest: httptry=$httptry info=$info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload"
+                    rethrow()
+                end
             end
             requestcount += 1
             _checkresponse(response)
             body = String(response.body)
             body = JSON3.read(body, Dict)
             body = _dictstring2values!(body)
-            if body["retCode"] != 0
+            if (body["retCode"] != 0) && (body["retCode"] != 170213)  # 170213 == cancelorder: Order does not exist.
                 @warn "HttpPrivateRequest $info #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
                 # println("public_key=$public_key, secret_key=$secret_key")
                 # "retCode" => 170193, "retMsg" => "Buy order price cannot be higher than 43183.1929USDT."
@@ -176,7 +191,9 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
             returnbody = isnothing(returnbody) ? body : returnbody  # 1st time in the loop returnbody=body, in following loops body is appended
         end
     catch err
-        @error "HttpPrivateRequest $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload \nexception=$err \nbacktrace=$(catch_backtrace())"
+        if !isa(err, InterruptException)
+            @error "HttpPrivateRequest $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload \nexception=$err"
+        end
         rethrow()
     end
     return returnbody
@@ -685,8 +702,8 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
         qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
         basequantity = floor(basequantity, digits=qtydigits)
-        params["qty"] = Formatting.format(basequantity, precision=qtydigits)
-        params["price"] = Formatting.format(limitprice, precision=pricedigits)
+        params["qty"] = Format.format(basequantity, precision=qtydigits)
+        params["price"] = Format.format(limitprice, precision=pricedigits)
         httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/create", params, "create order")
         attempts = httpresponse["retCode"] != 0 ? 0 : attempts  # leave loop in case of errors
         if "orderId" in keys(httpresponse["result"])
@@ -777,7 +794,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
             changedprice = Float32(round(changedprice, digits=pricedigits))
             if changedprice != orderatentry.limitprice
                 limitchanged = true
-                params["price"] = Formatting.format(changedprice, precision=pricedigits)
+                params["price"] = Format.format(changedprice, precision=pricedigits)
             end
         else
             changedprice = orderatentry.limitprice
@@ -789,7 +806,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
             basequantity = Float32(round(basequantity, digits=qtydigits))
             if basequantity != orderatentry.baseqty
                 quantitychanged = true
-                params["qty"] = Formatting.format(basequantity, precision=qtydigits)
+                params["qty"] = Format.format(basequantity, precision=qtydigits)
             end
         end
 
