@@ -1,7 +1,7 @@
 module TradeProduction
 
 using Test, Dates, Logging, LoggingExtras
-using EnvConfig, Trade, Classify, CryptoXch
+using EnvConfig, Trade, Classify, CryptoXch, Bybit
 
 # # Disable the default behavior of exiting on Ctrl+C
 # Base.exit_on_sigint(false)
@@ -22,6 +22,7 @@ defaultlogger = global_logger(demux_logger)
 CryptoXch.verbosity = 1
 Classify.verbosity = 2
 Trade.verbosity = 2
+Bybit.verbosity = 3
 EnvConfig.init(production)
 enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(true; enddt=enddt)

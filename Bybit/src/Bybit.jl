@@ -115,7 +115,7 @@ function _checkresponse(response)
     end
     for header in response.headers  # response.headers::Vector{pair}
         if (header[1] == "X-Bapi-Limit-Status") && (parse(Int, header[2]) == 1)
-            @info "h1=$(header[1]) h2=$(header[2]) fullheader=$(header) waiting for 1s"
+            @warn "h1=$(header[1]) h2=$(header[2]) fullheader=$(header) waiting for 1s"
             sleep(1)
         end
         # if (header[1] == "X-Bapi-Limit-Status")
@@ -147,17 +147,28 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
             httptry = 1
             while httptry > 0
                 try
+                    (verbosity >= 4) && print("\n$(EnvConfig.now()) HttpPrivateRequest httptry=$httptry $info #$requestcount $method response=$body url=$url headers=$headers payload=$payload")
                     if methodpost
                         # headers["Content-Type"] = "application/json; charset=utf-8"
                         url = bc.apirest * endPoint
-                        response = HTTP.request(method, url, headers, payload)
+                        response = HTTP.request(method, url, headers, payload; retry_non_idempotent = true, retries = 10, readtimeout = 60)
                     else
                         url = bc.apirest * endPoint * "?" * payload
-                        response = HTTP.request(method, url, headers)
+                        response = HTTP.request(method, url, headers; retry = true, retries = 10, readtimeout = 60)
                     end
+                    (verbosity >= 4) && println(" $(EnvConfig.now()) HttpPrivateRequest response=$response  done")
                     httptry -= 1
+                    #TODO check ratelimit overrun
+                    _checkresponse(response)
+                    body = String(response.body)
+                    body = JSON3.read(body, Dict)
+                    body = _dictstring2values!(body)
+                    if occursin("Too many visits!", body["retMsg"])
+                        @warn "Too many visits! - waiting 5 seconds"
+                        sleep(5) # wait 5 seconds
+                    end
                 catch httperr
-                    if occursin("DNSError", string(httperr)) && (5 >= httptry > 0)
+                    if (occursin("DNSError", string(httperr)) || occursin("ReadTimeoutError", string(httperr))) && (5 >= httptry > 0)
                         (verbosity >= 1) && @info "HttpPrivateRequest httptry=$httptry $info #$requestcount $method response=$body \nurl=$url \nheaders=$headers \npayload=$payload \nexception=$httperr"
                         sleep(5 * httptry) # sleep (5 seconds x number of retry) then retry = sleep with every retry longer
                         httptry += 1
@@ -168,10 +179,6 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
                 end
             end
             requestcount += 1
-            _checkresponse(response)
-            body = String(response.body)
-            body = JSON3.read(body, Dict)
-            body = _dictstring2values!(body)
             if (body["retCode"] != 0) && (body["retCode"] != 170213)  # 170213 == cancelorder: Order does not exist.
                 @warn "HttpPrivateRequest $info #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
                 # println("public_key=$public_key, secret_key=$secret_key")

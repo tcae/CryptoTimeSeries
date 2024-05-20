@@ -49,7 +49,7 @@ function updateassets!(cp, download=false)
     CryptoXch.removeallbases(cp.xc)
     if download
         assets = CryptoXch.portfolio!(cp.xc)
-        tc = TradingStrategy.train!(TradingStrategy.TradeConfig(cp.xc), assets[!, :coin]; datetime=Dates.now(UTC)) # revised config is saved
+        tc = TradingStrategy.train!(TradingStrategy.TradeConfig(cp.xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved
     end
     cp.assetsconfig, assets = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(cp.xc)) # read latest from file merged with assets in correct format
     cp.update = cp.assetsconfig[1, :update]

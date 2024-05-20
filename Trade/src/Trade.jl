@@ -70,9 +70,9 @@ maxconcurrentbuycount(regrwindow) = regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
-    stopbuying = false
+    stopbuying = true
     sellbuyqtyratio = 2 # sell qty / buy qty per order, if > 1 sell quicker than buying it
-    qtyacceleration = 2 # if > 1 then increase buy and sell order qty by this factor
+    qtyacceleration = 4 # if > 1 then increase buy and sell order qty by this factor
     executed = noop
     base = basecfg.basecoin
     totalusdt = sum(assets.usdtvalue)
