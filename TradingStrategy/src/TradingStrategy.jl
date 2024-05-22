@@ -150,7 +150,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     if !assetonly
         write(tc, datetime)
     end
-    (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
+    (verbosity >= 2) && println("\r$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
     return tc
 end
 
@@ -251,7 +251,7 @@ function read!(tc::TradeConfig, datetime=nothing)
                 @warn "skipping asset $(df[ix, :basecoin]) because classifier features cannot be calculated" cl=cl ohlcv=ohlcv f4=cl.f4
             end
         end
-        (verbosity >= 2) && println("\r$(EnvConfig.now())/$(CryptoXch.ttstr(tc.xc)) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
+        (verbosity >= 2) && println("\r$(CryptoXch.ttstr(tc.xc)) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
         df[:, :classifier] = clvec
     end
     return !isnothing(df) && (size(df, 1) > 0) ? tc : nothing

@@ -145,7 +145,7 @@ end
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
 tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(Bybit.servertime(xc.bc), Minute(1)) : xc.currentdt
 # tradetime(xc::XchCache) = EnvConfig.configmode == production ? Bybit.servertime(xc.bc) : Dates.now(UTC)
-ttstr(dt::DateTime) = "TT" * Dates.format(dt, EnvConfig.datetimeformat)
+ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
 
 function _sleepuntil(xc::XchCache, dt::DateTime)
@@ -157,7 +157,7 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
         return
     end
     if sleepperiod > Minute(1)
-        (verbosity => 2) && println("TT=$(tradetime(xc)) waiting until $dt resulting in long sleep $(floor(sleepperiod, Minute))")
+        (verbosity >= 2) && println("TT=$(tradetime(xc)) waiting until $dt resulting in long sleep $(floor(sleepperiod, Minute))")
     end
     # println("sleeping $(floor(sleepperiod, Second))")
     sleep(sleepperiod)
@@ -177,7 +177,9 @@ function setcurrenttime!(xc::XchCache, base::String, datetime::DateTime)
     end
     Ohlcv.setix!(ohlcv, Ohlcv.rowix(ohlcv, dt))
     if (size(Ohlcv.dataframe(ohlcv), 1) > 0) && (Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)] != dt)
-        (verbosity => 1) && @warn "setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])"
+        if (verbosity >= 1) && (EnvConfig.configmode == production)
+            @warn "setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])"
+        end
     end
     return ohlcv
 end
@@ -346,7 +348,7 @@ function downloadupdate!(xc::XchCache, bases, enddt, period=Dates.Year(10))
     count = length(bases)
     for (ix, base) in enumerate(bases)
         # break
-        (verbosity => 2) && println("\n$(EnvConfig.now()) start updating $base ($ix of $count)")
+        (verbosity >= 2) && println("\n$(EnvConfig.now()) start updating $base ($ix of $count)")
         startdt = enddt - period
         ohlcv = CryptoXch.cryptodownload(xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
         Ohlcv.write(ohlcv)
@@ -358,7 +360,7 @@ function downloadallUSDT(xc::XchCache, enddt, period=Dates.Year(10), minimumdayq
     df = getUSDTmarket(xc)
     df = df[df.quotevolume24h .> minimumdayquotevolume , :]
     bases = sort!(setdiff(df[!, :basecoin], baseignore))
-    (verbosity => 2) && println("$(EnvConfig.now())downloading the following bases bases with $(EnvConfig.cryptoquote) quote: $bases")
+    (verbosity >= 2) && println("$(EnvConfig.now())downloading the following bases bases with $(EnvConfig.cryptoquote) quote: $bases")
     downloadupdate!(xc, bases, enddt, period)
     return df
 end
@@ -934,7 +936,7 @@ function _ordersfilename(xc::XchCache)
     push!(fnvec, string(EnvConfig.configmode))
     # symbols = unique(xc.closedorders[!, :symbol])
     # bases = [basequote(s).basecoin for s in symbols]
-    bases = sort(keys(xc.bases))
+    bases = sort(collect(keys(xc.bases)))
     fnvec = vcat(fnvec, bases)
     push!(fnvec, Dates.format(xc.startdt, "yy-mm-dd"))
     enddt = isnothing(xc.enddt) ? (size(xc.orders, 1) > 0 ? xc.orders[end, :created] : (size(xc.closedorders, 1) > 0 ? xc.closedorders[end, :created] : xc.startdt)) : xc.enddt
@@ -946,7 +948,7 @@ end
 
 function writeorders(xc::XchCache)
     fn = _ordersfilename(xc)
-    (verbosity >=3) && println("saving order log in filename=$fn")
+    (verbosity >=0) && println("saving order log in filename=$fn")
     df = nothing
     if size(xc.closedorders, 1) > 0
         df = xc.closedorders
@@ -956,27 +958,28 @@ function writeorders(xc::XchCache)
     elseif size(xc.orders, 1) > 0
         df = xc.orders
     else
-        df = emptyorders()
+        @warn "no orders to save in $fn"
+        return
     end
     JDF.savejdf(fn, df)
 end
 
-function _assetsfilename(xc::XchCache)
+function _assetsfilename(xc::XchCache, dt)
     ASSETPREFIX = "Assets"
     fnvec = [ASSETPREFIX]
     if !isnothing(xc.mnemonic)
         push!(fnvec, xc.mnemonic)
     end
     push!(fnvec, string(EnvConfig.configmode))
-    dt = isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
+    # dt = isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
     push!(fnvec, Dates.format(dt, "yy-mm-dd"))
     push!(fnvec, "jdf")
     fn = join(fnvec, "_", ".")
     return EnvConfig.logpath(fn)
 end
 
-function writeassets(xc::XchCache)
-    fn = _assetsfilename(xc)
+function writeassets(xc::XchCache, dt::DateTime)
+    fn = _assetsfilename(xc, dt)
     (verbosity >=3) && println("saving asset snapshot in filename=$fn")
     JDF.savejdf(fn, xc.assets)
 end

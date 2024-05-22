@@ -92,7 +92,7 @@ function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize
         ix = ix + subrangesize
         aix = aix % snl + 1
     end
-    res = Dict(sn[aix] => [t[1]:t[2]; for t in arr[aix]] for aix in eachindex(arr))
+    res = Dict(sn[aix] => [t[1]:t[2] for t in arr[aix]] for aix in eachindex(arr))
     return res
 end
 
@@ -129,8 +129,8 @@ function basecombitestpartitions(rowcount, micropartions)
     end
     res =[[],[],[]]
     for aix in 1:3
-        res[aix] = [[t[1]:t[2]; for t in arr[aix]]] # with rangeset
-        res[aix] = [t[1]:t[2]; for t in arr[aix]] # without rangeset
+        res[aix] = [[t[1]:t[2] for t in arr[aix]]] # with rangeset
+        res[aix] = [t[1]:t[2] for t in arr[aix]] # without rangeset
     end
     return res
 end

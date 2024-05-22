@@ -7,6 +7,11 @@ using Dates, DataFrames
 using Test
 using Classify
 
+println("test_setpartitions()")
+Classify.test_setpartitions()
+println("test_basecombitestpartitions()")
+Classify.test_basecombitestpartitions()
+
 @testset "Classify tests" begin
 
 # y = categorical(["X", "O", "X", "X", "O", "X", "X", "O", "O", "X"], ordered=true)
@@ -28,5 +33,6 @@ res = Classify.setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, 
 @test res["combi"] == [11:15, 29:33, 47:49]
 @test res["eval"] == [17:18, 35:36]
 end
+
 
 end  # module

@@ -16,6 +16,14 @@ using EnvConfig, Ohlcv, TradingStrategy, CryptoXch, Classify, Assets, Features
 @enum OrderStatus opened cancelled rejected closed
 
 """
+- buysell is teh normal trade mode
+- sellonly disables buying but sells according to normal sell behavior
+- quickexit sells all assets as soon as possible
+"""
+@enum TradeMode buysell sellonly quickexit
+
+
+"""
 verbosity =
 - 0: suppress all output if not an error
 - 1: log warnings
@@ -41,8 +49,9 @@ mutable struct TradeCache
     lastbuy::Dict  # Dict(base, DateTime) required to buy in = Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in = Minute(tradegapminutes) time gaps
     reloadtimes::Vector{Time}  # provides time info when the portfolio of coin candidates shall be reassessed
-    function TradeCache(; tradegapminutes=1, topx=50, maxassetfraction=0.10, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[])
-        new(xc, tc, tradegapminutes, topx, 1f0, maxassetfraction, Dict(), Dict(), reloadtimes)
+    trademode::TradeMode
+    function TradeCache(; tradegapminutes=1, topx=50, maxassetfraction=0.10, xc=CryptoXch.XchCache(true), tc = TradingStrategy.TradeConfig(xc), reloadtimes=[], trademode=buysell)
+        new(xc, tc, tradegapminutes, topx, 1f0, maxassetfraction, Dict(), Dict(), reloadtimes, trademode)
     end
 end
 
@@ -70,7 +79,7 @@ maxconcurrentbuycount(regrwindow) = regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
-    stopbuying = true
+    stopbuying = false
     sellbuyqtyratio = 2 # sell qty / buy qty per order, if > 1 sell quicker than buying it
     qtyacceleration = 4 # if > 1 then increase buy and sell order qty by this factor
     executed = noop
@@ -99,17 +108,19 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestPro
             if !isnothing(oid)
                 cache.lastsell[base] = dtnow
                 executed = sell
-                (verbosity > 2) && println("\r$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
+                (verbosity > 2) && println("$(tradetime(cache)) created $base sell order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
             else
-                (verbosity > 2) && println("\r$(tradetime(cache)) failed to create $base maker sell order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
+                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker sell order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, $(basecfg.sellonly ? "sell only" : "")")
             end
+        else
+            (verbosity > 3) && println("$(tradetime(cache)) no sell $base due to sufficientsellbalance=$sufficientsellbalance, exceedsminimumbasequantity=$exceedsminimumbasequantity")
         end
-    elseif !stopbuying && (tp == buy) && !basecfg.sellonly
+    elseif (cache.trademode == buysell) && (tp == buy) && !basecfg.sellonly
         basequantity = min(max(qtyacceleration * quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price #* keep 1% * totalusdt as head room
         sufficientbuybalance = (basequantity * price < freeusdt) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         if basedominatesassets
-            (verbosity > 2) && println("\r$(tradetime(cache)) skip $base buy due to basefraction=$(sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > maxassetfraction=$(cache.maxassetfraction)")
+            (verbosity > 2) && println("$(tradetime(cache)) skip $base buy due to basefraction=$(sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > maxassetfraction=$(cache.maxassetfraction)")
             return
         end
         if sufficientbuybalance && exceedsminimumbasequantity && (!(base in keys(cache.lastbuy)) || (cache.lastbuy[base] + Minute(tradegapminutes) <= dtnow))
@@ -117,12 +128,14 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestPro
             if !isnothing(oid)
                 cache.lastbuy[base] = dtnow
                 executed = buy
-                (verbosity > 2) && println("\r$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
+                (verbosity > 2) && println("$(tradetime(cache)) created $base buy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
             else
-                (verbosity > 2) && println("\r$(tradetime(cache)) failed to create $base maker buy order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
+                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker buy order with limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), tgm=$tradegapminutes, (0.01 * totalusdt <= $freeusdt)")
                 # println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $price * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
                 # println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
             end
+        else
+            (verbosity > 2) && println("$(tradetime(cache)) no buy due to sufficientbuybalance=$sufficientbuybalance, exceedsminimumbasequantity=$exceedsminimumbasequantity")
         end
     end
     return executed
@@ -163,7 +176,7 @@ function tradeloop(cache::TradeCache)
     TradingStrategy.timerangecut!(cache.tc, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
     try
         for c in cache.xc
-            (verbosity > 2) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
+            (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
             oo = CryptoXch.getopenorders(cache.xc)
             for ooe in eachrow(oo)  # all orders to be cancelled because amending maker orders will lead to rejections and "Order does not exist" returns
                 if CryptoXch.openstatus(ooe.status)
