@@ -10,7 +10,7 @@ using EnvConfig, Classify
 EnvConfig.init(training)
 
 @testset "Classifier001 tests" begin
-cls = Classify.Classifier001Set()
+cls = Classify.Classifier001()
 cid = Classify.clsid(cls, STDREGRWINDOW, STDGAINTHRSHLD, 0, 10*24*60)
 @test Classify.clcfg.clid == cid
 

@@ -23,8 +23,8 @@ if test
     startdt = enddt - Day(30)
     startdt = DateTime("2022-01-01T00:00:00")
 
-    # Classify.addreplaceconfig!(cls, "BTC", 1440, 0.02, true)
-    # Classify.addreplaceconfig!(cls, "MATIC", 1440, 0.02, true)
+    # Classify.addreplaceconfig!(cls, "BTC", 1440, 0.02, 0, 0)
+    # Classify.addreplaceconfig!(cls, "MATIC", 1440, 0.02, 0, 0)
     Classify.evaluate!(cls, xc, ["BTC"], [1440], [0.01], startdt, enddt)
     # Classify.evaluate!(cls, xc, ["BTC"], Classify.STDREGRWINDOWSET, Classify.STDGAINTHRSHLDSET, startdt, enddt)
 else

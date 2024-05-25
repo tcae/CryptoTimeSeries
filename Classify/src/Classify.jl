@@ -3,21 +3,54 @@ Train and evaluate the trading signal classifiers
 """
 module Classify
 
-abstract type AbstractClassifier end
-abstract type AbstractClassifierSet end
-
-using CSV, DataFrames, Logging, Dates, PrettyPrinting, PrettyTables, Plots
+using CSV, DataFrames, Logging, Dates
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
 using CategoricalDistributions
 # using Distributions
-using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch, Assets
+using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 export noop, hold, sell, buy, strongsell, strongbuy
 
 @enum InvestProposal noop hold sell buy strongsell strongbuy # noop = no statement possible, e.g. due to error, trading shall go on save side
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
 DEBUG = false
+
+abstract type AbstractClassifier end
+
+"Adds ohlcv base with all ohlcv data, which can span the last requiredminutes or the time range of a back test / training.
+The required feature/target will be supplemented. "
+function addbase!(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData) end
+
+"Removes base and all associated data from cl. If base === nothing then all bases are removed."
+function removebase!(cl::AbstractClassifier, base::Union{Nothing, AbstractString}) end
+
+"Returns all successfully added bases."
+function bases(cl::AbstractClassifier)::AbstractVector{AbstractString} end
+
+"Returns the OhlcvData of base taht was previously added to cl."
+function ohlcv(cl::AbstractClassifier, base::AbstractString) end
+
+""" Supplements all with Ohlcv and feature/target data of bases to match with base ohlcv data.
+In a trade loop ohlcv data is updated first and then feature/target data is supplement with this function.
+This to avoid a Classifier dependency to CryptoXch. """
+function supplement!(cl::AbstractClassifier) end
+
+"Write all ohlcv, feature, target data of all bases to canned storage, which overwrites previous canned data."
+function writebasedata(cl::AbstractClassifier) end
+
+"Reduces all associated base data to the specified time range."
+function timerangecut!(cl::AbstractClassifier, startdt::DateTime, enddt::DateTime) end
+
+"Returns the required minutes of data history that is required for that classifier to work properly."
+function requiredminutes(cl::AbstractClassifier)::Integer end
+
+"Returns a trading advice for the specified time. Will return a noop in case of insufficient associated base data."
+function advice(cl::AbstractClassifier, base::AbstractString, dt::DateTime)::InvestProposal end
+
+"Trains the classifier based on previosly provided data and stores the adapted classifier."
+function train!(cl::AbstractClassifier) end
+
 
 """
 verbosity =
@@ -939,24 +972,24 @@ function roccurves(pred, labels=Targets.all_labels)
     return rocdict
 end
 
-function plotroccurves(rc::Dict, customtitle)
-    plotlyjs()
-    default(legend=true)
-    plt = plot()
-    for (k, v) in rc
-        if !isnothing(v)
-            # println("$k = $(length(v[1]))  xxx $(length(v[2]))")
-            # plot!(v, label=k)  # ROC package
-            plot!(v[1], v[2], label=k)  # StatisticalMeasures package
-        end
-    end
-    # plot!(xlab="false positive rate", ylab="true positive rate")
-    plot!([0, 1], [0, 1], linewidth=2, linestyle=:dash, color=:black, label="chance")  # StatisticalMeasures package
-    xlabel!("false positive rate")
-    ylabel!("true positive rate")
-    title!("receiver operator characteristic $customtitle")
-    display(plt)
-end
+# function plotroccurves(rc::Dict, customtitle)
+#     plotlyjs()
+#     default(legend=true)
+#     plt = plot()
+#     for (k, v) in rc
+#         if !isnothing(v)
+#             # println("$k = $(length(v[1]))  xxx $(length(v[2]))")
+#             # plot!(v, label=k)  # ROC package
+#             plot!(v[1], v[2], label=k)  # StatisticalMeasures package
+#         end
+#     end
+#     # plot!(xlab="false positive rate", ylab="true positive rate")
+#     plot!([0, 1], [0, 1], linewidth=2, linestyle=:dash, color=:black, label="chance")  # StatisticalMeasures package
+#     xlabel!("false positive rate")
+#     ylabel!("true positive rate")
+#     title!("receiver operator characteristic $customtitle")
+#     display(plt)
+# end
 
 function confusionmatrix(pred, targets, labels=Targets.all_labels)
     _, maxindex = maxpredictions(pred, labels)
@@ -1129,91 +1162,7 @@ end
 
 #endregion Evaluation
 
-#region Classifier-001
-
-_cls001 = nothing  # Classifier001Set
-
-mutable struct Classifier001Set
-    cfg  # DataFrame
-    function Classifier001Set() # implement persistent singleton
-        global _cls001
-        if isnothing(_cls001) || isnothing(_cls001.cfg)
-            _cls001 = new(nothing)
-            read!(_cls001)
-            @assert !isnothing(_cls001.cfg)
-        end
-        # @assert !isnothing(_cls001)
-        # @assert !isnothing(_cls001.cfg)
-        return _cls001
-    end
-end
-
-emptyclsdf() = DataFrame(
-    clid=Int16[],               # classifier identificator
-    regrwindow=Int16[],         # regressioin window of decisive regression line in minutes
-    gainthreshold=Float32[],    # gain threshold ratio of minimum gain/price of regression line for trade signal
-    headwindow=Int16[],         # regression window of heading regression line in minutes (0 = switched off) ; grad < 0 to sell; grad > 0 to buy
-    trendwindow=Int16[],        # regression window of trend regression line in minutes (0 = switched off) ; grad > 0 to buy
-)
-
-const CLASSIFIER001SETFILE = "Classifier001config"
-
-filename(cls::Classifier001Set) = EnvConfig.datafile(CLASSIFIER001SETFILE, "TradeConfig", ".jdf")
-
-function write(cls::Classifier001Set)
-    fn = filename(cls)
-    (verbosity >=3) && println("saved trading config in cfgfilename=$fn")
-    JDF.savejdf(fn, cls.cfg)
-end
-
-function read!(cls::Classifier001Set)
-    fn = filename(cls)
-    if isdir(fn)
-        cls.cfg = DataFrame(JDF.loadjdf(fn))
-        if isnothing(cls.cfg)
-            @error "Loading $fn failed"
-            cls.cfg = emptyclsdf()
-        else
-            (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded classifier config from $fn")
-        end
-    else
-        (verbosity >= 2) && println("\r$(EnvConfig.now()) No classifier001 set file $fn found")
-        cls.cfg = emptyclsdf()
-    end
-    return cls
-end
-
-function clsid(cls::Classifier001Set, regrwindow, gainthreshold, headwindow, trendwindow)
-    indices = size(cls.cfg, 1) > 0 ? findall((cls.cfg[!, :regrwindow] .== regrwindow) .& (cls.cfg[!, :gainthreshold] .== gainthreshold) .& (cls.cfg[!, :headwindow] .== headwindow) .& (cls.cfg[!, :trendwindow] .== trendwindow)) : []
-    clid = 0
-    if length(indices) == 0
-        clid = length(cls.cfg[!, :clid]) > 0 ? maximum(cls.cfg[!, :clid]) + 1 : 1
-        push!(cls.cfg, (clid, regrwindow, gainthreshold, headwindow, trendwindow))
-        write(cls)
-    else
-        if length(indices) > 1
-            @error "unexpected multiple entries for the same configuration"
-        end
-        clid = cls.cfg[indices[1], :clid]
-        if clid != indices[1]
-            @error "classifier id ($clid) != index ($(indices[1])) --> disables direct access"
-        end
-    end
-    @assert !isnothing(clid)
-    return clid
-end
-
-clcfg(cls::Classifier001Set, clid) = cls.cfg[clid, :]
-
-mutable struct Classifier001 <: AbstractClassifier
-    ohlcv::Union{Nothing, Ohlcv.OhlcvData}    # ohlcv cache
-    f4::Union{Nothing, Features.Features004}  # f4 cache that is shared with all regressionwindows
-    bestix # nothing if cfg is empty or not yet determined else row index of best config within cfg
-    makerfee
-    takerfee
-    cfg::AbstractDataFrame
-    dbgdf
-end
+#region Classifier001
 
 
 STDREGRWINDOW = 1440
@@ -1231,16 +1180,26 @@ SIMTRADEFRACTION = 1/1000  # fraction of total simulation budget for one trade
 STDMODEL = "baseline"
 STDMODELSET = [STDMODEL]
 
-function Classifier001(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true), makerfee=FEE, takerfee=FEE)
-    cl = isnothing(f4) ? nothing : Classifier001(ohlcv, f4, nothing, makerfee, takerfee, emptyconfigdf(), nothing)
+mutable struct BaseClassifier001
+    ohlcv::Union{Nothing, Ohlcv.OhlcvData}    # ohlcv cache
+    f4::Union{Nothing, Features.Features004}  # f4 cache that is shared with all regressionwindows
+    bestix # nothing if cfg is empty or not yet determined else row index of best config within cfg
+    makerfee
+    takerfee
+    cfg::AbstractDataFrame
+    dbgdf
+end
+
+function BaseClassifier001(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true), makerfee=FEE, takerfee=FEE)
+    cl = isnothing(f4) ? nothing : BaseClassifier001(ohlcv, f4, nothing, makerfee, takerfee, emptyconfigdf(), nothing)
     return cl
 end
 
-function Base.show(io::IO, cl::Classifier001)
-    println(io, "Classifier001[$(cl.ohlcv.base)]: ohlcv.ix=$(cl.ohlcv.ix),  ohlcv length=$(size(cl.ohlcv.df,1)), has f4=$(!isnothing(cl.f4)), bestix=$(cl.bestix), fee: maker=$(cl.makerfee), taker=$(cl.takerfee), size(cfg)=$(size(cl.cfg))")  # \n$(cl.ohlcv) \n$(cl.f4)")
+function Base.show(io::IO, cl::BaseClassifier001)
+    println(io, "BaseClassifier001[$(cl.ohlcv.base)]: ohlcv.ix=$(cl.ohlcv.ix),  ohlcv length=$(size(cl.ohlcv.df,1)), has f4=$(!isnothing(cl.f4)), bestix=$(cl.bestix), fee: maker=$(cl.makerfee), taker=$(cl.takerfee), size(cfg)=$(size(cl.cfg))")  # \n$(cl.ohlcv) \n$(cl.f4)")
 end
 
-function timerangecut!(cl::Classifier001, startdt, enddt)
+function timerangecut!(cl::BaseClassifier001, startdt::DateTime, enddt::DateTime)
     if !isnothing(cl.f4)
         ohlcvstartdt = startdt - Minute(Classify.requiredminutes()-1)
         Ohlcv.timerangecut!(cl.ohlcv, ohlcvstartdt, enddt)
@@ -1249,21 +1208,22 @@ function timerangecut!(cl::Classifier001, startdt, enddt)
     end
 end
 
-function write(cl::Classifier001)
+function write(cl::BaseClassifier001)
+    Ohlcv.write(cl.ohlcv)
     if !isnothing(cl.f4)
         Features.write(cl.f4)
     end
 end
 
-function configuration(cl::Classifier001)
+function configuration(cl::BaseClassifier001)
     if !isnothing(cl.bestix) && (size(cl.cfg, 1) > 0)
-        return merge(clcfg(Classifier001Set(), cl.cfg[cl.bestix, :clid]), (basecoin=cl.cfg[cl.bestix, :basecoin], simgain=cl.cfg[cl.bestix, :simgain], minsimgain=cl.cfg[cl.bestix, :minsimgain],))
+        return merge(clcfg(Classifier001(), cl.cfg[cl.bestix, :clid]), (basecoin=cl.cfg[cl.bestix, :basecoin], simgain=cl.cfg[cl.bestix, :simgain], minsimgain=cl.cfg[cl.bestix, :minsimgain],))
     else
         return nothing
     end
 end
 
-supplement!(cl::Classifier001) = Features.supplement!(cl.f4, cl.ohlcv)
+supplement!(cl::BaseClassifier001) = Features.supplement!(cl.f4, cl.ohlcv)
 
 
 # function _cfgfilename(timestamp::Union{Nothing, DateTime}, ext)
@@ -1276,32 +1236,28 @@ supplement!(cl::Classifier001) = Features.supplement!(cl.f4, cl.ohlcv)
 #     return cfgfilename
 # end
 
-requiredminutes(cls::Classifier001) = maximum(Features.regressionwindows004)
 requiredminutes() = maximum(Features.regressionwindows004)
+requiredminutes(cl::BaseClassifier001) = requiredminutes()
 
 "config DataFrame with columns: basecoin, clid, minqteqty, startdt, enddt, totalcnt, sellcnt, buycnt, maxccbuycnt, medianccbuycnt, unresolvedcnt, totalgain, mediangain, meangain, cumgain, maxcumgain, mincumgain, maxgap, mediangap, simgain, minsimgain, maxsimgain"
 emptyconfigdf() = DataFrame(basecoin=String[], clid=Int16[], minqteqty=Float32[], startdt=DateTime[], enddt=DateTime[], totalcnt=Int32[], sellcnt=Int32[], buycnt=Int32[], maxccbuycnt=Int32[], medianccbuycnt=Float32[], unresolvedcnt=Int32[], totalgain=Float32[], mediangain=Float32[], meangain=Float32[], cumgain=Float32[], maxcumgain=Float32[], mincumgain=Float32[], maxgap=Int32[], mediangap=Float32[], simgain=Float32[], minsimgain=Float32[], maxsimgain=Float32[])
 dummyconfig = (basecoin="dummy", clid=0, minqteqty=0f0, startdt=DateTime("2020-01-01T01:00:00"), enddt=DateTime("2020-01-01T01:00:00"), totalcnt=0, sellcnt=0, buycnt=0, maxccbuycnt=0, medianccbuycnt=0f0, unresolvedcnt=0, totalgain=0f0, mediangain=0f0, meangain=0f0, cumgain=0f0, maxcumgain=0f0, mincumgain=0f0, maxgap=0, mediangap=0f0, simgain=0f0, minsimgain=0f0, maxsimgain=0f0)
 
-function addconfig!(cl::Classifier001, base::String, regrwindow, gainthreshold, headwindow, trendwindow)
-    clid = clsid(Classifier001Set(), regrwindow, gainthreshold, headwindow, trendwindow)
-    push!(cl.cfg, (dummyconfig..., basecoin = base, clid = clid))
-    # cl.cfg[end, :basecoin] = base
-    # cl.cfg[end, :clid] = clid
-    return cl.cfg[end, :]
-end
-
-function addreplaceconfig!(cl::Classifier001, base, regrwindow, gainthreshold, headwindow, trendwindow)
+"Add a new BaseClassifier configuration and isenties it as the current/best one. The configuration is returned as DataFrameRow."
+function addreplaceconfig!(cl::BaseClassifier001, base, regrwindow, gainthreshold, headwindow, trendwindow)
     @assert regrwindow in Features.regressionwindows004
-    clid = clsid(Classifier001Set(), regrwindow, gainthreshold, headwindow, trendwindow)
+    clid = clsid(Classifier001(), regrwindow, gainthreshold, headwindow, trendwindow)
     cfgix = findall((cl.cfg[!, :basecoin] .== base) .&& (cl.cfg[!, :clid] .== clid))
     cfg = nothing
     if length(cfgix) == 0
-        cfg = addconfig!(cl, base, regrwindow, gainthreshold, headwindow, trendwindow)
+        push!(cl.cfg, (dummyconfig..., basecoin = base, clid = clid))
+        cl.bestix = lastindex(cl.cfg, 1)
+        cfg = cl.cfg[end, :]
         # sort!(cl.cfg, [:basecoin, :regrwindow, :gainthreshold])
     else
         for ix in reverse(cfgix) # use reverse to maintain correct index in loop
             if ix == first(cfgix)
+                cl.bestix = ix
                 # leave first entry
                 cfg = cl.cfg[ix, :]
             else
@@ -1314,8 +1270,8 @@ function addreplaceconfig!(cl::Classifier001, base, regrwindow, gainthreshold, h
     return cfg
 end
 
-function removeconfig!(cl::Classifier001, base, regrwindow, gainthreshold, headwindow, trendwindow)
-    clid = clsid(Classifier001Set(), regrwindow, gainthreshold, headwindow, trendwindow)
+function removeconfig!(cl::BaseClassifier001, base, regrwindow, gainthreshold, headwindow, trendwindow)
+    clid = clsid(Classifier001(), regrwindow, gainthreshold, headwindow, trendwindow)
     cfgix = findall((cl.cfg[!, :basecoin] .== base) .&& (cl.cfg[!, :clid] .== clid))
     if length(cfgix) > 0
         for ix in reverse(cfgix) # use reverse to maintain correct index in loop
@@ -1324,7 +1280,7 @@ function removeconfig!(cl::Classifier001, base, regrwindow, gainthreshold, headw
     end
 end
 
-function advice(cl::Classifier001, ohlcvix, regrwindow, gainthreshold, headwindow, trendwindow)
+function advice(cl::BaseClassifier001, ohlcvix, regrwindow, gainthreshold, headwindow, trendwindow)
     ohlcvdf = Ohlcv.dataframe(cl.ohlcv)
     fix = Features.f4ix(cl.f4, ohlcvix)
     dt = ohlcvdf[ohlcvix, :opentime]
@@ -1351,7 +1307,7 @@ end
 
 _ohlcvix(ohlcvstartix, adviceix) = adviceix + ohlcvstartix - 1
 
-function _tradepairs(cl::Classifier001, ipvec::Vector{InvestProposal}, startix)::DataFrame
+function _tradepairs(cl::BaseClassifier001, ipvec::Vector{InvestProposal}, startix)::DataFrame
     ot = cl.ohlcv.df[!, :opentime]
     piv = Ohlcv.pivot!(cl.ohlcv)
     buystack = []  # used to stack the buy index of an open trade pair
@@ -1434,7 +1390,7 @@ _median(itr::AbstractArray; init) = isempty(itr) ? init : median(itr)
 _mean(itr::AbstractArray; init) = isempty(itr) ? init : mean(itr)
 _last(itr::AbstractArray; init) = isempty(itr) ? init : last(itr)
 
-function _evalconfig(cl::Classifier001, cfgrow::DataFrameRow, startix, endix, tradepairs::DataFrame)
+function _evalconfig(cl::BaseClassifier001, cfgrow::DataFrameRow, startix, endix, tradepairs::DataFrame)
     cfgrow.startdt = cl.ohlcv.df[startix, :opentime]
     cfgrow.enddt = cl.ohlcv.df[endix, :opentime]
     cfgrow.totalcnt = endix - startix + 1
@@ -1461,7 +1417,7 @@ end
 """
 Evaluates the ohlcv data and adapts hyper parameters to the best configuration. The value of the best backtest is returned.
 """
-function train!(cl::Classifier001; regrwindows=STDREGRWINDOWSET, gainthresholds=STDGAINTHRSHLDSET, startdt, enddt)
+function train!(cl::BaseClassifier001; regrwindows=STDREGRWINDOWSET, gainthresholds=STDGAINTHRSHLDSET, startdt, enddt)
     @assert (length(regrwindows) > 0) && (length(gainthresholds) > 0) "(length(regrwindows) > 0)=$(length(regrwindows) > 0) && (length(gainthresholds) > 0)=$(length(gainthresholds) > 0)"
     @assert all([rw in Features.regressionwindows004 for rw in regrwindows]) "not all $regrwindows in $(Features.regressionwindows004)"
     startix = Ohlcv.rowix(cl.ohlcv.df[!, :opentime], startdt, Ohlcv.intervalperiod("1m"))
@@ -1475,7 +1431,7 @@ function train!(cl::Classifier001; regrwindows=STDREGRWINDOWSET, gainthresholds=
                     # (verbosity >= 3) && print("\r$(EnvConfig.timestr(enddt)) $(cl.ohlcv.base), $regr, $gth                                ")
                     #TODO first request clid
                     #TODO only store clid in cfgrow instead of "regr, gth, model"
-                    cfgrow = addconfig!(cl, cl.ohlcv.base, regr, gth, head, trend)
+                    cfgrow = addreplaceconfig!(cl, cl.ohlcv.base, regr, gth, head, trend)
                     if size(cl.ohlcv.df, 1) > 0
                         # ipvec = [advice(cl, oix, regr, gth, model) for oix in cl.ohlcv.ix:size(cl.ohlcv.df, 1)]
                         ipvec = [advice(cl, oix, regr, gth, head, trend) for oix in startix:endix]
@@ -1529,7 +1485,186 @@ end
 
 trainsetminperf(tsdf::AbstractDataFrame, simgainmin=MINSIMGAINPCT) = size(tsdf, 1) > 1 ? tsdf[tsdf[!, :simgain] .>= simgainmin, :] : tsdf
 
-#endregion Classifier-001
+
+_cls001 = nothing  # Classifier001
+
+mutable struct Classifier001 <: AbstractClassifier
+    cfg  # DataFrame
+    bd::Dict{AbstractString, BaseClassifier001}  # base => BaseClassifier001
+    function Classifier001() # implement persistent singleton
+        global _cls001
+        if isnothing(_cls001) || isnothing(_cls001.cfg)
+            _cls001 = new(nothing, Dict())
+            read!(_cls001)
+            @assert !isnothing(_cls001.cfg)
+        end
+        # @assert !isnothing(_cls001)
+        # @assert !isnothing(_cls001.cfg)
+        return _cls001
+    end
+end
+
+requiredminutes(cl::Classifier001) = requiredminutes()
+
+emptyclsdf() = DataFrame(
+    clid=Int16[],               # classifier identificator
+    regrwindow=Int16[],         # regression window of decisive regression line in minutes
+    gainthreshold=Float32[],    # gain threshold ratio of minimum gain/price of regression line for trade signal
+    headwindow=Int16[],         # regression window of heading regression line in minutes (0 = switched off) ; grad < 0 to sell; grad > 0 to buy
+    trendwindow=Int16[],        # regression window of trend regression line in minutes (0 = switched off) ; grad > 0 to buy
+)
+
+"Adds ohlcv base with all ohlcv data, which can span the last requiredminutes or the time range of a back test / training."
+function addbase!(cl::Classifier001, ohlcv::Ohlcv.OhlcvData)
+    bc = BaseClassifier001(ohlcv)
+    if !isnothing(bc)
+        cl.bd[ohlcv.base] = bc
+    end
+end
+
+addreplaceconfig!(cl::Classifier001, base, regrwindow, gainthreshold, headwindow, trendwindow) = base in keys(cl.bd) ? addreplaceconfig!(cl.bd[base], base, regrwindow, gainthreshold, headwindow, trendwindow) : nothing
+
+"Removes base and all associated data from cl. If base === nothing then all bases are removed."
+removebase!(cl::Classifier001, base::Union{Nothing, AbstractString}) = isnothing(base) ? cl.bd = Dict() : delete!(cl.bd, base);
+
+"Returns all successfully added bases."
+bases(cl::Classifier001)::AbstractVector{AbstractString} = collect(keys(cl.bd))
+
+"Returns the OhlcvData of base that was previously added to cl."
+ohlcv(cl::Classifier001, base::AbstractString) = cl.bd[base]
+
+""" Supplements all with Ohlcv and feature/target data of bases to match with base ohlcv data.
+In a trade loop ohlcv data is updated first and then feature/target data is supplement with this function."""
+function supplement!(cl::Classifier001)
+    for bcl in values(cl.bd)
+        supplement!(bcl)
+    end
+end
+
+"Write all ohlcv, feature, target data of all bases to canned storage, which overwrites previous canned data."
+function writebasedata(cl::Classifier001)
+    for bcl in values(cl.bd)
+        write(bcl)
+    end
+end
+
+"Reduces all associated base data to the specified time range."
+function timerangecut!(cl::Classifier001, startdt::DateTime, enddt::DateTime)
+    for bcl in values(cl.bd)
+        timerangecut!(bcl, startdt, enddt)
+    end
+end
+
+"Returns a trading advice for the specified time. Will return a noop in case of insufficient associated base data."
+function advice(cl::Classifier001, base::AbstractString, dt::DateTime)::InvestProposal
+    bc = base in keys(cl.bd) ? cl.bd[base] : nothing
+    if isnothing(bc)
+        return noop
+    end
+    ohlcvix = Ohlcv.rowix(bc.ohlcv.df[!, :opentime], dt)
+    if bc.ohlcv.df[ohlcvix, :opentime] == dt
+        cfg = clcfg(cl, bc.cfg[bc.bestix, :clid])
+        return advice(bc, ohlcvix, cfg.regrwindow, cfg.gainthreshold, cfg.headwindow, cfg.trendwindow)
+    else
+        return noop
+    end
+end
+
+"Trains the classifier based on previosly provided data and stores the adapted classifier."
+function train!(cl::Classifier001) end
+
+const CLASSIFIER001SETFILE = "Classifier001config"
+
+filename(cls::Classifier001) = EnvConfig.datafile(CLASSIFIER001SETFILE, "TradeConfig", ".jdf")
+
+function write(cls::Classifier001)
+    fn = filename(cls)
+    (verbosity >=3) && println("saved trading config in cfgfilename=$fn")
+    JDF.savejdf(fn, cls.cfg)
+end
+
+function read!(cls::Classifier001)
+    fn = filename(cls)
+    if isdir(fn)
+        cls.cfg = DataFrame(JDF.loadjdf(fn))
+        if isnothing(cls.cfg)
+            @error "Loading $fn failed"
+            cls.cfg = emptyclsdf()
+        else
+            (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded classifier config from $fn")
+        end
+    else
+        (verbosity >= 2) && println("\r$(EnvConfig.now()) No classifier001 set file $fn found")
+        cls.cfg = emptyclsdf()
+    end
+    return cls
+end
+
+function clsid(cls::Classifier001, regrwindow, gainthreshold, headwindow, trendwindow)
+    indices = size(cls.cfg, 1) > 0 ? findall((cls.cfg[!, :regrwindow] .== regrwindow) .& (cls.cfg[!, :gainthreshold] .== gainthreshold) .& (cls.cfg[!, :headwindow] .== headwindow) .& (cls.cfg[!, :trendwindow] .== trendwindow)) : []
+    clid = 0
+    if length(indices) == 0
+        clid = length(cls.cfg[!, :clid]) > 0 ? maximum(cls.cfg[!, :clid]) + 1 : 1
+        push!(cls.cfg, (clid, regrwindow, gainthreshold, headwindow, trendwindow))
+        write(cls)
+    else
+        if length(indices) > 1
+            @error "unexpected multiple entries for the same configuration"
+        end
+        clid = cls.cfg[indices[1], :clid]
+        if clid != indices[1]
+            @error "classifier id ($clid) != index ($(indices[1])) --> disables direct access"
+        end
+    end
+    @assert !isnothing(clid)
+    return clid
+end
+
+clcfg(cls::Classifier001, clid) = cls.cfg[clid, :]
+
+
+#endregion Classifier001
+
+#region Classifier002
+
+mutable struct Classifier002 <: AbstractClassifier
+    bd::Dict     # base data as Dict to ohlcv
+end
+
+
+"Adds ohlcv base with all ohlcv data, which can span the last requiredminutes or the time range of a back test / training.
+The required feature/target will be supplemented. "
+function addbase!(cl::Classifier002, ohlcv::Ohlcv.OhlcvData) end
+
+"Removes base and all associated data from cl. If base === nothing then all bases are removed."
+function removebase!(cl::Classifier002, base::Union{Nothing, AbstractString}) end
+
+"Returns all successfully added bases."
+function bases(cl::Classifier002)::AbstractVector{AbstractString} end
+
+"Returns the OhlcvData of base that was previously added to cl."
+function ohlcv(cl::Classifier002, base::AbstractString) end
+
+""" Supplements all with Ohlcv and feature/target data of bases to match with base ohlcv data.
+In a trade loop ohlcv data is updated first and then feature/target data is supplement with this function."""
+function supplement!(cl::Classifier002) end
+
+"Write all ohlcv, feature, target data of all bases to canned storage, which overwrites previous canned data."
+function writebasedata(cl::Classifier002) end
+
+"Reduces all associated base data to the specified time range."
+function timerangecut!(cl::Classifier002, startdt::DateTime, enddt::DateTime) end
+
+"Returns the required minutes of data history that is required for that classifier to work properly."
+function requiredminutes(cl::Classifier002)::Integer end
+
+"Returns a trading advice for the specified time. Will return a noop in case of insufficient associated base data."
+function advice(cl::Classifier002, base::AbstractString, dt::DateTime)::InvestProposal end
+
+"Trains the classifier based on previosly provided data and stores the adapted classifier."
+function train!(cl::Classifier002) end
+
+#endregion Classifier002
 
 
 end  # module

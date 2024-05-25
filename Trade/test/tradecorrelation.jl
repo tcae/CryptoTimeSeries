@@ -1,7 +1,7 @@
 module TradeCorrelation
 
 using Test, Dates, Logging, LoggingExtras, DataFrames
-using EnvConfig, Trade, TradingStrategy, Classify, Assets, Ohlcv, CryptoXch
+using EnvConfig, Trade, Classify, Ohlcv, CryptoXch
 
 println("$(EnvConfig.now()): TradeCorrelation started")
 
@@ -35,15 +35,15 @@ function compressdf(df)
 end
 
 startbudget = 100000f0
-cl = Classify.Classifier001(Ohlcv.read!(Ohlcv.defaultohlcv("BTC")))
 startdt = DateTime("2024-03-19T00:00:00")  # cl.ohlcv.df[begin, :opentime]
 enddt = DateTime("2024-03-29T10:00:00")  # cl.ohlcv.df[end, :opentime]
 cache = Trade.TradeCache(xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt), reloadtimes=[])
 CryptoXch.addbase!(cache.xc, cl.ohlcv)
+Classify.addbase!(cache.cl, Ohlcv.read!(Ohlcv.defaultohlcv("BTC")))
 CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
-Classify.train!(cl; regrwindows=[Classify.STDREGRWINDOW], gainthresholds=[Classify.STDGAINTHRSHLD], models=[Classify.STDMODEL], startdt, enddt)
-println(cl.cfg)
-TradingStrategy.addtradeconfig(cache.tc, cl)
+Classify.train!(cache.cl.bd["BTC"]; regrwindows=[Classify.STDREGRWINDOW], gainthresholds=[Classify.STDGAINTHRSHLD], startdt, enddt)
+println(cache.cl.bd["BTC"].cfg)
+Trade.tradeselection!(cache, ["BTC"], datetime=startdt, assetonly=true)
 Trade.tradeloop(cache)
 assets = CryptoXch.portfolio!(cache.xc)
 endbudget = sum(assets[!, :usdtvalue])

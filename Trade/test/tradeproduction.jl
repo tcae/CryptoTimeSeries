@@ -28,7 +28,7 @@ enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(true; enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 reloadtimes = [Time("04:00:00")]
-cache = Trade.TradeCache(xc=xc, reloadtimes=reloadtimes, trademode=buysell) # to exit , trademode=sellonly
+cache = Trade.TradeCache(xc=xc, reloadtimes=reloadtimes, trademode=Trade.buysell) # to exit , trademode=sellonly
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

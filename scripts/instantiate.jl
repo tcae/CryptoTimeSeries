@@ -18,7 +18,7 @@ Pkg.activate(rootpath)
 cd(rootpath)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
-mypackages = ["TradingStrategy", "Trade", "EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "Bybit", "CryptoXch", "Assets", "Classify"]
+mypackages = ["Trade", "Classify", "CryptoXch", "Bybit", "EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv"]
 rootpath = "."
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)

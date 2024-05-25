@@ -14,7 +14,9 @@ EnvConfig.init(production)
 xc = CryptoXch.XchCache(true)
 
 
-# tc = TradingStrategy.train!(TradingStrategy.TradeConfig(xc), []; datetime=dt, assetonly=true)
+# tc = TradingStrategy.tradeselection!(TradingStrategy.TradeConfig(xc), []; datetime=dt, assetonly=true)
+
+" Returns a dataframe with timerange that indicates available data per coin. "
 function ohlcv2df()
     df = DataFrame()
     stopafter = 3000
@@ -36,6 +38,7 @@ function ohlcv2df()
     return df
 end
 
+"Based on input of ohlcv2df, creates a USDTmarket fiel per day"
 function USDTmarketdf(ohlcvdf)
     mindt = minimum(ohlcvdf[!, :startdt])
     enddt = maxdt = floor(maximum(ohlcvdf[!, :enddt]), Day(1))
@@ -73,10 +76,11 @@ xc.currentdt = xc.enddt = DateTime("2024-03-30T10:03:00")  # set time simulation
 
 xc.currentdt = xc.enddt = nothing  # set time simulation off
 CryptoXch.getUSDTmarket(xc)
+println("cureent USDT market data from xchange: $(describe(df, :all))")
 
 xc.currentdt = xc.enddt = DateTime("2024-03-30T10:03:00")  # set time simulation on
 df = CryptoXch.getUSDTmarket(xc)
-println("check loading of saved USDT amrket data: $(describe(df, :all))")
+println("check loading of saved USDT market data: $(describe(df, :all))")
 println("done")
 
 

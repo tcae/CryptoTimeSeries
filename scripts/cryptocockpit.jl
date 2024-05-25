@@ -19,7 +19,7 @@ import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch, TradingStrategy
+using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch, Trade
 
 
 function loadohlcv!(cp, base, interval)
@@ -49,9 +49,9 @@ function updateassets!(cp, download=false)
     CryptoXch.removeallbases(cp.xc)
     if download
         assets = CryptoXch.portfolio!(cp.xc)
-        tc = TradingStrategy.train!(TradingStrategy.TradeConfig(cp.xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved
+        tc = Trade.tradeselection!(Trade.TradeCache(xc=cp.xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved
     end
-    cp.assetsconfig, assets = TradingStrategy.assetsconfig!(TradingStrategy.TradeConfig(cp.xc)) # read latest from file merged with assets in correct format
+    cp.assetsconfig, assets = Trade.assetsconfig!(Trade.TradeCache(xc=cp.xc)) # read latest from file merged with assets in correct format
     cp.update = cp.assetsconfig[1, :update]
     select!(cp.assetsconfig, Not(:update))
     if !isnothing(cp.assetsconfig) && (size(cp.assetsconfig, 1) > 0)
@@ -388,11 +388,11 @@ function targetfigure(base, period, enddt)
         pivot = Ohlcv.pivot!(subdf)
         pivot = normpercent(cp, pivot, normref)
         _, grad = Features.rollingregression(pivot, Features.regressionwindows004dict["1h"])
-        labels, relativedistances, distances, regressionix, priceix = Targets.continuousdistancelabels(pivot, grad, Targets.defaultlabelthresholds)
+        labels, relativedistances, distances, priceix = Targets.continuousdistancelabels(pivot, Targets.defaultlabelthresholds)
         x = subdf[!, :opentime]
         y = ["distpeak4h"]
         z = [distances]
-        t = [["p: $(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) r: $(Dates.format(x[regressionix[ix]], "mm-dd HH:MM"))" for ix in 1:size(x, 1)]]
+        t = [["pix=$(Dates.format(x[priceix[ix]], "mm-dd HH:MM")) " for ix in 1:size(x, 1)]]
         dcg = dcc_graph(
             figure = (
                 data = [

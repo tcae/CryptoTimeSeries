@@ -62,7 +62,7 @@ If isnothing(datetime) or datetime > last update then uploads latest OHLCV and c
 The resulting DataFrame table of tradable coins is stored.
 `assetonly` is an input parameter to enable backtesting.
 """
-function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false)
+function tradeselection!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false)
     datetime = floor(datetime, Minute(1))
 
     # make memory available
@@ -88,7 +88,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
             (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count) including cache update                           ")
             ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Year(10), datetime)
             Ohlcv.write(ohlcv)
-            cl = Classify.Classifier001(ohlcv)
+            cl = Classify.BaseClassifier001(ohlcv)
             if !isnothing(cl)
                 Classify.write(cl)
                 Classify.timerangecut!(cl, datetime - Minute(Classify.requiredminutes()-1), datetime)
@@ -96,7 +96,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
         else
             (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $base ($ix of $count)                                                  ")
             ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", datetime - Minute(Classify.requiredminutes()-1), datetime)
-            cl = Classify.Classifier001(ohlcv)
+            cl = Classify.BaseClassifier001(ohlcv)
         end
         if !isnothing(cl) # else Ohlcv history may be too short to calculate sufficient features
             cld[base] = cl
@@ -113,7 +113,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     (verbosity >= 2) && print("\r$(EnvConfig.now()) finished updating $count bases                                            ")
     startdt = datetime - Day(3)  # Day(10)
     (verbosity >= 2) && print("\r$(EnvConfig.now()) start classifier set training                                             ")
-    cfg = Classify.trainset!(collect(values(cld)), startdt, datetime, true)
+    cfg = Classify.trainset!(collect(values(cld)), startdt, datetime, true) #TODO to be removed from TradingStrategy -> internal to Classify
     (verbosity >= 4) && println("cld=$(collect(values(cld))) trainset! cfg=$cfg")
     if assetonly
         (verbosity >= 4) && println("tradablebases=$(size(cfg, 1) > 0 ? intersect(cfg[!, :basecoin], tradablebases) : []) = intersect($(cfg[!, :basecoin]), tradablebases=$tradablebases)")
@@ -121,7 +121,7 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     else
         (verbosity >= 4) && println("tradablebases=$(setdiff(tradablebases, skippedbases)) = setdiff(tradablebases=$tradablebases, skippedbases=$skippedbases)")
         tradablebases = setdiff(tradablebases, skippedbases)
-        trainsetminperfdf = Classify.trainsetminperf(cfg, 1.5)  # 0.5% gain per day
+        trainsetminperfdf = Classify.trainsetminperf(cfg, 1.5)  # 0.5% gain per day #TODO to be removed from TradingStrategy -> select only on liquidity criteria
         (verbosity >= 4) && println("trainsetminperfdf=$trainsetminperfdf")
         tradablebases = size(trainsetminperfdf, 1) > 0 ? intersect(trainsetminperfdf[!, :basecoin], tradablebases) : []
         (verbosity >= 4) && println("tradablebases=$tradablebases")
@@ -144,9 +144,10 @@ function train!(tc::TradeConfig, assetbases::Vector; datetime=Dates.now(Dates.UT
     cldf = DataFrame()
     for cl in values(cld)
         push!(cldf, (Classify.configuration(cl)..., simgain=cl.cfg[cl.bestix, :simgain], minsimgain=cl.cfg[cl.bestix, :minsimgain], medianccbuycnt=cl.cfg[cl.bestix, :medianccbuycnt], update=cl.cfg[cl.bestix, :enddt], classifier=cl))
+        #TODO don't merge all data into one dataframe - each module should manage their own dataframe synced via timestamp and orderid
     end
     tc.cfg = leftjoin(tc.cfg, cldf, on = :basecoin)
-    (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of TrainingStrategy.train! $(tc.cfg)")
+    (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of TrainingStrategy.tradeselection! $(tc.cfg)")
     if !assetonly
         write(tc, datetime)
     end
@@ -156,11 +157,12 @@ end
 
 function addtradeconfig(tc::TradeConfig, cl::Classify.AbstractClassifier)
     tcfg = (basecoin=cl.ohlcv.base, quotevolume24h_M=1f0, pricechangepercent=10f0, buysell=true, sellonly=false, Classify.configuration(cl)..., classifier=cl)
+    #TODO don't merge all data into one dataframe - each module should manage their own dataframe synced via timestamp and orderid
     push!(tc.cfg, tcfg)
 end
 
 """
-train! loads all data up to enddt. This function will reduce the memory starting from startdt plus OHLCV data required for feature calculation.
+tradeselection! loads all data up to enddt. This function will reduce the memory starting from startdt plus OHLCV data required for feature calculation.
 """
 function timerangecut!(tc::TradeConfig, startdt, enddt)
     for ohlcv in CryptoXch.ohlcv(tc.xc)
@@ -244,7 +246,7 @@ function read!(tc::TradeConfig, datetime=nothing)
         for ix in eachindex(df[!, :basecoin])
             (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(df[ix, :basecoin]) from trade config ($ix of $rows)                                                  ")
             ohlcv = CryptoXch.cryptodownload(tc.xc, df[ix, :basecoin], "1m", floor(datetime-Minute(Classify.requiredminutes()), Dates.Minute), floor(datetime, Dates.Minute))
-            cl = Classify.Classifier001(ohlcv)
+            cl = Classify.BaseClassifier001(ohlcv)
             if !isnothing(cl) # else Ohlcv history may be too short to calculate sufficient features
                 push!(clvec, cl)
             else
@@ -257,17 +259,22 @@ function read!(tc::TradeConfig, datetime=nothing)
     return !isnothing(df) && (size(df, 1) > 0) ? tc : nothing
 end
 
-"Returns the current TradeConfig dataframe with usdtprice and usdtvalue added as well as the portfolio dataframe as a tuple"
-function assetsconfig!(tc::TradeConfig, datetime=nothing)
+"Adds usdtprice and usdtvalue added as well as the portfolio dataframe to trade config and returns trade config and portfolio as tuple"
+function addassetsconfig!(tc::TradeConfig)
     assets = CryptoXch.portfolio!(tc.xc)
-    sort!(assets, [:coin])
-    tc = TradingStrategy.readconfig!(tc, datetime)
+    sort!(assets, [:coin])  # for readability only
 
     tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
     tc.cfg = tc.cfg[!, Not([:locked, :free])]
-    sort!(tc.cfg, [:basecoin])
-    sort!(tc.cfg, rev=true, [:buysell])
+    sort!(tc.cfg, [:basecoin])  # for readability only
+    sort!(tc.cfg, rev=true, [:buysell])  # for readability only
     return tc.cfg, assets
+end
+
+"Returns the current TradeConfig dataframe with usdtprice and usdtvalue added as well as the portfolio dataframe as a tuple"
+function assetsconfig!(tc::TradeConfig, datetime=nothing)
+    tc = TradingStrategy.readconfig!(tc, datetime)
+    return addassetsconfig!(tc)
 end
 
 end # module

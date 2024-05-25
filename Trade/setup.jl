@@ -8,7 +8,7 @@ cd(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 
-mypackages = ["EnvConfig", "Ohlcv", "TradingStrategy", "CryptoXch", "Features"]
+mypackages = ["EnvConfig", "Ohlcv", "CryptoXch", "Features"]
 rootpath = ".."
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)
@@ -18,7 +18,7 @@ for mypackage in mypackages
     # Pkg.gc()
 end
 
-Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging", "CSV", "LoggingExtras"])
+Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging", "CSV", "LoggingExtras", "JDF"])
 Pkg.resolve()
 Pkg.update()
 Pkg.gc()
