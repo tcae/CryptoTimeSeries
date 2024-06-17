@@ -337,7 +337,7 @@ weakdeps = ["SparseArrays"]
 deps = ["Assets", "BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "CryptoXch", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "Ohlcv", "PlotlyJS", "Plots", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.22.0"
+version = "0.25.3"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]
@@ -626,10 +626,10 @@ uuid = "fa6b7ba4-c1ee-5f82-b5fc-ecf0adba8f74"
 version = "0.6.8"
 
 [[deps.EnvConfig]]
-deps = ["Dates", "JSON3", "Logging", "Pkg", "Test"]
+deps = ["DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
 path = "EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.2.7"
+version = "0.2.10"
 
 [[deps.EpollShim_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -700,7 +700,7 @@ version = "0.2.8"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "JDF", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.6.6"
+version = "1.6.7"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -2512,7 +2512,7 @@ version = "0.5.23"
 deps = ["Assets", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "TradingStrategy"]
 path = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.15.0"
+version = "0.16.0"
 
 [[deps.TradingStrategy]]
 deps = ["Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JuliaInterpreter", "Logging", "Ohlcv", "Test"]

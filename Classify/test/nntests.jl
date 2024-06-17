@@ -9,8 +9,6 @@ using Classify
 
 println("test_setpartitions()")
 Classify.test_setpartitions()
-println("test_basecombitestpartitions()")
-Classify.test_basecombitestpartitions()
 
 @testset "Classify tests" begin
 

@@ -247,9 +247,13 @@ end
 """
 function relativegain(prices, baseix, gainix; relativefee=0.0)
     if baseix > gainix
-        gain = (prices[baseix] - prices[gainix] - (prices[gainix] + prices[baseix]) * relativefee) / prices[baseix]
+        baseprice = prices[baseix] * (1 - relativefee)
+        gainprice = prices[gainix] * (1 + relativefee)
+        gain = (baseprice - gainprice) / prices[baseix]
     else
-        gain = (prices[gainix] - prices[baseix] - (prices[gainix] + prices[baseix]) * relativefee) / prices[baseix]
+        baseprice = prices[baseix] * (1 + relativefee)
+        gainprice = prices[gainix] * (1 - relativefee)
+        gain = (gainprice - baseprice) / prices[baseix]
     end
     # println("forward gain(prices[$baseix]= $(prices[baseix]) prices[$gainix]= $(prices[gainix]))=$gain")
     return gain
@@ -554,13 +558,6 @@ function timerangecut!(ohlcv::OhlcvData, startdt, enddt)
     enddt = isnothing(enddt) ? ohlcv.df[end, :opentime] : enddt
     endix = Ohlcv.rowix(ohlcv.df[!, :opentime], enddt)
     ohlcv.df = ohlcv.df[startix:endix, :]
-    # if !isnothing(startdt) && !isnothing(enddt)
-    #     subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t .<= floor(enddt, intervalperiod(ohlcv.interval)))
-    # elseif !isnothing(startdt)
-    #     subset!(ohlcv.df, :opentime => t -> floor(startdt, intervalperiod(ohlcv.interval)) .<= t)
-    # elseif !isnothing(enddt)
-    #     subset!(ohlcv.df, :opentime => t -> t .<= floor(enddt, intervalperiod(ohlcv.interval)))
-    # end
     ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
 end
 

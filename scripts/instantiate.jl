@@ -35,3 +35,4 @@ end
 
 # Pkg.update()
 Pkg.gc()
+Pkg.instantiate()

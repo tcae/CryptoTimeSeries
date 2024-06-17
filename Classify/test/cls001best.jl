@@ -23,6 +23,8 @@ xc= CryptoXch.XchCache(true)
 enddt = nothing # nothing == latest;   DateTime("2024-03-22T20:40:00")
 period = Day(10)  # Year(20)
 
+#TODO train1() parameters CHANGED
+@error "train1() parameters CHANGED"
 bestdf = Classify.train!(cls, xc, 10, period, enddt, update, ["BTC"])
 println("$(EnvConfig.now()) train! $bestdf")
 println("$(EnvConfig.now()) size(cls.cfg))=$(size(cls.cfg))")

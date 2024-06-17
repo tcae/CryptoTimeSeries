@@ -8,8 +8,17 @@ Provides
 
 """
 module EnvConfig
-using Logging, Dates, Pkg, JSON3
-export authorization, test, production, training, now, timestr
+using Logging, Dates, Pkg, JSON3, DataFrames, JDF
+export authorization, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!
+
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info, e.g. number of steps in rowix
+"""
+verbosity = 1
 
 @enum Mode test production training
 cryptoquote = "USDT"
@@ -78,6 +87,7 @@ function setlogpath(folder=nothing)
     return mkpath(normpath(joinpath(cryptopath, logfilespath)))
 end
 
+"Returns the full path including filename of the given filename connected with the current log file path"
 logpath(file) = normpath(joinpath(cryptopath, logfilespath, file))
 logsubfolder() = logfilespath == "logs" ? "" : joinpath(splitpath(logfilespath)[2:end])
 logfolder() = logfilespath
@@ -173,6 +183,94 @@ function checkbackup(filename)
         mv(filename, backupfilename)
     end
 end
+
+#region abstract-configuration
+
+"""
+Provides a facility to write a configuration into 1 row of a DataFrame and retrieve it for configuring types, e.g. Features, Tragets, Classiifers.
+The subtype shall implement a property `cfg` to hold the DataFrame of all configurations of that subtype.
+`cfgid` is an Integer identifier of a configuration but also used as direct access row index within the `cfg` DataFrame.
+"""
+abstract type AbstractConfiguration end
+
+"Register feature configuration persistently and return cfgset configuration identifier"
+function configurationid(cfgset::AbstractConfiguration, config::Union{NamedTuple, DataFrameRow})::Integer
+    if !hasproperty(cfgset, :cfg)
+        return 0
+    end
+    match = nothing
+    for k in keys(config)
+        match2 = isa(config[k], AbstractFloat) ? isapprox.(cfgset.cfg[!, k], config[k]) : cfgset.cfg[!, k] .== config[k]
+        match = isnothing(match) ? match2 : match .& match2
+    end
+    indices = size(cfgset.cfg, 1) > 0 ? findall(match) : []
+    cfgid = 0
+    if length(indices) == 0
+        cfgid = length(cfgset.cfg[!, :cfgid]) > 0 ? maximum(cfgset.cfg[!, :cfgid]) + 1 : 1
+        push!(cfgset.cfg, (cfgid, config...))
+        writeconfigurations(cfgset)
+    else
+        @assert length(indices) == 1 "unexpected multiple entries $(indices) for the same configuration $(cfgset.cfg)"
+        cfgid = cfgset.cfg[indices[1], :cfgid]
+        @assert cfgid == indices[1] "config id ($cfgid) != index ($(indices[1]))"
+    end
+    @assert !isnothing(cfgid)
+    return cfgid
+end
+
+"Returns the DataFrameRow that matches "
+function configuration(cfgset::AbstractConfiguration, cfgid::Integer)
+    if !hasproperty(cfgset, :cfg)
+        return (cfgid=cfgid)
+    end
+    @assert cfgid <= size(cfgset.cfg, 1) "config id ($cfgid) > size(cfgset.cfg)=$(size(cfgset.cfg, 1)), config=$(cfgset.cfg)"
+    @assert cfgset.cfg[cfgid, :cfgid] == cfgid "config id ($cfgid) != index ($(cfgset.cfg[cfgid, :cfgid]))"
+    return cfgset.cfg[cfgid, :]
+end
+
+
+filename(cfgset::AbstractConfiguration) = EnvConfig.datafile(string(typeof(cfgset)) * "Config", "Config", ".jdf")
+
+"Writes the cfgset DataFrame config file into field cfg"
+function writeconfigurations(cfgset::AbstractConfiguration)
+    if !hasproperty(cfgset, :cfg)
+        return
+    end
+    fn = filename(cfgset)
+    (verbosity >=3) && println("saved config in cfgfilename=$fn")
+    JDF.savejdf(fn, cfgset.cfg)
+end
+
+"Reads the cfgset DataFrame config file from field cfg"
+function readconfigurations!(cfgset::AbstractConfiguration)
+    if !hasproperty(cfgset, :cfg)
+        return cfgset
+    end
+    fn = filename(cfgset)
+    if isdir(fn)
+        cfgset.cfg = DataFrame(JDF.loadjdf(fn))
+        if isnothing(cfgset.cfg)
+            @error "Loading $fn failed"
+            cfgset.cfg = emptyconfigdf(cfgset)
+        else
+            (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded cfgset config from $fn")
+        end
+    else
+        (verbosity >= 2) && println("\r$(EnvConfig.now()) No configuration file $fn found")
+        cfgset.cfg = emptyconfigdf(cfgset)
+        (verbosity >= 3) && println("\r$(EnvConfig.now()) empty cfgset config $(cfgset.cfg)")
+    end
+    return cfgset
+end
+
+function emptyconfigdf(cfgset::AbstractConfiguration)
+    (verbosity >= 3) && println("AbstractConfiguration emptyconfigdf of $(typeof(cfgset))")
+    return DataFrame(
+        cfgid=Int16[]               # config identificator
+    )
+end
+
+#endregion abstract-configuration
 
 end # module
 

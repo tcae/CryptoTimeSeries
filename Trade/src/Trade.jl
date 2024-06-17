@@ -108,7 +108,7 @@ If isnothing(datetime) or datetime > last update then uploads latest OHLCV and c
 The resulting DataFrame table of tradable coins is stored.
 `assetonly` is an input parameter to enable backtesting.
 """
-function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=Dates.now(Dates.UTC), minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false)
+function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false)
     datetime = floor(datetime, Minute(1))
 
     # make memory available
@@ -145,27 +145,28 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=Dates.now(
             (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) including cache update                           ")
             ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Year(10), datetime)
             Classify.addbase!(tc.cl, ohlcv)
-            Classify.writebasedata(tc.cl)
+            Classify.writetargetsfeatures(tc.cl)
             CryptoXch.removeallbases(tc.xc)  # avoid slow down due to memory overload
             Classify.removebase!(tc.cl, nothing)  # avoid slow down due to memory overload
         end
     end
     for (ix, row) in enumerate(eachrow(df))
         (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(row.basecoin) ($ix of $count)                                                  ")
-        ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Minute(Classify.requiredminutes(tc.cl)-1), datetime)
+        CryptoXch.setstartdt(tc.xc, datetime - Minute(Classify.requiredminutes(tc.cl)-1))
+        ohlcv = CryptoXch.addbase!(tc.xc, row.basecoin, datetime - Minute(Classify.requiredminutes(tc.cl)-1), tc.xc.enddt)
         Classify.addbase!(tc.cl, ohlcv)
         row.continuousminvol = continuousminimumvolume(ohlcv, datetime)
     end
     classifierbases = Classify.bases(tc.cl)
     tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]
-    tc.cfg = @view tc.cfg[tc.cfg[:, :minquotevol] .&& tc.cfg[:, :classifieraccepted], :]
+    tc.cfg = @view tc.cfg[tc.cfg[!, :minquotevol] .&& tc.cfg[!, :classifieraccepted], :]
 
     if assetonly
-        tc.cfg[:, :buyenabled] .= tc.cfg[:, :inportfolio] .&& tc.cfg[:, :classifieraccepted]
-        tc.cfg[:, :sellenabled] .= tc.cfg[:, :inportfolio] .&& tc.cfg[:, :classifieraccepted]
+        tc.cfg[:, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
+        tc.cfg[:, :sellenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
     else
-        tc.cfg[:, :buyenabled] .= tc.cfg[:, :classifieraccepted] .&& tc.cfg[:, :continuousminvol]
-        tc.cfg[:, :sellenabled] .= tc.cfg[:, :buyenabled] .|| (tc.cfg[:, :inportfolio] .&& tc.cfg[:, :classifieraccepted])
+        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :continuousminvol]
+        tc.cfg[:, :sellenabled] .= tc.cfg[!, :buyenabled] .|| (tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted])
     end
 
     (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
@@ -233,7 +234,7 @@ function readconfig!(tc::TradeCache, datetime)
     if !isnothing(df) && (size(df, 1) > 0 )
         (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config from $cfgfilename")
         tc.cfg = df
-        tc.cfg = @view tc.cfg[tc.cfg[:, :minquotevol] .&& tc.cfg[:, :classifieraccepted], :]
+        tc.cfg = @view tc.cfg[tc.cfg[!, :minquotevol] .&& tc.cfg[!, :classifieraccepted], :]
         return tc
     else
         (verbosity >=2) && !isnothing(df) && println("Loading $cfgfilename failed")
@@ -391,7 +392,13 @@ function tradeloop(cache::TradeCache)
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
     cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.cfg[!, :buyenabled]) > 0 ? count(cache.cfg[!, :buyenabled]) : 1))
-    timerangecut!(cache, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
+    if (verbosity > 2)
+        println("\n$(tradetime(cache)): cache.xc.startdt=$(cache.xc.startdt), cache.xc.currentdt=$(cache.xc.currentdt), cache.xc.enddt=$(cache.xc.enddt)")
+        for ohlcv in cache.cl.bd
+            println(ohlcv)
+        end
+    end
+    # timerangecut!(cache, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
     try
         for c in cache.xc
             (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
@@ -421,7 +428,7 @@ function tradeloop(cache::TradeCache)
                 (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
                 tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
                 (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
-                timerangecut!(cache, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
+                # timerangecut!(cache, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
                 cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.cfg[!, :buyenabled]) > 0 ? count(cache.cfg[!, :buyenabled]) : 1))
             end
             #TODO low prio: for closed orders check fees
@@ -444,7 +451,7 @@ function tradeloop(cache::TradeCache)
         end
     end
     (verbosity >= 2) && println("$(tradetime(cache)): finished trading core loop")
-    (verbosity >= 3) && @info (size(cache.xc.closedorders, 1) > 0) ? "$(EnvConfig.now()): closed orders log $(cache.xc.closedorders)" : "$(EnvConfig.now()): no closed orders"
+    (verbosity >= 3) && @info (size(cache.xc.closedorders, 1) > 0) ? "$(EnvConfig.now()): verbosity=$verbosity closed orders log $(cache.xc.closedorders)" : "$(EnvConfig.now()): no closed orders"
     (verbosity >= 3) && @info (size(cache.xc.orders, 1) > 0) ? "$(EnvConfig.now()): open orders log $(cache.xc.orders)" : "$(EnvConfig.now()): no open orders"
     (verbosity >= 2) && @info "$(EnvConfig.now()): closed orders $(size(cache.xc.closedorders, 1)), open orders $(size(cache.xc.orders, 1))"
     assets = CryptoXch.portfolio!(cache.xc)

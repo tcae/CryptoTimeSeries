@@ -12,6 +12,21 @@ using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv
 
+#region abstract-features
+
+"Defines the features interface that shall be provided by all feature implementations."
+abstract type AbstractFeatures <: EnvConfig.AbstractConfiguration end
+
+"Defines the number of minutes history required to provide the forst suitable feature set"
+requiredminutes(features::AbstractFeatures) = 0
+
+"Add newer features to match the recent timeline of ohlcv. It does not fill gaps nor adds features at the beginning."
+function update!(features::AbstractFeatures, ohlcv::Ohlcv.OhlcvData)
+end
+
+
+#endregion abstract-features
+
 #region FeatureUtilities
 
 """
@@ -1213,6 +1228,7 @@ regry(f4::Features004, regrminutes) =    f4.rw[regrminutes][!, :regry]
 std(f4::Features004, regrminutes) =      f4.rw[regrminutes][!, :std]
 opentime(f4::Features004, regrminutes) = f4.rw[regrminutes][!, :opentime]
 regrwindows(f4::Features004) = keys(f4.rw)
+relativedaygain(f4::Features004, regrminutes::Integer, featuresix::Integer) = relativegain(regry(f4, regrminutes)[featuresix], grad(f4, regrminutes)[featuresix], 24*60)
 
 #endregion Features004
 

@@ -52,8 +52,8 @@ function updateassets!(cp, download=false)
         tc = Trade.tradeselection!(Trade.TradeCache(xc=cp.xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved
     end
     cp.assetsconfig, assets = Trade.assetsconfig!(Trade.TradeCache(xc=cp.xc)) # read latest from file merged with assets in correct format
-    cp.update = cp.assetsconfig[1, :update]
-    select!(cp.assetsconfig, Not(:update))
+    cp.update = Dates.now(UTC)
+    # select!(cp.assetsconfig, Not(:update))
     if !isnothing(cp.assetsconfig) && (size(cp.assetsconfig, 1) > 0)
         cp.assetsconfig.id = cp.assetsconfig[!, :basecoin]
         println("portfolio: $assets")
@@ -64,7 +64,8 @@ function updateassets!(cp, download=false)
         # initial delay but quick switching between coins
         for (ix, base) in enumerate(cp.assetsconfig[!, :basecoin])
             println("$(EnvConfig.now()) ($ix of $rows) loading $base")
-            loadohlcv!(cp, base, "1m")
+            ohlcv = loadohlcv!(cp, base, "1m")
+            if cp.update > ohlcv.df[end, :opentime] cp.update = ohlcv.df[end, :opentime] end
             Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
                 loadohlcv!(cp, base, interval)
             end
