@@ -391,13 +391,9 @@ Calculates the start y coordinate of a straight regression line given by the las
 startregry(eregry, grad, window) = eregry - grad * (window - 1)
 
 "Returns the relative gain of the given regression relative to start y if `forward` (default) otherwise relative to given end regry"
-function relativegain(endregry, grad, window, forward=true)
+function relativegain(endregry, grad, window; relativefee::AbstractFloat=0f0, forward=true)
     sregry = startregry(endregry, grad, window)
-    if forward
-        return ((endregry - sregry) / sregry)
-    else
-        return ((endregry - sregry) / regry)
-    end
+    return Ohlcv.relativegain(sregry, endregry; relativefee=relativefee, forward=forward)
 end
 
 """

@@ -243,20 +243,25 @@ end
 
 """
 - returns the relative forward/backward looking gain
-- deducts relativefee from both prices
+- deducts relativefee from both values
 """
-function relativegain(prices, baseix, gainix; relativefee=0.0)
-    if baseix > gainix
-        baseprice = prices[baseix] * (1 - relativefee)
-        gainprice = prices[gainix] * (1 + relativefee)
-        gain = (baseprice - gainprice) / prices[baseix]
+function relativegain(startvalue::AbstractFloat, endvalue::AbstractFloat; relativefee::AbstractFloat=0f0, forward::Bool=true)
+    startvalue = startvalue * (1 + relativefee)
+    endvalue = endvalue * (1 - relativefee)
+    if forward
+        gain = (endvalue - startvalue) / startvalue
     else
-        baseprice = prices[baseix] * (1 + relativefee)
-        gainprice = prices[gainix] * (1 - relativefee)
-        gain = (gainprice - baseprice) / prices[baseix]
+        gain = (endvalue - startvalue) / endvalue
     end
-    # println("forward gain(prices[$baseix]= $(prices[baseix]) prices[$gainix]= $(prices[gainix]))=$gain")
     return gain
+end
+
+function relativegain(values::AbstractVector{AbstractFloat}, baseix::Signed, gainix::Signed; relativefee::AbstractFloat=0f0)
+    if baseix > gainix
+        return relativegain(values[gainix], values[baseix]; relativefee=relativefee, forward=false)
+    else
+        return relativegain(values[baseix], values[gainix]; relativefee=relativefee, forward=true)
+    end
 end
 
 """
@@ -411,6 +416,74 @@ function accumulate(df::AbstractDataFrame, period::Period)
     return adf
 end
 
+"""
+Returns a named tuple (startix, endix) with indices of the latest timerange that meet the requirements of
+- showing a continuous 24h minute median of `usdtminimum` USDT or more
+- is always above a 24h USDT trade volume of `usdt24h`
+
+If no such period is found then `nothing` is returned.
+"""
+function liquidrange(ohlcv::OhlcvData, usdt24h::AbstractFloat, usdtminimum::AbstractFloat)
+    incrementminutes = 12*60
+    dayminutes = 24*60
+    otime = dataframe(ohlcv)[!, :opentime]
+    usdtvol = dataframe(ohlcv)[!, :basevolume] .* pivot!(ohlcv)
+    startix = endix = nothing
+    range = nothing
+
+    _liquidityok(usdtvol) = (median(usdtvol) > usdtminimum) && (sum(usdtvol) > usdt24h)
+
+    function _check(ix, dayusdtvol)
+        if isnothing(startix) # up to now not enough trade liquidity
+            if _liquidityok(dayusdtvol) # start tracking liquidity period
+                startix = ix
+                endix = ix
+                range = (startix=startix, endix=endix)
+            end
+        else # handle period of liquidity
+            if _liquidityok(dayusdtvol)
+                endix = ix
+                range = (range..., endix=endix)
+            else # liquidity period stopped
+                (verbosity >= 4) && println("range startix=$startix - endix=$endix  startdt=$(otime[startix])-enddt=$(otime[endix])")
+                startix = endix = nothing
+            end
+        end
+    end
+
+    for ix in dayminutes:incrementminutes:lastindex(usdtvol)
+        _check(ix, view(usdtvol, (ix - dayminutes + 1) : ix))
+    end
+    if lastindex(usdtvol) >= dayminutes
+        _check(lastindex(usdtvol), view(usdtvol, (lastindex(usdtvol) - dayminutes + 1) : lastindex(usdtvol)))
+    end
+    return range
+end
+
+"""
+Returns a DataFrame of canned coins that meet the liquidrange criteria with their most recent data and with a liquid data range long enough.
+The DataFrame has the columns: basecoin, startix, endix, startdt, enddt, period
+"""
+function liquidcoins(;usdt24h::AbstractFloat=2*1000*1000f0, usdtminimum::AbstractFloat=1000f0, liquidrangeminutes::Signed=20*24*60)
+    liquidbases = DataFrame()
+    for ohlcv in Ohlcv.OhlcvFiles()
+        otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
+        range = Ohlcv.liquidrange(ohlcv, usdt24h, usdtminimum)
+        if isnothing(range)
+            (verbosity >= 3) && println("$(ohlcv.base) data: $(otime[begin])-$(otime[end])=$(Minute(otime[end]-otime[begin])) no time range with sufficient liquidity -> ignored for backtest")
+        else
+            if range.endix == lastindex(otime)
+                if (range.endix - range.startix) > liquidrangeminutes
+                    (verbosity >= 3) && println("$(ohlcv.base) data: $(otime[begin])-$(otime[end])=$(Minute(otime[end]-otime[begin])) sufficient liquidity: $(otime[range.startix])-$(otime[range.endix])=$(Minute(otime[range.endix]-otime[range.startix]))  - current candidate - long enough for backtest -> included for backtest")
+                    push!(liquidbases, (basecoin=ohlcv.base, range..., startdt=otime[range.startix], enddt=otime[range.endix], period=canonicalize(otime[range.endix]-otime[range.startix-1])))
+                else
+                    (verbosity >= 3) && println("$(ohlcv.base) data: $(otime[begin])-$(otime[end])=$(Minute(otime[end]-otime[begin])) sufficient liquidity: $(otime[range.startix])-$(otime[range.endix])=$(Minute(otime[range.endix]-otime[range.startix]))  - current candidate but too short -> ignored for backtest")
+                end
+            end
+        end
+    end
+    return liquidbases
+end
 
 """
 Reads OHLCV data generated by python FollowUpward
