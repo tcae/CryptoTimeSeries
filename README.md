@@ -34,7 +34,7 @@ Be cautious and don't use it for real trading unless you know what to do. There 
 
 Each module is located in the src folder and has a corresponding '_test' unti test in the test folder.
 
-- The main module is [Trade](Trade/src/Trade.jl) that is setup via [trade_test](Trade/test/trade_test.jl), which runs a tradeloop but applies [TradingStrategy](TradingStrategy/src/TradingStrategy.jl) to determine buy and sell actions
+- The main module is [Trade](Trade/src/Trade.jl) that is setup via [trade_test](Trade/test/trade_test.jl), which runs a tradeloop
 - Machine learning is made available by [Classify](Classify/src/Classify.jl).
 - [Targets](Targets/src/Targets.jl) provides target labels to train, evaluate and test machine learning approaches.
 - [Features](Features/src/Features.jl) provides OHLCV derived features as input for machine learning and trading.
@@ -57,7 +57,6 @@ In order to achieve a seperation of concerns and a self documenting code, the ap
 - the machine learning targets [Targets](Targets/src/Targets.jl)
 - the classification training and test [Classify](Classify/src/Classify.jl)
 - the management of assets through an exchage broker [CryptoXch](CryptoXch/src/CryptoXch.jl), [Assets](Assets/src/Assets.jl)
-- the trading strategy [TradingStrategy](TradingStrategy/src/TradingStrategy.jl)
 - the trading loop [Trade](Trade/src/Trade.jl) and [trade_test](Trade/test/trade_test.jl)
 
 In case of variants, e.g. features or classification algorithms, the same function name is implemented by different modules residing in the same , e.g. Features or Classify, package and have to imported via the package name `using Features.Feature100`.

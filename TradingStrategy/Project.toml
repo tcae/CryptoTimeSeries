@@ -1,7 +1,7 @@
 name = "TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.7.5"
+version = "0.8.0"
 
 [deps]
 Classify = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"

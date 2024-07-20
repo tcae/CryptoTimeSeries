@@ -1163,6 +1163,7 @@ function Base.iterate(f4f::Features004Files, state=1)
     return f4, state+1
 end
 
+"Supplements Features004 with the newest ohlcv datapoints, i.e. datapoints newer than last(f4)"
 function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
     usecache = (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0)
     Ohlcv.pivot!(ohlcv)

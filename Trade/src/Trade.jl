@@ -177,21 +177,6 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     return tc
 end
 
-"""
-tradeselection! loads all data up to enddt. This function will reduce the memory starting from startdt plus OHLCV data required for feature calculation.
-"""
-function timerangecut!(tc::TradeCache, startdt, enddt)
-    for ohlcv in CryptoXch.ohlcv(tc.xc)
-        tcix = findfirst(x -> x == ohlcv.base, tc.cfg[!, :basecoin])
-        if isnothing(tcix)
-            CryptoXch.removebase!(tc.xc, ohlcv.base)
-        else
-            Classify.timerangecut!(tc.cl, startdt, enddt)
-        end
-    end
-end
-
-
 function _cfgfilename(timestamp::Union{Nothing, DateTime}, ext="jdf")
     if isnothing(timestamp)
         cfgfilename = TRADECONFIGFILE
@@ -398,7 +383,6 @@ function tradeloop(cache::TradeCache)
             println(ohlcv)
         end
     end
-    # timerangecut!(cache, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
     try
         for c in cache.xc
             (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
@@ -428,7 +412,6 @@ function tradeloop(cache::TradeCache)
                 (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
                 tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
                 (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
-                # timerangecut!(cache, cache.xc.startdt, isnothing(cache.xc.enddt) ? cache.xc.currentdt : cache.xc.enddt)
                 cache.tradeassetfraction = min(cache.maxassetfraction, 1/(count(cache.cfg[!, :buyenabled]) > 0 ? count(cache.cfg[!, :buyenabled]) : 1))
             end
             #TODO low prio: for closed orders check fees

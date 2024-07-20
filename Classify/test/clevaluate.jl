@@ -18,23 +18,24 @@ EnvConfig.init(training)
 # EnvConfig.init(training)
 Ohlcv.verbosity = 1
 # Features.verbosity = 2
-# EnvConfig.verbosity = 3
+EnvConfig.verbosity = 3
 Classify.verbosity = 3
-EnvConfig.setlogpath("2424-11_TrendawareVolatilityTracker")
+EnvConfig.setlogpath("2429-Classifier005-ShortTest_TrendawareVolatilityTracker")
 
 startdt = DateTime("2024-03-01T00:00:00") # nothing
 enddt =   DateTime("2024-06-06T09:00:00")
 # coins = ["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"]
 coins = ["BTC"]
-coins = Ohlcv.liquidcoins(liquidrangeminutes=108*24*60)
-println("evaluating: $coins")
-df = Classify.evaluateclassifiers([Classify.Classifier005], coins, startdt, enddt)
+coinsdf = Ohlcv.liquidcoins(liquidrangeminutes=108*24*60)
+filtered_df = filter(row -> row.basecoin in coins, coinsdf)
+println("evaluating: $coins \n coinsdf=$coinsdf \n filtered_df=$filtered_df")
+df = Classify.evaluateclassifiers([Classify.Classifier005], filtered_df, startdt, enddt)
 # df = Classify.readsimulation()
 kpidf, gdf = Classify.kpioverview(df, Classify.Classifier005)
 sort!(kpidf, [:gain_sum], rev=true)
 println(kpidf)
-println(gdf[kpidf[1, :groupindex]])
-println(gdf[kpidf[2, :groupindex]])
+# println(gdf[kpidf[1, :groupindex]])
+# println(gdf[kpidf[2, :groupindex]])
 println("done")
 
 end  # module

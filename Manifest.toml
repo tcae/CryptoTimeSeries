@@ -629,7 +629,7 @@ version = "0.6.8"
 deps = ["DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
 path = "EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.2.10"
+version = "0.2.13"
 
 [[deps.EpollShim_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -2518,7 +2518,7 @@ version = "0.16.0"
 deps = ["Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JuliaInterpreter", "Logging", "Ohlcv", "Test"]
 path = "TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.7.5"
+version = "0.8.0"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "1fbeaaca45801b4ba17c251dd8603ef24801dd84"

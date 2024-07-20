@@ -461,7 +461,7 @@ function liquidrange(ohlcv::OhlcvData, usdt24h::AbstractFloat, usdtminimum::Abst
 end
 
 """
-Returns a DataFrame of canned coins that meet the liquidrange criteria with their most recent data and with a liquid data range long enough.
+Returns a DataFrame of canned coins that meet the liquidrange() criteria with their most recent data and with a liquid data range long enough.
 The DataFrame has the columns: basecoin, startix, endix, startdt, enddt, period
 """
 function liquidcoins(;usdt24h::AbstractFloat=2*1000*1000f0, usdtminimum::AbstractFloat=1000f0, liquidrangeminutes::Signed=20*24*60)

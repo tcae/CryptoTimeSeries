@@ -198,16 +198,26 @@ function configurationid(cfgset::AbstractConfiguration, config::Union{NamedTuple
     if !hasproperty(cfgset, :cfg)
         return 0
     end
-    match = nothing
-    for k in keys(config)
-        match2 = isa(config[k], AbstractFloat) ? isapprox.(cfgset.cfg[!, k], config[k]) : cfgset.cfg[!, k] .== config[k]
-        match = isnothing(match) ? match2 : match .& match2
+    if size(cfgset.cfg, 1) > 0
+        match = nothing
+        for k in keys(config)
+            if k != :cfgid
+                match2 = isa(config[k], AbstractFloat) ? isapprox.(cfgset.cfg[!, k], config[k]) : cfgset.cfg[!, k] .== config[k]
+                # (verbosity >=3) && println("$k = $match2")
+                match = isnothing(match) ? match2 : match .& match2
+            else
+                # (verbosity >=3) && println("cfgid = $k")
+            end
+        end
+        indices = findall(match)
+    else
+        indices = []
     end
-    indices = size(cfgset.cfg, 1) > 0 ? findall(match) : []
     cfgid = 0
     if length(indices) == 0
         cfgid = length(cfgset.cfg[!, :cfgid]) > 0 ? maximum(cfgset.cfg[!, :cfgid]) + 1 : 1
-        push!(cfgset.cfg, (cfgid, config...))
+        push!(cfgset.cfg, (;config..., cfgid))
+        (verbosity >= 3) && println("raw config = $config config=$((;config..., cfgid))  cfg=$(cfgset.cfg)")
         writeconfigurations(cfgset)
     else
         @assert length(indices) == 1 "unexpected multiple entries $(indices) for the same configuration $(cfgset.cfg)"
@@ -241,8 +251,11 @@ function writeconfigurations(cfgset::AbstractConfiguration)
     JDF.savejdf(fn, cfgset.cfg)
 end
 
-"Reads the cfgset DataFrame config file from field cfg"
-function readconfigurations!(cfgset::AbstractConfiguration)
+"""
+Reads the cfgset DataFrame config file from field cfg. If no config file then an empty DataFrame is created according to optparams.
+`optparams` denotes for each dict pair a column as key and a vector of config parameters. The eltype of that vector is used as column type.
+"""
+function readconfigurations!(cfgset::AbstractConfiguration, optparams::Dict=Dict())
     if !hasproperty(cfgset, :cfg)
         return cfgset
     end
@@ -251,23 +264,28 @@ function readconfigurations!(cfgset::AbstractConfiguration)
         cfgset.cfg = DataFrame(JDF.loadjdf(fn))
         if isnothing(cfgset.cfg)
             @error "Loading $fn failed"
-            cfgset.cfg = emptyconfigdf(cfgset)
+            cfgset.cfg = emptyconfigdf(cfgset, optparams)
         else
             (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded cfgset config from $fn")
         end
     else
         (verbosity >= 2) && println("\r$(EnvConfig.now()) No configuration file $fn found")
-        cfgset.cfg = emptyconfigdf(cfgset)
+        cfgset.cfg = emptyconfigdf(cfgset, optparams)
         (verbosity >= 3) && println("\r$(EnvConfig.now()) empty cfgset config $(cfgset.cfg)")
     end
     return cfgset
 end
 
-function emptyconfigdf(cfgset::AbstractConfiguration)
+function emptyconfigdf(cfgset::AbstractConfiguration, optparams::Dict=Dict())
     (verbosity >= 3) && println("AbstractConfiguration emptyconfigdf of $(typeof(cfgset))")
-    return DataFrame(
-        cfgid=Int16[]               # config identificator
+    df = DataFrame(
+        cfgid=Int16[]  # config identificator
     )
+    for (col, vec) in optparams
+        coltype = eltype(vec)
+        df[!, col] = Vector{coltype}()
+    end
+    return df
 end
 
 #endregion abstract-configuration

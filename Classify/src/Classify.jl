@@ -27,10 +27,7 @@ verbosity = 1
 
 
 #region abstractclassifier
-abstract type AbstractBaseClassifier end
-
 abstract type AbstractClassifier <: AbstractConfiguration end
-# field bc::Dict{AbstractString, AbstractBaseClassifier} connects base with AbstractBaseClassifier
 
 "Adds ohlcv base with all ohlcv data, which can span the last requiredminutes or the time range of a back test / training.
 The required feature/target will be supplemented. "
@@ -39,10 +36,10 @@ function addbase!(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData) end
 "Removes base and all associated data from cl. If base === nothing then all bases are removed."
 removebase!(cl::AbstractClassifier, base::Union{Nothing, AbstractString}) = (isnothing(base) && hasproperty(cl, :bc) ? cl.bc = Dict() : delete!(cl.bc, base); cl)
 
-"Returns all successfully added bases."
-bases(cl::AbstractClassifier)::AbstractVector{AbstractString} = collect(keys(cl.bc))
+"Returns all successfully added bases as Vector of Strings."
+bases(cl::AbstractClassifier)::AbstractVector{} = hasproperty(cl, :bc) ? collect(keys(cl.bc)) : []
 
-"Returns the OhlcvData of base taht was previously added to cl."
+"Returns the OhlcvData of base that was previously added to cl."
 ohlcv(cl::AbstractClassifier, base::AbstractString) = hasproperty(cl, :bc) ? (hasproperty(cl.bc[base], :ohlcv) ? cl.bc[base].ohlcv  : nothing) : nothing
 
 """ Supplements all with Ohlcv and feature/target data of bases to match with base ohlcv data.
@@ -50,11 +47,19 @@ In a trade loop ohlcv data is updated first and then feature/target data is supp
 This to avoid a Classifier dependency to CryptoXch. """
 function supplement!(cl::AbstractClassifier) end
 
-"Write all feature and target data (but not ohlcv) of all bases to canned storage, which overwrites previous canned data."
-function writetargetsfeatures(cl::AbstractClassifier) end
-
-"Reduces all associated base data to the specified time range."
-function timerangecut!(cl::AbstractClassifier, startdt::DateTime, enddt::DateTime) end
+"""
+Write all ohlcv, feature and target data (but not ohlcv) of all bases to canned storage, which overwrites previous canned data.
+The default implementation only write ohlcv.
+"""
+function writetargetsfeatures(cl::AbstractClassifier)
+    if hasproperty(cl, :bc)
+        for bc in values(cl.bc)
+            if hasproperty(bc, :ohlcv)
+                Ohlcv.write(bc.ohlcv)
+            end
+        end
+    end
+end
 
 "Returns the required minutes of data history that is required for that classifier to work properly."
 function requiredminutes(cl::AbstractClassifier)::Integer
@@ -98,18 +103,19 @@ function train!(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData)
 end
 
 function configurationid4base(cl::AbstractClassifier, base::AbstractString)::Integer
-    if !hasproperty(cl, :cfg)
-        return 0
+    if hasproperty(cl, :bc) #TODO check bc is Dict, check property cfgid within bc
+        return base in keys(cl.bc) ? cl.bc[base].cfgid : 0
     end
     @error "missing $(typeof(cl)) implementation"
 end
 
-"Configure classifer according to configuration identifier"
+"Configure classifer according to configuration identifier. Returns true in case of a valid config or false otherwise"
 function configureclassifier!(cl::AbstractClassifier, base::AbstractString, configid::Integer)
     if !hasproperty(cl, :cfg)
         return
     end
     @error "missing $(typeof(cl)) implementation"
+    return false
 end
 
 "Iterates over ohlcv and logs simulation results in df"
@@ -151,7 +157,10 @@ function logsim!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.Ohl
             end
             lasttp = tp
         end
-        takeprofitcheck(bo) = piv[ix] > bo.buyprice * (1 + takeprofitgain(cl, ohlcv.base))
+
+        "true if takeprofitgain is implemented and current price exceeds buy order price"
+        takeprofitcheck(bo) = isnothing(takeprofitgain(cl, ohlcv.base)) ? false : piv[ix] > bo.buyprice * (1 + takeprofitgain(cl, ohlcv.base))
+
         ixv = findall(takeprofitcheck, buyorders)
         if length(ixv) > 0
             sort!(ixv, rev = true)
@@ -183,10 +192,42 @@ function logsim!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.Ohl
     end
 end
 
-"Configures cl and evaluates cl by calling logsim! to log all trades in df."
+function _collectconfig!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, opsymbols, config)
+    if length(opsymbols) > 0
+        opsym = pop!(opsymbols)
+        for opval in values(cl.optparams[String(opsym)])
+            config[opsym] = opval
+            if length(opsymbols) > 0
+                _collectconfig!(df, cl, ohlcv, copy(opsymbols), config)
+            else
+                cfgid = configurationid(cl, (;config...))
+                if configureclassifier!(cl, ohlcv.base, cfgid)
+                    (verbosity > 2) && println("$(EnvConfig.now()): evaluating $(typeof(cl)) config $(NamedTuple(configuration(cl, cfgid)))")
+                    logsim!(df, cl, ohlcv)
+                end
+            end
+        end
+    end
+end
+
+"""
+Configures cl and evaluates cl by calling logsim! to log all trades in df.
+A property optparams may contain a Dict with String keys as parameter name and a Vector of to be evaluated values.
+"""
 function evaluate!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData)
     # default implementation with no spcific configuration
-    logsim!(df, cl, ohlcv)
+    (verbosity >=2) && println("$(EnvConfig.now()): evaluating $(typeof(cl))")
+    addbase!(cl, ohlcv)
+    if !(ohlcv.base in keys(cl.bc))
+        @error "addbase! failed"
+        return
+    end
+    if hasproperty(cl, :optparams)
+        opsymbols = [Symbol(k) for k in keys(cl.optparams)]
+        _collectconfig!(df, cl, ohlcv, opsymbols, Dict())
+    else
+        logsim!(df, cl, ohlcv)
+    end
 end
 
 "Returns the full log file path including filename that is used to log the trade simulation results"
@@ -1427,7 +1468,7 @@ function addreplaceconfig!(cl::BaseClassifier001, base, regrwindow, gainthreshol
     cfgix = findall((cl.cfg[!, :basecoin] .== base) .&& (cl.cfg[!, :cfgid] .== cfgid))
     cfg = nothing
     if length(cfgix) == 0
-        push!(cl.cfg, (dummyconfig..., basecoin = base, cfgid = cfgid))
+        push!(cl.cfg, (;dummyconfig..., basecoin = base, cfgid = cfgid))
         cl.bestix = lastindex(cl.cfg, 1)
         cfg = cl.cfg[end, :]
         # sort!(cl.cfg, [:basecoin, :regrwindow, :gainthreshold])
@@ -1759,9 +1800,31 @@ end
 
 mutable struct BaseClassifier003
     ohlcv::Ohlcv.OhlcvData
-    shortwindowix::Integer
-    longwindowix::Integer
+    cfgid::Int16
+    BaseClassifier003(ohlcv::Ohlcv.OhlcvData) = new(ohlcv, 0)
 end
+
+function Base.show(io::IO, bc::BaseClassifier003)
+    println(io, "BaseClassifier003[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), cfgid=$(bc.cfgid)")
+end
+
+"shortwindow have to be sorted in increasing order"
+const SHORTWINDOW003 = Int16[15, 30, 60, 2*60, 4*60]
+"longwindow have to be sorted in increasing order"
+const LONGWINDOW003 = Int16[12*60, 24*60, 2*24*60, 4*24*60, 8*24*60]
+"rbt: relative buy threshold to long mean price => buy when below -rbt"
+const RBT003 = Float32[0.01f0]
+"srnt: relative noise threshold of short window mean price change, also used for long window meanchange per day as positive trend indicator"
+const SRNT003 = Float32[0.005f0]
+"lrnt: relative noise threshold of long window mean price change"
+const LRNT003 = Float32[0.03f0]
+const OPTPARAMS003 = Dict(
+    "shortwindow" => SHORTWINDOW003,
+    "longwindow" => LONGWINDOW003,
+    "rbt" => RBT003,
+    "srnt" => SRNT003,
+    "lrnt" => LRNT003
+)
 
 """
 Classification is based on MA (moving average) price change of a time range (=window) length that is determined by the largest window that can catch all relative noise price changes
@@ -1781,50 +1844,52 @@ short term adapts to catch noise amplitudes of rnt.
 mutable struct Classifier003 <: AbstractClassifier
     "bd: base date maps the base string onto ohlcv data"
     bc::Dict{AbstractString, BaseClassifier003}
-    "window vector of considered mean window in minutes"
-    shortwindow::AbstractVector{Integer}  # have to be sorted in increasing order
-    longwindow::AbstractVector{Integer}  # have to be sorted in increasing order
-    "rbt: relative buy threshold to long mean price => buy when below -rbt"
-    rbt::Float32
-    "srnt: relative noise threshold of short window mean price change, also used for long window meanchange per day as positive trend indicator"
-    srnt::Float32
-    "lrnt: relative noise threshold of long window mean price change"
-    lrnt::Float32
+    cfg::Union{Nothing, DataFrame}  # configurations
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
     dbgdf
-    function Classifier003(;shortwindow=[15, 30, 60, 2*60, 4*60], longwindow=[12*60, 24*60, 2*24*60, 4*24*60, 8*24*60], rbt=0.01f0, srnt=0.005f0, lrnt=0.03f0)
-        shortwindow = sort(shortwindow)
-        longwindow = sort(longwindow)
-        return new(Dict(), shortwindow, longwindow, rbt, srnt, lrnt, DataFrame())
+    function Classifier003(optparams=OPTPARAMS003)
+        cl = new(Dict(), DataFrame(), optparams, DataFrame())
+        cl.optparams["longwindow"] = sort(cl.optparams["longwindow"])
+        cl.optparams["shortwindow"] = sort(cl.optparams["shortwindow"])
+        readconfigurations!(cl, optparams)
+        @assert !isnothing(cl.cfg)
+        return cl
     end
 end
 
 function addbase!(cl::Classifier003, ohlcv::Ohlcv.OhlcvData)
-    cl.bc[ohlcv.base] = BaseClassifier003(ohlcv, lastindex(cl.shortwindow), lastindex(cl.longwindow))
+    cl.bc[ohlcv.base] = BaseClassifier003(ohlcv)
 end
 
-removebase!(cl::Classifier003, base::Union{Nothing, AbstractString}) = isnothing(base) ? cl.bc = Dict() : delete!(cl.bc, base);
+requiredminutes(cl::Classifier003)::Integer = maximum(cl.optparams["longwindow"]) * 2
 
-bases(cl::Classifier003)::AbstractVector{AbstractString} = collect(keys(cl.bc))
+configurationid4base(cl::Classifier003, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
 
-ohlcv(cl::Classifier003, base::AbstractString) = cl.bc[base].ohlcv
-
-function timerangecut!(cl::Classifier003, startdt::DateTime, enddt::DateTime)
-    for bc in values(cl.bc)
-        ohlcvstartdt = startdt - Minute(Classify.requiredminutes(cl)-1)
-        Ohlcv.timerangecut!(bc.ohlcv, ohlcvstartdt, enddt)
+function configureclassifier!(cl::Classifier003, base::AbstractString, configid::Integer)
+    if base in keys(cl.bc)
+        cfg = configuration(cl, configid)
+        if 10 <= cfg.longwindow / cfg.shortwindow <= 20
+            cl.bc[base].cfgid = configid
+            return true
+        else
+            (verbosity >= 3) && println("$(typeof(cl)): configuration with longwindow=$(cfg.longwindow), shortwindow=$(cfg.shortwindow) out of valid range 10 <= $(cfg.longwindow / cfg.shortwindow) <= 20 ")
+            return false
+            end
+    else
+        @error "cannot find $base in $(typeof(cl))"
+        return false
     end
 end
 
-requiredminutes(cl::Classifier003)::Integer = max(maximum(cl.shortwindow), maximum(cl.longwindow)) * 2
 
 function buysplitparts(cl::Classifier003, base::AbstractString)
     bc = cl.bc[base]
-    return floor(Int, cl.shortwindow[bc.shortwindowix] / 2)
+    cfg = configuration(cl, bc.cfgid)
+    return floor(Int, cfg.shortwindow / 2)
 end
 
+relativelastprice(cl::Classifier003, piv, oix, meanpiv) = (piv[oix] - meanpiv) / meanpiv
 
-"""Returns a tuple (windowix, meanpivot, relativebreakoutprice) of the largest window index with all noise in +-cl.rnt bounds
-or - in case of a breakout - the relative break out pivotprice , which is otherwise `nothing`"""
 function noiseoutofbounds(cl::Classifier003, piv, oix, meanpiv, win, rt)
     for ix in oix-win:oix
         if relativelastprice(cl, piv, ix, meanpiv) > rt
@@ -1841,15 +1906,15 @@ function relativemeanchange(cl::Classifier003, piv, oix, win)
     return ((meanpiv - lastmeanpiv) / lastmeanpiv), meanpiv, lastmeanpiv
 end
 
-relativelastprice(cl::Classifier003, piv, oix, meanpiv) = (piv[oix] - meanpiv) / meanpiv
-meanwindow(cl::Classifier003, bc::BaseClassifier003, ix=bc.shortwindowix) = cl.shortwindow[ix]
-
 function meanchangeperday(cl::Classifier003, bc::BaseClassifier003, otime, oix, relmeanchange)
-    rpcpd = relmeanchange * 24f0 * 60f0 * Float32((otime[oix] - otime[oix-cl.longwindow[bc.longwindowix]]) / Minute(1)) # relative pivot price change per day
+    cfg = configuration(cl, bc.cfgid)
+    rpcpd = relmeanchange * 24f0 * 60f0 * Float32((otime[oix] - otime[oix-cfg.longwindow]) / Minute(1)) # relative pivot price change per day
     return rpcpd
 end
 
-function adjustwindow(cl::Classifier003, piv, oix, winmean, windows, wix, rt)
+function adjustwindow(cl::Classifier003, piv, oix, winmean, windows, window, rt)
+    wix = findfirst(x -> x == window, windows)
+    isnothing(wix) && @error "missing window=$window in windows=$windows"
     if noiseoutofbounds(cl, piv, oix, winmean, windows[wix], rt)
         # shorten window to catch noise range
         newwix = wix > firstindex(windows) ? wix - 1 : wix
@@ -1889,22 +1954,26 @@ function advice(cl::Classifier003, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
         return noop
     end
     bc = cl.bc[base]
+    cfg = configuration(cl, bc.cfgid)
     piv = Ohlcv.pivot!(ohlcv)
     otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
-    shortmeanchange, shortmean, _ = relativemeanchange(cl, piv, ohlcvix, cl.shortwindow[bc.shortwindowix])
-    longmeanchange, longmean, _ = relativemeanchange(cl, piv, ohlcvix, cl.longwindow[bc.longwindowix])
+    shortmeanchange, shortmean, _ = relativemeanchange(cl, piv, ohlcvix, cfg.shortwindow)
+    longmeanchange, longmean, _ = relativemeanchange(cl, piv, ohlcvix, cfg.longwindow)
     rlp = relativelastprice(cl, piv, ohlcvix, longmean)
-    adjustwindow(cl, piv, ohlcvix, shortmean, cl.shortwindow, bc.shortwindowix, cl.srnt)
-    adjustwindow(cl, piv, ohlcvix, shortmean, cl.longwindow, bc.longwindowix, cl.lrnt)
+    swix = adjustwindow(cl, piv, ohlcvix, shortmean, cl.optparams["shortwindow"], cfg.shortwindow, cfg.srnt)
+    lwix = adjustwindow(cl, piv, ohlcvix, shortmean, cl.optparams["longwindow"], cfg.longwindow, cfg.lrnt)
+    #TODO can still violate longwindow/shortwindow constraint
+    newcfg = (;cfg..., longwindow=cl.optparams["longwindow"][lwix], shortwindow=cl.optparams["shortwindow"][swix], )
+    bc.cfgid = configurationid(cl, newcfg)
     if rlp > 0 # sell above long window average
         if shortmeanchange < 0f0 # sell only if short window average is already falling assuming we are close to peak
             return sell
         else
             return hold
         end
-    elseif rlp <= -cl.rbt # buy at local dip
+    elseif rlp <= -cfg.rbt # buy at local dip
         mcpd = meanchangeperday(cl, bc, otime, ohlcvix, longmeanchange)
-        if (mcpd > cl.srnt) # positive trend
+        if (mcpd > cfg.srnt) # positive trend
             if shortmeanchange > 0f0 # positive short term average change
                 return buy
             else
@@ -1923,20 +1992,19 @@ end
 
 #region Classifier004
 
-"""
-Classifier004 idea
-- don't use a reference (like a mean or regression line) but look back over various time ranges and determine high and lows
-- buy around the anticipated low, sell at anticipated high with some head room in case the high is not reached.
-- goal is frequent trading with small wins, which makes losses acceptable as long as the significant majority of trades is positve
+const WINDOWSET = Int16[0, 15, 30, 60, 2*60, 4*60]         # 0 = dynamic use of all window sizes
+const LOOKBACKSET = Int16[5, 10, 20, 40]
+const BREAKOUTFACTORSET = Float32[0.5f0, 1.0f0, 2.0f0, 10000.0f0]      # 10000.0 == de facto switched off
+const TRENDFACTORSET = Float32[0.015f0, 0.03f0, 10000.0f0]             # 10000.0 == de facto switched off
+const GAINTHRESHOLDSET = Float32[0.01f0, 0.02f0, 0.04f0, 10000.0f0]    # 10000.0 == de facto switched off
 
-specific
-- choose a time window and look at 3 or 4 concatenations
-- for each of these windows identify maximum and minimum pivot peak
-- take the smallest as indication of expected upward amplitude
-- take smallest max to min amplitude as expecation to estimate next minimum
-- buy at expected minimum if expected upward amplitude > gainthreshold (gth)
-- sell at expected maximum
-"""
+const OPTPARAMS004 = Dict(
+    "window" => WINDOWSET,             # window for amplitude measurement in minutes
+    "lookback" => LOOKBACKSET,           # number of windows (in half window steps) back to calculate mean values
+    "breakoutfactor" => BREAKOUTFACTORSET,   # highchange / meanchange to consider it as breakout worth strongbuy
+    "trendfactor" => TRENDFACTORSET,      # gain threshold of highchange and lowchange to consider trend worth buy
+    "gainthreshold" => GAINTHRESHOLDSET     # gain threshold ratio of minimum gain/price of mean amplitude to consider volatility trading
+)
 
 mutable struct Amplitudes
     "mean amplitude over the last `lookback` time range windows that overlap each other by half"
@@ -1962,58 +2030,54 @@ mutable struct BaseClassifier004
     ohlcv::Ohlcv.OhlcvData
     "Dict of Amplitudes per window"
     amplitudes::Dict{Integer, Amplitudes}
-    BaseClassifier004(ohlcv::Ohlcv.OhlcvData) = new(ohlcv, Dict())
+    "cfgid: id to retrieve configuration parameters of Classifier004; uninitialized == 0"
+    cfgid::Int16
+    BaseClassifier004(ohlcv::Ohlcv.OhlcvData) = new(ohlcv, Dict(), 0)
 end
 
-"Classification is based on MA (moving average) price change of a time range (=window) length that is determined by the largest window that can catch all relative noise price changes"
+function Base.show(io::IO, bc::BaseClassifier004)
+    println(io, "BaseClassifier004[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), cfgid=$(bc.cfgid)")
+end
+
+
+"""
+Classifier004 idea
+- don't use a reference (like a mean or regression line) but look back over various time ranges and determine high and lows
+- buy around the anticipated low, sell at anticipated high with some head room in case the high is not reached.
+- goal is frequent trading with small wins, which makes losses acceptable as long as the significant majority of trades is positve
+
+specific
+- choose a time window and look at 3 or 4 concatenations
+- for each of these windows identify maximum and minimum pivot peak
+- take the smallest as indication of expected upward amplitude
+- take smallest max to min amplitude as expecation to estimate next minimum
+- buy at expected minimum if expected upward amplitude > gainthreshold (gth)
+- sell at expected maximum
+"""
 mutable struct Classifier004 <: AbstractClassifier
     "bd: base date maps the base string onto ohlcv data"
     bc::Dict{AbstractString, BaseClassifier004}
-    "window vector of considered timerange windows in minutes"
-    window::AbstractVector{Integer}  # have to be sorted in increasing order
     cfg::Union{Nothing, DataFrame}  # configurations
-    "cfgid: id to retrieve configuration parameters of Classifier004; uninitialized == 0"
-    cfgid::Int16
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
     "anchor DateTime to calculate window extremes only every half window"
     anchor::Union{Nothing, DateTime} # nothing if not yet set
     dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    function Classifier004(;window=WINDOWSET)
-        window = sort(window)
-        cl = new(Dict(), window, nothing, 0, nothing, nothing)
-        readconfigurations!(cl)
+    function Classifier004(optparams=OPTPARAMS004)
+        cl = new(Dict(), DataFrame(), optparams, nothing, DataFrame())
+        cl.optparams["window"] = sort(cl.optparams["window"])
+        readconfigurations!(cl, optparams)
         @assert !isnothing(cl.cfg)
         return cl
     end
 end
 
-const WINDOWSET = [0, 15, 30, 60, 2*60, 4*60]         # 0 = dynamic use of all window sizes
-const LOOKBACKSET = [5, 10, 20, 40]
-const BREAKOUTFACTORSET = [0.5f0, 1.0f0, 2.0f0, 10000.0f0]      # 10000.0 == de facto switched off
-const TRENDFACTORSET = [0.015f0, 0.03f0, 10000.0f0]             # 10000.0 == de facto switched off
-const GAINTHRESHOLDSET = [0.01f0, 0.02f0, 0.04f0, 10000.0f0]    # 10000.0 == de facto switched off
-
-EnvConfig.emptyconfigdf(cl::Classifier004) = DataFrame(
-    cfgid=Int16[],               # classifier identificator
-    window=Int16[],             # window for amplitude measurement in minutes
-    lookback=Int16[],           # number of windows (in half window steps) back to calculate mean values
-    breakoutfactor=Float32[],   # highchange / meanchange to consider it as breakout worth strongbuy
-    trendfactor=Float32[],      # gain threshold of highchange and lowchange to consider trend worth buy
-    gainthreshold=Float32[]     # gain threshold ratio of minimum gain/price of mean amplitude to consider volatility trading
-)
 
 
 function addbase!(cl::Classifier004, ohlcv::Ohlcv.OhlcvData)
     cl.bc[ohlcv.base] = BaseClassifier004(ohlcv)
 end
 
-function timerangecut!(cl::Classifier004, startdt::DateTime, enddt::DateTime)
-    for bc in values(cl.bc)
-        ohlcvstartdt = startdt - Minute(Classify.requiredminutes(cl)-1)
-        Ohlcv.timerangecut!(bc.ohlcv, ohlcvstartdt, enddt)
-    end
-end
-
-requiredminutes(cl::Classifier004)::Integer =  cl.cfgid == 0 ? maximum(cl.window) * 20 : (cl.cfg[cl.cfgid, :lookback] + 1) * floor(Int, maximum(cl.window) / 2)
+requiredminutes(cl::Classifier004)::Integer =  floor(Int, maximum(cl.optparams["window"]) / 2) * (maximum(cl.optparams["lookback"]) + 1)
 
 "(new - base) / base"
 reldiff(new, base) = (new - base) / abs(base)
@@ -2023,8 +2087,8 @@ function updateamplitudes!(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=oh
     otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
     piv = Ohlcv.pivot!(ohlcv)
     bc = cl.bc[ohlcv.base]
-    lookback = cl.cfg[cl.cfgid, :lookback]
-    windows = cl.cfg[cl.cfgid, :window] == 0 ? cl.window : [cl.cfg[cl.cfgid, :window]]
+    lookback = cl.cfg[bc.cfgid, :lookback]
+    windows = cl.cfg[bc.cfgid, :window] == 0 ? cl.optparams["window"] : [cl.cfg[bc.cfgid, :window]]
     for win in windows
         if win == 0 continue end
         if isnothing(cl.anchor)
@@ -2047,8 +2111,10 @@ function updateamplitudes!(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=oh
                 bc.amplitudes[win].lowchange = reldiff(bc.amplitudes[win].low, bc.amplitudes[win].lastlow)
             end
             bc.amplitudes[win].meanamp = bc.amplitudes[win].meanamp / lookback
-            bc.amplitudes[win].meanhighchange = bc.amplitudes[win].meanhighchange / (lookback - 1)
-            bc.amplitudes[win].meanlowchange = bc.amplitudes[win].meanlowchange / (lookback - 1)
+            if lookback > 1
+                bc.amplitudes[win].meanhighchange = bc.amplitudes[win].meanhighchange / (lookback - 1)
+                bc.amplitudes[win].meanlowchange = bc.amplitudes[win].meanlowchange / (lookback - 1)
+            end
         else
             endix = ohlcvix
             startix = endix - win + 1
@@ -2056,8 +2122,10 @@ function updateamplitudes!(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=oh
             low = minimum(piv[startix:endix])
             if floor(Int, ((otime[ohlcvix] - cl.anchor) / Minute(1)) % floor(Int, win / 2)) == 0
                 bc.amplitudes[win].meanamp = (bc.amplitudes[win].meanamp * (lookback - 1) + reldiff(bc.amplitudes[win].high, bc.amplitudes[win].low)) / lookback
-                bc.amplitudes[win].meanhighchange = (bc.amplitudes[win].meanhighchange * (lookback - 2) + reldiff(high, bc.amplitudes[win].high)) / (lookback - 1)
-                bc.amplitudes[win].meanlowchange = (bc.amplitudes[win].meanlowchange * (lookback - 2) + reldiff(low, bc.amplitudes[win].low)) / (lookback - 1)
+                if lookback > 1
+                    bc.amplitudes[win].meanhighchange = (bc.amplitudes[win].meanhighchange * (lookback - 2) + reldiff(high, bc.amplitudes[win].high)) / (lookback - 1)
+                    bc.amplitudes[win].meanlowchange = (bc.amplitudes[win].meanlowchange * (lookback - 2) + reldiff(low, bc.amplitudes[win].low)) / (lookback - 1)
+                end
                 bc.amplitudes[win].lasthigh = bc.amplitudes[win].high
                 bc.amplitudes[win].lastlow = bc.amplitudes[win].low
             end
@@ -2091,21 +2159,21 @@ function advice(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     updateamplitudes!(cl, ohlcv, ohlcvix)
     bc = cl.bc[base]
     piv = Ohlcv.pivot!(ohlcv)
-    windows = cl.cfg[cl.cfgid, :window] == 0 ? cl.window : [cl.cfg[cl.cfgid, :window]]
+    windows = cl.cfg[bc.cfgid, :window] == 0 ? cl.optparams["window"] : [cl.cfg[bc.cfgid, :window]]
     for win in windows # from short to long windows
         if win == 0 continue end
         # first check breakout
-        if reldiff(bc.amplitudes[win].highchange, bc.amplitudes[win].meanhighchange) >= cl.cfg[cl.cfgid, :breakoutfactor] # rel change of 2 rel chanegs
+        if reldiff(bc.amplitudes[win].highchange, bc.amplitudes[win].meanhighchange) >= cl.cfg[bc.cfgid, :breakoutfactor] # rel change of 2 rel chanegs
             return strongbuy
-        elseif reldiff(bc.amplitudes[win].lowchange, bc.amplitudes[win].meanlowchange) >= -cl.cfg[cl.cfgid, :breakoutfactor] # rel change of 2 rel chanegs
+        elseif reldiff(bc.amplitudes[win].lowchange, bc.amplitudes[win].meanlowchange) >= -cl.cfg[bc.cfgid, :breakoutfactor] # rel change of 2 rel chanegs
             return strongsell
         # then check trend
-        elseif (bc.amplitudes[win].meanhighchange >= cl.cfg[cl.cfgid, :trendfactor]) && (bc.amplitudes[win].highchange >= bc.amplitudes[win].meanhighchange)
+        elseif (bc.amplitudes[win].meanhighchange >= cl.cfg[bc.cfgid, :trendfactor]) && (bc.amplitudes[win].highchange >= bc.amplitudes[win].meanhighchange)
             return buy
-        elseif (bc.amplitudes[win].meanlowchange <= -cl.cfg[cl.cfgid, :trendfactor]) && (bc.amplitudes[win].highchange <= bc.amplitudes[win].meanhighchange)
+        elseif (bc.amplitudes[win].meanlowchange <= -cl.cfg[bc.cfgid, :trendfactor]) && (bc.amplitudes[win].highchange <= bc.amplitudes[win].meanhighchange)
             return sell
         # then check volatility trade
-        elseif bc.amplitudes[win].meanamp >= cl.cfg[cl.cfgid, :gainthreshold]
+        elseif bc.amplitudes[win].meanamp >= cl.cfg[bc.cfgid, :gainthreshold]
             if abs(reldiff(piv[ohlcvix], bc.amplitudes[win].low)) <= 0.2 * bc.amplitudes[win].meanamp
                 return buy
             elseif abs(reldiff(piv[ohlcvix], bc.amplitudes[win].high)) <= 0.2 * bc.amplitudes[win].meanamp
@@ -2116,22 +2184,17 @@ function advice(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     return hold
 end
 
-function evaluate!(df::AbstractDataFrame, cl::Classifier004, ohlcv::Ohlcv.OhlcvData)
-    for window in WINDOWSET
-        for lookback in LOOKBACKSET
-            for trendfactor in TRENDFACTORSET
-                for breakoutfactor in BREAKOUTFACTORSET
-                    for gainthreshold in STDGAINTHRSHLDSET
-                        cl.cfgid = configurationid(cl, (window=window, lookback=lookback, breakoutfactor=breakoutfactor, trendfactor=trendfactor, gainthreshold=gainthreshold))
-                        logsim!(df, cl, ohlcv)
-                    end
-                end
-            end
-        end
+configurationid4base(cl::Classifier004, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
+
+function configureclassifier!(cl::Classifier004, base::AbstractString, configid::Integer)
+    if base in keys(cl.bc)
+        cl.bc[base].cfgid = configid
+        return true
+    else
+        @error "cannot find $base in $(typeof(cl))"
+        return false
     end
 end
-
-configurationid4base(cl::Classifier004, base::AbstractString)::Integer = cl.cfgid
 
 
 #endregion Classifier004
@@ -2153,15 +2216,6 @@ function Base.show(io::IO, bc::BaseClassifier005)
     println(io, "BaseClassifier005[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
 end
 
-function timerangecut!(bc::BaseClassifier005, startdt::DateTime, enddt::DateTime)
-    if !isnothing(bc.f4)
-        ohlcvstartdt = startdt - Minute(Classify.requiredminutes(bc)-1)
-        Ohlcv.timerangecut!(bc.ohlcv, ohlcvstartdt, enddt)
-        Features.timerangecut!(bc.f4, startdt, enddt)
-        Features.f4offset!(bc.f4, bc.ohlcv)
-    end
-end
-
 function writetargetsfeatures(bc::BaseClassifier005)
     Ohlcv.write(bc.ohlcv)
     if !isnothing(bc.f4)
@@ -2171,6 +2225,26 @@ end
 
 supplement!(bc::BaseClassifier005) = Features.supplement!(bc.f4, bc.ohlcv)
 
+const REGRWINDOWSET005 = Int16[24*60, 3*24*60]
+const TRENDWINDOWSET005 = Int16[10*24*60]
+const TAKEPROFITGAINSET005 = Float32[0.02f0, 0.04f0]
+const BUYTHRESHOLDSET005 = Float32[0.01f0, 0.02f0]
+const TRENDBUYGRADSET005 = Float32[0.01f0] # -1f0 = equal to switched off
+const TRENDSELLGRADSET005 = Float32[-0.03f0, -0.06f0] # -1f0 = equal to switched off
+const BUYSPLITPARTSSET005 = Int16[10]
+const SELLVOLUMEFACTORET005 = Int16[1]
+const TRADEGAPMINUTES005 = Int16[10]
+const OPTPARAMS005 = Dict(
+    "regrwindow" => REGRWINDOWSET005,
+    "trendwindow" => TRENDWINDOWSET005,
+    "takeprofitgain" => TAKEPROFITGAINSET005,
+    "buythreshold" => BUYTHRESHOLDSET005,
+    "trendbuygrad" => TRENDBUYGRADSET005,
+    "trendsellgrad" => TRENDSELLGRADSET005,
+    "buysplitparts" => BUYSPLITPARTSSET005,
+    "sellvolumefactor" => SELLVOLUMEFACTORET005,
+    "tradegapminutes" => TRADEGAPMINUTES005
+)
 
 """
 Classifier005 idea
@@ -2186,42 +2260,17 @@ specific
 - specify trendwindow of trend regression line with buygrad in %/d to enable buy and selgrad in %/d to close open positions
 """
 mutable struct Classifier005 <: AbstractClassifier
-    "bd: base date maps the base string onto ohlcv data"
     bc::Dict{AbstractString, BaseClassifier005}
     cfg::Union{Nothing, DataFrame}  # configurations
-    "cfgid: id to retrieve configuration parameters of Classifier005; uninitialized == 0"
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
     dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    function Classifier005()
-        cl = new(Dict(), DataFrame(), nothing)
-        readconfigurations!(cl)
+    function Classifier005(optparams=OPTPARAMS005)
+        cl = new(Dict(), DataFrame(), optparams, nothing)
+        readconfigurations!(cl, optparams)
         @assert !isnothing(cl.cfg)
         return cl
     end
 end
-
-const REGRWINDOWSET005 = [24*60, 3*24*60]
-const TRENDWINDOWSET005 = [10*24*60]
-const TAKEPROFITGAINSET005 = [0.02f0, 0.04f0]
-const BUYTHRESHOLDSET005 = [0.01f0, 0.02f0]
-const TRENDBUYGRADSET005 = [0.01f0] # -1f0 = equal to switched off
-const TRENDSELLGRADSET005 = [-0.03f0, -0.06f0] # -1f0 = equal to switched off
-const BUYSPLITPARTSSET005 = [10]
-const SELLVOLUMEFACTORET005 = [1]
-const TRADEGAPMINUTES005 = [10]
-
-EnvConfig.emptyconfigdf(cl::Classifier005) = DataFrame(
-    cfgid=Int16[],              # classifier identificator
-    regrwindow=Int16[],         # regression window as reference to detect downward peaks
-    trendwindow=Int16[],        # regression window to identify trend gradient; 0= don't use trend info
-    takeprofitgain=Float32[],   # take profit gain threshold ratio to meet or exceed before selling
-    buythreshold=Float32[],     # buy threshold ratio below regression window; price to enter from below before buying
-    trendbuygrad=Float32[],     # relative price change/day; buy only if trend regression line >= trendbuygrad
-    trendsellgrad=Float32[],    # relative price change/day; sell as loss limit if trend regression line <= trendsellgrad
-    buysplitparts=Int16[],
-    sellvolumefactor=Int16[],
-    tradegapminutes=Int16[]
-)
-
 
 function addbase!(cl::Classifier005, ohlcv::Ohlcv.OhlcvData)
     bc = BaseClassifier005(ohlcv)
@@ -2241,12 +2290,6 @@ end
 function writetargetsfeatures(cl::Classifier005)
     for bcl in values(cl.bc)
         writetargetsfeatures(bcl)
-    end
-end
-
-function timerangecut!(cl::Classifier005, startdt::DateTime, enddt::DateTime)
-    for bc in values(cl.bc)
-        timerangecut!(bc, startdt, enddt)
     end
 end
 
@@ -2305,50 +2348,15 @@ function advice(cl::Classifier005, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     return hold
 end
 
-function evaluate!(df::AbstractDataFrame, cl::Classifier005, ohlcv::Ohlcv.OhlcvData)
-    (verbosity >=2) && println("$(EnvConfig.now()): evaluating Classifier005")
-    addbase!(cl, ohlcv)
-    if !(ohlcv.base in keys(cl.bc))
-        @error "addbase! failed"
-        return df
-    end
-    bc = cl.bc[ohlcv.base]
-    for regrwindow in REGRWINDOWSET005
-        for trendwindow in TRENDWINDOWSET005
-            for takeprofitgain in TAKEPROFITGAINSET005
-                for buythreshold in BUYTHRESHOLDSET005
-                    for buysplitparts in BUYSPLITPARTSSET005
-                        for sellvolumefactor in SELLVOLUMEFACTORET005
-                            for tradegapminutes in TRADEGAPMINUTES005
-                                for trendbuygrad in TRENDBUYGRADSET005
-                                    for trendsellgrad in TRENDSELLGRADSET005
-                                        if (trendwindow == 0) && !((trendbuygrad == first(TRENDBUYGRADSET005)) && (trendsellgrad == first(TRENDSELLGRADSET005)))
-                                            # execute only once because trendbuygrad and trendsellgrad are ignored with trendwindow == 0
-                                            continue
-                                        end
-
-                                        cfgid = configurationid(cl, (regrwindow=regrwindow, trendwindow=trendwindow, takeprofitgain=takeprofitgain, buythreshold=buythreshold, trendbuygrad=trendbuygrad, trendsellgrad=trendsellgrad, buysplitparts=buysplitparts, sellvolumefactor=sellvolumefactor, tradegapminutes=tradegapminutes))
-                                        configureclassifier!(cl, ohlcv.base, cfgid)
-                                        (verbosity >=2) && println("$(EnvConfig.now()): evaluating Classifier005 config $(NamedTuple(configuration(cl, cfgid)))")
-                                        logsim!(df, cl, ohlcv)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
-
 configurationid4base(cl::Classifier005, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
 
 function configureclassifier!(cl::Classifier005, base::AbstractString, configid::Integer)
     if base in keys(cl.bc)
         cl.bc[base].cfgid = configid
+        return true
     else
         @error "cannot find $base in Classifier005"
+        return false
     end
 end
 
