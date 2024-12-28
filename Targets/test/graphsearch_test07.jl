@@ -1,6 +1,5 @@
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test, CSV, Logging, LoggingExtras
-using PlotlyJS, WebIO
 
 using EnvConfig, Features, Targets, TestOhlcv, Ohlcv
 

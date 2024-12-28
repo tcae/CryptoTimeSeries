@@ -19,8 +19,8 @@ Pkg.add([
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", # "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
-    "PrettyPrinting", "PrettyTables",
-    "IJulia", "Plots", "PlotlyJS", "Colors"  # "WebIO", "Dash",   Regressionsim, CryptoCockpit, Notebooks
+    "PrettyPrinting", "PrettyTables"#,
+    #"IJulia", "Plots", "PlotlyJS", "Colors"  # "WebIO", "Dash",   Regressionsim, CryptoCockpit, Notebooks
     ])
 
 # Pkg.develop(path="/home/tor/TorProjects/CryptoTimeSeries")

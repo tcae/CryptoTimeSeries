@@ -65,7 +65,8 @@ Pkg.add([
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
-    "IJulia", "Plots", "Dash", "PlotlyJS", "Colors", "ProfileView",  # Regressionsim, CryptoCockpit, Notebooks
+    "Dash", "PlotlyJS", "Colors", "ProfileView",  # CryptoCockpit
+    # "IJulia", "Plots",  # Regressionsim,  Notebooks
     # "Flux", "ProgressMeter", "MLUtils", # ML
     "SortingAlgorithms",  # Targets
     "Profile",  # Trade

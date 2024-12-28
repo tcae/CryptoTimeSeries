@@ -430,6 +430,7 @@ function exchangeinfo(bc::BybitCache, symbol=nothing)
     params = Dict("category" => "spot")
     isnothing(symbol) ? nothing : params["symbol"] = uppercase(symbol)
     response = HttpPublicRequest(bc, "GET", "/v5/market/instruments-info", params, "instruments-info")
+    # response = HttpPublicRequest("GET", "/v5/market/instruments-info", params, "instruments-info")
     df = DataFrame()
     if length(response["result"]["list"]) > 0
         for col in keys(response["result"]["list"][1])
@@ -918,149 +919,149 @@ function balances(bc::BybitCache)
 end
 
 
-# Websockets functions
+# # Websockets functions
 
-function wsFunction(bc::BybitCache, channel::Channel, ws::String, symbol::String)
-    @assert false "not implemented for Bybit"
-    HTTP.WebSockets.open(string(BYBIT_API_WS, uppercase(symbol), ws); verbose=false) do io
-      while !eof(io);
-        put!(channel, _r2j(readavailable(io)))
-    end
-  end
-end
+# function wsFunction(bc::BybitCache, channel::Channel, ws::String, symbol::String)
+#     @assert false "not implemented for Bybit"
+#     HTTP.WebSockets.open(string(BYBIT_API_WS, uppercase(symbol), ws); verbose=false) do io
+#       while !eof(io);
+#         put!(channel, _r2j(readavailable(io)))
+#     end
+#   end
+# end
 
-function wsTradeAgg(bc::BybitCache, channel::Channel, symbol::String)
-    @assert false "not implemented for Bybit"
-    wsFunction(channel, "@aggTrade", symbol)
-end
+# function wsTradeAgg(bc::BybitCache, channel::Channel, symbol::String)
+#     @assert false "not implemented for Bybit"
+#     wsFunction(channel, "@aggTrade", symbol)
+# end
 
-function wsTradeRaw(bc::BybitCache, channel::Channel, symbol::String)
-    @assert false "not implemented for Bybit"
-    wsFunction(channel, "@trade", symbol)
-end
+# function wsTradeRaw(bc::BybitCache, channel::Channel, symbol::String)
+#     @assert false "not implemented for Bybit"
+#     wsFunction(channel, "@trade", symbol)
+# end
 
-function wsDepth(bc::BybitCache, channel::Channel, symbol::String; level=5)
-    @assert false "not implemented for Bybit"
-    wsFunction(channel, string("@depth", level), symbol)
-end
+# function wsDepth(bc::BybitCache, channel::Channel, symbol::String; level=5)
+#     @assert false "not implemented for Bybit"
+#     wsFunction(channel, string("@depth", level), symbol)
+# end
 
-function wsDepthDiff(bc::BybitCache, channel::Channel, symbol::String)
-    @assert false "not implemented for Bybit"
-    wsFunction(channel, "@depth", symbol)
-end
+# function wsDepthDiff(bc::BybitCache, channel::Channel, symbol::String)
+#     @assert false "not implemented for Bybit"
+#     wsFunction(channel, "@depth", symbol)
+# end
 
-function wsTicker(bc::BybitCache, channel::Channel, symbol::String)
-    @assert false "not implemented for Bybit"
-    wsFunction(channel, "@ticker", symbol)
-end
+# function wsTicker(bc::BybitCache, channel::Channel, symbol::String)
+#     @assert false "not implemented for Bybit"
+#     wsFunction(channel, "@ticker", symbol)
+# end
 
-function wsTicker24Hr(bc::BybitCache, channel::Channel)
-    @assert false "not implemented for Bybit"
-    HTTP.WebSockets.open(string(BYBIT_API_WS, "!ticker@arr"); verbose=false) do io
-      while !eof(io);
-        put!(channel, _r2j(readavailable(io)))
-    end
-  end
-end
+# function wsTicker24Hr(bc::BybitCache, channel::Channel)
+#     @assert false "not implemented for Bybit"
+#     HTTP.WebSockets.open(string(BYBIT_API_WS, "!ticker@arr"); verbose=false) do io
+#       while !eof(io);
+#         put!(channel, _r2j(readavailable(io)))
+#     end
+#   end
+# end
 
-function wsKline(bc::BybitCache, channel::Channel, symbol::String; interval="1m")
-  #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
-  @assert false "not implemented for Bybit"
-  wsFunction(channel, string("@kline_", interval), symbol)
-end
+# function wsKline(bc::BybitCache, channel::Channel, symbol::String; interval="1m")
+#   #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
+#   @assert false "not implemented for Bybit"
+#   wsFunction(channel, string("@kline_", interval), symbol)
+# end
 
-function wsKlineStreams(bc::BybitCache, channel::Channel, symbols::Array, interval="1m")
-  #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
-  @assert false "not implemented for Bybit"
-  allStreams = map(s -> string(uppercase(s), "@kline_", interval), symbols)
-    error = false;
-    while !error
-        try
-            HTTP.WebSockets.open(string(BYBIT_API_WS,join(allStreams, "/")); verbose=false) do io
-            while !eof(io);
-                put!(channel, String(readavailable(io)))
-            end
-      end
-        catch e
-            println(e)
-            error=true;
-            println("error occured bailing wsklinestreams !")
-        end
-    end
-end
+# function wsKlineStreams(bc::BybitCache, channel::Channel, symbols::Array, interval="1m")
+#   #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
+#   @assert false "not implemented for Bybit"
+#   allStreams = map(s -> string(uppercase(s), "@kline_", interval), symbols)
+#     error = false;
+#     while !error
+#         try
+#             HTTP.WebSockets.open(string(BYBIT_API_WS,join(allStreams, "/")); verbose=false) do io
+#             while !eof(io);
+#                 put!(channel, String(readavailable(io)))
+#             end
+#       end
+#         catch e
+#             println(e)
+#             error=true;
+#             println("error occured bailing wsklinestreams !")
+#         end
+#     end
+# end
 
-function wsKlineStreams(bc::BybitCache, callback::Function, symbols::Array; interval="1m")
-    #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
-    @assert false "not implemented for Bybit"
-      allStreams = map(s -> string(uppercase(s), "@kline_", interval), symbols)
-      @async begin
-        HTTP.WebSockets.open(string("wss://stream.binance.com:9443/ws/",join(allStreams, "/")); verbose=false) do io
-            while !eof(io)
-                    data = String(readavailable(io))
-                    callback(data)
-            end
-        end
-    end
-end
+# function wsKlineStreams(bc::BybitCache, callback::Function, symbols::Array; interval="1m")
+#     #interval => 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
+#     @assert false "not implemented for Bybit"
+#       allStreams = map(s -> string(uppercase(s), "@kline_", interval), symbols)
+#       @async begin
+#         HTTP.WebSockets.open(string("wss://stream.binance.com:9443/ws/",join(allStreams, "/")); verbose=false) do io
+#             while !eof(io)
+#                     data = String(readavailable(io))
+#                     callback(data)
+#             end
+#         end
+#     end
+# end
 
-function openUserData(bc::BybitCache, apiKey)
-    @assert false "not implemented for Bybit"
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    r = HTTP.request("POST", BYBIT_API_USER_DATA_STREAM, headers)
-    return _r2j(r.body)["listenKey"]
-end
+# function openUserData(bc::BybitCache, apiKey)
+#     @assert false "not implemented for Bybit"
+#     headers = Dict("X-BAPI-API-KEY" => apiKey)
+#     r = HTTP.request("POST", BYBIT_API_USER_DATA_STREAM, headers)
+#     return _r2j(r.body)["listenKey"]
+# end
 
-function keepAlive(bc::BybitCache, apiKey, listenKey)
-    @assert false "not implemented for Bybit"
-    if length(listenKey) == 0
-        return false
-    end
+# function keepAlive(bc::BybitCache, apiKey, listenKey)
+#     @assert false "not implemented for Bybit"
+#     if length(listenKey) == 0
+#         return false
+#     end
 
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    body = string("listenKey=", listenKey)
-    r = HTTP.request("PUT", BYBIT_API_USER_DATA_STREAM, headers, body)
-    return true
-end
+#     headers = Dict("X-BAPI-API-KEY" => apiKey)
+#     body = string("listenKey=", listenKey)
+#     r = HTTP.request("PUT", BYBIT_API_USER_DATA_STREAM, headers, body)
+#     return true
+# end
 
-function closeUserData(bc::BybitCache, apiKey, listenKey)
-    @assert false "not implemented for Bybit"
-    if length(listenKey) == 0
-        return false
-    end
-    headers = Dict("X-BAPI-API-KEY" => apiKey)
-    body = string("listenKey=", listenKey)
-    r = HTTP.request("DELETE", BYBIT_API_USER_DATA_STREAM, headers, body)
-   return true
-end
+# function closeUserData(bc::BybitCache, apiKey, listenKey)
+#     @assert false "not implemented for Bybit"
+#     if length(listenKey) == 0
+#         return false
+#     end
+#     headers = Dict("X-BAPI-API-KEY" => apiKey)
+#     body = string("listenKey=", listenKey)
+#     r = HTTP.request("DELETE", BYBIT_API_USER_DATA_STREAM, headers, body)
+#    return true
+# end
 
-function wsUserData(bc::BybitCache, channel::Channel, apiKey, listenKey; reconnect=true)
-    @assert false "not implemented for Bybit"
+# function wsUserData(bc::BybitCache, channel::Channel, apiKey, listenKey; reconnect=true)
+#     @assert false "not implemented for Bybit"
 
-    function mykeepAlive()
-        return keepAlive(apiKey, listenKey)
-    end
+#     function mykeepAlive()
+#         return keepAlive(apiKey, listenKey)
+#     end
 
-    Timer(mykeepAlive, 1800; interval = 1800)
+#     Timer(mykeepAlive, 1800; interval = 1800)
 
-    error = false;
-    while !error
-        try
-            HTTP.WebSockets.open(string(BYBIT_API_WS, listenKey); verbose=false) do io
-                while !eof(io);
-                    put!(channel, _r2j(readavailable(io)))
-                end
-            end
-        catch x
-            println(x)
-            error = true;
-        end
-    end
+#     error = false;
+#     while !error
+#         try
+#             HTTP.WebSockets.open(string(BYBIT_API_WS, listenKey); verbose=false) do io
+#                 while !eof(io);
+#                     put!(channel, _r2j(readavailable(io)))
+#                 end
+#             end
+#         catch x
+#             println(x)
+#             error = true;
+#         end
+#     end
 
-    if reconnect
-        wsUserData(channel, apiKey, openUserData(apiKey))
-    end
+#     if reconnect
+#         wsUserData(channel, apiKey, openUserData(apiKey))
+#     end
 
-end
+# end
 
 # helper
 filterOnRegex(matcher, withDictArr; withKey="symbol") = filter(x -> match(Regex(matcher), !isnothing(x[withKey])), withDictArr);

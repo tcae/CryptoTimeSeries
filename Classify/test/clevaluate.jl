@@ -20,14 +20,14 @@ Ohlcv.verbosity = 1
 # Features.verbosity = 2
 EnvConfig.verbosity = 3
 Classify.verbosity = 3
-EnvConfig.setlogpath("2429-Classifier005-ShortTest_TrendawareVolatilityTracker")
+EnvConfig.setlogpath("2432-Classifier005-FullTest_TrendawareVolatilityTracker")
 
-startdt = DateTime("2024-03-01T00:00:00") # nothing
-enddt =   DateTime("2024-06-06T09:00:00")
+startdt = nothing # DateTime("2024-03-01T00:00:00")
+enddt =   nothing # DateTime("2024-06-06T09:00:00")
 # coins = ["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"]
-coins = ["BTC"]
+coins = nothing # ["BTC"]
 coinsdf = Ohlcv.liquidcoins(liquidrangeminutes=108*24*60)
-filtered_df = filter(row -> row.basecoin in coins, coinsdf)
+filtered_df = coinsdf # filter(row -> row.basecoin in coins, coinsdf)
 println("evaluating: $coins \n coinsdf=$coinsdf \n filtered_df=$filtered_df")
 df = Classify.evaluateclassifiers([Classify.Classifier005], filtered_df, startdt, enddt)
 # df = Classify.readsimulation()

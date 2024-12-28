@@ -43,10 +43,10 @@ ohlcv(xc::XchCache) = values(xc.bases)
 ohlcv(xc::XchCache, base::String) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
-basenottradable = ["SUI"]
+basenottradable = ["SUI", "MATIC"]
 basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "EUR", "DAI"]
 quotecoins = ["USDT"]  # , "USDC"]
-baseignore = [""]
+baseignore = []
 baseignore = uppercase.(append!(baseignore, basestablecoin, basenottradable))
 minimumquotevolume = 10  # USDT
 
@@ -166,17 +166,19 @@ end
 "Sleeps until `datetime` if reached if `datetime` is in the future, set the *current* time and updates ohlcv if required"
 function setcurrenttime!(xc::XchCache, base::String, datetime::DateTime)
     dt = floor(datetime, Minute(1))
+    ot = []
     if base in keys(xc.bases)
         ohlcv = xc.bases[base]
-        ohlcvdf = Ohlcv.dataframe(ohlcv)
-        if (size(ohlcvdf, 1) == 0) || (dt > ohlcvdf.opentime[end])
-            xc.bases[base] = cryptoupdate!(xc, ohlcv, (size(ohlcvdf, 1) == 0 ? dt : ohlcvdf.opentime[begin]), dt)
+        ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
+        if (length(ot) == 0) || (dt > ot[end])
+            xc.bases[base] = cryptoupdate!(xc, ohlcv, (length(ot) == 0 ? dt : ot[begin]), dt)
         end
     else
         xc.bases[base] = ohlcv = cryptodownload(xc, base, "1m", dt, dt)
+        ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
     end
     Ohlcv.setix!(ohlcv, Ohlcv.rowix(ohlcv, dt))
-    if (size(Ohlcv.dataframe(ohlcv), 1) > 0) && (Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)] != dt)
+    if (length(ot) > 0) && (ot[begin] <= dt <= ot[end]) && (ot[Ohlcv.ix(ohlcv)] != dt)
         if (verbosity >= 1) && (EnvConfig.configmode == production)
             @warn "setcurrenttime!($base, $dt) failed, opentime[ix]=$(Ohlcv.dataframe(ohlcv).opentime[Ohlcv.ix(ohlcv)])"
         end
@@ -230,22 +232,32 @@ function _gethistoryohlcv(xc::XchCache, base::String, startdt::DateTime, enddt::
     # enddt = DateTime("2020-08-12T22:49:00")
     startdt = floor(startdt, intervalperiod(interval))
     enddt = floor(enddt, intervalperiod(interval))
+    fetches = 0
     # println("requesting from $startdt until $enddt $(ceil(enddt - startdt, intervalperiod(interval)) + intervalperiod(interval)) $base OHLCV from binance")
 
     notreachedstartdt = true
     df = Ohlcv.defaultohlcvdataframe()
     lastdt = enddt + Dates.Minute(1)  # make sure lastdt break condition is not true
+    (verbosity >= 3) && @info "request from $startdt until $enddt at entry"
     while notreachedstartdt
         # fills from newest to oldest using Bybit
+        fetches =+ 1
+        if startdt > enddt
+            (verbosity >= 3) && @warn "fetch $fetches: startdt $startdt > enddt $enddt at entry - exchanging"
+            dt = startdt
+            startdt = enddt
+            enddt = dt
+        end
         res = _ohlcfromexchange(xc, base, startdt, enddt, interval)
         if size(res, 1) == 0
+            # will be the case for the timerange before the first coin data is available
             # Logging.@warn "no $base $interval data returned by last ohlcv read from $startdt until $enddt"
             break
         end
         notreachedstartdt = (res[begin, :opentime] > startdt) # Bybit loads newest first
         if res[begin, :opentime] >= lastdt
-            # no progress since last ohlcv  read
-            (verbosity >= 1) && @warn "no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime])"
+            # no progress since last ohlcv read - will be the case for all coins that have no cached data because startdt is likely before the first coin data
+            (verbosity >= 3) && @warn "fetch $fetches: no progress since last ohlcv read: requested from $startdt until $enddt - received from $(res[begin, :opentime]) until $(res[end, :opentime]), lastdt=$lastdt - returning df from $(df[begin, :opentime]) until $(df[end, :opentime])"
             break
         end
         lastdt = res[begin, :opentime]
@@ -346,11 +358,12 @@ end
 "downloads missing data and merges with canned data then saves it as supplemented canned data"
 function downloadupdate!(xc::XchCache, bases, enddt, period=Dates.Year(10))
     count = length(bases)
+    enddt = floor(enddt, Dates.Minute)
+    startdt = floor(enddt - period, Dates.Minute)
     for (ix, base) in enumerate(bases)
         # break
-        (verbosity >= 2) && println("\n$(EnvConfig.now()) start updating $base ($ix of $count)")
-        startdt = enddt - period
-        ohlcv = CryptoXch.cryptodownload(xc, base, "1m", floor(startdt, Dates.Minute), floor(enddt, Dates.Minute))
+        (verbosity >= 2) && println("\n$(EnvConfig.now()) start updating $base ($ix of $count) request from $startdt until $enddt")
+        ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt, enddt)
         Ohlcv.write(ohlcv)
     end
 end
@@ -381,7 +394,9 @@ end
 function minimumqty(xc::XchCache, sym::String)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
     if isnothing(syminfo)
-        (verbosity >= 1) && @error "cannot find symbol $sym in Bybit exchange info"
+        if validsymbol(xc, sym)
+            (verbosity >= 1) && @error "cannot find symbol $sym in Bybit exchange info"
+        end
         return nothing
     end
     return (minbaseqty=syminfo.minbaseqty, minquoteqty=syminfo.minquoteqty)
@@ -390,7 +405,7 @@ end
 function minimumbasequantity(xc::XchCache, base::AbstractString, price)
     sym = CryptoXch.symboltoken(base)
     syminfo = CryptoXch.minimumqty(xc, sym)
-    return 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
+    return isnothing(syminfo) ? nothing : 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
 end
 
 function precision(xc::XchCache, sym::String)
@@ -459,9 +474,9 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
         @assert length(bq) == size(usdtdf, 1)
         usdtdf[!, :basecoin] = [isnothing(bqe) ? missing : bqe.basecoin for bqe in bq]
         nbq = [!isnothing(bqe) && validbase(xc, bqe.basecoin) && (bqe.quotecoin == EnvConfig.cryptoquote) for bqe in bq]  # create binary vector as DataFrame filter
-        usdtdf = usdtdf[nbq, :]
-        bq = [bqe.basecoin for bqe in bq if !isnothing(bqe)]
-        usdtdf = usdtdf[!, Not(:symbol)]
+        usdtdf = usdtdf[nbq, Not(:symbol)]
+        # usdtdf = usdtdf[nbq, :]
+        # usdtdf = usdtdf[!, Not(:symbol)]
         # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :] - covered above by validbase
         # usdtdf = filter(row -> validbase(xc, row.basecoin), usdtdf) - covered above by validbase
         (verbosity >= 3) && println("writing USDTmarket file of size=$(size(usdtdf)) at enddt=$dt")
@@ -492,9 +507,9 @@ function balances(xc::XchCache; ignoresmallvolume=true)
         delrows = []
         for ix in eachindex(bdf[!, :coin])
             if bdf[ix, :coin] != EnvConfig.cryptoquote
-                sym = CryptoXch.symboltoken(bdf[ix, :coin])
-                syminfo = CryptoXch.minimumqty(xc, sym)
-                if sum(bdf[ix, [:locked, :free]]) < 1.01 * syminfo.minbaseqty # 1% more to avoid issues by rounding errors
+                sym = symboltoken(bdf[ix, :coin])
+                syminfo = minimumqty(xc, sym)
+                if !validsymbol(xc, sym) || (sum(bdf[ix, [:locked, :free]]) < 1.01 * syminfo.minbaseqty) # 1% more to avoid issues by rounding errors
                     push!(delrows, ix)
                 end
             end
@@ -537,7 +552,8 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
     if ignoresmallvolume
         delrows = []
         for ix in eachindex(portfoliodf[!, :coin])
-            if (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free]]) < minimumbasequantity(xc, portfoliodf[ix, :coin], portfoliodf[ix, :usdtprice]))
+            minbasequant = minimumbasequantity(xc, portfoliodf[ix, :coin], portfoliodf[ix, :usdtprice])
+            if isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free]]) < minbasequant)
                 push!(delrows, ix)
             end
         end

@@ -7,9 +7,6 @@ using Dates, DataFrames
 using Test
 using Classify
 
-println("test_setpartitions()")
-Classify.test_setpartitions()
-
 @testset "Classify tests" begin
 
 # y = categorical(["X", "O", "X", "X", "O", "X", "X", "O", "O", "X"], ordered=true)

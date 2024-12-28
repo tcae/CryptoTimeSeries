@@ -12,8 +12,8 @@ function prepare()
     # Ohlcv.verbosity = 2
     Trade.verbosity = 2
     # EnvConfig.init(production)
-    startdt = DateTime("2024-01-19T00:00:00")
-    enddt = DateTime("2024-05-20T10:00:00")
+    startdt = DateTime("2024-03-01T00:00:00") # nothing
+    enddt =   DateTime("2024-06-06T09:00:00")
     demux_logger = TeeLogger(
         MinLevelLogger(FileLogger(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")), Logging.Info),
         MinLevelLogger(ConsoleLogger(stdout), Logging.Info)

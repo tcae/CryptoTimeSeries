@@ -1,10 +1,26 @@
 # Strategies
 
-General thoughts:
+## Market behaviour
+
+- From a fee perspective it is a quantitative advantage to be in the maker role and let a taker buy your offer.
+- As a maker you tend to increase the price until it is attractive enough for others to undercut you as maker.
+- An indication that you can raise the price is the side of the taker volume, i.e. if you want to sell and there is a relative high taker volume on the buy side you may want to increase your price and vice versa.
+  - what is the Exchange API function to provide the taker vs. maker volume?
+- The absolute and relative volume is also an indicator that market participants have differnet opinions about the trend
+  - a high volume seller will first increase his price until other undercut him in high volume
+  - then this high volume seller may change his tactic and take a larger volume of buy offers before others take away the availble volume in liquidity
+  - as a reaction on the buy side of a down peak, typically is a more aggressive buy behavior driving the prices and volume (=liquidity) even higher, which is good for the high volume seller, who can then make sell offers at higher prices or repeat a taker part to get rid of volume, which results in a short term volatility increase.
+- High volume market participants have a problem that they cannot get rid of large volume in a very short time range, which provides small volume traders an opportunity
+  - to recognize a high volume trend
+  - to participate before the trend settles
+- High volume coins with a large number of market participants - and different judgement about trends - are less volatile than low volume coins. Hence, trends establish slower and relative volume median time ranges should be choosen loner (e.g. 1h/10d).
+- Low volume coins are more sensitive to a few high volume traders, resulting in higher volatility with higher amplitudes. Here a quicker reaction to catch the trend is required because peaked liquidity may decrease faster and  and relative volume median timeranges should be choosen shorter (e.g. 15min/4d).
+
+## General thoughts
 
 - Problem: what to label as a trade signal, i.e. what is a noteworthy deviation from a trend that is worth to signal a trade?
-  - An option is to label everything that has a future gain or loss above a threshold. This will result in relatively poor classifers because it takes some time before a trend is established as such and distinguished from noise. Hm, that can be mitigated by setting the threshold high enough (e.g. 5% while 1% should be already profitable)- the advantage is that labelling remains straightforward.
-  - To address noise, signal labels may only be sent after a number of samples in the same direction and then still exceeding a gain/loss threshold. That can be achieved by using a regression window of x minutes.
+  - An option is to label everything that has a future gain or loss above a threshold. This will result in relatively poor classifers because it takes some time before a trend is established as such and distinguished from noise. Hm, that can be mitigated by setting the threshold high enough (e.g. 5% while 1% should be already profitable)- the advantage is that labelling remains straightforward. To address noise, signal labels may only be sent after a number of samples in the same direction and then still exceeding a gain/loss threshold. That can be achieved by using a regression window of x minutes. P.S. turns out to be not a good strategy. Assumption why no success: there can be too many ups and downs before it gains to the target.
+  - 2024-10-20 Learning: gain target has to be in reach within a defined time frame. To be found out: what is the appropraite time frame? 1% within 1h, 2h, 4h, 6h, 12h? Furthermore, need for a hysteresis to avoid frequent buy sell cycles, e.g. buy if 1% within 1h is likely, sell if 0% within 1h is unlikely (latter excludes likelihood of short peaks due to high volatility)
 - Follow trends: when is a trend broken? One may consider trend stability a criteria (less volatility but reliability in direction) versus a trend with high volatilty to catch extrema for trading and assume that the trend repairs a missed extreme. Trend reversal detection is crucial.
   - a trend is considered broken when the regression gradient changes sign but this should be detected earlier.
   - measure deviations of intact trends and accept  up to x sigma deviations before declared broken. This also enables break outs of a e.g. positive trend and to switch monitoring to a shorter regression window. Having a cascade of regression windows (e.g. 5m, 30m, 3h, 18h, 36h) the signal shall be bound to one of those windows with buy in a minimum and sell in a maximum. [Straight forward evaluations](data/gradientgainhisto.data) showed that a 24h showed good results while shorter windows returned losses. This can be explained with the observation that short windows also have more low amplitude noise signals. On the other hand in volatile times a long range window misses the fall back. Therefore a short range regression window is preferred in volatile times with high frequent, high amplitude prices changes while longer regression windows are preferred in low volatile times. In both cases a minimum gain is needed to avoid losses.

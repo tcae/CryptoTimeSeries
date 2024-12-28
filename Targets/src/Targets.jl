@@ -12,10 +12,60 @@ Prediction algorithms are identified by name. Individuals are identified by name
 module Targets
 
 using EnvConfig, Ohlcv, TestOhlcv, Features
-using DataFrames, Dates, Logging
+using DataFrames, Dates, Logging, CategoricalArrays
+
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
+"""
+verbosity = 1
 
 "returns all possible labels (don't change sequence because index is used as class id)"
-const all_labels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy"]
+const targetlabels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy"]
+
+"Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
+abstract type AbstractTargets <: EnvConfig.AbstractConfiguration end
+
+"Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set."
+function setbase!(targets::AbstractTargets, ohlcv::Ohlcv.OhlcvData) end
+
+"Removes the targets of a basecoin."
+function removebase!(targets::AbstractTargets) end
+
+"Add newer targets to match the recent timeline of ohlcv with the newest ohlcv datapoints, i.e. datapoints newer than last(features)"
+function supplement!(targets::AbstractTargets) end
+
+"Provides the class label of the target class."
+function labels(targets::AbstractTargets, firstix::Integer, lastix::Integer) end
+function labels(targets::AbstractTargets, firstix::DateTime, lastix::DateTime) end
+
+"Provide the relative gain of the current price compared to the target price in the future. (currentprice - targetprice) / currentprice"
+function relativegain(targets::AbstractTargets, firstix::Integer, lastix::Integer) end
+function relativegain(targets::AbstractTargets, firstix::DateTime, lastix::DateTime) end
+
+"Provides a description that characterizes the features"
+describe(targets::AbstractTargets) = "$(typeof(targets))"
+
+function labeldistribution(targets::Vector{String}, labels=unique(targets))
+    cattargets = categorical(targets; levels=labels, compress=true)
+    return labeldistribution(cattargets)
+end
+
+function labeldistribution(targets::CategoricalArray)
+    labels = levels(targets)
+    cnt = zeros(Int, length(labels))
+    # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
+    for tl in targets
+        cnt[levelcode(tl)] += 1
+    end
+    targetcount = size(targets, 1)
+    dist = [(labels[i], round(cnt[i] / targetcount*100, digits=1)) for i in eachindex(labels)]
+    println("target label distribution in %: ", dist)
+    return dist
+end
 
 
 """
@@ -50,33 +100,26 @@ struct LabelThresholds
     shorthold::Float32
     shortbuy::Float32
 end
+LabelThresholds(;longbuy, longhold, shorthold, shortbuy) = LabelThresholds(longbuy, longhold, shorthold, shortbuy)
+thresholds(lt::LabelThresholds)::NamedTuple = (longbuy=lt.longbuy, longhold=lt.longhold, shorthold=lt.shorthold, shortbuy=lt.shortbuy)
+thresholds(lt::NamedTuple)::LabelThresholds = LabelThresholds(lt.longbuy, lt.longhold, lt.shorthold, lt.shortbuy)
 
-"""
-- buy long at more than 3% gain potential from current price
-- hold long above 0.01% gain potential from current price
-- close long position below 0.01% gain potential from current price
-
-- buy short at or lower than -3% loss potential from current price
-- hold short below -0.01% loss potential from current price
-- close short position above -0.01% loss potential from current price
-"""
 defaultlabelthresholds = LabelThresholds(0.03, 0.005, -0.005, -0.03)
 
 """
 Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
 
-- The folllowing invariant is assumed: `longbuy > longclose >= 0 >= shortclose > shortbuy`
+- The folllowing invariant is assumed: `longbuy > longhold >= 0 >= shorthold > shortbuy`
 - a gain shall be above `longbuy` threshold for a buy (long buy) signal
-- bought assets shall be held (but not bought) if the remaining gain is above `closelong` threshold
-- bought assets shall be closed if the remaining gain is below `closelong` threshold
+- bought assets shall be held (but not bought) if the remaining gain is above `longhold` threshold
+- bought assets shall be closed if the remaining gain is below `longhold` threshold
 - a loss shall be below `shortbuy` for a sell (short buy) signal
-- sold (short buy) assets shall be held if the remaining loss is below `closeshort`
-- sold (short buy) assets shall be closed if the remaining loss is above `closeshort`
+- sold (short buy) assets shall be held if the remaining loss is below `shorthold`
+- sold (short buy) assets shall be closed if the remaining loss is above `shorthold`
 - all thresholds are relative gain values: if backwardrelative then the relative gain is calculated with the target price otherwise with the current price
 
 """
 function getlabels(relativedist, labelthresholds::LabelThresholds)
-    @assert all([lab in all_labels for lab in ["ignore", "longbuy", "longhold", "shortbuy", "shorthold", "close"]])
     lt = labelthresholds
     rd = relativedist
     lastbuy = "nobuy"
@@ -106,8 +149,11 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
         return newstate
     end
 
-    labels = [(rd >= lt.longbuy ? settradestate("longbuy") : (rd > lt.longhold ? settradestate("longhold") :
-              (lt.shortbuy >= rd ? settradestate("shortbuy") : (lt.shorthold > rd ? settradestate("shorthold") : settradestate("close"))))) for rd in relativedist]
+    labels = [(rd >= lt.longbuy ? settradestate("longbuy") :
+                (rd >= lt.longhold ? settradestate("longhold") :
+                    (rd <= lt.shortbuy ? settradestate("shortbuy") :
+                        (rd <= lt.shorthold ? settradestate("shorthold") :
+                            settradestate("close"))))) for rd in relativedist]
     return labels
 end
 
@@ -384,6 +430,154 @@ function loaddata(ohlcv, labelthresholds)
     pe = Targets.peaksbeforeregressiontargets(f2; labelthresholds=labelthresholds, regrwinarr=nothing)
     return f3, pe
 end
+
+emptyfdgdf() = DataFrame(Dict(:opentime=>DateTime[], :pivot=>Float32[], :label=>String[], :longbuy=>Bool[], :longhold=>Bool[], :shortbuy=>Bool[], :shorthold=>Bool[], :minix=>UInt32[], :maxix=>UInt32[], :minreldiff=>Float32[], :maxreldiff=>Float32[]))
+
+"""
+Provides 4 independent binary targets
+- longbuy if label threshold `thres.longbuy` is exceeded within the next `window` minutes
+- longhold if label threshold `thres.longhold` is not undercut within the next `window` minutes
+- shorthold if label threshold `thres.shorthold` is not exceeded within the next `window` minutes
+- shortbuy if label threshold `thres.shortbuy` is undercut within the next `window` minutes
+"""
+mutable struct FixedDistanceGain <: AbstractTargets
+    window::Int # in minutes
+    thres::LabelThresholds
+    ohlcv::Union{OhlcvData, Nothing}
+    df::Union{DataFrame, Nothing}
+    function FixedDistanceGain(window, thres)
+        fdg = new(window, thres, nothing, nothing)
+        return fdg
+    end
+end
+
+function setbase!(fdg::FixedDistanceGain, ohlcv::Ohlcv.OhlcvData)
+    fdg.ohlcv = ohlcv
+    fdg.df = DataFrame()
+    supplement!(fdg)
+end
+
+function removebase!(fdg::FixedDistanceGain)
+    fdg.ohlcv = nothing
+    fdg.df = nothing
+end
+
+function supplement!(fdg::FixedDistanceGain)
+    if isnothing(fdg.ohlcv)
+        (verbosity >= 2) && println("no ohlcv found in fdg - nothing to supplement")
+        return
+    end
+    odf = Ohlcv.dataframe(fdg.ohlcv)
+    piv = odf[!, :pivot]
+    if length(piv) > 0
+        size(fdg.df, 1) > 0 && @assert fdg.df[begin, :opentime] == odf[begin, :opentime] "$(fdg.df[begin, :opentime]) != $(odf[begin, :opentime])"
+        startix = max(firstindex(piv), firstindex(piv) + size(fdg.df, 1) - fdg.window + 1)
+        # len(piv) = 10, len(fdg)=5, window = 3 --> startix = 1+5-3+1=4
+        # recalc the last (window-1) rows due to new ohlcv max in last window element
+        pivnew = view( piv, startix:lastindex(piv))
+        pvlen = length(pivnew)
+        if pvlen > 0
+            deltalen = length(piv) - pvlen
+            dfnew = DataFrame()
+            maxix = zeros(UInt32, pvlen)
+            minix = zeros(UInt32, pvlen)
+            maxreldiff = zeros(Float32, pvlen)
+            minreldiff = zeros(Float32, pvlen)
+            for ix in eachindex(pivnew)
+                maxix[ix] = ix == lastindex(pivnew) ? ix : argmax(view(pivnew, ix+1:min(ix+1 + fdg.window - 1, lastindex(pivnew)))) + ix
+                minix[ix] = ix == lastindex(pivnew) ? ix : argmin(view(pivnew, ix+1:min(ix+1 + fdg.window - 1, lastindex(pivnew)))) + ix
+                minreldiff[ix] = (pivnew[minix[ix]] - pivnew[ix]) / pivnew[ix]
+                maxreldiff[ix] = (pivnew[maxix[ix]] - pivnew[ix]) / pivnew[ix]
+            end
+            dfnew[!, :minreldiff] = minreldiff
+            dfnew[!, :maxreldiff] = maxreldiff
+            dfnew[!, :longbuy] = dfnew[!, :maxreldiff] .>= fdg.thres.longbuy
+            dfnew[!, :longhold] = dfnew[!, :minreldiff] .>= fdg.thres.longhold
+            dfnew[!, :shortbuy] = dfnew[!, :minreldiff] .<= fdg.thres.shortbuy
+            dfnew[!, :shorthold] = dfnew[!, :maxreldiff] .<= fdg.thres.shorthold
+            dfnew[!, :label] .= "ignore"
+            for ix in eachindex(pivnew)
+                if (maxix[ix] < minix[ix]) || (dfnew[ix, :maxreldiff] > 0f0)
+                    if dfnew[ix, :longbuy]
+                        dfnew[ix, :label] = "longbuy"
+                    elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["longbuy", "longhold"])  # longhold can only follow longbuy or longhold
+                        dfnew[ix, :label] = dfnew[ix, :longhold] ? "longhold" : "close"
+                    end
+                end
+                if (maxix[ix] > minix[ix]) || (dfnew[ix, :minreldiff] < 0f0)
+                    if dfnew[ix, :shortbuy]
+                        dfnew[ix, :label] = "shortbuy"
+                    elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["shortbuy", "shorthold"])  # shorthold can only follow shortbuy or shorthold
+                        dfnew[ix, :label] = dfnew[ix, :shorthold] ? "shorthold" : "close"
+                    end
+                end
+            end
+            dfnew[!, :opentime] = odf[startix:lastindex(piv), :opentime]
+            dfnew[!, :maxix] = maxix .+ deltalen
+            dfnew[!, :minix] = minix .+ deltalen
+            dfnew[!, :pivot] = pivnew
+        end
+        fdg.df = deltalen > 0 ? vcat(fdg.df[begin:startix-1, :], dfnew) : dfnew
+    end
+end
+
+function timerangecut!(fdg::FixedDistanceGain)
+    if isnothing(fdg.ohlcv)
+        (verbosity >= 2) && println("no ohlcv found in fdg - no time range to cut")
+        return
+    end
+    # cut at start requires maxix correction, cut at end requires recalculation of last window elements
+    startdt = Ohlcv.dataframe(fdg.ohlcv)[begin, :opentime]
+    startix = Ohlcv.rowix(fdg.df[!, :opentime], startdt)
+    startdeltaix = startix - firstindex(fdg.df[!, :opentime])
+    enddt = Ohlcv.dataframe(fdg.ohlcv)[end, :opentime]
+    endix = Ohlcv.rowix(fdg.df[!, :opentime], enddt)
+    enddeltaix = lastindex(fdg.df[!, :opentime]) - endix
+    endix = enddeltaix > 0 ? endix - fdg.window + 1 : endix
+    fdg.df = fdg.df[startix:endix, :]
+    if startdeltaix > 0
+        fdg.df[!, :maxix] .-= startdeltaix
+    end
+    supplement!(fdg)
+end
+
+describe(fdg::FixedDistanceGain) = "$(typeof(fdg))_$(fdg.window)_label-thresholds=(longbuy=$(fdg.thres.longbuy),longhold=$(fdg.thres.longhold),shorthold=$(fdg.thres.shorthold),shortbuy=$(fdg.thres.shortbuy))"
+firstrowix(fdg::FixedDistanceGain)::Int = isnothing(fdg.df) ? 1 : (size(fdg.df, 1) > 0 ? firstindex(fdg.df[!, 1]) : 1)
+lastrowix(fdg::FixedDistanceGain)::Int = isnothing(fdg.df) ? 0 : (size(fdg.df, 1) > 0 ? lastindex(fdg.df[!, 1]) : 0)
+
+"returns a dataframe with binary volume columns :longbuy, :longhold, :shorthold, :shortbuy"
+function df(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractDataFrame
+    return isnothing(fdg.df) ? emptyfdgdf() : view(fdg.df, firstix:lastix, :)
+end
+
+df(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = df(fdg, Ohlcv.rowix(fdg.df[!, :opentime], startdt), Ohlcv.rowix(fdg.df[!, :opentime], enddt))
+longbuybinarytargets(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "close" for lb in df(fdg, startdt, enddt)[!, :longbuy]]
+
+function labels(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractVector
+    return isnothing(fdg.df) ? [] : fdg.df[firstix:lastix, :label]
+end
+
+labels(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = labels(fdg, Ohlcv.rowix(fdg.df[!, :opentime], startdt), Ohlcv.rowix(fdg.df[!, :opentime], enddt))
+
+function relativegain(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractVector
+    return isnothing(fdg.df) ? [] : fdg.df[firstix:lastix, :maxreldiff]
+end
+
+relativegain(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = relativegain(fdg, Ohlcv.rowix(fdg.df[!, :opentime], startdt), Ohlcv.rowix(fdg.df[!, :opentime], enddt))
+
+function relativeloss(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractVector
+    return isnothing(fdg.df) ? [] : fdg.df[firstix:lastix, :minreldiff]
+end
+
+relativeloss(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = relativegain(fdg, Ohlcv.rowix(fdg.df[!, :opentime], startdt), Ohlcv.rowix(fdg.df[!, :opentime], enddt))
+
+function Base.show(io::IO, fdg::FixedDistanceGain)
+    println(io, "FixedDistanceGain fdg base=$(fdg.ohlcv.base) window=$(fdg.window) label thresholds=$(thresholds(fdg.thres)) size(df)=$(size(fdg.df)) $(size(fdg.df, 1) > 0 ? "from $(fdg.df[begin, :opentime]) to $(fdg.df[end, :opentime]) " : "no time range ")")
+    # (verbosity >= 3) && println(io, "Features005 cfgdf=$(f5.cfgdf)")
+    # (verbosity >= 2) && println(io, "Features005 config=$(f5.cfgdf[!, :config])")
+    println(io, "FixedDistanceGain ohlcv=$(fdg.ohlcv)")
+end
+
 
 end  # module
 

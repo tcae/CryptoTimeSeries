@@ -67,7 +67,7 @@ backtest(cache) = cache.backtestperiod >= Dates.Minute(1)
 dummytime() = DateTime("2000-01-01T00:00:00")
 
 
-MINIMUMDAYUSDTVOLUME = 2*1000000
+MINIMUMDAYUSDTVOLUME = 10*10^6  # before: 2*1000000
 TRADECONFIGFILE = "TradeConfig"
 
 function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTime, Nothing}, checkperiod=Day(1), accumulateminutes=5, minimumaccumulatequotevolume=1000f0)::Bool
@@ -135,22 +135,23 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :classifieraccepted] .= false
     tc.cfg[:, :buyenabled] .= false
     tc.cfg[:, :sellenabled] .= false
-    (verbosity >= 3) && println("verbosity=$verbosity describe(tc.cfg, :all)")
 
     # download latest OHLCV and classifier features
-    df = @view tc.cfg[tc.cfg[:, :minquotevol], :]
-    count = size(df, 1)
+    tc.cfg = tc.cfg[tc.cfg[:, :minquotevol] .|| tc.cfg[:, :inportfolio], :]
+    (verbosity >= 3) && println("#minquotevol=$(sum(tc.cfg[:, :minquotevol])) #inportfolio=$(sum(tc.cfg[:, :inportfolio]))")
+    count = size(tc.cfg, 1)
     if updatecache
-        for (ix, row) in enumerate(eachrow(df))
+        for (ix, row) in enumerate(eachrow(tc.cfg))
             (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) including cache update                           ")
-            ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Year(10), datetime)
+            ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Year(20), datetime)
+            Ohlcv.write(ohlcv) # write ohlcv even if data length is too short to calculate features
             Classify.addbase!(tc.cl, ohlcv)
             Classify.writetargetsfeatures(tc.cl)
             CryptoXch.removeallbases(tc.xc)  # avoid slow down due to memory overload
             Classify.removebase!(tc.cl, nothing)  # avoid slow down due to memory overload
         end
     end
-    for (ix, row) in enumerate(eachrow(df))
+    for (ix, row) in enumerate(eachrow(tc.cfg))
         (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(row.basecoin) ($ix of $count)                                                  ")
         CryptoXch.setstartdt(tc.xc, datetime - Minute(Classify.requiredminutes(tc.cl)-1))
         ohlcv = CryptoXch.addbase!(tc.xc, row.basecoin, datetime - Minute(Classify.requiredminutes(tc.cl)-1), tc.xc.enddt)
@@ -159,15 +160,16 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     end
     classifierbases = Classify.bases(tc.cl)
     tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]
-    tc.cfg = @view tc.cfg[tc.cfg[!, :minquotevol] .&& tc.cfg[!, :classifieraccepted], :]
 
     if assetonly
         tc.cfg[:, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
         tc.cfg[:, :sellenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
     else
-        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :continuousminvol]
+        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& (tc.cfg[:, :minquotevol] .&& tc.cfg[!, :continuousminvol])
         tc.cfg[:, :sellenabled] .= tc.cfg[!, :buyenabled] .|| (tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted])
     end
+    tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
+    (verbosity >= 3) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases($(length(classifierbases)))=$(classifierbases) ")
 
     (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
     if !assetonly
@@ -198,11 +200,11 @@ function write(tc::TradeCache, timestamp::Union{Nothing, DateTime}=nothing)
         rm(cfgfilename; force=true, recursive=true)
     end
     (verbosity >=3) && println("saving trade config in cfgfilename=$cfgfilename")
-    JDF.savejdf(cfgfilename, parent(tc.cfg))
+    JDF.savejdf(cfgfilename, tc.cfg)  # parent(tc.cfg))
     if !isnothing(timestamp)
         cfgfilename = _cfgfilename(timestamp)
         (verbosity >=3) && println("saving trade config in cfgfilename=$cfgfilename")
-        JDF.savejdf(cfgfilename, parent(tc.cfg))
+        JDF.savejdf(cfgfilename, tc.cfg)  # parent(tc.cfg))
     end
 end
 
@@ -219,7 +221,6 @@ function readconfig!(tc::TradeCache, datetime)
     if !isnothing(df) && (size(df, 1) > 0 )
         (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config from $cfgfilename")
         tc.cfg = df
-        tc.cfg = @view tc.cfg[tc.cfg[!, :minquotevol] .&& tc.cfg[!, :classifieraccepted], :]
         return tc
     else
         (verbosity >=2) && !isnothing(df) && println("Loading $cfgfilename failed")

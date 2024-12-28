@@ -1,4 +1,3 @@
-# using Plots
 using PlotlyJS, Dates, DataFrames
 using Ohlcv, TestOhlcv, Features
 

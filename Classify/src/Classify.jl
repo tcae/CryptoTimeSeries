@@ -27,7 +27,48 @@ verbosity = 1
 
 
 #region abstractclassifier
+"""
+- `addbase!` adds bases you want to work with, get a list of them with bases or remove them with `removebase!`
+- save any parameters for features, targets, classifiers as a `EnvConfig.AbstractConfiguration` and
+  apply to to a classifier/base combination with `configureclassifier!` (retrieve the applied configuration id with `configurationid4base`)
+- use ohlcv to calculate the required features by implementing `supplement!`, then save them with `writetargetsfeatures`
+- features and targets can only be used after the initial `requiredminutes`
+- train the classfier by implementing `train!`
+    - uses `setpartitions` with a default split into learn, eval and test sets
+- in order to supplement new feature/target data of an incoming data stream implement `supplement!` like for the initial calculation as mentioned above
+- `advice` is implementing the classification verdict
+- the classifier can also influence the asset allocatin as Follows
+    - `buysplitparts` indicates the number of buy orders for an advice
+    - `tradegapminutes` indicates the number of minutes to wait before the next order advice of same type is issued
+    - `sellvolumefactor` is a factor that can introduce a different sell pace than the buy pace
+    - `takeprofitgain` returns a relative gain in case of a take profit order
+- a classifier can be simulation tested over a set of configuration given in the classifier property `optparams` by using
+    - `evaluate!` for a single classifier and the to be evaluated ohlcv data
+    - `evaluateclassifiers` for a set of classifiers and a set of bases on a given time range
+    - implement a binary answer of `configureclassifier!` to skip specific configurations
+    - simulation results are saved by `writesimulation` and can be retrieved by `readsimulation` into a `DataFrame`
+    - from the data frame of all simulations the simulation of a specific classifier can be isolated by `kpioverview`
+"""
 abstract type AbstractClassifier <: AbstractConfiguration end
+
+"""
+classifier usage approach: classifier that serves one or more bases but can be trained with arbitrary bases
+- preparation
+    - specify features
+    - specify targets
+    - specify set partitions
+    - specify NN
+    - add bases including logic what part to use, e.g. #* --> Ohlcv.volumeohlcv as filter for logic below
+        - add only parts with a minimal daily volume #* done
+        - stop when volume is 50% of minimal daily volume #* done
+        - consecutive minimum time range = 10 * gap * #partitions #* done
+
+- apply in arbitrary order with arbitrary base coins
+    - training
+    - evaluation
+    - test
+- evaluate classification result
+"""
 
 "Adds ohlcv base with all ohlcv data, which can span the last requiredminutes or the time range of a back test / training.
 The required feature/target will be supplemented. "
@@ -55,7 +96,8 @@ function writetargetsfeatures(cl::AbstractClassifier)
     if hasproperty(cl, :bc)
         for bc in values(cl.bc)
             if hasproperty(bc, :ohlcv)
-                Ohlcv.write(bc.ohlcv)
+                # Ohlcv.write(bc.ohlcv)  --> don't write ohlcv within writetargetsfeatures because then it is only written when features are valid
+                # ohlcv should also written when data length is too short to calculate features
             end
         end
     end
@@ -69,7 +111,7 @@ end
 
 """
 Returns number of part orders of an investment shall be split on average, e.g. to spread buying over a timerange.
-Required time range gaps between the split orders shall be handled via classifier advice time gaps, i.e. the last advice is stored in BaseClassifier and an advice of same type is only issued after the tarheted time gap.
+Required time range gaps between the split orders shall be handled via classifier advice time gaps, i.e. the last advice is stored in BaseClassifier and an advice of same type is only issued after the targeted time gap.
 """
 buysplitparts(cl::AbstractClassifier, base::AbstractString) = 1
 
@@ -97,24 +139,47 @@ function advice(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix
     return noop
 end
 
+"Returns a Dict of setname => vector of row ranges"
+function setpartitions(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData)
+    len = length(Ohlcv.dataframe(ohlcv).pivot)
+    return setpartitions(1:len, Dict("train"=>2/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/80)
+end
+
 "Trains the classifier based on previosly provided data and stores the adapted classifier."
 function train!(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData)
+    #! requires the definition of train, eval, test sets - that may be a configuration of target/features combi including requiredminutes of its own?
     @error "missing $(typeof(cl)) implementation"
 end
 
 function configurationid4base(cl::AbstractClassifier, base::AbstractString)::Integer
-    if hasproperty(cl, :bc) #TODO check bc is Dict, check property cfgid within bc
+    if hasproperty(cl, :bc) && isa(cl.bc, Dict)
         return base in keys(cl.bc) ? cl.bc[base].cfgid : 0
     end
-    @error "missing $(typeof(cl)) implementation"
+    @error "missing $(typeof(cl)) implementation" cl_has_bc=hasproperty(cl, :bc) bc_as_Dict=isa(cl.bc, Dict) cl_type=typeof(cl)
 end
 
 "Configure classifer according to configuration identifier. Returns true in case of a valid config or false otherwise"
 function configureclassifier!(cl::AbstractClassifier, base::AbstractString, configid::Integer)
-    if !hasproperty(cl, :cfg)
-        return
+    if hasproperty(cl, :cfg)
+        if configid in cl.cfg[!, :cfgid]
+            if hasproperty(cl, :bc) && isa(cl.bc, Dict)
+                if (base in keys(cl.bc)) && hasproperty(cl.bc[base], :cfgid)
+                    cl.bc[base].cfgid = configid
+                    return true
+                else
+                    (verbosity >= 3) && println("false because base in keys(cl.bc) = $(base in keys(cl.bc)) or hasproperty(cl.bc[base], :cfgid)=$(hasproperty(cl.bc[base], :cfgid)) in $(typeof(cl))")
+                    return false
+                end
+            else
+                (verbosity >= 3) && println("false because hasproperty(cl, :bc) = $(hasproperty(cl, :bc)) or isa(cl.bc, Dict)=$(isa(cl.bc, Dict)) in $(typeof(cl))")
+                return false
+            end
+        else
+            (verbosity >= 3) && println("false because configid in cl.cfg[!, :cfgid] = $(configid in cl.cfg[!, :cfgid]) in $(typeof(cl))")
+            return false
+        end
     end
-    @error "missing $(typeof(cl)) implementation"
+    @error "missing $(typeof(cl)) implementation and found no cfg property in $(typeof(cl))"
     return false
 end
 
@@ -345,7 +410,19 @@ end
 
 
 #region DataPrep
+mutable struct SetPartitions
+    samplesets::Dict
+    gapsize
+    relativesubrangesize
+end
+
 # folds(data, nfolds) = partition(1:nrows(data), (1/nfolds for i in 1:(nfolds-1))...)
+
+function setpartitions(rowrange, sp::SetPartitions)
+    setpartitions(rowrange, sp.samplesets, sp.gapsize, sp.relativesubrangesize)
+    @assert isapprox(sum(values(sp.samplesets)), 1, atol=0.001) "sum($(sp.samplesets))=$(sum(values(sp.samplesets))) != 1"
+    @assert sp.relativesubrangesize <= minimum(values(sp.samplesets))
+end
 
 """
     - Returns a Dict of setname => vector of row ranges
@@ -353,20 +430,22 @@ end
         - `rowrange` is the range of rows that are split in subranges, e.g. 2000:5000
         - `samplesets` is a Dict of setname => relative setsize with sum of all setsizes == 1
         - `gapsize` is the number of rows between partitions of different sets that are not included in any partition
-        - `relativesubrangesize` is the subrange size relative to `rowrange` of a consecutive range assigned to a setinterval
-        - gaps will be removed from a subrange to avoid crosstalk bias between ranges
-        - relativesubrangesize * length(rowrange) > 2 * gapsize
-        - any relative setsize > 2 * relativesubrangesize
-        - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
+        - `relativesubrangesize` is the minimum subrange size relative to `rowrange` of a consecutive range assigned to a setinterval
+    - gaps will be removed from a subrange to avoid crosstalk bias between ranges
+    - relativesubrangesize * length(rowrange) > 2 * gapsize
+    - any relative setsize > 2 * relativesubrangesize
+    - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
 """
 function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize)
+    @assert isapprox(sum(values(samplesets)), 1, atol=0.001) "sum($(samplesets))=$(sum(values(samplesets))) != 1"
+    @assert relativesubrangesize <= minimum(values(samplesets))
     rowstart = rowrange[1]
     rowend = rowrange[end]
     rows = rowend - rowstart + 1
     gapsize = relativesubrangesize * rows > 2 * gapsize ? gapsize : floor(Int, relativesubrangesize * rows / 3)
-    println("$(EnvConfig.now()) setpartitions rowrange=$rowrange, samplesets=$samplesets gapsize=$gapsize relativesubrangesize=$relativesubrangesize")
-    # @assert relativesubrangesize * rows > 2 * gapsize
-    @assert max(collect(values(samplesets))...) > 2 * relativesubrangesize "max(collect(values(samplesets))...)=$(max(collect(values(samplesets))...)) <= 2 * relativesubrangesize = $(2 * relativesubrangesize)"
+    (verbosity >= 3) && println("$(EnvConfig.now()) setpartitions rowrange=$rowrange, samplesets=$samplesets gapsize=$gapsize relativesubrangesize=$relativesubrangesize")
+    @assert relativesubrangesize * rows > 2 * gapsize
+    @assert max(collect(values(samplesets))...) > 2 * relativesubrangesize "max(collect(values(samplesets)=$(collect(values(samplesets))...))...)=$(max(collect(values(samplesets))...)) <= 2 * relativesubrangesize = $(2 * relativesubrangesize)"
     minrelsetsize = min(collect(values(samplesets))...)
     @assert minrelsetsize > 0.0
     sn = [setname for setname in keys(samplesets)]
@@ -374,20 +453,29 @@ function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize
     ix = rowstart
     aix = 1
     arr =[[] for _ in sn]
+    scale = [relativesubrangesize * samplesets[sn[aix]] / minrelsetsize for aix in 1:snl]
+    subsetcount = floor(1.0 / mean(scale))
+    setrows = rows - subsetcount * gapsize
+    actualgapsize = 0
     while ix <= rowend
-        subrangesize = round(Int, rows * relativesubrangesize * samplesets[sn[aix]] / minrelsetsize)
-        push!(arr[aix], ((ix == rowstart ? ix : ix + gapsize), min(rowend, ix+subrangesize-1)))
-        ix = ix + subrangesize
+        subrangesize = max(1, round(Int, setrows * scale[aix]))
+        nextrange = (ix, min(rowend, ix+subrangesize-1))
+        (verbosity >= 3) && println("\rsubrangesize=$subrangesize ix=$ix, snl=$snl aix=$aix rowend=$rowend nextrange=$nextrange actual range length=$(nextrange[2] - nextrange[1] + 1) actual gap size=$actualgapsize")
+        push!(arr[aix], nextrange)
+        ix = ix + subrangesize + gapsize
+        actualgapsize = ix - nextrange[2] - 1
         aix = aix % snl + 1
     end
     res = Dict(sn[aix] => [t[1]:t[2] for t in arr[aix]] for aix in eachindex(arr))
     return res
 end
 
-function test_setpartitions()
-    # res = setpartitions(1:26, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/3), 0, 1/9)
+function _test_setpartitions(samples=129601, samplesets=Dict("train"=>2/3, "test"=>1/6, "eval"=>1/6), gapsize=24*60, relativesubrangesize=1/13)
+    # function _test_setpartitions(samples=49, samplesets=Dict("train"=>2/3, "test"=>1/6, "eval"=>1/6), gapsize=1, relativesubrangesize=3/50)
+        # res = setpartitions(1:26, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/3), 0, 1/9)
     # res = setpartitions(1:26, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/3), 1, 1/9)
-    res = setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 3/50)
+    println("samples=$samples, samplesets=$samplesets, gapsize=$gapsize, relativesubrangesize=$relativesubrangesize")
+    res = setpartitions(1:samples, samplesets, gapsize, relativesubrangesize)
     # 3-element Vector{Vector{Any}}:
     #     [UnitRange{Int64}[1:3, 10:12, 19:21]]
     #     [UnitRange{Int64}[4:6, 13:15, 22:24]]
@@ -402,11 +490,11 @@ function test_setpartitions()
             end
         # end
     end
-    println(res)
+    println("\nres=$res")
 end
 
-"prediction list is a csv file with the one line summary of an training/evaluation to compare the different configurations quickly"
-function predictionlist()
+"summary prediction list is a csv file with the one line summary of an training/evaluation to compare the different configurations quickly"
+function summarypredictionlist()
     df = nothing
     sf = EnvConfig.logsubfolder()
     EnvConfig.setlogpath(nothing)
@@ -420,8 +508,9 @@ function predictionlist()
     return df
 end
 
-function registerpredictions(filename, evalperf=missing, testperf=missing)
-    df = predictionlist()
+"adds a summary prediction line with overall performance of evaluation / test sets and the filename of details to the prediction list"
+function registersummaryprediction(filename, evalperf=missing, testperf=missing)
+    df = summarypredictionlist()
     if isnothing(df)
         df = DataFrame(abbrev=String[], evalperf=[], testperf=[], comment=String[], subfolder=String[], filename=String[])
     else
@@ -446,6 +535,7 @@ function registerpredictions(filename, evalperf=missing, testperf=missing)
     EnvConfig.setlogpath(sf)
 end
 
+"loads and returns the predictions for every ohlcv time of a classifier froma jdf file into a DataFrame"
 function loadpredictions(filename)
     filename = predictionsfilename(filename)
     df = DataFrame()
@@ -482,6 +572,7 @@ function loadpredictions(filename)
     return df
 end
 
+"saves the predictions for every ohlcv time of a classifier given in df"
 function savepredictions(df, fileprefix)
     filename = predictionsfilename(fileprefix)
     println("saving $filename predictions dataframe of size=$(size(df))")
@@ -493,7 +584,8 @@ function savepredictions(df, fileprefix)
     return fileprefix
 end
 
-function predictionsdataframe(nn::NN, setranges, targets, predictions, f3::Features.Features003)
+"creates a DataFrame of predictions for every ohlcv time of a classifier"
+function predictionsdataframe(nn::NN, setranges, targets, predictions, features)
     df = DataFrame(permutedims(predictions, (2, 1)), nn.labels)
     # for (ix, label) in enumerate(nn.labels)
     #     df[label, :] = predictions[ix, :]
@@ -509,15 +601,17 @@ function predictionsdataframe(nn::NN, setranges, targets, predictions, f3::Featu
     sc = categorical(setlabels; compress=true)
     df[:, "set"] = sc
     df[:, "targets"] = categorical(targets; levels=nn.labels, compress=true)
-    df[:, "opentime"] = Ohlcv.dataframe(f3.f2.ohlcv).opentime[f3.firstix:end]
-    df[:, "pivot"] = Ohlcv.dataframe(f3.f2.ohlcv).pivot[f3.firstix:end]
+    df[:, "opentime"] = Features.ohlcvdfview(features)[!, :opentime]
+    df[:, "pivot"] = Features.ohlcvdfview(features)[!, :pivot]
     println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
     println(describe(df, :all))
-    fileprefix = uppercase(Ohlcv.basecoin(f3.f2.ohlcv) * Ohlcv.quotecoin(f3.f2.ohlcv)) * "_" * nn.fileprefix
+    println("diagnose: features=$features")
+    fileprefix = uppercase(Ohlcv.basecoin(Features.ohlcv(features)) * Ohlcv.quotecoin(Features.ohlcv(features))) * "_" * nn.fileprefix
     savepredictions(df, fileprefix)
     return fileprefix
 end
 
+"creates a feature matrix from the dataframe results of a base classifier"
 function predictionmatrix(df, labels)
     pred = Array{Float32, 2}(undef, length(labels), size(df, 1))
     pnames = names(df)
@@ -578,29 +672,40 @@ function checklabeldistribution(targets::CategoricalArray)
 
 end
 
-"returns features as dataframe and targets as CategorialArray (which is why this function resides in Classify and not in Targets)."
-function featurestargets(regrwindow, f3::Features.Features003, pe::Dict)
-    @assert regrwindow in keys(Features.featureslookback01) "regrwindow=$regrwindow not in keys(Features.featureslookback01)=$(keys(Features.featureslookback01))"
-    @assert regrwindow in keys(pe)
-    features, _ = Features.featureslookback01[regrwindow](f3)
-    println(describe(features, :all))
-    featuresdescription = "featureslookback01[$regrwindow](f3)"
-    labels, relativedist, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe[regrwindow])
-    targets = labels[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
-    relativedist = relativedist[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
-    println(describe(DataFrame(reshape(targets, (length(targets), 1)), ["targets"]), :all))
-    targetsdescription = "ohlcvlabels(ohlcv.pivot, PriceExtreme[$regrwindow])"
+"returns features as Array and targets as label vector (for classifier) and as gain vector (for regressor)."
+function featurestargets(base::AbstractString, features::Features.AbstractFeatures, targets::Targets.AbstractTargets)
+    features = Features.features(features, base)
+    odf = Features.ohlcvdfview(features)
+    println(Features.describe(features))
+    featuresdescription = Features.describe(features)
+    labels = Targets.labels(targets, odf[begin, :opentime], odf[end, :opentime])
+    @assert size(odf, 1) == length(labels) "base=$base: size(odf, 1)=$(size(odf, 1)) == length(labels)=$(length(labels))"
+    relativegain = Targets.relativegain(targets, odf[begin, :opentime], odf[end, :opentime])
+    @assert size(odf, 1) == length(relativegain) "base=$base: size(odf, 1)=$(size(odf, 1)) == length(relativegain)=$(length(relativegain))"
+    println(describe(DataFrame(reshape(labels, (length(labels), 1)), ["labels"]), :all))
+    targetsdescription = Targets.describe(targets)
     features = Array(features)  # change from df to array
-    @assert size(targets, 1) == size(features, 1) == size(relativedist, 1)  "size(targets, 1)=$(size(targets, 1)) == size(features, 1)=$(size(features, 1)) == size(relativedist, 1)=$(size(relativedist, 1))"
     features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
-    return features, targets, featuresdescription, targetsdescription, relativedist
+    return features, labels, featuresdescription, targetsdescription, relativegain
 end
 
-function combifeaturestargets(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict)
-    @assert "combi" in keys(pe) "`combi` not in keys(pe)=$(keys(pe))"
-    labels, relativedist, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(f3.f2.ohlcv).pivot, pe["combi"])
-    targets = labels[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
-    relativedist = relativedist[Features.ohlcvix(f3, 1):end]  # cut beginning from ohlcv observations to feature observations
+"Under construction "
+function combifeaturestargets(nnvec::Vector{NN}, features::Features.AbstractFeatures, targets::Targets.AbstractTargets)
+    @assert false "under construction - does not work"
+    #TODO targets to be provided - open how to generate
+    features = Features.features(features)
+    odf = Features.ohlcvdfview(features)
+    println(Features.describe(features))
+    featuresdescription = Features.describe(features)
+    labels = Targets.labels(targets, odf[begin, :opentime], odf[end, :opentime])
+    @assert size(odf, 1) == length(labels) "size(odf, 1)=$(size(odf, 1)) == length(labels)=$(length(labels))"
+    relativegain = Targets.relativegain(targets, odf[begin, :opentime], odf[end, :opentime])
+    @assert size(odf, 1) == length(relativegain) "size(odf, 1)=$(size(odf, 1)) == length(relativegain)=$(length(relativegain))"
+
+    #TODO what follows is the old stuff
+    labels, relativedist, _, _ = Targets.ohlcvlabels(Ohlcv.dataframe(features.f2.ohlcv).pivot, nothing) #pe["combi"])
+    targets = labels[Features.ohlcvix(features, 1):end]  # cut beginning from ohlcv observations to feature observations
+    relativedist = relativedist[Features.ohlcvix(features, 1):end]  # cut beginning from ohlcv observations to feature observations
     targetsdescription = "ohlcvlabels(ohlcv.pivot, PriceExtreme[combi])"
     features = nothing
     for nn in nnvec
@@ -671,7 +776,7 @@ function model001(featurecount, labels, mnemonic)::NN
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = (@doc model001);
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
     mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
     fileprefix = mnemonic * "_" * EnvConfig.runid()
     nn = NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix)
@@ -683,7 +788,7 @@ creates and adapts a neural network using `features` with ground truth label pro
 relativedist is a vector
 """
 function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
-    onehottargets = Flux.onehotbatch(targets, Targets.all_labels)  # onehot class encoding of an observation as one column
+    onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
     loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
 
     # Training loop, using the whole data set 1000 times:
@@ -691,7 +796,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     testmode!(nn, false)
     minloss = maxloss = missing
     breakmsg = ""
-    @showprogress for epoch in 1:1000
+    @showprogress for epoch in 1:1000 #1:1000
     # for epoch in 1:200  # 1:1000
         losses = Float32[]
         for (x, y) in loader
@@ -721,7 +826,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
 end
 
 " Returns a predictions Float Array of size(classes, observations)"
-predict(nn::NN, features) = nn.model(features)  # size(classes, observations)
+predict(nn::NN, features) = Flux.softmax(nn.model(features))  # size(classes, observations)
 
 function predictiondistribution(predictions, classifiertitle)
     maxindex = mapslices(argmax, predictions, dims=1)
@@ -732,23 +837,24 @@ function predictiondistribution(predictions, classifiertitle)
     println("$(EnvConfig.now()) prediction distribution with $classifiertitle classifier: $dist")
 end
 
-function adaptbase(regrwindow, f3::Features.Features003, pe::Dict, setranges::Dict)
+function adaptbase(regrwindow, features::Features.AbstractFeatures, pe::Dict, setranges::Dict)
     println("$(EnvConfig.now()) preparing features and targets for regressionwindow $regrwindow")
-    features, targets, featuresdescription, targetsdescription, relativedist = featurestargets(regrwindow, f3, pe)
+    features, targets, featuresdescription, targetsdescription, relativedist = featurestargets(regrwindow, features, pe)
     # trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["base"])
     trainfeatures = subsetdim2(features, setranges["base"])
     traintargets = subsetdim2(targets, setranges["base"])
     # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
+    # (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
+    (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
-    nn = model001(size(trainfeatures, 1), Targets.all_labels, Features.periodlabels(regrwindow))
+    nn = model001(size(trainfeatures, 1), Targets.targetlabels, Features.periodlabels(regrwindow))
     nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
     pred = predict(nn, features)
-    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, f3))
+    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, features))
     # predictiondistribution(pred, nn.mnemonic)
 
     println("saving adapted classifier $(nn.fileprefix)")
@@ -762,25 +868,28 @@ function adaptbase(regrwindow, f3::Features.Features003, pe::Dict, setranges::Di
     return nn
 end
 
-function adaptcombi(nnvec::Vector{NN}, f3::Features.Features003, pe::Dict, setranges::Dict)
+function adaptcombi(nnvec::Vector{NN}, features::Features.AbstractFeatures, pe::Dict, setranges::Dict)
+    @error "under reconsideration - does not work"
+    return
+
     println("$(EnvConfig.now()) preparing features and targets for combi classifier")
-    features, targets, featuresdescription, targetsdescription, relativedist = combifeaturestargets(nnvec, f3, pe)
+    features, targets, featuresdescription, targetsdescription, relativedist = combifeaturestargets(nnvec, features, pe)
     # trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["combi"])
     # println("size(features)=$(size(features)), size(targets)=$(size(targets))")
     trainfeatures = subsetdim2(features, setranges["combi"])
     traintargets = subsetdim2(targets, setranges["combi"])
     # println("before oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
-    (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
+    (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
     println("$(EnvConfig.now()) adapting machine for combi classifier")
-    nn = model001(size(trainfeatures, 1), Targets.all_labels, "combi")
+    nn = model001(size(trainfeatures, 1), Targets.targetlabels, "combi")
     nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
     nn.predecessors = [nn.fileprefix for nn in nnvec]
     println("$(EnvConfig.now()) predicting with combi classifier")
     pred = predict(nn, features)
-    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, f3))
+    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, features))
     # predictiondistribution(pred, nn.mnemonic)
     @assert size(pred, 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred, 2)) == size(features, 2)=$(size(features, 2))"
     @assert size(targets, 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
@@ -852,7 +961,7 @@ function savenn(nn::NN)
 end
 
 function loadnn(filename)
-    nn = model001(1, Targets.all_labels, "dummy")  # dummy data struct
+    nn = model001(1, Targets.targetlabels, "dummy")  # dummy data struct
     BSON.@load EnvConfig.logpath(nnfilename(filename)) nn
     # loadlosses!(nn)
     return nn
@@ -876,11 +985,12 @@ function trades(predictions::AbstractDataFrame, thresholds::Vector)
     if size(predictions, 1) == 0
         return df
     end
-    scores, maxindex = maxpredictions(predictions)
+    predonly = predictions[!, predictioncolumns(predictions)]
+    scores, maxindex = maxpredictions(Matrix(predonly), 2)
     labels = levels(predictions.targets)
-    ignoreix, longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy"])
-    buytrade = (tradeix=closeix, predix=0, set=predictions.set[begin])  # tradesignal, predictions index
-    holdtrade = (tradeix=closeix, predix=0, set=predictions.set[begin])  # tradesignal, predictions index
+    ignoreix, longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.targetlabels)
+    buytrade = (tradeix=closeix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
+    holdtrade = (tradeix=closeix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
 
     function closetrade!(tradetuple, closetrade, ix)
         gain = (predictions.pivot[ix] - predictions.pivot[tradetuple.predix]) / predictions.pivot[tradetuple.predix] * 100
@@ -948,7 +1058,8 @@ bin2score(binix, thresholdbins) = round((binix-1)*1.0/thresholdbins; digits = 2)
 generates summary statistics from predictions
 """
 function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=10)
-    scores, maxindex = maxpredictions(predictions)
+    predonly = predictions[!, predictioncolumns(predictions)]
+    scores, maxindex = maxpredictions(Matrix(predonly), 2)
     labels = levels(predictions.targets)
     confcatsyms = [:tp, :tn, :fp, :fn]
     confcat = Dict(zip(confcatsyms, 1:length(confcatsyms)))
@@ -997,14 +1108,22 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
     tpr = round.(tpvec ./ (tpvec + fnvec); digits=2)
     fpr = round.(fpvec ./ (fpvec + tnvec); digits=2)
     xcdf = DataFrame("set" => sc, "pred_label" => lc, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
-    # println(xcdf)
+    println(xcdf)
     return xcdf
     #TODO next step: take only first of an equal trading signal sequence according to threshold -> how often is a sequence missed?
  end
 
- function confusionmatrix(predictions::AbstractDataFrame)
-    scores, maxindex = maxpredictions(predictions)
-    labels = levels(predictions.targets)
+function predictioncolumns(predictionsdf::AbstractDataFrame)
+    nms = names(predictionsdf)
+    [nmix for nmix in eachindex(nms) if nms[nmix] in Targets.targetlabels]
+end
+
+function confusionmatrix(predictions::AbstractDataFrame)
+    predonly = predictions[!, predictioncolumns(predictions)]
+    # return confusionmatrix(Matrix(predonly), predictions.targets, names(predonly))
+
+    scores, maxindex = maxpredictions(Matrix(predonly), 2)
+    labels = names(predonly)
     confcatsyms = [:tp, :tn, :fp, :fn]
     confcat = Dict(zip(confcatsyms, 1:length(confcatsyms)))
     # preallocate collection matrices with columns TP, TN, FP, FN and rows as bins with lower separation value x/thresholdbins per label per set
@@ -1031,25 +1150,31 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
     for (ix, l) in enumerate(labels)
         cdf[:, ("truth_"*l*"_%")] = round.(cdf[:, ("truth_"*l)] ./ pred_sum * 100; digits=2)
     end
-    # println(cdf)
+    println(cdf)
     return cdf
- end
+end
 
 function predictionsfilename(fileprefix::String)
     prefix = splitext(fileprefix)[1]
     return prefix * ".jdf"
 end
 
-labelvec(labelindexvec, labels=Targets.all_labels) = [labels[i] for i in labelindexvec]
+labelvec(labelindexvec, labels=Targets.targetlabels) = [labels[i] for i in labelindexvec]
 
-labelindexvec(labelvec, labels=Targets.all_labels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
+labelindexvec(labelvec, labels=Targets.targetlabels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
 
-"returns a (scores, labelindices) tuple of best predictions. Without labels the index is the index within levels(df.targets)."
-function maxpredictions end
-function maxpredictions(predictions::AbstractMatrix, labels=Targets.all_labels)
-    @assert length(labels) == size(predictions, 1)
-    maxindex = mapslices(argmax, predictions, dims=1)
-    scores = [predictions[maxindex[i], i] for i in eachindex(maxindex)]
+"returns a (scores, labelindices) tuple of best predictions. Without labels the index is the index within levels(df.targets).
+dim=1 indicates predictions of the same column are compared while dim=2 indicates that predictions of the same row are compared."
+function maxpredictions(predictions::AbstractMatrix, dim=1)
+    if dim == 1
+        maxindex = mapslices(argmax, predictions, dims=1)
+        scores = [predictions[maxindex[i], i] for i in eachindex(maxindex)]
+    elseif dim == 2
+        maxindex = mapslices(argmax, predictions, dims=2)
+        scores = [predictions[i, maxindex[i]] for i in eachindex(maxindex)]
+    else
+        @error "unexpected dim=$dim for size(predictions)=$(size(predictions))"
+    end
     return scores, maxindex
 end
 
@@ -1061,7 +1186,7 @@ end
 #     maxindex = zeros(UInt32, size(predictions, 1))
 #     for (lix, label) in enumerate(names(predictions))
 #         if eltype(predictions[!, label]) <: AbstractFloat
-#             if !(label in Targets.all_labels)
+#             if !(label in Targets.targetlabels)
 #                 @warn "unexpected predictions class: $label"
 #             end
 #             vec = predictions[!, label]
@@ -1076,7 +1201,10 @@ end
 #     return scores, maxindex
 # end
 
-function maxpredictions(predictions::AbstractDataFrame, labels=Targets.all_labels)
+function maxpredictions(predictions::AbstractDataFrame)
+    return maxpredictions(Matrix(predictions), 2)
+
+
     if size(predictions, 1) == 0
         return [],[]
     end
@@ -1110,7 +1238,7 @@ end
 "returns a (scores, booltargets) tuple of binary predictions of class `label`, i.e. booltargets[ix] == true if bestscore is assigned to focuslabel"
 function binarypredictions end
 
-function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.all_labels)
+function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.targetlabels)
     flix = findfirst(x -> x == focuslabel, labels)
     @assert !isnothing(flix) && (firstindex(labels) <= flix <= lastindex(labels)) "$focuslabel==$(isnothing(flix) ? "nothing" : flix) not found in $labels[$(firstindex(labels)):$(lastindex(labels))]"
     @assert length(labels) == size(predictions, 1) "length(labels)=$(length(labels)) == size(predictions, 1)=$(size(predictions, 1))"
@@ -1123,7 +1251,7 @@ function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labe
     return (length(ixvec) > 0 ? predictions[flix, :] : []), ixvec
 end
 
-function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.all_labels)
+function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.targetlabels)
     @assert focuslabel in labels
     if size(predictions, 1) == 0
         return [],[]
@@ -1147,7 +1275,7 @@ function smauc(scores, predlabels)
     return auc(ŷ, y)  # StatisticalMeasures package
 end
 
-function aucscores(pred, labels=Targets.all_labels)
+function aucscores(pred, labels=Targets.targetlabels)
     aucdict = Dict()
     if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
@@ -1163,7 +1291,7 @@ function aucscores(pred, labels=Targets.all_labels)
     return aucdict
 end
 
-# aucscores(pred, labels=Targets.all_labels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+# aucscores(pred, labels=Targets.targetlabels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
     # auc_scores = []
     # for class_label in unique(targets)
     #     class_scores, class_events = binarypredictions(pred, targets, class_label)
@@ -1174,7 +1302,7 @@ end
 # end
 
 "Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
-function roccurves(pred, labels=Targets.all_labels)
+function roccurves(pred, labels=Targets.targetlabels)
     rocdict = Dict()
     if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
@@ -1211,45 +1339,48 @@ end
 #     display(plt)
 # end
 
-function confusionmatrix(pred, targets, labels=Targets.all_labels)
-    _, maxindex = maxpredictions(pred, labels)
-    targets = [String(targets[ix]) for ix in eachindex(targets)]
-    predlabels = labelvec(maxindex, labels)
+function confusionmatrix(pred, targets, labels=Targets.targetlabels)
+    predonly = pred[!, predictioncolumns(pred)]
+
+    dim = length(targets) == size(pred, 1) ? 2 : 1
+    _, maxindex = maxpredictions(Matrix(predonly), dim)
+    targets = [String(targets[ix]) for ix in eachindex(targets)] # convert CategoricalVector to String Vector
+    predlabels = labelvec(maxindex, levels(targets))
     StatisticalMeasures.ConfusionMatrices.confmat(predlabels, targets)
 end
 
+function _sumperf(tpdf, setname)
+    selectedtrades = filter(row -> (row.set == setname) && ((row.trade == "longbuy") || (row.trade == "shortbuy")), tpdf, view=true)
+    if length(selectedtrades.gainpct) > 0
+        tcount = sum(selectedtrades.cnt)
+        tsum = sum(selectedtrades.gainpct)
+        sumperf = round(tsum/tcount, digits=3)
+    else
+        sumperf = 0.0
+    end
+    return sumperf
+end
 
 function evaluatepredictions(predictions::AbstractDataFrame, fileprefix)
+    println("evaluatepredictions: size=$(size(predictions)) \n$(describe(predictions))")
     assetpair, nntitle = split(fileprefix, "_")[1:2]
     title = assetpair * "_" * nntitle
-    if EnvConfig.configmode == EnvConfig.test
+    # if EnvConfig.configmode == EnvConfig.test
         cdf = confusionmatrix(predictions)
         xcdf = extendedconfusionmatrix(predictions)
-    end
+    # end
     labels = levels(predictions.targets)
     thresholds = [0.01f0 for l in labels]
     tdf = trades(predictions, thresholds)
+    println("evaluatepredictions: size(tdf)=$(size(tdf)) \n$(describe(tdf))")
     tpdf = tradeperformance(tdf, labels)
+    println("evaluatepredictions: size(tpdf)=$(size(tpdf)) \n$(describe(tpdf))")
 
-    selectedtrades = filter(row -> (row.set == "eval") && ((row.trade == "longbuy") || (row.trade == "shortbuy")), tpdf, view=true)
-    if length(selectedtrades.gainpct) > 0
-        tcount = sum(selectedtrades.cnt)
-        tsum = sum(selectedtrades.gainpct)
-        evalperf = round(tsum/tcount, digits=3)
-    else
-        evalperf = 0.0
-    end
-    selectedtrades = filter(row -> (row.set == "test") && ((row.trade == "longbuy") || (row.trade == "shortbuy")), tpdf, view=true)
-    if length(selectedtrades.gainpct) > 0
-        tcount = sum(selectedtrades.cnt)
-        tsum = sum(selectedtrades.gainpct)
-        testperf = round(tsum/tcount, digits=3)
-    else
-        testperf = 0.0
-    end
-    if EnvConfig.configmode == EnvConfig.production
-        registerpredictions(fileprefix, evalperf, testperf)
-    end
+    evalperf = _sumperf(tpdf, "eval")
+    testperf = _sumperf(tpdf, "test")
+    # if EnvConfig.configmode == EnvConfig.production
+        registersummaryprediction(fileprefix, evalperf, testperf)
+    # end
 
     for s in levels(predictions.set)
         if s == "unused"
@@ -1257,19 +1388,19 @@ function evaluatepredictions(predictions::AbstractDataFrame, fileprefix)
         end
         sdf = filter(row -> row.set == s, predictions, view=true)
         if size(sdf, 1) > 0
-            if EnvConfig.configmode == EnvConfig.test
+            # if EnvConfig.configmode == EnvConfig.test
                 # println(title)
                 # aucscores = Classify.aucscores(sdf)
                 # println("auc[$s, $title]=$(aucscores)")
                 # rc = Classify.roccurves(sdf)
                 # Classify.plotroccurves(rc, "$s / $title")
                 println(title)
-                show(stdout, MIME"text/plain"(), Classify.confusionmatrix(sdf, sdf.targets))  # prints the table
+                show(stdout, MIME"text/plain"(), confusionmatrix(sdf, sdf.targets))  # prints the table
                 println(title)
                 println(filter(row -> row.set == s, cdf, view=true))
                 println(title)
                 println(filter(row -> row.set == s, xcdf, view=true))
-            end
+            # end
             println(title)
             println(filter(row -> row.set == s, tpdf, view=true))
         else
@@ -1323,24 +1454,24 @@ end
 function evaluate(ohlcv::Ohlcv.OhlcvData, labelthresholds; select=nothing)
     nnvec = NN[]
     # push!(nnvec, loadnn("NN1d_23-12-18_15-58-18_gitSHA-b02abf01b3a714054ea6dd92d5b683648878b079"))
-    f3, pe = Targets.loaddata(ohlcv, labelthresholds)
-    # println(f3)
-    len = length(Ohlcv.dataframe(f3.f2.ohlcv).pivot) - Features.ohlcvix(f3, 1) + 1
-    # println("$(EnvConfig.now()) len=$len  length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)=$(length(Ohlcv.dataframe(f3.f2.ohlcv).pivot)) Features.ohlcvix(f3, 1)=$(Features.ohlcvix(f3, 1))")
+    features, pe = Targets.loaddata(ohlcv, labelthresholds)
+    # println(features)
+    len = length(Ohlcv.dataframe(features.f2.ohlcv).pivot) - Features.ohlcvix(features, 1) + 1
+    # println("$(EnvConfig.now()) len=$len  length(Ohlcv.dataframe(features.f2.ohlcv).pivot)=$(length(Ohlcv.dataframe(features.f2.ohlcv).pivot)) Features.ohlcvix(features, 1)=$(Features.ohlcvix(features, 1))")
     setranges = setpartitions(1:len, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/80)
     for (s,v) in setranges
         println("$s: length=$(length(v))")
     end
-    # Threads.@threads for regrwindow in f3.regrwindow
-    for regrwindow in f3.regrwindow
+    # Threads.@threads for regrwindow in features.regrwindow
+    for regrwindow in features.regrwindow
         if isnothing(select) || (regrwindow in select)
-            push!(nnvec, adaptbase(regrwindow, f3, pe, setranges))
+            push!(nnvec, adaptbase(regrwindow, features, pe, setranges))
         else
             println("skipping $regrwindow classifier due to not selected")
         end
     end
     if isnothing(select) || ("combi" in select)
-        nncombi = adaptcombi(nnvec, f3, pe, setranges)
+        nncombi = adaptcombi(nnvec, features, pe, setranges)
         for nn in nncombi.predecessors
             evaluateclassifier(nn)
         end
@@ -1382,6 +1513,134 @@ end
 
 #endregion Evaluation
 
+#region NNClassifier001
+mutable struct NNClassifier001Base
+    NN
+end
+
+const NOLOSSCOUNT = Int16[4]
+
+OPTPARAMSNN001 = Dict(
+    "nolosscount" => NOLOSSCOUNT   # number of periods without loss reduction before adaption stop
+)
+
+"""
+NNClassifier001 idea
+- use NN to predict a minimum gain within a fixed time range, e.g. 0.5% within 1h
+- adapt threshold longbuy and longhold to achieve hysteresis and avoid high frequent buy/close transactions
+- targets and features are configured outside and are provided at initialization
+- a set of coins and set ranges are provided to adapt evaluate and test
+
+phased approach
+- adapt a classifier only on it own data
+- adapt classifier to all data and as last step optimize for own data
+- first adapt only for long, later for long and short
+"""
+mutable struct NNClassifier001 <: AbstractClassifier
+    bc::Dict{AbstractString, NNClassifier001Base}
+    cfg::Union{Nothing, DataFrame}  # configurations
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
+    features::Features.AbstractFeatures
+    targets::Targets.AbstractTargets
+    sp::SetPartitions
+    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
+    function NNClassifier001(xc::CryptoXch.XchCache, features::Features.AbstractFeatures, targets::Targets.AbstractTargets, sp::SetPartitions, optparams=OPTPARAMSNN001)
+        cl = new(Dict(), DataFrame(), optparams, nothing)
+        readconfigurations!(cl, optparams)
+        @assert !isnothing(cl.cfg)
+        return cl
+    end
+end
+
+function addbase!(cl::NNClassifier001, ohlcv::Ohlcv.OhlcvData)
+    # calc features and targets - get ohlcv through their ohlcv references
+    bc = BaseClassifier005(ohlcv)
+    if isnothing(bc)
+        @error "$(typeof(cl)): Failed to add $ohlcv"
+    else
+        cl.bc[ohlcv.base] = bc
+    end
+end
+
+function supplement!(cl::NNClassifier001)
+    for bcl in values(cl.bc)
+        supplement!(bcl)
+    end
+end
+
+function writetargetsfeatures(cl::NNClassifier001)
+    for bcl in values(cl.bc)
+        writetargetsfeatures(bcl)
+    end
+end
+
+# requiredminutes(cl::NNClassifier001)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
+requiredminutes(cl::NNClassifier001)::Integer =  maximum(Features.regressionwindows004)
+
+function buysplitparts(cl::NNClassifier001, base::AbstractString)
+    return configuration(cl, configurationid4base(cl, base)).buysplitparts
+end
+
+function tradegapminutes(cl::NNClassifier001, base::AbstractString)
+    return configuration(cl, configurationid4base(cl, base)).tradegapminutes
+end
+
+function sellvolumefactor(cl::NNClassifier001, base::AbstractString)
+    return configuration(cl, configurationid4base(cl, base)).sellvolumefactor
+end
+
+function takeprofitgain(cl::NNClassifier001, base::AbstractString)
+    return configuration(cl, configurationid4base(cl, base)).takeprofitgain
+end
+
+function advice(cl::NNClassifier001, base::AbstractString, dt::DateTime)::InvestProposal
+    bc = ohlcv = nothing
+    if base in keys(cl.bc)
+        bc = cl.bc[base]
+        ohlcv = bc.ohlcv
+    else
+        (verbosity >= 2) && @warn "$base not found in NNClassifier001"
+        return noop
+    end
+    oix = Ohlcv.rowix(ohlcv, dt)
+    return advice(cl, ohlcv, oix)
+end
+
+function advice(cl::NNClassifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+    if ohlcvix < requiredminutes(cl)
+        return noop
+    end
+    base = ohlcv.base
+    bc = cl.bc[base]
+    cfg = configuration(cl, bc.cfgid)
+    piv = Ohlcv.pivot!(ohlcv)
+    fix = Features.featureix(bc.f4, ohlcvix)
+    regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
+    buyprice = regry * (1 - cfg.buythreshold)
+    trenddaygain = cfg.trendwindow == 0 ? Inf32 : Features.relativedaygain(bc.f4, cfg.trendwindow, fix)
+    if (cfg.trendwindow > 0) && (cfg.trendsellgrad >= trenddaygain)
+        return strongsell  # stop loss
+    end
+    if (cfg.trendbuygrad <= trenddaygain) && (piv[ohlcvix] >= buyprice) && (piv[ohlcvix-1] < buyprice) # price swings back to regression after peak down
+        return buy
+    end
+    return hold
+end
+
+configurationid4base(cl::NNClassifier001, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
+
+function configureclassifier!(cl::NNClassifier001, base::AbstractString, configid::Integer)
+    if base in keys(cl.bc)
+        cl.bc[base].cfgid = configid
+        return true
+    else
+        @error "cannot find $base in NNClassifier001"
+        return false
+    end
+end
+
+#endregion NNClassifier001
+
 #region Classifier001
 
 
@@ -1422,12 +1681,11 @@ function timerangecut!(cl::BaseClassifier001, startdt::DateTime, enddt::DateTime
         ohlcvstartdt = startdt - Minute(Classify.requiredminutes(cl)-1)
         Ohlcv.timerangecut!(cl.ohlcv, ohlcvstartdt, enddt)
         Features.timerangecut!(cl.f4, startdt, enddt)
-        Features.f4offset!(cl.f4, cl.ohlcv)
+        Features.featureoffset!(cl.f4, cl.ohlcv)
     end
 end
 
 function writetargetsfeatures(cl::BaseClassifier001)
-    Ohlcv.write(cl.ohlcv)
     if !isnothing(cl.f4)
         Features.write(cl.f4)
     end
@@ -1500,7 +1758,7 @@ end
 
 function baseadvice(cl::BaseClassifier001, ohlcvix, regrwindow, gainthreshold, headwindow, trendwindow)
     ohlcvdf = Ohlcv.dataframe(cl.ohlcv)
-    fix = Features.f4ix(cl.f4, ohlcvix)
+    fix = Features.featureix(cl.f4, ohlcvix)
     dt = ohlcvdf[ohlcvix, :opentime]
     if fix <= 0
         return noop
@@ -1992,18 +2250,18 @@ end
 
 #region Classifier004
 
-const WINDOWSET = Int16[0, 15, 30, 60, 2*60, 4*60]         # 0 = dynamic use of all window sizes
-const LOOKBACKSET = Int16[5, 10, 20, 40]
-const BREAKOUTFACTORSET = Float32[0.5f0, 1.0f0, 2.0f0, 10000.0f0]      # 10000.0 == de facto switched off
-const TRENDFACTORSET = Float32[0.015f0, 0.03f0, 10000.0f0]             # 10000.0 == de facto switched off
-const GAINTHRESHOLDSET = Float32[0.01f0, 0.02f0, 0.04f0, 10000.0f0]    # 10000.0 == de facto switched off
+const WINDOW004 = Int16[0, 15, 30, 60, 2*60, 4*60]         # 0 = dynamic use of all window sizes
+const LOOKBACK004 = Int16[5, 10, 20, 40]
+const BREAKOUTFACTOR004 = Float32[0.5f0, 1.0f0, 2.0f0, 10000.0f0]      # 10000.0 == de facto switched off
+const TRENDFACTOR004 = Float32[0.015f0, 0.03f0, 10000.0f0]             # 10000.0 == de facto switched off
+const GAINTHRESHOLD004 = Float32[0.01f0, 0.02f0, 0.04f0, 10000.0f0]    # 10000.0 == de facto switched off
 
 const OPTPARAMS004 = Dict(
-    "window" => WINDOWSET,             # window for amplitude measurement in minutes
-    "lookback" => LOOKBACKSET,           # number of windows (in half window steps) back to calculate mean values
-    "breakoutfactor" => BREAKOUTFACTORSET,   # highchange / meanchange to consider it as breakout worth strongbuy
-    "trendfactor" => TRENDFACTORSET,      # gain threshold of highchange and lowchange to consider trend worth buy
-    "gainthreshold" => GAINTHRESHOLDSET     # gain threshold ratio of minimum gain/price of mean amplitude to consider volatility trading
+    "window" => WINDOW004,             # window for amplitude measurement in minutes
+    "lookback" => LOOKBACK004,           # number of windows (in half window steps) back to calculate mean values
+    "breakoutfactor" => BREAKOUTFACTOR004,   # highchange / meanchange to consider it as breakout worth strongbuy
+    "trendfactor" => TRENDFACTOR004,      # gain threshold of highchange and lowchange to consider trend worth buy
+    "gainthreshold" => GAINTHRESHOLD004     # gain threshold ratio of minimum gain/price of mean amplitude to consider volatility trading
 )
 
 mutable struct Amplitudes
@@ -2217,7 +2475,6 @@ function Base.show(io::IO, bc::BaseClassifier005)
 end
 
 function writetargetsfeatures(bc::BaseClassifier005)
-    Ohlcv.write(bc.ohlcv)
     if !isnothing(bc.f4)
         Features.write(bc.f4)
     end
@@ -2225,24 +2482,24 @@ end
 
 supplement!(bc::BaseClassifier005) = Features.supplement!(bc.f4, bc.ohlcv)
 
-const REGRWINDOWSET005 = Int16[24*60, 3*24*60]
-const TRENDWINDOWSET005 = Int16[10*24*60]
-const TAKEPROFITGAINSET005 = Float32[0.02f0, 0.04f0]
-const BUYTHRESHOLDSET005 = Float32[0.01f0, 0.02f0]
-const TRENDBUYGRADSET005 = Float32[0.01f0] # -1f0 = equal to switched off
-const TRENDSELLGRADSET005 = Float32[-0.03f0, -0.06f0] # -1f0 = equal to switched off
-const BUYSPLITPARTSSET005 = Int16[10]
-const SELLVOLUMEFACTORET005 = Int16[1]
+const REGRWINDOW005 = Int16[24*60, 3*24*60]
+const TRENDWINDOW005 = Int16[10*24*60]
+const TAKEPROFITGAIN005 = Float32[0.02f0, 0.04f0]
+const BUYTHRESHOLD005 = Float32[0.01f0, 0.02f0]
+const TRENDBUYGRAD005 = Float32[0.01f0] # -1f0 = equal to switched off
+const TRENDSELLGRAD005 = Float32[-0.03f0, -0.06f0] # -1f0 = equal to switched off
+const BUYSPLITPARTS005 = Int16[10]
+const SELLVOLUMEFACTOR005 = Int16[1]
 const TRADEGAPMINUTES005 = Int16[10]
 const OPTPARAMS005 = Dict(
-    "regrwindow" => REGRWINDOWSET005,
-    "trendwindow" => TRENDWINDOWSET005,
-    "takeprofitgain" => TAKEPROFITGAINSET005,
-    "buythreshold" => BUYTHRESHOLDSET005,
-    "trendbuygrad" => TRENDBUYGRADSET005,
-    "trendsellgrad" => TRENDSELLGRADSET005,
-    "buysplitparts" => BUYSPLITPARTSSET005,
-    "sellvolumefactor" => SELLVOLUMEFACTORET005,
+    "regrwindow" => REGRWINDOW005,
+    "trendwindow" => TRENDWINDOW005,
+    "takeprofitgain" => TAKEPROFITGAIN005,
+    "buythreshold" => BUYTHRESHOLD005,
+    "trendbuygrad" => TRENDBUYGRAD005,
+    "trendsellgrad" => TRENDSELLGRAD005,
+    "buysplitparts" => BUYSPLITPARTS005,
+    "sellvolumefactor" => SELLVOLUMEFACTOR005,
     "tradegapminutes" => TRADEGAPMINUTES005
 )
 
@@ -2333,17 +2590,15 @@ function advice(cl::Classifier005, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     bc = cl.bc[base]
     cfg = configuration(cl, bc.cfgid)
     piv = Ohlcv.pivot!(ohlcv)
-    fix = Features.f4ix(bc.f4, ohlcvix)
+    fix = Features.featureix(bc.f4, ohlcvix)
     regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
     buyprice = regry * (1 - cfg.buythreshold)
     trenddaygain = cfg.trendwindow == 0 ? Inf32 : Features.relativedaygain(bc.f4, cfg.trendwindow, fix)
-    if (piv[ohlcvix] >= buyprice) && (piv[ohlcvix-1] < buyprice) # price swings back to regression after peak down
-        if cfg.trendbuygrad <= trenddaygain
-            return buy
-        end
-    end
     if (cfg.trendwindow > 0) && (cfg.trendsellgrad >= trenddaygain)
         return strongsell  # stop loss
+    end
+    if (cfg.trendbuygrad <= trenddaygain) && (piv[ohlcvix] >= buyprice) && (piv[ohlcvix-1] < buyprice) # price swings back to regression after peak down
+        return buy
     end
     return hold
 end

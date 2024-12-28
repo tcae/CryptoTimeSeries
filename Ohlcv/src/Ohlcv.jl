@@ -256,7 +256,7 @@ function relativegain(startvalue::AbstractFloat, endvalue::AbstractFloat; relati
     return gain
 end
 
-function relativegain(values::AbstractVector{AbstractFloat}, baseix::Signed, gainix::Signed; relativefee::AbstractFloat=0f0)
+function relativegain(values::AbstractVector{T}, baseix::Integer, gainix::Integer; relativefee::AbstractFloat=0f0) where {T<:AbstractFloat}
     if baseix > gainix
         return relativegain(values[gainix], values[baseix]; relativefee=relativefee, forward=false)
     else
@@ -607,6 +607,12 @@ function read!(ohlcv::OhlcvData)::OhlcvData
     return ohlcv
 end
 
+function read(basecoin::AbstractString)::OhlcvData
+    ohlcv = Ohlcv.defaultohlcv(basecoin)
+    Ohlcv.read!(ohlcv)
+    return ohlcv
+end
+
 function delete(ohlcv::OhlcvData)
     if EnvConfig.configmode == production
         fn = file(ohlcv)
@@ -632,6 +638,52 @@ function timerangecut!(ohlcv::OhlcvData, startdt, enddt)
     endix = Ohlcv.rowix(ohlcv.df[!, :opentime], enddt)
     ohlcv.df = ohlcv.df[startix:endix, :]
     ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
+end
+
+"""
+Returns a vector of ohlcv dataframe views that complies to the USDT volume constraints of:
+- starts to consider ohlcv data if USDT volume within `aggregationtimerange` exceeds `startminvolume`
+- stops considering ohlcv data if USDT volume decreases below `stopminvolume` within `aggregationminutes`
+- consecutive time range meets or exceeds `mintimerange`
+"""
+function volumeohlcv(ohlcv::OhlcvData, startminvolume, aggregationtimerange::Period, stopminvolume, mintimerange::Period)::Vector{AbstractDataFrame}
+    res = []
+    pivot!(ohlcv)
+    usdtvol = dataframe(ohlcv)[!, :pivot] .* dataframe(ohlcv)[!, :basevolume]
+    segment = nothing
+    last = current = (startix = firstindex(usdtvol), endix = firstindex(usdtvol), vol = 0f0)
+
+    function closesegment()
+        if !isnothing(segment) && (mintimerange <= dataframe(ohlcv)[segment.endix, :opentime] - dataframe(ohlcv)[segment.startix, :opentime])  # close the so far identified volume part
+            df = view(dataframe(ohlcv), segment.startix:segment.endix, :)
+            push!(res, df)
+        end
+        return nothing
+    end
+
+    for ix in eachindex(usdtvol)
+        if dataframe(ohlcv)[ix, :opentime] - dataframe(ohlcv)[last.startix, :opentime] >= aggregationtimerange
+            current = (startix = last.startix + 1, endix = ix, vol = last.vol + usdtvol[ix] - usdtvol[last.startix])
+        else
+            current = (startix = last.startix, endix = ix, vol = last.vol + usdtvol[ix])
+        end
+        last = current
+        @assert current.vol == sum(usdtvol[current.startix:current.endix]) "current.vol=$(current.vol) == sum(usdtvol[current.startix=$(current.startix):current.endix=$(current.endix)])=$(sum(usdtvol[current.startix:current.endix])) usdtvol[current.startix:current.endix]=$(usdtvol[current.startix:current.endix])"
+        if current.vol > stopminvolume
+            if isnothing(segment)
+                if current.vol >= startminvolume
+                    segment = (startix = current.startix, endix = current.endix, vol = current.vol)
+                end
+            else
+                segment = (startix = segment.startix, endix = ix, vol = segment.vol + usdtvol[ix])
+                @assert segment.vol == sum(usdtvol[segment.startix:segment.endix])  "segment.vol=$(segment.vol) == sum(usdtvol[segment.startix=$(segment.startix):segment.endix=$(segment.endix)])=$(sum(usdtvol[segment.startix:segment.endix])) usdtvol[segment.startix:segment.endix]=$(usdtvol[segment.startix:segment.endix])"
+            end
+        else  # current.vol < stopminvolume  => not enough volume to contnue segment
+            segment = closesegment()
+        end
+    end
+    segment = closesegment()
+    return res
 end
 
 function curetime!(ohlcvdf, rn)

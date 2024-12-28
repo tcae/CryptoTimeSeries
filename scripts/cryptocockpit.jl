@@ -65,6 +65,10 @@ function updateassets!(cp, download=false)
         for (ix, base) in enumerate(cp.assetsconfig[!, :basecoin])
             println("$(EnvConfig.now()) ($ix of $rows) loading $base")
             ohlcv = loadohlcv!(cp, base, "1m")
+            if size(ohlcv.df, 1) == 0
+                println("skipping empty $(ohlcv.base)")
+                continue
+            end
             if cp.update > ohlcv.df[end, :opentime] cp.update = ohlcv.df[end, :opentime] end
             Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
                 loadohlcv!(cp, base, interval)

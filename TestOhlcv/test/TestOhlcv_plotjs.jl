@@ -10,14 +10,17 @@ function plotit(ohlcv::OhlcvData)
 end
 
 ohlc1 = TestOhlcv.testohlcv(
-    "SINEUSDT", Dates.DateTime("2022-01-01T00:00", dateformat"yyyy-mm-ddTHH:MM"),
+    "SINE", Dates.DateTime("2022-01-01T00:00", dateformat"yyyy-mm-ddTHH:MM"),
     Dates.DateTime("2022-01-01T09:31", dateformat"yyyy-mm-ddTHH:MM"), "1m")
 ohlc2 = TestOhlcv.testohlcv(
-    "DOUBLESINEUSDT", Dates.DateTime("2022-01-01T00:15", dateformat"yyyy-mm-ddTHH:MM"),
+    "DOUBLESINE", Dates.DateTime("2022-01-01T00:15", dateformat"yyyy-mm-ddTHH:MM"),
     Dates.DateTime("2022-01-02T09:31", dateformat"yyyy-mm-ddTHH:MM"), "1m")
-layout = Layout(yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.25],
+layout = Layout(title=ohlc1.base, yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.25],
 yaxis_domain=[0.3, 1.0], xaxis_rangeslider_visible=true)
 display(plot(plotit(ohlc1), layout))
+layout = Layout(title=ohlc2.base, yaxis2=attr(title="vol", side="right"), yaxis2_domain=[0.0, 0.25],
+yaxis_domain=[0.3, 1.0], xaxis_rangeslider_visible=true)
+display(plot(plotit(ohlc2), layout))
 # display([plot(plotit(ohlc1), layout) plot(plotit(ohlc2), layout)])
 # display(p)
 

@@ -1,9 +1,11 @@
+
 module FeaturesTest
 using Dates, DataFrames
 using Test
 
 using EnvConfig, Ohlcv, Features, CryptoXch, TestOhlcv
 
+include("features005_test.jl")
 
 
 function lastextremes_test()
@@ -108,7 +110,7 @@ EnvConfig.init(test)
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Minute(Features.requiredminutes() + 3)
-ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
 ol = size(Ohlcv.dataframe(ohlcv),1)
 f2 = Features.Features002(ohlcv)
 
@@ -253,7 +255,7 @@ md = DateTime("2022-06-02T12:54:00")
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Day(20)
-ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
 df = Ohlcv.dataframe(ohlcv)
 f2 = Features.Features002(ohlcv)
 # f12x = Features.features12x1m01(f2)
@@ -288,7 +290,7 @@ rdf, colname = Features.lookbackrow!(nothing, df, "colA",0, 1, size(df,1); fill=
 
 enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Day(40)
-ohlcv = TestOhlcv.testohlcv("SINEUSDT", startdt, enddt)
+ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
 f12x, f3 = Features.regressionfeatures01(ohlcv,  11, 5, [5, 15, 60, 240], 5, 4*60, "relminuteofday")
 # println("regressionfeatures01(ohlcv)")
 # println("size(f12x)=$(size(f12x))")
@@ -321,7 +323,7 @@ startdt = enddt - period
 EnvConfig.init(production)
 EnvConfig.setlogpath("F4StorageTest")
 xc = CryptoXch.XchCache(true)
-ohlcv = CryptoXch.cryptodownload(xc, "SINEUSDT", "1m", startdt, enddt)
+ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
 # f4 is larger reference
 f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=false)
 # f4s is smaller f4 subset with some f4 data before and after f4s
@@ -340,3 +342,4 @@ end # testset
 
 
 end  # module
+

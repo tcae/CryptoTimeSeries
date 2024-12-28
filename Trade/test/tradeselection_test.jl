@@ -10,6 +10,7 @@ Classify.verbosity = 2
 Ohlcv.verbosity = 1
 Features.verbosity = 1
 Trade.verbosity = 3
+CryptoXch.verbosity = 1
 # EnvConfig.init(training)
 EnvConfig.init(production)
 xc = CryptoXch.XchCache(true)
@@ -20,7 +21,7 @@ startdt = Dates.now(UTC) # - Hour(1)
 # startdt = DateTime("2024-04-15T06:00:00")
 enddt = nothing  # DateTime("2024-03-30T10:03:00")
 assets = CryptoXch.portfolio!(xc)
-tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=2*1000000, updatecache=true)
+tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=10*10^6, updatecache=true)
 
 
 # df = DataFrame()

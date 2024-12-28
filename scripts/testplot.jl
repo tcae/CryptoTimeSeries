@@ -5,7 +5,7 @@
 
 # include(pwd() * "/" * "../src/features.jl")
 
-using PlotlyJS, WebIO, Dates, DataFrames
+using PlotlyJS, Dates, DataFrames
 using Features, TestOhlcv
 
 function test1()

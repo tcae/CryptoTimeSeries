@@ -1,6 +1,5 @@
 using Dates
 # using Features, TestOhlcv, Targets, ROC
-# using Plots
 using EnvConfig, Classify
 
 EnvConfig.init(test)

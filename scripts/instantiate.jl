@@ -28,9 +28,9 @@ for mypackage in mypackages
     Pkg.update()
     Pkg.resolve()
     Pkg.instantiate()
-    Pkg.precompile()
+    # Pkg.precompile() # precompile should be part of instantiate
+    Pkg.gc()
     Pkg.activate(rootpath)
-    # Pkg.gc()
 end
 
 # Pkg.update()

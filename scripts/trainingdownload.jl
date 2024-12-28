@@ -11,12 +11,13 @@ using EnvConfig, Assets, CryptoXch, Ohlcv
 
 EnvConfig.init(training)
 bases = EnvConfig.trainingbases
+xc = CryptoXch.XchCache(true)
 # bases = ["btc"]
 enddt = Dates.now(Dates.UTC)
 startdt = enddt - Dates.Week(4.5 * 52)
 for base in bases
     println("$(EnvConfig.now()): Loading $base from $startdt until $enddt as training data")
-    ohlcv = CryptoXch.cryptodownload(base, "1m", startdt, enddt)
+    ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt, enddt)
     Ohlcv.write(ohlcv)
 end
 

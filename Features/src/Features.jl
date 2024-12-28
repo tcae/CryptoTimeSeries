@@ -7,6 +7,7 @@ module Features
 
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, runmedian, rolling
+using RollingFunctions
 using DataFrames, Statistics, Indicators, JDF
 using Combinatorics, Dates
 using Logging
@@ -17,13 +18,33 @@ using EnvConfig, Ohlcv
 "Defines the features interface that shall be provided by all feature implementations."
 abstract type AbstractFeatures <: EnvConfig.AbstractConfiguration end
 
-"Defines the number of minutes history required to provide the forst suitable feature set"
+"Adds a coin with OhlcvData to the feature generation. It will remove any previously added ohlcv and corresponding features."
+function setbase!(features::AbstractFeatures, ohlcv::Ohlcv.OhlcvData) end
+
+"Removes any previously added ohlcv and corresponding the features."
+function removebase!(features::AbstractFeatures) end
+
+"Returns the OhlcvData reference of features"
+function ohlcv(features::AbstractFeatures) end
+
+"Returns a dataframe view that matches the f5 features time range of the last added ohlcv"
+function ohlcvdfview(features::AbstractFeatures) end
+
+"Provides a description that characterizes the features"
+function describe(features::AbstractFeatures)::String end
+
+"Defines the number of minutes history required to provide the first suitable feature set"
 requiredminutes(features::AbstractFeatures) = 0
 
-"Add newer features to match the recent timeline of ohlcv. It does not fill gaps nor adds features at the beginning."
-function update!(features::AbstractFeatures, ohlcv::Ohlcv.OhlcvData)
-end
+"Add newer features to match the recent timeline of ohlcv[firstix:lastix] with the newest ohlcv datapoints, i.e. datapoints newer than last(features)"
+function supplement!(features::AbstractFeatures) end
 
+"returns a dataframe with an opentime column followed by feature columns"
+function features(features::AbstractFeatures, firstix::Integer, lastix::Integer) end
+function features(features::AbstractFeatures, firstix::DateTime, lastix::DateTime) end
+
+"Cuts the features time range to match the ohlcv time range that was used to derive the features"
+function timerangecut!(features::AbstractFeatures) end
 
 #endregion abstract-features
 
@@ -298,7 +319,7 @@ maxsearch(regressionextremeindex) = regressionextremeindex > 0
 - 2 further index arrays are returned: with regression extreme indices and with price extreme indices
 
 """
-function pricediffregressionpeak(prices, regressiongradients; smoothing=true)
+function pricediffregressionpeak(prices, regressiongradients; smoothing=true) #! deprecated
     #! deprecated
     @error "Features.pricediffregressionpeak is deprecated and replaced by Targets.peaksbeforeregressiontargets"
     return
@@ -869,12 +890,493 @@ end
  but no need to add before an existing start
 """
 function getfeatures!(features::Features001, ohlcv::OhlcvData)
-    # TODO to be done
+    # TODO
+    @error "to be done"
     return features
 end
 
 
 #endregion Features001
+
+#region Features005
+
+# Features005 is based on Features004. To reuse the F4 cache files, those features are always calculated to keep the saved cache complete.
+
+regressionwindows005 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
+regressionproperties = ["grad", "std", "regry", "gain"]
+savedregressionwindows005 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60] # == Features.regressionwindows004
+savedregressionproperties = ["grad", "std", "regry"]
+minmaxproperties = ["mindist", "maxdist"]
+
+"Checks validity of requested configs and returns dataframe with analysis"
+function configdf(requestedconfigs, requiredminutes)
+    savecols = names(emptycachef005())
+    df = DataFrame()
+    allconfigs = union(requestedconfigs, savecols)
+    configix = 1
+    while configix <= length(allconfigs)
+        config = allconfigs[configix]
+        cfg = split(config, "_")
+        valid = false
+        first = cfg[1]
+        second = third = ""
+        if !(first in ["opentime", "rw", "mm", "rv"])
+            @error "skipping $config with unknown feature type $(first) (requestedconfigs=$(requestedconfigs))"
+        else
+            if (first in ["rw", "mm", "rv"]) && length(cfg) != 3
+                @error "$config has not 3 elements cfg=$cfg (requestedconfigs=$(requestedconfigs))"
+            elseif (first in ["opentime"]) && length(cfg) != 1
+                @error "$config has not 1 element cfg=$cfg (requestedconfigs=$(requestedconfigs))"
+            else
+                if first == "rw"
+                    second = parse(Int, cfg[2])
+                    if second in regressionwindows005
+                        third = cfg[3]
+                        if third in regressionproperties
+                            if third in ["gain", "std", "regry"]
+                                grd = join(["rw", string(cfg[2]), "grad"], "_")
+                                if !(grd in allconfigs) push!(allconfigs, grd) end
+                            end
+                            if third in ["gain", "std", "grad"]
+                                rgr = join(["rw", string(cfg[2]), "regry"], "_")
+                                if !(rgr in allconfigs) push!(allconfigs, rgr) end
+                            end
+                            valid = true
+                        else
+                            @error "skipping $config due to regression property=$(third) not in $regressionproperties"
+                        end
+                    else
+                        @error "skipping $config due to regression window=$(second) not in $regressionwindows005 (requestedconfigs=$(requestedconfigs))"
+                    end
+                elseif first == "mm"
+                    second = parse(Int, cfg[2])
+                    if 0 < second <= requiredminutes
+                        third = cfg[3]
+                        if third in minmaxproperties
+                            valid = true
+                        else
+                            @error "skipping $config due to min/max property=$(third) not in $minmaxproperties (requestedconfigs=$(requestedconfigs))"
+                        end
+                    else
+                        @error "skipping $config due to minmax window=$(second) not within [1:$regressionwindows005] (requestedconfigs=$(requestedconfigs))"
+                    end
+                elseif first == "rv"
+                    second = parse(Int, cfg[2])
+                    third = parse(Int, cfg[3])
+                    if 0 < second <= requiredminutes
+                        if 0 < third <= requiredminutes
+                            if second < third
+                                valid = true
+                            else
+                                @error "skipping $config due to wrong short_long sequence: shortwin=$second < longwin=$third (requestedconfigs=$(requestedconfigs))"
+                            end
+                        else
+                            @error "skipping $config due to longwin=$(third) not within [1:$regressionwindows005] (requestedconfigs=$(requestedconfigs))"
+                        end
+                    else
+                        @error "skipping $config due to shortwin=$(second) not within [1:$regressionwindows005] (requestedconfigs=$(requestedconfigs))"
+                    end
+                elseif first == "opentime"
+                    valid = true
+                else
+                    @error "$config contains no known feature"
+                end
+            end
+        end
+        push!(df, (config = config, first = first, second = second, third = third, valid = valid, save = config in savecols, requested = config in requestedconfigs), promote=true)
+        configix += 1
+    end
+    # (verbosity >= 3) && println("Features005 cfgdf: $df")
+    return df
+end
+
+
+"""
+Features005 provides a configurable feature set with the following config choices provided as vector of Strings with elements:
+- "rw" followed by *minutes* (e.g. "rw_60") to denote a 60 minute regression window with the following `_` concatenated options: "grad", "std", "regry", "gain".
+  Regression window minutes are constraint by the set of *regressionwindows005*
+    - grad = gradient of regression line
+    - std = standard deviation of regression line
+    - regry = y position of regression line end
+    - gain = relative gain between end and start point of regression line (multiply with 100 and the value is a percentage)
+- "mm" followed by *minutes* (e.g. "mm_60") to denote a 60 minute min/max window with the following `_` concatenated options: "maxdist", "mindist".
+    - maxdist = relative distance to max value of minmaxwindows
+    - mindist = relative distance to min value of minmaxwindows
+- "rv" to denote a relative median volume with the following `_` concatenated option: shortwindow followed by longwindow in minutes,
+  e.g. "rv_5_60" provides 1 vector with the ratio of the volume median of shortwindow / longwindow
+    - shortwindow = minutes of short window median
+    - longwindow = minutes of long window median
+Each tuple element will result in a feature vector of that name
+
+Example:
+```
+Features005(["rw_60_regry", "rw_60_grad", "mm_30_maxdist", "mm_15_mindist", "rv_5_60"])
+```
+
+Struct property notes:
+- cfgdf: dataframe of the validated configuration
+  - configcols: vector of column names of the requested configuration, which is subset of names(f5.fdf)
+- ohlcv: reference ohlcv data that are used as basis for feature calculation
+- fdf: features data frame with union of configured columns and Features004 columns
+
+"""
+mutable struct Features005 <: AbstractFeatures
+    requiredminutes  # determined by requiredminutes or firstix whatever is larger
+    cfgdf::DataFrame
+    ohlcv::Union{Nothing, Ohlcv.OhlcvData}
+    fdf::Union{Nothing, DataFrame}
+    latestloadeddt::Union{Nothing, DateTime}
+    complete::Bool # init set it to true, timerangecut to set it to false
+    ohlcvoffset::Union{Nothing, Int}
+    function Features005(config::Vector{T}) where T<:AbstractString
+        requiredminutes = maximum(regressionwindows005)
+        @assert length(config) > 0
+        cfgdf = configdf(config, requiredminutes)
+        @assert all(cfgdf[!, :valid]) "invalid config: $cfgdf"
+        f5 = new(requiredminutes, cfgdf, nothing, nothing, nothing, false, nothing)
+        return f5
+    end
+end
+
+function setbase!(f5::Features005, ohlcv::Ohlcv.OhlcvData; usecache=false)
+    f5.ohlcv = ohlcv
+    f5.fdf = usecache ? read!(f5) : emptycachef005()
+    f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
+    f5.complete = true
+    f5.ohlcvoffset = nothing
+    featureoffset!(f5)
+    supplement!(f5)
+end
+
+function removebase!(f5::Features005)
+    f5.ohlcv = nothing
+    f5.fdf = nothing
+    f5.latestloadeddt = nothing
+    f5.complete = false
+    f5.ohlcvoffset = nothing
+end
+
+
+ohlcvix(f5::Features005, featureix) = featureix + f5.ohlcvoffset
+featureix(f5::Features005, ohlcvix) = ohlcvix - f5.ohlcvoffset
+
+function featureoffset!(f5::Features005)
+    odf = Ohlcv.dataframe(f5.ohlcv)
+    if (size(odf, 1) > 0) && (size(f5.fdf, 1)> 0)
+        f5.ohlcvoffset = Ohlcv.rowix(odf[!,:opentime], f5.fdf[begin, :opentime]) - 1
+        @assert odf[ohlcvix(f5, firstindex(f5.fdf[!, :opentime])), :opentime] == f5.fdf[begin, :opentime] "f5.ohlcvoffset=$(f5.ohlcvoffset) odf[ohlcvix(f5, 1), :opentime]=$(odf[ohlcvix(f5, 1), :opentime]) f5.fdf[begin, :opentime]=$(f5.fdf[begin, :opentime])"
+    else
+        f5.ohlcvoffset = nothing
+    end
+end
+
+ohlcvdfview(f5::Features005) = isnothing(f5.ohlcv) ? nothing : view(Ohlcv.dataframe(f5.ohlcv), Ohlcv.rowix(f5.fdf[!, :opentime], f5.fdf[begin, :opentime]):Ohlcv.rowix(f5.fdf[!, :opentime], f5.fdf[end, :opentime]), :)
+ohlcv(f5::Features005) = f5.ohlcv
+
+requiredminutes(f5::Features005) = f5.requiredminutes
+
+function emptycachef005()
+    df = DataFrame()
+    df[:, "opentime"] = DateTime[]
+    for rw in savedregressionwindows005   # share data with Features004 and only regressionwindows004 subset of regressionwindows005 in cache
+        for rp in savedregressionproperties
+            df[:, join(["rw", string(rw), rp], "_")] = Float32[]
+        end
+    end
+    return df
+end
+describe(f5::Features005)::String = "Features005($(uppercase(f5.ohlcv.base)))" * join(names(f5.fdf), "+")
+mnemonic(f5::Features005) = uppercase(f5.ohlcv.base) * "_" * uppercase(f5.ohlcv.quotecoin) * "_" * "_F4"  #* share data with Features004
+
+function file(f5::Features005)
+    mnm = mnemonic(f5)
+    filename = EnvConfig.datafile(mnm, "Features004")  # share data with Features004
+    if isdir(filename)
+        return (filename=filename, existing=true)
+    else
+        return (filename=filename, existing=false)
+    end
+end
+
+function write(f5::Features005)
+    if EnvConfig.configmode == production
+        if !isnothing(f5.fdf) && !isnothing(f5.ohlcv)
+            fn = file(f5)
+            if !f5.complete || (size(f5.fdf, 1) == 0)
+                (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to incomplete data=$(f5.complete) or empty data: size(f5.fdf)=$(size(f5.fdf))")
+                return
+            end
+            if !isnothing(f5.latestloadeddt) && (f5.latestloadeddt >= f5.fdf[end, :opentime])
+                (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to already stored data:$(f5.latestloadeddt) >= $(f5.fdf[end, :opentime])")
+                return
+            end
+            df = DataFrame()
+            for configrow in eachrow(f5.cfgdf)
+                if configrow.save
+                    savecol = configrow.first == "opentime" ? "opentime" : join([string(configrow.second), string(configrow.third)], "_")
+                    df[:, savecol] = f5.fdf[!, configrow.config]
+                end
+            end
+            try
+                JDF.savejdf(fn.filename, df[!, :])
+                (verbosity >= 2) && println("$(EnvConfig.now()) saved F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
+                f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
+            catch e
+                Logging.@error "exception $e detected when writing $(fn.filename)"
+            end
+        else
+            (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5 - nothing to write")
+            (verbosity >= 2) && isnothing(f5.ohlcv) && println("no ohlcv found in F5 - missing base info required to write")
+        end
+    else
+        (verbosity >= 2) && println("no F5.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data")
+    end
+end
+
+function read!(f5::Features005)::DataFrame
+    if isnothing(f5.ohlcv)
+        (verbosity >= 2)  && println("no ohlcv found in F5 - missing base info required to read")
+        return emptycachef005()
+    end
+    fn = file(f5)
+    # try
+    f5.complete = true
+    if fn.existing
+            (verbosity >= 3) && println("$(EnvConfig.now()) start loading F5 data of $(f5.ohlcv.base) from $(fn.filename)")
+            df = DataFrame(JDF.loadjdf(fn.filename))
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
+            if size(df, 1) == 0
+                (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(fn.filename)")
+                df = emptycachef005()
+            else
+                startix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[begin, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? firstindex(df[!, :opentime]) : nothing
+                endix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[end, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? lastindex(df[!, :opentime]) : nothing
+                if !isnothing(startix)
+                    if isnothing(endix) # df[begin] is inside and df[end] is outside ohlcv time range
+                        endix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[end, :opentime])
+                        df = df[startix:endix, :]
+                    # else no df change
+                    end
+                else
+                    if !isnothing(endix) # df[begin] is outside and df[end] is inside ohlcv time range
+                        startix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[begin, :opentime])
+                        df = df[startix:endix, :]
+                    else # both df[begin] and df[end] are outside ohlcv time range
+                        df = emptycachef005()
+                    end
+                end
+            end
+        else
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
+            df = emptycachef005()
+        end
+        f5.fdf = df
+        # (verbosity >= 3) && println("$(EnvConfig.now()) Features005.read! after loading and adapting $f5")
+        # (verbosity >= 3) && println("$(EnvConfig.now()) Features005.read! names(df)=$(names(df))")
+        # catch e
+    #     Logging.@warn "exception $e detected"
+    # end
+    return df
+end
+
+function delete(f5::Features005)
+    if isnothing(f5.ohlcv)
+        (verbosity >= 2)  && println("no ohlcv found in F5 - missing base info required to delete file")
+        return emptycachef005()
+    end
+    fn = file(f5)
+    if fn.existing
+        rm(fn.filename; force=true, recursive=true)
+        (verbosity >= 2) && println("$(EnvConfig.now()) deleted $(fn.filename)")
+    end
+end
+
+
+function supplement!(f5::Features005)
+    if isnothing(f5.ohlcv)
+        (verbosity >= 2)  && println("no ohlcv found in F5 - nothing to supplement")
+        return emptycachef005()
+    end
+    # replace the existing fdf by a new one
+    Ohlcv.pivot!(f5.ohlcv)
+    odf = Ohlcv.dataframe(f5.ohlcv)
+    reqmin = requiredminutes(f5) # all dataframes to start at the same time to make performance comparable and f5 handling easier
+    fdf = DataFrame()
+    if size(f5.fdf, 1) > 0
+        odfstartix = Ohlcv.rowix(odf[!, "opentime"], f5.fdf[end, "opentime"]) + 1 # ohlcv index of last feature datetime
+        odfstartix = odfstartix > lastindex(odf[!, "opentime"]) ? nothing : odfstartix  # nothing = most recent ohlcv data have matching features
+        newlen = isnothing(odfstartix) ? 0 : lastindex(odf[!, "opentime"]) - odfstartix + 1
+        cols = names(f5.fdf)
+    else
+        odfstartix = nothing
+        newlen = length(odf[!, "opentime"]) - reqmin + 1
+        cols = []
+    end
+    for configrow in eachrow(f5.cfgdf)
+        if configrow.config in names(fdf)
+            # (verbosity >= 3) && println("$configrow already processed together with other column")
+            continue
+        end
+        if configrow.first == "rw"
+            fc = f5.cfgdf
+            regryrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "regry"), :])
+            gradrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "grad"), :])
+            win = configrow.second
+            std = gain = nothing
+            if regryrow.config in cols
+                if !isnothing(odfstartix)
+                    regry, grad = rollingregression(odf[!, :pivot], win, odfstartix)
+                    @assert length(regry) == newlen "length(regry)=$(length(regry)) != newlen=$newlen"
+                    regry = vcat(f5.fdf[!, regryrow.config], regry)
+                    grad = vcat(f5.fdf[!, gradrow.config], grad)
+                else
+                    regry = f5.fdf[!, regryrow.config]
+                    grad = f5.fdf[!, gradrow.config]
+                end
+            else
+                regry, grad = rollingregression(odf[!, :pivot], win, reqmin)
+            end
+            fdf[:, regryrow.config] = regry
+            fdf[:, gradrow.config] = grad
+            finddf = f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "std"), :]
+            if size(finddf, 1) > 0
+                stdrow = first(finddf)
+                if stdrow.config in cols
+                    if !isnothing(odfstartix)
+                        std = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], regry, grad, win, odfstartix)
+                        @assert length(std) == newlen "length(std)=$(length(std)) != newlen=$newlen"
+                        std = vcat(f5.fdf[!, stdrow.config], std)
+                    else
+                        std = f5.fdf[!, stdrow.config]
+                    end
+                else
+                    std = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], regry, grad, win, reqmin)
+                end
+                fdf[:, stdrow.config] = std
+            end
+
+            finddf = f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "gain"), :]
+            if size(finddf, 1) > 0
+                gainrow = first(finddf)
+                if gainrow.config in cols
+                    gain = relativegain.(regry[end-newlen+1:end], grad[end-newlen+1:end], win)
+                    @assert length(gain) == newlen "length(gain)=$(length(gain)) != newlen=$newlen"
+                    gain = vcat(f5.fdf[!, gainrow.config], gain)
+                else
+                    gain = relativegain.(regry, grad, win)
+                end
+                fdf[:, gainrow.config] = gain
+            end
+        elseif configrow.first == "mm"
+            win = configrow.second
+            if (configrow.third == "mindist")
+                if (configrow.config in cols)
+                    if !isnothing(odfstartix)
+                        minvec = RollingFunctions.rollmin(odf[odfstartix-win+1:end, :low], win)
+                        mindist = (odf[odfstartix:end, :pivot] .- minvec) ./ minvec
+                        @assert length(mindist) == newlen "length(mindist)=$(length(mindist)) != newlen=$newlen"
+                        mindist = vcat(f5.fdf[!, configrow.config], mindist)
+                    else
+                        mindist = f5.fdf[!, configrow.config]
+                    end
+                else
+                    minvec = RollingFunctions.rollmin(odf[reqmin-win+1:end, :low], win)
+                    mindist = (odf[reqmin:end, :pivot] .- minvec) ./ minvec
+                end
+                fdf[:, configrow.config] = mindist
+            end
+            if (configrow.third == "maxdist")
+                if (configrow.config in cols)
+                    if !isnothing(odfstartix)
+                        maxvec = RollingFunctions.rollmax(odf[odfstartix-win+1:end, :high], win)
+                        maxdist = (odf[odfstartix:end, :pivot] .- maxvec) ./ maxvec
+                        @assert length(maxdist) == newlen "length(maxdist)=$(length(maxdist)) != newlen=$newlen"
+                        maxdist = vcat(f5.fdf[!, configrow.config], maxdist)
+                    else
+                        maxdist = f5.fdf[!, configrow.config]
+                    end
+                else
+                    maxvec = RollingFunctions.rollmax(odf[reqmin-win+1:end, :high], win)
+                    maxdist = (odf[reqmin:end, :pivot] .- maxvec) ./ maxvec
+                end
+                fdf[:, configrow.config] = maxdist
+            end
+        elseif configrow.first == "rv"
+            shortwin = configrow.second
+            longwin = configrow.third
+            if configrow.config in cols
+                if !isnothing(odfstartix)
+                    rvvec = relativevolume(odf[odfstartix-longwin+1:end, :pivot], shortwin, longwin)[end-newlen+1:end]
+                    @assert length(rvvec) == newlen "length(rvvec)=$(length(rvvec)) != newlen=$newlen"
+                    rvvec = vcat(f5.fdf[!, configrow.config], rvvec)
+                else
+                    rvvec = f5.fdf[!, configrow.config]
+                end
+            else
+                rvvec = relativevolume(odf[reqmin-longwin+1:end, :pivot], shortwin, longwin)[end-lastindex(odf[!, "opentime"])+reqmin:end]
+            end
+            fdf[:, configrow.config] = rvvec
+        elseif configrow.first == "opentime"
+            if !isnothing(odfstartix)
+                @assert configrow.config in cols "configrow=$configrow in cols=$cols"
+                ot = odf[odfstartix:end, :opentime]
+                @assert length(ot) == newlen "length(ot)=$(length(ot)) != newlen=$newlen"
+                ot = vcat(f5.fdf[!, configrow.config], ot)
+            else
+                ot = odf[reqmin:end, configrow.config]
+            end
+            fdf[:, configrow.config] = ot
+        else
+            @error "unexpected configrow=$(string(configrow))"
+        end
+    end
+    f5.fdf = fdf
+    featureoffset!(f5)
+end
+
+function timerangecut!(f5::Features005)
+    if isnothing(f5.ohlcv) || isnothing(f5.fdf)
+        (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5 - no time range to cut")
+        (verbosity >= 2) && isnothing(f5.ohlcv) && println("no ohlcv found in F5 - missing ohlcv reference to cut time range")
+        return
+    end
+    startdt = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime]
+    startix = Ohlcv.rowix(f5.fdf[!, :opentime], startdt)
+    enddt = Ohlcv.dataframe(f5.ohlcv)[end, :opentime]
+    endix = Ohlcv.rowix(f5.fdf[!, :opentime], enddt)
+    f5.fdf = f5.fdf[startix:endix, :]
+    f5.complete = false
+    featureoffset!(f5)
+end
+
+function features(f5::Features005, firstix::Integer=firstindex(f5.fdf[!, :opentime]), lastix::Integer=lastindex(f5.fdf[!, :opentime]))
+    if isnothing(f5.fdf)
+        (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5")
+        return nothing
+    end
+    @assert !isnothing(firstix) && (firstindex(f5.fdf[!, :opentime]) <= firstix <= lastix <= lastindex(f5.fdf[!, :opentime])) "firstindex=$(firstindex(f5.fdf[!, :opentime])) <= firstix=$firstix <= lastix=$lastix <= lastindex=$(lastindex(f5.fdf[!, :opentime]))"
+    cols = f5.cfgdf[f5.cfgdf[!, :requested], :config]
+    return f5.fdf[firstix:lastix, cols]
+end
+
+function features(f5::Features005, startdt::DateTime, enddt::DateTime)
+    if isnothing(f5.fdf)
+        (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5")
+        return nothing
+    end
+    return features(f5, Ohlcv.rowix(f5.fdf[!, :opentime], startdt), Ohlcv.rowix(f5.fdf[!, :opentime], enddt))
+end
+
+opentime(f5::Features005) = isnothing(f5.fdf) ? [] : f5.fdf[!, :opentime]
+
+function Base.show(io::IO, f5::Features005)
+    println(io, "Features005 requiredminutes=$(f5.requiredminutes) base=$(f5.ohlcv.base), size(fdf)=$(size(f5.fdf)) $(size(f5.fdf, 1) > 0 ? "from $(f5.fdf[begin, :opentime]) to $(f5.fdf[end, :opentime]) " : "no time range ")requiredminutes=$(f5.requiredminutes) latestloadeddt=$(f5.latestloadeddt) complete=$(f5.complete) ohlcvoffset=$(f5.ohlcvoffset)")
+    # (verbosity >= 3) && println(io, "Features005 cfgdf=$(f5.cfgdf)")
+    # (verbosity >= 2) && println(io, "Features005 config=$(f5.cfgdf[!, :config])")
+    println(io, "Features005 ohlcv=$(f5.ohlcv)")
+end
+
+#endregion Features005
 
 #region Features004
 "Features004 is a simplified subset of Features002 without regression extremes and relative volume but with save and read functions and implemented as DataFrame"
@@ -885,7 +1387,7 @@ regressionwindows004dict = Dict("1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d"
 """
 Provides per regressionwindow gradient, regression line price, standard deviation.
 """
-mutable struct Features004
+mutable struct Features004 <: AbstractFeatures
     basecoin::String
     quotecoin::String
     ohlcvoffset
@@ -921,8 +1423,8 @@ end
 
 #TODO add regression test
 mnemonic(f4::Features004) = uppercase(f4.basecoin) * "_" * uppercase(f4.quotecoin) * "_" * "_F4"
-ohlcvix(f4::Features004, f4ix) = f4ix + f4.ohlcvoffset
-f4ix(f4::Features004, ohlcvix) = ohlcvix - f4.ohlcvoffset
+ohlcvix(f4::Features004, featureix) = featureix + f4.ohlcvoffset
+featureix(f4::Features004, ohlcvix) = ohlcvix - f4.ohlcvoffset
 
 function consistent(f4::Features004, ohlcv::Ohlcv.OhlcvData)
     checkok = true
@@ -965,7 +1467,7 @@ function consistent(f4::Features004, ohlcv::Ohlcv.OhlcvData)
     return checkok
 end
 
-function f4offset!(f4::Features004, ohlcv::Ohlcv.OhlcvData)
+function featureoffset!(f4::Features004, ohlcv::Ohlcv.OhlcvData)
     f4.ohlcvoffset = nothing
     if (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0) && (size(ohlcv.df, 1) > 0)
         fix = nothing
@@ -1164,7 +1666,7 @@ function Base.iterate(f4f::Features004Files, state=1)
 end
 
 "Supplements Features004 with the newest ohlcv datapoints, i.e. datapoints newer than last(f4)"
-function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
+function supplement!(f4::Features004, ohlcv::Ohlcv.OhlcvData; firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
     usecache = (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0)
     Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
@@ -1207,7 +1709,7 @@ function supplement!(f4::Features004, ohlcv; firstix=firstindex(ohlcv.df[!, :ope
             f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
         end
     end
-    return isnothing(f4offset!(f4, ohlcv)) ? nothing : f4
+    return isnothing(featureoffset!(f4, ohlcv)) ? nothing : f4
 end
 
 requiredminutes(f4::Features004) = maximum(regrwindows(f4))
@@ -1224,8 +1726,14 @@ grad(f4::Features004, regrminutes) =     f4.rw[regrminutes][!, :grad]
 regry(f4::Features004, regrminutes) =    f4.rw[regrminutes][!, :regry]
 std(f4::Features004, regrminutes) =      f4.rw[regrminutes][!, :std]
 opentime(f4::Features004, regrminutes) = f4.rw[regrminutes][!, :opentime]
+opentime(f4::Features004) = first(f4.rw)[2][!, :opentime]  # opentime array from all rw members shall start and end equally
 regrwindows(f4::Features004) = keys(f4.rw)
 relativedaygain(f4::Features004, regrminutes::Integer, featuresix::Integer) = relativegain(regry(f4, regrminutes)[featuresix], grad(f4, regrminutes)[featuresix], 24*60)
+
+function features(f4::Features004, firstix, lastix)::AbstractDataFrame
+    #TODO
+    @error "to be implemented"
+end
 
 #endregion Features004
 
@@ -1483,7 +1991,7 @@ function lookbackrow!(rdf::Union{DataFrame, Nothing}, df::AbstractDataFrame, col
     end
     # ixstr = lookback > 0 ? string(lookback, pad=2, base=10) : ""
     ixstr = string(lookback, pad=2, base=10)
-    colname = col*ixstr
+    configrow = col*ixstr
     fix = max(1, firstix - lookback)
     lix = lastix - lookback
     fill = isnothing(fill) ? df[fix, col] : fill
@@ -1492,14 +2000,14 @@ function lookbackrow!(rdf::Union{DataFrame, Nothing}, df::AbstractDataFrame, col
     fillarr .= fill
     if lix >= fix # copy lookback vector part
         if fillcount > 0
-            rdf[!, colname] = vcat(fillarr, df[fix:lix, col])
+            rdf[!, configrow] = vcat(fillarr, df[fix:lix, col])
         else
-            rdf[!, colname] = df[fix:lix, col]
+            rdf[!, configrow] = df[fix:lix, col]
         end
     else
-        rdf[!, colname] = fillarr
+        rdf[!, configrow] = fillarr
     end
-    return rdf, colname
+    return rdf, configrow
 end
 
 """
@@ -1608,7 +2116,7 @@ Returns a DataFrame with feature vectors in each row. Each feature vector is bas
 The feature vectors covering the ohlcv time range from f2.startix until f2.lastix.
 Each feature vector is composed of:
 
-- Relative date/time accordign to keyword as mapped in Features.relativetimedict
+- Relative date/time according to keyword as mapped in Features.relativetimedict
   - "relminuteofday" => relativeminuteofday
   - "reldayofweek" => relativedayofweek
   - "reldayofyear" => relativedayofyear

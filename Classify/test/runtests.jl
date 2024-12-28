@@ -23,10 +23,17 @@ df = DataFrame(String(classes(ŷ)[1]) => pdf(ŷ, classes(ŷ))[:, 1], String(clas
 println(df)
 
 res = Classify.setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 3/50)
-@test res["base"] == [1:6, 20:24, 38:42]
-@test res["test"] == [8:9, 26:27, 44:45]
-@test res["combi"] == [11:15, 29:33, 47:49]
-@test res["eval"] == [17:18, 35:36]
+@test res["base"] == [1:5, 19:23, 37:41]
+@test res["test"] == [7:8, 25:26, 43:44]
+@test res["combi"] == [10:14, 28:32, 46:49]
+@test res["eval"] == [16:17, 34:35]
+
+@test Classify.score2bin(0.95, 10) == 10
+@test Classify.score2bin(1.15, 10) == 10
+@test Classify.score2bin(0.55, 10) == 6
+@test Classify.score2bin(0.05, 10) == 1
+@test Classify.score2bin(0.0, 10) == 1
+@test Classify.score2bin(-0.05, 10) == 1
 end
 
 end  # module
