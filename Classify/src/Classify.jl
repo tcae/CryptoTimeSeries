@@ -2666,52 +2666,56 @@ end
 
 #endregion Classifier005
 
-#region Classifier006
+#region Classifier007
 
-mutable struct BaseClassifier006
+mutable struct BaseClassifier007
     ohlcv::Ohlcv.OhlcvData
     f4::Union{Nothing, Features.Features004}
     "cfgid: id to retrieve configuration parameters; uninitialized == 0"
     cfgid::Int16
-    function BaseClassifier006(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true))
+    function BaseClassifier007(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true))
         cl = isnothing(f4) ? nothing : new(ohlcv, f4, 0)
         return cl
     end
 end
 
-function Base.show(io::IO, bc::BaseClassifier006)
-    println(io, "BaseClassifier006[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
+function Base.show(io::IO, bc::BaseClassifier007)
+    println(io, "BaseClassifier007[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
 end
 
-function writetargetsfeatures(bc::BaseClassifier006)
+function writetargetsfeatures(bc::BaseClassifier007)
     if !isnothing(bc.f4)
         Features.write(bc.f4)
     end
 end
 
-supplement!(bc::BaseClassifier006) = Features.supplement!(bc.f4, bc.ohlcv)
+supplement!(bc::BaseClassifier007) = Features.supplement!(bc.f4, bc.ohlcv)
 
-const REGRWINDOW006 = Int16[4*60, 12*60, 24*60]
-const BUYTHRESHOLD006 = Float32[-0.02f0, -0.04f0, -0.06f0, -0.08f0]
-const USETREND006 = Bool[true, false]
-const OPTPARAMS006 = Dict(
-    "regrwindow" => REGRWINDOW006,
-    "buythreshold" => BUYTHRESHOLD006,
-    "usetrend" => USETREND006
+const REGRWINDOW007 = Int16[4*60, 12*60, 24*60]
+const BUYTHRESHOLD007 = Float32[-0.02f0, -0.04f0, -0.06f0, -0.08f0]
+const USETREND007 = Bool[true, false]
+const USEVOLATILITY007 = Bool[true, false]
+const ONLYPOSITIVETREND007 = Bool[true, false]
+const OPTPARAMS007 = Dict(
+    "regrwindow" => REGRWINDOW007,
+    "buythreshold" => BUYTHRESHOLD007,
+    "usetrend" => USETREND007,
+    "usevolatility" => USEVOLATILITY007,
+    "onlypositivetrend" => ONLYPOSITIVETREND007
 )
 
 """
-Classifier006 idea
+Classifier007 idea
 - use regression to identify downward peaks buy at (buy threshold + regression grad * regression length) below regression line
 - sell if regression line is reached
 
 """
-mutable struct Classifier006 <: AbstractClassifier
-    bc::Dict{AbstractString, BaseClassifier006}
+mutable struct Classifier007 <: AbstractClassifier
+    bc::Dict{AbstractString, BaseClassifier007}
     cfg::Union{Nothing, DataFrame}  # configurations
     optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
     dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    function Classifier006(optparams=OPTPARAMS006)
+    function Classifier007(optparams=OPTPARAMS007)
         cl = new(Dict(), DataFrame(), optparams, nothing)
         readconfigurations!(cl, optparams)
         @assert !isnothing(cl.cfg)
@@ -2719,8 +2723,8 @@ mutable struct Classifier006 <: AbstractClassifier
     end
 end
 
-function addbase!(cl::Classifier006, ohlcv::Ohlcv.OhlcvData)
-    bc = BaseClassifier006(ohlcv)
+function addbase!(cl::Classifier007, ohlcv::Ohlcv.OhlcvData)
+    bc = BaseClassifier007(ohlcv)
     if isnothing(bc)
         @error "$(typeof(cl)): Failed to add $ohlcv"
     else
@@ -2728,29 +2732,29 @@ function addbase!(cl::Classifier006, ohlcv::Ohlcv.OhlcvData)
     end
 end
 
-function supplement!(cl::Classifier006)
+function supplement!(cl::Classifier007)
     for bcl in values(cl.bc)
         supplement!(bcl)
     end
 end
 
-function writetargetsfeatures(cl::Classifier006)
+function writetargetsfeatures(cl::Classifier007)
     for bcl in values(cl.bc)
         writetargetsfeatures(bcl)
     end
 end
 
-# requiredminutes(cl::Classifier006)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
-requiredminutes(cl::Classifier006)::Integer =  maximum(Features.regressionwindows004)
+# requiredminutes(cl::Classifier007)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
+requiredminutes(cl::Classifier007)::Integer =  maximum(Features.regressionwindows004)
 
 
-function advice(cl::Classifier006, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier007, base::AbstractString, dt::DateTime)::InvestProposal
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
-        (verbosity >= 2) && @warn "$base not found in Classifier006"
+        (verbosity >= 2) && @warn "$base not found in Classifier007"
         return noop
     end
     oix = Ohlcv.rowix(ohlcv, dt)
@@ -2760,7 +2764,7 @@ end
 "provides the buy threshold amount that the gradient of the regression window adds over the full window length"
 regramount(regry, grad, regrwindow) = (grad * (regrwindow - 1)) / regry
 
-function advice(cl::Classifier006, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier007, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
     if ohlcvix < requiredminutes(cl)
         return noop
     end
@@ -2774,7 +2778,7 @@ function advice(cl::Classifier006, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     ra = regramount(regry, grad, cfg.regrwindow)
     buyprice = ra < 0 ? regry * (1 + cfg.buythreshold + ra) : regry * (1 + cfg.buythreshold)
 
-    if ((piv[ohlcvix] < buyprice) && (ra >= 0.0)) || (cfg.usetrend && (ra >= cfg.buythreshold))
+    if ((piv[ohlcvix] < buyprice) && ((ra >= 0.0) || (!cfg.onlypositivetrend)) && cfg.usevolatility) || (cfg.usetrend && (ra >= cfg.buythreshold))
         return buy
     elseif ((piv[ohlcvix] <= regry) && (piv[ohlcvix-1] >= regry)) || ((piv[ohlcvix] >= regry) && (piv[ohlcvix-1] <= regry)) # regr line cross from either side
         return sell
@@ -2782,18 +2786,18 @@ function advice(cl::Classifier006, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     return hold
 end
 
-configurationid4base(cl::Classifier006, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
+configurationid4base(cl::Classifier007, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
 
-function configureclassifier!(cl::Classifier006, base::AbstractString, configid::Integer)
+function configureclassifier!(cl::Classifier007, base::AbstractString, configid::Integer)
     if base in keys(cl.bc)
         cl.bc[base].cfgid = configid
         return true
     else
-        @error "cannot find $base in Classifier006"
+        @error "cannot find $base in Classifier007"
         return false
     end
 end
 
-#endregion Classifier006
+#endregion Classifier007
 
 end  # module
