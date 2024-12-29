@@ -20,8 +20,8 @@ Ohlcv.verbosity = 1
 # Features.verbosity = 2
 EnvConfig.verbosity = 3
 Classify.verbosity = 3
-EnvConfig.setlogpath("2452-Classifier007_TrendawareVolatilityTracker")
-classifiertype = Classify.Classifier007
+EnvConfig.setlogpath("2452-Classifier008_TrendawareVolatilityTracker")
+classifiertype = Classify.Classifier008
 
 startdt = nothing # DateTime("2024-03-01T00:00:00")
 enddt =   nothing # DateTime("2024-06-06T09:00:00")
