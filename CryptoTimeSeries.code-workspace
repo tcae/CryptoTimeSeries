@@ -81,11 +81,14 @@
 			// "SparseArrays",
 			// "Mmap"
 		],
-		"csv-preview.resizeColumns": "all"
+		"csv-preview.resizeColumns": "all",
+		"julia.NumThreads": 0,
+		"julia.numTestProcesses": 1
 	},
 	"launch": {
 		"version": "0.2.0",
 		"configurations": [
+
 			{
 				"type": "julia",
 				"request": "launch",
@@ -93,7 +96,8 @@
 				"program": "${file}",
 				"stopOnEntry": false,
 				"cwd": "${workspaceFolder}",
-				"juliaEnv": "${command:activeJuliaEnvironment}"
+				"juliaEnv": "${command:activeJuliaEnvironment}",
+	            "args": ["-p", "4"] // Specify the number of processes you want to run	added by TCAE on advice of AskJulia
 			},
 			{
 				"type": "julia",

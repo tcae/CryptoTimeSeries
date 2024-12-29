@@ -49,7 +49,7 @@ function relativegain(targets::AbstractTargets, firstix::DateTime, lastix::DateT
 "Provides a description that characterizes the features"
 describe(targets::AbstractTargets) = "$(typeof(targets))"
 
-function labeldistribution(targets::Vector{String}, labels=unique(targets))
+function labeldistribution(targets::AbstractVector{T}, labels=unique(targets)) where T<:AbstractString
     cattargets = categorical(targets; levels=labels, compress=true)
     return labeldistribution(cattargets)
 end

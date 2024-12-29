@@ -20,7 +20,8 @@ Ohlcv.verbosity = 1
 # Features.verbosity = 2
 EnvConfig.verbosity = 3
 Classify.verbosity = 3
-EnvConfig.setlogpath("2432-Classifier005-FullTest_TrendawareVolatilityTracker")
+EnvConfig.setlogpath("2452-Classifier006-PositiveRegr_TrendawareVolatilityTracker")
+classifiertype = Classify.Classifier006
 
 startdt = nothing # DateTime("2024-03-01T00:00:00")
 enddt =   nothing # DateTime("2024-06-06T09:00:00")
@@ -29,9 +30,9 @@ coins = nothing # ["BTC"]
 coinsdf = Ohlcv.liquidcoins(liquidrangeminutes=108*24*60)
 filtered_df = coinsdf # filter(row -> row.basecoin in coins, coinsdf)
 println("evaluating: $coins \n coinsdf=$coinsdf \n filtered_df=$filtered_df")
-df = Classify.evaluateclassifiers([Classify.Classifier005], filtered_df, startdt, enddt)
+df = Classify.evaluateclassifiers([classifiertype], filtered_df, startdt, enddt)
 # df = Classify.readsimulation()
-kpidf, gdf = Classify.kpioverview(df, Classify.Classifier005)
+kpidf, gdf = Classify.kpioverview(df, classifiertype)
 sort!(kpidf, [:gain_sum], rev=true)
 println(kpidf)
 # println(gdf[kpidf[1, :groupindex]])

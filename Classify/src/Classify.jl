@@ -428,6 +428,55 @@ end
     - Returns a Dict of setname => vector of row ranges
     - input
         - `rowrange` is the range of rows that are split in subranges, e.g. 2000:5000
+        - `samplesets` is a string vector that denotes the set sequence comprising of samples of partitionsize, e.g. ["train", "test", "train", "train", "eval", "train"]
+        - `gapsize` is the number of rows between partitions of different sets that are not included in any partition
+        - `partitionsize` is the number of rows of the smallest allowed partition.
+    - gaps will be removed from a subrange to avoid crosstalk bias between ranges
+    - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
+"""
+function setpartitions(rowrange, samplesets::Vector; gapsize::Signed, partitionsize::Signed)
+    @assert length(samplesets) > 0 "length(samplesets)=$(length(samplesets))"
+    @assert partitionsize > 0 "partitionsize=$(partitionsize)"
+    @assert length(rowrange) > (partitionsize * length(samplesets)) "length(rowrange)=$(length(rowrange)) > (partitionsize=$(partitionsize) * length(samplesets)=$(length(samplesets)))"
+    @assert gapsize >= 0 "gapsize=$(gapsize)"
+    sv = CategoricalArray(samplesets)
+    ls = nothing
+    rix = rowrange[begin]
+    six = 1
+    arr = []
+    p = nothing
+    while rix < rowrange[end]
+        if !isnothing(p) && (p.setname != sv[six])
+            push!(arr, p)
+            p = nothing
+            rix += gapsize
+            if rix > rowrange[end]
+                break
+            end
+        end
+        if isnothing(p)
+            p = (setname=sv[six], range=rix:min(rix+partitionsize-1, rowrange[end]))  # new partition
+        else
+            p = (setname=p.setname, range=p.range[begin]:min(rix+partitionsize-1, rowrange[end])) # extend partition range
+        end
+        rix += partitionsize
+        six = six % length(sv) + 1
+    end
+    if !isnothing(p)
+        push!(arr, p)
+    end
+    res = Dict(sn => [] for sn in sv)
+    for p in arr
+            res[p.setname] = push!(res[p.setname], p.range)
+    end
+    result = Dict(String(sn) => rv for (sn, rv) in res)
+    return result
+end
+
+"""
+    - Returns a Dict of setname => vector of row ranges
+    - input
+        - `rowrange` is the range of rows that are split in subranges, e.g. 2000:5000
         - `samplesets` is a Dict of setname => relative setsize with sum of all setsizes == 1
         - `gapsize` is the number of rows between partitions of different sets that are not included in any partition
         - `relativesubrangesize` is the minimum subrange size relative to `rowrange` of a consecutive range assigned to a setinterval
@@ -2616,5 +2665,135 @@ function configureclassifier!(cl::Classifier005, base::AbstractString, configid:
 end
 
 #endregion Classifier005
+
+#region Classifier006
+
+mutable struct BaseClassifier006
+    ohlcv::Ohlcv.OhlcvData
+    f4::Union{Nothing, Features.Features004}
+    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
+    cfgid::Int16
+    function BaseClassifier006(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true))
+        cl = isnothing(f4) ? nothing : new(ohlcv, f4, 0)
+        return cl
+    end
+end
+
+function Base.show(io::IO, bc::BaseClassifier006)
+    println(io, "BaseClassifier006[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
+end
+
+function writetargetsfeatures(bc::BaseClassifier006)
+    if !isnothing(bc.f4)
+        Features.write(bc.f4)
+    end
+end
+
+supplement!(bc::BaseClassifier006) = Features.supplement!(bc.f4, bc.ohlcv)
+
+const REGRWINDOW006 = Int16[4*60, 12*60, 24*60]
+const BUYTHRESHOLD006 = Float32[-0.02f0, -0.04f0, -0.06f0, -0.08f0]
+const USETREND006 = Bool[true, false]
+const OPTPARAMS006 = Dict(
+    "regrwindow" => REGRWINDOW006,
+    "buythreshold" => BUYTHRESHOLD006,
+    "usetrend" => USETREND006
+)
+
+"""
+Classifier006 idea
+- use regression to identify downward peaks buy at (buy threshold + regression grad * regression length) below regression line
+- sell if regression line is reached
+
+"""
+mutable struct Classifier006 <: AbstractClassifier
+    bc::Dict{AbstractString, BaseClassifier006}
+    cfg::Union{Nothing, DataFrame}  # configurations
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
+    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
+    function Classifier006(optparams=OPTPARAMS006)
+        cl = new(Dict(), DataFrame(), optparams, nothing)
+        readconfigurations!(cl, optparams)
+        @assert !isnothing(cl.cfg)
+        return cl
+    end
+end
+
+function addbase!(cl::Classifier006, ohlcv::Ohlcv.OhlcvData)
+    bc = BaseClassifier006(ohlcv)
+    if isnothing(bc)
+        @error "$(typeof(cl)): Failed to add $ohlcv"
+    else
+        cl.bc[ohlcv.base] = bc
+    end
+end
+
+function supplement!(cl::Classifier006)
+    for bcl in values(cl.bc)
+        supplement!(bcl)
+    end
+end
+
+function writetargetsfeatures(cl::Classifier006)
+    for bcl in values(cl.bc)
+        writetargetsfeatures(bcl)
+    end
+end
+
+# requiredminutes(cl::Classifier006)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
+requiredminutes(cl::Classifier006)::Integer =  maximum(Features.regressionwindows004)
+
+
+function advice(cl::Classifier006, base::AbstractString, dt::DateTime)::InvestProposal
+    bc = ohlcv = nothing
+    if base in keys(cl.bc)
+        bc = cl.bc[base]
+        ohlcv = bc.ohlcv
+    else
+        (verbosity >= 2) && @warn "$base not found in Classifier006"
+        return noop
+    end
+    oix = Ohlcv.rowix(ohlcv, dt)
+    return advice(cl, ohlcv, oix)
+end
+
+"provides the buy threshold amount that the gradient of the regression window adds over the full window length"
+regramount(regry, grad, regrwindow) = (grad * (regrwindow - 1)) / regry
+
+function advice(cl::Classifier006, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+    if ohlcvix < requiredminutes(cl)
+        return noop
+    end
+    base = ohlcv.base
+    bc = cl.bc[base]
+    cfg = configuration(cl, bc.cfgid)
+    piv = Ohlcv.pivot!(ohlcv)
+    fix = Features.featureix(bc.f4, ohlcvix)
+    regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
+    grad = Features.grad(bc.f4, cfg.regrwindow)[fix]
+    ra = regramount(regry, grad, cfg.regrwindow)
+    buyprice = ra < 0 ? regry * (1 + cfg.buythreshold + ra) : regry * (1 + cfg.buythreshold)
+
+    if ((piv[ohlcvix] < buyprice) && (ra >= 0.0)) || (cfg.usetrend && (ra >= cfg.buythreshold))
+        return buy
+    elseif ((piv[ohlcvix] <= regry) && (piv[ohlcvix-1] >= regry)) || ((piv[ohlcvix] >= regry) && (piv[ohlcvix-1] <= regry)) # regr line cross from either side
+        return sell
+    end
+    return hold
+end
+
+configurationid4base(cl::Classifier006, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
+
+function configureclassifier!(cl::Classifier006, base::AbstractString, configid::Integer)
+    if base in keys(cl.bc)
+        cl.bc[base].cfgid = configid
+        return true
+    else
+        @error "cannot find $base in Classifier006"
+        return false
+    end
+end
+
+#endregion Classifier006
 
 end  # module

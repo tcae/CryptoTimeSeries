@@ -16,7 +16,7 @@ classes: binary buy yes vs no (=sell) with hysteresis using likelihood % of buy 
 
 """
 module FixedTimeGain001
-using Test, Dates, Logging, CSV, DataFrames, Statistics
+using Test, Dates, Logging, CSV, DataFrames, Statistics, MLUtils
 using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
 
 allregressionfeatures() = [join(["rw", rw, rp], "_") for rw in Features.regressionwindows005 for rp in Features.regressionproperties]
@@ -52,7 +52,8 @@ function calctargets(f5::Features.AbstractFeatures, fdg::Targets.AbstractTargets
     # targets = Targets.labels(fdg, fot[begin], fot[end])
     targets = Targets.longbuybinarytargets(fdg, fot[begin], fot[end])
     @assert size(features, 1) == length(targets) "size(features, 1)=$(size(features, 1)) != length(targets)=$(length(targets))"
-    # Targets.labeldistribution(targets, Targets.targetlabels)
+    print("Total ")
+    Targets.labeldistribution(targets)
     # println(describe(fdg.df, :all))
 
     return targets
@@ -110,6 +111,7 @@ function BTCtest()
     # EnvConfig.init(production)
     enddt = DateTime("2024-12-20T22:58:00")
     startdt = enddt - Year(10)
+    # startdt = enddt - Month(6)
     requestedfeatures = vcat(allregressionfeatures(), popularminmaxfeatures(), popularvolumefeatures())
     f5 = Features.Features005(requestedfeatures)
     features = calcfeatures("BTC", startdt, enddt, f5)
@@ -119,12 +121,19 @@ function BTCtest()
         # println("targets=$(fdg.df[1:300, :])")
 
         println("$(EnvConfig.now()) subset creation")
-        setranges = Classify.setpartitions(1:length(targets), Dict("train"=>2/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/13)
+        setranges = Classify.setpartitions(1:length(targets), ["train", "test", "train", "train", "eval", "train"], partitionsize=20*24*60, gapsize=24*60)
+        # setranges = Classify.setpartitions(1:length(targets), Dict("train"=>2/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/13)
         println("setranges: $setranges")
-        println("$(EnvConfig.now()) get train features subset")
         trainfeatures = Classify.subsetdim2(features, setranges["train"])
-        println("$(EnvConfig.now()) get train targets subset")
+        println("$(EnvConfig.now()) got train features subset size=$(size(trainfeatures))")
         traintargets = Classify.subsetdim2(targets, setranges["train"])
+        println("$(EnvConfig.now()) got train targets subset size=$(size(traintargets))")
+        # trainfeatures, traintargets = oversample(trainfeatures, traintargets)  # all classes are equally trained
+        trainfeatures, traintargets = undersample(trainfeatures, traintargets)  # all classes are equally trained
+        println("$(EnvConfig.now()) after undersampling train features subset size=$(size(trainfeatures))")
+        println("$(EnvConfig.now()) after undersampling train targets subset size=$(size(traintargets)) type=$(typeof(traintargets))")
+        print("Training ")
+        Targets.labeldistribution(traintargets)
 
         println("$(EnvConfig.now()) NN model cration")
         nn = Classify.model001(size(trainfeatures, 1), unique(targets), "FixedTimeGain$(round(Int, lb*1000))permille$(window)minutes")
