@@ -10,7 +10,7 @@ using EnvConfig, Trade, Classify, CryptoXch, Bybit
 ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
 
 println("TradeProduction tradeproduction")
-
+EnvConfig.setlogpath("Classifier010-production")
 messagelogfn = EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")
 println("$(EnvConfig.now()): started - messages are logged in $messagelogfn")
 demux_logger = TeeLogger(
@@ -27,8 +27,13 @@ EnvConfig.init(production)
 enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(true; enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
+cl = Classify.Classifier010()
+cfgnt = (regrwindow=3*24*60,trendthreshold=1f0, volatilitybuythreshold=-0.08f0, volatilitylongthreshold=0.02f0, volatilitysellthreshold=0.08f0, volatilityselltrendfactor=0f0)
+cfgid = configurationid(cl, cfgnt)
+println("cfgid=$cfgid for $cfgnt")
+Classify.configureclassifier!(cl, cfgid, true)
 reloadtimes = [Time("04:00:00")]
-cache = Trade.TradeCache(xc=xc, reloadtimes=reloadtimes, trademode=Trade.buysell) # to exit , trademode=sellonly
+cache = Trade.TradeCache(xc=xc, cl=cl, reloadtimes=reloadtimes, trademode=Trade.buysell) # to exit , trademode=sellonly
 
 # EnvConfig.init(production)
 # startdt = Dates.now(UTC)

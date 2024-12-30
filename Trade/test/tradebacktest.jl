@@ -206,8 +206,8 @@ function backtestcl010()
                                 cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold, volatilitysellthreshold=volatilitysellthreshold, volatilityselltrendfactor=volatilityselltrendfactor)
                                 cfgid = configurationid(cl, cfgnt)
                                 println("cfgid=$cfgid for $cfgnt")
+                                Classify.configureclassifier!(cl, cfgid, true) 
                                 cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
-                                Classify.configureclassifier!(cl, base, cfgid)  # 119
                                 # println("cl=$cl")
                                 # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
                                 CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)

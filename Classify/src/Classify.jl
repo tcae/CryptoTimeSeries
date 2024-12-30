@@ -2954,8 +2954,8 @@ mutable struct BaseClassifier010
     f4::Union{Nothing, Features.Features004}
     "cfgid: id to retrieve configuration parameters; uninitialized == 0"
     cfgid::Int16
-    function BaseClassifier010(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true))
-        cl = isnothing(f4) ? nothing : new(ohlcv, f4, 0)
+    function BaseClassifier010(ohlcv::Ohlcv.OhlcvData, cfgid, f4=Features.Features004(ohlcv, usecache=true))
+        cl = isnothing(f4) ? nothing : new(ohlcv, f4, cfgid)
         return cl
     end
 end
@@ -2998,8 +2998,9 @@ mutable struct Classifier010 <: AbstractClassifier
     cfg::Union{Nothing, DataFrame}  # configurations
     optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
     dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
+    defaultcfgid
     function Classifier010(optparams=OPTPARAMS010)
-        cl = new(Dict(), DataFrame(), optparams, nothing)
+        cl = new(Dict(), DataFrame(), optparams, nothing, 1)
         readconfigurations!(cl, optparams)
         @assert !isnothing(cl.cfg)
         return cl
@@ -3007,7 +3008,7 @@ mutable struct Classifier010 <: AbstractClassifier
 end
 
 function addbase!(cl::Classifier010, ohlcv::Ohlcv.OhlcvData)
-    bc = BaseClassifier010(ohlcv)
+    bc = BaseClassifier010(ohlcv, cl.defaultcfgid)
     if isnothing(bc)
         @error "$(typeof(cl)): Failed to add $ohlcv"
     else
@@ -3077,6 +3078,15 @@ function configureclassifier!(cl::Classifier010, base::AbstractString, configid:
     else
         @error "cannot find $base in Classifier010"
         return false
+    end
+end
+
+function configureclassifier!(cl::Classifier010, configid::Integer, updatedbases::Bool)
+    cl.defaultcfgid = configid
+    if updatedbases
+        for base in keys(cl.bc)
+            cl.bc[base].cfgid = configid
+        end
     end
 end
 
