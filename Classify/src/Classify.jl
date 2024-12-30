@@ -6,7 +6,7 @@ module Classify
 using CSV, DataFrames, Logging, Dates
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
-using CategoricalDistributions
+# using CategoricalDistributions
 # using Distributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 export noop, hold, sell, buy, strongsell, strongbuy
@@ -2691,10 +2691,10 @@ end
 
 supplement!(bc::BaseClassifier008) = Features.supplement!(bc.f4, bc.ohlcv)
 
-const REGRWINDOW008 = Int16[4*60, 12*60, 24*60]
+const REGRWINDOW008 = Int16[24*60]
 const TRENDTHRESHOLD008 = Float32[0.02f0, 0.04f0, 0.06f0, 0.08f0, 1f0]  # 1f0 == switch off
-const VOLATILITYBUYTHRESHOLD008 = Float32[-0.02f0, -0.04f0, -0.06f0, -0.08f0, -1f0]  # -1f0 == switch off
-const VOLATILITYLONGTHRESHOLD008 = Float32[-1f0, 0f0, 0.01f0, 0.02f0]  # -1f0 == switch off
+const VOLATILITYBUYTHRESHOLD008 = Float32[-0.01f0, -0.02f0, -0.04f0, -0.06f0, -0.08f0, -1f0]  # -1f0 == switch off
+const VOLATILITYLONGTHRESHOLD008 = Float32[0.02f0]  # -1f0 == switch off
 const OPTPARAMS008 = Dict(
     "regrwindow" => REGRWINDOW008,
     "trendthreshold" => TRENDTHRESHOLD008,
@@ -2797,5 +2797,289 @@ function configureclassifier!(cl::Classifier008, base::AbstractString, configid:
 end
 
 #endregion Classifier008
+
+#region Classifier009
+
+mutable struct BaseClassifier009
+    ohlcv::Ohlcv.OhlcvData
+    f5::Union{Nothing, Features.Features005}
+    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
+    cfgid::Int16
+    regrwindow::Union{Nothing, Int}
+    function BaseClassifier009(ohlcv::Ohlcv.OhlcvData, f5=Features.Features005(Features.featurespecification005(Features.regressionfeaturespec005(),[],[])))
+        Features.setbase!(f5, ohlcv, usecache=true)
+        cl = isnothing(f5) ? nothing : new(ohlcv, f5, 0, nothing)
+        return cl
+    end
+end
+
+function Base.show(io::IO, bc::BaseClassifier009)
+    println(io, "BaseClassifier009[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f5=$(!isnothing(bc.f5)), cfgid=$(bc.cfgid)")
+end
+
+function writetargetsfeatures(bc::BaseClassifier009)
+    if !isnothing(bc.f5)
+        Features.write(bc.f5)
+    end
+end
+
+supplement!(bc::BaseClassifier009) = Features.supplement!(bc.f5)
+
+const BUYGAINTHRESHOLD009 = Float32[0.02f0, 0.04f0, 0.06f0, 0.08f0]
+const SELLTHRESHOLDFACTOR009 = Float32[0.75f0, 0.5f0, 0f0, -1f0]  # -1f0 == switch off ==> only regr crossing as sell criteria
+const OPTPARAMS009 = Dict(
+    "buygainthreshold" => BUYGAINTHRESHOLD009,
+    "sellthresholdfactor" => SELLTHRESHOLDFACTOR009
+)
+
+"""
+Classifier009 idea
+- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> buy
+- sell if gain is decreased to gain threshold / x or pivot crosses regression line 
+- sell criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then sell otherwise follow sell criteria above
+
+"""
+mutable struct Classifier009 <: AbstractClassifier
+    bc::Dict{AbstractString, BaseClassifier009}
+    cfg::Union{Nothing, DataFrame}  # configurations
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
+    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
+    function Classifier009(optparams=OPTPARAMS009)
+        cl = new(Dict(), DataFrame(), optparams, nothing)
+        readconfigurations!(cl, optparams)
+        @assert !isnothing(cl.cfg)
+        return cl
+    end
+end
+
+function addbase!(cl::Classifier009, ohlcv::Ohlcv.OhlcvData)
+    bc = BaseClassifier009(ohlcv)
+    if isnothing(bc)
+        @error "$(typeof(cl)): Failed to add $ohlcv"
+    else
+        cl.bc[ohlcv.base] = bc
+    end
+end
+
+function supplement!(cl::Classifier009)
+    for bcl in values(cl.bc)
+        supplement!(bcl)
+    end
+end
+
+function writetargetsfeatures(cl::Classifier009)
+    for bcl in values(cl.bc)
+        writetargetsfeatures(bcl)
+    end
+end
+
+# requiredminutes(cl::Classifier009)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
+requiredminutes(cl::Classifier009)::Integer =  maximum(Features.regressionwindows005)
+
+
+function advice(cl::Classifier009, base::AbstractString, dt::DateTime)::InvestProposal
+    bc = ohlcv = nothing
+    if base in keys(cl.bc)
+        bc = cl.bc[base]
+        ohlcv = bc.ohlcv
+    else
+        (verbosity >= 2) && @warn "$base not found in Classifier009"
+        return noop
+    end
+    oix = Ohlcv.rowix(ohlcv, dt)
+    return advice(cl, ohlcv, oix)
+end
+
+function advice(cl::Classifier009, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+    if ohlcvix < requiredminutes(cl)
+        return noop
+    end
+    base = ohlcv.base
+    bc = cl.bc[base]
+    cfg = configuration(cl, bc.cfgid)
+    piv = Ohlcv.pivot!(ohlcv)
+    fix = Features.featureix(bc.f5, ohlcvix)
+    lastgrad = nothing
+    sellcondition = false
+    if !isnothing(bc.regrwindow) # check sell condition
+        regry = Features.regry(bc.f5, bc.regrwindow)[fix]
+        grad = Features.grad(bc.f5, bc.regrwindow)[fix]
+        gain = Features.relativegain(regry, grad, bc.regrwindow, forward=false)
+        if (gain < cfg.buygainthreshold * cfg.sellthresholdfactor) || (piv[ohlcvix] < regry)
+            sellcondition = true
+        end
+    end
+    for rw in Features.regressionwindows005
+        regry = Features.regry(bc.f5, rw)[fix]
+        grad = Features.grad(bc.f5, rw)[fix]
+        gain = Features.relativegain(regry, grad, rw, forward=false)
+        if gain >= cfg.buygainthreshold
+            if isnothing(lastgrad) || (lastgrad >= grad)
+                # buy condition in place
+                if sellcondition && (bc.regrwindow < rw)
+                    bc.regrwindow = nothing
+                    return sell
+                else
+                    bc.regrwindow = rw
+                    return buy
+                end
+            end
+        end
+    end
+    if sellcondition
+        bc.regrwindow = nothing
+        return sell
+    end
+    return hold
+end
+
+configurationid4base(cl::Classifier009, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
+
+function configureclassifier!(cl::Classifier009, base::AbstractString, configid::Integer)
+    if base in keys(cl.bc)
+        cl.bc[base].cfgid = configid
+        return true
+    else
+        @error "cannot find $base in Classifier009"
+        return false
+    end
+end
+
+#endregion Classifier009
+
+#region Classifier010
+
+mutable struct BaseClassifier010
+    ohlcv::Ohlcv.OhlcvData
+    f4::Union{Nothing, Features.Features004}
+    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
+    cfgid::Int16
+    function BaseClassifier010(ohlcv::Ohlcv.OhlcvData, f4=Features.Features004(ohlcv, usecache=true))
+        cl = isnothing(f4) ? nothing : new(ohlcv, f4, 0)
+        return cl
+    end
+end
+
+function Base.show(io::IO, bc::BaseClassifier010)
+    println(io, "BaseClassifier010[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
+end
+
+function writetargetsfeatures(bc::BaseClassifier010)
+    if !isnothing(bc.f4)
+        Features.write(bc.f4)
+    end
+end
+
+supplement!(bc::BaseClassifier010) = Features.supplement!(bc.f4, bc.ohlcv)
+
+const REGRWINDOW010 = Int16[24*60, 3*24*60]
+const TRENDTHRESHOLD010 = Float32[1f0]  # 1f0 == switch off
+const VOLATILITYBUYTHRESHOLD010 = Float32[-0.01f0, -0.02f0, -0.04f0, -0.06f0, -0.08f0, -1f0]  # -1f0 == switch off
+const VOLATILITYSELLTHRESHOLD010 = Float32[0.01f0, 0.02f0, 0.04f0, 0.06f0, 0.08f0]
+const VOLATILITYSELLTRENDFACTOR010 = Float32[1f0, 0f0]
+const VOLATILITYLONGTHRESHOLD010 = Float32[0.02f0]  # -1f0 == switch off
+const OPTPARAMS010 = Dict(
+    "regrwindow" => REGRWINDOW010,
+    "trendthreshold" => TRENDTHRESHOLD010,
+    "volatilitybuythreshold" => VOLATILITYBUYTHRESHOLD010,
+    "volatilitysellthreshold" => VOLATILITYSELLTHRESHOLD010,
+    "volatilityselltrendfactor" => VOLATILITYSELLTRENDFACTOR010,
+    "volatilitylongthreshold" => VOLATILITYLONGTHRESHOLD010
+)
+
+"""
+Classifier010 idea
+- use regression to identify downward peaks buy at (buy threshold + regression grad * regression length) below regression line
+- sell if regression line is reached
+
+"""
+mutable struct Classifier010 <: AbstractClassifier
+    bc::Dict{AbstractString, BaseClassifier010}
+    cfg::Union{Nothing, DataFrame}  # configurations
+    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
+    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
+    function Classifier010(optparams=OPTPARAMS010)
+        cl = new(Dict(), DataFrame(), optparams, nothing)
+        readconfigurations!(cl, optparams)
+        @assert !isnothing(cl.cfg)
+        return cl
+    end
+end
+
+function addbase!(cl::Classifier010, ohlcv::Ohlcv.OhlcvData)
+    bc = BaseClassifier010(ohlcv)
+    if isnothing(bc)
+        @error "$(typeof(cl)): Failed to add $ohlcv"
+    else
+        cl.bc[ohlcv.base] = bc
+    end
+end
+
+function supplement!(cl::Classifier010)
+    for bcl in values(cl.bc)
+        supplement!(bcl)
+    end
+end
+
+function writetargetsfeatures(cl::Classifier010)
+    for bcl in values(cl.bc)
+        writetargetsfeatures(bcl)
+    end
+end
+
+# requiredminutes(cl::Classifier010)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
+requiredminutes(cl::Classifier010)::Integer =  maximum(Features.regressionwindows004)
+
+
+function advice(cl::Classifier010, base::AbstractString, dt::DateTime)::InvestProposal
+    bc = ohlcv = nothing
+    if base in keys(cl.bc)
+        bc = cl.bc[base]
+        ohlcv = bc.ohlcv
+    else
+        (verbosity >= 2) && @warn "$base not found in Classifier010"
+        return noop
+    end
+    oix = Ohlcv.rowix(ohlcv, dt)
+    return advice(cl, ohlcv, oix)
+end
+
+function advice(cl::Classifier010, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+    if ohlcvix < requiredminutes(cl)
+        return noop
+    end
+    base = ohlcv.base
+    bc = cl.bc[base]
+    cfg = configuration(cl, bc.cfgid)
+    piv = Ohlcv.pivot!(ohlcv)
+    fix = Features.featureix(bc.f4, ohlcvix)
+    regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
+    grad = Features.grad(bc.f4, cfg.regrwindow)[fix]
+    ra = Features.relativegain(regry, grad, cfg.regrwindow, forward=false)
+    buyprice = ra < 0 ? regry * (1 + cfg.volatilitybuythreshold + ra) : regry * (1 + cfg.volatilitybuythreshold)
+    sellprice = regry * (1 + cfg.volatilitysellthreshold + ra * cfg.volatilityselltrendfactor)
+
+    if ((piv[ohlcvix] < buyprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.trendthreshold)
+        return buy
+        # elseif ((piv[ohlcvix] <= regry) && (piv[ohlcvix-1] >= regry)) || ((piv[ohlcvix] >= regry) && (piv[ohlcvix-1] <= regry)) # regr line cross from either side
+    elseif piv[ohlcvix-1] >= sellprice
+        return sell
+    end
+    return hold
+end
+
+configurationid4base(cl::Classifier010, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
+
+function configureclassifier!(cl::Classifier010, base::AbstractString, configid::Integer)
+    if base in keys(cl.bc)
+        cl.bc[base].cfgid = configid
+        return true
+    else
+        @error "cannot find $base in Classifier010"
+        return false
+    end
+end
+
+#endregion Classifier010
 
 end  # module

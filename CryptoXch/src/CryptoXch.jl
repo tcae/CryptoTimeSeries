@@ -553,7 +553,7 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
         delrows = []
         for ix in eachindex(portfoliodf[!, :coin])
             minbasequant = minimumbasequantity(xc, portfoliodf[ix, :coin], portfoliodf[ix, :usdtprice])
-            if isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free]]) < minbasequant)
+            if !(portfoliodf[ix, :coin] in quotecoins) && (isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free]]) < minbasequant))
                 push!(delrows, ix)
             end
         end

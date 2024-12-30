@@ -12,8 +12,12 @@ function prepare()
     # Ohlcv.verbosity = 2
     Trade.verbosity = 2
     # EnvConfig.init(production)
-    startdt = DateTime("2024-03-01T00:00:00") # nothing
-    enddt =   DateTime("2024-06-06T09:00:00")
+    # startdt = DateTime("2024-03-01T00:00:00") # nothing
+    # enddt =   DateTime("2024-06-06T09:00:00")
+    enddt = DateTime("2024-12-20T22:58:00")
+    startdt = DateTime("2024-11-10T22:58:00")
+    # startdt = enddt - Year(10)
+    # startdt = enddt - Month(6)
     demux_logger = TeeLogger(
         MinLevelLogger(FileLogger(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")), Logging.Info),
         MinLevelLogger(ConsoleLogger(stdout), Logging.Info)
@@ -139,8 +143,102 @@ function backtestcl003()
     wrapup(defaultlogger)
 end
 
+function backtestcl008()
+    # Redirect sigint to julia exception handling
+    startdt, enddt, defaultlogger = prepare()
+    for base in ["BTC"]
+        EnvConfig.setlogpath("Classifier008-$base")
+        for regrwindow in [24*60]
+            for trendthreshold in [0.08f0]
+                for volatilitybuythreshold in [-0.04f0]
+                    for volatilitylongthreshold in [0.02f0]
+                        println("TradeTest backtest Classifier008-regrwindow$regrwindow-trendthreshold$trendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitylongthreshold$volatilitylongthreshold")
+                        println("$(EnvConfig.now()): started")
+
+                        xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                        cl = Classify.Classifier008()
+                        cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold)
+                        cfgid = configurationid(cl, cfgnt)
+                        println("cfgid=$cfgid for $cfgnt")
+                        cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
+                        Classify.configureclassifier!(cl, base, cfgid)  # 119
+                        # println("cl=$cl")
+                        # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
+                        CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
+                        CryptoXch.writeassets(cache.xc, cache.xc.startdt)
+                        assets = CryptoXch.portfolio!(cache.xc)
+                        totalusdt = sum(assets.usdtvalue)
+                        println("start total USDT = $totalusdt")
+                        println("Trade.verbosity=$(Trade.verbosity)")
+
+                        Trade.tradeloop(cache)
+                        # println("$(cl.dbgdf) \n$(describe(cl.dbgdf, :all))")
+                        # println(describe(cl.dbgdf))
+                        assets = CryptoXch.portfolio!(cache.xc)
+                        totalusdt = sum(assets.usdtvalue)
+                        println("finish total USDT = $totalusdt")
+                        CryptoXch.writeorders(cache.xc)
+                        CryptoXch.writeassets(cache.xc, cache.xc.enddt)
+                    end
+                end
+            end
+        end
+    end
+    wrapup(defaultlogger)
+end
+
+function backtestcl010()
+    # Redirect sigint to julia exception handling
+    startdt, enddt, defaultlogger = prepare()
+    for base in ["XRP"]
+        EnvConfig.setlogpath("Classifier010-$base")
+        for regrwindow in [3*24*60]
+            for trendthreshold in [1f0]
+                for volatilitybuythreshold in [-0.08f0]
+                    for volatilitylongthreshold in [0.02f0]
+                        for volatilitysellthreshold in [0.08f0]
+                            for volatilityselltrendfactor in [0f0]
+                                println("TradeTest backtest Classifier010-regrwindow$regrwindow-trendthreshold$trendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitylongthreshold$volatilitylongthreshold-volatilitysellthreshold$volatilitysellthreshold-volatilityselltrendfactor$volatilityselltrendfactor")
+                                println("$(EnvConfig.now()): started")
+
+                                xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                                cl = Classify.Classifier010()
+                                cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold, volatilitysellthreshold=volatilitysellthreshold, volatilityselltrendfactor=volatilityselltrendfactor)
+                                cfgid = configurationid(cl, cfgnt)
+                                println("cfgid=$cfgid for $cfgnt")
+                                cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
+                                Classify.configureclassifier!(cl, base, cfgid)  # 119
+                                # println("cl=$cl")
+                                # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
+                                CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
+                                CryptoXch.writeassets(cache.xc, cache.xc.startdt)
+                                assets = CryptoXch.portfolio!(cache.xc)
+                                totalusdt = sum(assets.usdtvalue)
+                                println("start total USDT = $totalusdt")
+                                println("Trade.verbosity=$(Trade.verbosity)")
+
+                                Trade.tradeloop(cache)
+                                # println("$(cl.dbgdf) \n$(describe(cl.dbgdf, :all))")
+                                # println(describe(cl.dbgdf))
+                                assets = CryptoXch.portfolio!(cache.xc)
+                                totalusdt = sum(assets.usdtvalue)
+                                println("finish total USDT = $totalusdt")
+                                CryptoXch.writeorders(cache.xc)
+                                CryptoXch.writeassets(cache.xc, cache.xc.enddt)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    wrapup(defaultlogger)
+end
+
 # backtestcl001()
 # backtestcl002()
-backtestcl003()
+# backtestcl003()
+# backtestcl008()
+backtestcl010()
 
 end  # module

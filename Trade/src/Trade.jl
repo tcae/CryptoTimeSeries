@@ -46,7 +46,7 @@ mutable struct TradeCache
     tradegapminutes::Integer  # required to buy/sell in Minute(tradegapminutes) time gaps - will be extended on low budget to satisfy minimum spending constraints per trade
     topx::Integer  # defines how many best candidates are considered for trading
     tradeassetfraction # defines the default trade fraction of an assets versus total assets value as a function(maxassetfraction, count buy sell coins)
-    maxassetfraction # defines the maximum ration of (a specific asset) / ( total assets) - sell only if this is exceeded
+    maxassetfraction # defines the maximum ratio of (a specific asset) / ( total assets) - sell only if this is exceeded
     lastbuy::Dict  # Dict(base, DateTime) required to buy in = Minute(tradegapminutes) time gaps
     lastsell::Dict  # Dict(base, DateTime) required to sell in = Minute(tradegapminutes) time gaps
     reloadtimes::Vector{Time}  # provides time info when the portfolio of coin candidates shall be reassessed
@@ -249,7 +249,7 @@ function read!(tc::TradeCache, datetime=nothing)
         if (length(classifierbases) != count(tc.cfg[:, :classifieraccepted]))
             @error "length(classifierbases)=$(length(classifierbases)) != count(tc.cfg[:, :classifieraccepted])=$(count(tc.cfg[:, :classifieraccepted]))"
         end
-        tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]
+        tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]] #! redundant with previous if check?
         (verbosity >= 2) && println("\r$(CryptoXch.ttstr(tc.xc)) loaded trade config data including $rows base classifier (ohlcv, features) data      ")
     end
     return !isnothing(df) && (size(df, 1) > 0) ? tc : nothing
@@ -285,12 +285,22 @@ maxconcurrentbuycount() = 10  # regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, tp::Classify.InvestProposal, assets::AbstractDataFrame)
-    stopbuying = false
+    #TODO handle multiple classifier with different buy/sell signals for one base
+    #TODO  - provide multiple advices from differen classifiers
+    #TODO  - limits per classifier + config and base => classifier provides relative amount for that base
+    #TODO  - classifier provides: class name, cfgid, relative invest amount, buy price, take profit price
+    #TODO  - Trade adds: investment ID, average actual buy price, startdt buying, enddt buying, actual amount bought
+    #TODO  - ask for advice per investment with specific classifier + config bought at specific price
+    #TODO enable short trading
     sellbuyqtyratio = 2 # sell qty / buy qty per order, if > 1 sell quicker than buying it
     qtyacceleration = 4 # if > 1 then increase buy and sell order qty by this factor
     executed = noop
     base = basecfg.basecoin
     totalusdt = sum(assets.usdtvalue)
+    if totalusdt <= 0
+        @warn "totalusdt=$totalusdt is insufficient, assets=$assets"
+        return noop
+    end
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])
     freebase = sum(assets[assets[!, :coin] .== base, :free])
     # 1800 = likely maxccbuycount

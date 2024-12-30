@@ -907,6 +907,12 @@ regressionproperties = ["grad", "std", "regry", "gain"]
 savedregressionwindows005 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60] # == Features.regressionwindows004
 savedregressionproperties = ["grad", "std", "regry"]
 minmaxproperties = ["mindist", "maxdist"]
+regressionfeaturespec005(regrwindows=regressionwindows005, regrprops=regressionproperties) = [join(["rw", rw, rp], "_") for rw in regrwindows for rp in regrprops]
+minmaxfeaturespec005(mmwindows=regressionwindows005, mmprops=minmaxproperties) = [join(["mm", mmw, rp], "_") for mmw in mmwindows for rp in mmprops]
+volumefeaturespec005(shortlongtuplevector=[(5, 4*60), (60, 3*24*60)]) = [join(["rv", sw, lw], "_") for (sw, lw) in shortlongtuplevector]
+
+"Concatenates the 3 feature specifications. In case one of the specs is not requested then add an empty vector [] instead"
+featurespecification005(regressionfeaturespec=regressionfeaturespec005(), minmaxfeaturespec=minmaxfeaturespec005(), volumefeaturespec=volumefeaturespec005()) = vcat(regressionfeaturespec, minmaxfeaturespec, volumefeaturespec)
 
 "Checks validity of requested configs and returns dataframe with analysis"
 function configdf(requestedconfigs, requiredminutes)
@@ -1028,7 +1034,7 @@ mutable struct Features005 <: AbstractFeatures
     latestloadeddt::Union{Nothing, DateTime}
     complete::Bool # init set it to true, timerangecut to set it to false
     ohlcvoffset::Union{Nothing, Int}
-    function Features005(config::Vector{T}) where T<:AbstractString
+    function Features005(config::Vector)
         requiredminutes = maximum(regressionwindows005)
         @assert length(config) > 0
         cfgdf = configdf(config, requiredminutes)
@@ -1367,6 +1373,14 @@ function features(f5::Features005, startdt::DateTime, enddt::DateTime)
     return features(f5, Ohlcv.rowix(f5.fdf[!, :opentime], startdt), Ohlcv.rowix(f5.fdf[!, :opentime], enddt))
 end
 
+grad(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "grad"], "_")]
+regry(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "regry"], "_")]
+std(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "std"], "_")]
+gain(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "gain"], "_")]
+mindist(f5::Features005, mmminutes) = f5.fdf[!, join(["mm", mmminutes, "mindist"], "_")]
+maxdist(f5::Features005, mmminutes) = f5.fdf[!, join(["mm", mmminutes, "maxdist"], "_")]
+relativevolume(f5::Features005, shortlongtuple) = f5.fdf[!, join(["rv", shortlongtuple[1], shortlongtuple[2]], "_")]
+regrwindows(f5::Features005) = keys(f4.rw)
 opentime(f5::Features005) = isnothing(f5.fdf) ? [] : f5.fdf[!, :opentime]
 
 function Base.show(io::IO, f5::Features005)
