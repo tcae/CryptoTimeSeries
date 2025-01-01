@@ -26,7 +26,7 @@ enddt =   nothing # DateTime("2024-06-06T09:00:00")
 enddt = DateTime("2024-12-31T14:15:00")
 startdt = DateTime("2024-11-12T14:15:00")
 # startdt = enddt - Year(10)
-EnvConfig.setlogpath("2452-Classifier010_$(startdt)_$(enddt)")
+EnvConfig.setlogpath("250101-Classifier010_$(startdt)_$(enddt)")
 classifiertype = Classify.Classifier010
 # coins = ["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"]
 coins = nothing # ["BTC"]
