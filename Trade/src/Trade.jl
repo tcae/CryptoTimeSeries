@@ -108,7 +108,7 @@ If isnothing(datetime) or datetime > last update then uploads latest OHLCV and c
 The resulting DataFrame table of tradable coins is stored.
 `assetonly` is an input parameter to enable backtesting.
 """
-function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false)
+function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false, liquidrangeminutes=30*24*60)
     datetime = floor(datetime, Minute(1))
 
     # make memory available
@@ -156,7 +156,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         CryptoXch.setstartdt(tc.xc, datetime - Minute(Classify.requiredminutes(tc.cl)-1))
         ohlcv = CryptoXch.addbase!(tc.xc, row.basecoin, datetime - Minute(Classify.requiredminutes(tc.cl)-1), tc.xc.enddt)
         Classify.addbase!(tc.cl, ohlcv)
-        row.continuousminvol = continuousminimumvolume(ohlcv, datetime)
+        range = Ohlcv.liquidrange(ohlcv, MINIMUMDAYUSDTVOLUME, 1000f0)
+        row.continuousminvol = !isnothing(range) && (range.endix == lastindex(Ohlcv.dataframe(ohlcv)[!, :opentime])) && ((range.endix - range.startix) > liquidrangeminutes) # continuousminimumvolume(ohlcv, datetime)
     end
     classifierbases = Classify.bases(tc.cl)
     tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]

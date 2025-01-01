@@ -11,6 +11,7 @@ using CategoricalArrays
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 export noop, hold, sell, buy, strongsell, strongbuy
 
+#TODO change to Traget.tradelabels 
 @enum InvestProposal noop hold sell buy strongsell strongbuy # noop = no statement possible, e.g. due to error, trading shall go on save side
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
@@ -897,7 +898,7 @@ function adaptbase(regrwindow, features::Features.AbstractFeatures, pe::Dict, se
     (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
-    nn = model001(size(trainfeatures, 1), Targets.targetlabels, Features.periodlabels(regrwindow))
+    nn = model001(size(trainfeatures, 1), Targets.tradelabels, Features.periodlabels(regrwindow))
     nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
@@ -931,7 +932,7 @@ function adaptcombi(nnvec::Vector{NN}, features::Features.AbstractFeatures, pe::
     (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
     println("$(EnvConfig.now()) adapting machine for combi classifier")
-    nn = model001(size(trainfeatures, 1), Targets.targetlabels, "combi")
+    nn = model001(size(trainfeatures, 1), Targets.tradelabels, "combi")
     nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
@@ -1010,7 +1011,7 @@ function savenn(nn::NN)
 end
 
 function loadnn(filename)
-    nn = model001(1, Targets.targetlabels, "dummy")  # dummy data struct
+    nn = model001(1, Targets.tradelabels, "dummy")  # dummy data struct
     BSON.@load EnvConfig.logpath(nnfilename(filename)) nn
     # loadlosses!(nn)
     return nn
@@ -1037,7 +1038,7 @@ function trades(predictions::AbstractDataFrame, thresholds::Vector)
     predonly = predictions[!, predictioncolumns(predictions)]
     scores, maxindex = maxpredictions(Matrix(predonly), 2)
     labels = levels(predictions.targets)
-    ignoreix, longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.targetlabels)
+    ignoreix, longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels)
     buytrade = (tradeix=closeix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
     holdtrade = (tradeix=closeix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
 
@@ -1164,7 +1165,7 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
 
 function predictioncolumns(predictionsdf::AbstractDataFrame)
     nms = names(predictionsdf)
-    [nmix for nmix in eachindex(nms) if nms[nmix] in Targets.targetlabels]
+    [nmix for nmix in eachindex(nms) if nms[nmix] in Targets.tradelabels]
 end
 
 function confusionmatrix(predictions::AbstractDataFrame)
@@ -1208,9 +1209,9 @@ function predictionsfilename(fileprefix::String)
     return prefix * ".jdf"
 end
 
-labelvec(labelindexvec, labels=Targets.targetlabels) = [labels[i] for i in labelindexvec]
+labelvec(labelindexvec, labels=Targets.tradelabels) = [labels[i] for i in labelindexvec]
 
-labelindexvec(labelvec, labels=Targets.targetlabels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
+labelindexvec(labelvec, labels=Targets.tradelabels) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
 
 "returns a (scores, labelindices) tuple of best predictions. Without labels the index is the index within levels(df.targets).
 dim=1 indicates predictions of the same column are compared while dim=2 indicates that predictions of the same row are compared."
@@ -1235,7 +1236,7 @@ end
 #     maxindex = zeros(UInt32, size(predictions, 1))
 #     for (lix, label) in enumerate(names(predictions))
 #         if eltype(predictions[!, label]) <: AbstractFloat
-#             if !(label in Targets.targetlabels)
+#             if !(label in Targets.tradelabels)
 #                 @warn "unexpected predictions class: $label"
 #             end
 #             vec = predictions[!, label]
@@ -1287,7 +1288,7 @@ end
 "returns a (scores, booltargets) tuple of binary predictions of class `label`, i.e. booltargets[ix] == true if bestscore is assigned to focuslabel"
 function binarypredictions end
 
-function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.targetlabels)
+function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.tradelabels)
     flix = findfirst(x -> x == focuslabel, labels)
     @assert !isnothing(flix) && (firstindex(labels) <= flix <= lastindex(labels)) "$focuslabel==$(isnothing(flix) ? "nothing" : flix) not found in $labels[$(firstindex(labels)):$(lastindex(labels))]"
     @assert length(labels) == size(predictions, 1) "length(labels)=$(length(labels)) == size(predictions, 1)=$(size(predictions, 1))"
@@ -1300,7 +1301,7 @@ function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labe
     return (length(ixvec) > 0 ? predictions[flix, :] : []), ixvec
 end
 
-function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.targetlabels)
+function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.tradelabels)
     @assert focuslabel in labels
     if size(predictions, 1) == 0
         return [],[]
@@ -1324,7 +1325,7 @@ function smauc(scores, predlabels)
     return auc(ŷ, y)  # StatisticalMeasures package
 end
 
-function aucscores(pred, labels=Targets.targetlabels)
+function aucscores(pred, labels=Targets.tradelabels)
     aucdict = Dict()
     if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
@@ -1340,7 +1341,7 @@ function aucscores(pred, labels=Targets.targetlabels)
     return aucdict
 end
 
-# aucscores(pred, labels=Targets.targetlabels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+# aucscores(pred, labels=Targets.tradelabels) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
     # auc_scores = []
     # for class_label in unique(targets)
     #     class_scores, class_events = binarypredictions(pred, targets, class_label)
@@ -1351,7 +1352,7 @@ end
 # end
 
 "Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
-function roccurves(pred, labels=Targets.targetlabels)
+function roccurves(pred, labels=Targets.tradelabels)
     rocdict = Dict()
     if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
@@ -1388,7 +1389,7 @@ end
 #     display(plt)
 # end
 
-function confusionmatrix(pred, targets, labels=Targets.targetlabels)
+function confusionmatrix(pred, targets, labels=Targets.tradelabels)
     predonly = pred[!, predictioncolumns(pred)]
 
     dim = length(targets) == size(pred, 1) ? 2 : 1
@@ -2972,12 +2973,12 @@ end
 
 supplement!(bc::BaseClassifier010) = Features.supplement!(bc.f4, bc.ohlcv)
 
-const REGRWINDOW010 = Int16[24*60, 3*24*60]
-const TRENDTHRESHOLD010 = Float32[1f0]  # 1f0 == switch off
+const REGRWINDOW010 = Int16[24*60]
+const TRENDTHRESHOLD010 = Float32[0.02f0, 0.04f0, 0.06f0, 0.08f0, 1f0]  # 1f0 == switch off
 const VOLATILITYBUYTHRESHOLD010 = Float32[-0.01f0, -0.02f0, -0.04f0, -0.06f0, -0.08f0, -1f0]  # -1f0 == switch off
 const VOLATILITYSELLTHRESHOLD010 = Float32[0.01f0, 0.02f0, 0.04f0, 0.06f0, 0.08f0]
-const VOLATILITYSELLTRENDFACTOR010 = Float32[1f0, 0f0]
-const VOLATILITYLONGTHRESHOLD010 = Float32[0.02f0]  # -1f0 == switch off
+const VOLATILITYSELLTRENDFACTOR010 = Float32[0f0]  # 0f0 == switch off 
+const VOLATILITYLONGTHRESHOLD010 = Float32[0f0]  # -1f0 == switch off
 const OPTPARAMS010 = Dict(
     "regrwindow" => REGRWINDOW010,
     "trendthreshold" => TRENDTHRESHOLD010,
@@ -3063,7 +3064,7 @@ function advice(cl::Classifier010, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     if ((piv[ohlcvix] < buyprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.trendthreshold)
         return buy
         # elseif ((piv[ohlcvix] <= regry) && (piv[ohlcvix-1] >= regry)) || ((piv[ohlcvix] >= regry) && (piv[ohlcvix-1] <= regry)) # regr line cross from either side
-    elseif piv[ohlcvix-1] >= sellprice
+    elseif (piv[ohlcvix-1] >= sellprice) && (ra < cfg.trendthreshold)
         return sell
     end
     return hold

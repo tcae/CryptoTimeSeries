@@ -423,7 +423,7 @@ Returns a named tuple (startix, endix) with indices of the latest timerange that
 
 If no such period is found then `nothing` is returned.
 """
-function liquidrange(ohlcv::OhlcvData, usdt24h::AbstractFloat, usdtminimum::AbstractFloat)
+function liquidrange(ohlcv::OhlcvData, usdt24h::Real, usdtminimum::Real)
     incrementminutes = 12*60
     dayminutes = 24*60
     otime = dataframe(ohlcv)[!, :opentime]
@@ -464,7 +464,7 @@ end
 Returns a DataFrame of canned coins that meet the liquidrange() criteria with their most recent data and with a liquid data range long enough.
 The DataFrame has the columns: basecoin, startix, endix, startdt, enddt, period
 """
-function liquidcoins(;usdt24h::AbstractFloat=2*1000*1000f0, usdtminimum::AbstractFloat=1000f0, liquidrangeminutes::Signed=20*24*60)
+function liquidcoins(;usdt24h::AbstractFloat=10*1000*1000f0, usdtminimum::AbstractFloat=1000f0, liquidrangeminutes::Signed=20*24*60)
     liquidbases = DataFrame()
     for ohlcv in Ohlcv.OhlcvFiles()
         otime = Ohlcv.dataframe(ohlcv)[!, :opentime]

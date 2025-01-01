@@ -28,7 +28,7 @@ enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(true; enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 cl = Classify.Classifier010()
-cfgnt = (regrwindow=3*24*60,trendthreshold=1f0, volatilitybuythreshold=-0.08f0, volatilitylongthreshold=0.02f0, volatilitysellthreshold=0.08f0, volatilityselltrendfactor=0f0)
+cfgnt = (regrwindow=1*24*60,trendthreshold=1f0, volatilitybuythreshold=-0.06f0, volatilitylongthreshold=0.0f0, volatilitysellthreshold=0.06f0, volatilityselltrendfactor=0f0)
 cfgid = configurationid(cl, cfgnt)
 println("cfgid=$cfgid for $cfgnt")
 Classify.configureclassifier!(cl, cfgid, true)

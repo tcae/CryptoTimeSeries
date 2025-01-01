@@ -159,7 +159,7 @@ Consider out of spread deviations down from a reached price level as trade crite
 
 Challenges:
 
-- what is an uptrend, considering that we have more or less significant distortions during an uptrend? Once determined, history data need to get corresponding **`targetlabels`**
+- what is an uptrend, considering that we have more or less significant distortions during an uptrend? Once determined, history data need to get corresponding **`tradelabels`**
 - when does a profitable uptrend starts?
 - when does an uptrend ends? Independent whether or not it is a profitable uptrend we have to limit losses
 - are there uptrends per granularity, e.g. regression window?

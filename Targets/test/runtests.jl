@@ -45,7 +45,7 @@ end
 
         # CryptoTimeSeries/Targets/test/continuousdistancelabels_test02.jl
         labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(ydata, Targets.defaultlabelthresholds)
-        @test labels == ["longbuy", "longbuy", "close", "shortbuy", "shortbuy", "shortbuy", "shortbuy", "close", "longbuy", "longbuy", "longbuy", "longbuy", "close", "shortbuy", "shortbuy", "shortbuy", "close", "longbuy", "longbuy", "close"]
+        @test labels == ["longbuy", "longbuy", "longclose", "shortbuy", "shortbuy", "shortbuy", "shortbuy", "shortclose", "longbuy", "longbuy", "longbuy", "longbuy", "longclose", "shortbuy", "shortbuy", "shortbuy", "shortclose", "longbuy", "longbuy", "longclose"]
         @test relativedist ≈ [0.23776412, 0.07918227, 0.0, -0.38418326, -0.33542147, -0.23776412, -0.10646201, 0.0, 0.6238597, 0.45098034, 0.23776412, 0.07918227, 0.0, -0.31081077, -0.2562392, -0.14694631, 0.0, 0.11914659, 0.11914659, 0.0]
         @test realdist ≈ [0.47552824f0, 0.18163562f0, 0.0f0, -0.9510565f0, -0.76942086f0, -0.47552824f0, -0.18163562f0, 0.0f0, 0.9510565f0, 0.76942086f0, 0.47552824f0, 0.18163562f0, 0.0f0, -0.76942086f0, -0.58778524f0, -0.29389262f0, 0.0f0, 0.18163562f0, 0.18163562f0, 0.0f0]
         @test priceix == [4, 4, 4, 9, 9, 9, 9, 9, 14, 14, 14, 14, 14, 20, 20, 20, 20, 20, 20, 0]

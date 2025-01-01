@@ -23,8 +23,10 @@ verbosity =
 """
 verbosity = 1
 
-"returns all possible labels (don't change sequence because index is used as class id)"
-const targetlabels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy"]
+"""
+returns all possible labels (don't change sequence because index is used as class id). "close" will be phased out and replaced by "longclose", "shortclose"
+"""
+const tradelabels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy", "longclose", "shortclose", "longstrongbuy", "shortstrongbuy", "longstrongclose", "shortstrongclose"]
 
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
 abstract type AbstractTargets <: EnvConfig.AbstractConfiguration end
@@ -142,6 +144,10 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
         elseif newstate == "close"
             if !(lastbuy in ["shortbuy", "longbuy"])
                 newstate = "ignore"
+            elseif lastbuy == "longbuy"
+                newstate = "longclose"
+            elseif lastbuy == "shortbuy"
+                newstate = "shortclose"
             end
         else
             @error "unexpected newstate=$newstate"
@@ -501,14 +507,14 @@ function supplement!(fdg::FixedDistanceGain)
                     if dfnew[ix, :longbuy]
                         dfnew[ix, :label] = "longbuy"
                     elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["longbuy", "longhold"])  # longhold can only follow longbuy or longhold
-                        dfnew[ix, :label] = dfnew[ix, :longhold] ? "longhold" : "close"
+                        dfnew[ix, :label] = dfnew[ix, :longhold] ? "longhold" : "longclose"
                     end
                 end
                 if (maxix[ix] > minix[ix]) || (dfnew[ix, :minreldiff] < 0f0)
                     if dfnew[ix, :shortbuy]
                         dfnew[ix, :label] = "shortbuy"
                     elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["shortbuy", "shorthold"])  # shorthold can only follow shortbuy or shorthold
-                        dfnew[ix, :label] = dfnew[ix, :shorthold] ? "shorthold" : "close"
+                        dfnew[ix, :label] = dfnew[ix, :shorthold] ? "shorthold" : "shortclose"
                     end
                 end
             end
@@ -551,7 +557,7 @@ function df(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::In
 end
 
 df(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = df(fdg, Ohlcv.rowix(fdg.df[!, :opentime], startdt), Ohlcv.rowix(fdg.df[!, :opentime], enddt))
-longbuybinarytargets(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "close" for lb in df(fdg, startdt, enddt)[!, :longbuy]]
+longbuybinarytargets(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "longclose" for lb in df(fdg, startdt, enddt)[!, :longbuy]]
 
 function labels(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractVector
     return isnothing(fdg.df) ? [] : fdg.df[firstix:lastix, :label]
