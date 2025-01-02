@@ -21,7 +21,7 @@ In crypto trading it is all about yield. We have the follwig main task:
 
 These are 2 independent loops. As soon as a better trading system is available it will replace the old.
 
-# Train/improve a trading system
+## Train/improve a trading system
 
 The minimal requirement to allow a trading system to execute is a positive yield on average. This requires self assessment and a definition when a system is good / not good enough and it is risk acceptable to trade or better to not trade at all. Both criteria should form a hysteresis to avoid high frequent on/off switches.
 

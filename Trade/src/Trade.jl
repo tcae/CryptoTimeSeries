@@ -305,7 +305,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
     minimumbasequantity = CryptoXch.minimumbasequantity(cache.xc, base, price)
     minqteratio = round(Int, (minimumbasequantity * price) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
     basedominatesassets = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > cache.maxassetfraction
-    if (ta.tradelabel == longclose) && (cache.trademode in [buysell, sellonly, quickexit]) && basecfg.sellenabled
+    if (ta.longtradelabel in [longstrongclose, longclose]) && (cache.trademode in [buysell, sellonly, quickexit]) && basecfg.sellenabled
         # now adapt minimum, if otherwise a too small remainder would be left
         minimumbasequantity = freebase <= 2 * minimumbasequantity ? (freebase >= minimumbasequantity ? freebase : minimumbasequantity) : minimumbasequantity
         basequantity = min(max(sellbuyqtyratio * qtyacceleration * quotequantity/price, minimumbasequantity), freebase)
@@ -322,7 +322,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         else
             (verbosity > 3) && println("$(tradetime(cache)) no longclose $base due to sufficientsellbalance=$sufficientsellbalance, exceedsminimumbasequantity=$exceedsminimumbasequantity")
         end
-    elseif (ta.tradelabel == longbuy) && (cache.trademode == buysell) && basecfg.buyenabled
+    elseif (ta.longtradelabel in [longbuy, longstrongbuy]) && (cache.trademode == buysell) && basecfg.buyenabled
         basequantity = min(max(qtyacceleration * quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price #* keep 1% * totalusdt as head room
         sufficientbuybalance = (basequantity * price < freeusdt) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity

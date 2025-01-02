@@ -26,12 +26,13 @@ enddt =   nothing # DateTime("2024-06-06T09:00:00")
 enddt = DateTime("2024-12-31T14:15:00")
 startdt = DateTime("2024-11-12T14:15:00")
 # startdt = enddt - Year(10)
-EnvConfig.setlogpath("250102-Classifier010_$(startdt)_$(enddt)")
-classifiertype = Classify.Classifier010
+EnvConfig.setlogpath("250102-Classifier011_$(startdt)_$(enddt)")
+classifiertype = Classify.Classifier011
 # coins = ["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"]
 coins = nothing # ["BTC"]
 coinsdf = Ohlcv.liquidcoins(liquidrangeminutes=10*24*60)
-filtered_df = coinsdf # filter(row -> row.basecoin in coins, coinsdf)
+# filtered_df = coinsdf[1:2, :] # filter(row -> row.basecoin in coins, coinsdf)
+filtered_df = coinsdf
 println("evaluating: $coins \n coinsdf=$coinsdf \n filtered_df=$filtered_df")
 df = Classify.evaluateclassifiers([classifiertype], filtered_df, startdt, enddt)
 # df = Classify.readsimulation()

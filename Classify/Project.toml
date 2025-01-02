@@ -1,7 +1,7 @@
 name = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.26.0"
+version = "0.27.1"
 
 [deps]
 Assets = "e4c5a7f8-51b3-4a40-8507-79544143629b"
