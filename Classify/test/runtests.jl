@@ -5,7 +5,7 @@ using CategoricalDistributions, StatisticalMeasures
 import CategoricalDistributions:classes
 using Dates, DataFrames
 using Test
-using Classify, Features
+using Classify, Features, Targets
 
 @testset "Classify tests" begin
 
@@ -35,7 +35,7 @@ res = Classify.setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, 
 @test Classify.score2bin(0.0, 10) == 1
 @test Classify.score2bin(-0.05, 10) == 1
 
-@test Classify.regramount(25.1, 0.2, 60) == Features.relativegain(25.1, 0.2, 60, forward=false)
+@test Classify.regramount(25.1, 0.2, 60) == Targets.relativegain(25.1, 0.2, 60, forward=false)
 end
 
 end  # module

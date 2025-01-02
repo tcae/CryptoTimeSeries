@@ -6,12 +6,12 @@
 
 # TODO treat orders as portfolio part, show sel limit as line
 # TODO show % improvement of portfolio and whike portfolio
-# TODO buy at next specific regresson minimum
+# TODO longbuy at next specific regresson minimum
 # TODO migrate all windows to ohlcv graphs
 # TODO deviation spread and tracker visualization
 # TODO deviation spread and tracker window clear color other regression windows opaque
 # TODO yellow within x sigma range, green break out, red plunge
-# TODO green marker = buy, black marker sell, red marker emergency sell in 4h Candlestick
+# TODO green marker = longbuy, black marker longclose, red marker emergency longclose in 4h Candlestick
 # TODO load TestOhlcv dynamically instead of using a file cache to be able to adapt testdata
 # TODO load test Assets dynamically instead of using a file cache to be able to add/remove testdata bases
 # using Colors

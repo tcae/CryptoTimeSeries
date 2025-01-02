@@ -242,29 +242,6 @@ function fillgaps!(ohlcv::OhlcvData)
 end
 
 """
-- returns the relative forward/backward looking gain
-- deducts relativefee from both values
-"""
-function relativegain(startvalue::AbstractFloat, endvalue::AbstractFloat; relativefee::AbstractFloat=0f0, forward::Bool=true)
-    startvalue = startvalue * (1 + relativefee)
-    endvalue = endvalue * (1 - relativefee)
-    if forward
-        gain = (endvalue - startvalue) / startvalue
-    else
-        gain = (endvalue - startvalue) / endvalue
-    end
-    return gain
-end
-
-function relativegain(values::AbstractVector{T}, baseix::Integer, gainix::Integer; relativefee::AbstractFloat=0f0) where {T<:AbstractFloat}
-    if baseix > gainix
-        return relativegain(values[gainix], values[baseix]; relativefee=relativefee, forward=false)
-    else
-        return relativegain(values[baseix], values[gainix]; relativefee=relativefee, forward=true)
-    end
-end
-
-"""
 Divides all elements by the value of the last as reference point - if not otherwise specified - and subtracts 1.
 If ``percent==true`` then the result is multiplied by 100
 """

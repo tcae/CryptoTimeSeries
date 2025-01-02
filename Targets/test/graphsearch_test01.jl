@@ -13,7 +13,7 @@ end
 
 with_logger(logger) do
 
-# not exceeding buy thresholds should result always in next possible extreme
+# not exceeding longbuy thresholds should result always in next possible extreme
 ydata = [1.0f0, 1.29f0, 1.0f0, 1.29f0, 0.97f0, 1.15f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0, 1.0f0, 1.1f0, 1.0f0, 1.2f0, 1.0f0, 1.2f0]
 grad1 = [0.2f0, 0.2f0, -0.2f0, -0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
 grad2 = [0.2f0, 0.1f0, 0.1f0, 0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
@@ -30,7 +30,7 @@ df.relativedist = relativedist
 df.labels = labels
 
 refpriceix = Int32[2, -5, -5, -5, 6, -7, 12, 12, 12, 12, 12, -13, 16, 16, 16, -17, 18, -19, 20, -20]
-println("not exceeding buy thresholds should result always in next possible extreme")
+println("not exceeding longbuy thresholds should result always in next possible extreme")
 println(df)
 println("equal to ref = $(refpriceix == priceix)  priceix = $priceix")
 

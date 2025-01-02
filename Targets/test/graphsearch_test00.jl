@@ -12,13 +12,13 @@ end
 
 with_logger(logger) do
 
-# if a long term buy exceeding regr extreme is interrupted by a short term buy exceeding regr then the short term has priority except the long term has mor than double gain
+# if a long term longbuy exceeding regr extreme is interrupted by a short term longbuy exceeding regr then the short term has priority except the long term has mor than double gain
 ydata = [1.0f0, 1.1f0, 1.1f0, 0.9f0, 0.75f0, 0.8f0, 0.8f0, 0.85f0, 0.8f0, 0.75f0, 0.7f0, 0.6f0, 0.4f0, 0.6f0, 0.65f0, 0.7f0, 0.71f0, 0.75f0, 0.7f0, 0.6f0]
 grad1 = [-0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.0f1]
 grad2 = [0.2f0, 0.1f0, 0.1f0, -0.1f0, 0.0f0, 0.1f0, 0.2f0, 0.2f0, -0.1f0, -0.2f0, -0.1f0, -0.1f0, -0.1f0, 0.2f0, 0.1f0, 0.2f0, 0.2f0, -0.2f0, -0.2f0, 0.0f0]
 f2 = Targets.fakef2fromarrays(ydata, [grad1, grad2])
 labels, relativedist, realdist, priceix = Targets.continuousdistancelabels(f2; labelthresholds=Targets.LabelThresholds(0.3, 0.05, -0.05, -0.3))
-println("nearer extreme exceeding buy thresholds should win against further away buy threshold exceeding extreme if near term buy has at least 50% of the far term buy gain")
+println("nearer extreme exceeding longbuy thresholds should win against further away longbuy threshold exceeding extreme if near term longbuy has at least 50% of the far term longbuy gain")
 df = DataFrame()
 df.ydata = ydata
 df.grad1 = grad1

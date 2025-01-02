@@ -13,6 +13,7 @@ module Targets
 
 using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
+export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, ignore, longstrongclose, longclose, longhold, longbuy, longstrongbuy
 
 """
 verbosity =
@@ -23,10 +24,12 @@ verbosity =
 """
 verbosity = 1
 
+
 """
 returns all possible labels (don't change sequence because index is used as class id). "close" will be phased out and replaced by "longclose", "shortclose"
 """
 const tradelabels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy", "longclose", "shortclose", "longstrongbuy", "shortstrongbuy", "longstrongclose", "shortstrongclose"]
+@enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose =-1 ignore=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5
 
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
 abstract type AbstractTargets <: EnvConfig.AbstractConfiguration end
@@ -50,6 +53,42 @@ function relativegain(targets::AbstractTargets, firstix::DateTime, lastix::DateT
 
 "Provides a description that characterizes the features"
 describe(targets::AbstractTargets) = "$(typeof(targets))"
+
+"""
+Calculates the start y coordinate of a straight regression line given by the last y of the line `regry`, the gradient `grad` and the length `window`.
+"""
+startregry(eregry, grad, window) = eregry - grad * (window - 1)
+
+"Returns the relative gain of the given regression relative to start y if `forward` (default) otherwise relative to given end regry"
+function relativegain(endregry, grad, window; relativefee::AbstractFloat=0f0, forward=true)
+    sregry = startregry(endregry, grad, window)
+    return Targets.relativegain(sregry, endregry; relativefee=relativefee, forward=forward)
+end
+relativedaygain(f4::Features.Features004, regrminutes::Integer, featuresix::Integer) = relativegain(regry(f4, regrminutes)[featuresix], grad(f4, regrminutes)[featuresix], 24*60)
+
+"""
+- returns the relative forward/backward looking gain
+- deducts relativefee from both values
+"""
+function relativegain(startvalue::AbstractFloat, endvalue::AbstractFloat; relativefee::AbstractFloat=0f0, forward::Bool=true)
+    startvalue = startvalue * (1 + relativefee)
+    endvalue = endvalue * (1 - relativefee)
+    if forward
+        gain = (endvalue - startvalue) / startvalue
+    else
+        gain = (endvalue - startvalue) / endvalue
+    end
+    return gain
+end
+
+function relativegain(values::AbstractVector{T}, baseix::Integer, gainix::Integer; relativefee::AbstractFloat=0f0) where {T<:AbstractFloat}
+    if baseix > gainix
+        return relativegain(values[gainix], values[baseix]; relativefee=relativefee, forward=false)
+    else
+        return relativegain(values[baseix], values[gainix]; relativefee=relativefee, forward=true)
+    end
+end
+
 
 function labeldistribution(targets::AbstractVector{T}, labels=unique(targets)) where T<:AbstractString
     cattargets = categorical(targets; levels=labels, compress=true)
@@ -88,11 +127,11 @@ end
 
 """
 - defines the relative transaction thresholds
-    - buy long at more than *longbuy* gain potential from current price
-    - hold long above *longhold* gain potential from current price
+    - longbuy long at more than *longbuy* gain potential from current price
+    - longhold long above *longhold* gain potential from current price
     - close long position below *longhold* gain potential from current price
-    - buy short at or lower than *shortbuy* loss potential from current price
-    - hold short below *shorthold* loss potential from current price
+    - longbuy short at or lower than *shortbuy* loss potential from current price
+    - longhold short below *shorthold* loss potential from current price
     - close short position above *shorthold* loss potential from current price
 - Targets.defaultlabelthresholds provides default thresholds
 """
@@ -112,12 +151,12 @@ defaultlabelthresholds = LabelThresholds(0.03, 0.005, -0.005, -0.03)
 Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
 
 - The folllowing invariant is assumed: `longbuy > longhold >= 0 >= shorthold > shortbuy`
-- a gain shall be above `longbuy` threshold for a buy (long buy) signal
+- a gain shall be above `longbuy` threshold for a longbuy (long longbuy) signal
 - bought assets shall be held (but not bought) if the remaining gain is above `longhold` threshold
 - bought assets shall be closed if the remaining gain is below `longhold` threshold
-- a loss shall be below `shortbuy` for a sell (short buy) signal
-- sold (short buy) assets shall be held if the remaining loss is below `shorthold`
-- sold (short buy) assets shall be closed if the remaining loss is above `shorthold`
+- a loss shall be below `shortbuy` for a longclose (short longbuy) signal
+- sold (short longbuy) assets shall be held if the remaining loss is below `shorthold`
+- sold (short longbuy) assets shall be closed if the remaining loss is above `shorthold`
 - all thresholds are relative gain values: if backwardrelative then the relative gain is calculated with the target price otherwise with the current price
 
 """
@@ -220,7 +259,7 @@ function Base.show(io::IO, pe::PriceExtreme)
 end
 
 function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
-    g = Ohlcv.relativegain(prices, abs(ix1), abs(ix2))
+    g = Targets.relativegain(prices, abs(ix1), abs(ix2))
     if g > 0
         g = g >= labelthresholds.longbuy ? g : 0.0
     else

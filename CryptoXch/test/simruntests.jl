@@ -179,7 +179,7 @@ println("CryptoXchSimTest simruntests")
     oo6 = (o6..., id=oid)
     assetbtc = (assetbtc..., free = assetbtc.free - o6.baseqty, locked = assetbtc.locked + o6.baseqty)
     oodf = CryptoXch.getopenorders(xc)
-    (verbosity  >= 3) && println("getopenorders(nothing) - expect 1 buy and 1 sell order: $oodf")
+    (verbosity  >= 3) && println("getopenorders(nothing) - expect 1 longbuy and 1 longclose order: $oodf")
     adf = CryptoXch.portfolio!(xc)
     (verbosity  >= 3) && println("7) changeorder btc=$assetbtc usdt=$assetusdt simassets=$adf")
     @test abs(sum(adf[adf[!, :coin] .== "BTC", :free]) - assetbtc.free) < BTCEPS
@@ -202,7 +202,7 @@ println("CryptoXchSimTest simruntests")
     assetusdt = (assetusdt..., free = assetusdt.free + o6.baseqty * o6.limit * (1 - xc.feerate))
 
     oodf = CryptoXch.getopenorders(xc)
-    (verbosity  >= 3) && println("8) getopenorders(nothing) - expect 1 buy order open: $oodf")
+    (verbosity  >= 3) && println("8) getopenorders(nothing) - expect 1 longbuy order open: $oodf")
     @test (size(oodf, 1) == 1)
 
     adf = CryptoXch.portfolio!(xc)

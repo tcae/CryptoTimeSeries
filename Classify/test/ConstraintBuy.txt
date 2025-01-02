@@ -1,5 +1,5 @@
 ConstraintBuy.txt
-the following results are calculated with unconstraint buy
+the following results are calculated with unconstraint longbuy
 evaluate! result: 12×24 DataFrame
  Row │ basecoin  regrwindow  gainthreshold  active  startdt              enddt                totalcnt  sellcnt  buycnt   maxccbuycnt  medianccbuycnt  unresolvedcnt  totalgain       mediangain  meangain  cumgain         maxcumgain      mincumgain       maxdrawdown      maxgap  mediangap  simgain         minsimgain  maxsimgain
      │ String    Int16       Float32        Bool    DateTime             DateTime             Int32     Int32    Int32    Int32        Float32         Int32          Float32         Float32     Float32   Float32         Float32         Float32          Float32          Int32   Float32    Float32          Float32      Float32
@@ -19,7 +19,7 @@ evaluate! result: 12×24 DataFrame
 240320 23:12: finished
 Main.Cls001Evaluate
 
-the following results are calculated with buy only if 3d grad >= 0
+the following results are calculated with longbuy only if 3d grad >= 0
 240320 23:21: started
 BTC, 14400, 0.025
 evaluate! result: 12×24 DataFrame
@@ -41,7 +41,7 @@ evaluate! result: 12×24 DataFrame
 240320 23:23: finished
 Main.Cls001Evaluate
 
-the following results are calculated with buy only if 10d grad >= 0
+the following results are calculated with longbuy only if 10d grad >= 0
 240320 23:25: started
 BTC, 14400, 0.025
 evaluate! result: 12×24 DataFrame

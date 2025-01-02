@@ -9,10 +9,6 @@ using CategoricalArrays
 # using CategoricalDistributions
 # using Distributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
-export noop, hold, sell, buy, strongsell, strongbuy
-
-#TODO change to Traget.tradelabels 
-@enum InvestProposal noop hold sell buy strongsell strongbuy # noop = no statement possible, e.g. due to error, trading shall go on save side
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
 DEBUG = false
@@ -38,11 +34,6 @@ verbosity = 1
     - uses `setpartitions` with a default split into learn, eval and test sets
 - in order to supplement new feature/target data of an incoming data stream implement `supplement!` like for the initial calculation as mentioned above
 - `advice` is implementing the classification verdict
-- the classifier can also influence the asset allocatin as Follows
-    - `buysplitparts` indicates the number of buy orders for an advice
-    - `tradegapminutes` indicates the number of minutes to wait before the next order advice of same type is issued
-    - `sellvolumefactor` is a factor that can introduce a different sell pace than the buy pace
-    - `takeprofitgain` returns a relative gain in case of a take profit order
 - a classifier can be simulation tested over a set of configuration given in the classifier property `optparams` by using
     - `evaluate!` for a single classifier and the to be evaluated ohlcv data
     - `evaluateclassifiers` for a set of classifiers and a set of bases on a given time range
@@ -51,6 +42,16 @@ verbosity = 1
     - from the data frame of all simulations the simulation of a specific classifier can be isolated by `kpioverview`
 """
 abstract type AbstractClassifier <: AbstractConfiguration end
+
+mutable struct TradeAdvice
+    classifier::AbstractClassifier
+    configid
+    tradelabel::TradeLabel
+    relativeamount  # relative investment amount to be spent from the maximum amount considered for classifier/base combination
+    base
+    price  # price of this trade advice
+    datetime  # exchange datetime (== opentime of OHLCV) of this trade advice 
+end
 
 """
 classifier usage approach: classifier that serves one or more bases but can be trained with arbitrary bases
@@ -110,34 +111,19 @@ function requiredminutes(cl::AbstractClassifier)::Integer
     return 0
 end
 
-"""
-Returns number of part orders of an investment shall be split on average, e.g. to spread buying over a timerange.
-Required time range gaps between the split orders shall be handled via classifier advice time gaps, i.e. the last advice is stored in BaseClassifier and an advice of same type is only issued after the targeted time gap.
-"""
-buysplitparts(cl::AbstractClassifier, base::AbstractString) = 1
-
-"Minimum number of minutes between consecutive gaps of the same trade type (e.g. buy)"
-tradegapminutes(cl::AbstractClassifier, base::AbstractString) = 60
-
-"Factor used to sell buy parts, i.e. 2 = sell with each order double the volume than bought. It shall be an Integer > 0"
-sellvolumefactor(cl::AbstractClassifier, base::AbstractString) = 1
-
-"`nothing` if no take profit request or a relative gain"
-takeprofitgain(cl::AbstractClassifier, base::AbstractString) = nothing
-
 "fee to be considered in classifier backtesting"
 relativefee(cl::AbstractClassifier, base::AbstractString) = 0.08 / 100  # Bybit VIP1 taker fee: 0.08%
 
-"Returns a trading advice for the specified time. Will return a noop in case of insufficient associated base data."
-function advice(cl::AbstractClassifier, base::AbstractString, dt::DateTime)::InvestProposal
+"Returns a trading advice for the specified time. Will return a ignore in case of insufficient associated base data."
+function advice(cl::AbstractClassifier, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     @error "missing $(typeof(cl)) implementation"
-    return noop
+    return nothing
 end
 
-"Returns a trading advice for the current ohlcv index. Will return a noop in case of insufficient associated base data."
-function advice(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+"Returns a trading advice for the current ohlcv index. Will return a ignore in case of insufficient associated base data."
+function advice(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     @error "missing $(typeof(cl)) implementation"
-    return noop
+    return nothing
 end
 
 "Returns a Dict of setname => vector of row ranges"
@@ -189,72 +175,35 @@ function logsim!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.Ohl
     otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
     piv = Ohlcv.dataframe(ohlcv)[!, :pivot]
     cfgid = configurationid4base(cl, ohlcv.base)
-    lasttp = noop
-    tradegap = tradegapminutes(cl, ohlcv.base)
-    buyenabledix = sellenabledix = 1
     buyorders = []
-    sellmultiple = round(Int, sellvolumefactor(cl, ohlcv.base))
 
-    function pushsim(buydt, buyprice, selldt, sellprice, possiblebuycount, closetrade, fee=relativefee(cl, ohlcv.base))
+    function pushlongsim(buydt, buyprice, selldt, sellprice, closetrade, transactionfee=relativefee(cl, ohlcv.base))
+        #TODO add lendingfee(cl, base, startdt, enddt)
         @assert buydt <= selldt "buydt=$buydt > selldt=$selldt"
-        buyprice = buyprice * (1 + fee)
-        sellprice = sellprice * (1 - fee)
-        push!(df, (classifier=string(typeof(cl)), basecoin=ohlcv.base, cfgid=cfgid, buydt=buydt, buyprice=buyprice, selldt=selldt, sellprice=sellprice, gain=(sellprice - buyprice)/buyprice, possiblebuycount=possiblebuycount, closetrade=closetrade, fee=fee))
+        buyprice = buyprice * (1 + transactionfee)
+        sellprice = sellprice * (1 - transactionfee)
+        push!(df, (classifier=string(typeof(cl)), basecoin=ohlcv.base, cfgid=cfgid, buydt=buydt, buyprice=buyprice, selldt=selldt, sellprice=sellprice, gain=(sellprice - buyprice)/buyprice, closetrade=closetrade, fee=transactionfee))
     end
 
     (verbosity >= 3) && println("$(EnvConfig.now()): logsim! running $(ohlcv.base) from $(otime[begin]) until $(otime[end])")
-    # pushsim(otime[begin], piv[begin], otime[begin], piv[begin], buysplitparts(cl, ohlcv.base) - length(buyorders), "dummy", 0f0) # dummy to avoid empty dataframe
+    # pushlongsim(otime[begin], piv[begin], otime[begin], piv[begin], "dummy", 0f0) # dummy to avoid empty dataframe
     for ix in eachindex(otime)
         Ohlcv.setix!(ohlcv, ix)
-        tp = advice(cl, ohlcv)
-        if ix >= buyenabledix
-            possiblebuycount = buysplitparts(cl, ohlcv.base) - length(buyorders)
-            if possiblebuycount > 0
-                if tp == buy
-                    push!(buyorders, (buydt=otime[ix], buyprice=piv[ix], possiblebuycount=possiblebuycount))
-                elseif tp == strongbuy
-                    while possiblebuycount > 0
-                        push!(buyorders, (buydt=otime[ix], buyprice=piv[ix], possiblebuycount=possiblebuycount))
-                        possiblebuycount -= 1
-                    end
-                end
-                buyenabledix = ix + tradegap
-                sellenabledix = ix + 1
-            end
-            lasttp = tp
+        ta = advice(cl, ohlcv)
+        if !isnothing(ta) && (ta.tradelabel in [longbuy, longstrongbuy])
+            push!(buyorders, (buydt=otime[ix], buyprice=piv[ix]))
         end
 
-        "true if takeprofitgain is implemented and current price exceeds buy order price"
-        takeprofitcheck(bo) = isnothing(takeprofitgain(cl, ohlcv.base)) ? false : piv[ix] > bo.buyprice * (1 + takeprofitgain(cl, ohlcv.base))
-
-        ixv = findall(takeprofitcheck, buyorders)
-        if length(ixv) > 0
-            sort!(ixv, rev = true)
-            for bix in ixv
-                @assert length(buyorders) > 0
-                bo = popat!(buyorders, bix)
-                pushsim(bo.buydt, bo.buyprice, otime[ix], piv[ix], bo.possiblebuycount, "takeprofit")
-            end
-            buyenabledix = ix + 1
-            sellenabledix = ix + tradegap
-            lasttp = tp
-        end
-        if ix >= sellenabledix
-            if (tp in [sell, strongsell])
-                for _ in 1:sellmultiple
-                    if length(buyorders) > 0
-                        bo = popfirst!(buyorders)
-                        pushsim(bo.buydt, bo.buyprice, otime[ix], piv[ix], bo.possiblebuycount, "selladvice")
-                        buyenabledix = ix + 1
-                        sellenabledix = ix + tradegap
-                    end
-                end
+        if !isnothing(ta) && (ta.tradelabel in [longclose, longstrongclose])
+            if length(buyorders) > 0
+                bo = popfirst!(buyorders)
+                pushlongsim(bo.buydt, bo.buyprice, otime[ix], piv[ix], "selladvice")
             end
         end
     end
     while length(buyorders) > 0
         bo = popfirst!(buyorders)
-        pushsim(bo.buydt, bo.buyprice, otime[end], piv[end], bo.possiblebuycount, "closebacktest")
+        pushlongsim(bo.buydt, bo.buyprice, otime[end], piv[end], "closebacktest")
     end
 end
 
@@ -363,7 +312,7 @@ function kpioverview(df::AbstractDataFrame, classifiertype)
         df = @view df[df[!, :classifier] .== string(classifiertype), :]
         # gdf = groupby(df, [:classifier, :basecoin, :cfgid])
         gdf = groupby(df, [:basecoin, :cfgid])
-        rdf = combine(gdf, :gain => mean, :gain => median, :gain => sum, :gain => minimum, :gain => maximum, nrow, :closetrade => (x -> count(x .== "takeprofit")) => :takeprofit, :closetrade => (x -> count(x .== "selladvice")) => :selladvice, :closetrade => (x -> count(x .== "closebacktest")) => :closebacktest, :possiblebuycount => (x -> count(x .== 1)) => :buyblocked, groupindices => :groupindex)
+        rdf = combine(gdf, :gain => mean, :gain => median, :gain => sum, :gain => minimum, :gain => maximum, nrow, :closetrade => (x -> count(x .== "takeprofit")) => :takeprofit, :closetrade => (x -> count(x .== "selladvice")) => :selladvice, :closetrade => (x -> count(x .== "closebacktest")) => :closebacktest, groupindices => :groupindex)
         cl = classifiertype()
         if hasproperty(cl, :cfg)
             leftjoin!(rdf, cl.cfg, on=:cfgid)
@@ -677,31 +626,31 @@ function predictionmatrix(df, labels)
     return pred
 end
 
-"Target consistency check that a hold or close signal can only follow a buy or sell signal"
+"Target consistency check that a longhold or close signal can only follow a longbuy or longclose signal"
 function checktargetsequence(targets::CategoricalArray)
     labels = levels(targets)
-    ignoreix, longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy"])
+    ignoreix, longbuyix, longholdix, closeix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels)
     # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    buy = levelcode(first(targets)) in [longholdix, closeix] ? longbuyix : (levelcode(first(targets)) == shortholdix ? shortbuyix : ignoreix)
+    longbuy = levelcode(first(targets)) in [longholdix, closeix] ? longbuyix : (levelcode(first(targets)) == shortholdix ? shortbuyix : ignoreix)
     for (ix, tl) in enumerate(targets)
         if levelcode(tl) == longbuyix
-            buy = longbuyix
+            longbuy = longbuyix
         elseif (levelcode(tl) == longholdix)
-            if (buy != longbuyix)
+            if (longbuy != longbuyix)
                 @error "$ix: missed $longbuyix ($(labels[longbuyix])) before $longholdix ($(labels[longholdix]))"
             end
         elseif levelcode(tl) == shortbuyix
-            buy = shortbuyix
+            longbuy = shortbuyix
         elseif (levelcode(tl) == shortholdix)
-            if (buy != shortbuyix)
+            if (longbuy != shortbuyix)
                 @error "$ix: missed $shortbuyix ($(labels[shortbuyix])) before $shortholdix ($(labels[shortholdix]))"
             end
         elseif (levelcode(tl) == closeix)
-            if (buy == ignoreix)
+            if (longbuy == ignoreix)
                 @error "$ix: missed either $shortbuyix ($(labels[shortbuyix])) or $longbuyix ($(labels[longbuyix])) before $closeix ($(labels[closeix]))"
             end
         elseif (levelcode(tl) == ignoreix)
-            buy = ignoreix
+            longbuy = ignoreix
         else
             @error "$ix: unexpected $(levelcode(tl)) ($(labels[closeix]))"
         end
@@ -1577,7 +1526,7 @@ OPTPARAMSNN001 = Dict(
 """
 NNClassifier001 idea
 - use NN to predict a minimum gain within a fixed time range, e.g. 0.5% within 1h
-- adapt threshold longbuy and longhold to achieve hysteresis and avoid high frequent buy/close transactions
+- adapt threshold longbuy and longhold to achieve hysteresis and avoid high frequent longbuy/close transactions
 - targets and features are configured outside and are provided at initialization
 - a set of coins and set ranges are provided to adapt evaluate and test
 
@@ -1627,38 +1576,22 @@ end
 # requiredminutes(cl::NNClassifier001)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
 requiredminutes(cl::NNClassifier001)::Integer =  maximum(Features.regressionwindows004)
 
-function buysplitparts(cl::NNClassifier001, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).buysplitparts
-end
-
-function tradegapminutes(cl::NNClassifier001, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).tradegapminutes
-end
-
-function sellvolumefactor(cl::NNClassifier001, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).sellvolumefactor
-end
-
-function takeprofitgain(cl::NNClassifier001, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).takeprofitgain
-end
-
-function advice(cl::NNClassifier001, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::NNClassifier001, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in NNClassifier001"
-        return noop
+        return ignore
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::NNClassifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::NNClassifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return nothing
     end
     base = ohlcv.base
     bc = cl.bc[base]
@@ -1667,14 +1600,14 @@ function advice(cl::NNClassifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::
     fix = Features.featureix(bc.f4, ohlcvix)
     regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
     buyprice = regry * (1 - cfg.buythreshold)
-    trenddaygain = cfg.trendwindow == 0 ? Inf32 : Features.relativedaygain(bc.f4, cfg.trendwindow, fix)
+    trenddaygain = cfg.trendwindow == 0 ? Inf32 : Targets.relativedaygain(bc.f4, cfg.trendwindow, fix)
     if (cfg.trendwindow > 0) && (cfg.trendsellgrad >= trenddaygain)
-        return strongsell  # stop loss
+        return TradeAdvice(cl, bc.cfgid, longstrongclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])  # stop loss
     end
     if (cfg.trendbuygrad <= trenddaygain) && (piv[ohlcvix] >= buyprice) && (piv[ohlcvix-1] < buyprice) # price swings back to regression after peak down
-        return buy
+        return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
     end
-    return hold
+    return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
 end
 
 configurationid4base(cl::NNClassifier001, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
@@ -1700,8 +1633,6 @@ STDHEADWINDOW = Dict(12*60 => [0, 60], 24*60 => [0, 60], 3*24*60 => [0, 4*60], 1
 STDTRENDWINDOW = Dict(12*60 => [0, 3*24*60], 24*60 => [0, 10*24*60], 3*24*60 => [0, 10*24*60], 10*24*60 => [0, 10*24*60])
 STDGAINTHRSHLD = 0.01f0
 STDGAINTHRSHLDSET = [0.01f0, 0.02f0, 0.04f0]  # excluding 0.005f0,
-FEE = 0.1f0 / 100f0  # 0.1%
-# FEE = 0f0  # no fee
 MINSIMGAINPCT = 5  # 5% is standard minimum simulation gain
 MINGAINLOSSRATIO = 2 # minimum gain versus max loss ratio
 SIMSTART = 10000f0  # simulation budget
@@ -1806,29 +1737,30 @@ function removeconfig!(cl::BaseClassifier001, base, regrwindow, gainthreshold, h
     end
 end
 
-function baseadvice(cl::BaseClassifier001, ohlcvix, regrwindow, gainthreshold, headwindow, trendwindow)
+function baseadvice(cl::BaseClassifier001, ohlcvix, regrwindow, gainthreshold, headwindow, trendwindow)::Union{Nothing, TradeAdvice}
     ohlcvdf = Ohlcv.dataframe(cl.ohlcv)
     fix = Features.featureix(cl.f4, ohlcvix)
     dt = ohlcvdf[ohlcvix, :opentime]
     if fix <= 0
-        return noop
+        return nothing
     end
     if cl.f4.rw[regrwindow][fix, :opentime] == dt
         if ohlcvdf[ohlcvix, :pivot] > cl.f4.rw[regrwindow][fix, :regry] * (1 + gainthreshold)
             if (headwindow == 0) || (cl.f4.rw[headwindow][fix, :grad] < 0f0)
-                return sell
+                return TradeAdvice(cl, 0, longclose, 1f0, cl.ohlcv.base, ohlcvdf[ohlcvix, :pivot], ohlcvdf[ohlcvix, :opentime])
+
             end
         elseif ohlcvdf[ohlcvix, :pivot] < cl.f4.rw[regrwindow][fix, :regry] * (1 - gainthreshold)
             if (trendwindow == 0) || (cl.f4.rw[trendwindow][fix, :grad] >= 0f0)
                 if (headwindow == 0) || (cl.f4.rw[headwindow][fix, :grad] > 0f0)
-                    return buy
+                    return TradeAdvice(cl, 0, longbuy, 1f0, cl.ohlcv.base, ohlcvdf[ohlcvix, :pivot], ohlcvdf[ohlcvix, :opentime])
                 end
             end
         end
     else  # if cl.f4.rw[regrwindow][begin, :opentime] < dt
         @warn "expected $(cl.ohlcv.base) ohlcv opentime[ohlcvix]=$dt not matching $(cl.f4.rw[regrwindow][fix, :opentime]) of f4[$regrwindow] with start=$(cl.f4.rw[regrwindow][begin, :opentime]) end=$(cl.f4.rw[regrwindow][end, :opentime])"
     end
-    return hold
+    return TradeAdvice(cl, 0, longhold, 1f0, cl.ohlcv.base, ohlcvdf[ohlcvix, :pivot], ohlcvdf[ohlcvix, :opentime])
 end
 
 """
@@ -1857,8 +1789,8 @@ function EnvConfig.emptyconfigdf(cfgset::Classifier001)
         cfgid=Int16[],               # classifier identificator
         regrwindow=Int16[],         # regression window of decisive regression line in minutes
         gainthreshold=Float32[],    # gain threshold ratio of minimum gain/price of regression line for trade signal
-        headwindow=Int16[],         # regression window of heading regression line in minutes (0 = switched off) ; grad < 0 to sell; grad > 0 to buy
-        trendwindow=Int16[],        # regression window of trend regression line in minutes (0 = switched off) ; grad > 0 to buy
+        headwindow=Int16[],         # regression window of heading regression line in minutes (0 = switched off) ; grad < 0 to longclose; grad > 0 to longbuy
+        trendwindow=Int16[],        # regression window of trend regression line in minutes (0 = switched off) ; grad > 0 to longbuy
     )
 end
 
@@ -1895,29 +1827,29 @@ function timerangecut!(cl::Classifier001, startdt::DateTime, enddt::DateTime)
     end
 end
 
-function buysplitparts(cl::Classifier001, base::AbstractString)
-    bc = cl.bc[base]
-    config = configuration(cl,bc.cfg[bc.bestix, :cfgid])
-    return floor(Int, config.regrwindow / 2)
-end
-
-function advice(cl::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier001, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     bc = cl.bc[ohlcv.base]
     cfg = configuration(cl, bc.cfg[bc.bestix, :cfgid])
-    return baseadvice(bc, ohlcvix, cfg.regrwindow, cfg.gainthreshold, cfg.headwindow, cfg.trendwindow)
+    ba = baseadvice(bc, ohlcvix, cfg.regrwindow, cfg.gainthreshold, cfg.headwindow, cfg.trendwindow)
+    ba.classifier = cl
+    ba.configid = bc.cfg[bc.bestix, :cfgid]
+    return ba
 end
 
-function advice(cl::Classifier001, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier001, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = base in keys(cl.bc) ? cl.bc[base] : nothing
     if isnothing(bc)
-        return noop
+        return nothing
     end
     ohlcvix = Ohlcv.rowix(bc.ohlcv.df[!, :opentime], dt)
     if bc.ohlcv.df[ohlcvix, :opentime] == dt
         cfg = configuration(cl, bc.cfg[bc.bestix, :cfgid])
-        return baseadvice(bc, ohlcvix, cfg.regrwindow, cfg.gainthreshold, cfg.headwindow, cfg.trendwindow)
+        ba =  baseadvice(bc, ohlcvix, cfg.regrwindow, cfg.gainthreshold, cfg.headwindow, cfg.trendwindow)
+        ba.classifier = cl
+        ba.configid = dt
+        return ba
     else
-        return noop
+        return nothing
     end
 end
 
@@ -1958,8 +1890,8 @@ end
 """
 Classification is based on MA (moving average) price change of a time range (=window) length that is determined by the largest window that can catch all relative noise price changes
 - close when pivot price <= mean
-- buy when
-  - last price relative to mean > rbt to ensure hysteresis avoiding quick fallback sell
+- longbuy when
+  - last price relative to mean > rbt to ensure hysteresis avoiding quick fallback longclose
   - mean relative to last mean per day > rbt
   - mean trendwindow price change >= 0
 - one window change step per time (=per advice call)
@@ -1972,9 +1904,9 @@ mutable struct Classifier002 <: AbstractClassifier
     bc::Dict
     "window vector of considered MA window in minutes"
     window::AbstractVector{Integer}  # have to be sorted in increasing order
-    "rbt: relative buy threshold of mean price increase / day"
+    "rbt: relative longbuy threshold of mean price increase / day"
     rbt::Float32
-    "trendwindow: mean(trendwindow) - mean(trendwindow @ trendwindow distance) shall be > 0 to enable buy trades. Is switched off if trendwindow==0."
+    "trendwindow: mean(trendwindow) - mean(trendwindow @ trendwindow distance) shall be > 0 to enable longbuy trades. Is switched off if trendwindow==0."
     trendwindow::Integer
     dbgdf
     function Classifier002(;window=[15, 30, 60, 2*60, 4*60, 8*60, 16*60], rbt=0.01f0, trendwindow=4*60)
@@ -2002,11 +1934,6 @@ function timerangecut!(cl::Classifier002, startdt::DateTime, enddt::DateTime)
 end
 
 requiredminutes(cl::Classifier002)::Integer = 2 * max(cl.trendwindow, maximum(cl.window))
-
-function buysplitparts(cl::Classifier002, base::AbstractString)
-    bc = cl.bc[base]
-    return floor(Int, cl.window[bc.meanwindowix] / 2)
-end
 
 "returns a tuple of (relative price of 2 consecutive mean pivot price windows, current mean pivot price, last mean pivot price)"
 function relativemeanchange(cl::Classifier002, piv, oix, win)
@@ -2048,24 +1975,24 @@ end
 
 smallerwindow(cl::Classifier002, bc::BaseClassifier002) = bc.meanwindowix > firstindex(cl.window) ? bc.meanwindowix - 1 : bc.meanwindowix
 
-function advice(cl::Classifier002, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier002, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier002"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::Classifier002, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier002, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     base = ohlcv.base
     otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return nothing
     end
     bc = cl.bc[base]
     piv = Ohlcv.pivot!(ohlcv)
@@ -2078,26 +2005,26 @@ function advice(cl::Classifier002, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
             bc.meanwindowix = largerwindow(cl, bc, piv, ohlcvix)
         end
         # (verbosity >= 3) && push!(cl.dbgdf, (opentime=otime[ohlcvix], piv=piv[ohlcvix], meanpiv=meanpiv, rlp=rlp, lpcok=false, mcpd=0f0, mcpdok=false, postrend=false))
-        return sell
+        return TradeAdvice(cl, 0, longclose, 1f0, base, piv[ohlcvix], otime[ohlcvix])
     elseif rlp >= cl.rbt
         bc.meanwindowix = smallerwindow(cl,bc)
         mcpd = meanchangeperday(cl, bc, otime, ohlcvix, relmeanchange)
         if (mcpd > cl.rbt)
             if positiverelativetrendwindowchange(cl, bc, piv, ohlcvix)
                 (verbosity >= 3) && push!(cl.dbgdf, (opentime=otime[ohlcvix], piv=piv[ohlcvix], meanpiv=meanpiv, rlp=rlp, lpcok=true, mcpd=mcpd, mcpdok=true, postrend=true))
-                return buy
+                return TradeAdvice(cl, 0, longbuy, 1f0, base, piv[ohlcvix], otime[ohlcvix])
             else
                 (verbosity >= 3) && push!(cl.dbgdf, (opentime=otime[ohlcvix], piv=piv[ohlcvix], meanpiv=meanpiv, rlp=rlp, lpcok=true, mcpd=mcpd, mcpdok=true, postrend=false))
-                return hold
+                return TradeAdvice(cl, 0, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
             end
         else
             (verbosity >= 3) && push!(cl.dbgdf, (opentime=otime[ohlcvix], piv=piv[ohlcvix], meanpiv=meanpiv, rlp=rlp, lpcok=true, mcpd=mcpd, mcpdok=false, postrend=false))
-            return hold
+            return TradeAdvice(cl, 0, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
         end
     else # (cl.rbt / 2f0) > rlp >= 0
         # (verbosity >= 3) && push!(cl.dbgdf, (opentime=otime[ohlcvix], piv=piv[ohlcvix], meanpiv=meanpiv, rlp=rlp, lpcok=false, mcpd=0f0, mcpdok=false, postrend=false))
         bc.meanwindowix = largerwindow(cl, bc,piv, ohlcvix)
-        return hold
+        return TradeAdvice(cl, 0, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
     end
 end
 
@@ -2120,7 +2047,7 @@ end
 const SHORTWINDOW003 = Int16[15, 30, 60, 2*60, 4*60]
 "longwindow have to be sorted in increasing order"
 const LONGWINDOW003 = Int16[12*60, 24*60, 2*24*60, 4*24*60, 8*24*60]
-"rbt: relative buy threshold to long mean price => buy when below -rbt"
+"rbt: relative longbuy threshold to long mean price => longbuy when below -rbt"
 const RBT003 = Float32[0.01f0]
 "srnt: relative noise threshold of short window mean price change, also used for long window meanchange per day as positive trend indicator"
 const SRNT003 = Float32[0.005f0]
@@ -2141,7 +2068,7 @@ short term adapts to catch noise amplitudes of rnt.
 - close when
   - last price relative to long term mean > 0
   - short term mean change < 0f0
-- buy when
+- longbuy when
   - last price relative to long term mean < -rbt
   - short term mean change > 0f0
   - long term mean relative to last mean per day > rnt
@@ -2190,12 +2117,6 @@ function configureclassifier!(cl::Classifier003, base::AbstractString, configid:
 end
 
 
-function buysplitparts(cl::Classifier003, base::AbstractString)
-    bc = cl.bc[base]
-    cfg = configuration(cl, bc.cfgid)
-    return floor(Int, cfg.shortwindow / 2)
-end
-
 relativelastprice(cl::Classifier003, piv, oix, meanpiv) = (piv[oix] - meanpiv) / meanpiv
 
 function noiseoutofbounds(cl::Classifier003, piv, oix, meanpiv, win, rt)
@@ -2241,25 +2162,25 @@ function adjustwindow(cl::Classifier003, piv, oix, winmean, windows, window, rt)
     return wix
 end
 
-function advice(cl::Classifier003, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier003, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier003"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::Classifier003, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier003, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     base = ohlcv.base
     otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
     if ohlcvix < requiredminutes(cl)
-        # (verbosity >= 3) && println("$(otime[ohlcvix]) $base ($(ohlcv.df[begin,:opentime])-$(ohlcv.df[end,:opentime])) ohlcvix=$ohlcvix < requiredminutes(Classifier003)=$(requiredminutes(cl)) => noop")
-        return noop
+        # (verbosity >= 3) && println("$(otime[ohlcvix]) $base ($(ohlcv.df[begin,:opentime])-$(ohlcv.df[end,:opentime])) ohlcvix=$ohlcvix < requiredminutes(Classifier003)=$(requiredminutes(cl)) => ignore")
+        return nothing
     end
     bc = cl.bc[base]
     cfg = configuration(cl, bc.cfgid)
@@ -2273,25 +2194,25 @@ function advice(cl::Classifier003, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     #TODO can still violate longwindow/shortwindow constraint
     newcfg = (;cfg..., longwindow=cl.optparams["longwindow"][lwix], shortwindow=cl.optparams["shortwindow"][swix], )
     bc.cfgid = configurationid(cl, newcfg)
-    if rlp > 0 # sell above long window average
-        if shortmeanchange < 0f0 # sell only if short window average is already falling assuming we are close to peak
-            return sell
+    if rlp > 0 # longclose above long window average
+        if shortmeanchange < 0f0 # longclose only if short window average is already falling assuming we are close to peak
+            return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], otime[ohlcvix])
         else
-            return hold
+            return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
         end
-    elseif rlp <= -cfg.rbt # buy at local dip
+    elseif rlp <= -cfg.rbt # longbuy at local dip
         mcpd = meanchangeperday(cl, bc, otime, ohlcvix, longmeanchange)
         if (mcpd > cfg.srnt) # positive trend
             if shortmeanchange > 0f0 # positive short term average change
-                return buy
+                return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], otime[ohlcvix])
             else
-                return hold
+                return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
             end
         else
-            return hold
+            return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
         end
     else # -cl.rbt < rlp <= 0
-        return hold
+        return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], otime[ohlcvix])
     end
 end
 
@@ -2309,8 +2230,8 @@ const GAINTHRESHOLD004 = Float32[0.01f0, 0.02f0, 0.04f0, 10000.0f0]    # 10000.0
 const OPTPARAMS004 = Dict(
     "window" => WINDOW004,             # window for amplitude measurement in minutes
     "lookback" => LOOKBACK004,           # number of windows (in half window steps) back to calculate mean values
-    "breakoutfactor" => BREAKOUTFACTOR004,   # highchange / meanchange to consider it as breakout worth strongbuy
-    "trendfactor" => TRENDFACTOR004,      # gain threshold of highchange and lowchange to consider trend worth buy
+    "breakoutfactor" => BREAKOUTFACTOR004,   # highchange / meanchange to consider it as breakout worth longstrongbuy
+    "trendfactor" => TRENDFACTOR004,      # gain threshold of highchange and lowchange to consider trend worth longbuy
     "gainthreshold" => GAINTHRESHOLD004     # gain threshold ratio of minimum gain/price of mean amplitude to consider volatility trading
 )
 
@@ -2351,7 +2272,7 @@ end
 """
 Classifier004 idea
 - don't use a reference (like a mean or regression line) but look back over various time ranges and determine high and lows
-- buy around the anticipated low, sell at anticipated high with some head room in case the high is not reached.
+- longbuy around the anticipated low, longclose at anticipated high with some head room in case the high is not reached.
 - goal is frequent trading with small wins, which makes losses acceptable as long as the significant majority of trades is positve
 
 specific
@@ -2359,8 +2280,8 @@ specific
 - for each of these windows identify maximum and minimum pivot peak
 - take the smallest as indication of expected upward amplitude
 - take smallest max to min amplitude as expecation to estimate next minimum
-- buy at expected minimum if expected upward amplitude > gainthreshold (gth)
-- sell at expected maximum
+- longbuy at expected minimum if expected upward amplitude > gainthreshold (gth)
+- longclose at expected maximum
 """
 mutable struct Classifier004 <: AbstractClassifier
     "bd: base date maps the base string onto ohlcv data"
@@ -2446,23 +2367,23 @@ function updateamplitudes!(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=oh
     if isnothing(cl.anchor) cl.anchor = otime[ohlcvix] end
 end
 
-function advice(cl::Classifier004, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier004, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier004"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     base = ohlcv.base
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return nothing
     end
     updateamplitudes!(cl, ohlcv, ohlcvix)
     bc = cl.bc[base]
@@ -2472,24 +2393,24 @@ function advice(cl::Classifier004, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
         if win == 0 continue end
         # first check breakout
         if reldiff(bc.amplitudes[win].highchange, bc.amplitudes[win].meanhighchange) >= cl.cfg[bc.cfgid, :breakoutfactor] # rel change of 2 rel chanegs
-            return strongbuy
+            return TradeAdvice(cl, bc.cfgid, longstrongbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
         elseif reldiff(bc.amplitudes[win].lowchange, bc.amplitudes[win].meanlowchange) >= -cl.cfg[bc.cfgid, :breakoutfactor] # rel change of 2 rel chanegs
-            return strongsell
+            return TradeAdvice(cl, bc.cfgid, longstrongclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
         # then check trend
         elseif (bc.amplitudes[win].meanhighchange >= cl.cfg[bc.cfgid, :trendfactor]) && (bc.amplitudes[win].highchange >= bc.amplitudes[win].meanhighchange)
-            return buy
+            return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
         elseif (bc.amplitudes[win].meanlowchange <= -cl.cfg[bc.cfgid, :trendfactor]) && (bc.amplitudes[win].highchange <= bc.amplitudes[win].meanhighchange)
-            return sell
+            return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
         # then check volatility trade
         elseif bc.amplitudes[win].meanamp >= cl.cfg[bc.cfgid, :gainthreshold]
             if abs(reldiff(piv[ohlcvix], bc.amplitudes[win].low)) <= 0.2 * bc.amplitudes[win].meanamp
-                return buy
+                return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
             elseif abs(reldiff(piv[ohlcvix], bc.amplitudes[win].high)) <= 0.2 * bc.amplitudes[win].meanamp
-                return sell
+                return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
             end
         end
     end
-    return hold
+    return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
 end
 
 configurationid4base(cl::Classifier004, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
@@ -2534,37 +2455,29 @@ supplement!(bc::BaseClassifier005) = Features.supplement!(bc.f4, bc.ohlcv)
 
 const REGRWINDOW005 = Int16[24*60, 3*24*60]
 const TRENDWINDOW005 = Int16[10*24*60]
-const TAKEPROFITGAIN005 = Float32[0.02f0, 0.04f0]
 const BUYTHRESHOLD005 = Float32[0.01f0, 0.02f0]
 const TRENDBUYGRAD005 = Float32[0.01f0] # -1f0 = equal to switched off
 const TRENDSELLGRAD005 = Float32[-0.03f0, -0.06f0] # -1f0 = equal to switched off
-const BUYSPLITPARTS005 = Int16[10]
-const SELLVOLUMEFACTOR005 = Int16[1]
-const TRADEGAPMINUTES005 = Int16[10]
 const OPTPARAMS005 = Dict(
     "regrwindow" => REGRWINDOW005,
     "trendwindow" => TRENDWINDOW005,
-    "takeprofitgain" => TAKEPROFITGAIN005,
     "buythreshold" => BUYTHRESHOLD005,
     "trendbuygrad" => TRENDBUYGRAD005,
     "trendsellgrad" => TRENDSELLGRAD005,
-    "buysplitparts" => BUYSPLITPARTS005,
-    "sellvolumefactor" => SELLVOLUMEFACTOR005,
-    "tradegapminutes" => TRADEGAPMINUTES005
 )
 
 """
 Classifier005 idea
-- use regression to identify downward peaks buy at downward peak if regression is positive and trend is positive
-- sell if gain is realized or when trend turns too much negative
+- use regression to identify downward peaks longbuy at downward peak if regression is positive and trend is positive
+- longclose if gain is realized or when trend turns too much negative
 
 specific
 - check down peak against a set of regression windows
   - shorter windows can follow a breakout
-- specify buythreshold of relative loss compared to regression line for buy trigger
-  - buy when price comes back from below the buythreshold
+- specify buythreshold of relative loss compared to regression line for longbuy trigger
+  - longbuy when price comes back from below the buythreshold
 - specify gainthreshold to take profit
-- specify trendwindow of trend regression line with buygrad in %/d to enable buy and selgrad in %/d to close open positions
+- specify trendwindow of trend regression line with buygrad in %/d to enable longbuy and selgrad in %/d to close open positions
 """
 mutable struct Classifier005 <: AbstractClassifier
     bc::Dict{AbstractString, BaseClassifier005}
@@ -2603,38 +2516,22 @@ end
 # requiredminutes(cl::Classifier005)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
 requiredminutes(cl::Classifier005)::Integer =  maximum(Features.regressionwindows004)
 
-function buysplitparts(cl::Classifier005, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).buysplitparts
-end
-
-function tradegapminutes(cl::Classifier005, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).tradegapminutes
-end
-
-function sellvolumefactor(cl::Classifier005, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).sellvolumefactor
-end
-
-function takeprofitgain(cl::Classifier005, base::AbstractString)
-    return configuration(cl, configurationid4base(cl, base)).takeprofitgain
-end
-
-function advice(cl::Classifier005, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier005, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier005"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::Classifier005, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier005, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return ignore
     end
     base = ohlcv.base
     bc = cl.bc[base]
@@ -2643,14 +2540,14 @@ function advice(cl::Classifier005, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     fix = Features.featureix(bc.f4, ohlcvix)
     regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
     buyprice = regry * (1 - cfg.buythreshold)
-    trenddaygain = cfg.trendwindow == 0 ? Inf32 : Features.relativedaygain(bc.f4, cfg.trendwindow, fix)
+    trenddaygain = cfg.trendwindow == 0 ? Inf32 : Targets.relativedaygain(bc.f4, cfg.trendwindow, fix)
     if (cfg.trendwindow > 0) && (cfg.trendsellgrad >= trenddaygain)
-        return strongsell  # stop loss
+        return TradeAdvice(cl, bc.cfgid, longstrongclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])  # stop loss
     end
     if (cfg.trendbuygrad <= trenddaygain) && (piv[ohlcvix] >= buyprice) && (piv[ohlcvix-1] < buyprice) # price swings back to regression after peak down
-        return buy
+        return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
     end
-    return hold
+    return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
 end
 
 configurationid4base(cl::Classifier005, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
@@ -2705,8 +2602,8 @@ const OPTPARAMS008 = Dict(
 
 """
 Classifier008 idea
-- use regression to identify downward peaks buy at (buy threshold + regression grad * regression length) below regression line
-- sell if regression line is reached
+- use regression to identify downward peaks longbuy at (longbuy threshold + regression grad * regression length) below regression line
+- longclose if regression line is reached
 
 """
 mutable struct Classifier008 <: AbstractClassifier
@@ -2747,25 +2644,25 @@ end
 requiredminutes(cl::Classifier008)::Integer =  maximum(Features.regressionwindows004)
 
 
-function advice(cl::Classifier008, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier008, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier008"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-"provides the buy threshold amount that the gradient of the regression window adds over the full window length"
+"provides the longbuy threshold amount that the gradient of the regression window adds over the full window length"
 regramount(regry, grad, regrwindow) = (grad * (regrwindow - 1)) / regry
 
-function advice(cl::Classifier008, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier008, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return nothing
     end
     base = ohlcv.base
     bc = cl.bc[base]
@@ -2778,11 +2675,11 @@ function advice(cl::Classifier008, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     buyprice = ra < 0 ? regry * (1 + cfg.volatilitybuythreshold + ra) : regry * (1 + cfg.volatilitybuythreshold)
 
     if ((piv[ohlcvix] < buyprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.trendthreshold)
-        return buy
+        return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
     elseif ((piv[ohlcvix] <= regry) && (piv[ohlcvix-1] >= regry)) || ((piv[ohlcvix] >= regry) && (piv[ohlcvix-1] <= regry)) # regr line cross from either side
-        return sell
+        return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
     end
-    return hold
+    return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
 end
 
 configurationid4base(cl::Classifier008, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
@@ -2827,7 +2724,7 @@ end
 supplement!(bc::BaseClassifier009) = Features.supplement!(bc.f5)
 
 const BUYGAINTHRESHOLD009 = Float32[0.02f0, 0.04f0, 0.06f0, 0.08f0]
-const SELLTHRESHOLDFACTOR009 = Float32[0.75f0, 0.5f0, 0f0, -1f0]  # -1f0 == switch off ==> only regr crossing as sell criteria
+const SELLTHRESHOLDFACTOR009 = Float32[0.75f0, 0.5f0, 0f0, -1f0]  # -1f0 == switch off ==> only regr crossing as longclose criteria
 const OPTPARAMS009 = Dict(
     "buygainthreshold" => BUYGAINTHRESHOLD009,
     "sellthresholdfactor" => SELLTHRESHOLDFACTOR009
@@ -2835,9 +2732,9 @@ const OPTPARAMS009 = Dict(
 
 """
 Classifier009 idea
-- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> buy
-- sell if gain is decreased to gain threshold / x or pivot crosses regression line 
-- sell criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then sell otherwise follow sell criteria above
+- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longbuy
+- longclose if gain is decreased to gain threshold / x or pivot crosses regression line 
+- longclose criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then longclose otherwise follow longclose criteria above
 
 """
 mutable struct Classifier009 <: AbstractClassifier
@@ -2878,22 +2775,22 @@ end
 requiredminutes(cl::Classifier009)::Integer =  maximum(Features.regressionwindows005)
 
 
-function advice(cl::Classifier009, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier009, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier009"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::Classifier009, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier009, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return nothing
     end
     base = ohlcv.base
     bc = cl.bc[base]
@@ -2902,10 +2799,10 @@ function advice(cl::Classifier009, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     fix = Features.featureix(bc.f5, ohlcvix)
     lastgrad = nothing
     sellcondition = false
-    if !isnothing(bc.regrwindow) # check sell condition
+    if !isnothing(bc.regrwindow) # check longclose condition
         regry = Features.regry(bc.f5, bc.regrwindow)[fix]
         grad = Features.grad(bc.f5, bc.regrwindow)[fix]
-        gain = Features.relativegain(regry, grad, bc.regrwindow, forward=false)
+        gain = Targets.relativegain(regry, grad, bc.regrwindow, forward=false)
         if (gain < cfg.buygainthreshold * cfg.sellthresholdfactor) || (piv[ohlcvix] < regry)
             sellcondition = true
         end
@@ -2913,25 +2810,25 @@ function advice(cl::Classifier009, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     for rw in Features.regressionwindows005
         regry = Features.regry(bc.f5, rw)[fix]
         grad = Features.grad(bc.f5, rw)[fix]
-        gain = Features.relativegain(regry, grad, rw, forward=false)
+        gain = Targets.relativegain(regry, grad, rw, forward=false)
         if gain >= cfg.buygainthreshold
             if isnothing(lastgrad) || (lastgrad >= grad)
-                # buy condition in place
+                # longbuy condition in place
                 if sellcondition && (bc.regrwindow < rw)
                     bc.regrwindow = nothing
-                    return sell
+                    return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
                 else
                     bc.regrwindow = rw
-                    return buy
+                    return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
                 end
             end
         end
     end
     if sellcondition
         bc.regrwindow = nothing
-        return sell
+        return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
     end
-    return hold
+    return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
 end
 
 configurationid4base(cl::Classifier009, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
@@ -2990,8 +2887,8 @@ const OPTPARAMS010 = Dict(
 
 """
 Classifier010 idea
-- use regression to identify downward peaks buy at (buy threshold + regression grad * regression length) below regression line
-- sell if regression line is reached
+- use regression to identify downward peaks longbuy at (longbuy threshold + regression grad * regression length) below regression line
+- longclose if regression line is reached
 
 """
 mutable struct Classifier010 <: AbstractClassifier
@@ -3033,22 +2930,22 @@ end
 requiredminutes(cl::Classifier010)::Integer =  maximum(Features.regressionwindows004)
 
 
-function advice(cl::Classifier010, base::AbstractString, dt::DateTime)::InvestProposal
+function advice(cl::Classifier010, base::AbstractString, dt::DateTime)::Union{Nothing, TradeAdvice}
     bc = ohlcv = nothing
     if base in keys(cl.bc)
         bc = cl.bc[base]
         ohlcv = bc.ohlcv
     else
         (verbosity >= 2) && @warn "$base not found in Classifier010"
-        return noop
+        return nothing
     end
     oix = Ohlcv.rowix(ohlcv, dt)
     return advice(cl, ohlcv, oix)
 end
 
-function advice(cl::Classifier010, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::InvestProposal
+function advice(cl::Classifier010, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::Union{Nothing, TradeAdvice}
     if ohlcvix < requiredminutes(cl)
-        return noop
+        return nothing
     end
     base = ohlcv.base
     bc = cl.bc[base]
@@ -3057,17 +2954,17 @@ function advice(cl::Classifier010, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix)::In
     fix = Features.featureix(bc.f4, ohlcvix)
     regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
     grad = Features.grad(bc.f4, cfg.regrwindow)[fix]
-    ra = Features.relativegain(regry, grad, cfg.regrwindow, forward=false)
+    ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
     buyprice = ra < 0 ? regry * (1 + cfg.volatilitybuythreshold + ra) : regry * (1 + cfg.volatilitybuythreshold)
     sellprice = regry * (1 + cfg.volatilitysellthreshold + ra * cfg.volatilityselltrendfactor)
 
     if ((piv[ohlcvix] < buyprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.trendthreshold)
-        return buy
+        return TradeAdvice(cl, bc.cfgid, longbuy, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
         # elseif ((piv[ohlcvix] <= regry) && (piv[ohlcvix-1] >= regry)) || ((piv[ohlcvix] >= regry) && (piv[ohlcvix-1] <= regry)) # regr line cross from either side
     elseif (piv[ohlcvix-1] >= sellprice) && (ra < cfg.trendthreshold)
-        return sell
+        return TradeAdvice(cl, bc.cfgid, longclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
     end
-    return hold
+    return TradeAdvice(cl, bc.cfgid, longhold, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime])
 end
 
 configurationid4base(cl::Classifier010, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0

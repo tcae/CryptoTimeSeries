@@ -2,7 +2,7 @@
 module VolatilityTracker
 
 using DataFrames, Dates, Statistics, CSV, Logging, JDF
-using EnvConfig, TestOhlcv, Ohlcv, Features
+using EnvConfig, TestOhlcv, Ohlcv, Features, Targets
 
 const FEE = 0.08 / 100 # VIP1 Bybit taker fee (worst case)
 
@@ -30,13 +30,13 @@ function trackregression!(tradedf, f2::Features.Features002; asset, trendminutes
             # handle open long positions
             tl = currentix - openix[begin]
             if longshort == "long"
-                gain = Ohlcv.relativegain(piv, openix[begin], currentix, relativefee=FEE)
+                gain = Targets.relativegain(piv, openix[begin], currentix, relativefee=FEE)
                 longlastok = (gain >= selfmonitor)
                 handleall = longlastok ? handleall : true
                 push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=currentix, tradelen=tl, gain=gain, trendminutes=trendminutes, buygainthreshold=buygainthreshold, sellgainthreshold=sellgainthreshold, buygap=buygap, sellgap=sellgap, selfmonitor=selfmonitor, stdcheck=stdcheck, maxconcurrentbuy=maxconcurrentbuy, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
                 cltok += 1
             else
-                gain = -Ohlcv.relativegain(piv, openix[begin], currentix, relativefee=FEE)
+                gain = -Targets.relativegain(piv, openix[begin], currentix, relativefee=FEE)
                 shortlastok = (gain >= selfmonitor)
                 handleall = shortlastok ? handleall : true
                 push!(tradedf, (asset=asset, regr=regrwindow, longshort=longshort, openix=openix[begin], closeix=currentix, tradelen=tl, gain=gain, trendminutes=trendminutes, buygainthreshold=buygainthreshold, sellgainthreshold=sellgainthreshold, buygap=buygap, sellgap=sellgap, selfmonitor=selfmonitor, stdcheck=stdcheck, maxconcurrentbuy=maxconcurrentbuy, drawdown30dayslong=sum(drawdown30dayslong), drawdown30daysshort=sum(drawdown30daysshort)))
@@ -74,7 +74,7 @@ function trackregression!(tradedf, f2::Features.Features002; asset, trendminutes
 
     function sufficientgain(openix, currentix, longshort, sellgainthreshold)
         if length(openix) > 0
-            gain = longshort == "long" ? Ohlcv.relativegain(piv, openix[begin], currentix, relativefee=FEE) : -Ohlcv.relativegain(piv, openix[begin], currentix, relativefee=FEE)
+            gain = longshort == "long" ? Targets.relativegain(piv, openix[begin], currentix, relativefee=FEE) : -Targets.relativegain(piv, openix[begin], currentix, relativefee=FEE)
             return gain >= sellgainthreshold
         else
             return false

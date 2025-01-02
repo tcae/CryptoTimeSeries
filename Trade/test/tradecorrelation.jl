@@ -17,7 +17,7 @@ function compressdf(df)
     lp = p = lastrow = nothing
     count = 0
     for row in eachrow(df)
-        p = (row.simtp, coalesce(row.side, "Noop"))
+        p = (row.simtp, coalesce(row.side, "ignore"))
         if isnothing(lp) || (p != lp)
             if !isnothing(lastrow)
                 push!(dfc, (lastrow..., count=count), promote=true)
@@ -70,11 +70,11 @@ df = vcat(cache.xc.closedorders, cache.xc.orders)
 println("describe(cache.xc.orders)=$(describe(df, :all))")
 df = leftjoin(cache.cl.bd["BTC"].dbgdf, df, on = :opentime => :created, matchmissing = :notequal)
 println("describe(df)=$(describe(df, :all))")
-simtpcheck = coalesce.(df[!, :simtp], Classify.noop)
-sidecheck = coalesce.(df[!, :side], "noop")
+simtpcheck = coalesce.(df[!, :simtp], ignore)
+sidecheck = coalesce.(df[!, :side], "ignore")
 filtedf = DataFrame()
-filtedf[:, :simsellcheck] = simtpcheck .== Classify.sell
-filtedf[:, :simbuycheck] = simtpcheck .== Classify.buy
+filtedf[:, :simsellcheck] = simtpcheck .== longclose
+filtedf[:, :simbuycheck] = simtpcheck .== longbuy
 filtedf[:, :sidesellcheck] = sidecheck .== "Sell"
 filtedf[:, :sidebuycheck] = sidecheck .== "Buy"
 cnt = (simsellcount = sum(filtedf[!, :simsellcheck]), simbuycount = sum(filtedf[!, :simbuycheck]), sidesellcount = sum(filtedf[!, :sidesellcheck]), sidebuycount = sum(filtedf[!, :sidebuycheck]))

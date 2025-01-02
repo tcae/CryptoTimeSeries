@@ -191,7 +191,7 @@ function backtestcl010()
     # Redirect sigint to julia exception handling
     startdt, enddt, defaultlogger = prepare()
     for base in ["XRP"]
-        EnvConfig.setlogpath("Classifier010-$base")
+        EnvConfig.setlogpath("Classifier010v2-$base")
         for regrwindow in [3*24*60]
             for trendthreshold in [1f0]
                 for volatilitybuythreshold in [-0.08f0]

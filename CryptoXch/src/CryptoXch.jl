@@ -668,19 +668,19 @@ end
 
 #region simulation
 
-#TODO add to buy orders flags that indicate why a buy advice is not followed:
+#TODO add to longbuy orders flags that indicate why a longbuy advice is not followed:
 #TODO exceedsmaxassetfraction = fraction of an asset exceed configured maximum
 #TODO insufficientbuybalance = not enough USDT availble
 #TODO withintradegap = trade is not executed because trade gap has notpassed yet
 #
-#TODO add to buy and sell orders flags that indicate why an advice is not followed:
-#TODO belowminimumbasequantity = buy/sell amount too low
+#TODO add to longbuy and longclose orders flags that indicate why an advice is not followed:
+#TODO belowminimumbasequantity = longbuy/longclose amount too low
 #TODO add comment with additional info
 #
-#TODO 3 order lists: openbuy (will only be moved to closed when sell order is issued), opensell, closed
-#TODO buy/sell order records receive the sell/buy counterpartprder id that links buy with sell and a classifier id
+#TODO 3 order lists: openbuy (will only be moved to closed when longclose order is issued), opensell, closed
+#TODO longbuy/longclose order records receive the longclose/longbuy counterpartprder id that links longbuy with longclose and a classifier id
 #TODO a classifier remains active as long as there are open investments with its classifier id
-#TODO 1 file with open and closed orders. buy orders without a sell order id are open investments, orders withan executed qty are open orders
+#TODO 1 file with open and closed orders. longbuy orders without a longclose order id are open investments, orders withan executed qty are open orders
 
 
 ASSETSFILENAME = "XchCacheAssets"
@@ -719,7 +719,7 @@ function _cancelordersimulation(xc::XchCache, base, orderid)
         if side == "Buy"
             qteqty = (baseqty - executedqty) * limitprice
             updateasset!(xc, EnvConfig.cryptoquote, -qteqty, qteqty)
-        else # sell side
+        else # longclose side
             baseqty = baseqty - executedqty
             updateasset!(xc, base, -baseqty, baseqty)
         end
@@ -800,7 +800,7 @@ function _updateorder!(xc::XchCache, orderix)
                 updateasset!(xc, base, 0, executedqty * (1 - xc.feerate))
                 break
             end
-        else # sell side
+        else # longclose side
             if ohlcvdf.high[oix] >= xco.limitprice
                 xco.updated = ohlcvdf.opentime[ohlcvix]
                 xco.avgprice = xco.limitprice
@@ -820,7 +820,7 @@ function _updateorder!(xc::XchCache, orderix)
     end
 end
 
-"Checks in sumulation buy or sell conditions and returns order index or nothign if not found"
+"Checks in sumulation longbuy or longclose conditions and returns order index or nothign if not found"
 function _orderrefresh(xc::XchCache, orderid)
     if isnothing(xc)
         (verbosity >= 1) && @error "cannot simulate getorder() with uninitialized CryptoXch cache"
@@ -834,7 +834,7 @@ end
 
 function _createordersimulation(xc::XchCache, base, side, baseqty, limitprice, freeasset)
     if isnothing(xc)
-        (verbosity >= 1) && @error "cannot simulate create buy/sell order() with uninitialized CryptoXch cache"
+        (verbosity >= 1) && @error "cannot simulate create longbuy/longclose order() with uninitialized CryptoXch cache"
         return nothing
     end
     ohlcv = xc.bases[base]
@@ -853,7 +853,7 @@ function _createordersimulation(xc::XchCache, base, side, baseqty, limitprice, f
         else
             limitprice = min(limitprice, ohlcv.df.close[ohlcv.ix])
             quoteqty = baseqty * limitprice
-            (verbosity >= 3) && println("buy order: quoteqty=$quoteqty = baseqty=$baseqty * limitprice=$limitprice")
+            (verbosity >= 3) && println("longbuy order: quoteqty=$quoteqty = baseqty=$baseqty * limitprice=$limitprice")
             if _assetfreelocked(xc, EnvConfig.cryptoquote).free >= quoteqty
                 push!(xc.orders, (orderid=orderid, symbol=symboltoken(base), side=side, baseqty=baseqty, ordertype="Limit", timeinforce=timeinforce, limitprice=limitprice, avgprice=0.0f0, executedqty=0.0f0, status="New", created=dtnow, updated=dtnow, rejectreason="NO ERROR", lastcheck=dtnow-Minute(1)))
                 updateasset!(xc, EnvConfig.cryptoquote, quoteqty, -quoteqty)

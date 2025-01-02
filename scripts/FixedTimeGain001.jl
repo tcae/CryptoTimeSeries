@@ -12,7 +12,7 @@ hyper parameters:
 - gain: 0.5%, 1%, 2%, 4%
 - window: 30min, 1h, 4h, 12h
 
-classes: binary buy yes vs no (=sell) with hysteresis using likelihood % of buy violate
+classes: binary longbuy yes vs no (=longclose) with hysteresis using likelihood % of longbuy violate
 
 """
 module FixedTimeGain001

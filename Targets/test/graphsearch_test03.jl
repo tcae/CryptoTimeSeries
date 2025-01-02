@@ -12,7 +12,7 @@ end
 
 with_logger(logger) do
 
- # nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme
+ # nearer extreme not exceeding longbuy thresholds should not win against further away but longbuy threshold exceeding extreme
  ydata =     [1.0f0, 1.2f0, 1.0f0, 1.29f0, 1.1f0, 1.1f0, 0.8f0, 0.9f0, 1.0f0, 1.1f0, 1.0f0, 1.31f0, 1.0f0, 1.2f0, 0.91f0, 1.182f0, 1.0f0, 1.1f0, 1.2f0, 1.3f0]
  grad1 = [0.2f0, 0.2f0, 0.2f0, 0.1f0, 0.05f0, -0.1f0, -0.2f0, -0.2f0, -0.1f0, 0.0f0, 0.1f0, 0.1f0, 0.1f0, 0.2f0, -0.1f0, -0.2f0, -0.2f0, 0.2f0, 0.2f0, 0.0f0]
  grad2 = [0.2f0, 0.1f0, -0.1f0, -0.1f0, 0.0f0, 0.1f0, -0.2f0, 0.2f0, -0.1f0, -0.2f0, 0.1f0, 0.1f0, -0.1f0, -0.2f0, -0.1f0, 0.2f0, -0.2f0, 0.2f0, -0.2f0, 0.0f0]
@@ -28,7 +28,7 @@ df.priceix = priceix
 df.relativedist = relativedist
 df.labels = labels
 println(df)
- println("nearer extreme not exceeding buy thresholds should not win against further away but buy threshold exceeding extreme")
+ println("nearer extreme not exceeding longbuy thresholds should not win against further away but longbuy threshold exceeding extreme")
  println("labels = $labels")
  println("relativedist = $relativedist")
  println("realdist = $realdist")

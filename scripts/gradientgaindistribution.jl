@@ -61,8 +61,8 @@ mutable struct RegressionHisto  # for long as well as short signals
         "buyhisto and sellhisto are supplemented after each slope"
         bh = zeros(Int32, (regbuckets, length(gainborders)))  # used to register regression and gain of slope
         bcl = zeros(Float32, regbuckets)
-        sh = zeros(Int32, regbuckets)  # only used to register the gradient of the best sell regression
-        "gradgains is used to register all buy gradients of a single slope with their gains"
+        sh = zeros(Int32, regbuckets)  # only used to register the gradient of the best longclose regression
+        "gradgains is used to register all longbuy gradients of a single slope with their gains"
         gg = zeros(Union{Missing,Float32}, regbuckets)
         gradzix = searchsortedlast(regquantiles, 0 - eps(Float32)) + 1
         gainzix = searchsortedlast(gainborders, 0 - eps(Float32)) + 1
@@ -91,7 +91,7 @@ function slope2histo!(histo, prices, regressions, buyix)
         end
 
         if isequal(gradgains[regix], missing)  # only consider a gradient once in a particular slope
-            gain = Ohlcv.relativegain(prices, buyix, sellix)
+            gain = Targets.relativegain(prices, buyix, sellix)
             gradgains[regix] = gain
             # println("gradgains[$sampleregix, $endregix] = $gain")
         end
@@ -112,7 +112,7 @@ end
 
 """
 Assumption: the probability for a successful trade signal is higher at a certain slope threshold but it is unclear where this threshold is.
-This function shall collect all buy/sell gradients versus all of their potential counter sell/buy gradients versus the gain between them as a histogram
+This function shall collect all longbuy/longclose gradients versus all of their potential counter longclose/longbuy gradients versus the gain between them as a histogram
 to identify the slope where a majority of gains is above 1% gain.
 To achieve this the gradients as well as the gaps need to be split into buckets.
 """

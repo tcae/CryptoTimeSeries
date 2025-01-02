@@ -407,17 +407,6 @@ function prevextremeindex(regressions, startindex)
 end
 
 """
-Calculates the start y coordinate of a straight regression line given by the last y of the line `regry`, the gradient `grad` and the length `window`.
-"""
-startregry(eregry, grad, window) = eregry - grad * (window - 1)
-
-"Returns the relative gain of the given regression relative to start y if `forward` (default) otherwise relative to given end regry"
-function relativegain(endregry, grad, window; relativefee::AbstractFloat=0f0, forward=true)
-    sregry = startregry(endregry, grad, window)
-    return Ohlcv.relativegain(sregry, endregry; relativefee=relativefee, forward=forward)
-end
-
-"""
  This implementation ignores index and assumes an equidistant x values.
  y is a one dimensional array.
 
@@ -1742,7 +1731,6 @@ std(f4::Features004, regrminutes) =      f4.rw[regrminutes][!, :std]
 opentime(f4::Features004, regrminutes) = f4.rw[regrminutes][!, :opentime]
 opentime(f4::Features004) = first(f4.rw)[2][!, :opentime]  # opentime array from all rw members shall start and end equally
 regrwindows(f4::Features004) = keys(f4.rw)
-relativedaygain(f4::Features004, regrminutes::Integer, featuresix::Integer) = relativegain(regry(f4, regrminutes)[featuresix], grad(f4, regrminutes)[featuresix], 24*60)
 
 function features(f4::Features004, firstix, lastix)::AbstractDataFrame
     #TODO

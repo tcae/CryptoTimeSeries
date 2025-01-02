@@ -1,7 +1,7 @@
 """
 This script measures the performace on a trinaing set of cryptocurrencies when buying at the begin of an up slope and selling at the end of an up slope at various regression time window lenghts.
 
-- Use 24h as main investment guideline and add performance if volatility around a positive regression gradient exceeds threshold to add buy and sell within that volatility.
+- Use 24h as main investment guideline and add performance if volatility around a positive regression gradient exceeds threshold to add longbuy and longclose within that volatility.
   Assumption: Thresholds of such approach shall be significantly higher than 1%.
 
   What are the gain distributioins per regression window? Result: longer regression windows have a broader distribution and are less focused on the small <1% gains, i.e. also more extreme gains.
@@ -23,7 +23,7 @@ This script measures the performace on a trinaing set of cryptocurrencies when b
   consider factor 6 between windows: 5min, 30min, 3h, 18h, 36h (1,5d)
 
   approach: use the last n=3 predecessor slopes to determine by majority vote how the mnext slope likely works out in terms of gain
-do that for different windows and switch after each sell to the best performing window
+do that for different windows and switch after each longclose to the best performing window
 
 Break out handling approach: if smaller regression windows are within x* standard deviation (rollstd) or within a fixed threshold (e.g. 1%) with higher likelihood that the change is significant then follow the shorter outlier.
     As soon as the shortest outlier is again within the x * standard deviation of a longer then switch back to that one.
@@ -38,7 +38,7 @@ fee = 0.001  # 0.1%
 
 
 """
-Returns an array of price gains between a buy at slope begin and sell at slope end.
+Returns an array of price gains between a longbuy at slope begin and longclose at slope end.
 """
 function gradientgains(prices, regressions)
     # @info "gradientgains" size(prices, 1), size(regressions, 1)
@@ -48,7 +48,7 @@ function gradientgains(prices, regressions)
     nextix = Features.nextextremeindex(regressions, lastix)
     while nextix > 0
         if (lastix < nextix) && (regressions[lastix] > 0)
-            gains[ix] = Ohlcv.relativegain(prices, lastix, nextix) - 2 * fee
+            gains[ix] = Targets.relativegain(prices, lastix, nextix) - 2 * fee
             ix += 1
         end
         lastix = nextix
@@ -58,7 +58,7 @@ function gradientgains(prices, regressions)
 end
 
 """
-Returns an array of price gains between a buy at slope begin and sell at slope end.
+Returns an array of price gains between a longbuy at slope begin and longclose at slope end.
 """
 function gradientextremesindex(prices, regressions)
     # @info "gradientgains" size(prices, 1), size(regressions, 1)
@@ -67,7 +67,7 @@ function gradientextremesindex(prices, regressions)
     nextix = Features.nextextremeindex(regressions, lastix)
     while nextix > 0
         if regressions[lastix] > 0
-            gains[ix] = Ohlcv.relativegain(prices, lastix, nextix) - 2 * fee
+            gains[ix] = Targets.relativegain(prices, lastix, nextix) - 2 * fee
             ix += 1
         end
         lastix = nextix
@@ -77,7 +77,7 @@ function gradientextremesindex(prices, regressions)
 end
 
 """
-This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
+This function uses a fixed regression window with a single base to longbuy at slope begin and longclose at slope end.
 """
 function singlebasegradientgain(prices, regressions)
     @assert size(prices, 1) == size(regressions, 1)
@@ -88,13 +88,13 @@ function singlebasegradientgain(prices, regressions)
         if regressions[ix] > 0.0
             if regressions[ix - 1] <= 0.0  # start of upslope
                 lastix = ix
-                gains[ix] = gains[ix - 1] * (1 - fee)  # buy
+                gains[ix] = gains[ix - 1] * (1 - fee)  # longbuy
             else
-                gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix))
+                gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix))
             end
         else  # regressions[ix] <= 0.0
             if regressions[ix - 1] > 0.0  # start of downslope
-                gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix) - fee)  # sell
+                gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix) - fee)  # longclose
             else
                 gains[ix] = gains[ix - 1]
             end
@@ -104,9 +104,9 @@ function singlebasegradientgain(prices, regressions)
 end
 
 """
-This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
-Only buy on upslope if lastgain > lastupgainthreshold.
-If upgtdown == true then only buy if also lastgain > lastloss.
+This function uses a fixed regression window with a single base to longbuy at slope begin and longclose at slope end.
+Only longbuy on upslope if lastgain > lastupgainthreshold.
+If upgtdown == true then only longbuy if also lastgain > lastloss.
 """
 function singlebasegradientgainhistory(prices, regressions; lastupgainthreshold, upgtdown::Bool)
     @assert size(prices, 1) == size(regressions, 1)
@@ -119,17 +119,17 @@ function singlebasegradientgainhistory(prices, regressions; lastupgainthreshold,
             if regressions[ix - 1] <= 0.0  # start of upslope
                 if (gldf[ix, :lastgain] > lastupgainthreshold) && ((!upgtdown) || (gldf[ix, :lastgain] > abs(gldf[ix, :lastloss])))
                     lastix = ix
-                    gains[ix] = gains[ix - 1] * (1 - fee)  # buy
+                    gains[ix] = gains[ix - 1] * (1 - fee)  # longbuy
                 else
                     lastix = 0  # indicating no upslope to consider as gain
                     gains[ix] = gains[ix - 1]
                 end
             else
-                gains[ix] = lastix > 0 ? gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix)) : gains[ix - 1]
+                gains[ix] = lastix > 0 ? gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix)) : gains[ix - 1]
             end
         else  # regressions[ix] <= 0.0
             if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
-                gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix) - fee)  # sell
+                gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix) - fee)  # longclose
             else
                 gains[ix] = gains[ix - 1]
             end
@@ -139,9 +139,9 @@ function singlebasegradientgainhistory(prices, regressions; lastupgainthreshold,
 end
 
 """
-This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
-Only buy on upslope if lastgain > lastupgainthreshold.
-If upgtdown == true then only buy if also lastgain > lastloss.
+This function uses a fixed regression window with a single base to longbuy at slope begin and longclose at slope end.
+Only longbuy on upslope if lastgain > lastupgainthreshold.
+If upgtdown == true then only longbuy if also lastgain > lastloss.
 """
 function lastregressionamplitudes(regressions, nbramplitudes=2)
     modlimit = nbramplitudes+2
@@ -177,9 +177,9 @@ function lastregressionamplitudes(regressions, nbramplitudes=2)
 end
 
 # """
-# This function uses a fixed regression window with a single base to buy at slope begin and sell at slope end.
-# Only buy on upslope if lastgain > lastupgainthreshold.
-# If upgtdown == true then only buy if also lastgain > lastloss.
+# This function uses a fixed regression window with a single base to longbuy at slope begin and longclose at slope end.
+# Only longbuy on upslope if lastgain > lastupgainthreshold.
+# If upgtdown == true then only longbuy if also lastgain > lastloss.
 # """
 # function multibasegradientgainhistory(prices, regressionminutes; lastupgainthreshold)
 #     gains = zeros(Float32, size(prices, 1))
@@ -196,17 +196,17 @@ end
 #             if regressions[ix - 1] <= 0.0  # start of upslope
 #                 if (gldf[ix, :lastgain] > lastupgainthreshold) && ((!upgtdown) || (gldf[ix, :lastgain] > abs(gldf[ix, :lastloss])))
 #                     lastix = ix
-#                     gains[ix] = gains[ix - 1] * (1 - fee)  # buy
+#                     gains[ix] = gains[ix - 1] * (1 - fee)  # longbuy
 #                 else
 #                     lastix = 0  # indicating no upslope to consider as gain
 #                     gains[ix] = gains[ix - 1]
 #                 end
 #             else
-#                 gains[ix] = lastix > 0 ? gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix)) : gains[ix - 1]
+#                 gains[ix] = lastix > 0 ? gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix)) : gains[ix - 1]
 #             end
 #         else  # regressions[ix] <= 0.0
 #             if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
-#                 gains[ix] = gains[lastix] * (1 + Ohlcv.relativegain(prices, lastix, ix) - fee)  # sell
+#                 gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix) - fee)  # longclose
 #             else
 #                 gains[ix] = gains[ix - 1]
 #             end
@@ -242,19 +242,19 @@ function steepestbasegain(prices::AbstractDataFrame, regressions::AbstractDataFr
     for rix in Iterators.drop(eachindex(gains), 1)  # 2:size(gains, 1)
         bestix[rix], maxgrad = maxgradient(regressions, bases, rix)
         if regressions[rix, bases[bestix[rix]]] > 0.0
-            if regressions[rix - 1, bases[bestix[rix - 1]]] <= 0.0  # start of upslope, no need to sell because last gradient was negative
+            if regressions[rix - 1, bases[bestix[rix - 1]]] <= 0.0  # start of upslope, no need to longclose because last gradient was negative
                 lastix = rix
-                gains[rix] = gains[rix - 1] * (1 - fee)  # buy
+                gains[rix] = gains[rix - 1] * (1 - fee)  # longbuy
             elseif bestix[rix - 1] == bestix[rix]
-                gains[rix] = gains[lastix] * (1 + Ohlcv.relativegain(prices[!, bases[bestix[rix]]], lastix, rix))
+                gains[rix] = gains[lastix] * (1 + Targets.relativegain(prices[!, bases[bestix[rix]]], lastix, rix))
             else  # (bestix[rix-1] != bestix[rix]) && (regressions[rix-1, bestix[rix-1]] > 0.0)
-                gains[rix] = gains[lastix] * (1 + Ohlcv.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # sell to change currency
-                gains[rix] = gains[rix] * (1 - fee)  # buy
+                gains[rix] = gains[lastix] * (1 + Targets.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # longclose to change currency
+                gains[rix] = gains[rix] * (1 - fee)  # longbuy
                 lastix = rix
             end
         else  # regressions[rix] <= 0.0
             if regressions[rix - 1, bases[bestix[rix - 1]]] > 0.0  # start of downslope
-                gains[rix] = gains[lastix] * (1 + Ohlcv.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # sell
+                gains[rix] = gains[lastix] * (1 + Targets.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # longclose
             else
                 gains[rix] = gains[rix - 1]
             end
@@ -309,7 +309,7 @@ function steepesttrainingbasesgain()
 end
 
 """
-Measurement of all training data to always buy at slope begin and sell at slope end with a fixed regression window shows that this shows best results for all currencies with 24h=1440min regression window.
+Measurement of all training data to always longbuy at slope begin and longclose at slope end with a fixed regression window shows that this shows best results for all currencies with 24h=1440min regression window.
 """
 # base ╲ regrmin │           5           15           30           60          240          720         1440         4320        12960
 # ───────────────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -365,7 +365,7 @@ function singletrainingbasesgradientgain()
 end
 
 """
-Measurement of all training data to buy at slope begin and sell at slope end with a fixed regression window if lastgain > 1% and lastgain > lastloss.
+Measurement of all training data to longbuy at slope begin and longclose at slope end with a fixed regression window if lastgain > 1% and lastgain > lastloss.
 It shows that this shows best results for all currencies with 24h=1440min regression window and that threshold and lastgain>lastloss only in a few cases improved the result above 1.
 It is also worth to note that lastgain seems to be negative sometimes, which is the case when the actual price jumps down much faster than the regression.
 
@@ -467,7 +467,7 @@ function gainfromix!(slopesix, prices, fromix, toix)
         startix = startix < fromix ? fromix : startix
         endix = endix > toix ? toix : endix
         if startix < endix
-            gain += Ohlcv.relativegain(prices, startix, endix) - 2 * fee
+            gain += Targets.relativegain(prices, startix, endix) - 2 * fee
             if lastendix > startix
                 @warn "lastendix=$lastendix > startix=$startix, endix=$endix"
                 display(slopesix)
@@ -502,7 +502,7 @@ function checkgains(prices, regressions, slopesix)
     ggains = gradientgains(prices, regressions)
     g = zeros(Float32, (size(slopesix, 1)))
     for (ix, (startix, endix)) in enumerate(slopesix)
-        g[ix] = Ohlcv.relativegain(prices, startix, endix) - 2 * fee
+        g[ix] = Targets.relativegain(prices, startix, endix) - 2 * fee
     end
     g2 = gainfromix!(slopesix, prices, 1, size(prices, 1))
     println("len(ggains)=$(size(ggains, 1)), ggain=$(sum(ggains)), len(slopesix)=$(size(slopesix, 1)), len(g)=$(size(g, 1)), g=$(sum(g)), g2=$g2")
@@ -561,7 +561,7 @@ function bestgradientgain(bases, regressionminutesset, gainthresholds)
                     end
                 else  # invested
                     if (bestrix != rix) && (bestgain >= gainthreshold) && (bestgain >= (gainthreshold + gains[bestrix]))
-                        bestrix = rix  # on the fly change of regression window without sell and buy
+                        bestrix = rix  # on the fly change of regression window without longclose and longbuy
                     end
                     if (bestnextix == nextix[bestrix]) && (basegrad[bix][rix][bestnextix] <= 0) && (bestlastix < bestnextix) # end of up slope
                         push!(bestslopesix, (bestlastix, bestnextix))
@@ -644,7 +644,7 @@ function gainperregressionwindow(bases = EnvConfig.trainingbases)
             buyix = Features.nextextremeindex(regr, 1)
             sellix = buyix > 0 ? Features.nextextremeindex(regr, buyix) : 0
             while sellix !=0
-                gain = Ohlcv.relativegain(ohlcv.df.pivot, buyix, sellix)
+                gain = Targets.relativegain(ohlcv.df.pivot, buyix, sellix)
                 gix = searchsortedlast(gainborders, gain) + 1
                 histo[bix, rix, gix] += 1
                 buyix = sellix
@@ -682,7 +682,7 @@ function gainperregressionwindowlastgain(bases = EnvConfig.trainingbases, regres
             buyix = Features.nextextremeindex(regr, 1)
             sellix = buyix > 0 ? Features.nextextremeindex(regr, buyix) : 0
             while sellix !=0
-                gain = Ohlcv.relativegain(ohlcv.df.pivot, buyix, sellix)
+                gain = Targets.relativegain(ohlcv.df.pivot, buyix, sellix)
                 gix = searchsortedlast(gainborders, gain) + 1
                 histo[rix, gix, lastgix2] += 1
                 lastgix2 = lastgix1
@@ -743,7 +743,7 @@ function gainperregressionwindowlastgain2(bases = EnvConfig.trainingbases, regre
 
                 lastbuyix = buyix
                 lastsellix = sellix
-                # gain = Ohlcv.relativegain(ohlcv.df.pivot, buyix, sellix)
+                # gain = Targets.relativegain(ohlcv.df.pivot, buyix, sellix)
                 # gix = searchsortedlast(gainborders, gain) + 1
                 histo[rix, gix, lastgix] += 1
                 buyix = sellix

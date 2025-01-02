@@ -188,7 +188,7 @@ end
 
 """
 Provides a facility to write a configuration into 1 row of a DataFrame and retrieve it for configuring types, e.g. Features, Targets, Classiifers.
-The subtype shall implement a property `cfg` to hold the DataFrame of all configurations of that subtype.
+The subtype shall implement a property `cfg` to longhold the DataFrame of all configurations of that subtype.
 `cfgid` is an Integer identifier of a configuration but also used as direct access row index within the `cfg` DataFrame.
 """
 abstract type AbstractConfiguration end
