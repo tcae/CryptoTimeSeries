@@ -203,7 +203,7 @@ version = "0.1.10"
 deps = ["Combinatorics", "DataFrames", "Dates", "EnvConfig", "Indicators", "JDF", "Logging", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.7.0"
+version = "1.8.0"
 
 [[deps.FilePathsBase]]
 deps = ["Compat", "Dates"]

@@ -892,7 +892,7 @@ end
 # Features005 is based on Features004. To reuse the F4 cache files, those features are always calculated to keep the saved cache complete.
 
 regressionwindows005 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
-regressionproperties = ["grad", "std", "regry", "gain"]
+regressionproperties = ["grad", "std", "regry"]
 savedregressionwindows005 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60] # == Features.regressionwindows004
 savedregressionproperties = ["grad", "std", "regry"]
 minmaxproperties = ["mindist", "maxdist"]
@@ -928,11 +928,11 @@ function configdf(requestedconfigs, requiredminutes)
                     if second in regressionwindows005
                         third = cfg[3]
                         if third in regressionproperties
-                            if third in ["gain", "std", "regry"]
+                            if third in ["std", "regry"]
                                 grd = join(["rw", string(cfg[2]), "grad"], "_")
                                 if !(grd in allconfigs) push!(allconfigs, grd) end
                             end
-                            if third in ["gain", "std", "grad"]
+                            if third in ["std", "grad"]
                                 rgr = join(["rw", string(cfg[2]), "regry"], "_")
                                 if !(rgr in allconfigs) push!(allconfigs, rgr) end
                             end
@@ -988,12 +988,11 @@ end
 
 """
 Features005 provides a configurable feature set with the following config choices provided as vector of Strings with elements:
-- "rw" followed by *minutes* (e.g. "rw_60") to denote a 60 minute regression window with the following `_` concatenated options: "grad", "std", "regry", "gain".
+- "rw" followed by *minutes* (e.g. "rw_60") to denote a 60 minute regression window with the following `_` concatenated options: "grad", "std", "regry".
   Regression window minutes are constraint by the set of *regressionwindows005*
     - grad = gradient of regression line
     - std = standard deviation of regression line
     - regry = y position of regression line end
-    - gain = relative gain between end and start point of regression line (multiply with 100 and the value is a percentage)
 - "mm" followed by *minutes* (e.g. "mm_60") to denote a 60 minute min/max window with the following `_` concatenated options: "maxdist", "mindist".
     - maxdist = relative distance to max value of minmaxwindows
     - mindist = relative distance to min value of minmaxwindows
@@ -1217,7 +1216,7 @@ function supplement!(f5::Features005)
             regryrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "regry"), :])
             gradrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "grad"), :])
             win = configrow.second
-            std = gain = nothing
+            std = nothing
             if regryrow.config in cols
                 if !isnothing(odfstartix)
                     regry, grad = rollingregression(odf[!, :pivot], win, odfstartix)
@@ -1250,18 +1249,6 @@ function supplement!(f5::Features005)
                 fdf[:, stdrow.config] = std
             end
 
-            finddf = f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "gain"), :]
-            if size(finddf, 1) > 0
-                gainrow = first(finddf)
-                if gainrow.config in cols
-                    gain = relativegain.(regry[end-newlen+1:end], grad[end-newlen+1:end], win)
-                    @assert length(gain) == newlen "length(gain)=$(length(gain)) != newlen=$newlen"
-                    gain = vcat(f5.fdf[!, gainrow.config], gain)
-                else
-                    gain = relativegain.(regry, grad, win)
-                end
-                fdf[:, gainrow.config] = gain
-            end
         elseif configrow.first == "mm"
             win = configrow.second
             if (configrow.third == "mindist")
@@ -1365,7 +1352,6 @@ end
 grad(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "grad"], "_")]
 regry(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "regry"], "_")]
 std(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "std"], "_")]
-gain(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "gain"], "_")]
 mindist(f5::Features005, mmminutes) = f5.fdf[!, join(["mm", mmminutes, "mindist"], "_")]
 maxdist(f5::Features005, mmminutes) = f5.fdf[!, join(["mm", mmminutes, "maxdist"], "_")]
 relativevolume(f5::Features005, shortlongtuple) = f5.fdf[!, join(["rv", shortlongtuple[1], shortlongtuple[2]], "_")]

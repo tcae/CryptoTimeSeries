@@ -13,7 +13,7 @@ module Targets
 
 using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
-export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, ignore, longstrongclose, longclose, longhold, longbuy, longstrongbuy
+export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, longshortclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy
 
 """
 verbosity =
@@ -26,10 +26,10 @@ verbosity = 1
 
 
 """
-returns all possible labels (don't change sequence because index is used as class id). "close" will be phased out and replaced by "longclose", "shortclose"
+returns all possible labels (don't change sequence because index is used as class id). "longshortclose" is default.
 """
-const tradelabels = ["ignore", "longbuy", "longhold", "close", "shorthold", "shortbuy", "longclose", "shortclose", "longstrongbuy", "shortstrongbuy", "longstrongclose", "shortstrongclose"]
-@enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose =-1 ignore=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5
+const tradelabels = ["ignore", "longbuy", "longhold", "longshortclose", "shorthold", "shortbuy", "longclose", "shortclose", "longstrongbuy", "shortstrongbuy", "longstrongclose", "shortstrongclose"]
+@enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose =-1 longshortclose=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5
 
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
 abstract type AbstractTargets <: EnvConfig.AbstractConfiguration end
@@ -180,7 +180,7 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
                 lastbuy = "nobuy"
                 newstate = "ignore"
             end
-        elseif newstate == "close"
+        elseif newstate == "longshortclose"
             if !(lastbuy in ["shortbuy", "longbuy"])
                 newstate = "ignore"
             elseif lastbuy == "longbuy"
@@ -198,7 +198,7 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
                 (rd >= lt.longhold ? settradestate("longhold") :
                     (rd <= lt.shortbuy ? settradestate("shortbuy") :
                         (rd <= lt.shorthold ? settradestate("shorthold") :
-                            settradestate("close"))))) for rd in relativedist]
+                            settradestate("longshortclose"))))) for rd in relativedist]
     return labels
 end
 

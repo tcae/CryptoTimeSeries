@@ -281,12 +281,12 @@ maxconcurrentbuycount() = 10  # regrwindow / 2.0  #* heuristic
 function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvice, assets::AbstractDataFrame)
     sellbuyqtyratio = 2 # longclose qty / longbuy qty per order, if > 1 longclose quicker than buying it
     qtyacceleration = 4 # if > 1 then increase longbuy and longclose order qty by this factor
-    executed = ignore
+    executed = longshortclose
     base = basecfg.basecoin
     totalusdt = sum(assets.usdtvalue)
     if totalusdt <= 0
         @warn "totalusdt=$totalusdt is insufficient, assets=$assets"
-        return ignore
+        return longshortclose
     end
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])
     freebase = sum(assets[assets[!, :coin] .== base, :free])

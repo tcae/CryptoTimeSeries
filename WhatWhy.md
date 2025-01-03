@@ -30,3 +30,14 @@ The minimal requirement to allow a trading system to execute is a positive yield
 Evaluate the system on historic data to determine what is an acceptable deviation from positive yield and if it is good enough then eveluate the number of consequtive time window, e.g. a day, or consecutive losses before it falls out of the accepted range observed.
 
 good = x consecutive days showing at least 1 day positive trade result AND the integrate loss of recent (without spec)
+
+## Ideas worth to investigate
+
+### Volatility trades - symmetric or snap back?
+
+It seems that a break-out quickly drags the regression in that direction with the following trading options:
+
+- Have a relyable exit criteria using a regression line means
+  - Consider a regressioin line overshoot, which supports a symmetric sell threshold, but provides a risk to run into losses in case of a trend change
+  - Consider a more aggressive peak, which is more seldom and usually requires a longer regression line, i.e. >3d to be profitable
+- Use a fixed snap back gain with the consequence of not having an exit criteria, which is not acceptable

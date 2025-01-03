@@ -193,7 +193,7 @@ The subtype shall implement a property `cfg` to longhold the DataFrame of all co
 """
 abstract type AbstractConfiguration end
 
-"Register feature configuration persistently and return cfgset configuration identifier"
+"Returns the configuration id in case the configuration is already registered or registers configuration persistently and returns cfgset configuration identifier"
 function configurationid(cfgset::AbstractConfiguration, config::Union{NamedTuple, DataFrameRow})::Integer
     if !hasproperty(cfgset, :cfg)
         return 0
