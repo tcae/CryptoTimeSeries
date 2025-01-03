@@ -18,7 +18,7 @@ EnvConfig.init(training)
 # EnvConfig.init(training)
 Ohlcv.verbosity = 1
 # Features.verbosity = 2
-EnvConfig.verbosity = 3
+EnvConfig.verbosity = 2
 Classify.verbosity = 3
 
 startdt = nothing # DateTime("2024-03-01T00:00:00")
@@ -26,15 +26,12 @@ enddt =   nothing # DateTime("2024-06-06T09:00:00")
 enddt = DateTime("2024-12-31T14:15:00")
 startdt = DateTime("2024-11-12T14:15:00")
 # startdt = enddt - Year(10)
-EnvConfig.setlogpath("250102-Classifier011_$(startdt)_$(enddt)")
+EnvConfig.setlogpath("250103-Classifier011_$(startdt)_$(enddt)")
+coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO"]
+# coins = nothing # ["BTC"]
 classifiertype = Classify.Classifier011
-# coins = ["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"]
-coins = nothing # ["BTC"]
-coinsdf = Ohlcv.liquidcoins(liquidrangeminutes=10*24*60)
-# filtered_df = coinsdf[1:2, :] # filter(row -> row.basecoin in coins, coinsdf)
-filtered_df = coinsdf
-println("evaluating: $coins \n coinsdf=$coinsdf \n filtered_df=$filtered_df")
-df = Classify.evaluateclassifiers([classifiertype], filtered_df, startdt, enddt)
+println("evaluating: $coins")
+df = Classify.evaluateclassifiers([classifiertype], coins, startdt, enddt)
 # df = Classify.readsimulation()
 kpidf, gdf = Classify.kpioverview(df, classifiertype)
 sort!(kpidf, [:gain_sum], rev=true)

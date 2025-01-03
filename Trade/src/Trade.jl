@@ -279,13 +279,6 @@ maxconcurrentbuycount() = 10  # regrwindow / 2.0  #* heuristic
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvice, assets::AbstractDataFrame)
-    #TODO handle multiple classifier with different longbuy/longclose signals for one base
-    #TODO  - provide multiple advices from differen classifiers
-    #TODO  - limits per classifier + config and base => classifier provides relative amount for that base
-    #TODO  - classifier provides: class name, cfgid, relative invest amount, price, trade label
-    #TODO  - Trade adds: investment ID, average actual longbuy price, startdt buying, enddt buying, actual amount bought
-    #TODO  - ask for advice per investment with specific classifier + config bought at specific price
-    #TODO enable short trading
     sellbuyqtyratio = 2 # longclose qty / longbuy qty per order, if > 1 longclose quicker than buying it
     qtyacceleration = 4 # if > 1 then increase longbuy and longclose order qty by this factor
     executed = ignore
@@ -305,7 +298,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
     minimumbasequantity = CryptoXch.minimumbasequantity(cache.xc, base, price)
     minqteratio = round(Int, (minimumbasequantity * price) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
     basedominatesassets = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > cache.maxassetfraction
-    if (ta.longtradelabel in [longstrongclose, longclose]) && (cache.trademode in [buysell, sellonly, quickexit]) && basecfg.sellenabled
+    if (ta.tradelabel in [longstrongclose, longclose]) && (cache.trademode in [buysell, sellonly, quickexit]) && basecfg.sellenabled
         # now adapt minimum, if otherwise a too small remainder would be left
         minimumbasequantity = freebase <= 2 * minimumbasequantity ? (freebase >= minimumbasequantity ? freebase : minimumbasequantity) : minimumbasequantity
         basequantity = min(max(sellbuyqtyratio * qtyacceleration * quotequantity/price, minimumbasequantity), freebase)
@@ -322,7 +315,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         else
             (verbosity > 3) && println("$(tradetime(cache)) no longclose $base due to sufficientsellbalance=$sufficientsellbalance, exceedsminimumbasequantity=$exceedsminimumbasequantity")
         end
-    elseif (ta.longtradelabel in [longbuy, longstrongbuy]) && (cache.trademode == buysell) && basecfg.buyenabled
+    elseif (ta.tradelabel in [longbuy, longstrongbuy]) && (cache.trademode == buysell) && basecfg.buyenabled
         basequantity = min(max(qtyacceleration * quotequantity/price, minimumbasequantity) * price, freeusdt - 0.01 * totalusdt) / price #* keep 1% * totalusdt as head room
         sufficientbuybalance = (basequantity * price < freeusdt) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
@@ -398,6 +391,18 @@ function tradeloop(cache::TradeCache)
             buybases = []
             for basecfg in eachrow(cache.cfg)
                 Classify.supplement!(cache.cl)
+                #TODO supplement all bases then call to be implemented batchadvice that should return a ranked advice list
+                #TODO input to batchadvice is also a TradeAdvice vector of open investments that need to be answered 
+                #TODO based on the ranking running invstments may need to be corrected in favor of others 
+
+                #TODO handle multiple classifier with different longbuy/longclose signals for one base
+                #TODO  - provide multiple advices from differen classifiers
+                #TODO  - limits per classifier + config and base => classifier provides relative amount for that base
+                #TODO  - classifier provides: class name, cfgid, relative invest amount, price, trade label
+                #TODO  - Trade adds: investment ID, average actual longbuy price, startdt buying, enddt buying, actual amount bought
+                #TODO  - ask for advice per investment with specific classifier + config bought at specific price
+                #TODO enable short trading
+
                 tradeadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt)
                 # print("\r$(tradetime(cache)): $(USDTmsg(assets))")
                 executed = trade!(cache, basecfg, tradeadvice, assets)
