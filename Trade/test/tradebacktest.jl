@@ -191,7 +191,7 @@ function backtestcl010()
     # Redirect sigint to julia exception handling
     startdt, enddt, defaultlogger = prepare()
     for base in ["XRP"]
-        EnvConfig.setlogpath("Classifier010v2-$base")
+        EnvConfig.setlogpath("Classifier010-$base")
         for regrwindow in [3*24*60]
             for trendthreshold in [1f0]
                 for volatilitybuythreshold in [-0.08f0]
@@ -235,10 +235,63 @@ function backtestcl010()
     wrapup(defaultlogger)
 end
 
+function backtestcl011()
+    # Redirect sigint to julia exception handling
+    startdt, enddt, defaultlogger = prepare()
+    coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
+    coins = sort(coins)
+    for base in coins
+        EnvConfig.setlogpath("$(split(string(classifiertype), ".")[end])_$(join(coins, "_"))__$(Dates.format(startdt, "yymmddTHHMM"))-$(Dates.format(enddt, "yymyymmddTHHMMmdd"))")
+        for regrwindow in [24*60]
+            for longtrendthreshold in [0.02f0]
+                for shorttrendthreshold in [-0.06f0]
+                    for volatilitybuythreshold in [-0.01f0]
+                        for volatilitysellthreshold in [0.02f0]
+                            for volatilitylongthreshold in [0f0]
+                                for volatilityshortthreshold in [-1f0]
+                                    println("TradeTest backtest Classifier010-regrwindow$regrwindow-longtrendthreshold$longtrendthreshold-shorttrendthreshold$shorttrendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitysellthreshold$volatilitysellthreshold-volatilitylongthreshold$volatilitylongthreshold-volatilityshortthreshold$volatilityshortthreshold")
+                                    println("$(EnvConfig.now()): started")
+
+                                    xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                                    cl = Classify.Classifier010()
+                                    cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold, volatilitysellthreshold=volatilitysellthreshold, volatilityselltrendfactor=volatilityselltrendfactor)
+                                    cfgid = configurationid(cl, cfgnt)
+                                    println("cfgid=$cfgid for $cfgnt")
+                                    Classify.configureclassifier!(cl, cfgid, true) 
+                                    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
+                                    # println("cl=$cl")
+                                    # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
+                                    CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
+                                    CryptoXch.writeassets(cache.xc, cache.xc.startdt)
+                                    assets = CryptoXch.portfolio!(cache.xc)
+                                    totalusdt = sum(assets.usdtvalue)
+                                    println("start total USDT = $totalusdt")
+                                    println("Trade.verbosity=$(Trade.verbosity)")
+
+                                    Trade.tradeloop(cache)
+                                    # println("$(cl.dbgdf) \n$(describe(cl.dbgdf, :all))")
+                                    # println(describe(cl.dbgdf))
+                                    assets = CryptoXch.portfolio!(cache.xc)
+                                    totalusdt = sum(assets.usdtvalue)
+                                    println("finish total USDT = $totalusdt")
+                                    CryptoXch.writeorders(cache.xc)
+                                    CryptoXch.writeassets(cache.xc, cache.xc.enddt)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    wrapup(defaultlogger)
+end
+
 # backtestcl001()
 # backtestcl002()
 # backtestcl003()
 # backtestcl008()
-backtestcl010()
+# backtestcl010()
+backtestcl011()
 
 end  # module

@@ -21,15 +21,16 @@ Ohlcv.verbosity = 1
 EnvConfig.verbosity = 2
 Classify.verbosity = 3
 
-classifiertype = Classify.Classifier012
+classifiertype = Classify.Classifier011
 startdt = nothing # DateTime("2024-03-01T00:00:00")
 enddt =   nothing # DateTime("2024-06-06T09:00:00")
-enddt = DateTime("2024-12-31T14:15:00")
+enddt = DateTime("2025-01-04T16:09:00")
 startdt = DateTime("2024-11-12T14:15:00")
 # startdt = enddt - Year(10)
-EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(split(string(classifiertype), ".")[end])_$(startdt)_$(enddt)")
-coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO"]
-# coins = ["ADA"]
+EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(split(string(classifiertype), ".")[end])_24x60_$(startdt)_$(enddt)")
+coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
+coins = sort(coins)
+# coins = ["BTC"]
 println("$(split(string(classifiertype), ".")[end]) evaluating: $coins")
 df = Classify.evaluateclassifiers([classifiertype], coins, startdt, enddt)
 # df = Classify.readsimulation()

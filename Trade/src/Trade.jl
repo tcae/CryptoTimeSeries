@@ -48,7 +48,7 @@ mutable struct TradeCache
     maxassetfraction # defines the maximum ratio of (a specific asset) / ( total assets) - longclose only if this is exceeded
     reloadtimes::Vector{Time}  # provides time info when the portfolio of coin candidates shall be reassessed
     trademode::TradeMode
-    function TradeCache(; topx=50, maxassetfraction=0.07, xc=CryptoXch.XchCache(true), cl=Classify.Classifier001(), reloadtimes=[], trademode=buysell)
+    function TradeCache(; topx=50, maxassetfraction=0.07, xc=CryptoXch.XchCache(true), cl=Classify.Classifier011(), reloadtimes=[], trademode=buysell)
         new(xc, DataFrame(), cl, topx, 1f0, maxassetfraction, reloadtimes, trademode)
     end
 end
