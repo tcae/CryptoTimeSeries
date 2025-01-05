@@ -321,7 +321,7 @@ function _dictstring2values!(bybitdict::T) where T <: AbstractDict
         "maxTradeQty", "maxTradeAmt", "minPricePrecision", "minOrderAmt", "o", "h", "l", "c", "v",
         "price", "qty", "avgPrice", "leavesQty", "leavesValue", "cumExecQty", "cumExecValue",
         "cumExecFee", "triggerPrice", "takeProfit", "stopLoss", "maxOrderAmt",
-        "availableToWithdraw", "locked"]
+        "availableToWithdraw", "locked", "borrowAmount", "accruedInterest"]
     datetimekeys = ["timeSecond"]
     nostringdatetimemillikeys = ["time", "t"]
     datetimemillikeys = ["createdTime", "updatedTime", "nextFundingTime", "deliveryTime", "launchTime"]
@@ -368,7 +368,8 @@ end
 
 """Returns the DateTime of the Bybit server time as UTC"""
 function servertime(bc::BybitCache)
-    ret = HttpPublicRequest(bc, "GET", "/v3/public/time", nothing, "server time")
+    # ret = HttpPublicRequest(bc, "GET", "/v3/public/time", nothing, "server time")
+    ret = HttpPublicRequest(bc, "GET", "/v5/market/time", nothing, "server time")
     return ret["time"]
 end
 
@@ -657,10 +658,12 @@ function cancelorder(bc::BybitCache, symbol, orderid)
     return !("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]
 end
 
-function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true)
+"Places an order: spot order by default or margin order if 2 <= marginleverage <= 10"
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
     @assert basequantity > 0.0 "createorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(price) || price > 0.0 "createorder $symbol price of $price cannot be <=0 for order type Limit"
     @assert orderside in ["Buy", "Sell"] "createorder $symbol orderside=$orderside no in [Buy, Sell]"
+
     syminfo = symbolinfo(bc, symbol)
     if isnothing(syminfo)
         @warn "no instrument info for $symbol"
@@ -668,6 +671,12 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     end
     if syminfo.status != "Trading"
         @warn "$symbol status=$(syminfo.status) != Trading"
+        return nothing
+    end
+    if 2 <= marginleverage <= 10
+        Bybit.HttpPrivateRequest(bc, "POST", "/v5/spot-margin-trade/set-leverage", Dict("leverage" => string(marginleverage)), "set margin leverage")
+    elseif marginleverage != 0
+        @error "invalid Bybit margin leverage $marginleverage != [0,2-10]"
         return nothing
     end
     attempts = 5
@@ -681,6 +690,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         "orderType" => "Limit",
         "qty" => "undefined",
         "price" => "undefined",
+        "isLeverage" => (marginleverage == 0 ? 0 : 1),
         "timeInForce" => "undefined")  # "PostOnly" "GTC
     while attempts > 0
         if isnothing(price) # == market order
@@ -876,9 +886,19 @@ Returns DataFrame with 3 columns of wallet positions of Unified Trade Account
      """
 function balances(bc::BybitCache)
     response = HttpPrivateRequest(bc, "GET", "/v5/account/wallet-balance", Dict("accountType" => "UNIFIED"), "wallet balance")
+    # println(response["result"]["list"][1]["coin"][1])
     if length(response["result"]["list"]) > 1
         @warn "unexpected more than 1 account type Bybit balance info: $response"
     end
+
+    # example of BTC margin sell balance result:
+    # ("locked" => 0.0f0, "accruedInterest" => 0.0f0, "usdValue" => "-9.08460318", 
+    # "spotHedgingQty" => "0", "cumRealisedPnl" => "-0.0044106", "availableToBorrow" => "", 
+    # "availableToWithdraw" => 0.0f0, "bonus" => "0", "unrealisedPnl" => "0", "coin" => "BTC", 
+    # "borrowAmount" => 9.235487f-5, "walletBalance" => "-0.00009235", "collateralSwitch" => true, 
+    # "marginCollateral" => true, "equity" => "-0.00009235", "totalPositionMM" => 0.0f0, 
+    # "totalOrderIM" => "0", "totalPositionIM" => 0.0f0)
+
     # println(response)
     # Dict:
     #    ─────┼───────────────────────────────────────────
@@ -900,7 +920,7 @@ function balances(bc::BybitCache)
     #      16 │ totalPositionMM      0
     #      17 │ totalOrderIM         0
     #      18 │ totalPositionIM      0
-     df = DataFrame(coin=String[], locked=Float32[], free=Float32[])
+    df = DataFrame(coin=String[], locked=Float32[], free=Float32[], borrowamount=Float32[], accruedinterest=Float32[])
     if "list" in keys(response["result"])
         for account in response["result"]["list"]
             if account["accountType"] != "UNIFIED"
@@ -908,7 +928,9 @@ function balances(bc::BybitCache)
             end
             if "coin" in keys(account)
                 for coin in account["coin"]
-                    push!(df, (coin=coin["coin"], locked=coin["locked"], free=coin["availableToWithdraw"]))
+                    borrowamount = isnothing(coin["borrowAmount"]) ? 0f0 : coin["borrowAmount"]
+                    accruedinterest = isnothing(coin["accruedInterest"]) ? 0f0 : coin["accruedInterest"]
+                    push!(df, (coin=coin["coin"], locked=coin["locked"], free=coin["availableToWithdraw"], borrowamount=borrowamount, accruedinterest=accruedinterest))
                 end
             end
         end

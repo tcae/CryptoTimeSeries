@@ -28,7 +28,7 @@ enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(true; enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 cl = Classify.Classifier011()
-cfgnt = (regrwindow=1*24*60,longtrendthreshold=0.04f0, shorttrendthreshold=-1f0, volatilitybuythreshold=-0.02f0, volatilitylongthreshold=0.0f0, volatilityshortthreshold=0.0f0, volatilitysellthreshold=0.02f0)
+cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-0.06f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.02f0, volatilitylongthreshold=0.0f0, volatilityshortthreshold=-1f0)
 cfgid = configurationid(cl, cfgnt)
 println("cfgid=$cfgid for $cfgnt")
 Classify.configureclassifier!(cl, cfgid, true)
@@ -40,7 +40,7 @@ cache = Trade.TradeCache(xc=xc, cl=cl, reloadtimes=reloadtimes, trademode=Trade.
 # enddt = nothing
 # cache = Trade.TradeCache(startdt=startdt, enddt=enddt, messagelog=messagelog)
 
-#! try
+try
     Trade.tradeloop(cache)
     # Trade.tradeloop(startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
     # Trade.tradeloop(startdt=Dates.now(UTC), enddt=nothing))
@@ -52,9 +52,9 @@ cache = Trade.TradeCache(xc=xc, cl=cl, reloadtimes=reloadtimes, trademode=Trade.
 #     if isa(ex, InterruptException)
 #         println("Ctrl+C pressed by trade_test")
 #     end
-#! finally
-#!     @info "$(EnvConfig.now()): finished"
-#!     global_logger(defaultlogger)
-#! end
+finally
+    @info "$(EnvConfig.now()): finished"
+    global_logger(defaultlogger)
+end
 
 end  # module

@@ -548,12 +548,12 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
         end
         portfoliodf.usdtprice = usdtprice
     end
-    portfoliodf.usdtvalue = (portfoliodf.locked + portfoliodf.free) .* portfoliodf.usdtprice
+    portfoliodf.usdtvalue = (portfoliodf.locked + portfoliodf.free - portfoliodf.borrowamount) .* portfoliodf.usdtprice
     if ignoresmallvolume
         delrows = []
         for ix in eachindex(portfoliodf[!, :coin])
             minbasequant = minimumbasequantity(xc, portfoliodf[ix, :coin], portfoliodf[ix, :usdtprice])
-            if !(portfoliodf[ix, :coin] in quotecoins) && (isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free]]) < minbasequant))
+            if !(portfoliodf[ix, :coin] in quotecoins) && (isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free, :borrowamount]]) < minbasequant))
                 push!(delrows, ix)
             end
         end
@@ -620,14 +620,15 @@ function cancelorder(xc::XchCache, base, orderid)
 end
 
 """
+Places an order: spot order by default or margin order if 2 <= marginleverage <= 10
 Adapts `limitprice` and `basequantity` according to symbol rules and executes order.
 Order is rejected (but order created) if `limitprice` > current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=false)
+function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0)
     base = uppercase(base)
     if EnvConfig.configmode == production
-        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker)
+        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
         return oid
     else  # simulation
@@ -636,14 +637,15 @@ function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, ma
 end
 
 """
+Places an order: spot order by default or margin order if 2 <= marginleverage <= 10
 Adapts `limitprice` and `basequantity` according to symbol rules and executes order.
 Order is rejected (but order created) if `limitprice` < current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createsellorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true)
+function createsellorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0)
     base = uppercase(base)
     if EnvConfig.configmode == production
-        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker)
+        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
         return oid
     else  # simulation

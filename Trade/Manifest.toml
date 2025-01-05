@@ -180,7 +180,7 @@ version = "1.2.2"
 deps = ["DataFrames", "Dates", "EnvConfig", "Format", "HTTP", "JSON3", "Logging", "Printf", "SHA", "Test"]
 path = "../Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.2.0"
+version = "4.2.1"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
@@ -292,7 +292,7 @@ weakdeps = ["SparseArrays"]
 deps = ["Assets", "BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "CryptoXch", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "../Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.27.3"
+version = "0.27.5"
 
 [[deps.CodecZlib]]
 deps = ["TranscodingStreams", "Zlib_jll"]
@@ -389,7 +389,7 @@ version = "4.1.1"
 deps = ["Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "../CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.5.6"
+version = "1.5.7"
 
 [[deps.DataAPI]]
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
@@ -1079,9 +1079,9 @@ version = "1.10.1+0"
 
 [[deps.MLDataDevices]]
 deps = ["Adapt", "Compat", "Functors", "Preferences", "Random"]
-git-tree-sha1 = "c2581519bdea44ff65a74d763f0d122ef3c0434d"
+git-tree-sha1 = "731113c87c225f372a733522a6d6952ae95ee686"
 uuid = "7e8f7934-dd98-4c1a-8fe8-92b47a384d40"
-version = "1.6.6"
+version = "1.6.7"
 
     [deps.MLDataDevices.extensions]
     MLDataDevicesAMDGPUExt = "AMDGPU"
@@ -1130,9 +1130,9 @@ version = "0.4.17"
 
 [[deps.MLUtils]]
 deps = ["ChainRulesCore", "Compat", "DataAPI", "DelimitedFiles", "FLoops", "NNlib", "Random", "ShowCases", "SimpleTraits", "Statistics", "StatsBase", "Tables", "Transducers"]
-git-tree-sha1 = "b45738c2e3d0d402dffa32b2c1654759a2ac35a4"
+git-tree-sha1 = "7940c0af802586b97009f254aa6065000a16fa1d"
 uuid = "f1d291b0-491e-4a28-83b9-f70985020b54"
-version = "0.4.4"
+version = "0.4.5"
 
 [[deps.MacroTools]]
 deps = ["Markdown", "Random"]

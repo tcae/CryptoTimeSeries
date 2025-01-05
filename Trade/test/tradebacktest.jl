@@ -236,7 +236,7 @@ function backtestcl010()
 end
 
 function backtestcl011()
-    # Redirect sigint to julia exception handling
+    classifiertype = Classify.Classifier011
     startdt, enddt, defaultlogger = prepare()
     coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
     coins = sort(coins)
@@ -253,8 +253,8 @@ function backtestcl011()
                                     println("$(EnvConfig.now()): started")
 
                                     xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
-                                    cl = Classify.Classifier010()
-                                    cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold, volatilitysellthreshold=volatilitysellthreshold, volatilityselltrendfactor=volatilityselltrendfactor)
+                                    cl = classifiertype()
+                                    cfgnt = (regrwindow=regrwindow,longtrendthreshold=longtrendthreshold,shorttrendthreshold=shorttrendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitysellthreshold=volatilitysellthreshold, volatilitylongthreshold=volatilitylongthreshold, volatilityshortthreshold=volatilityshortthreshold)
                                     cfgid = configurationid(cl, cfgnt)
                                     println("cfgid=$cfgid for $cfgnt")
                                     Classify.configureclassifier!(cl, cfgid, true) 

@@ -125,8 +125,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     end
     tc.cfg[:, :datetime] .= datetime
     # tc.cfg[:, :validbase] = [CryptoXch.validbase(tc.xc, base) for base in tc.cfg[!, :basecoin]] # is already filtered by getUSDTmarket
-    minimumdayquotevolume = minimumdayquotevolume / 1000000
-    tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolume
+    minimumdayquotevolumemillion = minimumdayquotevolume / 1000000
+    tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in assetbases for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
@@ -152,9 +152,11 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(row.basecoin) ($ix of $count)                                                  ")
         CryptoXch.setstartdt(tc.xc, datetime - Minute(Classify.requiredminutes(tc.cl)-1))
         ohlcv = CryptoXch.addbase!(tc.xc, row.basecoin, datetime - Minute(Classify.requiredminutes(tc.cl)-1), tc.xc.enddt)
+        otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
         Classify.addbase!(tc.cl, ohlcv)
-        range = Ohlcv.liquidrange(ohlcv, MINIMUMDAYUSDTVOLUME, 1000f0)
-        row.continuousminvol = !isnothing(range) && (range.endix == lastindex(Ohlcv.dataframe(ohlcv)[!, :opentime])) && ((range.endix - range.startix) > liquidrangeminutes) # continuousminimumvolume(ohlcv, datetime)
+        range = Ohlcv.liquidrange(ohlcv, minimumdayquotevolume, 1000f0)
+        row.continuousminvol = !isnothing(range) && (range.endix == lastindex(otime)) && ((range.endix - range.startix) > liquidrangeminutes) # continuousminimumvolume(ohlcv, datetime)
+        !row.continuousminvol && (verbosity >= 2) && println("continuousminvol=false $(ohlcv.base) range:$(otime[range.startix])-$(otime[range.endix]) requested:$(otime[max(1,lastindex(otime)-liquidrangeminutes+1)])-$(otime[end])")
     end
     classifierbases = Classify.bases(tc.cl)
     tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]
@@ -166,10 +168,10 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& (tc.cfg[:, :minquotevol] .&& tc.cfg[!, :continuousminvol])
         tc.cfg[:, :sellenabled] .= tc.cfg[!, :buyenabled] .|| (tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted])
     end
+    (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
     tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
     (verbosity >= 3) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases($(length(classifierbases)))=$(classifierbases) ")
 
-    (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
     if !assetonly
         write(tc, datetime)
     end
@@ -276,6 +278,8 @@ significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(
 
 currentprice(ohlcv::Ohlcv.OhlcvData) = Ohlcv.dataframe(ohlcv).close[ohlcv.ix]
 maxconcurrentbuycount() = 10  # regrwindow / 2.0  #* heuristic
+closelongset = [shortstrongbuy, shortbuy, shorthold, longshortclose, longstrongclose, longclose]
+closeshortset = [shortclose, shortstrongclose, longshortclose, longhold, longbuy, longstrongbuy]
 
 "Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
 function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvice, assets::AbstractDataFrame)
@@ -298,7 +302,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
     minimumbasequantity = CryptoXch.minimumbasequantity(cache.xc, base, price)
     minqteratio = round(Int, (minimumbasequantity * price) / quotequantity)  # if quotequantity target exceeds minimum quote constraints then extend gaps because spending budget is low
     basedominatesassets = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt) > cache.maxassetfraction
-    if (ta.tradelabel in [longstrongclose, longclose]) && (cache.trademode in [buysell, sellonly, quickexit]) && basecfg.sellenabled
+    if (ta.tradelabel in closelongset) && (cache.trademode in [buysell, sellonly, quickexit]) && basecfg.sellenabled
         # now adapt minimum, if otherwise a too small remainder would be left
         minimumbasequantity = freebase <= 2 * minimumbasequantity ? (freebase >= minimumbasequantity ? freebase : minimumbasequantity) : minimumbasequantity
         basequantity = min(max(sellbuyqtyratio * qtyacceleration * quotequantity/price, minimumbasequantity), freebase)
