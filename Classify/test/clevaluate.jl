@@ -22,17 +22,17 @@ EnvConfig.verbosity = 2
 Classify.verbosity = 3
 
 # classifiertypes = [Classify.Classifier011, Classify.Classifier014]
-classifiertypes = [Classify.Classifier014]
+classifiertypes = [Classify.Classifier011]
 startdt = nothing # DateTime("2024-03-01T00:00:00")
 enddt =   nothing # DateTime("2024-06-06T09:00:00")
-enddt = DateTime("2025-01-04T09:23:00")
+enddt = DateTime("2025-01-05T11:19:00")
 startdt = enddt - Day(30)  # DateTime("2025-01-03T16:09:00")
 # startdt = enddt - Year(10)
 classifierstring = join([split(string(cls), ".")[end] for cls in classifiertypes], "+")
-EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(classifierstring)_24x60_$(startdt)_$(enddt)")
+EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(classifierstring)_24x60_$(Dates.format(startdt, "yymmddTHHMM"))_$(Dates.format(enddt, "yymmddTHHMM"))")
 coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
 coins = sort(coins)
-coins = ["ADA"]
+# coins = ["ADA"]
 for cl in classifiertypes
     println("$(split(string(cl), ".")[end]) evaluating: $coins")
     df = Classify.evaluateclassifiers([cl], coins, startdt, enddt)

@@ -332,9 +332,9 @@ function evaluateclassifiers(classifiertypevector, basecoins, startdt, enddt)
                 verbosity >= 1 && @warn "evaluation of $(string(clt))/$(ohlcv.base) failed due to enddt=$edt < startdt=$sdt"
             end
         end
-        println("cl=$(typeof(cl)) cl.dgbdf=$(typeof(cl.dbgdf))")
-        println(describe(cl.dbgdf))
-        println("rw=(24h:$(count(cl.dbgdf[!, :rw] .== 24*60)), 12h:$(count(cl.dbgdf[!, :rw] .== 12*60)), 4h:$(count(cl.dbgdf[!, :rw] .== 4*60)))")    
+        # println("cl=$(typeof(cl)) cl.dgbdf=$(typeof(cl.dbgdf))")
+        # println(describe(cl.dbgdf))
+        # println("rw=(24h:$(count(cl.dbgdf[!, :rw] .== 24*60)), 12h:$(count(cl.dbgdf[!, :rw] .== 12*60)), 4h:$(count(cl.dbgdf[!, :rw] .== 4*60)))")    
     end
     return df
 end
@@ -1758,11 +1758,11 @@ supplement!(bc::BaseClassifier011) = Features.supplement!(bc.f4, bc.ohlcv)
 
 const REGRWINDOW011 = Int16[24*60]
 const LONGTRENDTHRESHOLD011 = Float32[0.02f0] # , 0.04f0, 0.06f0, 1f0]  # 1f0 == switch off long trend following
-const SHORTTRENDTHRESHOLD011 = Float32[-0.02f0] # , -0.04f0, -0.06f0, -1f0]  # -1f0 == switch off short trend following
+const SHORTTRENDTHRESHOLD011 = Float32[-0.02f0, -0.04f0, -1f0] # , -0.04f0, -0.06f0, -1f0]  # -1f0 == switch off short trend following
 const VOLATILITYBUYTHRESHOLD011 = Float32[-0.01f0, -0.02f0]
 const VOLATILITYSELLTHRESHOLD011 = Float32[0.01f0, 0.02f0]
-const VOLATILITYSHORTTHRESHOLD011 = Float32[0f0] # , -1f0]  # -1f0 == switch off volatility short investments
-const VOLATILITYLONGTHRESHOLD011 = Float32[0f0] # , 1f0]  # 1f0 == switch off volatility long investments
+const VOLATILITYSHORTTHRESHOLD011 = Float32[0f0, -1f0]  # -1f0 == switch off volatility short investments
+const VOLATILITYLONGTHRESHOLD011 = Float32[0f0, 1f0]  # 1f0 == switch off volatility long investments
 const OPTPARAMS011 = Dict(
     "regrwindow" => REGRWINDOW011,
     "longtrendthreshold" => LONGTRENDTHRESHOLD011,
