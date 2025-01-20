@@ -5,7 +5,7 @@
 
 module CryptoXch
 
-using Dates, DataFrames, DataAPI, JDF, CSV, Logging
+using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings
 using Bybit, EnvConfig, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
@@ -18,6 +18,9 @@ verbosity =
 """
 verbosity = 1
 
+@enum Sidefactor buy=1 sell=-1 invaid = 0
+@enum SimMode nosimulation bybitsim cryptoxchsim
+
 mutable struct XchCache
     orders  # ::DataFrame
     closedorders  # ::DataFrame
@@ -29,10 +32,17 @@ mutable struct XchCache
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mnemonic  # String or nothing
-    function XchCache(bybitinit::Bool=true; startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing)
+    mc::Dict # MC = module constants
+    function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        return new(emptyorders(), emptyorders(), emptyassets(), Dict(), bybitinit ? Bybit.BybitCache() : nothing, 0.001, startdt, nothing, enddt, mnemonic)
+        # simmode = cryptoxchsim # does not call Bybit for account specific functions but uses CryptoXch simulation
+        # simmode = bybitsim # does not use CryptoXch simulation but Bybit Testnet simulation
+        # simmode = nosimulation # uses production mode of Bybit without any exchange simulation
+        simmode = EnvConfig.configmode == production ? simmode = nosimulation : simmode = cryptoxchsim
+        xc = new(_emptyorders(), _emptyorders(), _emptyassets(), Dict(), Bybit.BybitCache(simmode == bybitsim), 0.001, startdt, nothing, enddt, mnemonic, Dict())
+        xc.mc[:simmode] = simmode
+        return xc
     end
 end
 
@@ -40,23 +50,22 @@ setstartdt(xc::XchCache, dt::DateTime) = (xc.startdt = isnothing(dt) ? nothing :
 setenddt(xc::XchCache, dt::DateTime) = (xc.enddt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
 bases(xc::XchCache) = keys(xc.bases)
 ohlcv(xc::XchCache) = values(xc.bases)
-ohlcv(xc::XchCache, base::String) = xc.bases[base]
+ohlcv(xc::XchCache, base::AbstractString) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
-basenottradable = ["SUI", "MATIC"]
+basenottradable = ["MATIC", "FTM", "AI16Z", "TRUMP", "ENA", "MNT", "POPCAT", "PENGU", "SUI", "ETH"]
 basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "EUR", "DAI"]
 quotecoins = ["USDT"]  # , "USDC"]
-baseignore = []
-baseignore = uppercase.(append!(baseignore, basestablecoin, basenottradable))
+baseignore = uppercase.(union(basestablecoin, basenottradable))
 minimumquotevolume = 10  # USDT
 
 MAXLIMITDELTA = 0.1
 
-_isleveraged(token) = (token[end] in ['S', 'L']) && isdigit(token[end-1])
+_isleveraged(token) = !isnothing(token) && (length(token) > 2) && (token[end] in ['S', 'L']) && isdigit(token[end-1])
 
 #region support
 
-validbase(xc::XchCache, base::String) = validsymbol(xc, symboltoken(base))
+validbase(xc::XchCache, base::AbstractString) = validsymbol(xc, symboltoken(base))
 
 removebase!(xc::XchCache, base) = delete!(xc.bases, base)
 removeallbases(xc::XchCache) = xc.bases = Dict()
@@ -144,7 +153,7 @@ end
 
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
 tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(Bybit.servertime(xc.bc), Minute(1)) : xc.currentdt
-# tradetime(xc::XchCache) = EnvConfig.configmode == production ? Bybit.servertime(xc.bc) : Dates.now(UTC)
+# tradetime(xc::XchCache) = (xc.mc[:simmode] != cryptoxchsim) ? Bybit.servertime(xc.bc) : Dates.now(UTC)
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
 
@@ -164,7 +173,7 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
 end
 
 "Sleeps until `datetime` if reached if `datetime` is in the future, set the *current* time and updates ohlcv if required"
-function setcurrenttime!(xc::XchCache, base::String, datetime::DateTime)
+function setcurrenttime!(xc::XchCache, base, datetime::DateTime)
     dt = floor(datetime, Minute(1))
     ot = []
     if base in keys(xc.bases)
@@ -206,7 +215,7 @@ Subsequent calls are required to get > 1000 entries.
 Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> weeks; M -> months):
 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 """
-function _ohlcfromexchange(xc::XchCache, base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
+function _ohlcfromexchange(xc::XchCache, base::AbstractString, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     df = nothing
     if base in testbasecoin()
         df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
@@ -227,7 +236,7 @@ Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> wee
 
 time gaps will not be filled
 """
-function _gethistoryohlcv(xc::XchCache, base::String, startdt::DateTime, enddt::DateTime=Dates.now(Dates.UTC), interval="1m")
+function _gethistoryohlcv(xc::XchCache, base::AbstractString, startdt::DateTime, enddt::DateTime=Dates.now(Dates.UTC), interval="1m")
     # startdt = DateTime("2020-08-11T22:45:00")
     # enddt = DateTime("2020-08-12T22:49:00")
     startdt = floor(startdt, intervalperiod(interval))
@@ -382,7 +391,7 @@ end
 
 #region public
 
-function validsymbol(xc::XchCache, symbol::String)
+function validsymbol(xc::XchCache, symbol)
     sym = Bybit.symbolinfo(xc.bc, symbol)
     r = Bybit.validsymbol(xc.bc, sym) &&
         !(sym.basecoin in baseignore) &&
@@ -390,8 +399,8 @@ function validsymbol(xc::XchCache, symbol::String)
     return r || (basequote(symbol).basecoin in testbasecoin())
 end
 
-
-function minimumqty(xc::XchCache, sym::String)
+"Returns a tuple of (minimum base quantity, minimum quote quantity)"
+function minimumqty(xc::XchCache, sym::AbstractString)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
     if isnothing(syminfo)
         if validsymbol(xc, sym)
@@ -402,13 +411,25 @@ function minimumqty(xc::XchCache, sym::String)
     return (minbaseqty=syminfo.minbaseqty, minquoteqty=syminfo.minquoteqty)
 end
 
-function minimumbasequantity(xc::XchCache, base::AbstractString, price)
+function minimumbasequantity(xc::XchCache, base::AbstractString, price=(base in bases(xc) ? Ohlcv.dataframe(ohlcv(xc, base))[Ohlcv.ix(ohlcv(xc, base)), :close] : nothing))
+    if isnothing(price)
+        return nothing
+    end
     sym = CryptoXch.symboltoken(base)
     syminfo = CryptoXch.minimumqty(xc, sym)
     return isnothing(syminfo) ? nothing : 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
 end
 
-function precision(xc::XchCache, sym::String)
+function minimumquotequantity(xc::XchCache, base::AbstractString, price=(base in bases(xc) ? Ohlcv.dataframe(ohlcv(xc, base))[Ohlcv.ix(ohlcv(xc, base)), :close] : nothing))
+    if isnothing(price)
+        return nothing
+    end
+    sym = CryptoXch.symboltoken(base)
+    syminfo = CryptoXch.minimumqty(xc, sym)
+    return isnothing(syminfo) ? nothing : 1.01 * max(syminfo.minbaseqty * price, syminfo.minquoteqty) # 1% more to avoid issues by rounding errors
+end
+
+function precision(xc::XchCache, sym::AbstractString)
     syminfo = Bybit.symbolinfo(xc.bc, sym)
     if isnothing(syminfo)
         (verbosity >= 1) && @error "cannot find symbol $sym in Bybit exchange info"
@@ -489,10 +510,10 @@ end
 
 #region account
 
-"Returns a DataFrame[:coin, :locked, :free] of wallet/portfolio balances"
+"Returns a DataFrame[:coin, :locked, :free, :borrowed, :accruedinterest] of wallet/portfolio balances"
 function balances(xc::XchCache; ignoresmallvolume=true)
     bdf = nothing
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         bdf = Bybit.balances(xc.bc)
         select = [!(coin in baseignore) || (coin == EnvConfig.cryptoquote) for coin in bdf[!, :coin]]
         bdf = bdf[select, :]
@@ -501,15 +522,15 @@ function balances(xc::XchCache; ignoresmallvolume=true)
             (verbosity >= 1) && @error "cannot simulate balances() with uninitialized CryptoXch cache"
             return DataFrame()
         end
-        bdf = xc.assets
+        bdf = _balances(xc)
     end
-    if ignoresmallvolume
+    if !isnothing(bdf) && (size(bdf, 1) > 0) && ignoresmallvolume
         delrows = []
         for ix in eachindex(bdf[!, :coin])
             if bdf[ix, :coin] != EnvConfig.cryptoquote
                 sym = symboltoken(bdf[ix, :coin])
                 syminfo = minimumqty(xc, sym)
-                if !validsymbol(xc, sym) || (sum(bdf[ix, [:locked, :free]]) < 1.01 * syminfo.minbaseqty) # 1% more to avoid issues by rounding errors
+                if !validsymbol(xc, sym) || ((abs(bdf[ix, :free]) + abs(bdf[ix, :locked]) + abs(bdf[ix, :borrowed])) < 1.01 * syminfo.minbaseqty) # 1% more to avoid issues by rounding errors
                     push!(delrows, ix)
                 end
             end
@@ -548,12 +569,12 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
         end
         portfoliodf.usdtprice = usdtprice
     end
-    portfoliodf.usdtvalue = (portfoliodf.locked + portfoliodf.free - portfoliodf.borrowamount) .* portfoliodf.usdtprice
+    portfoliodf.usdtvalue = (abs.(portfoliodf.free .+ portfoliodf.locked) .- portfoliodf.borrowed) .* portfoliodf.usdtprice .* sign.(portfoliodf.free .+ portfoliodf.locked)
     if ignoresmallvolume
         delrows = []
         for ix in eachindex(portfoliodf[!, :coin])
             minbasequant = minimumbasequantity(xc, portfoliodf[ix, :coin], portfoliodf[ix, :usdtprice])
-            if !(portfoliodf[ix, :coin] in quotecoins) && (isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && (sum(portfoliodf[ix, [:locked, :free, :borrowamount]]) < minbasequant))
+            if !(portfoliodf[ix, :coin] in quotecoins) && (isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && ((abs(portfoliodf[ix, :free]) + abs(portfoliodf[ix, :locked]) + abs(portfoliodf[ix, :borrowed])) < minbasequant))
                 push!(delrows, ix)
             end
         end
@@ -562,7 +583,7 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
     return portfoliodf
 end
 
-openstatus(st::String)::Bool = st in ["New", "PartiallyFilled", "Untriggered"]
+openstatus(st::AbstractString)::Bool = st in ["New", "PartiallyFilled", "Untriggered"]
 openstatus(stvec::AbstractVector{String})::Vector{Bool} = [openstatus(st) for st in stvec]
 
 """
@@ -582,9 +603,9 @@ Returns an AbstractDataFrame of open **spot** orders with columns:
 - rejectreason ::String
 """
 function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         oo = Bybit.openorders(xc.bc, symbol=symboltoken(base))
-        return size(oo) == (0,0) ? emptyorders() : oo
+        return size(oo) == (0,0) ? _emptyorders() : oo
     else  # simulation
         if isnothing(xc)
             (verbosity >= 1) && @error "cannot simulate getopenorders() with uninitialized CryptoXch cache"
@@ -601,7 +622,7 @@ end
 
 "Returns a named tuple with elements equal to columns of getopenorders() dataframe of the identified order or `nothing` if order is not found"
 function getorder(xc::XchCache, orderid)
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         return Bybit.order(xc.bc, orderid)
     else  # simulation
         orderindex = _orderrefresh(xc, orderid)
@@ -612,10 +633,10 @@ end
 
 "Returns orderid in case of a successful cancellation"
 function cancelorder(xc::XchCache, base, orderid)
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         return Bybit.cancelorder(xc.bc, symboltoken(base), orderid)
     else  # simulation
-        return _cancelordersimulation(xc::XchCache, base, orderid)
+        return _cancelordersimulation(xc, orderid)
     end
 end
 
@@ -625,14 +646,15 @@ Adapts `limitprice` and `basequantity` according to symbol rules and executes or
 Order is rejected (but order created) if `limitprice` > current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createbuyorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0)
+function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0)
     base = uppercase(base)
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
+        (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     else  # simulation
-        return _createordersimulation(xc, base, "Buy", basequantity, limitprice, EnvConfig.cryptoquote)
+        return _createordersimulation(xc, base, buy, basequantity, limitprice, marginleverage)
     end
 end
 
@@ -642,19 +664,20 @@ Adapts `limitprice` and `basequantity` according to symbol rules and executes or
 Order is rejected (but order created) if `limitprice` < current price in order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createsellorder(xc::XchCache, base::String; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0)
+function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0)
     base = uppercase(base)
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
+        (verbosity >= 3) && @info "$(tradetime(cache)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     else  # simulation
-        return _createordersimulation(xc, base, "Sell", basequantity, limitprice, base)
+        return _createordersimulation(xc, base, sell, basequantity, limitprice, marginleverage)
     end
 end
 
 function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing)
-    if EnvConfig.configmode == production
+    if (xc.mc[:simmode] != cryptoxchsim)
         oo = Bybit.order(xc.bc, orderid) #TODO in order to avoid this unnecessary order request the interface of Bybit.amendorder need to remove symbol param
         if isnothing(oo)
             return nothing
@@ -689,48 +712,69 @@ ASSETSFILENAME = "XchCacheAssets"
 ORDERSFILENAME = "XchCacheOrders"
 CLOSEDORDERSFILENAME = "XchCacheClosedorders"
 
-function _orderbase(xc::XchCache, orderid)
-    ooix = findlast(oid -> oid == orderid, xc.orders[!, :orderid])
-    coix = isnothing(ooix) ? findlast(oid -> oid == orderid, xc.closedorders[!, :orderid]) : nothing
-    return isnothing(ooix) ? (isnothing(coix) ? nothing : basequote(xc.closedorders[coix, :symbol])[1]) : basequote(xc.orders[ooix, :symbol])[1]
+"Finds or creates an asset order row in an asset dataframe and returns it. "
+function _assetrow!(adf::DataFrame, coin)
+    aorow = nothing
+    adfix = size(adf, 1) > 0 ? findfirst(x -> x == coin, adf[!, :coin]) : nothing
+    if isnothing(adfix)
+        push!(adf, (coin = coin, free = 0f0, locked = 0f0, marginfree = 0f0, marginlocked = 0f0, assetborrowed = 0f0, orderborrowed = 0f0, accruedinterest = 0f0))
+        aorow = last(adf)
+    else
+        aorow = adf[adfix, :]
+    end
+    return aorow
 end
 
-_orderohlcv(xc::XchCache, orderid) = (base = _orderbase(xc,orderid); isnothing(base) ? nothing : xc.bases[base])
-_ordercurrenttime(xc::XchCache, orderid) = (ohlcv = _orderohlcv(xc, orderid); isnothing(ohlcv) ? nothing : (ot = Ohlcv.dataframe(ohlcv).opentime; length(ot) > 0 ? ot[Ohlcv.ix(ohlcv)] : nothing))
-_ordercurrentprice(xc::XchCache, orderid) = (ohlcv = _orderohlcv(xc, orderid); isnothing(ohlcv) ? nothing : (cl = Ohlcv.dataframe(ohlcv).close; length(cl) > 0 ? cl[Ohlcv.ix(ohlcv)] : nothing))
+"Updates assets according to order execution."
+function _updateassetsofcancelledorder!(xc::XchCache, orderrow)
+    basecoin, quotecoin = basequote(orderrow.symbol)
+    quoterow = _assetrow!(xc.assets, quotecoin)
+    baserow = _assetrow!(xc.assets, basecoin)
+    revertamount = orderrow.baseqty - orderrow.executedqty
+    if orderrow.marginleverage == 0  # spot trade
+        if orderrow.side == "Buy"
+            quoterow.free += revertamount * orderrow.limitprice
+            quoterow.locked -= revertamount * orderrow.limitprice
+        else # side == "Sell"
+            baserow.free += revertamount
+            baserow.locked -= revertamount
+        end
+    else # orderrow.marginleverage in [2:10]
+        # get required capital independent of free basecoin
+        quoterow.free += revertamount * orderrow.limitprice / orderrow.marginleverage
+        quoterow.locked -= revertamount * orderrow.limitprice / orderrow.marginleverage
+        baserow.orderborrowed -= revertamount * (orderrow.marginleverage - 1) / orderrow.marginleverage  # abs amount due to pay back of borrowed only at order closure
+        #TODO calc accrued interest of unused borrowed capital in slices of hours
+    end
+end
 
-function _cancelordersimulation(xc::XchCache, base, orderid)
+function _cancelordersimulation(xc::XchCache, orderid)
     if isnothing(xc)
         (verbosity >= 1) && @error "cannot simulate cancelorder() with uninitialized CryptoXch cache"
         return nothing
     end
-    oix = findlast(x -> x == orderid, xc.orders[!, :orderid])
+    oix = _orderrefresh(xc, orderid)
     if !isnothing(oix)
         xco = xc.orders[oix, :]
-        base, _ = basequote(xco.symbol)
+        _updateassetsofcancelledorder!(xc, xco)
+        base = basequote(xco.symbol).basecoin
         ohlcv = xc.bases[base]
         ohlcvdf = Ohlcv.dataframe(ohlcv)
         xco.updated = ohlcvdf.opentime[Ohlcv.ix(ohlcv)]
-        xco.status = "Cancelled"
-        baseqty = xco.baseqty
-        executedqty = xco.executedqty
-        limitprice = xco.limitprice
-        side = xco.side
+        if xco.executedqty > 0 
+            xco.status = "PartiallyFilledCanceled"
+        else
+            xco.status = "Cancelled"
+        end
         push!(xc.closedorders,xco)
         deleteat!(xc.orders, oix)
-        if side == "Buy"
-            qteqty = (baseqty - executedqty) * limitprice
-            updateasset!(xc, EnvConfig.cryptoquote, -qteqty, qteqty)
-        else # longclose side
-            baseqty = baseqty - executedqty
-            updateasset!(xc, base, -baseqty, baseqty)
-        end
         return orderid
     else
         return nothing
     end
 end
 
+"Changes either limitprice or base quantity of an order. The simulation cancels the order and recreates a new using the same id. That already done executed quantities are not taken over."
 function _changeordersimulation(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing)
     oix = _orderrefresh(xc, orderid)
     # if isnothing(oix) || !openstatus(xc.orders[oix, :status]) || (xc.orders[oix, :baseqty] <= xc.orders[oix, :executedqty])
@@ -738,40 +782,77 @@ function _changeordersimulation(xc::XchCache, orderid; limitprice=nothing, baseq
         return nothing
     end
     xco = xc.orders[oix, :]
-    if isnothing(limitprice)
-        limitdelta = 0.0f0
-        limit = xco.limitprice
-    else
-        limitdelta = limitprice - xco.limitprice
-        limit = limitprice
-    end
-    if isnothing(basequantity)
-        baseqtydelta = 0.0f0
-        baseqty = xco.baseqty
-    else
-        basequantity = max(basequantity, xco.executedqty)
-        baseqtydelta = basequantity - xco.baseqty
-        baseqty = basequantity
-    end
-    ohlcv = xc.bases[basequote(xco.symbol)[1]]
-    dtnow = ohlcv.df.opentime[ohlcv.ix]
-    xco.updated = dtnow
-
-    freeasset, freeassetqty = xco.side == "Buy" ? (EnvConfig.cryptoquote, baseqty * limitdelta + limit * baseqtydelta) : (basequote(xco.symbol)[1], baseqtydelta)
-    xco.baseqty = baseqty
-    xco.limitprice = limit
-    if baseqty <= xco.executedqty # close order
-        xco.status = "Filled"
-        push!(xc.closedorders,xco)
-        deleteat!(xc.orders, oix)
-    end
-    updateasset!(xc, freeasset, freeassetqty, -freeassetqty)
+    baseqty = (isnothing(basequantity) ? xco.baseqty : basequantity) - xco.executedqty
+    #* new new order will have zero executedqty but baseqty is reduce by the already executed amount
+    marginleverage = xco.marginleverage
+    base = basequote(xco.symbol).basecoin
+    side = xco.side == "Buy" ? buy : sell
+    limitprice = isnothing(limitprice) ? xco.limitprice : limitprice
+    @assert orderid == _cancelordersimulation(xc, xco.orderid)
+    orderid = _createordersimulation(xc, base, side, baseqty, limitprice, marginleverage; oid=orderid)
     return orderid
 end
+
+"Updates assets according to order execution."
+function _updateassetsofexecutedorder!(xc::XchCache, orderrow, transactionqty)
+    basecoin, quotecoin = basequote(orderrow.symbol)
+    @assert quotecoin == EnvConfig.cryptoquote
+    @assert transactionqty <= orderrow.baseqty - orderrow.executedqty "transactionqty=$transactionqty > baseqty=$(orderrow.baseqty) - executedqty=$(orderrow.executedqty)"
+    @assert transactionqty > 0f0
+    quoterow = _assetrow!(xc.assets, quotecoin)
+    baserow = _assetrow!(xc.assets, basecoin)
+    side = (orderrow.side == "Buy" ? 1f0 : -1f0)
+    if orderrow.marginleverage == 0  # spot trade
+        if side > 0 # side == Buy
+            quoterow.locked -= transactionqty * orderrow.limitprice
+            baserow.free += transactionqty
+        else # side == "Sell"
+            baserow.locked -= transactionqty
+            quoterow.free += transactionqty * orderrow.limitprice
+        end
+    else # orderrow.marginleverage in [2:10]
+        if side > 0 # side == Buy
+            reduceqty = baserow.marginlocked < 0 ? min(abs(baserow.marginlocked), transactionqty) : 0f0
+            extendqty = transactionqty - reduceqty
+            baserow.marginlocked += reduceqty  # unlock negative reduce amount
+            baserow.assetborrowed -= reduceqty * (orderrow.marginleverage - 1) / orderrow.marginleverage
+            quoterow.free += reduceqty * orderrow.limitprice / orderrow.marginleverage
+            if extendqty > 0f0
+                baserow.marginfree += extendqty
+            end
+        else # side == "Sell"
+            reduceqty = baserow.marginlocked > 0 ? min(abs(baserow.marginlocked), transactionqty) : 0f0
+            extendqty = transactionqty - reduceqty
+            if reduceqty > 0
+                baserow.marginlocked += -reduceqty  # unlock positive reduce amount
+                baserow.assetborrowed -= reduceqty * (orderrow.marginleverage - 1) / orderrow.marginleverage
+                quoterow.free += reduceqty * orderrow.limitprice / orderrow.marginleverage
+                reducespotqty = baserow.locked > 0 ? min(abs(baserow.locked), extendqty) : 0f0
+                if reducespotqty > 0 # use case: first reduce also spot base before selling coins via margin
+                    extendqty = extendqty - reducespotqty
+                    baserow.locked -= reducespotqty  # unlock positive reduce amount
+                    baserow.assetborrowed = max(0f0, baserow.assetborrowed - reducespotqty)  # pay back positive reduce amount
+                    quoterow.free += reducespotqty * orderrow.limitprice
+                end
+            end
+            if extendqty > 0f0
+                baserow.marginfree -= extendqty
+            end
+        end
+        if extendqty > 0f0
+            baserow.orderborrowed -= extendqty * (orderrow.marginleverage - 1) / orderrow.marginleverage  # pay back of abs amount during open order
+            baserow.assetborrowed += (extendqty) * (orderrow.marginleverage - 1) / orderrow.marginleverage  # pay back of abs amount during open order
+            quoterow.locked -= extendqty * orderrow.limitprice / orderrow.marginleverage
+        end
+    end
+    quoterow.free -= transactionqty * orderrow.limitprice * xc.feerate
+end
+
 
 "Checks ohlcv since last check and marks order as executed if limitprice is exceeded"
 function _updateorder!(xc::XchCache, orderix)
     xco = xc.orders[orderix, :]
+    transactionqty = xco.baseqty  #TODO too simple to assume just one transaction for the whole order
     # if !openstatus(xco.status)
     #     return
     # end
@@ -779,171 +860,200 @@ function _updateorder!(xc::XchCache, orderix)
     ohlcv = xc.bases[base]
     ohlcvdf = Ohlcv.dataframe(ohlcv)
     ohlcvix = oix = Ohlcv.ix(ohlcv)
-    if ohlcvdf.opentime[oix] == xco.lastcheck
-        return
-    end
-    while (ohlcvdf.opentime[oix] > xco.lastcheck) && (oix > firstindex(ohlcvdf.opentime))
-        oix -= 1
-    end
-    xco.lastcheck = ohlcvdf.opentime[ohlcvix]
-    while oix <= ohlcvix
-        if xco.side == "Buy"
-            if ohlcvdf.low[oix] <= xco.limitprice
-                xco.updated = ohlcvdf.opentime[ohlcvix]
-                xco.avgprice = xco.limitprice
-                xco.executedqty = xco.baseqty
-                xco.status = "Filled"
-                executedqty = xco.executedqty
-                limitprice = xco.limitprice
-                push!(xc.closedorders,xco)
-                deleteat!(xc.orders, orderix)
-                updateasset!(xc, EnvConfig.cryptoquote, -(executedqty * limitprice), 0)
-                # update quote locked part with sum of open orders
-                updateasset!(xc, base, 0, executedqty * (1 - xc.feerate))
-                break
-            end
-        else # longclose side
-            if ohlcvdf.high[oix] >= xco.limitprice
-                xco.updated = ohlcvdf.opentime[ohlcvix]
-                xco.avgprice = xco.limitprice
-                xco.executedqty = xco.baseqty
-                xco.status = "Filled"
-                executedqty = xco.executedqty
-                limitprice = xco.limitprice
-                push!(xc.closedorders,xco)
-                deleteat!(xc.orders, orderix)
-                updateasset!(xc, base, -executedqty, 0)
-                # update base locked part with sum of open orders
-                updateasset!(xc, EnvConfig.cryptoquote, 0, (executedqty * limitprice * (1 - xc.feerate)))
-                break
-            end
+    if ohlcvdf.opentime[oix] != xco.lastcheck
+        while (ohlcvdf.opentime[oix] > xco.lastcheck) && (oix > firstindex(ohlcvdf.opentime))
+            oix -= 1
         end
-        oix += 1
+        xco.lastcheck = ohlcvdf.opentime[ohlcvix]
+        while oix <= ohlcvix
+            if ((xco.side == "Buy") && (ohlcvdf.low[oix] <= xco.limitprice)) || ((xco.side == "Sell") && (ohlcvdf.high[oix] >= xco.limitprice))
+                _updateassetsofexecutedorder!(xc, xco, transactionqty)
+                xco.updated = ohlcvdf.opentime[ohlcvix]
+                xco.avgprice = (xco.avgprice * xco.executedqty + xco.limitprice * transactionqty) / (xco.executedqty + transactionqty)
+                xco.executedqty += transactionqty
+                minbaseqty, _ = minimumqty(xc, xco.symbol)
+                if (xco.executedqty - xco.baseqty) < minbaseqty
+                    xco.status = "Filled"
+                else
+                    xco.status = "PartiallyFilled"
+                end
+                push!(xc.closedorders,xco)
+                xco = last(xc.closedorders)
+                deleteat!(xc.orders, orderix)
+                break
+            end
+            oix += 1
+        end
     end
+    return xco
 end
 
-"Checks in sumulation longbuy or longclose conditions and returns order index or nothign if not found"
+"Checks in simulation close conditions and returns order index or nothing if not found"
 function _orderrefresh(xc::XchCache, orderid)
+    openstatus = ["New", "PartiallyFilled", "Untriggered"]
     if isnothing(xc)
         (verbosity >= 1) && @error "cannot simulate getorder() with uninitialized CryptoXch cache"
         return nothing
     end
+    xcoix = nothing
     for oix in reverse(eachindex(xc.orders[!, :orderid]))
-        _updateorder!(xc, oix)
+        uo = _updateorder!(xc, oix)
+        xcoix = (uo.orderid == orderid) && (uo.status in openstatus) ? oix : xcoix
     end
-    return findlast(x -> x == orderid, xc.orders[!, :orderid])
+    return xcoix
 end
 
-function _createordersimulation(xc::XchCache, base, side, baseqty, limitprice, freeasset)
+
+function _assetaddorder!(baserow, quoterow, orderrow)
+    if orderrow.marginleverage == 0  # spot trade
+        if orderrow.side == "Buy"
+            quoterow.free -= orderrow.baseqty * orderrow.limitprice
+            quoterow.locked += orderrow.baseqty * orderrow.limitprice
+        else # side == "Sell"
+            baserow.free -= orderrow.baseqty
+            baserow.locked += orderrow.baseqty
+        end
+    else # orderrow.marginleverage in [2:10]
+        # get required capital independent of free basecoin
+        sidefactor = (orderrow.side == "Buy" ? 1f0 : -1f0)
+        if sidefactor > 0 # buy side
+            if baserow.marginfree < 0 # -> reduce
+                reduceqty = min(orderrow.baseqty, abs(baserow.marginfree))
+                extendqty = orderrow.baseqty - reduceqty
+                baserow.marginlocked += -reduceqty  # lock negative reduce amount
+                baserow.marginfree += reduceqty
+            else # extend only
+                extendqty = orderrow.baseqty
+            end
+        else # side < 0 -> sell side
+            if baserow.marginfree > 0 # -> reduce
+                reduceqty = min(orderrow.baseqty, baserow.marginfree)
+                extendqty = orderrow.baseqty - reduceqty
+                if extendqty > 0
+                    reducespotqty = min(extendqty, baserow.free) # use spot free also for reduce
+                    extendqty = extendqty - reducespotqty
+                    if reducespotqty > 0
+                        baserow.free -= reducespotqty
+                        baserow.locked += reducespotqty
+                    end
+                end
+                baserow.marginlocked += reduceqty  # lock positive reduce amount
+                baserow.marginfree += -reduceqty
+            else # extend only
+                extendqty = orderrow.baseqty
+            end
+        end
+        if extendqty > 0
+            quoterow.free -= extendqty * orderrow.limitprice / orderrow.marginleverage
+            quoterow.locked += extendqty * orderrow.limitprice / orderrow.marginleverage
+            baserow.orderborrowed += extendqty * (orderrow.marginleverage - 1) / orderrow.marginleverage  # without sidefactor because borrow is always >= 0
+        end
+    end
+end
+
+function _createordersimulation(xc::XchCache, base, side::Sidefactor, baseqty, limitprice, marginleverage; oid=nothing)
+    #* borrowed is updated in xc.assets at order close
+    #* locked is not updated in xc.assets but only derived by _assetstate
+    @assert baseqty >= 0 "baseqty=$baseqty < 0"
+    @assert isnothing(limitprice) || (limitprice >= 0) "limitprice=$limitprice < 0"
+    @assert marginleverage in [0] || marginleverage in 2:10 "marginleverage not in [0, 2:10]"
+    
     if isnothing(xc)
         (verbosity >= 1) && @error "cannot simulate create longbuy/longclose order() with uninitialized CryptoXch cache"
         return nothing
     end
     ohlcv = xc.bases[base]
     dtnow = ohlcv.df.opentime[ohlcv.ix]
-    if isnothing(limitprice)
-        limitprice = ohlcv.df[ohlcv.ix, :close]
+    sym = symboltoken(base)
+    if isnothing(limitprice)  # no limitprice indicates maker=true
+        syminfo = Bybit.symbolinfo(xc.bc, sym)
+        limitprice = side == buy ? ohlcv.df[ohlcv.ix, :close] - syminfo.ticksize : ohlcv.df[ohlcv.ix, :close] + syminfo.ticksize
         timeinforce = "PostOnly"
     else
         timeinforce = "GTC"
     end
-    orderid = "$side$baseqty*$(round(limitprice, sigdigits=5))$base$(Dates.format(dtnow, "yymmddTHH:MM"))"
-    if (side == "Buy")
+    orderid = isnothing(oid) ? "$side$baseqty*$(round(limitprice, sigdigits=5))$base$(Dates.format(dtnow, "yymmddTHH:MM"))" : oid
+    if (side == buy)
         if (limitprice > (1+MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])
             (verbosity >= 2) && @info "limitprice $limitprice > max delta $((1+MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])"
             return nothing
         else
             limitprice = min(limitprice, ohlcv.df.close[ohlcv.ix])
-            quoteqty = baseqty * limitprice
-            (verbosity >= 3) && println("longbuy order: quoteqty=$quoteqty = baseqty=$baseqty * limitprice=$limitprice")
-            if _assetfreelocked(xc, EnvConfig.cryptoquote).free >= quoteqty
-                push!(xc.orders, (orderid=orderid, symbol=symboltoken(base), side=side, baseqty=baseqty, ordertype="Limit", timeinforce=timeinforce, limitprice=limitprice, avgprice=0.0f0, executedqty=0.0f0, status="New", created=dtnow, updated=dtnow, rejectreason="NO ERROR", lastcheck=dtnow-Minute(1)))
-                updateasset!(xc, EnvConfig.cryptoquote, quoteqty, -quoteqty)
-            else
-                (verbosity >= 1) && @warn "$(Dates.format(dtnow, "yymmddTHH:MM")) $side of $base insufficient free assets: requested $quoteqty $(EnvConfig.cryptoquote) > available $(_assetfreelocked(xc, EnvConfig.cryptoquote).free) $freeasset"
-                return nothing
-            end
-                end
-    elseif (side == "Sell")
+        end
+    else # if (side == sell)
         if (limitprice < (1-MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])
             (verbosity >= 1) && @warn "limitprice $limitprice < max delta $((1-MAXLIMITDELTA) * ohlcv.df.close[ohlcv.ix])"
             return nothing
         else
             limitprice = max(limitprice, ohlcv.df.close[ohlcv.ix])
-            if _assetfreelocked(xc, base).free >= baseqty
-                push!(xc.orders, (orderid=orderid, symbol=symboltoken(base), side=side, baseqty=baseqty, ordertype="Limit", timeinforce=timeinforce, limitprice=limitprice, avgprice=0.0f0, executedqty=0.0f0, status="New", created=dtnow, updated=dtnow, rejectreason="NO ERROR", lastcheck=dtnow-Minute(1)))
-                updateasset!(xc, freeasset, baseqty, -baseqty)
-            else
-                (verbosity >= 1) && @warn "$(Dates.format(dtnow, "yymmddTHH:MM")) $side of $base insufficient free assets: requested $baseqty $base > available $(_assetfreelocked(xc, base).free) $base"
-                return nothing
-            end
         end
     end
+    xco = _placeorder(xc, (orderid=orderid, symbol=sym, side=side, baseqty=baseqty, ordertype="Limit", marginleverage=marginleverage, timeinforce=timeinforce, limitprice=limitprice, avgprice=0.0f0, executedqty=0.0f0, status="New", created=dtnow, updated=dtnow, rejectreason="NO ERROR", lastcheck=dtnow-Minute(1)))
+    quoterow = _assetrow!(xc.assets, EnvConfig.cryptoquote)
+    baserow = _assetrow!(xc.assets, basequote(xco.symbol).basecoin)
+    _assetaddorder!(baserow, quoterow, xco)
     return orderid
 end
 
-
-"Returns a `(free, locked)` named tuple with the amount of `free` and `locked` amounts of coin in portfolio assets"
-function _assetfreelocked(xc::XchCache, coin::String)
-    coinix = findfirst(x -> x == uppercase(coin), xc.assets[!, :coin])
+function _closeprice(xc::XchCache, coin::AbstractString)
     if coin == EnvConfig.cryptoquote
-        #* containemnt due to negative locked values (not understood yet)
-        locked = sum(xc.orders[xc.orders[!, :side] .== "Buy", :baseqty] .* (xc.orders[xc.orders[!, :side] .== "Buy", :limitprice]))
+        return 1f0
     else
-        locked = sum(xc.orders[(xc.orders[!, :side] .== "Sell") .&& (xc.orders[!, :symbol] .== symboltoken(coin)), :baseqty])
-    end
-    # return isnothing(coinix) ? (free=0.0f0, locked=0.0f0) : (free=xc.assets[coinix, :free], locked=xc.assets[coinix, :locked])
-    return isnothing(coinix) ? (free=0.0f0, locked=0.0f0) : (free=xc.assets[coinix, :free], locked=locked)
-end
-
-SIMEPS = -2*eps(Float32)
-
-function updateasset!(xc::XchCache, coin::String, lockedqty, freeqty)
-    coin = uppercase(coin)
-    coinix = findfirst(x -> x == coin, xc.assets[!, :coin])
-    if isnothing(coinix)
-        push!(xc.assets, (coin=coin, locked=lockedqty, free=freeqty))
-        (verbosity >= 3) && (lockedqty < 0) && println("initial lockedqty < 0 for $coin with lockedqty=$lockedqty, freeqty=$freeqty")
-        (verbosity >= 3) && (freeqty < 0) && println("initial freeqty < 0 for $coin with lockedqty=$lockedqty, freeqty=$freeqty")
-    else
-        xc.assets[coinix, :free] += freeqty
-        if xc.assets[coinix, :free] < 0
-            if xc.assets[coinix, :free] < SIMEPS
-                error("xc.assets[coinix, :free]=$(xc.assets[coinix, :free]) < $SIMEPS for $coin with delata lockedqty=$lockedqty, delta freeqty=$freeqty")
-            else
-                xc.assets[coinix, :free] = 0f0
-            end
-        end
-        xc.assets[coinix, :locked] = _assetfreelocked(xc, coin).locked
-        # xc.assets[coinix, :locked] += lockedqty
-        # if xc.assets[coinix, :locked] < 0
-        #     if xc.assets[coinix, :locked] < SIMEPS
-        #         # put behind verbose as all amounts < 10^-5 USDT #TODO still don't understand why we have these deltas
-        #         (verbosity >= 3) && @warn  "xc.assets[coinix, :locked]=$(xc.assets[coinix, :locked]) < $SIMEPS for $coin with delta lockedqty=$lockedqty, delta freeqty=$freeqty"
-        #     end
-        #     xc.assets[coinix, :locked] = 0f0
-        # end
+        ohlcv = xc.bases[coin]
+        ohlcvdf = Ohlcv.dataframe(ohlcv)
+        ohlcvix = Ohlcv.ix(ohlcv)
+        return ohlcvdf[ohlcvix, :close]
     end
 end
 
-# function updatecache(xc::XchCache; ohlcv=nothing, orders=nothing, assets=nothing)  # not used and DEPRECATED
-#     xc = isnothing(xc) ? XchCache(false) : xc
-#     if !isnothing(ohlcv)
-#         xc.bases[ohlcv.base] = ohlcv
-#     end
-#     if !isnothing(orders)
-#         xc.orders = orders
-#     end
-#     if !isnothing(assets)
-#         xc.assets = assets
-#     end
-# end
+"Set a fixed asset amount for coin into simulation bookkeeping and returns the assetrow."
+function _updateasset!(xc::XchCache, coin, amount)
+    xca = _assetrow!(xc.assets, coin)
+    xca.free = amount
+end
 
-emptyassets()::DataFrame = DataFrame(coin=String[], locked=Float32[], free=Float32[])
+"""
+- :marginfree, :marginlocked can be negative
+- :free, :marginfree, :locked, :marginlocked can be added with sign to reflect balances for the same coin
+- :free / :locked sum over all coins shall take the absolute value minus sum of :borrowed
+"""
+function _balances(xc::XchCache)
+    df = select(xc.assets, :coin, [:locked, :marginlocked] => ((sl, ml) -> sl .+ ml) => :locked, [:free, :marginfree] => ((sf, mf) -> sf .+ mf) => :free, [:assetborrowed, :orderborrowed] => ((a, b) -> abs.(a .+ b)) => :borrowed, :accruedinterest)
+    @assert all(abs.(df[!, :free] .+ df[!, :locked]) .> df[!, :borrowed] .>= 0f0) "working capital > borrowed capital >= 0f0 -> balances: $df"
+    return df
+end
+
+
+_emptyassets()::DataFrame = DataFrame(coin=String31[], free=Float32[], locked=Float32[], marginfree=Float32[], marginlocked=Float32[], assetborrowed=Float32[], orderborrowed=Float32[], accruedinterest=Float32[])
 
 "provides an empty dataframe for simulation (with lastcheck as extra column)"
-emptyorders()::DataFrame = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
+function _emptyorders()::DataFrame
+    df = Bybit.emptyorders()
+    insertcols!(df, :marginleverage => Vector{Int32}(undef, 0))
+end
 
+"Places an order and returns the DataFrameRow of the created order row"
+function _placeorder(xc::XchCache, order::Union{DataFrameRow, NamedTuple})
+    @assert haskey(order, :orderid) && (length(order.orderid) < 64) "$(haskey(order, :orderid) ? "length(order.orderid)=$(length(order.orderid)) >= 64" : "orderid is missing in order")" 
+    @assert haskey(order, :symbol) && (length(order.symbol) < 32) "$(haskey(order, :symbol) ? "length(order.symbol)=$(length(order.symbol)) >= 32" : "symbol is missing in order")" 
+    @assert haskey(order, :side) "side is missing in order"
+    @assert haskey(order, :baseqty) "baseqty is missing in order"
+    @assert haskey(order, :ordertype) && (length(order.ordertype) < 8) "$(haskey(order, :ordertype) ? "length(order.ordertype)=$(length(order.ordertype)) >= 8" : "ordertype is missing in order")" 
+    @assert haskey(order, :marginleverage) "marginleverage is missing in order"
+    @assert haskey(order, :timeinforce) && (length(order.timeinforce) < 16) "$(haskey(order, :timeinforce) ? "length(order.timeinforce)=$(length(order.timeinforce)) >= 16" : "timeinforce is missing in order")" 
+    @assert haskey(order, :limitprice) "limitprice is missing in order"
+    @assert haskey(order, :avgprice) "avgprice is missing in order"
+    @assert haskey(order, :executedqty) "executedqty is missing in order"
+    @assert haskey(order, :status) && (length(order.status) < 16) "$(haskey(order, :status) ? "length(order.status)=$(length(order.status)) >= 16" : "status is missing in order")" 
+    @assert haskey(order, :created) "created is missing in order"
+    @assert haskey(order, :updated) "updated is missing in order"
+    @assert haskey(order, :rejectreason) "rejectreason is missing in order"
+    @assert haskey(order, :lastcheck) "lastcheck is missing in order"
+    order = (order..., side=uppercasefirst(string(order.side)))
+    # println("xc.orde rs=$(xc.orders)\nORDER: $order")
+    push!(xc.orders, (order..., side=uppercasefirst(string(order.side)), isLeverage=(order.marginleverage > 0)))
+    return last(xc.orders)
+end
 
 function _ordersfilename(xc::XchCache)
     ORDERPREFIX = "Orders"

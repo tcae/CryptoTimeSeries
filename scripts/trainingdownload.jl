@@ -11,7 +11,7 @@ using EnvConfig, Assets, CryptoXch, Ohlcv
 
 EnvConfig.init(training)
 bases = EnvConfig.trainingbases
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 # bases = ["btc"]
 enddt = Dates.now(Dates.UTC)
 startdt = enddt - Dates.Week(4.5 * 52)

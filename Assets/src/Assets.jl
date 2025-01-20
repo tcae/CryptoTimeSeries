@@ -34,7 +34,7 @@ mutable struct AssetData
     basedf::AbstractDataFrame
     xc::CryptoXch.XchCache
     usdtvolume
-    AssetData(basedf=emptyassetdataframe(), xc=CryptoXch.XchCache(true), usdtvolume=100.0) = new(basedf, xc, usdtvolume)
+    AssetData(basedf=emptyassetdataframe(), xc=CryptoXch.XchCache(), usdtvolume=100.0) = new(basedf, xc, usdtvolume)
 end
 
 function Base.show(io::IO, assets::AssetData)

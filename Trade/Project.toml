@@ -1,7 +1,7 @@
 name = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.17.1"
+version = "0.18.0"
 
 [deps]
 Assets = "e4c5a7f8-51b3-4a40-8507-79544143629b"
@@ -19,5 +19,6 @@ LoggingExtras = "e6f89c97-d47a-5376-807f-9c37f3926c36"
 Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
 PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
 Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 TradingStrategy = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"

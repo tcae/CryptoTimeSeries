@@ -18,7 +18,7 @@ println("$(EnvConfig.now()): started")
 update=true
 
 cls = Classify.ClassifierSet001()
-xc= CryptoXch.XchCache(true)
+xc= CryptoXch.XchCache()
 
 enddt = nothing # nothing == latest;   DateTime("2024-03-22T20:40:00")
 period = Day(10)  # Year(20)

@@ -5,7 +5,7 @@ period = Day(1)
 startdt = enddt - period
 EnvConfig.init(production)
 EnvConfig.setlogpath("F4StorageTest")
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 ohlcv = CryptoXch.cryptodownload(xc, "SINEUSDT", "1m", startdt, enddt)
 println(ohlcv)
 println(describe(ohlcv.df))

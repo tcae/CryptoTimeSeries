@@ -22,7 +22,7 @@ end
 EnvConfig.init(production)
 logpath = EnvConfig.logfolder()
 EnvConfig.setlogpath("admin")
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 # odf, tdf = loadtransactions(xc)
 odf, tdf = analyzeloaded()
 println("finished")

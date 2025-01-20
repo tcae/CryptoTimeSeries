@@ -5,7 +5,7 @@ function deleteoutdateohlcv()
     EnvConfig.init(production)
     Ohlcv.verbosity = 1
 
-    xc = CryptoXch.XchCache(true)
+    xc = CryptoXch.XchCache()
     outdated = invalid = valid = 0
     latest = oldest = nothing
     deadline = DateTime("2024-01-01T01:00:00")

@@ -18,6 +18,21 @@ function leverage()
     println(Bybit.HttpPrivateRequest(bc, "POST", "/v5/spot-margin-trade/set-leverage", Dict("leverage" => "2"), "alltransactions"))
 end
 
+function checkbaseames()
+    df = Bybit.exchangeinfo(bc)
+    len= 0
+    sorted = true
+    lastbase = first(df[!, :basecoin])
+    for base in df[!, :basecoin]
+        len = max(len, length(base))
+        if lastbase > base
+            sorted = false
+        end
+    end
+    println("length=$len, sorted=$sorted, #coins=$(length(df[!, :basecoin]))")
+end
+
+checkbaseames()
 # leverage()
-order()
+# order()
 # println("balances: $(Bybit.balances(bc))")

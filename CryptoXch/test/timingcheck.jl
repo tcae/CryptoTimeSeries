@@ -8,8 +8,8 @@ CryptoXch.verbosity = 3
 function sim()
     startdt = DateTime("2024-03-29T09:58:00")
     enddt = DateTime("2024-03-29T10:00:00")
-    xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
-    println("starting $(EnvConfig.configmode) XchCache(true, startdt=$startdt, enddt=$enddt), tradetime=$(CryptoXch.tradetime(xc))")
+    xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
+    println("starting $(EnvConfig.configmode) XchCache( startdt=$startdt, enddt=$enddt), tradetime=$(CryptoXch.tradetime(xc))")
     println(CryptoXch.tradetime(xc))
     for x in xc
         println("$(CryptoXch.tradetime(xc))")
@@ -21,8 +21,8 @@ function prod()
     EnvConfig.init(production)
     minutes = 3
     enddt = nothing
-    xc=CryptoXch.XchCache(true, enddt=enddt)
-    println("starting $(EnvConfig.configmode) XchCache(true, startdt=$(xc.startdt), enddt=$enddt), tradetime=$(CryptoXch.tradetime(xc))")
+    xc=CryptoXch.XchCache( enddt=enddt)
+    println("starting $(EnvConfig.configmode) XchCache( startdt=$(xc.startdt), enddt=$enddt), tradetime=$(CryptoXch.tradetime(xc))")
     println(CryptoXch.tradetime(xc))
     for x in xc
         println("$(CryptoXch.tradetime(xc))")
@@ -36,8 +36,8 @@ function prodbusy()
     EnvConfig.init(production)
     minutes = 3
     enddt = nothing
-    xc=CryptoXch.XchCache(true, enddt=enddt)
-    println("starting $(EnvConfig.configmode) XchCache(true, startdt=$(xc.startdt), enddt=$enddt), tradetime=$(CryptoXch.tradetime(xc))")
+    xc=CryptoXch.XchCache( enddt=enddt)
+    println("starting $(EnvConfig.configmode) XchCache( startdt=$(xc.startdt), enddt=$enddt), tradetime=$(CryptoXch.tradetime(xc))")
     println(CryptoXch.tradetime(xc))
     for x in xc
         println("$(CryptoXch.tradetime(xc))")

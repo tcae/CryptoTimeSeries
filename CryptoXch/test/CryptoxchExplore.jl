@@ -14,7 +14,7 @@ end
 
 # EnvConfig.init(test)
 EnvConfig.init(production)
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 # balances_test()
 
 userdataChannel = Channel(10)

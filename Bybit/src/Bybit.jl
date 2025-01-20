@@ -48,7 +48,8 @@ BYBIT_TESTNET_APIREST = "https://api-testnet.bybit.com"
 function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test)::BybitCache
     apirest = testnet ? BYBIT_TESTNET_APIREST : BYBIT_APIREST
     bc = BybitCache(nothing, apirest, EnvConfig.authorization.key, EnvConfig.authorization.secret)
-    xchinfo = exchangeinfo(bc)
+    xchinfo = _exchangeinfo(bc)
+    xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.cryptoquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
     return BybitCache(xchinfo, apirest, EnvConfig.authorization.key, EnvConfig.authorization.secret)
 end
@@ -321,7 +322,7 @@ function _dictstring2values!(bybitdict::T) where T <: AbstractDict
         "maxTradeQty", "maxTradeAmt", "minPricePrecision", "minOrderAmt", "o", "h", "l", "c", "v",
         "price", "qty", "avgPrice", "leavesQty", "leavesValue", "cumExecQty", "cumExecValue",
         "cumExecFee", "triggerPrice", "takeProfit", "stopLoss", "maxOrderAmt",
-        "availableToWithdraw", "locked", "borrowAmount", "accruedInterest"]
+        "walletBalance", "locked", "borrowAmount", "accruedInterest"]
     datetimekeys = ["timeSecond"]
     nostringdatetimemillikeys = ["time", "t"]
     datetimemillikeys = ["createdTime", "updatedTime", "nextFundingTime", "deliveryTime", "launchTime"]
@@ -427,7 +428,9 @@ Returns a DataFrame with trading constraints one row per symbol. If symbol is pr
 - minbaseqty
 - minquoteqty
 """
-function exchangeinfo(bc::BybitCache, symbol=nothing)
+exchangeinfo(bc::BybitCache, symbol=nothing) = isnothing(symbol) ? bc.syminfodf : bc.syminfodf[:symbol .== symbol, :]
+
+function _exchangeinfo(bc::BybitCache, symbol=nothing)
     params = Dict("category" => "spot")
     isnothing(symbol) ? nothing : params["symbol"] = uppercase(symbol)
     response = HttpPublicRequest(bc, "GET", "/v5/market/instruments-info", params, "instruments-info")
@@ -524,7 +527,7 @@ function account(bc::BybitCache)
     return ret["result"]
 end
 
-emptyorders()::DataFrame = EnvConfig.configmode == production ? DataFrame() : DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
+emptyorders()::DataFrame = EnvConfig.configmode == production ? DataFrame() : DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
 
 """
 Returns a DataFrame of open **spot** orders with columns:
@@ -554,7 +557,7 @@ function openorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId
         for col in keys(httpresponse["result"]["list"][1])
             df[:, col] = [entry[col] for entry in httpresponse["result"]["list"]]
         end
-        df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
+        df = select(df, :orderId => "orderid", :symbol, :side, [:leavesQty, :cumExecQty] => ((leavesQty, cumExecQty) -> leavesQty + cumExecQty) => "baseqty", :orderType => "ordertype", :isLeverage => "isLeverage", :timeInForce => "timeinforce", :price => "limitprice", :avgPrice => "avgprice", :cumExecQty => "executedqty", :orderStatus => "status", :createdTime => "created", :updatedTime => "updated", :rejectReason => "rejectreason")
     end
 #     41×3 DataFrame
 #     Row │ variable            min                      eltype
@@ -876,13 +879,16 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
 end
 
 """
-Returns DataFrame with 3 columns of wallet positions of Unified Trade Account
+Returns DataFrame with 5 columns of wallet positions of Unified Trade Account
 ```
    18×2 DataFrame
   ─────┼───────────────────────────────────────────
      1 │ coin                 BTC
      2 │ locked               0
      3 │ free                 0.00011588
+     4 │ borrowed             0
+     5 │ accruedinterest      0
+````
      """
 function balances(bc::BybitCache)
     response = HttpPrivateRequest(bc, "GET", "/v5/account/wallet-balance", Dict("accountType" => "UNIFIED"), "wallet balance")
@@ -920,7 +926,7 @@ function balances(bc::BybitCache)
     #      16 │ totalPositionMM      0
     #      17 │ totalOrderIM         0
     #      18 │ totalPositionIM      0
-    df = DataFrame(coin=String[], locked=Float32[], free=Float32[], borrowamount=Float32[], accruedinterest=Float32[])
+    df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
     if "list" in keys(response["result"])
         for account in response["result"]["list"]
             if account["accountType"] != "UNIFIED"
@@ -928,9 +934,12 @@ function balances(bc::BybitCache)
             end
             if "coin" in keys(account)
                 for coin in account["coin"]
-                    borrowamount = isnothing(coin["borrowAmount"]) ? 0f0 : coin["borrowAmount"]
+                    walletbalance = isnothing(coin["walletBalance"]) ? 0f0 : coin["walletBalance"]
+                    locked = isnothing(coin["locked"]) ? 0f0 : coin["locked"]
+                    borrowed = isnothing(coin["borrowAmount"]) ? 0f0 : coin["borrowAmount"]
+                    free = abs(walletbalance) - locked - borrowed
                     accruedinterest = isnothing(coin["accruedInterest"]) ? 0f0 : coin["accruedInterest"]
-                    push!(df, (coin=coin["coin"], locked=coin["locked"], free=coin["availableToWithdraw"], borrowamount=borrowamount, accruedinterest=accruedinterest))
+                    push!(df, (coin=coin["coin"], locked=locked, free=free, borrowed=borrowed, accruedinterest=accruedinterest))
                 end
             end
         end

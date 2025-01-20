@@ -322,7 +322,7 @@ period = Day(1)
 startdt = enddt - period
 EnvConfig.init(production)
 EnvConfig.setlogpath("F4StorageTest")
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
 # f4 is larger reference
 f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=false)

@@ -25,7 +25,7 @@ popularvolumefeatures() = [join(["rv", sw, lw], "_") for (sw, lw) in [(5, 4*60),
 
 function calcfeatures(base::AbstractString, startdt::DateTime, enddt::DateTime, f5::Features.AbstractFeatures)
     println("$(EnvConfig.now()) loading $base") 
-    xc = CryptoXch.XchCache(true)
+    xc = CryptoXch.XchCache()
     ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt, enddt)
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
 

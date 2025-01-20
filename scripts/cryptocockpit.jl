@@ -43,7 +43,7 @@ end
 
 function updateassets!(cp, download=false)
     if isnothing(cp.xc)
-        cp.xc = CryptoXch.XchCache(true)
+        cp.xc = CryptoXch.XchCache()
     end
     cp.coin = Dict()
     CryptoXch.removeallbases(cp.xc)

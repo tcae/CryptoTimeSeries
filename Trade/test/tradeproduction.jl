@@ -21,37 +21,23 @@ defaultlogger = global_logger(demux_logger)
 
 CryptoXch.verbosity = 1
 Classify.verbosity = 2
-Trade.verbosity = 2
+Trade.verbosity = 3
 Bybit.verbosity = 3
 EnvConfig.init(production)
 enddt = nothing  # == continue endless
-xc = CryptoXch.XchCache(true; enddt=enddt)
+xc = CryptoXch.XchCache(enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 cl = Classify.Classifier011()
-cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-0.04f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.01f0, volatilitylongthreshold=0.0f0, volatilityshortthreshold=-1f0)
+# cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-0.04f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.01f0, volatilitylongthreshold=0.0f0, volatilityshortthreshold=-1f0)
+cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-1f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.01f0, volatilitylongthreshold=1f0, volatilityshortthreshold=-1f0)
 cfgid = configurationid(cl, cfgnt)
 println("cfgid=$cfgid for $cfgnt")
 Classify.configureclassifier!(cl, cfgid, true)
-reloadtimes = [Time("04:00:00")]
-cache = Trade.TradeCache(xc=xc, cl=cl, reloadtimes=reloadtimes, trademode=Trade.buysell) # to exit , trademode=sellonly
+cache = Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.buysell) # buysell sellonly quickexit notrade
 
-# EnvConfig.init(production)
-# startdt = Dates.now(UTC)
-# enddt = nothing
-# cache = Trade.TradeCache(startdt=startdt, enddt=enddt, messagelog=messagelog)
 
 try
     Trade.tradeloop(cache)
-    # Trade.tradeloop(startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
-    # Trade.tradeloop(startdt=Dates.now(UTC), enddt=nothing))
-
-    # Trade.tradelooptest(startdt=DateTime("2022-01-01T00:00:00"), enddt=DateTime("2022-02-01T01:00:00")))
-    # Trade.tradelooptest(startdt=Dates.now(UTC), enddt=Dates.now(UTC)+Minute(3)))
-    # Trade.tradelooptest(startdt=Dates.now(UTC), enddt=nothing))
-# catch ex
-#     if isa(ex, InterruptException)
-#         println("Ctrl+C pressed by trade_test")
-#     end
 finally
     @info "$(EnvConfig.now()): finished"
     global_logger(defaultlogger)

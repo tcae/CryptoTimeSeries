@@ -9,7 +9,7 @@ Features.verbosity = 1
 Trade.verbosity = 3
 # EnvConfig.init(training)
 EnvConfig.init(production)
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 
 assets = CryptoXch.portfolio!(xc)
 # tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved

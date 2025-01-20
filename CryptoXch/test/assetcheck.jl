@@ -2,13 +2,13 @@ using Dates, DataFrames
 using Ohlcv, EnvConfig, CryptoXch, Bybit, Trade
 
 # EnvConfig.init(training)
-# xc = CryptoXch.XchCache(true)
+# xc = CryptoXch.XchCache()
 # CryptoXch.updateasset!(xc, "BTC", 0.001, 0.002)
 # CryptoXch.updateasset!(xc, "XRP", 0.001, 0.002)
 # CryptoXch.updateasset!(xc, "USDT", 0.001, 0.002)
 
 EnvConfig.init(production)
-xc = CryptoXch.XchCache(true)
+xc = CryptoXch.XchCache()
 
 function assetcheck()
     tcdf, assets = Trade.assetsconfig!(Trade.TradeCache(xc=xc))

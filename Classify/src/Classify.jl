@@ -52,6 +52,7 @@ mutable struct TradeAdvice
     price  # limit price of this trade advice
     datetime  # exchange datetime (== opentime of OHLCV) of this trade advice 
     hourlygain  # used as criteria to give coin investments priority
+    probability  # 0 <= probability <= 1; used to calculate risk as probability * hourlygain
     investmentid  # nothing until filled by Trade based on a transaction
 end
 
@@ -304,7 +305,7 @@ Instantiates and evaluates all provided classifier types and logs all trades in 
 function evaluateclassifiers(classifiertypevector, basecoins, startdt, enddt)
     df = readsimulation()
     (verbosity >=3) && println("$(EnvConfig.now()): successfully read classifier simulation trades with $(size(df, 1)) entries")
-    xc = CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+    xc = CryptoXch.XchCache(startdt=startdt, enddt=enddt)
     CryptoXch.addbases!(xc, basecoins, startdt, enddt)
     for clt in classifiertypevector
         cl = clt()
@@ -1661,7 +1662,7 @@ function advice(cl::Classifier013, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
         end
     end
     lastgrad = nothing
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], 0f0, nothing)
+    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], 0f0, 1f0, nothing)
     if !isnothing(regrwindow) # check longclose condition
         regry = Features.regry(bc.f5, regrwindow)[fix]
         grad = Features.grad(bc.f5, regrwindow)[fix]
@@ -1756,12 +1757,12 @@ end
 
 supplement!(bc::BaseClassifier011) = Features.supplement!(bc.f4, bc.ohlcv)
 
-const REGRWINDOW011 = Int16[24*60]
+const REGRWINDOW011 = Int16[24*60, 12*60, 4*60, 60]
 const LONGTRENDTHRESHOLD011 = Float32[0.02f0] # , 0.04f0, 0.06f0, 1f0]  # 1f0 == switch off long trend following
-const SHORTTRENDTHRESHOLD011 = Float32[-0.02f0, -0.04f0, -1f0] # , -0.04f0, -0.06f0, -1f0]  # -1f0 == switch off short trend following
-const VOLATILITYBUYTHRESHOLD011 = Float32[-0.01f0, -0.02f0]
-const VOLATILITYSELLTHRESHOLD011 = Float32[0.01f0, 0.02f0]
-const VOLATILITYSHORTTHRESHOLD011 = Float32[0f0, -1f0]  # -1f0 == switch off volatility short investments
+const SHORTTRENDTHRESHOLD011 = Float32[-1f0] # , -0.04f0, -0.06f0, -1f0]  # -1f0 == switch off short trend following
+const VOLATILITYBUYTHRESHOLD011 = Float32[-0.06f0]
+const VOLATILITYSELLTHRESHOLD011 = Float32[0.01f0]
+const VOLATILITYSHORTTHRESHOLD011 = Float32[-1f0] # 0f0, -1f0]  # -1f0 == switch off volatility short investments
 const VOLATILITYLONGTHRESHOLD011 = Float32[0f0, 1f0]  # 1f0 == switch off volatility long investments
 const OPTPARAMS011 = Dict(
     "regrwindow" => REGRWINDOW011,
@@ -1848,7 +1849,7 @@ function advice(cl::Classifier011, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), nothing)
+    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy
@@ -2062,7 +2063,7 @@ function advice(cl::Classifier014, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), nothing)
+    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy
@@ -2220,7 +2221,7 @@ function advice(cl::Classifier015, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), nothing)
+    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy

@@ -6,8 +6,8 @@ using EnvConfig, Trade, Classify, Ohlcv, CryptoXch
 function prepare()
     # Redirect sigint to julia exception handling
     ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
-    EnvConfig.init(training)  # not production as this would result in real orders
-    # CryptoXch.verbosity = 1
+    EnvConfig.init(test)  # not production as this would result in real orders
+    CryptoXch.verbosity = 2
     Classify.verbosity = 2
     # Ohlcv.verbosity = 2
     Trade.verbosity = 2
@@ -43,9 +43,10 @@ function backtestcl001()
                         EnvConfig.setlogpath("Classifier001-$base-$headwindow-$regrwindow-$trendwindow")
                         println("TradeTest backtest Classifier001-$base-$headwindow-$regrwindow-$trendwindow")
                         println("$(EnvConfig.now()): started")
-                        xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                        xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
                         cl = Classify.Classifier001()
                         cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
+                        cache.mc[:reloadtimes] = []
                         # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
                         Classify.addreplaceconfig!(cl, base, regrwindow, gainthreshold, headwindow, trendwindow)
                         CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
@@ -74,7 +75,7 @@ function backtestcl002()
                     println("TradeTest backtest Classifier002-$base-$window-$rbt-$trendwindow")
                     println("$(EnvConfig.now()): started")
 
-                    xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                    xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
                     cl = Classify.Classifier002(window=window, rbt=rbt, trendwindow=trendwindow)
                     println("cl=$cl")
                     cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
@@ -114,7 +115,7 @@ function backtestcl003()
                             println("TradeTest backtest Classifier003-$base-$shortwindow-$longwindow-$rbt-$srnt-$lrnt")
                             println("$(EnvConfig.now()): started")
 
-                            xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                            xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
                             cl = Classify.Classifier003(shortwindow=shortwindow, longwindow=longwindow, rbt=rbt, srnt=srnt, lrnt=lrnt)
                             println("cl=$cl")
                             cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
@@ -155,7 +156,7 @@ function backtestcl008()
                         println("TradeTest backtest Classifier008-regrwindow$regrwindow-trendthreshold$trendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitylongthreshold$volatilitylongthreshold")
                         println("$(EnvConfig.now()): started")
 
-                        xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                        xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
                         cl = Classify.Classifier008()
                         cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold)
                         cfgid = configurationid(cl, cfgnt)
@@ -201,7 +202,7 @@ function backtestcl010()
                                 println("TradeTest backtest Classifier010-regrwindow$regrwindow-trendthreshold$trendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitylongthreshold$volatilitylongthreshold-volatilitysellthreshold$volatilitysellthreshold-volatilityselltrendfactor$volatilityselltrendfactor")
                                 println("$(EnvConfig.now()): started")
 
-                                xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                                xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
                                 cl = Classify.Classifier010()
                                 cfgnt = (regrwindow=regrwindow,trendthreshold=trendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitylongthreshold=volatilitylongthreshold, volatilitysellthreshold=volatilitysellthreshold, volatilityselltrendfactor=volatilityselltrendfactor)
                                 cfgid = configurationid(cl, cfgnt)
@@ -238,31 +239,37 @@ end
 function backtestcl011()
     classifiertype = Classify.Classifier011
     startdt, enddt, defaultlogger = prepare()
-    coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
+    enddt = DateTime("2025-01-05T11:19:00")
+    enddt = DateTime("2024-12-20T11:19:00")
+    startdt = enddt - Day(30)  # DateTime("2025-01-03T16:09:00")
+    # coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
+    coins = ["ADA"]
     coins = sort(coins)
     for base in coins
         EnvConfig.setlogpath("$(split(string(classifiertype), ".")[end])_$(join(coins, "_"))__$(Dates.format(startdt, "yymmddTHHMM"))-$(Dates.format(enddt, "yymyymmddTHHMMmdd"))")
         for regrwindow in [24*60]
-            for longtrendthreshold in [0.02f0]
-                for shorttrendthreshold in [-0.06f0]
+            for longtrendthreshold in [1f0]  # 0.02f0]
+                for shorttrendthreshold in [-0.02f0]
                     for volatilitybuythreshold in [-0.01f0]
-                        for volatilitysellthreshold in [0.02f0]
-                            for volatilitylongthreshold in [0f0]
+                        for volatilitysellthreshold in [0.01f0]
+                            for volatilitylongthreshold in [1f0]  # 0f0
                                 for volatilityshortthreshold in [-1f0]
-                                    println("TradeTest backtest Classifier010-regrwindow$regrwindow-longtrendthreshold$longtrendthreshold-shorttrendthreshold$shorttrendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitysellthreshold$volatilitysellthreshold-volatilitylongthreshold$volatilitylongthreshold-volatilityshortthreshold$volatilityshortthreshold")
+                                    println("TradeTest backtest $(split(string(classifiertype), ".")[end])-regrwindow$regrwindow-longtrendthreshold$longtrendthreshold-shorttrendthreshold$shorttrendthreshold-volatilitybuythreshold$volatilitybuythreshold-volatilitysellthreshold$volatilitysellthreshold-volatilitylongthreshold$volatilitylongthreshold-volatilityshortthreshold$volatilityshortthreshold")
                                     println("$(EnvConfig.now()): started")
 
-                                    xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+                                    xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
+
                                     cl = classifiertype()
                                     cfgnt = (regrwindow=regrwindow,longtrendthreshold=longtrendthreshold,shorttrendthreshold=shorttrendthreshold, volatilitybuythreshold=volatilitybuythreshold, volatilitysellthreshold=volatilitysellthreshold, volatilitylongthreshold=volatilitylongthreshold, volatilityshortthreshold=volatilityshortthreshold)
                                     cfgid = configurationid(cl, cfgnt)
                                     println("cfgid=$cfgid for $cfgnt")
                                     Classify.configureclassifier!(cl, cfgid, true) 
-                                    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
+                                    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.buysell), [base], assetonly=true)
+                                    cache.mc[:reloadtimes] = []
                                     # println("cl=$cl")
                                     # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
-                                    CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
-                                    CryptoXch.writeassets(cache.xc, cache.xc.startdt)
+                                    CryptoXch._updateasset!(xc, EnvConfig.cryptoquote, 10000f0)
+                                    # CryptoXch.writeassets(cache.xc, cache.xc.startdt)
                                     assets = CryptoXch.portfolio!(cache.xc)
                                     totalusdt = sum(assets.usdtvalue)
                                     println("start total USDT = $totalusdt")
@@ -274,8 +281,8 @@ function backtestcl011()
                                     assets = CryptoXch.portfolio!(cache.xc)
                                     totalusdt = sum(assets.usdtvalue)
                                     println("finish total USDT = $totalusdt")
-                                    CryptoXch.writeorders(cache.xc)
-                                    CryptoXch.writeassets(cache.xc, cache.xc.enddt)
+                                    # CryptoXch.writeorders(cache.xc)
+                                    # CryptoXch.writeassets(cache.xc, cache.xc.enddt)
                                 end
                             end
                         end

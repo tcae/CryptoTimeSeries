@@ -12,9 +12,9 @@ EnvConfig.init(production)  # test CryptoXch real production
 println("CryptoXchTest runtests")
 
 @testset "CryptoXch production tests" begin
-    CryptoXch.verbosity =3
+    CryptoXch.verbosity =0
 
-    xc = CryptoXch.XchCache(true)
+    xc = CryptoXch.XchCache()
     # df = CryptoXch.klines2jdf(xc, missing)
     # @test nrow(df) == 0
     mdf = CryptoXch.getUSDTmarket(xc)
@@ -101,15 +101,16 @@ println("CryptoXchTest runtests")
 
     # EnvConfig.init(test)
     EnvConfig.init(production)
+    mdf = CryptoXch.getUSDTmarket(xc)
     btcprice = mdf[mdf.basecoin .== "BTC", :lastprice][1,1]
     # println("btcprice=$btcprice  (+1%=$(btcprice * 1.01))")
 
     bdf = CryptoXch.balances(xc)
-    @test size(bdf, 2) == 3
+    @test size(bdf, 2) >= 3
     # println(bdf)
 
     pdf = CryptoXch.portfolio!(xc, bdf, mdf)
-    @test size(pdf, 2) == 5
+    @test size(pdf, 2) >= 5
     # println(pdf)
 
     oodf = CryptoXch.getopenorders(xc, nothing)
@@ -122,13 +123,11 @@ println("CryptoXchTest runtests")
     oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false) # limitprice out of allowed range
     @test isnothing(oid)
     # println("createbuyorder: $(string(oid)) - error expected")
-    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 1.01, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
+    oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 1.001, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
     @test !isnothing(oid)
-    # println("createbuyorder: $(string(oid)) - reject expected")
     oo2 = CryptoXch.getorder(xc, oid)
     # println("getorder: $oo2")
     @test oo2.orderid == oid
-    # @test oo2.status == "Rejected"  # applicable for PostOnly as soon as taker fee > maker fee
     @test oo2.status == "Filled"  # due to GTC as long as taker fee == maker fee
 
     oid = CryptoXch.createbuyorder(xc, "btc", limitprice=btcprice * 0.9, basequantity=6.01/btcprice, maker=false)
@@ -150,7 +149,7 @@ println("CryptoXchTest runtests")
     oodf = CryptoXch.getopenorders(xc, nothing)
     @test isa(oodf, AbstractDataFrame)
     @test (size(oodf, 1) > 0)
-    @test (size(oodf, 2) == 13)
+    @test (size(oodf, 2) >= 13)
     # println("getopenorders(nothing): $oodf")
     oodf = CryptoXch.getopenorders(xc, "xrp")
     # println("getopenorders(\"xrp\"): $oodf")

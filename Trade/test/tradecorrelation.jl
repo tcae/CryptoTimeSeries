@@ -39,7 +39,7 @@ startdt = DateTime("2024-03-19T00:00:00")  # cl.ohlcv.df[begin, :opentime]
 enddt = DateTime("2024-03-29T10:00:00")  # cl.ohlcv.df[end, :opentime]
 base = "BTC"
 
-xc=CryptoXch.XchCache(true, startdt=startdt, enddt=enddt)
+xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
 cl = Classify.Classifier001()
 cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
 Classify.basetrain!(cache.cl.bd["BTC"]; regrwindows=[Classify.STDREGRWINDOW], gainthresholds=[Classify.STDGAINTHRSHLD], startdt, enddt)
