@@ -21,19 +21,19 @@ defaultlogger = global_logger(demux_logger)
 
 CryptoXch.verbosity = 1
 Classify.verbosity = 2
-Trade.verbosity = 3
-Bybit.verbosity = 3
+Trade.verbosity = 2
+Bybit.verbosity = 1
 EnvConfig.init(production)
 enddt = nothing  # == continue endless
 xc = CryptoXch.XchCache(enddt=enddt)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 cl = Classify.Classifier011()
 # cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-0.04f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.01f0, volatilitylongthreshold=0.0f0, volatilityshortthreshold=-1f0)
-cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-1f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.01f0, volatilitylongthreshold=1f0, volatilityshortthreshold=-1f0)
+cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-1f0, volatilitybuythreshold=-0.04f0, volatilitysellthreshold=0.03f0, volatilitylongthreshold=0f0, volatilityshortthreshold=-1f0)
 cfgid = configurationid(cl, cfgnt)
 println("cfgid=$cfgid for $cfgnt")
 Classify.configureclassifier!(cl, cfgid, true)
-cache = Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.buysell) # buysell sellonly quickexit notrade
+cache = Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.quickexit) # buysell sellonly quickexit notrade
 
 
 try

@@ -1,6 +1,5 @@
 """
 Provides features to classify the most price development.
-Currently advertised features are in Features001
 
 """
 module Features
@@ -8,6 +7,7 @@ module Features
 # using Dates, DataFrames
 import RollingFunctions: rollmedian, runmedian, rolling
 using RollingFunctions
+# using LinearRegression
 using DataFrames, Statistics, Indicators, JDF
 using Combinatorics, Dates
 using Logging
@@ -421,34 +421,46 @@ end
 
  k(x) = 0.310714 * x + 2.54286 is the linear regression of [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
  """
- function rollingregression(y, windowsize)
-    sum_x = sum(1:windowsize)
-    sum_x_squared = sum((1:windowsize).^2)
-    sum_xy = rolling(sum, y, windowsize,collect(1:windowsize))
-    sum_y = rolling(sum, y, windowsize)
-    gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
-    intercept = (sum_y - gradient*(sum_x)) / windowsize
-    regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
-    gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
-    return regression_y[windowsize:end], gradient[windowsize:end]
-end
+ function rollingregression(y, windowsize, startindex=1)
+    @assert windowsize > 1 "false: windowsize=$windowsize > 1"
+    @assert length(y) >= 1 "false: length(y)=$(length(y)) >= 1"
+    @assert 1 <= startindex <= length(y) "false: 1 <= startindex=$startindex <= length(y)=$(length(y))"
+    if windowsize <= length(y)
+        suby = y[max(1, startindex-windowsize+1):end]
+        sum_x = sum(1:windowsize)
+        sum_x_squared = sum((1:windowsize).^2)
+        sum_xy = rolling(sum, suby, windowsize,collect(1:windowsize)) # rolling returns a vector of length(suby) - windowsize + 1
+        sum_y = rolling(sum, suby, windowsize)
+        gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
+        intercept = (sum_y - gradient*(sum_x)) / windowsize
+        regression_y = intercept + (gradient .* windowsize)
+        (verbosity >= 4) && println("suby=$suby, max(1, startindex-windowsize+1)=$(max(1, startindex-windowsize+1)):end=$(lastindex(y)), gradient=$gradient, intercept=$intercept, regression_y=$regression_y")
+    else
+        gradient = similar(y, 0)
+        intercept = similar(y, 0)
+        regression_y = similar(y, 0)
+    end
+    (verbosity >= 4) && println("A) length(y)=$(length(y)), startindex=$startindex, windowsize=$windowsize, length(regression_y)=$(length(regression_y)), length(gradient))]=$(length(gradient))")
 
-"""
-Acts like rollingregression(y, windowsize) but starts calculation at *startindex-windowsize+1*.
-In order to get only the regression_y, gradient without padding use the subvectors *[windowsize:end]*
-"""
-function rollingregression(y, windowsize, startindex)
-    startindex = max(1, startindex-windowsize+1)
-    suby = y[startindex:end]
-    sum_x = sum(1:windowsize)
-    sum_x_squared = sum((1:windowsize).^2)
-    sum_xy = rolling(sum, suby, windowsize,collect(1:windowsize))
-    sum_y = rolling(sum, suby, windowsize)
-    gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
-    intercept = (sum_y - gradient*(sum_x)) / windowsize
-    regression_y = [[intercept[1] + gradient[1] * i for i in 1:(windowsize-1)]; intercept + (gradient .* windowsize)]
-    gradient = [fill(gradient[1], windowsize-1);gradient]  # fill with first gradient instead of missing
-    return regression_y[windowsize:end], gradient[windowsize:end]
+    if startindex < windowsize
+        endy = min(windowsize-1, length(y))
+        l = endy - startindex + 1
+        regression_y = vcat(zeros(eltype(y), l), regression_y)
+        gradient = vcat(zeros(eltype(y), l), gradient)
+        (verbosity >= 4) && println("A1) endy=$(endy), l=$(l), new length(regression_y)=$(length(regression_y)), new length(gradient))]=$(length(gradient))")
+        for si in startindex:endy
+            if si > 1
+                r, g = rollingregression(view(y, 1:si), si, si)  #TODO to be adapted to multi vector
+                regression_y[si - startindex + 1] = r[1]
+                gradient[si - startindex + 1] = g[1]
+            else
+                regression_y[1] = y[1] 
+                gradient[1] = 0
+            end
+        end
+    end
+    (verbosity >= 4) && println("B) length(y)=$(length(y)), startindex=$startindex, windowsize=$windowsize, length(regression_y)=$(length(regression_y)), length(gradient))]=$(length(gradient))")
+    return regression_y, gradient
 end
 
 """
@@ -463,9 +475,11 @@ function rollingregression!(regression_y, gradient, y, windowsize)
             gradient = gradnew
         elseif length(regression_y) < length(y)  # only change regression_y and gradient if it makes sense
             @assert size(regression_y, 1) == size(gradient, 1)
-            startindex = min(startindex, windowsize)
-            regression_y = append!(regression_y, regnew[startindex:end])
-            gradient = append!(gradient, gradnew[startindex:end])
+            # startindex = min(startindex, windowsize)
+            # regression_y = append!(regression_y, regnew[startindex:end])
+            # gradient = append!(gradient, gradnew[startindex:end])
+            regression_y = vcat(regression_y, regnew)
+            gradient = vcat(gradient, gradnew)
         else
             @warn "nothing to append when length(regression_y) >= length(y)" length(regression_y) length(y)
         end
@@ -482,7 +496,7 @@ end
 
 For each x:
 
-- expand regression to the length of window size
+- y, regr_y and grad shall be time aligned with their last element
 - subtract regression from y to remove trend within window
 - calculate std and mean on resulting trend free data for just 1 x
 
@@ -492,81 +506,64 @@ Returns a tuple of vectors for each x calculated calculated back using the last 
 - mean of last `window` `y` minus rolling regression as given in `regr_y` and `grad`
 - y distance from regression line of last `window` points
 """
-function rollingregressionstd(y, regr_y, grad, window)
-    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
-    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
-    normy = similar(y)
-    std = similar(y)
-    mean = similar(y)
-    # normy .= 0
-    # std .= 0
-    # mean .= 0
-    for ix1 in size(y, 1):-1:window
-        ix2min = max(1, ix1 - window + 1)
-        for ix2 in ix2min:ix1
-            normy[ix2] = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
-        end
-        mean[ix1] = Statistics.mean(normy[ix2min:ix1])
-        std[ix1] = Statistics.stdm(normy[ix2min:ix1], mean[ix1])
-    end
-    std[1] = 0  # not avoid NaN
-    return std[window:end], mean[window:end], normy[window:end]
-end
+# function rollingregressionstd(y, regr_y, grad, window)
+#     @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
+#     @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
+#     normy = similar(y)
+#     std = similar(y)
+#     mean = similar(y)
+#     # normy .= 0
+#     # std .= 0
+#     # mean .= 0
+#     for ix1 in size(y, 1):-1:window
+#         ix2min = max(1, ix1 - window + 1)
+#         for ix2 in ix2min:ix1
+#             normy[ix2] = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
+#         end
+#         mean[ix1] = Statistics.mean(normy[ix2min:ix1])
+#         std[ix1] = Statistics.stdm(normy[ix2min:ix1], mean[ix1])
+#     end
+#     std[1] = 0  # not avoid NaN
+#     return std[window:end], mean[window:end], normy[window:end]
+# end
 
-"""
-Acts like rollingregressionstd(y, regr_y, grad, window) but starts calculation at *startindex-windowsize+1*.
-In order to get only the std, mean, normy without padding use the subvectors *[windowsize:end]*
-"""
-function rollingregressionstd(y, regr_y, grad, window, startindex)
-    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
-    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
+# """
+# Acts like rollingregressionstd(y, regr_y, grad, window) but starts calculation at *startindex-windowsize+1*.
+# In order to get only the std, mean, normy without padding use the subvectors *[windowsize:end]*
+# """
+function rollingregressionstd(y, regr_y, grad, window, startindex=1)
+    @assert length(y) > 0
+    @assert size(y, 1) >= size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1) >= size(regr_y, 1) == size(grad, 1) > 0 is false: size(y, 1)=$(size(y, 1)), size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1)), startindex=$startindex"
+    @assert startindex > size(y, 1) - size(regr_y, 1) "startindex > size(y, 1) - size(regr_y, 1) is false: size(y, 1)=$(size(y, 1)), size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1)), startindex=$startindex"
+    @assert size(y, 1) >= startindex > 0 "size(y, 1) >= startindex > 0 is false: size(y, 1)=$(size(y, 1)), startindex=$startindex"
+    window = min(window, length(y))
+    rgoffset = length(y)-length(regr_y)
     starty = max(1, startindex-window+1)
-    offset = starty - 1
-    normy = similar(y[starty:end])
-    std = similar(normy)
-    mean = similar(normy)
-    # normy .= 0
-    # std .= 0
-    # mean .= 0
-    for ix1 in size(y, 1):-1:max(startindex, window)
-        ix2min = max(1, ix1 - window + 1)
+    @assert starty <= startindex "starty <= startindex is false: starty=$starty <= startindex=$startindex"
+    ny = similar(y[1:window])
+    std = similar(y[startindex:end])
+    mean = similar(std)
+    normy = similar(std)
+    for ix1 in lastindex(y):-1:startindex
+        ix2min = max(starty, ix1 - window + 1)
         for ix2 in ix2min:ix1
-            normy[ix2-offset] = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
+            ny[ix2-ix2min+1] = y[ix2] - (regr_y[ix1-rgoffset] - grad[ix1-rgoffset] * (ix1 - ix2))
         end
-        ix3 = ix2min-offset
-        ix4 = ix1-offset
-        mean[ix4] = Statistics.mean(normy[ix3:ix4])
-        std[ix4] = Statistics.stdm(normy[ix3:ix4], mean[ix4])
+        if ix1 > ix2min
+            normy[ix1-startindex+1] = ny[ix1-ix2min+1]
+            mean[ix1-startindex+1] = Statistics.mean(ny[1:ix1-ix2min+1])
+            std[ix1-startindex+1] = Statistics.stdm(ny[1:ix1-ix2min+1], mean[ix1-startindex+1])
+        else
+            std[1] = 0
+            normy[1] = mean[1] = ny[1]
+        end
     end
-    std[1] = 0  # not avoid NaN
-    startindex = max(startindex, window)
-    return std[startindex:end], mean[startindex:end], normy[startindex:end]
+    # startix = startindex - starty + 1
+    # @assert (lastindex(std) - startix) == (lastindex(y) - startindex) "(lastindex(std)=$(lastindex(std)) - startix=$startix)=$(lastindex(std) - startix) == (lastindex(y)=$(lastindex(y)) - startindex=$startindex)=$(lastindex(y) - startindex) is false"
+    # return std[startix:end], mean[startix:end], normy[startix:end]
+    return std, mean, normy
 end
 
-""" don't use - this is a version for debug reasons """
-function rollingregressionstdxt(y, regr_y, grad, window)
-    @assert size(y, 1) >= window  > 0 "$(size(y, 1)), $window"
-    @assert (size(y, 1) - window + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(y, 1)=$(size(y, 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
-    normy = similar(y, (size(y, 1), window))
-    std = similar(y)
-    mean = similar(y)
-    for ix1 in size(y, 1):-1:window
-        ix2min = max(1, ix1 - window + 1)
-        for ix2 in ix2min:ix1
-            # @assert 0<ix2<=window "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), window: $window"
-            # @assert 0<ix1<=size(y, 1) "ix1: $ix1, ix2: $ix2, ix2-ix2min+1: $(ix2-ix2min+1), size(y, 1): $(size(y, 1))"
-            ix3 = ix2-ix2min+1
-            ny = y[ix2] - (regr_y[ix1-window+1] - grad[ix1-window+1] * (ix1 - ix2))
-            # Logging.@info "check" ix1 ix2 ix2min ix3 ny
-            normy[ix1, ix3] = ny
-        end
-        mean[ix1] = Statistics.mean(normy[ix1, 1:min(window, ix1)])
-        std[ix1] = Statistics.stdm(normy[ix1, 1:min(window, ix1)], mean[ix1])
-        std[1] = 0  # not avoid NaN
-    end
-    # Logging.@info "check" normy y regr_y grad std mean
-    return std[window:end], mean[window:end], normy[window:end]
-end
 
 """
 
@@ -584,33 +581,39 @@ In multiple vectors *mv* version, ymv is an array of ymv vectors all of the same
 
 In order to get only the std without padding use the subvector *[windowsize:end]*
 """
-function rollingregressionstdmv(ymv, regr_y, grad, window, ymvstartindex)
-    ymvstartindex = max(ymvstartindex, window)
-    @assert size(ymv, 1) > 0
-    @assert size(ymv[1], 1) >= window > 0 "size(ymv[1], 1)=$(size(ymv[1], 1)), ymvstartindex=$ymvstartindex, window=$window"
-    @assert (size(ymv[1], 1) - ymvstartindex + 1) == size(regr_y, 1) == size(grad, 1) > 0 "size(ymv[1], 1)=$(size(ymv[1], 1)), window=$window, size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1)) ymvstartindex=$ymvstartindex"
-    ymvlen = size(ymv, 1) # number of ohlc == 4
-    normy = repeat(similar([ymv[1][1]], window * ymvlen))
-    std = similar(regr_y)
-    for ix1 in ymvstartindex:lastindex(ymv[1])
-        ix2min = max(1, ix1 - window + 1)
-        thiswindow = ix1 - ix2min + 1
-        normy .= 0.0
-        normyix = 1
-        for ymvix in 1:ymvlen
-            for ix2 in (ix1 - window + 1):ix1
-                # println("normyix=$normyix length(normy)=$(length(normy)) ix1=$ix1 ymvix=$ymvix ix2=$ix2")
-                normy[normyix] = ymv[ymvix][ix2] - (regr_y[ix1-ymvstartindex+1] - grad[ix1-ymvstartindex+1] * (ix1 - ix2))
-                normyix += 1
+function rollingregressionstdmv(y, regr_y, grad, window, startindex=1)
+    @assert length(y) > 0
+    @assert length(y[1]) > 1 "false: length(y[1])=$(length(y[1])) > 1"
+    @assert 1 <= startindex <= length(y[1]) "false: 1 <= startindex=$startindex <= length(y[1])=$(length(y[1]))"
+    @assert all([length(y[1]) == length(y[i]) for i in 2:lastindex(y)]) "not all y vectors are of equal length: length(y[i]) = $([length(y[i]) for i in eachindex(y)])"
+    @assert size(y[1], 1) >= size(regr_y, 1) == size(grad, 1) > 0 "size(y[1], 1) >= size(regr_y, 1) == size(grad, 1) > 0 is false: size(y[1], 1)=$(size(y[1], 1)), size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
+    @assert size(y[1], 1)-startindex+1 <= size(regr_y, 1) == size(grad, 1) > 0 "size(y[1], 1)-startindex+1 <= size(regr_y, 1) == size(grad, 1) > 0 is false: size(y[1], 1)=$(size(y[1], 1)), startindex=$startindex, size(y[1], 1)-startindex+1=$(size(y[1], 1)-startindex+1), size(regr_y, 1)=$(size(regr_y, 1)), size(grad, 1)=$(size(grad, 1))"
+    window = min(window, length(y[1]))
+    rgoffset = length(y[1])-length(regr_y)
+    starty = max(1, startindex-window+1)
+    @assert starty <= startindex "starty <= startindex is false: starty=$starty <= startindex=$startindex"
+    ny = similar(y[1], window * length(y))
+    std = similar(y[1][startindex:end])
+    mean = similar(std)
+    for ix1 in lastindex(y[1]):-1:startindex
+        ix2min = max(starty, ix1 - window + 1)
+        for vecix in eachindex(y)
+            vecoffset = (vecix - 1) * (ix1 - ix2min + 1)
+            for ix2 in ix2min:ix1
+                ny[ix2-ix2min+1+vecoffset] = y[vecix][ix2] - (regr_y[ix1-rgoffset] - grad[ix1-rgoffset] * (ix1 - ix2))
             end
         end
-        normylen = ymvlen*thiswindow
-        ymvmean = Statistics.mean(normy[1:normylen])
-        std[ix1-ymvstartindex+1] = Statistics.stdm(normy[1:normylen], ymvmean)
+        if (ix1 > ix2min) || (length(y) > 1)
+            mean[ix1-startindex+1] = Statistics.mean(ny[1:length(y)*(ix1-ix2min+1)])
+            std[ix1-startindex+1] = Statistics.stdm(ny[1:length(y)*(ix1-ix2min+1)], mean[ix1-startindex+1])
+        else
+            std[1] = 0
+            mean[1] = ny[1]
+        end
     end
-    std[1] = isnan(std[1]) ? 0 : std[1]
     return std
 end
+
 
 """
 calculates and appends missing `length(y) - length(std)` *std, mean, normy* elements that correpond to the last elements of *ymv*
@@ -665,7 +668,7 @@ end
 # t 110 - 10
 
 function correctunworkablevolume(vv::Vector{T})::Vector{T} where {T <: AbstractFloat}
-    return map(x -> x <= 0.0 ? 0.0001 : x, vv)
+    return map(x -> x < zero(x) ? error("only positive volume allowed but found $x") : (abs(x) <= eps(typeof(x)) ? eps(typeof(x)) : x), vv)
 end
 
 function relativevolume(volumes, shortwindow, largewindow)
@@ -817,81 +820,490 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
+rollingmax(valuevector, window) = RollingFunctions.runmax(valuevector, window)
+rollingmin(valuevector, window) = RollingFunctions.runmin(valuevector, window)
+
 #endregion FeatureUtilities
 
-#region Features001
-regressionwindows001 = Dict("5m" => 5, "15m" => 15, "1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
-
-sortedregressionwindowkeys001 = [d[1] for d in sort(collect(regressionwindows001), by = x -> x[2])]
-
-" Features001 is no longer used and replaced by Features002 "
-struct Features001
-    fdf::AbstractDataFrame
-    featuremask::Vector{String}
-    ohlcv::OhlcvData
-end
-
+#region Features006
 
 """
-Properties at various rolling windows calculated on df data with ohlcv + pilot columns:
+Features006 provides a configurable feature set. The following features can be added:
 
-- per regression window
-    - gradient of pivot regression line
-    - standard deviation of regression normalized distribution
-    - difference of last pivot price to regression line
+    - last y position (regry) of linear regression characterized by regression window [minutes] and offset [minutes]
+    - gradient (grad) of linear regression characterized by regression window [minutes] and offset [minutes]
+    - standard deviation (std) of linear regression characterized by regression window [minutes] and offset [minutes]
+    - relative distance of pivot to maximum of range (maxdist) characterized by window [minutes] and offset [minutes]
+    - relative distance of pivot to minimum of range (mindist) characterized by window [minutes] and offset [minutes]
+    - relative volume of median (relvol) over a short time range [minutes] relative to a longer time range [minutes] and common offset [minutes]
+
+The offset [minutes] is in the past relative to the sample under consideration, e.g. window=5 offset=3 means that the window starts -7 minutes and ends -3 minutes.
 
 """
-function getfeatures001(pivot::Vector{<:AbstractFloat})
-    featuremask::Vector{String} = []
-    fdf = DataFrame()
-    for wk in sortedregressionwindowkeys001  # wk = window key
-        ws = regressionwindows001[wk]  # ws = window size in minutes
-        fdf[:, "regry$wk"], fdf[:, "grad$wk"] = rollingregression(pivot, ws)
-        stdnotrend, _, fdf[:, "regrdiff$wk"] = rollingregressionstd(pivot, fdf[!, "regry$wk"], fdf[!, "grad$wk"], ws)
-        fdf[:, "2xstd$wk"] = stdnotrend .* 2.0  # also to be used as normalization reference
-        append!(featuremask, ["grad$wk", "regrdiff$wk", "2xstd$wk"])
+mutable struct Features006 <: AbstractFeatures
+    requested::Vector # named tuple features 
+    required::Vector # named tuple features
+    requiredminutes::Integer
+    maxoffset::Integer
+    ohlcv::Union{Nothing, Ohlcv.OhlcvData}
+    fdfno::Union{Nothing, DataFrame} # feature DataFrame that comprises requested and required features without offset, i.e. it starts requiredminutes earlier than fdf
+    fdf::Union{Nothing, DataFrame} # this is the feature dataframe that comprises only requested features. it works with views into fdfno and dataframe(ohlcv)
+    function Features006()
+        f6 = new([], [], 0, 0, nothing, nothing, nothing)
+        return f6
     end
-    return fdf, featuremask
+end
+
+function _check(f6::Features006, window, offset)
+    @assert 1 < window <= 10*24*60 "1 < window <= 10*24*60 failed: window=$window"
+    @assert 0 <= offset "0 <= offset failed: offset=$offset"
+    f6.requiredminutes = max(f6.requiredminutes, window + offset)
+    f6.maxoffset = max(f6.maxoffset, offset)
+end
+
+_regry(f6::Features006; window, offset=0) = (f="ry", w=window, o=offset)
+_grad(f6::Features006; window, offset=0) = (f="rg", w=window, o=offset)
+_std(f6::Features006; window, offset=0) = (f="rs", w=window, o=offset)
+_mind(f6::Features006; window, offset=0) = (f="mind", w=window, o=offset)
+_maxd(f6::Features006; window, offset=0) = (f="maxd", w=window, o=offset)
+_rv(f6::Features006; short, long, offset=0) = (f="rv", s=short, l=long, o=offset)
+
+fdfnocol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l], "-") : join([feature.f, feature.w], "-")
+fdfcol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l, feature.o], "-") : join([feature.f, feature.w, feature.o], "-")
+
+f6requested(f6::Features006) = f6.requested
+f6all(f6::Features006) = union(f6.required, f6.requested)
+
+"adds feature configuration of last y position of linear regression characterized by regression window [minutes] and offset [minutes]"
+function addregry!(f6::Features006; window::Integer=15, offset::Integer=0)
+    _check(f6, window, offset)
+    g = _grad(f6, window=window, offset=offset)
+    push!(f6.required, g)
+    y = _regry(f6, window=window, offset=offset)
+    push!(f6.requested, y)
+end
+
+"adds feature configuration of gradient of linear regression characterized by regression window [minutes] and offset [minutes]"
+function addgrad!(f6::Features006; window::Integer=15, offset::Integer=0)
+    _check(f6, window, offset)
+    y = _regry(f6, window=window, offset=offset)
+    push!(f6.required, y)
+    g = _grad(f6, window=window, offset=offset)
+    push!(f6.requested, g)
+    return g
+end
+
+"adds feature configuration of standard deviation of linear regression characterized by regression window [minutes] and offset [minutes]"
+function addstd!(f6::Features006; window::Integer=15, offset::Integer=0)
+    _check(f6, window, offset)
+    y = _regry(f6, window=window, offset=offset)
+    push!(f6.required, y)
+    g = _grad(f6, window=window, offset=offset)
+    push!(f6.required, g)
+    s = _std(f6, window=window, offset=offset)
+    push!(f6.requested, s)
+    return s
+end
+
+"adds feature configuration of relative distance of pivot to maximum of range characterized by window [minutes] and offset [minutes]"
+function addmaxdist!(f6::Features006; window::Integer=15, offset::Integer=0)
+    _check(f6, window, offset)
+    md = _maxd(f6, window=window, offset=offset)
+    push!(f6.requested, md)
+    return md
+end
+
+"adds feature configuration of relative distance of pivot to minimum of range characterized by window [minutes] and offset [minutes]"
+function addmindist!(f6::Features006; window::Integer=15, offset::Integer=0)
+    _check(f6, window, offset)
+    md = _mind(f6, window=window, offset=offset)
+    push!(f6.requested, md)
+    return md
+end
+
+"adds feature configuration of relative volume of median over a short time range [minutes] relative to a longer time range [minutes] and common offset [minutes]"
+function addrelvol!(f6::Features006; short::Integer=5, long::Integer=60, offset::Integer=0)
+    @assert 1 < short < long <= 10*24*60 "1 < short < long <= 10*24*60 failed: short=$short long=$long"
+    @assert 0 <= offset "0 <= offset failed: offset=$offset"
+    rv = _rv(f6, short=short, long=long, offset=offset)
+    push!(f6.requested, rv)
+    return rv
+end
+
+function setbase!(f6::Features006, ohlcv::Ohlcv.OhlcvData; usecache=false)
+    f6.ohlcv = ohlcv
+    f6.fdfno = usecache ? read!(f6) : DataFrame()   # emptycachef006()
+    supplement!(f6)
+end
+
+function removebase!(f6::Features006)
+    f6.ohlcv = nothing
+    f6.fdfno = nothing
+    f6.fdf = nothing
+end
+
+ohlcvix(f6::Features006, featureix) = featureix + f6.ohlcvoffset
+featureix(f6::Features006, ohlcvix) = ohlcvix - f6.ohlcvoffset
+
+ohlcvdfview(f6::Features006) = f6.fdf
+ohlcv(f6::Features006) = f6.ohlcv
+
+requiredminutes(f6::Features006) = f6.requiredminutes
+
+function emptycachef006()
+    df = DataFrame()
+    df[:, "opentime"] = DateTime[]
+    return df
+end
+
+function describe(f6::Features006)::String
+    base = isnothing(f6.ohlcv) ? "missing ohlcv" : f6.ohlcv.base
+    f6str = isnothing(f6.fdf) ? "missing feature data" : "from $(f6.fdf[begin, :opentime]) to $(f6.fdf[end, :opentime])"
+    requested = join([fdfcol(f6, f) for f in f6.requested], "_")
+    required = join([fdfcol(f6, f) for f in f6.required], "_")
+    "Features006 base=$base, time range $f6str, requiredminutes=$(f6.requiredminutes), maxoffset=$(f6.maxoffset), requested=$requested, required=$required"
+end
+
+function Base.show(io::IO, f6::Features006)
+    println(io, describe(f6))
+end
+
+function file(f6::Features006)
+    mnm = uppercase(f6.ohlcv.base) * "_" * uppercase(f6.ohlcv.quotecoin) * "_" * "_F4"  #* use saved Features004 data cache
+    filename = EnvConfig.datafile(mnm, "Features004")  # share data with Features004
+    if isdir(filename)
+        return (filename=filename, existing=true)
+    else
+        return (filename=filename, existing=false)
+    end
+end
+
+function _f4regrcol(f6::Features006, window, f6regr)
+    f6f4 = Dict("ry" => "regry", "rg" => "grad", "rs" => "std")
+    join([window, f6f4[f6regr]], "_")
 end
 
 """
-- getfeatures001(pivot::Vector{Float32})
-- ration 4hour/9day volume to detect mid term rising volume
-- ration 5minute/4hour volume to detect short term rising volume
+Features006 will use the Features004 cache but will not change it.
+Creates a f6.fdfno dataframe without considering offset with columns of F4 cache that match f6 config using f6 column naming.
 """
-function getfeatures001(ohlcvdf::AbstractDataFrame)
-    fdf, featuremask = getfeatures001(ohlcvdf.pivot)
-    fdf[:, "4h/9dvol"] = relativevolume(ohlcvdf[!, :basevolume], 4*60, 9*24*60)
-    fdf[:, "5m/4hvol"] = relativevolume(ohlcvdf[!, :basevolume], 5, 4*60)
-    append!(featuremask, ["4h/9dvol", "5m/4hvol"])
-    return fdf, featuremask
+function read!(f6::Features006)::DataFrame
+    if isnothing(f6.ohlcv)
+        (verbosity >= 2)  && println("no ohlcv found in f6 - missing base info required to read")
+        return emptycachef006()
+    end
+    fn = file(f6)
+    # try
+    if fn.existing
+        (verbosity >= 3) && println("$(EnvConfig.now()) start loading f6 data of $(f6.ohlcv.base) from $(fn.filename)")
+        df = DataFrame(JDF.loadjdf(fn.filename))
+        (verbosity >= 2) && println("$(EnvConfig.now()) loaded f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
+        if size(df, 1) == 0
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(fn.filename)")
+            df = emptycachef006()
+        else
+            df = DataFrame()
+            for f in f6all(f6)
+                if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
+                    f4col = _f4regrcol(f6, f.w, f.f)
+                    f6col = fdfnocol(f6, f)
+                    df[:, f6col] = df[!, f4col]
+                end
+            end
+            if size(df, 2) > 0
+                df[:, "opentime"] = df[!, "opentime"]
+            end
+        end
+    else
+        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
+        df = emptycachef006()
+    end
+    f6.fdfno = df
+    # (verbosity >= 3) && println("$(EnvConfig.now()) Features006.read! after loading and adapting $f6")
+    # (verbosity >= 3) && println("$(EnvConfig.now()) Features006.read! names(df)=$(names(df))")
+    # catch e
+    #     Logging.@warn "exception $e detected"
+    # end
+    return df
 end
 
-function getfeatures001(ohlcv::OhlcvData)
-    ohlcvdf = ohlcv.df
-    fdf, featuremask = getfeatures001(ohlcvdf)
-    return Features001(fdf, featuremask, ohlcv)
+function emptyfdf(f6::Features006, consideroffset)
+    df = DataFrame(opentime = DateTime[])
+    for f in f6all(f6)
+        if consideroffset
+            df[:, fdfcol(f6, f)] = Float32[]
+        else
+            df[:, fdfnocol(f6, f)] = Float32[]
+        end
+    end
+    return df
 end
 
-"""
- Update featureset001 to match ohlcv.
- constraint: either featureset001 is nothing or empty or it has to be appended
- but no need to add before an existing start
-"""
-function getfeatures!(features::Features001, ohlcv::OhlcvData)
-    # TODO
-    @error "to be done"
-    return features
+function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
+    rvcol = fdfnocol(f6, ftup)
+    short = ftup.s
+    long = ftup.l
+    if rvcol in names(fdfno) # was already calculated
+        return fdfno
+    end
+    if rvcol in names(f6.fdfno) 
+        rv = f6.fdfno[!, rvcol]
+        if !isnothing(odfendix)
+            rv1 = relativevolume(view(odf[!, :basevolume], firstindex(odf[!, :basevolume]):odfendix), short, long)
+            rv = vcat(rv1, rv)
+        end
+        if !isnothing(odfstartix)
+            lastix = lastindex(odf[!, :basevolume])
+            rv2 = relativevolume(view(odf[!, :basevolume], max(firstindex(odf[!, :basevolume]), odfstartix-long):lastix), short, long)
+            rv = vcat(rv, view(rv2, (lastindex(rv2)-(lastix-odfstartix)):lastindex(rv2)))
+        end
+    else
+        rv = relativevolume(odf[!, :basevolume], short, long)
+    end
+    fdfno[:, rvcol] = rv
+    return fdfno
 end
 
+function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
+    mdcol = fdfnocol(f6, ftup)
+    window = ftup.w
+    if mdcol in names(fdfno) # was already calculated
+        return fdfno
+    end
+    if mdcol in names(f6.fdfno) 
+        md = f6.fdfno[!, mdcol]
+        if !isnothing(odfendix)
+            md1 = rollingmin(view(odf[!, :low], firstindex(odf[!, :low]):odfendix), window)
+            md = vcat(md1, md)
+        end
+        if !isnothing(odfstartix)
+            lastix = lastindex(odf[!, :low])
+            md2 = rollingmin(view(odf[!, :low], max(firstindex(odf[!, :low]), odfstartix-window):lastix), window)
+            md = vcat(md, view(md2, (lastindex(md2)-(lastix-odfstartix)):lastindex(md2)))
+        end
+    else
+        md = rollingmin(odf[!, :low], window)
+    end
+    fdfno[:, mdcol] = md
+    return fdfno
+end
 
-#endregion Features001
+function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
+    mdcol = fdfnocol(f6, ftup)
+    window = ftup.w
+    if mdcol in names(fdfno) # was already calculated
+        return fdfno
+    end
+    if mdcol in names(f6.fdfno) 
+        md = f6.fdfno[!, mdcol]
+        if !isnothing(odfendix)
+            md1 = rollingmax(view(odf[!, :high], firstindex(odf[!, :high]):odfendix), window)
+            md = vcat(md1, md)
+        end
+        if !isnothing(odfstartix)
+            md2 = rollingmax(view(odf[!, :high], odfstartix:lastindex(odf[!, :high])), window)
+            md = vcat(md, md2)
+        end
+    else
+        md = rollingmax(odf[!, :high], window)
+    end
+    fdfno[:, mdcol] = md
+    return fdfno
+end
+
+function _opentime!(fdfno, f6::Features006, odf, odfendix, odfstartix)
+    if "opentime" in names(fdfno) # was already calculated
+        return fdfno
+    end
+    if "opentime" in names(f6.fdfno) 
+        ot = f6.fdfno[!, "opentime"]
+        if !isnothing(odfendix)
+            ot = vcat(odf[begin:odfendix, "opentime"], ot)
+        end
+        if !isnothing(odfstartix)
+            ot = vcat(ot, odf[odfstartix:end, "opentime"])
+        end
+    else
+        ot = odf[!, "opentime"]
+    end
+    fdfno[:, "opentime"] = ot
+    return fdfno
+end
+
+function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
+    rycol = fdfnocol(f6, _regry(f6, window=ftup.w, offset=ftup.o))
+    rgcol = fdfnocol(f6, _grad(f6, window=ftup.w, offset=ftup.o))
+    window = ftup.w
+    if rycol in names(fdfno) # was already calculated
+        return fdfno
+    end
+    if rycol in names(f6.fdfno) 
+        ry = f6.fdfno[!, rycol]
+        rg = f6.fdfno[!, rgcol]
+        if !isnothing(odfendix)
+            ry1, rg1 = rollingregression(view(odf[!, :pivot], firstindex(odf[!, :pivot]):odfendix), window)
+            rg = vcat(rg1, rg)
+            ry = vcat(ry1, ry)
+        end
+        if !isnothing(odfstartix)
+            ry2, rg2 = rollingregression(odf[!, :pivot], window, odfstartix)
+            rg = vcat(rg, rg2)
+            ry = vcat(ry,ry2)
+        end
+    else
+        ry, rg = rollingregression(odf[!, :pivot], window)
+    end
+    fdfno[:, rycol] = ry
+    fdfno[:, rgcol] = rg
+    return fdfno
+end
+
+function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
+    rscol = fdfnocol(f6, ftup)
+    window = ftup.w
+    if rscol in names(fdfno) # was already calculated
+        return fdfno
+    end
+    fdfno = _regrgrady!(fdfno, f6, ftup, odf, odfendix, odfstartix)
+    rycol = fdfnocol(f6, _regry(f6, window=window))
+    rgcol = fdfnocol(f6, _grad(f6, window=window))
+    if rscol in names(f6.fdfno) 
+        rs = f6.fdfno[!, rscol]
+        if !isnothing(odfendix)
+            odfv = view(odf, firstindex(odf[!, :pivot]):odfendix, :)
+            ryv = view(fdfno[!, rycol], firstindex(odf[!, :pivot]):odfendix)
+            rgv = view(fdfno[!, rgcol], firstindex(odf[!, :pivot]):odfendix)
+            rs1 = rollingregressionstdmv([odfv[!, :open], odfv[!, :high], odfv[!, :low], odfv[!, :close]], ryv, rgv, window)
+            rs = vcat(rs1, rs)
+        end
+        if !isnothing(odfstartix)
+            # odfv = view(odf, odfstartix:lastindex(odf[!, :pivot]), :)
+            # ryv = view(fdfno[!, rycol], odfstartix:lastindex(odf[!, :pivot]))
+            # rgv = view(fdfno[!, rgcol], odfstartix:lastindex(odf[!, :pivot]))
+            rs2 = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window, odfstartix)
+            rs = vcat(rs, rs2)
+        end
+    else
+        rs = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window)
+    end
+    fdfno[:, rscol] = rs
+    return fdfno
+end
+
+function _supplementboundaries(f6::Features006, fdf)
+    odf = Ohlcv.dataframe(f6.ohlcv)
+    odfendix = odfstartix = nothing
+    if size(fdf, 2) > 1
+        odfendix = Ohlcv.rowix(odf[!, "opentime"], fdf[begin, "opentime"]) - 1 # ohlcv index of last feature datetime
+        odfendix = odfendix < firstindex(odf[!, "opentime"]) ? nothing : odfendix  # nothing = most recent ohlcv data have matching features
+        odfstartix = Ohlcv.rowix(odf[!, "opentime"], fdf[end, "opentime"]) + 1 # ohlcv index of last feature datetime
+        odfstartix = odfstartix > lastindex(odf[!, "opentime"]) ? nothing : odfstartix  # nothing = most recent ohlcv data have matching features
+    end
+    return odfendix, odfstartix
+end
+
+function supplementfdfno!(f6::Features006)
+    odf = Ohlcv.dataframe(f6.ohlcv)
+    @assert size(odf, 1) > 1 "size(odf, 1)=$(size(odf)) > 1 failed"
+    if !isnothing(f6.fdfno) && (size(f6.fdfno, 1) > 0)
+        startix = endix = nothing
+        if f6.fdfno[begin, :opentime] < odf[begin,:opentime]
+            startix = Ohlcv.rowix(f6.fdfno[!, :opentime], odf[begin,:opentime])
+        end
+        if f6.fdfno[end, :opentime] > odf[end,:opentime]
+            endix = Ohlcv.rowix(f6.fdfno[!, :opentime], odf[end,:opentime])
+        end
+        if !isnothing(startix) || !isnothing(endix)
+            f6.fdfno = f6.fdfno[(isnothing(startix) ? firstindex(f6.fdfno, 1) : startix):(isnothing(endix) ? lastindex(f6.fdfno, 1) : endix), :] # cut time range to match odf 
+        end
+    end
+    odfendix, odfstartix = _supplementboundaries(f6, f6.fdfno)
+    fdfno = DataFrame()
+    for f in f6all(f6)
+        if f.f in ["ry", "rg"] fdfno = _regrgrady!(fdfno, f6, f, odf, odfendix, odfstartix)
+        elseif f.f == "rs" fdfno = _regrstd!(fdfno, f6, f, odf, odfendix, odfstartix)
+        elseif f.f == "mind" fdfno = _mindist!(fdfno, f6, f, odf, odfendix, odfstartix)
+        elseif f.f == "maxd" fdfno = _maxdist!(fdfno, f6, f, odf, odfendix, odfstartix)
+        elseif f.f == "rv" fdfno = _relvol!(fdfno, f6, f, odf, odfendix, odfstartix)
+        else error("unknown Feature006 feature type")
+        end
+    end
+    if size(fdfno, 2) > 0
+        fdfno = _opentime!(fdfno, f6::Features006, odf, odfendix, odfstartix)
+    end
+    @assert size(odf, 1) == size(fdfno, 1) "size(odf, 1)=$(size(odf, 1)) == size(fdfno, 1)=$(size(fdfno, 1)) failed"
+    f6.fdfno = fdfno
+end
+
+function supplement!(f6::Features006)
+    if isnothing(f6.ohlcv) || (size(Ohlcv.dataframe(f6.ohlcv), 1) == 0)
+        (verbosity >= 2)  && println("no ohlcv found in f6 - nothing to supplement")
+        return emptycachef006()
+    end
+    supplementfdfno!(f6)
+    # replace the existing fdf by a new one
+    Ohlcv.pivot!(f6.ohlcv)
+    odf = Ohlcv.dataframe(f6.ohlcv)
+    startix = f6.maxoffset + firstindex(odf[!, :opentime])
+    endix = lastindex(odf[!, :opentime])
+    fdf = DataFrame(
+        opentime = view(odf[!, :opentime], startix:endix), 
+        open = view(odf[!, :open], startix:endix), 
+        high = view(odf[!, :high], startix:endix), 
+        low = view(odf[!, :low], startix:endix), 
+        close = view(odf[!, :close], startix:endix), 
+        basevolume = view(odf[!, :basevolume], startix:endix), 
+        pivot = view(odf[!, :pivot], startix:endix))
+    for f in f6requested(f6)
+        fdfc = fdfcol(f6, f)
+        fdfnoc = fdfnocol(f6, f)
+        if f.f in ["ry", "rg", "rs", "rv"] fdf[:, fdfc] = view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)
+        elseif f.f in ["mind", "maxd"] fdf[:, fdfc] = (fdf[!, :pivot] .- view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)) ./ fdf[!, :pivot] # relative distance in respect to pivot
+        else error("unknown Feature006 feature type")
+        end
+    end
+    f6.fdf = fdf
+end
+
+function timerangecut!(f6::Features006)
+    if isnothing(f6.ohlcv) || isnothing(f6.fdf)
+        (verbosity >= 2) && isnothing(f6.fdf) && println("no features found in f6 - no time range to cut")
+        (verbosity >= 2) && isnothing(f6.ohlcv) && println("no ohlcv found in f6 - missing ohlcv reference to cut time range")
+        return
+    end
+    supplement!(f6)
+end
+
+function features(f6::Features006, firstix::Integer=firstindex(f6.fdf[!, :opentime]), lastix::Integer=lastindex(f6.fdf[!, :opentime]))
+    if isnothing(f6.fdf)
+        (verbosity >= 2) && isnothing(f6.fdf) && println("no features found in f6")
+        return nothing
+    end
+    @assert !isnothing(firstix) && (firstindex(f6.fdf[!, :opentime]) <= firstix <= lastix <= lastindex(f6.fdf[!, :opentime])) "firstindex=$(firstindex(f6.fdf[!, :opentime])) <= firstix=$firstix <= lastix=$lastix <= lastindex=$(lastindex(f6.fdf[!, :opentime]))"
+    if (firstix==firstindex(f6.fdf, 1)) && (lastix==lastindex(f6.fdf, 1))
+        return f6.fdf
+    else
+        return view(f6.fdf, firstix:lastix, :)
+    end
+end
+
+function features(f6::Features006, startdt::DateTime, enddt::DateTime)
+    if isnothing(f6.fdf)
+        (verbosity >= 2) && isnothing(f6.fdf) && println("no features found in f6")
+        return nothing
+    end
+    return features(f6, Ohlcv.rowix(f6.fdf[!, :opentime], startdt), Ohlcv.rowix(f6.fdf[!, :opentime], enddt))
+end
+
+opentime(f6::Features006) = isnothing(f6.fdf) ? DateTime[] : f6.fdf[!, :opentime]
+
+#endregion Features006
 
 #region Features005
 
 # Features005 is based on Features004. To reuse the F4 cache files, those features are always calculated to keep the saved cache complete.
 
-regressionwindows005 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
+regressionwindows005 = [2, 5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
 regressionproperties = ["grad", "std", "regry"]
 savedregressionwindows005 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60] # == Features.regressionwindows004
 savedregressionproperties = ["grad", "std", "regry"]
@@ -915,11 +1327,12 @@ function configdf(requestedconfigs, requiredminutes)
         valid = false
         first = cfg[1]
         second = third = ""
+        fourth = 0
         if !(first in ["opentime", "rw", "mm", "rv"])
             @error "skipping $config with unknown feature type $(first) (requestedconfigs=$(requestedconfigs))"
         else
-            if (first in ["rw", "mm", "rv"]) && length(cfg) != 3
-                @error "$config has not 3 elements cfg=$cfg (requestedconfigs=$(requestedconfigs))"
+            if (first in ["rw", "mm", "rv"]) && !(length(cfg) in [3, 4])
+                @error "$config has not 3 or 4  elements cfg=$cfg (requestedconfigs=$(requestedconfigs))"
             elseif (first in ["opentime"]) && length(cfg) != 1
                 @error "$config has not 1 element cfg=$cfg (requestedconfigs=$(requestedconfigs))"
             else
@@ -936,6 +1349,12 @@ function configdf(requestedconfigs, requiredminutes)
                                 rgr = join(["rw", string(cfg[2]), "regry"], "_")
                                 if !(rgr in allconfigs) push!(allconfigs, rgr) end
                             end
+                            if length(cfg) > 3
+                                fourth = parse(Int, cfg[4])
+                                if !(1 <= fourth <= requiredminutes - second)
+                                    @error "$config has invalid repetition range !(1 <= $fourth <= $(requiredminutes - second)"
+                                end
+                            end
                             valid = true
                         else
                             @error "skipping $config due to regression property=$(third) not in $regressionproperties"
@@ -948,6 +1367,12 @@ function configdf(requestedconfigs, requiredminutes)
                     if 0 < second <= requiredminutes
                         third = cfg[3]
                         if third in minmaxproperties
+                            if length(cfg) > 3
+                                fourth = parse(Int, cfg[4])
+                                if !(1 <= fourth <= requiredminutes - second)
+                                    @error "$config has invalid repetition range !(1 <= $fourth <= $(requiredminutes - second)"
+                                end
+                            end
                             valid = true
                         else
                             @error "skipping $config due to min/max property=$(third) not in $minmaxproperties (requestedconfigs=$(requestedconfigs))"
@@ -978,7 +1403,7 @@ function configdf(requestedconfigs, requiredminutes)
                 end
             end
         end
-        push!(df, (config = config, first = first, second = second, third = third, valid = valid, save = config in savecols, requested = config in requestedconfigs), promote=true)
+        push!(df, (config = config, first = first, second = second, third = third, fourth = fourth, valid = valid, save = config in savecols, requested = config in requestedconfigs), promote=true)
         configix += 1
     end
     # (verbosity >= 3) && println("Features005 cfgdf: $df")
@@ -993,9 +1418,11 @@ Features005 provides a configurable feature set with the following config choice
     - grad = gradient of regression line
     - std = standard deviation of regression line
     - regry = y position of regression line end
+    Optinally regression windows can have an offset, which is implicitly 0 (last minute) if omitted. This indicates the number of minutes offset from current minute. offset + window shall not exceed requiredminutes.
 - "mm" followed by *minutes* (e.g. "mm_60") to denote a 60 minute min/max window with the following `_` concatenated options: "maxdist", "mindist".
     - maxdist = relative distance to max value of minmaxwindows
     - mindist = relative distance to min value of minmaxwindows
+    Optinally min/max windows can have an offset, which is implicitly 0 (last minute) if omitted. This indicates the number of minutes offset from current minute. offset + window shall not exceed requiredminutes.
 - "rv" to denote a relative median volume with the following `_` concatenated option: shortwindow followed by longwindow in minutes,
   e.g. "rv_5_60" provides 1 vector with the ratio of the volume median of shortwindow / longwindow
     - shortwindow = minutes of short window median
@@ -1004,7 +1431,7 @@ Each tuple element will result in a feature vector of that name
 
 Example:
 ```
-Features005(["rw_60_regry", "rw_60_grad", "mm_30_maxdist", "mm_15_mindist", "rv_5_60"])
+Features005(["rw_60_regry", "rw_60_grad", "rw_5_grad_3", "mm_30_maxdist", "mm_15_mindist", "rv_5_60"])
 ```
 
 Struct property notes:
@@ -1211,15 +1638,17 @@ function supplement!(f5::Features005)
             # (verbosity >= 3) && println("$configrow already processed together with other column")
             continue
         end
+        win = configrow.second
+        offset = configrow.fourth
+        #TODO calc rolling regressioin run of same length than ohlcv, supplement from f4 and restore them.use offset as view vector
         if configrow.first == "rw"
             fc = f5.cfgdf
-            regryrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "regry"), :])
-            gradrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "grad"), :])
-            win = configrow.second
+            regryrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== win) .&& (fc[!, :third] .== "regry") .&& (fc[!, :fourth] .== offset), :])
+            gradrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== win) .&& (fc[!, :third] .== "grad") .&& (fc[!, :fourth] .== offset), :])
             std = nothing
             if regryrow.config in cols
                 if !isnothing(odfstartix)
-                    regry, grad = rollingregression(odf[!, :pivot], win, odfstartix)
+                    regry, grad = rollingregression(odf[!, :pivot], win, odfstartix - offset)
                     @assert length(regry) == newlen "length(regry)=$(length(regry)) != newlen=$newlen"
                     regry = vcat(f5.fdf[!, regryrow.config], regry)
                     grad = vcat(f5.fdf[!, gradrow.config], grad)
@@ -1232,12 +1661,12 @@ function supplement!(f5::Features005)
             end
             fdf[:, regryrow.config] = regry
             fdf[:, gradrow.config] = grad
-            finddf = f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== configrow.second) .&& (fc[!, :third] .== "std"), :]
+            finddf = f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== win) .&& (fc[!, :third] .== "std"), :]
             if size(finddf, 1) > 0
                 stdrow = first(finddf)
                 if stdrow.config in cols
                     if !isnothing(odfstartix)
-                        std = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], regry, grad, win, odfstartix)
+                        std = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], regry, grad, win, odfstartix - offset)
                         @assert length(std) == newlen "length(std)=$(length(std)) != newlen=$newlen"
                         std = vcat(f5.fdf[!, stdrow.config], std)
                     else
@@ -1250,36 +1679,35 @@ function supplement!(f5::Features005)
             end
 
         elseif configrow.first == "mm"
-            win = configrow.second
             if (configrow.third == "mindist")
                 if (configrow.config in cols)
                     if !isnothing(odfstartix)
-                        minvec = RollingFunctions.rollmin(odf[odfstartix-win+1:end, :low], win)
-                        mindist = (odf[odfstartix:end, :pivot] .- minvec) ./ minvec
+                        minvec = RollingFunctions.rollmin(odf[odfstartix - win + 1 - offset:end - offset, :low], win)
+                        mindist = (odf[odfstartix - offset:end - offset, :pivot] .- minvec) ./ minvec
                         @assert length(mindist) == newlen "length(mindist)=$(length(mindist)) != newlen=$newlen"
                         mindist = vcat(f5.fdf[!, configrow.config], mindist)
                     else
                         mindist = f5.fdf[!, configrow.config]
                     end
                 else
-                    minvec = RollingFunctions.rollmin(odf[reqmin-win+1:end, :low], win)
-                    mindist = (odf[reqmin:end, :pivot] .- minvec) ./ minvec
+                    minvec = RollingFunctions.rollmin(odf[reqmin - win + 1 - offset:end - offset, :low], win)
+                    mindist = (odf[reqmin - offset:end - offset, :pivot] .- minvec) ./ minvec
                 end
                 fdf[:, configrow.config] = mindist
             end
             if (configrow.third == "maxdist")
                 if (configrow.config in cols)
                     if !isnothing(odfstartix)
-                        maxvec = RollingFunctions.rollmax(odf[odfstartix-win+1:end, :high], win)
-                        maxdist = (odf[odfstartix:end, :pivot] .- maxvec) ./ maxvec
+                        maxvec = RollingFunctions.rollmax(odf[odfstartix - win + 1 - offset:end - offset, :high], win)
+                        maxdist = (odf[odfstartix - offset:end - offset, :pivot] .- maxvec) ./ maxvec
                         @assert length(maxdist) == newlen "length(maxdist)=$(length(maxdist)) != newlen=$newlen"
                         maxdist = vcat(f5.fdf[!, configrow.config], maxdist)
                     else
                         maxdist = f5.fdf[!, configrow.config]
                     end
                 else
-                    maxvec = RollingFunctions.rollmax(odf[reqmin-win+1:end, :high], win)
-                    maxdist = (odf[reqmin:end, :pivot] .- maxvec) ./ maxvec
+                    maxvec = RollingFunctions.rollmax(odf[reqmin - win + 1 - offset:end - offset, :high], win)
+                    maxdist = (odf[reqmin - offset:end - offset, :pivot] .- maxvec) ./ maxvec
                 end
                 fdf[:, configrow.config] = maxdist
             end
@@ -1598,6 +2026,7 @@ function read!(f4::Features004, startdt, enddt)::Features004
             enddt = isnothing(enddt) ? df[end, :opentime] : enddt
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
             if (size(df, 1) > 0) && (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
+                (verbosity >= 4) && println("f4cache $(fn.filename) names: $(names(df))")
                 f4.latestloadeddt = df[end, :opentime]
                 startix = Ohlcv.rowix(df[!, :opentime], startdt)
                 startix = df[startix, :opentime] < startdt ? min(lastindex(df[!, :opentime]), startix+1) : startix
@@ -1659,43 +2088,47 @@ function supplement!(f4::Features004, ohlcv::Ohlcv.OhlcvData; firstix=firstindex
     usecache = (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0)
     Ohlcv.pivot!(ohlcv)
     df = Ohlcv.dataframe(ohlcv)
-    startix = maxregrwindow = maximum(regrwindows(f4))  # all dataframes to start at the same time to make performance comparable and f4 handling easier
-    if !(firstindex(df[!, :opentime]) <= startix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
-        @warn "$(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
+    maxregrwindow = maximum(regrwindows(f4))  # all dataframes to start at the same time to make performance comparable and f4 handling easier
+    if !(firstindex(df[!, :opentime]) <= firstix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
+        @warn "$(firstindex(df[!, :opentime])) <= $firstix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
         return nothing
     end
-    dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
-    pivot = dfv.pivot
+    # dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
+    # dfv = view(df, max(firstix-maxregrwindow+1, 1):lastix, :)
+    pivot = df.pivot
     startafterix = endbeforeix = nothing
+    ot = df[!, "opentime"]
     if usecache
-        ot = dfv[!, "opentime"]
         otstored = first(values(f4.rw))[!, "opentime"]
         endbeforeix = Ohlcv.rowix(ot, otstored[begin]) - 1
-        endbeforeix = endbeforeix < startix ? nothing : endbeforeix
+        endbeforeix = endbeforeix < firstix ? nothing : endbeforeix
         startafterix = Ohlcv.rowix(ot, otstored[end]) + 1
         startafterix = startafterix > lastindex(ot) ? nothing : startafterix
     end
     for window in regrwindows(f4)
         if usecache && (window in keys(f4.rw)) && (size(f4.rw[window], 1) > 0)
             if !isnothing(endbeforeix)
-                (verbosity >= 3) && println("$(EnvConfig.now()) F4 endbeforeix=$endbeforeix with window=$window and startix=$startix for $(endbeforeix-startix+1) rows")
-                regry, grad = rollingregression(pivot[begin:endbeforeix], window, startix)
-                std = rollingregressionstdmv([dfv.open[begin:endbeforeix], dfv.high[begin:endbeforeix], dfv.low[begin:endbeforeix], dfv.close[begin:endbeforeix]], regry, grad, window, startix)
-                dft = DataFrame(opentime=dfv[startix:endbeforeix, :opentime], regry=regry, grad=grad, std=std)
+                dfv = view(df, 1:endbeforeix, :)
+                (verbosity >= 3) && println("$(EnvConfig.now()) F4 endbeforeix=$endbeforeix with window=$window and firstix=$firstix for $(endbeforeix-firstix+1) rows")
+                regry, grad = rollingregression(dfv.pivot, window, firstix)
+                std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, firstix)
+                dft = DataFrame(opentime=view(ot, firstix:endbeforeix), regry=regry, grad=grad, std=std)
                 prepend!(f4.rw[window], dft)
             end
             if !isnothing(startafterix)
-                (verbosity >= 3) && println("$(EnvConfig.now()) F4 startafterix=$startafterix with window=$window for $(length(pivot)-startix+1) rows")
-                regry, grad = rollingregression(pivot, window, startafterix)
+                dfv = view(df, 1:lastix, :)
+                (verbosity >= 3) && println("$(EnvConfig.now()) F4 startafterix=$startafterix with window=$window for $(size(df, 1)-startafterix+1) rows")
+                regry, grad = rollingregression(dfv.pivot, window, startafterix)
                 std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, startafterix)
-                dft = DataFrame(opentime=dfv[startafterix:end, :opentime], regry=regry, grad=grad, std=std)
+                dft = DataFrame(opentime=view(ot, startafterix:lastix), regry=regry, grad=grad, std=std)
                 append!(f4.rw[window], dft)
             end
         else
-            (verbosity >= 3) && println("$(EnvConfig.now()) F4 full calc startix=$startix with window=$window for $(length(pivot)-startix+1) rows")
-            regry, grad = rollingregression(pivot, window, startix)
-            std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, startix)
-            f4.rw[window] = DataFrame(opentime=dfv[startix:end, :opentime], regry=regry, grad=grad, std=std)
+            dfv = view(df, 1:lastix, :)
+            (verbosity >= 3) && println("$(EnvConfig.now()) F4 full calc from firstix=$firstix until lastix=$lastix with window=$window for $(lastix-firstix+1) rows")
+            regry, grad = rollingregression(dfv.pivot, window, firstix)
+            std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, firstix)
+            f4.rw[window] = DataFrame(opentime=view(ot, firstix:lastix), regry=regry, grad=grad, std=std)
         end
     end
     return isnothing(featureoffset!(f4, ohlcv)) ? nothing : f4
@@ -1704,7 +2137,7 @@ end
 requiredminutes(f4::Features004) = maximum(regrwindows(f4))
 
 function Base.show(io::IO, f4::Features004)
-    print(io, "Features004 base=$(f4.basecoin) quote=$(f4.quotecoin) $(["$regr:size=$(size(df))" for (regr,df) in f4.rw])")
+    print(io, "Features004 base=$(f4.basecoin) quote=$(f4.quotecoin) offset=$(f4.ohlcvoffset) from $(first(values(f4.rw))[begin, :opentime]) until $(first(values(f4.rw))[end, :opentime]), $(["$regr:size=$(size(df)) names=$(names(df)), " for (regr,df) in f4.rw])")
     # for (key, value) in f4.rw
     #     println(io, "Features004 base=$(f4.basecoin), regr key: $key of size=$(size(value))")
     #     (verbosity >= 3) && println(io, describe(value, :first, :last, :min, :mean, :max, :nuniqueall, :nnonmissing, :nmissing, :eltype))
@@ -1729,7 +2162,7 @@ end
 "Features002 is a feature set used in trading strategy"
 
 regressionwindows002 = [5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
-relativevolumes002 = [(1, 60), (5, 4*60)]  # , (4*60, 9*24*60)] # TODO should be part of Features002
+relativevolumes002 = [(1, 60), (5, 4*60)]  # , (4*60, 9*24*60)]
 
 mutable struct Features002Regr
     grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
@@ -1829,17 +2262,18 @@ function getfeatures002regr(ohlcv::OhlcvData, firstix, lastix, regrwindows)::Dic
     regr = Dict()
     for window in regrwindows
         dfv = view(df, (firstix-window+1):lastix, :)
-        startix = window
-        open = dfv.open
-        high = dfv.high
-        low = dfv.low
-        close = dfv.close
+        startix = 1 # window
+        open = view(dfv.open, startix:lastindex(dfv.open))
+        high = view(dfv.high, startix:lastindex(dfv.high))
+        low = view(dfv.low, startix:lastindex(dfv.low))
+        close = view(dfv.close, startix:lastindex(dfv.close))
         ymv = [open, high, low, close]
         pivot = dfv.pivot
         # println("firstix=$firstix lastix=$lastix size(df)=$(size(df)) size(dfv)=$(size(dfv))")
         @assert firstindex(dfv[!, :opentime]) <= startix <= lastindex(dfv[!, :opentime]) "$(firstindex(dfv[!, :opentime])) <= $startix <= $lastix <= $(lastindex(dfv[!, :opentime]))"
-        regry, grad = rollingregression(pivot, window, startix)
-        std = rollingregressionstdmv(ymv, regry, grad, window, startix) # startix is related to ymv
+        regry, grad = rollingregression(pivot, window, window) #TODO startix -> window
+        std = rollingregressionstdmv(ymv, regry, grad, window, window) #TODO startix -> window # startix is related to ymv
+        # println("window=$window, regry[end]=$(regry[end]), grad[end]=$(grad[end]), std[end]=$(std[end]), length(regry)=$(length(regry)), length(grad)=$(length(grad)), length(std)=$(length(std))")
         xtrmix = regressionextremesix!(nothing, grad)
         regr[window] = Features002Regr(grad, regry, std, xtrmix)
     end

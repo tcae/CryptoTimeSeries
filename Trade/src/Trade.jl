@@ -51,13 +51,14 @@ mutable struct TradeCache
         cache.mc[:exitcoins] = [] # exit specific coins
         cache.mc[:longopencoins] = []  # force open long
         cache.mc[:shortopencoins] = [] # force open short
-        cache.mc[:noinvestcoins] = [] # black listed coins (in addition to the one defned in XchCrypto)
+        cache.mc[:whitelistcoins] = ["ADA", "AI16Z", "APEX", "AAVE", "BNB", "BTC", "CAKE", "DOGE", "ENA", "ETH", "HBAR", "JUP", "LINK", "LTC", "MNT", "ONDO", "PEPE", "POPCAT", "S", "SOL", "SUI", "TON", "TRX", "VIRTUAL", "W", "WIF", "X", "XLM", "XRP"] 
+        # not whitelisted: "ANIME", "B3", "BERA", "CMETH", "LDO", "PLUME", "SOSO", "TRUMP"
         cache.mc[:hourlygainlimit] = 0.1f0 # limit hourly gain to a realistic 10% max
         cache.mc[:maxassetfraction] = 0.1f0 # defines the maximum ratio of (a specific asset) / ( total assets) - only close trades, if this is exceeded
         cache.mc[:reloadtimes] = [Time("04:00:00")]
         cache.mc[:trademode] = trademode  # see TradeMode definition above
         cache.mc[:usenewtrade] = false # implementation switch between old and new trade! method
-        (verbosity >= 2) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), reloadtimes = $(cache.mc[:reloadtimes]), exitcoins = $(cache.mc[:exitcoins]), noinvestcoins = $(cache.mc[:noinvestcoins]), longopencoins = $(cache.mc[:longopencoins]), shortopencoins = $(cache.mc[:shortopencoins])")
+        (verbosity >= 2) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), reloadtimes = $(cache.mc[:reloadtimes]), exitcoins = $(cache.mc[:exitcoins]), whitelistcoins = $(cache.mc[:whitelistcoins]), longopencoins = $(cache.mc[:longopencoins]), shortopencoins = $(cache.mc[:shortopencoins])")
         return cache
     end
 end
@@ -75,8 +76,9 @@ dummytime() = DateTime("2000-01-01T00:00:00")
 
 MINIMUMDAYUSDTVOLUME = 20*10^6  # before: 2*1000000
 TRADECONFIGFILE = "TradeConfig"
+MINVOLBREAKTHRESHOLD = 0.01  # threshold to ignore a few continunous volume breaks 
 
-function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTime, Nothing}; checkperiod=Day(1), accumulateminutes=5, minimumaccumulatequotevolume=1000f0)::Bool
+function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTime, Nothing}; checkperiod=Day(1), accumulateminutes=5, minimumaccumulatequotevolume=1000f0, minvolbreakthreshold=MINVOLBREAKTHRESHOLD)::Bool
     if size(ohlcv.df, 1) == 0
         (verbosity >= 4) && println("$(ohlcv.base) has an empty dataframe")
         return false
@@ -100,7 +102,7 @@ function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTim
             vol += ohlcv.df[ix, :basevolume] * ohlcv.df[ix, :pivot]
         end
     end
-    if count == countok
+    if ((count - countok) / count) < minvolbreakthreshold
         return true
     else
         (verbosity >= 3) && println("\r$(ohlcv.base) has ($(count - countok) of $count) in $(round(((count - countok) / count) * 100.0))% insuficient continuous $(accumulateminutes) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $datetime")
@@ -139,8 +141,10 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in assetbases for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
+    tc.cfg[:, :noinvest] .= false
     tc.cfg[:, :buyenabled] .= false
     tc.cfg[:, :sellenabled] .= false
+    tc.cfg[:, :whitelisted] = [base in tc.mc[:whitelistcoins] for base in tc.cfg[!, :basecoin]]
 
     # download latest OHLCV and classifier features
     tc.cfg = tc.cfg[tc.cfg[:, :minquotevol] .|| tc.cfg[:, :inportfolio], :]
@@ -175,11 +179,11 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         tc.cfg[:, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
         tc.cfg[:, :sellenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
     else
-        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& (tc.cfg[:, :minquotevol] .&& tc.cfg[!, :continuousminvol])
+        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& (tc.cfg[:, :minquotevol] .&& tc.cfg[!, :continuousminvol]) .&& tc.cfg[!, :whitelisted]
         tc.cfg[:, :sellenabled] .= tc.cfg[!, :buyenabled] .|| (tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted])
     end
     (verbosity >= 3) && println("$(CryptoXch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
-    tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
+    # tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
     (verbosity >= 3) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases($(length(classifierbases)))=$(classifierbases) ")
 
     if !assetonly
@@ -231,6 +235,8 @@ function readconfig!(tc::TradeCache, datetime)
     if !isnothing(df) && (size(df, 1) > 0 )
         (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config from $cfgfilename")
         tc.cfg = df
+        tc.cfg[:, :whitelisted] = [coin in tc.mc[:whitelistcoins] for coin in tc.cfg[!, :basecoin]]
+        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& (tc.cfg[:, :minquotevol] .&& tc.cfg[!, :continuousminvol]) .&& tc.cfg[!, :whitelisted]
         return tc
     else
         (verbosity >=2) && !isnothing(df) && println("Loading $cfgfilename failed")
@@ -273,6 +279,8 @@ function addassetsconfig!(tc::TradeCache, assets=CryptoXch.portfolio!(tc.xc))
 
     tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
     tc.cfg = tc.cfg[!, Not([:borrowed, :accruedinterest, :locked, :free])]
+    tc.cfg[:, :inportfolio] = .!ismissing.(tc.cfg[:, :usdtvalue])
+    tc.cfg[:, :sellenabled] .= tc.cfg[!, :buyenabled] .|| (tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted])
     sort!(tc.cfg, [:basecoin])  # for readability only
     sort!(tc.cfg, rev=true, [:buyenabled])  # for readability only
     return tc.cfg, assets
@@ -360,7 +368,9 @@ function policyenforcement(cache::TradeCache, tavec::Vector{Classify.TradeAdvice
     else # no quick exit
         # don't check against other trade modes to enable debugging of tradeamount()
         for ta in tavec
-            if !(ta.base in union(cache.mc[:noinvestcoins], CryptoXch.baseignore))
+            if !(ta.base in CryptoXch.baseignore)
+                #TODO baseignore -> invalid symbol
+                #TODO noinvest => buyenabled = false
                 rowix = findfirst(row -> row.basecoin == ta.base, cache.cfg)
                 if !isnothing(rowix) 
                     if cache.cfg[rowix, :sellenabled] && _isclosetrade(ta.tradelabel)
@@ -431,8 +441,14 @@ Provides the amount that should be used for the tradeadvice including all consid
   Returned dataframe should include (all amounts in usdt to better compare magnitudes)
 
   - basecoin, currentcloseprice, totalwallet, totalbasecoin, minquoteqty, minbaseqty, maxtotalbasecoin, maxbuyamount, maxsellamount, targetchunksize, buyamount, sellamount
+
+  ## Short trades:
+
+  - marginfree and marginlocked can be negative
+  - the total absolute value is sum(abs.(marginfree, marginlocked), free, locked, - borrowed per coin)
+  - there should be no case of free / locked positive and marginfree / marginlocked negative because there are balanced with each other -> save to add all absolute amounts by abs.(df)
 """
-function tradeamount(cache::TradeCache, tavec::Vector{Classify.TradeAdvice}, assets::AbstractDataFrame)
+function tradeamount(cache::TradeCache, tavec::Vector{Classify.TradeAdvice}, assets::AbstractDataFrame) #TODO consider negative short amounts
     tadf = policyenforcement(cache, tavec, assets) # returns a dataframe with tradeadvice per line plus corresponding asset info
     if sze(tadf, 1) > 0
         tadf.minquoteqty = [minimumquotequantity(xc, base) for base in tadf[!, :basecoin]]
@@ -514,7 +530,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
     minimumbasequantity = CryptoXch.minimumbasequantity(cache.xc, base, price)
     # (verbosity > 2) && println("$(tradetime(cache)) entry $base , $(ta.tradelabel)")
     # CryptoXch.portfolio subtracts the borrowed amount from usdtvalue of each base
-    if cache.mc[:trademode] == quickexit
+    if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:exitcoins])
         ta.tradelabel = longshortclose
     end
     if (ta.tradelabel in [longshortclose, longhold]) && (borrowedbase > 0)
@@ -556,7 +572,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         # end
     
         if basefraction > cache.mc[:maxassetfraction] # base dominates assets
-            (verbosity > 2) && println("$(tradetime(cache)) skip $base longbuy: base dominates assets due to basefraction=$(basefraction) > maxassetfraction=$(cache.mc[:maxassetfraction])")
+            (verbosity > 3) && println("$(tradetime(cache)) skip $base longbuy: base dominates assets due to basefraction=$(basefraction) > maxassetfraction=$(cache.mc[:maxassetfraction])")
         elseif sufficientbuybalance && exceedsminimumbasequantity
             oid = (cache.mc[:trademode] == notrade) ? "BuySpotSim" : CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=0)
             if !isnothing(oid)
@@ -670,6 +686,7 @@ function tradeloop(cache::TradeCache)
             (verbosity >= 2) && print("\r$(tradetime(cache)): start reassessing trading strategy")
             tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
         end
+        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :] # limit coins to those that are tradable
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
     try
@@ -723,6 +740,7 @@ function tradeloop(cache::TradeCache)
                 assets = CryptoXch.portfolio!(cache.xc)
                 (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
                 tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
+                cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]  # limit coins to those that are tradable
                 (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
             end
             #TODO low prio: for closed orders check fees

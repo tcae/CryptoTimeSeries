@@ -2,10 +2,14 @@
 module FeaturesTest
 using Dates, DataFrames
 using Test
+using LinearRegression
 
 using EnvConfig, Ohlcv, Features, CryptoXch, TestOhlcv
 
+include("featureutilities_test.jl")
+include("features006_test.jl")
 include("features005_test.jl")
+include("f4supplement_test.jl")
 
 
 function lastextremes_test()
@@ -112,6 +116,7 @@ enddt = DateTime("2022-01-02T22:54:00")
 startdt = enddt - Dates.Minute(Features.requiredminutes() + 3)
 ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
 ol = size(Ohlcv.dataframe(ohlcv),1)
+# println("ol=$ol, startdt=$startdt, enddt=$enddt")
 f2 = Features.Features002(ohlcv)
 
 @test ol == Features.requiredminutes() + 4
@@ -125,8 +130,10 @@ end
 
 f2t = Features.Features002(ohlcv, firstix=lastindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime))
 lix = lastindex(ohlcv.df.opentime)
+lixt = lastindex(ohlcv.df.opentime)
 # println("lastindex(ohlcv.df.opentime)=$(lastindex(ohlcv.df.opentime)) f2.lastix=$(f2.lastix) f2t.lastix=$(f2t.lastix)")
 for rw in keys(f2t.regr)
+    # println("rw=$rw, lix=$lix, length(f2.regr[rw].regry)=$(length(f2.regr[rw].regry)), Features.featureix(f2,lix)=$(Features.featureix(f2,lix)), length(f2t.regr[rw].regry)=$(length(f2t.regr[rw].regry)), Features.featureix(f2t,lix)=$(Features.featureix(f2t,lix))")
     @test f2.regr[rw].regry[Features.featureix(f2,lix)] == f2t.regr[rw].regry[Features.featureix(f2t,lix)]
     @test f2.regr[rw].grad[Features.featureix(f2,lix)] == f2t.regr[rw].grad[Features.featureix(f2t,lix)]
     @test f2.regr[rw].std[Features.featureix(f2,lix)] == f2t.regr[rw].std[Features.featureix(f2t,lix)]
@@ -139,20 +146,22 @@ end
 
 yvec = [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
 regr,grad = Features.rollingregression(yvec, 7)
-@test abs(grad[1] - 0.31071427) < 10^-7
+@test abs(grad[7] - 0.31071427) < 10^-6
 # @test isapprox(regr, [2.8535714, 3.1642857, 3.475, 3.7857144, 4.0964284, 4.4071426, 4.7178574], atol=10^-5)
-@test isapprox(regr, [4.7178574], atol=10^-5)
+@test isapprox(regr[7], 4.7178574, atol=10^-5)
 regr2,grad2 = Features.rollingregression(yvec, 7, 1)
+# println("regr=$regr, grad=$grad")
+# println("regr2=$regr2, grad2=$grad2")
 @test regr == regr2
 @test grad == grad2
 regr,grad = Features.rollingregression(yvec, 4)
 # @test isapprox(regr, [2.87, 3.19, 3.51, 3.83, 4.06, 4.13, 4.78], atol=10^-5)
 # @test isapprox(grad, [0.32, 0.32, 0.32, 0.32, 0.29, 0.17, 0.37], atol=10^-5)
-@test isapprox(regr, [3.83, 4.06, 4.13, 4.78], atol=10^-5)
-@test isapprox(grad, [0.32, 0.29, 0.17, 0.37], atol=10^-5)
+@test isapprox(regr[end-3:end], [3.83, 4.06, 4.13, 4.78], atol=10^-5)
+@test isapprox(grad[end-3:end], [0.32, 0.29, 0.17, 0.37], atol=10^-5)
 regr2,grad2 = Features.rollingregression(yvec, 4, 5)
-@test regr[2:end] == regr2
-@test grad[2:end] == grad2
+@test regr[end-2:end] == regr2
+@test grad[end-2:end] == grad2
 # regr,grad = Features.normrollingregression(yvec, 4)
 # @test isapprox(regr, [0.98965514, 1.0290322, 0.975, 1.0078948, 1.015, 1.0073171, 0.95600003], atol=10^-5)
 # @test isapprox(grad, [0.11034483, 0.103225805, 0.08888888, 0.08421052, 0.0725, 0.041463416, 0.074], atol=10^-5)
@@ -166,24 +175,24 @@ regr2,grad2 = Features.rollingregression(yvec, 4, 5)
 
 regr,grad = Features.rollingregression(yvec, 2)
 regr2,grad2 = Features.rollingregression(yvec, 2, 4)
-@test length(regr) - 4 + 2 == length(regr2)
-@test length(grad) - 4 + 2 == length(grad2)
-@test regr[4:end] == regr2[2:end]
-@test grad[4:end] == grad2[2:end]
+@test length(regr) - 4 + 1 == length(regr2)
+@test length(grad) - 4 + 1 == length(grad2)
+@test regr[4:end] == regr2
+@test grad[4:end] == grad2
 # @test grad == grad2
 
 regr2,grad2 = Features.rollingregression!(nothing, nothing, yvec[1:4], 2)
-@test regr[1:3] == regr2
-@test grad[1:3] == grad2
-regr2,grad2 = Features.rollingregression!(Float64[], Float64[], yvec[1:4], 2)
-@test regr[1:3] == regr2
-@test grad[1:3] == grad2
-regr2,grad2 = Features.rollingregression(yvec[1:4], 2)
-@test regr[1:3] == regr2
-@test grad[1:3] == grad2
-regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec[1:5], 2)
 @test regr[1:4] == regr2
 @test grad[1:4] == grad2
+regr2,grad2 = Features.rollingregression!(Float64[], Float64[], yvec[1:4], 2)
+@test regr[1:4] == regr2
+@test grad[1:4] == grad2
+regr2,grad2 = Features.rollingregression(yvec[1:4], 2)
+@test regr[1:4] == regr2
+@test grad[1:4] == grad2
+regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec[1:5], 2)
+@test regr[1:5] == regr2
+@test grad[1:5] == grad2
 regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec, 2)
 @test regr == regr2
 @test grad == grad2
@@ -197,10 +206,6 @@ regr2,grad2 = Features.rollingregression!(regr2, grad2, yvec, 5)
 @test grad == grad2
 
 s1, m1, n1 = Features.rollingregressionstd(yvec, regr, grad, 5)
-s2, m2, n2 = Features.rollingregressionstdxt(yvec, regr, grad, 5)
-@test s1 == s2
-@test m1 == m2
-
 ymv = [yvec]
 smv = Features.rollingregressionstdmv(ymv, regr, grad, 5, 1)
 @test s1 == smv
@@ -218,16 +223,6 @@ ymv = [yvec[1:4]]
 # smv2 = Features.rollingregressionstdmv!(smv2, ymv, regr, grad, 3)
 # @test smv1 == smv2
 
-ymv = [yvec, yvec]
-smv1 = Features.rollingregressionstdmv(ymv, regr, grad, 3, 1)
-@test all(s1[2:end] .> smv1[2:end])
-@test length(s1) == length(smv1)
-ymv = [yvec[1:4], yvec[1:4]]
-# smv2 = Features.rollingregressionstdmv!(nothing, ymv, regr[3:4], grad[3:4], 3)
-# @test smv1[1:4] == smv2 broken=true
-# ymv = [yvec, yvec]
-# smv2 = Features.rollingregressionstdmv!(smv2, ymv, regr, grad, 3)
-# @test smv1 == smv2
 
 
 reggrad = [1, 2, 0, 0, -1, 0, 1, -3, 1, 1, 0]

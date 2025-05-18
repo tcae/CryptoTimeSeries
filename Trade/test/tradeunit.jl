@@ -19,7 +19,8 @@ function prepcache()
 end
 
 function tradeamounttest(cache)
-
+    # load config from day in teh past that does not change
+    # change sell / buy enabled
 end
 
 cache = prepcache()

@@ -14,7 +14,7 @@ EnvConfig.init(test)
     ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     # println("ohlcvdf=$(ohlcv)")
-    requestedfeatures = ["rw_15_regry", "rw_15_std", "rw_15_gain", "mm_60_mindist", "mm_60_maxdist", "rv_5_60"]
+    requestedfeatures = ["rw_15_regry", "rw_15_std", "mm_60_mindist", "mm_60_maxdist", "rv_5_60"]
     f5 = Features.Features005(requestedfeatures)
     Features.setbase!(f5, ohlcv, usecache=false)
     # println("fdf: $f5")
@@ -71,4 +71,4 @@ EnvConfig.init(test)
     """
 
 end # testset
-
+return

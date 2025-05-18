@@ -1,7 +1,7 @@
 name = "Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.2.3"
+version = "0.2.4"
 
 [deps]
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"

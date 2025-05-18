@@ -21,7 +21,7 @@ startdt = Dates.now(UTC) # - Hour(1)
 # startdt = DateTime("2024-04-15T06:00:00")
 enddt = nothing  # DateTime("2024-03-30T10:03:00")
 assets = CryptoXch.portfolio!(xc)
-tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=20*10^6, updatecache=false)
+tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=startdt, minimumdayquotevolume=20*10^6, updatecache=true)
 
 
 # df = DataFrame()

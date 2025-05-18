@@ -39,12 +39,13 @@ function test1()
 
     ]
 
-    std, mean, normy = Features.rollingregressionstdxt(iny, regry, grad, regrwindow)
-    traceadd = [scatter(;x=1:x1, y=normy[x1, 1:x1], mode="lines+markers", name="notrend y") for x1 in 1:regrwindow]
-    append!(traces, traceadd)
+    std = Features.rollingregressionstd(iny, regry, grad, regrwindow)
+    # std, mean, normy = Features.rollingregressionstd(iny, regry, grad, regrwindow)
+    # traceadd = [scatter(;x=1:x1, y=normy[x1, 1:x1], mode="lines+markers", name="notrend y") for x1 in 1:regrwindow]
+    # append!(traces, traceadd)
     traceadd = [
         scatter(;x=1:regrwindow, y=std[1:regrwindow], mode="lines+markers", name="std notrend y")
-        scatter(;x=1:regrwindow, y=mean[1:regrwindow], mode="lines+markers", name="mean notrend y")
+        # scatter(;x=1:regrwindow, y=mean[1:regrwindow], mode="lines+markers", name="mean notrend y")
     ]
     append!(traces, traceadd)
     plot(traces)

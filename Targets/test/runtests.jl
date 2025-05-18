@@ -21,6 +21,7 @@ logger = EarlyFilteredLogger(all_logger) do args
     return r
 end
 
+include("trend_test.jl")
 include("fixeddistancegain_test.jl")
 
 @testset "Targets Labelthresholds" begin

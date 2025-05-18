@@ -19,9 +19,9 @@ module FixedTimeGain001
 using Test, Dates, Logging, CSV, DataFrames, Statistics, MLUtils
 using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
 
-allregressionfeatures() = [join(["rw", rw, rp], "_") for rw in Features.regressionwindows005 for rp in Features.regressionproperties]
-popularminmaxfeatures() = [join(["mm", mmw, rp], "_") for mmw in Features.regressionwindows005 for rp in Features.minmaxproperties]
-popularvolumefeatures() = [join(["rv", sw, lw], "_") for (sw, lw) in [(5, 4*60), (60, 3*24*60)]]
+allregressionfeatures() = [join(["rw", rw, rp], "_") for rw in [5, 15, 60, 4*60] for rp in ["grad", "regry"]] # see Features.regressionwindows005 and Features.savedregressionproperties for all options
+popularminmaxfeatures() = [join(["mm", mmw, rp], "_") for mmw in [4*60] for rp in Features.minmaxproperties] # see Features.regressionwindows005 and Features.savedregressionproperties for all options
+popularvolumefeatures() = [join(["rv", sw, lw], "_") for (sw, lw) in [(5, 24*60)]]
 
 function calcfeatures(base::AbstractString, startdt::DateTime, enddt::DateTime, f5::Features.AbstractFeatures)
     println("$(EnvConfig.now()) loading $base") 
@@ -115,7 +115,7 @@ function BTCtest()
     requestedfeatures = vcat(allregressionfeatures(), popularminmaxfeatures(), popularvolumefeatures())
     f5 = Features.Features005(requestedfeatures)
     features = calcfeatures("BTC", startdt, enddt, f5)
-    for (window, lb) in [(60, 0.005), (60, 0.01), (60, 0.02), (4*60, 0.01), (4*60, 0.02), (4*60, 0.05), (12*60, 0.05)]
+    for (window, lb) in [(60, 0.005), (60, 0.01), (60, 0.02), (4*60, 0.01), (4*60, 0.02), (4*60, 0.05)]
         fdg = Targets.FixedDistanceGain(window, Targets.thresholds((longbuy=lb, longhold=0.0005, shorthold=-0.0005, shortbuy=-0.01)))
         targets = calctargets(f5, fdg)
         # println("targets=$(fdg.df[1:300, :])")
@@ -191,10 +191,10 @@ EnvConfig.verbosity = 3
 Classify.verbosity = 3
 
 EnvConfig.setlogpath("2452-FixedTimeGain001")
-# nn = sinetest()
+nn = sinetest()
 # nn = Classify.loadnn("NNFixedTimeGain10pct30minutes_24-12-20_23-03-26_gitSHA-083e1b7c51352cfd06775b0426632796d5e881eb")
 
-nn = BTCtest()
+# nn = BTCtest()
 
 # EnvConfig.setlogpath("2445-FixedTimeGain001")
 # nn = Classify.loadnn("NNFixedTimeGain10pct30minutes_24-12-22_01-48-26_gitSHA-083e1b7c51352cfd06775b0426632796d5e881eb") # class balancing by undersampling - best generalization

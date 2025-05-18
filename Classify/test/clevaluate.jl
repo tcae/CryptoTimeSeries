@@ -29,8 +29,8 @@ enddt = DateTime("2025-01-05T11:19:00")
 startdt = enddt - Day(30)  # DateTime("2025-01-03T16:09:00")
 # startdt = enddt - Year(10)
 classifierstring = join([split(string(cls), ".")[end] for cls in classifiertypes], "+")
-EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(classifierstring)_24x60_$(Dates.format(startdt, "yymmddTHHMM"))_$(Dates.format(enddt, "yymmddTHHMM"))")
-coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
+EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(classifierstring)_$(Dates.format(startdt, "yymmddTHHMM"))_$(Dates.format(enddt, "yymmddTHHMM"))")
+coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "VIRTUAL", "HBAR"]
 coins = sort(coins)
 # coins = ["ADA"]
 for cl in classifiertypes
