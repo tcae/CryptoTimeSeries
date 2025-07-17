@@ -1,6 +1,55 @@
 using Classify
-Classify.verbosity = 3
+using CategoricalArrays, Test
+Classify.verbosity = 1
+verbosity = 1
 
+@testset "set partitions test" begin
+samplesets = ["train", "test", "train", "eval", "train"]
+samplesets = CategoricalArray(samplesets)
 # Classify._test_setpartitions(129601, Dict("train"=>2/3, "test"=>1/6, "eval"=>1/6), 24*60, 1/13)
-Classify.setpartitions(11:31, ["train", "test", "train", "eval", "train"], partitionsize=2, gapsize=1)
+psets = Classify.setpartitions(11:31, samplesets, partitionsize=2, gapsize=1, minpartitionsize = 2, maxpartitionsize = 2)
+# Dict{String, Vector{Any}}("test" => [14:15, 28:29], "train" => [11:12, 17:18, 23:26, 31:31], "eval" => [20:21])
+@test psets["test"] == [14:15, 28:29]
+@test psets["train"] == [11:12, 17:18, 23:26, 31:31]
+@test psets["eval"] == [20:21]
 
+function rps(r, samplesets = samplesets, gapsize = 1, partitionsize = 3, minpartitionsize = 1, maxpartitionsize = 6)
+    # rp = Classify._realpartitionsize(rowrange, samplesets, gapsize, partitionsize, minpartitionsize, maxpartitionsize)
+    rp = Classify._realpartitionsize(r, samplesets, gapsize, partitionsize, minpartitionsize, maxpartitionsize)
+    psets = Classify.setpartitions(r, samplesets, gapsize=gapsize, partitionsize=partitionsize, minpartitionsize=minpartitionsize, maxpartitionsize=maxpartitionsize)
+    return psets, rp
+end
+
+psets, rp = rps(1:38)
+@test rp == 3
+@test psets["test"] == [5:7, 24:26]
+@test psets["train"] == [1:3, 9:11, 17:22, 28:30, 36:38]
+@test psets["eval"] == [13:15, 32:34]
+
+psets, rp = rps(1:45)
+@test rp == 4
+@test psets["test"] == [6:9, 30:33]
+@test psets["train"] == [1:4, 11:14, 21:28, 35:38, 45:45]
+@test psets["eval"] == [16:19, 40:43]
+
+psets, rp = rps(1:37)
+@test rp == 6
+@test psets["test"] == [8:13]
+@test psets["train"] == [1:6, 15:20, 29:37]
+@test psets["eval"] == [22:27]
+
+psets, rp = rps(1:18)
+@test rp == 3
+@test psets["test"] == [5:7]
+@test psets["train"] == [1:3, 9:11, 17:18]
+@test psets["eval"] == [13:15]
+
+Classify.verbosity = 1
+
+res = Classify.setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 3/50)
+@test res["base"] == [1:5, 19:23, 37:41]
+@test res["test"] == [7:8, 25:26, 43:44]
+@test res["combi"] == [10:14, 28:32, 46:49]
+@test res["eval"] == [16:17, 34:35]
+
+end;

@@ -9,6 +9,10 @@
     - shorten regression window to meet above max deviation
     - in case of a trend change, it starts after 0.5% deviation + 1 minute to react with buy or sell if and only if it continues at least another 0.5% considering previous mentioned trend change rules of 0.5% change + 1 minute
 
+## Partitioning
+
+- need to merge partitioning with ranges of liquidity to skip ranges of insufficient liquidity
+
 ## Adaptation approach
 
 - trade reactions have to be proportional to amplitude changes

@@ -51,7 +51,7 @@ mutable struct TradeCache
         cache.mc[:exitcoins] = [] # exit specific coins
         cache.mc[:longopencoins] = []  # force open long
         cache.mc[:shortopencoins] = [] # force open short
-        cache.mc[:whitelistcoins] = ["ADA", "AI16Z", "APEX", "AAVE", "BNB", "BTC", "CAKE", "DOGE", "ENA", "ETH", "HBAR", "JUP", "LINK", "LTC", "MNT", "ONDO", "PEPE", "POPCAT", "S", "SOL", "SUI", "TON", "TRX", "VIRTUAL", "W", "WIF", "X", "XLM", "XRP"] 
+        cache.mc[:whitelistcoins] = ["ADA", "AI16Z", "APEX", "AAVE", "BNB", "BTC", "CAKE", "DOGE", "ELX", "ENA", "ETH", "HBAR", "HFT", "JUP", "LINK", "LTC", "MNT", "ONDO", "PEPE", "POPCAT", "S", "SOL", "SUI", "TON", "TRX", "VIRTUAL", "W", "WAL", "WIF", "WLD", "X", "XLM", "XRP"] 
         # not whitelisted: "ANIME", "B3", "BERA", "CMETH", "LDO", "PLUME", "SOSO", "TRUMP"
         cache.mc[:hourlygainlimit] = 0.1f0 # limit hourly gain to a realistic 10% max
         cache.mc[:maxassetfraction] = 0.1f0 # defines the maximum ratio of (a specific asset) / ( total assets) - only close trades, if this is exceeded
@@ -74,55 +74,21 @@ backtest(cache) = cache.backtestperiod >= Dates.Minute(1)
 dummytime() = DateTime("2000-01-01T00:00:00")
 
 
-MINIMUMDAYUSDTVOLUME = 20*10^6  # before: 2*1000000
 TRADECONFIGFILE = "TradeConfig"
-MINVOLBREAKTHRESHOLD = 0.01  # threshold to ignore a few continunous volume breaks 
-
-function continuousminimumvolume(ohlcv::Ohlcv.OhlcvData, datetime::Union{DateTime, Nothing}; checkperiod=Day(1), accumulateminutes=5, minimumaccumulatequotevolume=1000f0, minvolbreakthreshold=MINVOLBREAKTHRESHOLD)::Bool
-    if size(ohlcv.df, 1) == 0
-        (verbosity >= 4) && println("$(ohlcv.base) has an empty dataframe")
-        return false
-    end
-    datetime = isnothing(datetime) ? ohlcv.df[end, :opentime] : datetime
-    endix = Ohlcv.rowix(ohlcv, datetime)
-    startdt = datetime - checkperiod
-    startix = Ohlcv.rowix(ohlcv, startdt)
-    vol = minimumaccumulatequotevolume
-    count = countok = 0
-    for ix in startix:endix
-        if ((ix - startix) % accumulateminutes) == 0
-            if ix > startix
-                count += 1
-                if vol >= minimumaccumulatequotevolume
-                    countok += 1
-                end
-            end
-            vol = ohlcv.df[ix, :basevolume] * ohlcv.df[ix, :pivot]
-        else
-            vol += ohlcv.df[ix, :basevolume] * ohlcv.df[ix, :pivot]
-        end
-    end
-    if ((count - countok) / count) < minvolbreakthreshold
-        return true
-    else
-        (verbosity >= 3) && println("\r$(ohlcv.base) has ($(count - countok) of $count) in $(round(((count - countok) / count) * 100.0))% insuficient continuous $(accumulateminutes) minimum volume of $minimumaccumulatequotevolume $(EnvConfig.cryptoquote) over a period of $checkperiod ending $datetime")
-        return false
-    end
-end
 
 """
-Loads all USDT coins, checks last24h volume and other continuous minimum volume criteria, removes risk coins.
+Loads all USDT coins, checks continuous minimum volume criteria, removes risk coins.
 If isnothing(datetime) or datetime > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
 The resulting DataFrame table of tradable coins is stored.
 `assetonly` is an input parameter to enable backtesting.
 """
-function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, minimumdayquotevolume=MINIMUMDAYUSDTVOLUME, assetonly=false, updatecache=false, liquidrangeminutes=30*24*60)
+function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, assetonly=false, updatecache=false)
     datetime = floor(datetime, Minute(1))
 
     # make memory available
     tc.cfg = DataFrame() # return stored config, if one exists from same day
-    CryptoXch.removeallbases(tc.xc)
-    Classify.removebase!(tc.cl, nothing)
+    # CryptoXch.removeallbases(tc.xc)  #* reuse what is in cache
+    # Classify.removebase!(tc.cl, nothing)  #* reuse what is in cache
 
     usdtdf = CryptoXch.getUSDTmarket(tc.xc)  # superset of coins with 24h volume price change and last price
     if assetonly
@@ -136,7 +102,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     end
     tc.cfg[:, :datetime] .= datetime
     # tc.cfg[:, :validbase] = [CryptoXch.validbase(tc.xc, base) for base in tc.cfg[!, :basecoin]] # is already filtered by getUSDTmarket
-    minimumdayquotevolumemillion = minimumdayquotevolume / 1000000
+    minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0)
     tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in assetbases for base in tc.cfg[!, :basecoin]]
@@ -150,29 +116,42 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg = tc.cfg[tc.cfg[:, :minquotevol] .|| tc.cfg[:, :inportfolio], :]
     (verbosity >= 3) && println("#minquotevol=$(sum(tc.cfg[:, :minquotevol])) #inportfolio=$(sum(tc.cfg[:, :inportfolio]))")
     count = size(tc.cfg, 1)
-    if updatecache
-        for (ix, row) in enumerate(eachrow(tc.cfg))
-            (verbosity >= 2) && print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) including cache update                           ")
-            ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Year(20), datetime)
-            Ohlcv.write(ohlcv) # write ohlcv even if data length is too short to calculate features
-            Classify.addbase!(tc.cl, ohlcv)
-            Classify.writetargetsfeatures(tc.cl)
-            CryptoXch.removeallbases(tc.xc)  # avoid slow down due to memory overload
-            Classify.removebase!(tc.cl, nothing)  # avoid slow down due to memory overload
-        end
+    xcbases = CryptoXch.bases(tc.xc)
+    removebases = setdiff(xcbases, tc.cfg[!, :basecoin])
+    for rb in removebases  # remove coins that were loaded but are no longer part of the new configuration
+        CryptoXch.removebase!(tc.xc, rb)
+        Classify.removebase!(tc.cl, rb)
     end
+    xcbases = CryptoXch.bases(tc.xc)
     for (ix, row) in enumerate(eachrow(tc.cfg))
-        (verbosity >= 2) && print("\r$(EnvConfig.now()) loading $(row.basecoin) ($ix of $count)                                                  ")
-        CryptoXch.setstartdt(tc.xc, datetime - Minute(Classify.requiredminutes(tc.cl)-1))
-        ohlcv = CryptoXch.addbase!(tc.xc, row.basecoin, datetime - Minute(Classify.requiredminutes(tc.cl)-1), tc.xc.enddt)
-        otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
-        Classify.addbase!(tc.cl, ohlcv)
-        # range = Ohlcv.liquidrange(ohlcv, minimumdayquotevolume, 500f0)
-        # row.continuousminvol = !isnothing(range) && (range.endix == lastindex(otime)) && ((range.endix - range.startix) > liquidrangeminutes) # continuousminimumvolume(ohlcv, datetime)
-        #x !row.continuousminvol && (verbosity >= 2) && println("continuousminvol=false $(ohlcv.base) range:$(isnothing(range) ? "no range" : ("$(otime[range.startix])-$(otime[range.endix])")) requested:$(otime[max(1,lastindex(otime)-liquidrangeminutes+1)])-$(otime[end])")
-        row.continuousminvol = continuousminimumvolume(ohlcv, datetime, checkperiod=Day(20), accumulateminutes=5, minimumaccumulatequotevolume=1000f0)
+        (verbosity >= 2) && updatecache &&  print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) including cache update                           ")
+        (verbosity >= 2) && !updatecache && print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) without cache update                             ")
+        if row.basecoin in xcbases
+            ohlcv = CryptoXch.ohlcv(tc.xc, row.basecoin)
+            CryptoXch.cryptoupdate!(tc.xc, ohlcv, datetime - Year(20), datetime)
+        else
+            ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Year(20), datetime)
+            Classify.addbase!(tc.cl, ohlcv)
+        end
+        if updatecache
+            Ohlcv.write(ohlcv) # write ohlcv even if data length is too short to calculate features
+        end
+        rv = Ohlcv.liquiditycheck(ohlcv)
+        row.continuousminvol = (length(rv) > 0) && (rv[end][end] == lastindex(Ohlcv.dataframe(ohlcv), 1))
     end
+    Classify.supplement!(tc.cl)
+    if updatecache
+        Classify.writetargetsfeatures(tc.cl)
+    end
+    xcbases = CryptoXch.bases(tc.xc)
     classifierbases = Classify.bases(tc.cl)
+    removebases = setdiff(xcbases, classifierbases)
+    for rb in removebases  # remove coins that were not accepted by the classifier, e.g. if requiredminutes is insufficient
+        CryptoXch.removebase!(tc.xc, rb)
+    end
+    xcbases = CryptoXch.bases(tc.xc)
+    @assert Set(xcbases) == Set(classifierbases) "Set(xcbases)=$(xcbases) != Set(classifierbases)=$(classifierbases)"
+
     tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]
 
     if assetonly
@@ -188,8 +167,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 
     if !assetonly
         write(tc, datetime)
+        (verbosity >= 2) && println("\r$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
     end
-    (verbosity >= 2) && println("\r$(CryptoXch.ttstr(tc.xc)) trained and saved trade config data including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
     return tc
 end
 
@@ -254,6 +233,7 @@ function read!(tc::TradeCache, datetime=nothing)
     df = nothing
     checkinclude(basecoin) = !(basecoin in CryptoXch.baseignore)
     if !isnothing(tc) && !isnothing(tc.cfg) && (size(tc.cfg, 1) > 0)
+        datetime = tc.cfg[begin, :datetime]
         clvec = []
         tc.cfg = tc.cfg[checkinclude.(tc.cfg[!, :basecoin]), :] 
         df = tc.cfg
@@ -298,8 +278,8 @@ significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(
 
 currenttime(ohlcv::Ohlcv.OhlcvData) = Ohlcv.dataframe(ohlcv)[ohlcv.ix, :opentime]
 currentprice(ohlcv::Ohlcv.OhlcvData) = Ohlcv.dataframe(ohlcv)[ohlcv.ix, :close]
-closelongset = [shortstrongbuy, shortbuy, shorthold, longshortclose, longstrongclose, longclose]
-closeshortset = [shortclose, shortstrongclose, longshortclose, longhold, longbuy, longstrongbuy]
+closelongset = [shortstrongbuy, shortbuy, shorthold, allclose, longstrongclose, longclose]
+closeshortset = [shortclose, shortstrongclose, allclose, longhold, longbuy, longstrongbuy]
 
 mutable struct Investment  #TODO bookkeeping for consistency checks
     investmentid
@@ -325,7 +305,7 @@ function dbgrow(cache::TradeCache, ta)
 end
 
 "Adds a dataframe trade advice row "
-function _traderow!(df, cache; basecoin="XXX", tradelabel=longshortclose, hourlygain=0f0, probability=1f0, relativeamount=1f0, investmentid="XXX", price=0f0, datetime=cache.xc.currentdt, classifier=cache.cl, configid=0, oid="", enforced="n/a")
+function _traderow!(df, cache; basecoin="XXX", tradelabel=allclose, hourlygain=0f0, probability=1f0, relativeamount=1f0, investmentid="XXX", price=0f0, datetime=cache.xc.currentdt, classifier=cache.cl, configid=0, oid="", enforced="n/a")
     hourlygain = min(hourlygain, cache.mc[:hourlygainlimit])
     push!(df, (basecoin=basecoin, tradelabel=tradelabel, hourlygain=hourlygain, probability=probability, relativeamount=relativeamount, investmentid=investmentid, price=price, datetime=datetime, classifier=classifier, configid=configid, oid=oid, enforced=enforced))
     return last(df)
@@ -349,7 +329,7 @@ function _forcetradelabel!(df::DataFrame, cache::TradeCache, coins, tradelabel, 
     end
 end
 
-_isclosetrade(tl) = tl in [shortclose, shortstrongclose, longshortclose, longstrongclose, longclose]
+_isclosetrade(tl) = tl in [shortclose, shortstrongclose, allclose, longstrongclose, longclose]
 _isopentrade(tl) = tl in [shortstrongbuy, shortbuy, longbuy, longstrongbuye]
 _isopenshorttrade(tl) = tl in [shortstrongbuy, shortbuy]
 
@@ -363,7 +343,7 @@ function policyenforcement(cache::TradeCache, tavec::Vector{Classify.TradeAdvice
     pop!(df)  # remove dummy row
     if cache.mc[:trademode] == quickexit
         for base in assets[!, :coin]
-            _traderow!(df, cache, basecoin=base, tradelabel=longshortclose, enforced="quickexit")
+            _traderow!(df, cache, basecoin=base, tradelabel=allclose, enforced="quickexit")
         end
     else # no quick exit
         # don't check against other trade modes to enable debugging of tradeamount()
@@ -384,7 +364,7 @@ function policyenforcement(cache::TradeCache, tavec::Vector{Classify.TradeAdvice
         end
         _forcetradelabel!(df, cache, cache.mc[:longopencoins], longstrongbuy, 1f0, "longopen")
         _forcetradelabel!(df, cache, cache.mc[:shortopencoins], shortstrongbuy, -1x0, "shortopen")
-        _forcetradelabel!(df, cache, cache.mc[:exitcoins], longshortclose, 0f0, "exit")
+        _forcetradelabel!(df, cache, cache.mc[:exitcoins], allclose, 0f0, "exit")
     end
     if size(df, 1) > 0
         leftjoin!(df, assets, on = :basecoin => :coin)
@@ -405,7 +385,7 @@ function _tradeamounts!(tadf)
     tadf.quoteamount[_isopentrade(tadf.tradelabel)] .= tadf[!, :quoteamount] .- abs.(tadf[!, :free]) .* tadf[!, :usdtprice]  # deduct already opened amount
     reduceamount = _isopentrade(tadf.tradelabel) .&& (tadf[!, :quoteamount] .< (-0.1 .* abs.(tadf[!, :free]) .* tadf[!, :usdtprice]))  # 0f0) # reduce if current open position is >10% larger than target
     if any(reduceamount)  # instead of open -> change to close with the amount that is above target volume
-        tadf.tradelabel[reduceamount] .= longshortclose
+        tadf.tradelabel[reduceamount] .= allclose
         tadf.quoteamount[reduceamount] .= abs.(trade.quoteamount)
     end
     tadf.quoteamount[_isopentrade(tadf.tradelabel) .&& (tadf[!, :quoteamount] .< 0f0)] .== 0f0  # those who have a reduce amount less than 10% will be ignored
@@ -531,15 +511,15 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
     # (verbosity > 2) && println("$(tradetime(cache)) entry $base , $(ta.tradelabel)")
     # CryptoXch.portfolio subtracts the borrowed amount from usdtvalue of each base
     if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:exitcoins])
-        ta.tradelabel = longshortclose
+        ta.tradelabel = allclose
     end
-    if (ta.tradelabel in [longshortclose, longhold]) && (borrowedbase > 0)
+    if (ta.tradelabel in [allclose, longhold]) && (borrowedbase > 0)
         ta.tradelabel = shortclose
     end
-    if (ta.tradelabel in [longshortclose, shorthold]) && (freebase > 0)
+    if (ta.tradelabel in [allclose, shorthold]) && (freebase > 0)
         ta.tradelabel = longclose
     end
-    if (ta.tradelabel in [longshortclose, shorthold, longhold])
+    if (ta.tradelabel in [allclose, shorthold, longhold])
         return nothing
     end
     if (ta.tradelabel in [longstrongclose, longclose]) && (cache.mc[:trademode] in [buysell, sellonly, quickexit]) && basecfg.sellenabled
@@ -649,7 +629,7 @@ function USDTmsg(assets)
     return string("USDT: total=$(round(Int, sum(assets.usdtvalue))), free=$(sum(assets.usdtvalue) > 0f0 ? round(Int, sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])/sum(assets.usdtvalue)*100) : 0f0)%")
 end
 function tradeadvicelessthan(ta1, ta2)
-    closeset = [shortclose, shortstrongclose, longshortclose, longstrongclose, longclose]
+    closeset = [shortclose, shortstrongclose, allclose, longstrongclose, longclose]
     buyset = [shortstrongbuy, shortbuy, longbuy, longstrongbuy]
     holdset = [shorthold, longhold]
     if (ta1.tradelabel in closeset) && !(ta2.tradelabel in closeset)

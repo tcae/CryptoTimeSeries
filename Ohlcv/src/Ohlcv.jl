@@ -18,7 +18,7 @@ export write, read!, OhlcvData
 Ohlcv data starts in the first row with the oldest data and adds new data at the end
 """
 mutable struct OhlcvData
-    df::DataFrames.DataFrame
+    df::DataFrames.AbstractDataFrame
     base::String
     quotecoin::String  # instead of quotecoin because *quotecoin* is a Julia keyword
     interval::String
@@ -98,9 +98,15 @@ current(ohlcv::OhlcvData) = size(ohlcv.df, 1) > 0 ? ohlcv.df[ohlcv.ix, :] : noth
 #     return OhlcvData(ohlcv.df, ohlcv.base, ohlcv.quotecoin, ohlcv.interval)
 # end
 
+"Returns an ohlcv copy including dataframe copy (not a reference)"
 function copy(ohlcv::OhlcvData)
     ohlcvcopy = OhlcvData(DataFrames.copy(ohlcv.df), ohlcv.base, ohlcv.quotecoin, ohlcv.interval, ohlcv.ix, ohlcv.latestloadeddt)
     return ohlcvcopy
+end
+
+"Returns a new OhlcvData struct with an ohlcv row range view of the original ohlcv dataframe. Writing a view to file is not possible."
+function ohlcvview(ohlcv::OhlcvData, rowrange)
+    return OhlcvData(view(ohlcv.df, rowrange, :), ohlcv.base, ohlcv.quotecoin, ohlcv.interval, ohlcv.ix, ohlcv.latestloadeddt)
 end
 
 """
@@ -393,74 +399,116 @@ function accumulate(df::AbstractDataFrame, period::Period)
     return adf
 end
 
+" liquidity criteria defaults"
+ld = (minquotevol=15000f0, accumulate=5, checkperiod=24*60, startthreshold=0.01, stopthreshold=0.25, minliquidminutes=24*60*10, startdistance=24*60*10)
+
 """
-Returns a named tuple (startix, endix) with indices of the latest timerange that meet the requirements of
-- showing a continuous 24h minute median of `usdtminimum` USDT or more
-- is always above a 24h USDT trade volume of `usdt24h`
+Returns a vector of ranges that are considered tradable concerning liquidity criteria  
 
-If no such period is found then `nothing` is returned.
+  - `minquotevol` is the minimum quote volume accumulated over a period of `accumulate` consecutive samples that is considered sufficient
+  - trade volume is considered sufficient if a percentage of less than `threshold` relative samples are missing `minquotevol` over a period of `checkperiod` samples
+  - before a coin is considered liquid enough, the relative number of samples missing minquotevol within checkperiod has to be lower than startthreshold
+  - before a coin, that was considered liquid, is no longer considered liquid, the relative number of samples missing minquotevol within checkperiod has to be higher than stopthreshold
+  - a liquid range that meets above criteria is only been considered if it spans more than `minliquidminutes` minutes
+  - `startdistance` is the distance from start of ohlcv data in minutes that have been passed before considering any liquid range of that coin
 """
-function liquidrange(ohlcv::OhlcvData, usdt24h::Real, usdtminimum::Real)
-    incrementminutes = 12*60
-    dayminutes = 24*60
-    otime = dataframe(ohlcv)[!, :opentime]
-    usdtvol = dataframe(ohlcv)[!, :basevolume] .* pivot!(ohlcv)
-    startix = endix = nothing
-    range = nothing
+function liquiditycheck(ohlcv::OhlcvData; minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod, startthreshold=ld.startthreshold, stopthreshold=ld.stopthreshold, minliquidminutes=ld.minliquidminutes, startdistance=ld.startdistance)
+    @assert accumulate <= checkperiod
+    odf = dataframe(ohlcv)
+    quotevol = odf[!, :pivot] .* odf[!, :basevolume]
+    stopnok = round(Int, checkperiod * stopthreshold) # range stop if number of samples with insufficient volume is higher
+    startnok = round(Int, checkperiod * startthreshold) # range start if number of samples with insufficient volume is lower
 
-    _liquidityok(usdtvol) = (median(usdtvol) > usdtminimum) && (sum(usdtvol) > usdt24h)
-
-    function _check(ix, dayusdtvol)
-        if isnothing(startix) # up to now not enough trade liquidity
-            if _liquidityok(dayusdtvol) # start tracking liquidity period
+    notok = ones(Bool, checkperiod)
+    accqvol = 0f0
+    res = []
+    startix = nothing
+    for ix in eachindex(quotevol)
+        accqvol += ix > accumulate ? quotevol[ix] - quotevol[ix - accumulate] : quotevol[ix]
+        notok[(ix % checkperiod) + 1] = accqvol < minquotevol
+        if isnothing(startix) 
+            if (count(notok) < startnok)
                 startix = ix
-                endix = ix
-                range = (startix=startix, endix=endix)
             end
-        else # handle period of liquidity
-            if _liquidityok(dayusdtvol)
-                endix = ix
-                range = (range..., endix=endix)
-            else # liquidity period stopped
-                (verbosity >= 4) && println("range startix=$startix - endix=$endix  startdt=$(otime[startix])-enddt=$(otime[endix])")
-                startix = endix = nothing
-            end
-        end
-    end
-
-    for ix in dayminutes:incrementminutes:lastindex(usdtvol)
-        _check(ix, view(usdtvol, (ix - dayminutes + 1) : ix))
-    end
-    if lastindex(usdtvol) >= dayminutes
-        _check(lastindex(usdtvol), view(usdtvol, (lastindex(usdtvol) - dayminutes + 1) : lastindex(usdtvol)))
-    end
-    return range
-end
-
-"""
-Returns a DataFrame of canned coins that meet the liquidrange() criteria with their most recent data and with a liquid data range long enough.
-The DataFrame has the columns: basecoin, startix, endix, startdt, enddt, period
-"""
-function liquidcoins(;usdt24h::AbstractFloat=10*1000*1000f0, usdtminimum::AbstractFloat=1000f0, liquidrangeminutes::Signed=20*24*60)
-    liquidbases = DataFrame()
-    for ohlcv in Ohlcv.OhlcvFiles()
-        otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
-        range = Ohlcv.liquidrange(ohlcv, usdt24h, usdtminimum)
-        if isnothing(range)
-            (verbosity >= 3) && println("$(ohlcv.base) data: $(otime[begin])-$(otime[end])=$(Minute(otime[end]-otime[begin])) no time range with sufficient liquidity -> ignored for backtest")
         else
-            if range.endix == lastindex(otime)
-                if (range.endix - range.startix) > liquidrangeminutes
-                    (verbosity >= 3) && println("$(ohlcv.base) data: $(otime[begin])-$(otime[end])=$(Minute(otime[end]-otime[begin])) sufficient liquidity: $(otime[range.startix])-$(otime[range.endix])=$(Minute(otime[range.endix]-otime[range.startix]))  - current candidate - long enough for backtest -> included for backtest")
-                    push!(liquidbases, (basecoin=ohlcv.base, range..., startdt=otime[range.startix], enddt=otime[range.endix], period=canonicalize(otime[range.endix]-otime[range.startix-1])))
-                else
-                    (verbosity >= 3) && println("$(ohlcv.base) data: $(otime[begin])-$(otime[end])=$(Minute(otime[end]-otime[begin])) sufficient liquidity: $(otime[range.startix])-$(otime[range.endix])=$(Minute(otime[range.endix]-otime[range.startix]))  - current candidate but too short -> ignored for backtest")
+            if (count(notok) > stopnok)
+                if (ix - startix + 1) >= minliquidminutes
+                    push!(res, startix:ix-1)
                 end
+                startix = nothing
             end
         end
     end
-    return liquidbases
+    if !isnothing(startix) 
+        if (lastindex(quotevol) - startix + 1) >= minliquidminutes
+            push!(res, startix:lastindex(quotevol))
+        end
+    end
+    for rix in reverse(eachindex(res)) # enforce startdistance criteria
+        if res[rix][end] > startdistance
+            if res[rix][begin] <= startdistance
+                res[rix] = (startdistance + 1):res[rix][end]
+            end
+        else
+            deleteat!(res, rix)
+        end
+    end
+
+    # self test:
+    # if (verbosity >= 3)  # check criteria as implicit self test
+    #     volnok = [sum(quotevol[max(ix - accumulate + 1, firstindex(quotevol)):ix]) < minquotevol for ix in eachindex(quotevol)]
+    #     checkperiodnokstart = [count(volnok[max(ix - checkperiod + 1, firstindex(volnok)):ix]) < startnok for ix in eachindex(volnok)]
+    #     checkperiodnokstop = [count(volnok[max(ix - checkperiod + 1, firstindex(volnok)):ix]) > stopnok for ix in eachindex(volnok)]
+    #     for rix in eachindex(res)
+    #         # range check:
+    #         @assert res[rix][begin] >= checkperiod
+    #         @assert res[rix][begin] <= res[rix][end]
+    #         @assert (res[rix][end] - res[rix][begin] + 1) >= minliquidminutes
+    #         @assert res[rix][begin] > startdistance
+    #         @assert count(volnok[(res[rix][begin] - checkperiod + 1):res[rix][begin]]) < startnok "count(volnok[(res[rix=$rix][begin] - checkperiod=$checkperiod + 1)=$(res[rix][begin] - checkperiod + 1):res[rix=$rix][begin]=$(res[rix][begin])])=$(count(volnok[(res[rix][begin] - checkperiod + 1):res[rix][begin]])) < startnok=$startnok"
+    #         @assert checkperiodnokstart[res[rix][begin]]
+    #         for ix in res[rix][begin]:res[rix][end]
+    #             @assert !checkperiodnokstop[ix] "checkperiodnokstop[$ix]=$(checkperiodnokstop[ix-1:ix+1]) ix in res[rix][begin]=$(res[rix][begin]):res[rix][end]=$(res[rix][end])"
+    #             # @assert count(volnok[(ix - checkperiod + 1):ix]) > stopnok
+    #         end
+    #     end
+    # end
+
+    return res
 end
+
+"""
+Returns a vector of named tuples. Each named tuple contains an element `basecoin::String` and an element `ranges`, which is a vector of index ranges that satisfy the liquidity requirements.
+"""
+function liquidcoins(; minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod, startthreshold=ld.startthreshold, stopthreshold=ld.stopthreshold, minliquidminutes=ld.minliquidminutes, startdistance=ld.startdistance)
+    res = []
+    coincount = 0
+    for ohlcv in Ohlcv.OhlcvFiles()
+        coincount += 1
+        rv = Ohlcv.liquiditycheck(ohlcv; minquotevol=minquotevol, accumulate=accumulate, checkperiod=checkperiod, startthreshold=startthreshold, stopthreshold=stopthreshold, minliquidminutes=minliquidminutes, startdistance=startdistance)
+        if verbosity >= 3
+            println("liquid coin test of $(ohlcv.base), length=$(size(Ohlcv.dataframe(ohlcv), 1))")
+            ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
+            for r in rv
+                period = ot[r[end]] - ot[r[begin]]
+                days = round(period, Day)
+                # hours = round(period-days, Hour)
+                # minutes = round(period - days - hours, Minute)
+                println("$(ohlcv.base): range = $r, $days, $(ot[r[begin]]) - $(ot[r[end]])")
+            end
+        end
+        if length(rv) > 0
+            push!(res, (basecoin=ohlcv.base, ranges=rv))
+            # break
+        end
+    end
+    (verbosity >= 2) && println("$(length(res)) liquid coins out of $coincount total coins")
+    return res
+end
+
+"Returns the minimum daily qote volume for the case of an uniform distribution over checkperiod"
+liquiddailyminimumquotevolume(;minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod) = checkperiod / accumulate * minquotevol
+
 
 """
 Reads OHLCV data generated by python FollowUpward
@@ -549,6 +597,10 @@ function write(ohlcv::OhlcvData)
     if EnvConfig.configmode == production
         if !isnothing(ohlcv.latestloadeddt) && (size(ohlcv.df, 1) > 0) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
             (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
+            return
+        end
+        if !(ohlcv.df isa DataFrame)
+            (verbosity >= 2) && println("$(EnvConfig.now()) Ohlcv not written because contains not a DataFrame ($(typeof(ohlcv.df)) cannot be written)")
             return
         end
         fn = file(ohlcv)

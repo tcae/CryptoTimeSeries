@@ -7,6 +7,8 @@ using Dates, DataFrames
 using Test
 using Classify, Features, Targets
 
+include("setpartitions_test.jl")
+
 @testset "Classify tests" begin
 
 # y = categorical(["X", "O", "X", "X", "O", "X", "X", "O", "O", "X"], ordered=true)
@@ -22,12 +24,6 @@ df = DataFrame(String(classes(ŷ)[1]) => pdf(ŷ, classes(ŷ))[:, 1], String(clas
 # println("classes=$(classes(ŷ)) pdf=$(pdf(ŷ, classes(ŷ)))")
 println(df)
 
-res = Classify.setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, "eval"=>1/6), 1, 3/50)
-@test res["base"] == [1:5, 19:23, 37:41]
-@test res["test"] == [7:8, 25:26, 43:44]
-@test res["combi"] == [10:14, 28:32, 46:49]
-@test res["eval"] == [16:17, 34:35]
-
 @test Classify.score2bin(0.95, 10) == 10
 @test Classify.score2bin(1.15, 10) == 10
 @test Classify.score2bin(0.55, 10) == 6
@@ -35,7 +31,6 @@ res = Classify.setpartitions(1:49, Dict("base"=>1/3, "combi"=>1/3, "test"=>1/6, 
 @test Classify.score2bin(0.0, 10) == 1
 @test Classify.score2bin(-0.05, 10) == 1
 
-@test Classify.regramount(25.1, 0.2, 60) == Targets.relativegain(25.1, 0.2, 60, forward=false)
-end
+end;
 
-end  # module
+end;  # module

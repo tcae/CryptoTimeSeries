@@ -77,9 +77,26 @@ end
 
 _dict2paramspost(dict::Union{Dict, Nothing}) = isnothing(dict) ? "" : JSON3.write(dict)
 
-# signing with apiKey and apiSecret
 function timestamp()
-    Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1000))
+    if Sys.isapple()
+        Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1000))
+    else
+        Int64(floor(Dates.datetime2unix(Dates.now())))
+        # Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC))))
+    end
+    # if Sys.islinux()
+    #     # rootpath = joinpath(@__DIR__, "..")
+    #     println("Linux, rootpath: $rootpath, homepath: $(homedir())")
+    # elseif Sys.isapple()
+    #     # rootpath = joinpath(@__DIR__, "..")
+    #     println("Apple, rootpath: $rootpath, homepath: $(homedir())")
+    # elseif Sys.iswindows()
+    #     # rootpath = joinpath(@__DIR__, "..")
+    #     println("Windows, rootpath: $rootpath, homepath: $(homedir())")
+    # else
+    #     # rootpath = joinpath(@__DIR__, "..")
+    #     println("unknown OS, rootpath: $rootpath, homepath: $(homedir())")
+    # end
 end
 
 function _hmac(key::Vector{UInt8}, msg::Vector{UInt8}, hash, blocksize::Int=64)
@@ -182,6 +199,7 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
             requestcount += 1
             if (body["retCode"] != 0) && (body["retCode"] != 170213)  # 170213 == cancelorder: Order does not exist.
                 @warn "HttpPrivateRequest $info #$requestcount $method return code == $(body["retCode"]) \nurl=$url \nheaders=$headers \npayload=$payload \nresponse=$body"
+                println("server time $(servertime(bc)) X-BAPI-TIMESTAMP $(Dates.unix2datetime(parse(Int, time_stamp)))")
                 # println("public_key=$public_key, secret_key=$secret_key")
                 # "retCode" => 170193, "retMsg" => "Buy order price cannot be higher than 43183.1929USDT."
             end

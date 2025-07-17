@@ -66,7 +66,12 @@ end
     ixcheck = [ix - trd.maxwindow < trd.df[ix, :relix] <= ix for ix in eachindex(trd.df[!,:relix])]
     gaincheck = [(ohlcv.df[ix, :pivot] .- ohlcv.df[trd.df[ix, :relix], :pivot]) / ohlcv.df[trd.df[ix, :relix], :pivot] for ix in eachindex(ohlcv.df[!, :opentime])]
     if (Targets.verbosity >= 3)
-        df = DataFrame((opentime=ohlcv.df.opentime, pivot=ohlcv.df.pivot, targettime=trd.df.opentime, relix=trd.df.relix, reldiff=trd.df.reldiff, labels=Targets.labels(trd), tmp2labels=trd.df.tmp2label, tmprelix=trd.df.tmprelix, tmpreldiff=trd.df.tmpreldiff, tmplabels=trd.df.tmplabel, ixcheck=ixcheck, relativegain=Targets.relativegain(trd), gaincheck=gaincheck, gainchecktest=(gaincheck .== Targets.relativegain(trd))))
+        df = DataFrame((opentime=ohlcv.df.opentime, pivot=ohlcv.df.pivot, targettime=trd.df.opentime, relix=trd.df.relix, reldiff=trd.df.reldiff, 
+            labels=Targets.labels(trd), tmp2labels=trd.df.tmp2label, tmprelix=trd.df.tmprelix, tmpreldiff=trd.df.tmpreldiff, tmplabels=trd.df.tmplabel, ixcheck=ixcheck, 
+            relativegain=Targets.relativegain(trd), gaincheck=gaincheck, gainchecktest=(gaincheck .== Targets.relativegain(trd)),
+            longbuybinarytargets=Targets.labelbinarytargets(trd, longbuy), longbuyrelativegain=Targets.labelrelativegain(trd, longbuy), 
+            shortbuybinarytargets=Targets.labelbinarytargets(trd, shortbuy), shortbuyrelativegain=Targets.labelrelativegain(trd, shortbuy)
+            ))
         println(df)
     end
     @test noshorttrends(trd)

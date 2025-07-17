@@ -18,7 +18,7 @@ for mypackage in mypackages
     # Pkg.gc()
 end
 
-Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging", "CSV", "LoggingExtras", "JDF", "Statistics"])
+Pkg.add([ "Dates", "DataFrames", "JSON", "Profile", "Logging", "CSV", "LoggingExtras", "JDF", "Statistics", "cuDNN"])
 Pkg.resolve()
 Pkg.update()
 Pkg.gc()

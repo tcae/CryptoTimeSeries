@@ -24,64 +24,67 @@ using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch, Trade
 
 function loadohlcv!(cp, base, interval)
     if !(base in keys(cp.coin))
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setinterval!(ohlcv, "1m")
-        ohlcv = CryptoXch.cryptodownload(cp.xc, base, "1m", cp.update - Year(10), cp.update)
-        # Ohlcv.read!(ohlcv)
+        ohlcv = CryptoXch.ohlcv(cp.tc.xc, base)
+        f4 = cp.tc.cl.bc[base].f4                      #* this is a Classifier011 hack !!!!! any other classifier in tc will derail it
         cp.coin[base] = CoinData(Dict(), nothing)
         cp.coin[base].ohlcv["1m"] = ohlcv
-        cp.coin[base].f4 = Features.Features004(ohlcv, usecache=true)
+        cp.coin[base].f4 = f4
     end
-    if interval != "1m"
-        ohlcv = Ohlcv.defaultohlcv(base)
-        Ohlcv.setdataframe!(ohlcv, Ohlcv.accumulate(Ohlcv.dataframe(cp.coin[base].ohlcv["1m"]), interval))
-        Ohlcv.setinterval!(ohlcv, interval)
-        cp.coin[base].ohlcv[interval] = ohlcv
+    if !(interval in keys(cp.coin[base].ohlcv))
+        @assert interval in ["5m", "1h", "1d", "3d"] "$interval not in [5m, 1h, 1d, 3d]"
+        Threads.@threads for iv in ["5m", "1h", "1d", "3d"]
+            ohlcv = Ohlcv.defaultohlcv(base)
+            Ohlcv.setinterval!(ohlcv, iv)
+            Ohlcv.setdataframe!(ohlcv, Ohlcv.accumulate(Ohlcv.dataframe(cp.coin[base].ohlcv["1m"]), iv))
+            cp.coin[base].ohlcv[iv] = ohlcv
+        end
     end
     return cp.coin[base].ohlcv[interval]
 end
 
 function updateassets!(cp, download=false)
-    if isnothing(cp.xc)
-        cp.xc = CryptoXch.XchCache()
-    end
+    assets = CryptoXch.portfolio!(cp.tc.xc)
     cp.coin = Dict()
-    CryptoXch.removeallbases(cp.xc)
-    if download
-        assets = CryptoXch.portfolio!(cp.xc)
-        tc = Trade.tradeselection!(Trade.TradeCache(xc=cp.xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved
+    if !download 
+        Trade.read!(cp.tc)
     end
-    cp.assetsconfig, assets = Trade.assetsconfig!(Trade.TradeCache(xc=cp.xc)) # read latest from file merged with assets in correct format
-    cp.update = Dates.now(UTC)
-    # select!(cp.assetsconfig, Not(:update))
-    if !isnothing(cp.assetsconfig) && (size(cp.assetsconfig, 1) > 0)
-        cp.assetsconfig.id = cp.assetsconfig[!, :basecoin]
-        println("portfolio: $assets")
-        println("config + assets: $(cp.assetsconfig)")
+    if download || isnothing(cp.tc.cfg)
+        Trade.tradeselection!(cp.tc, assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true)
+    end
+    cp.tc.cfg = cp.tc.cfg[cp.tc.cfg[!, :classifieraccepted], :]
+    Trade.addassetsconfig!(cp.tc, assets)
+    # cp.update = Dates.now(UTC)
+    # select!(cp.tc.cfg, Not(:update))
+    if !isnothing(cp.tc.cfg) && (size(cp.tc.cfg, 1) > 0)
+        cp.update = cp.tc.cfg[begin, :datetime]
+        cp.tc.cfg.id = cp.tc.cfg[!, :basecoin]
+        println("config + assets: $(cp.tc.cfg)")
         # println("updating table data of size: $(size(adf))")
-        rows = size(cp.assetsconfig, 1)
+        rows = size(cp.tc.cfg, 1)
+        xcbases = CryptoXch.bases(cp.tc.xc)
 
-        # initial delay but quick switching between coins
-        for (ix, base) in enumerate(cp.assetsconfig[!, :basecoin])
-            println("$(EnvConfig.now()) ($ix of $rows) loading $base")
-            ohlcv = loadohlcv!(cp, base, "1m")
-            if size(ohlcv.df, 1) == 0
-                println("skipping empty $(ohlcv.base)")
-                continue
-            end
-            if cp.update > ohlcv.df[end, :opentime] cp.update = ohlcv.df[end, :opentime] end
-            Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
-                loadohlcv!(cp, base, interval)
-            end
-            # loadohlcv!(cp, base, "5m")
-            # loadohlcv!(cp, base, "1h")
-            # loadohlcv!(cp, base, "1d")
-        end
+        # # initial delay but quick switching between coins
+        # for (ix, base) in enumerate(cp.tc.cfg[!, :basecoin])
+        #     println("$(EnvConfig.now()) ($ix of $rows) loading $base")
+        #     @assert base in xcbases "base=$base not in xcbases=$xcbases"
+        #     ohlcv = loadohlcv!(cp, base, "1m")
+        #     if size(ohlcv.df, 1) == 0
+        #         println("skipping empty $(ohlcv.base)")
+        #         continue
+        #     end
+        #     # if cp.update > ohlcv.df[end, :opentime] cp.update = ohlcv.df[end, :opentime] end
+        #     Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
+        #         loadohlcv!(cp, base, interval)
+        #     end
+        #     # loadohlcv!(cp, base, "5m")
+        #     # loadohlcv!(cp, base, "1h")
+        #     # loadohlcv!(cp, base, "1d")
+        # end
         println("$(EnvConfig.now()) all $rows coins loaded")
     else
         @warn "no config + assets found"
     end
-    return cp.assetsconfig
+    return cp.tc.cfg
 end
 
 mutable struct CoinData
@@ -90,10 +93,9 @@ mutable struct CoinData
 end
 
 mutable struct CockpitData
-    xc               # CryptoXch.XchCache
+    tc               # Trade to use trade cache
     coin             # Dict of coin => CoinData
     update           # DateTime
-    assetsconfig     # AbstractDataFrame
     donormalize::Bool
     dtf::String      # DateTime display format
     cssdir::String
@@ -101,7 +103,8 @@ mutable struct CockpitData
         global cp
         dtf = "yyyy-mm-dd HH:MM"
         cssdir = EnvConfig.setprojectdir()  * "/scripts/"
-        cp = new(nothing, Dict(), nothing, nothing, true, dtf, cssdir)
+        xc = CryptoXch.XchCache()
+        cp = new(Trade.TradeCache(xc=xc), nothing, nothing, true, dtf, cssdir)
         updateassets!(cp, false)
         return cp
     end
@@ -117,7 +120,7 @@ println("css dir: $(CP.cssdir)")
 app = dash(external_stylesheets = ["dashboard.css"], assets_folder=CP.cssdir)
 
 
-# println(CP.assetsconfig)
+# println(CP.tc.cfg)
 println("last assetsconfig update: $(CP.update)")
 app.layout = html_div() do
     html_div(id="leftside", [
@@ -141,8 +144,8 @@ app.layout = html_div() do
     html_div(id="rightside", [
         dcc_dropdown(
             id="crypto_focus",
-            options=[(label = i, value = i) for i in CP.assetsconfig[!, :basecoin]],
-            value=CP.assetsconfig[1, :basecoin]
+            options=[(label = i, value = i) for i in CP.tc.cfg[!, :basecoin]],
+            value=CP.tc.cfg[1, :basecoin]
         ),
         dcc_checklist(
             id="indicator_select",
@@ -167,9 +170,9 @@ app.layout = html_div() do
         html_div(id="targets4h"),
         dcc_graph(id="graph4h"),
         dash_datatable(id="kpi_table", editable=false,
-            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(CP.assetsconfig) if !(i in ["id", "update"])],  # exclude "id" to not display it
-            data = Dict.(pairs.(eachrow(CP.assetsconfig))),
-            style_data_conditional=discrete_background_color_bins(CP.assetsconfig, n_bins=length(names(CP.assetsconfig)), columns="pricechangepercent"),
+            columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(CP.tc.cfg) if !(i in ["id", "update"])],  # exclude "id" to not display it
+            data = Dict.(pairs.(eachrow(CP.tc.cfg))),
+            style_data_conditional=discrete_background_color_bins(CP.tc.cfg, n_bins=length(names(CP.tc.cfg)), columns="pricechangepercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
@@ -610,18 +613,18 @@ callback!(
         if active_cell isa Nothing
             active_row_id = currentfocus
         else
-            active_row_id = active_cell.row_id
+            active_row_id = active_cell.row_id #TODO clear table before coin update otherwise this raises and error with row_id not found
         end
         CP.donormalize = "normalize" in indicator
         # if button_id == "indicator_select"
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
                 updateassets!(CP, false)
-                active_row_id = CP.assetsconfig[1, :basecoin]
+                active_row_id = CP.tc.cfg[1, :basecoin]
             elseif (EnvConfig.configmode == EnvConfig.test) && !("test" in indicator)  # switch from test to prodcution data
                 EnvConfig.init(EnvConfig.production)
                 updateassets!(CP, false)
-                active_row_id = CP.assetsconfig[1, :basecoin]
+                active_row_id = CP.tc.cfg[1, :basecoin]
             end
 
         if button_id == "update_data"
@@ -629,9 +632,9 @@ callback!(
         # else
         #     return 0, olddata, active_row_id, options
         end
-        if !isnothing(CP.assetsconfig)
-            # println("data update CP.assetsconfig.size: $(size(CP.assetsconfig))")
-            return 1, Dict.(pairs.(eachrow(CP.assetsconfig))), active_row_id, [(label = i, value = i) for i in CP.assetsconfig[!, :basecoin]]
+        if !isnothing(CP.tc.cfg)
+            # println("data update CP.tc.cfg.size: $(size(CP.tc.cfg))")
+            return 1, Dict.(pairs.(eachrow(CP.tc.cfg))), active_row_id, [(label = i, value = i) for i in CP.tc.cfg[!, :basecoin]]
         else
             @warn "found no assetsconfig"
             return 0, olddata, active_row_id, options
@@ -655,7 +658,7 @@ callback!(
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
         res = Dict(
-            "all_button" => (0:(size(CP.assetsconfig[!, :basecoin], 1)-1), CP.assetsconfig[!, :basecoin]),
+            "all_button" => (0:(size(CP.tc.cfg[!, :basecoin], 1)-1), CP.tc.cfg[!, :basecoin]),
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))

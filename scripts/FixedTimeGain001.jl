@@ -168,7 +168,7 @@ function liquidcoinstest()
     # coins = ["BTC", "ETC", "XRP", "GMT", "PEOPLE", "SOL", "APEX", "MATIC", "OMG"]
     coins = nothing # ["BTC"]
 
-    coinsdf = Ohlcv.liquidcoins(liquidrangeminutes=108*24*60)
+    coinsdf = Ohlcv.liquidcoins()
     filtered_df = coinsdf # filter(row -> row.basecoin in coins, coinsdf)
     println("evaluating: $coins \n coinsdf=$coinsdf \n filtered_df=$filtered_df")
     df = Classify.evaluateclassifiers([Classify.Classifier005], filtered_df, startdt, enddt)

@@ -90,7 +90,7 @@ end
 "Returns the full path including filename of the given filename connected with the current log file path"
 logpath(file) = normpath(joinpath(cryptopath, logfilespath, file))
 logsubfolder() = logfilespath == "logs" ? "" : joinpath(splitpath(logfilespath)[2:end])
-logfolder() = logfilespath
+logfolder() = normpath(joinpath(cryptopath, logfilespath))
 
 " set project dir as working dir "
 function setprojectdir()

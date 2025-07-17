@@ -13,7 +13,7 @@ module Targets
 
 using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
-export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, longshortclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy
+export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy
 
 """
 verbosity =
@@ -26,38 +26,47 @@ verbosity = 1
 
 
 """
-returns all possible labels (don't change sequence because index is used as class id). "longshortclose" is default.
+returns all possible labels (don't change sequence because index is used as class id). "allclose" is default.
 """
-tradelabels() = ["ignore", "longbuy", "longhold", "longshortclose", "shorthold", "shortbuy", "longclose", "shortclose", "longstrongbuy", "shortstrongbuy", "longstrongclose", "shortstrongclose"]
-@enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose =-1 longshortclose=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5
+tradelabels() = [string(lbl) for lbl in instances(TradeLabel)]
+@enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose=-1 allclose=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5 ignore=9
 
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
 abstract type AbstractTargets <: EnvConfig.AbstractConfiguration end
 
+
 "Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set."
-function setbase!(targets::AbstractTargets, ohlcv::Ohlcv.OhlcvData) end
+function setbase!(targets::AbstractTargets, ohlcv::Ohlcv.OhlcvData) error("not implemented") end
 
 "Removes the targets of a basecoin."
-function removebase!(targets::AbstractTargets) end
+function removebase!(targets::AbstractTargets) error("not implemented") end
 
 "Add newer targets to match the recent timeline of ohlcv with the newest ohlcv datapoints, i.e. datapoints newer than last(features)"
-function supplement!(targets::AbstractTargets) end
+function supplement!(targets::AbstractTargets) error("not implemented") end
 
 "Returns a vector with all supported labels ::String, which is a subset(tradelabels())"
 function tradelabels(targets::AbstractTargets) 
     return tradelabels()
 end
 
+"provides a target label Bool vector of the given label"
+function labelbinarytargets(targets::AbstractTargets, label::TradeLabel, firstix::Integer, lastix::Integer) error("not implemented") end
+function labelbinarytargets(targets::AbstractTargets, label::TradeLabel, startdt::DateTime, enddt::DateTime) error("not implemented") end
+
+"provides a relative gain Float32 vector of the given label"
+function labelrelativegain(targets::AbstractTargets, label::TradeLabel, firstix::Integer, lastix::Integer) error("not implemented") end
+function labelrelativegain(targets::AbstractTargets, label::TradeLabel, startdt::DateTime, enddt::DateTime) error("not implemented") end
+
 "Provides a vector of class labels ::String of the target class."
-function labels(targets::AbstractTargets, firstix::Integer, lastix::Integer) end
-function labels(targets::AbstractTargets, startdt::DateTime, enddt::DateTime) end
+function labels(targets::AbstractTargets, firstix::Integer, lastix::Integer) error("not implemented") end
+function labels(targets::AbstractTargets, startdt::DateTime, enddt::DateTime) error("not implemented") end
 
 """
 Provide a vector of relative gains of the current price compared to the target price in the future. (currentprice - targetprice) / currentprice,
 which provide a means to adapt a regressor
 """
-function relativegain(targets::AbstractTargets, firstix::Integer, lastix::Integer) end
-function relativegain(targets::AbstractTargets, startdt::DateTime, enddt::DateTime) end
+function relativegain(targets::AbstractTargets, firstix::Integer, lastix::Integer) error("not implemented") end
+function relativegain(targets::AbstractTargets, startdt::DateTime, enddt::DateTime) error("not implemented") end
 
 "Provides a description that characterizes the features"
 describe(targets::AbstractTargets) = "$(typeof(targets))"
@@ -98,11 +107,6 @@ function relativegain(values::AbstractVector{T}, baseix::Integer, gainix::Intege
 end
 
 
-function labeldistribution(targets::AbstractVector{T}, labels=unique(targets)) where T<:AbstractString
-    cattargets = categorical(targets; levels=labels, compress=true)
-    return labeldistribution(cattargets)
-end
-
 function labeldistribution(targets::CategoricalArray)
     labels = levels(targets)
     cnt = zeros(Int, length(labels))
@@ -112,10 +116,27 @@ function labeldistribution(targets::CategoricalArray)
     end
     targetcount = size(targets, 1)
     dist = [(labels[i], round(cnt[i] / targetcount*100, digits=1)) for i in eachindex(labels)]
-    println("target label distribution in %: ", dist)
+    (verbosity >= 3) && println("target label distribution in %: ", dist)
     return dist
 end
 
+labeldistribution(targets::AbstractVector{T}) where {T<:AbstractString} = labeldistribution(categorical(targets; levels=unique(targets), compress=true))
+
+function labeldistribution(targets::AbstractVector{T}) where {T<:TradeLabel}
+    cnt = Dict()
+    # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
+    for tl in targets
+        if tl in keys(cnt)
+            cnt[tl] += 1
+        else
+            cnt[tl] = 1
+        end
+    end
+    targetcount = size(targets, 1)
+    dist = [(lab, round(labcnt / targetcount*100, digits=1)) for (lab, labcnt) in cnt]
+    (verbosity >= 3) && println("target label distribution in %: ", dist)
+    return dist
+end
 
 """
 Go back in index look for a more actual price extreme than the one from horizontal regression.
@@ -188,7 +209,7 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
                 lastbuy = "nobuy"
                 newstate = "ignore"
             end
-        elseif newstate == "longshortclose"
+        elseif newstate == "allclose"
             if !(lastbuy in ["shortbuy", "longbuy"])
                 newstate = "ignore"
             elseif lastbuy == "longbuy"
@@ -206,7 +227,7 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
                 (rd >= lt.longhold ? settradestate("longhold") :
                     (rd <= lt.shortbuy ? settradestate("shortbuy") :
                         (rd <= lt.shorthold ? settradestate("shorthold") :
-                            settradestate("longshortclose"))))) for rd in relativedist]
+                            settradestate("allclose"))))) for rd in relativedist]
     return labels
 end
 
@@ -637,12 +658,12 @@ end
 emptytrddf() = DataFrame(Dict(:opentime=>DateTime[], :pivot=>Float32[], :label=>String[], :longbuy=>Bool[], :longhold=>Bool[], :shortbuy=>Bool[], :shorthold=>Bool[], :minix=>UInt32[], :maxix=>UInt32[], :minreldiff=>Float32[], :maxreldiff=>Float32[]))
 
 """
-Provides 2 independent binary targets
+Provides 2 independent binary targets as wellas their relative gain
 - minwindow is the minimum number of minutes a trend should have
 - maxwindow is the maximum number of history minutes to detect a trend with given thresholds 
 - required condition: 1 < minwindow < maxwindow <= 4*60
-- longbuy label for all samples exceeding `thres.longhold` if subsequently threshold `thres.longbuy` is exceeded within the next `window` minutes
-- shortbuy label for all samples undercutting `thres.longhold` if subsequently threshold `thres.shortbuy` is undercut within the next `window` minutes
+- longbuy label for all samples exceeding `thres.longhold` if subsequently threshold `thres.longbuy` is exceeded within the next `maxwindow` minutes
+- shortbuy label for all samples undercutting `thres.longhold` if subsequently threshold `thres.shortbuy` is undercut within the next `maxwindow` minutes
 """
 mutable struct Trend <: AbstractTargets
     minwindow::Int # in minutes
@@ -652,7 +673,7 @@ mutable struct Trend <: AbstractTargets
     df::Union{DataFrame, Nothing}
     function Trend(minwindow, maxwindow, thres)
         @assert 1 < minwindow < maxwindow <= 4*60 "condition violated: 1 < minwindow=$(minwindow) < maxwindow=$(maxwindow) <= 4*60"
-        @assert thres.shortbuy < thres.shorthold < thres.longhold < thres.longbuy "condition violated: thres.shortbuy=$(thres.shortbuy) < thres.shorthold=$(thres.shorthold) < thres.longhold=$(thres.longhold) < fdg.thres.longbuy=$(thres.longbuy)"
+        @assert thres.shortbuy <= thres.shorthold <= thres.longhold <= thres.longbuy "condition violated: thres.shortbuy=$(thres.shortbuy) <= thres.shorthold=$(thres.shorthold) <= thres.longhold=$(thres.longhold) <= fdg.thres.longbuy=$(thres.longbuy)"
         trd = new(minwindow, maxwindow, thres, nothing, nothing)
         return trd
     end
@@ -676,7 +697,7 @@ function _removeshorttrends!(trd::Trend, labels)
         if lbl != labels[ix]
             if (lbl in [shortbuy, longbuy]) && ((ix - startix) < trd.minwindow)
                 # too short trend detected -> to be removed
-                if (verbosity >= 2) 
+                if (verbosity >= 4) 
                     @warn "$lbl short trend $startix:$(ix-1) lblbefore=$lblbefore labels[$ix]=$(labels[ix])"
                 end
                 if lblbefore == labels[ix]
@@ -685,7 +706,7 @@ function _removeshorttrends!(trd::Trend, labels)
                     end
                 else
                     for repairix in startix:(ix-1)
-                        labels[repairix] = longshortclose
+                        labels[repairix] = allclose
                     end
                 end
             end
@@ -755,6 +776,7 @@ because prices can be very volatile no assumption on continous price development
   - establish by exceeding buy threshold against an achor reference, don't deviate from most extreme point of trend by more than hold thrshold
 """
 function supplement!(trd::Trend)
+    #TODO TrendDetector001.AdaTest() showed only targets of longbuy and shortbuy and no sample with target allclose, which should be checked
     if isnothing(trd.ohlcv)
         (verbosity >= 2) && println("no ohlcv found in trd - nothing to supplement")
         return
@@ -762,8 +784,14 @@ function supplement!(trd::Trend)
     odf = Ohlcv.dataframe(trd.ohlcv)
     piv = odf[!, :pivot]
     if length(piv) > 0
-        size(trd.df, 1) > 0 && @assert trd.df[begin, :opentime] == odf[begin, :opentime] "$(trd.df[begin, :opentime]) != $(odf[begin, :opentime])"
-        startix = max(firstindex(piv), firstindex(piv) + size(trd.df, 1) - trd.maxwindow + 1)
+        if size(trd.df, 1) > 0
+            @assert trd.df[begin, :opentime] == odf[begin, :opentime] "$(trd.df[begin, :opentime]) != $(odf[begin, :opentime])"
+            startix = max(firstindex(piv), firstindex(piv) + size(trd.df, 1) - trd.maxwindow + 1)  # replace the last (trd.maxwindow -1) samples of trd.df
+            #* why replacing the last trd.maxwindow samples? because newer samples lead to conslusion of a trend that was not there before and short trend may not yet removed
+            #TODO in order to refresh also trd.maxwindow history, 2 * trd.maxwindow samples need to be inspected that should be part of pivnew
+        else
+            startix = firstindex(piv)
+        end
         # len(piv) = 10, len(trd)=5, maxwindow = 3 --> startix = 1+5-3+1=4
         # recalc the last (maxwindow-1) rows due to new ohlcv max in last maxwindow element
         pivnew = view( piv, startix:lastindex(piv))
@@ -773,10 +801,11 @@ function supplement!(trd::Trend)
             dfnew = DataFrame()
             relix = zeros(UInt32, pvlen)
             reldiff = zeros(Float32, pvlen)
-            labels = fill(longshortclose, pvlen)
+            labels = fill(allclose, pvlen)
             lastix = firstindex(pivnew)
+            relix[lastix] = firstindex(pivnew)
             for ix in eachindex(pivnew)
-                windowstartix = max(firstindex(pivnew), ix - trd.maxwindow + 1, relix[lastix])
+                windowstartix = max(ix - trd.maxwindow + 1, relix[lastix])
                 labels[ix], relix[ix], reldiff[ix] = _trendinrange(trd, pivnew, windowstartix, ix, labels[lastix])
                 lastix = ix
             end
@@ -786,7 +815,7 @@ function supplement!(trd::Trend)
                 dfnew[!, :tmplabel] = copy(labels)
             end
             trdix = lastindex(pivnew)
-            trdlabel = longshortclose
+            trdlabel = allclose
             for ix in reverse(eachindex(pivnew))  # now propagade [longbuy, shortbuy] across their trend
                 if (ix > trdix) && (labels[ix] != trdlabel)
                     relix[ix] = trdix
@@ -796,7 +825,7 @@ function supplement!(trd::Trend)
                     trdix = relix[ix]
                     trdlabel = labels[ix] 
                 else
-                    labels[ix] = longshortclose # also overwriting shorthold, longhold
+                    labels[ix] = allclose # also overwriting shorthold, longhold
                     trdix = relix[ix]
                     trdlabel = labels[ix] 
                 end
@@ -814,7 +843,7 @@ function supplement!(trd::Trend)
     end
 end
 
-tradelabels(trd::Trend) = ["longbuy", "shortbuy", "longshortclose"]
+tradelabels(trd::Trend) = ["longbuy", "shortbuy", "allclose"]
 
 function timerangecut!(trd::Trend)
     if isnothing(trd.ohlcv)
@@ -836,39 +865,33 @@ function timerangecut!(trd::Trend)
     supplement!(trd)
 end
 
-describe(trd::Trend) = "$(typeof(trd))_$(trd.maxwindow)_label-thresholds=(longbuy=$(trd.thres.longbuy),longhold=$(trd.thres.longhold),shorthold=$(trd.thres.shorthold),shortbuy=$(trd.thres.shortbuy))"
+describe(trd::Trend) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "NoBase" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_thresholds=longbuy=$(trd.thres.longbuy)+longhold=$(trd.thres.longhold)+shorthold=$(trd.thres.shorthold)+shortbuy=$(trd.thres.shortbuy)"
 firstrowix(trd::Trend)::Int = isnothing(trd.df) ? 1 : (size(trd.df, 1) > 0 ? firstindex(trd.df[!, 1]) : 1)
 lastrowix(trd::Trend)::Int = isnothing(trd.df) ? 0 : (size(trd.df, 1) > 0 ? lastindex(trd.df[!, 1]) : 0)
 
-"returns a dataframe with binary volume columns :longbuy, :shortbuy"
-function df(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame
-    return isnothing(trd.df) ? emptytrddf() : view(trd.df, firstix:lastix, :)
-end
+# "returns a dataframe with binary volume columns :longbuy, :shortbuy"
+# function df(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame
+#     return isnothing(trd.df) ? emptytrddf() : view(trd.df, firstix:lastix, :)
+# end
 
-df(trd::Trend, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-longbuybinarytargets(trd::Trend, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "longclose" for lb in df(trd, startdt, enddt)[!, :longbuy]]
-shortbuybinarytargets(trd::Trend, startdt::DateTime, enddt::DateTime) = [lb ? "shortbuy" : "shortclose" for lb in df(trd, startdt, enddt)[!, :longbuy]]
+# df(trd::Trend, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+# longbuybinarytargets(trd::Trend, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "longclose" for lb in df(trd, startdt, enddt)[!, :longbuy]]
+# shortbuybinarytargets(trd::Trend, startdt::DateTime, enddt::DateTime) = [lb ? "shortbuy" : "shortclose" for lb in df(trd, startdt, enddt)[!, :longbuy]]
 
-function labels(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector
-    return isnothing(trd.df) ? [] : trd.df[firstix:lastix, :label]
-end
+labelbinarytargets(trd::Trend, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labels(trd, firstix, lastix) .== label
+labelbinarytargets(trd::Trend, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
 
+labelrelativegain(trd::Trend, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labelbinarytargets(trd, label, firstix, lastix) .* relativegain(trd, firstix, lastix)
+labelrelativegain(trd::Trend, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelrelativegain(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+
+labels(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector = isnothing(trd.df) ? [] : view(trd.df, firstix:lastix, :label)
 labels(trd::Trend, startdt::DateTime, enddt::DateTime) = labels(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
 
-function relativegain(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector
-    return isnothing(trd.df) ? [] : trd.df[firstix:lastix, :reldiff]
-end
-
+relativegain(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector = isnothing(trd.df) ? [] : view(trd.df, firstix:lastix, :reldiff)
 relativegain(trd::Trend, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
 
-function relativeloss(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector
-    return isnothing(trd.df) ? [] : trd.df[firstix:lastix, :maxreldiff]
-end
-
-relativeloss(trd::Trend, startdt::DateTime, enddt::DateTime) = relativeloss(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-
 function Base.show(io::IO, trd::Trend)
-    println(io, "Trend trd base=$(isnothing(trd.ohlcv) ? "no ohlcv base" : trd.ohlcv.base) maxwindow=$(trd.maxwindow) label thresholds=$(thresholds(trd.thres)) size(df)=$(size(trd.df)) $(isnothing(trd.df) ? "no df" : size(trd.df, 1) > 0 ? "from $(isnothing(trd.df) ? "no df" : trd.df[begin, :opentime]) to $(isnothing(trd.df) ? "no df" : trd.df[end, :opentime]) " : "no time range ")")
+    println(io, "Trend targets base=$(isnothing(trd.ohlcv) ? "no ohlcv base" : trd.ohlcv.base) maxwindow=$(trd.maxwindow) label thresholds=$(thresholds(trd.thres)) size(df)=$(size(trd.df)) $(isnothing(trd.df) ? "no df" : size(trd.df, 1) > 0 ? "from $(isnothing(trd.df) ? "no df" : trd.df[begin, :opentime]) to $(isnothing(trd.df) ? "no df" : trd.df[end, :opentime]) " : "no time range ")")
     # (verbosity >= 3) && println(io, "Features005 cfgdf=$(f5.cfgdf)")
     # (verbosity >= 2) && println(io, "Features005 config=$(f5.cfgdf[!, :config])")
     println(io, "Trend ohlcv=$(trd.ohlcv)")

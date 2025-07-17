@@ -368,7 +368,7 @@ mutable struct NN
     model
     optim
     lossfunc
-    labels::Vector{String}  # in fixed sequence as index == class id
+    labels::AbstractVector  # in fixed sequence as index == class id
     description
     mnemonic::String
     fileprefix::String  # filename without suffix
@@ -407,6 +407,21 @@ function setpartitions(rowrange, sp::SetPartitions)
     @assert sp.relativesubrangesize <= minimum(values(sp.samplesets))
 end
 
+function _realpartitionsize(rowrange, samplesets, gapsize, partitionsize, minpartitionsize, maxpartitionsize)
+    gapix = [ix for ix in eachindex(samplesets) if ix < lastindex(samplesets) ? !(samplesets[ix] == samplesets[(ix + 1)]) : !(samplesets[ix] == samplesets[1])]
+    gapcount = length(gapix)
+    remainder = length(rowrange) % (partitionsize * length(samplesets) + gapcount)
+    ps = round(Int, remainder / length(samplesets))
+    # ps = round(Int, (remainder - gapcount) / length(samplesets))
+    if (length(rowrange) / (partitionsize * length(samplesets) + gapcount)) < 1
+        res = max(ps - 1, minpartitionsize)
+    else
+        res = min(partitionsize + ps, maxpartitionsize)
+    end
+    (verbosity >= 3) && println("res=$res, rowrange=$rowrange, samplesets=$samplesets, ps=$ps, remainder=$remainder, gapcount=$gapcount, gapix=$gapix")
+    return res
+end
+
 """
     - Returns a Dict of setname => vector of row ranges
     - input
@@ -417,13 +432,14 @@ end
     - gaps will be removed from a subrange to avoid crosstalk bias between ranges
     - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
 """
-function setpartitions(rowrange, samplesets::Vector; gapsize::Signed, partitionsize::Signed)
+function setpartitions(rowrange, samplesets::AbstractVector; gapsize=24*60, partitionsize=20*24*60, minpartitionsize=min(2*length(samplesets)*gapsize, partitionsize), maxpartitionsize=partitionsize*2)
     @assert length(samplesets) > 0 "length(samplesets)=$(length(samplesets))"
     @assert partitionsize > 0 "partitionsize=$(partitionsize)"
     @assert length(rowrange) > (partitionsize * length(samplesets)) "length(rowrange)=$(length(rowrange)) > (partitionsize=$(partitionsize) * length(samplesets)=$(length(samplesets)))"
     @assert gapsize >= 0 "gapsize=$(gapsize)"
+    #TODO gapsize not always equal (in ca 1% not - see ldf result of TrendDetector001.featurestargetsliquidranges!()) - fix is low prio
     sv = CategoricalArray(samplesets)
-    ls = nothing
+    psize = _realpartitionsize(rowrange, sv, gapsize, partitionsize, minpartitionsize, maxpartitionsize)
     rix = rowrange[begin]
     six = 1
     arr = []
@@ -438,11 +454,11 @@ function setpartitions(rowrange, samplesets::Vector; gapsize::Signed, partitions
             end
         end
         if isnothing(p)
-            p = (setname=sv[six], range=rix:min(rix+partitionsize-1, rowrange[end]))  # new partition
+            p = (setname=sv[six], range=rix:min(rix+psize-1, rowrange[end]))  # new partition
         else
-            p = (setname=p.setname, range=p.range[begin]:min(rix+partitionsize-1, rowrange[end])) # extend partition range
+            p = (setname=p.setname, range=p.range[begin]:min(rix+psize-1, rowrange[end])) # extend partition range
         end
-        rix += partitionsize
+        rix += psize
         six = six % length(sv) + 1
     end
     if !isnothing(p)
@@ -453,6 +469,7 @@ function setpartitions(rowrange, samplesets::Vector; gapsize::Signed, partitions
             res[p.setname] = push!(res[p.setname], p.range)
     end
     result = Dict(String(sn) => rv for (sn, rv) in res)
+    (verbosity >= 3) && println("$([kv for kv in result])")
     return result
 end
 
@@ -468,7 +485,7 @@ end
     - any relative setsize > 2 * relativesubrangesize
     - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
 """
-function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize)
+function setpartitions(rowrange, samplesets::Dict, gapsize, relativesubrangesize) #* DEPRECATED  
     @assert isapprox(sum(values(samplesets)), 1, atol=0.001) "sum($(samplesets))=$(sum(values(samplesets))) != 1"
     @assert relativesubrangesize <= minimum(values(samplesets))
     rowstart = rowrange[1]
@@ -600,7 +617,8 @@ function loadpredictions(filename)
         end
     end
     # checktargetsequence(df[!, "targets"])
-    checklabeldistribution(df[!, "targets"])
+    # checklabeldistribution(df[!, "targets"])
+    Targets.labeldistribution(df[!, "targets"])
     return df
 end
 
@@ -632,7 +650,8 @@ function predictionsdataframe(nn::NN, setranges, targets, predictions, features)
     end
     sc = categorical(setlabels; compress=true)
     df[:, "set"] = sc
-    df[:, "targets"] = categorical(targets; levels=nn.labels, compress=true)
+    # df[:, "targets"] = categorical(targets; levels=nn.labels, compress=true)
+    df[:, "targets"] = targets
     df[:, "opentime"] = Features.ohlcvdfview(features)[!, :opentime]
     df[:, "pivot"] = Features.ohlcvdfview(features)[!, :pivot]
     println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
@@ -662,9 +681,9 @@ end
 "Target consistency check that a longhold or close signal can only follow a longbuy or longclose signal"
 function checktargetsequence(targets::CategoricalArray)
     labels = levels(targets)
-    ignoreix, longbuyix, longholdix, longshortcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels())
+    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels())
     # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    longbuy = levelcode(first(targets)) in [longholdix, longshortcloseix] ? longbuyix : (levelcode(first(targets)) == shortholdix ? shortbuyix : ignoreix)
+    longbuy = levelcode(first(targets)) in [longholdix, allcloseix] ? longbuyix : (levelcode(first(targets)) == shortholdix ? shortbuyix : ignoreix)
     for (ix, tl) in enumerate(targets)
         if levelcode(tl) == longbuyix
             longbuy = longbuyix
@@ -678,14 +697,14 @@ function checktargetsequence(targets::CategoricalArray)
             if (longbuy != shortbuyix)
                 @error "$ix: missed $shortbuyix ($(labels[shortbuyix])) before $shortholdix ($(labels[shortholdix]))"
             end
-        elseif (levelcode(tl) == longshortcloseix)
+        elseif (levelcode(tl) == allcloseix)
             if (longbuy == ignoreix)
-                @error "$ix: missed either $shortbuyix ($(labels[shortbuyix])) or $longbuyix ($(labels[longbuyix])) before $longshortcloseix ($(labels[longshortcloseix]))"
+                @error "$ix: missed either $shortbuyix ($(labels[shortbuyix])) or $longbuyix ($(labels[longbuyix])) before $allcloseix ($(labels[allcloseix]))"
             end
         elseif (levelcode(tl) == ignoreix)
             longbuy = ignoreix
         else
-            @error "$ix: unexpected $(levelcode(tl)) ($(labels[longshortcloseix]))"
+            @error "$ix: unexpected $(levelcode(tl)) ($(labels[allcloseix]))"
         end
     end
     println("target sequence check ready")
@@ -700,7 +719,7 @@ function checklabeldistribution(targets::CategoricalArray)
         cnt[levelcode(tl)] += 1
     end
     targetcount = size(targets, 1)
-    println("target label distribution in %: ", [(labels[i], round(cnt[i] / targetcount*100, digits=1)) for i in eachindex(labels)])
+    (verbosity >= 3) && println("target label distribution in %: ", [(labels[i], round(cnt[i] / targetcount*100, digits=1)) for i in eachindex(labels)])
 
 end
 
@@ -811,7 +830,9 @@ function model001(featurecount, labels, mnemonic)::NN
     description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
     mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
     fileprefix = mnemonic * "_" * EnvConfig.runid()
-    nn = NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix)
+    lsv = [string(lbl) for lbl in labels]
+    println("NN labels $lsv")
+    nn = NN(model, optim, lossfunc, lsv, description, mnemonic, fileprefix)
     return nn
 end
 
@@ -1013,22 +1034,22 @@ Groups trading pairs and stores them with the corresponding gain in a DataFrame 
 Pairs that cross a set before closure are being forced closed at set border.
 """
 function trades(predictions::AbstractDataFrame, thresholds::Vector)
-    df = DataFrame(set=CategoricalArray(undef, 0; levels=levels(predictions.set), ordered=false), opentrade=Int32[], openix=Int32[], trade=Int32[], longshortcloseix=Int32[], gain=Float32[])
+    df = DataFrame(set=CategoricalArray(undef, 0; levels=levels(predictions.set), ordered=false), opentrade=Int32[], openix=Int32[], trade=Int32[], allcloseix=Int32[], gain=Float32[])
     if size(predictions, 1) == 0
         return df
     end
     predonly = predictions[!, predictioncolumns(predictions)]
     scores, maxindex = maxpredictions(Matrix(predonly), 2)
     labels = levels(predictions.targets)
-    ignoreix, longbuyix, longholdix, longshortcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels())
-    buytrade = (tradeix=longshortcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
-    holdtrade = (tradeix=longshortcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
+    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels())
+    buytrade = (tradeix=allcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
+    holdtrade = (tradeix=allcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
 
     function closetrade!(tradetuple, closetrade, ix)
         gain = (predictions.pivot[ix] - predictions.pivot[tradetuple.predix]) / predictions.pivot[tradetuple.predix] * 100
         gain = tradetuple.tradeix in [longbuyix, longholdix] ? gain : -gain
         push!(df, (tradetuple.set, tradetuple.tradeix, tradetuple.predix, closetrade, ix, gain))
-        return (tradeix=longshortcloseix, predix=ix, set=predictions.set[ix])
+        return (tradeix=allcloseix, predix=ix, set=predictions.set[ix])
     end
 
     function closeifneeded!(buychecktrades, holdchecktrades, closetrade, ix)
@@ -1042,19 +1063,19 @@ function trades(predictions::AbstractDataFrame, thresholds::Vector)
         score = scores[ix]
         if (labelix == longbuyix) && (thresholds[longbuyix] <= score)
             buytrade, holdtrade = closeifneeded!(shortbuyix, shortholdix, longbuyix, ix)
-            buytrade = buytrade.tradeix == longshortcloseix ? (tradeix=longbuyix, predix=ix, set=predictions.set[ix]) : buytrade
+            buytrade = buytrade.tradeix == allcloseix ? (tradeix=longbuyix, predix=ix, set=predictions.set[ix]) : buytrade
         elseif (labelix == longholdix) && (thresholds[longholdix] <= score)
             buytrade, holdtrade = closeifneeded!(shortbuyix, shortholdix, longholdix, ix)
-            holdtrade = holdtrade.tradeix == longshortcloseix ? (tradeix=longholdix, predix=ix, set=predictions.set[ix]) : holdtrade
-        elseif ((labelix == longshortcloseix) && (thresholds[longshortcloseix] <= score)) || ((labelix == ignoreix) && (thresholds[ignoreix] <= score))
-            buytrade = buytrade.tradeix != longshortcloseix ? closetrade!(buytrade, longshortcloseix, ix) : buytrade
-            holdtrade = holdtrade.tradeix != longshortcloseix ? closetrade!(holdtrade, longshortcloseix, ix) : holdtrade
+            holdtrade = holdtrade.tradeix == allcloseix ? (tradeix=longholdix, predix=ix, set=predictions.set[ix]) : holdtrade
+        elseif ((labelix == allcloseix) && (thresholds[allcloseix] <= score)) || ((labelix == ignoreix) && (thresholds[ignoreix] <= score))
+            buytrade = buytrade.tradeix != allcloseix ? closetrade!(buytrade, allcloseix, ix) : buytrade
+            holdtrade = holdtrade.tradeix != allcloseix ? closetrade!(holdtrade, allcloseix, ix) : holdtrade
         elseif (labelix == shortholdix) && (thresholds[shortholdix] <= score)
             buytrade, holdtrade = closeifneeded!(longbuyix, longholdix, shortholdix, ix)
-            holdtrade = holdtrade.tradeix == longshortcloseix ? (tradeix=shortholdix, predix=ix, set=predictions.set[ix]) : holdtrade
+            holdtrade = holdtrade.tradeix == allcloseix ? (tradeix=shortholdix, predix=ix, set=predictions.set[ix]) : holdtrade
         elseif (labelix == shortbuyix) && (thresholds[shortbuyix] <= score)
             buytrade, holdtrade = closeifneeded!(longbuyix, longholdix, shortbuyix, ix)
-            buytrade = buytrade.tradeix == longshortcloseix ? (tradeix=shortbuyix, predix=ix, set=predictions.set[ix]) : buytrade
+            buytrade = buytrade.tradeix == allcloseix ? (tradeix=shortbuyix, predix=ix, set=predictions.set[ix]) : buytrade
         end
     end
     return df
@@ -1662,7 +1683,7 @@ function advice(cl::Classifier013, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
         end
     end
     lastgrad = nothing
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], 0f0, 1f0, nothing)
+    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], 0f0, 1f0, nothing)
     if !isnothing(regrwindow) # check longclose condition
         regry = Features.regry(bc.f5, regrwindow)[fix]
         grad = Features.grad(bc.f5, regrwindow)[fix]
@@ -1780,7 +1801,7 @@ Classifier011 idea
 - follow the regression long and short if their gradient exceeds thresholds
 - use fixed regression window
 """
-mutable struct Classifier011 <: AbstractClassifier
+mutable struct Classifier011 <: AbstractClassifier  #* is also used as ohlcv and f4 anchor in cryptocockpit
     bc::Dict{AbstractString, BaseClassifier011}
     cfg::Union{Nothing, DataFrame}  # configurations
     optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
@@ -1849,7 +1870,7 @@ function advice(cl::Classifier011, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
+    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy
@@ -1864,7 +1885,7 @@ function advice(cl::Classifier011, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     elseif (ra <= cfg.volatilityshortthreshold)
         ta.tradelabel = shorthold
     else
-        ta.tradelabel = longshortclose
+        ta.tradelabel = allclose
     end
     return ta
 end
@@ -2063,7 +2084,7 @@ function advice(cl::Classifier014, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
+    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy
@@ -2221,7 +2242,7 @@ function advice(cl::Classifier015, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
+    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy
@@ -2397,7 +2418,7 @@ function advice(cl::Classifier016, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ra = Targets.relativegain(regry, grad, regrwindow, forward=false)
     volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
     volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, longshortclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
+    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
         ta.tradelabel = longbuy

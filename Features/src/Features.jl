@@ -39,9 +39,12 @@ requiredminutes(features::AbstractFeatures) = 0
 "Add newer features to match the recent timeline of ohlcv[firstix:lastix] with the newest ohlcv datapoints, i.e. datapoints newer than last(features)"
 function supplement!(features::AbstractFeatures) end
 
-"returns a dataframe with an opentime column followed by feature columns"
+"returns a features dataframe of the requested range"
 function features(features::AbstractFeatures, firstix::Integer, lastix::Integer) end
 function features(features::AbstractFeatures, firstix::DateTime, lastix::DateTime) end
+
+"returns the opentime vector of features"
+function opentime(features::AbstractFeatures) end
 
 "Cuts the features time range to match the ohlcv time range that was used to derive the features"
 function timerangecut!(features::AbstractFeatures) end
@@ -450,7 +453,7 @@ end
         (verbosity >= 4) && println("A1) endy=$(endy), l=$(l), new length(regression_y)=$(length(regression_y)), new length(gradient))]=$(length(gradient))")
         for si in startindex:endy
             if si > 1
-                r, g = rollingregression(view(y, 1:si), si, si)  #TODO to be adapted to multi vector
+                r, g = rollingregression(view(y, 1:si), si, si)  # why? TODO to be adapted to multi vector
                 regression_y[si - startindex + 1] = r[1]
                 gradient[si - startindex + 1] = g[1]
             else
@@ -854,7 +857,7 @@ mutable struct Features006 <: AbstractFeatures
     end
 end
 
-function _check(f6::Features006, window, offset)
+function _check!(f6::Features006, window, offset)
     @assert 1 < window <= 10*24*60 "1 < window <= 10*24*60 failed: window=$window"
     @assert 0 <= offset "0 <= offset failed: offset=$offset"
     f6.requiredminutes = max(f6.requiredminutes, window + offset)
@@ -868,15 +871,15 @@ _mind(f6::Features006; window, offset=0) = (f="mind", w=window, o=offset)
 _maxd(f6::Features006; window, offset=0) = (f="maxd", w=window, o=offset)
 _rv(f6::Features006; short, long, offset=0) = (f="rv", s=short, l=long, o=offset)
 
-fdfnocol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l], "-") : join([feature.f, feature.w], "-")
-fdfcol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l, feature.o], "-") : join([feature.f, feature.w, feature.o], "-")
+fdfnocol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l], "+") : join([feature.f, feature.w], "+")
+fdfcol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l, feature.o], "+") : join([feature.f, feature.w, feature.o], "+")
 
 f6requested(f6::Features006) = f6.requested
 f6all(f6::Features006) = union(f6.required, f6.requested)
 
 "adds feature configuration of last y position of linear regression characterized by regression window [minutes] and offset [minutes]"
 function addregry!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check(f6, window, offset)
+    _check!(f6, window, offset)
     g = _grad(f6, window=window, offset=offset)
     push!(f6.required, g)
     y = _regry(f6, window=window, offset=offset)
@@ -885,7 +888,7 @@ end
 
 "adds feature configuration of gradient of linear regression characterized by regression window [minutes] and offset [minutes]"
 function addgrad!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check(f6, window, offset)
+    _check!(f6, window, offset)
     y = _regry(f6, window=window, offset=offset)
     push!(f6.required, y)
     g = _grad(f6, window=window, offset=offset)
@@ -895,7 +898,7 @@ end
 
 "adds feature configuration of standard deviation of linear regression characterized by regression window [minutes] and offset [minutes]"
 function addstd!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check(f6, window, offset)
+    _check!(f6, window, offset)
     y = _regry(f6, window=window, offset=offset)
     push!(f6.required, y)
     g = _grad(f6, window=window, offset=offset)
@@ -907,7 +910,7 @@ end
 
 "adds feature configuration of relative distance of pivot to maximum of range characterized by window [minutes] and offset [minutes]"
 function addmaxdist!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check(f6, window, offset)
+    _check!(f6, window, offset)
     md = _maxd(f6, window=window, offset=offset)
     push!(f6.requested, md)
     return md
@@ -915,7 +918,7 @@ end
 
 "adds feature configuration of relative distance of pivot to minimum of range characterized by window [minutes] and offset [minutes]"
 function addmindist!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check(f6, window, offset)
+    _check!(f6, window, offset)
     md = _mind(f6, window=window, offset=offset)
     push!(f6.requested, md)
     return md
@@ -932,6 +935,8 @@ end
 
 function setbase!(f6::Features006, ohlcv::Ohlcv.OhlcvData; usecache=false)
     f6.ohlcv = ohlcv
+    f6.fdfno = nothing
+    f6.fdf = nothing
     f6.fdfno = usecache ? read!(f6) : DataFrame()   # emptycachef006()
     supplement!(f6)
 end
@@ -942,30 +947,49 @@ function removebase!(f6::Features006)
     f6.fdf = nothing
 end
 
-ohlcvix(f6::Features006, featureix) = featureix + f6.ohlcvoffset
-featureix(f6::Features006, ohlcvix) = ohlcvix - f6.ohlcvoffset
+ohlcvix(f6::Features006, featureix) = featureix + f6.maxoffset
+featureix(f6::Features006, ohlcvix) = ohlcvix - f6.maxoffset
 
-ohlcvdfview(f6::Features006) = f6.fdf
+function ohlcvdfview(f6::Features006)
+    odf = Ohlcv.dataframe(f6.ohlcv)
+    startix = f6.maxoffset + firstindex(odf[!, :opentime])
+    endix = lastindex(odf[!, :opentime])
+    return view(odf, startix:endix, :)
+end
+
 ohlcv(f6::Features006) = f6.ohlcv
 
 requiredminutes(f6::Features006) = f6.requiredminutes
 
 function emptycachef006()
     df = DataFrame()
-    df[:, "opentime"] = DateTime[]
+    # df[:, "opentime"] = DateTime[]
     return df
 end
 
 function describe(f6::Features006)::String
-    base = isnothing(f6.ohlcv) ? "missing ohlcv" : f6.ohlcv.base
-    f6str = isnothing(f6.fdf) ? "missing feature data" : "from $(f6.fdf[begin, :opentime]) to $(f6.fdf[end, :opentime])"
-    requested = join([fdfcol(f6, f) for f in f6.requested], "_")
-    required = join([fdfcol(f6, f) for f in f6.required], "_")
-    "Features006 base=$base, time range $f6str, requiredminutes=$(f6.requiredminutes), maxoffset=$(f6.maxoffset), requested=$requested, required=$required"
+    if isnothing(f6.ohlcv)
+        base = "NoBaseAssigned"
+    else
+        base = f6.ohlcv.base
+    end
+    requested = join([fdfcol(f6, f) for f in f6.requested], "+")
+    return "Features006_$(base)_$(f6.requiredminutes)_maxoffset=$(f6.maxoffset)_requested=$requested"
 end
 
 function Base.show(io::IO, f6::Features006)
-    println(io, describe(f6))
+    if isnothing(f6.ohlcv)
+        base = "missing ohlcv" : f6.ohlcv.base
+        timerangestr = "no time range"
+    else
+        base = f6.ohlcv.base
+        odf = ohlcvdfview(f6)
+        timerangestr = "from $(odf[begin, :opentime]) to $(odf[end, :opentime])"
+    end
+    requested = join([fdfcol(f6, f) for f in f6.requested], ", ")
+    required = join([fdfcol(f6, f) for f in f6.required], ", ")
+    desc = "Features006 base=$base, time range $timerangestr, requiredminutes=$(f6.requiredminutes), maxoffset=$(f6.maxoffset), requested=[$requested], required=[$required]"
+    println(io, desc)
 end
 
 function file(f6::Features006)
@@ -997,34 +1021,32 @@ function read!(f6::Features006)::DataFrame
     if fn.existing
         (verbosity >= 3) && println("$(EnvConfig.now()) start loading f6 data of $(f6.ohlcv.base) from $(fn.filename)")
         df = DataFrame(JDF.loadjdf(fn.filename))
-        (verbosity >= 2) && println("$(EnvConfig.now()) loaded f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
+        (verbosity >= 2) && println("$(EnvConfig.now()) loaded f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df)) from $(fn.filename)")
         if size(df, 1) == 0
             (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(fn.filename)")
             df = emptycachef006()
         else
-            df = DataFrame()
+            fdfno = DataFrame()
             for f in f6all(f6)
                 if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
                     f4col = _f4regrcol(f6, f.w, f.f)
                     f6col = fdfnocol(f6, f)
-                    df[:, f6col] = df[!, f4col]
+                    fdfno[:, f6col] = df[!, f4col]
                 end
             end
             if size(df, 2) > 0
-                df[:, "opentime"] = df[!, "opentime"]
+                fdfno[:, "opentime"] = df[!, "opentime"]
             end
         end
     else
         (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
-        df = emptycachef006()
+        fdfno = emptycachef006()
     end
-    f6.fdfno = df
-    # (verbosity >= 3) && println("$(EnvConfig.now()) Features006.read! after loading and adapting $f6")
-    # (verbosity >= 3) && println("$(EnvConfig.now()) Features006.read! names(df)=$(names(df))")
+    f6.fdfno = fdfno
     # catch e
     #     Logging.@warn "exception $e detected"
     # end
-    return df
+    return fdfno
 end
 
 function emptyfdf(f6::Features006, consideroffset)
@@ -1190,8 +1212,8 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     return fdfno
 end
 
-function _supplementboundaries(f6::Features006, fdf)
-    odf = Ohlcv.dataframe(f6.ohlcv)
+"Receives an ohlcv datafram and compares against already calculated features whether supplementation have to be calculated before and/or after those."
+function _supplementboundaries(f6::Features006, fdf, odf)
     odfendix = odfstartix = nothing
     if size(fdf, 2) > 1
         odfendix = Ohlcv.rowix(odf[!, "opentime"], fdf[begin, "opentime"]) - 1 # ohlcv index of last feature datetime
@@ -1202,8 +1224,25 @@ function _supplementboundaries(f6::Features006, fdf)
     return odfendix, odfstartix
 end
 
-function supplementfdfno!(f6::Features006)
+"Returns an extended, a provided f6.ohlcv dataframe and the firstindex offset between both. The extended and the provided dataframes are different if the provided is only a view of the provided dataframe"
+function _ohlcvdataframes(f6::Features006)
     odf = Ohlcv.dataframe(f6.ohlcv)
+    xodf = odf # default
+    podf = parent(odf)
+    @assert size(podf, 1) >= size(odf, 1)
+    if size(podf, 1) > size(odf, 1)
+        startix = Ohlcv.rowix(podf[!, :opentime], odf[begin, :opentime])
+        xodfstartix = max(1, startix-requiredminutes(f6)+1)
+        if startix > 1
+            endix = Ohlcv.rowix(podf[!, :opentime], odf[end, :opentime])
+            xodf = view(podf, xodfstartix:endix, :)
+        end
+    end
+    return xodf, odf
+end
+
+"Calculates all features without offset and returns them in fdfno"
+function _supplementfdfno!(f6::Features006, odf)
     @assert size(odf, 1) > 1 "size(odf, 1)=$(size(odf)) > 1 failed"
     if !isnothing(f6.fdfno) && (size(f6.fdfno, 1) > 0)
         startix = endix = nothing
@@ -1217,7 +1256,7 @@ function supplementfdfno!(f6::Features006)
             f6.fdfno = f6.fdfno[(isnothing(startix) ? firstindex(f6.fdfno, 1) : startix):(isnothing(endix) ? lastindex(f6.fdfno, 1) : endix), :] # cut time range to match odf 
         end
     end
-    odfendix, odfstartix = _supplementboundaries(f6, f6.fdfno)
+    odfendix, odfstartix = _supplementboundaries(f6, f6.fdfno, odf)
     fdfno = DataFrame()
     for f in f6all(f6)
         if f.f in ["ry", "rg"] fdfno = _regrgrady!(fdfno, f6, f, odf, odfendix, odfstartix)
@@ -1240,31 +1279,25 @@ function supplement!(f6::Features006)
         (verbosity >= 2)  && println("no ohlcv found in f6 - nothing to supplement")
         return emptycachef006()
     end
-    supplementfdfno!(f6)
+    xodf, odf = _ohlcvdataframes(f6)
+    _supplementfdfno!(f6, xodf) # use the extended xodf to calculate features without offset
+    startix = Ohlcv.rowix(f6.fdfno[!, :opentime], odf[begin, :opentime])
+    endix = lastindex(f6.fdfno[!, :opentime])
     # replace the existing fdf by a new one
-    Ohlcv.pivot!(f6.ohlcv)
-    odf = Ohlcv.dataframe(f6.ohlcv)
-    startix = f6.maxoffset + firstindex(odf[!, :opentime])
-    endix = lastindex(odf[!, :opentime])
-    fdf = DataFrame(
-        opentime = view(odf[!, :opentime], startix:endix), 
-        open = view(odf[!, :open], startix:endix), 
-        high = view(odf[!, :high], startix:endix), 
-        low = view(odf[!, :low], startix:endix), 
-        close = view(odf[!, :close], startix:endix), 
-        basevolume = view(odf[!, :basevolume], startix:endix), 
-        pivot = view(odf[!, :pivot], startix:endix))
+    fdf = DataFrame(opentime = view(f6.fdfno[!, :opentime], startix:endix))
+    piv = view(xodf[!,:pivot], startix:endix)
     for f in f6requested(f6)
         fdfc = fdfcol(f6, f)
         fdfnoc = fdfnocol(f6, f)
         if f.f in ["ry", "rg", "rs", "rv"] fdf[:, fdfc] = view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)
-        elseif f.f in ["mind", "maxd"] fdf[:, fdfc] = (fdf[!, :pivot] .- view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)) ./ fdf[!, :pivot] # relative distance in respect to pivot
+        elseif f.f in ["mind", "maxd"] fdf[:, fdfc] = (piv .- view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)) ./ piv # relative distance in respect to pivot
         else error("unknown Feature006 feature type")
         end
     end
     f6.fdf = fdf
 end
 
+"Adapts features to an adapted timerangecut of ohlcv"
 function timerangecut!(f6::Features006)
     if isnothing(f6.ohlcv) || isnothing(f6.fdf)
         (verbosity >= 2) && isnothing(f6.fdf) && println("no features found in f6 - no time range to cut")
@@ -1280,11 +1313,7 @@ function features(f6::Features006, firstix::Integer=firstindex(f6.fdf[!, :openti
         return nothing
     end
     @assert !isnothing(firstix) && (firstindex(f6.fdf[!, :opentime]) <= firstix <= lastix <= lastindex(f6.fdf[!, :opentime])) "firstindex=$(firstindex(f6.fdf[!, :opentime])) <= firstix=$firstix <= lastix=$lastix <= lastindex=$(lastindex(f6.fdf[!, :opentime]))"
-    if (firstix==firstindex(f6.fdf, 1)) && (lastix==lastindex(f6.fdf, 1))
-        return f6.fdf
-    else
-        return view(f6.fdf, firstix:lastix, :)
-    end
+    return view(f6.fdf, firstix:lastix, Not(:opentime))
 end
 
 function features(f6::Features006, startdt::DateTime, enddt::DateTime)
@@ -1640,7 +1669,7 @@ function supplement!(f5::Features005)
         end
         win = configrow.second
         offset = configrow.fourth
-        #TODO calc rolling regressioin run of same length than ohlcv, supplement from f4 and restore them.use offset as view vector
+        # obsolete TODO calc rolling regressioin run of same length than ohlcv, supplement from f4 and restore them.use offset as view vector
         if configrow.first == "rw"
             fc = f5.cfgdf
             regryrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== win) .&& (fc[!, :third] .== "regry") .&& (fc[!, :fourth] .== offset), :])
@@ -1838,7 +1867,7 @@ function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastin
     return isnothing(supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)) ? nothing : f4
 end
 
-#TODO add regression test
+# obsolete TODO add regression test
 mnemonic(f4::Features004) = uppercase(f4.basecoin) * "_" * uppercase(f4.quotecoin) * "_" * "_F4"
 ohlcvix(f4::Features004, featureix) = featureix + f4.ohlcvoffset
 featureix(f4::Features004, ohlcvix) = ohlcvix - f4.ohlcvoffset

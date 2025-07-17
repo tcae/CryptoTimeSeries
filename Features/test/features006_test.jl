@@ -28,6 +28,8 @@ function f6config(ohlcv)
     return f6
 end
 
+#TODO supplement tests of a ohlcv view
+
 @testset "Features006 tests" begin
     startdt = DateTime("2023-02-17T13:30:00")
     enddt = startdt + Hour(20) - Minute(1) 
@@ -38,6 +40,12 @@ end
     # Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     f6 = f6config(ohlcv)
     (verbosity >= 3) && println("f6 $f6, fdf size=$(size(f6.fdf)), fdfno size=$(size(f6.fdfno)), fdf describe $(describe(f6.fdf)), fdfno describe $(describe(f6.fdfno))")
+    os = 2
+    ryf = Features._regry(f6, window=5, offset=os)
+    ryffdfcol = Features.fdfcol(f6, ryf)
+    ryffdfnocol = Features.fdfnocol(f6, ryf)
+    (verbosity >= 3) && println("f6.fdf[end, $ryffdfcol]=$(f6.fdf[end, ryffdfcol]), f6.fdfno[end-$os, $ryffdfnocol]=$(f6.fdfno[end-os, ryffdfnocol])")
+    @test f6.fdf[end, ryffdfcol] == f6.fdfno[end-os, ryffdfnocol]
 
     @test size(f6.fdf, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1) - f6.maxoffset
     @test size(f6.fdfno, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1)
@@ -86,8 +94,23 @@ end
         (verbosity >= 3) && println("short extended $n test fdf=$(all(f6.fdf[!,n] .== f6short.fdf[!,n]))")
         @test all(f6.fdf[!,n] .== f6short.fdf[!,n])
     end
+    featdf = Features.features(f6)
+    (verbosity >= 3) && println("names(f6, features)=$(names(featdf))")
+    @test length(names(featdf)) == length(names(f6.fdf)) - 1 # without opentime
+    @test size(featdf, 1) == size(f6.fdf, 1)
+
 
     @test all(Matrix(f6.fdf) .== Matrix(f6short.fdf))
+
+    (verbosity >= 3) && (Features.verbosity = 3)
+    ohlcv = CryptoXch.cryptodownload(xc, "BTC", "1m", startdt, enddt)
+    Ohlcv.timerangecut!(ohlcv, startdt, enddt)
+    f6 = Features.Features006()
+    Features.addregry!(f6, window=4*60, offset=2)
+    Features.setbase!(f6, ohlcv, usecache=true)
+    (verbosity >= 3) && println("f6=$f6 size(f6.fdfno)=$(size(f6.fdfno))  size(f6.fdf)=$(size(f6.fdf)) names(f6.fdfno)=$(names(f6.fdfno)) names(f6.fdf)=$(names(f6.fdf)) ohlcv=$(f6.ohlcv)")
+    @test size(f6.fdfno, 1) - f6.maxoffset == size(f6.fdf, 1)
+    @test size(f6.fdfno, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1)
 
 
 end # testset
