@@ -506,8 +506,8 @@ function liquidcoins(; minquotevol=ld.minquotevol, accumulate=ld.accumulate, che
     return res
 end
 
-"Returns the minimum daily qote volume for the case of an uniform distribution over checkperiod"
-liquiddailyminimumquotevolume(;minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod) = checkperiod / accumulate * minquotevol
+"Returns the minimum daily quote volume for the case of an uniform distribution over checkperiod times heuristic factor"
+liquiddailyminimumquotevolume(;minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod) = 2 * checkperiod * minquotevol / accumulate
 
 
 """

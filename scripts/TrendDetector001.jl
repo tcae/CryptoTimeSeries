@@ -22,7 +22,7 @@ using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils
 using CategoricalArrays
 using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
 
-#TODO regression from last trend pivot as feature
+#TODO regression from last trend pivot as feature 
 """
 verbosity =
 - 0: suppress all output if not an error
@@ -156,14 +156,13 @@ function featurestargetsliquidranges!(settypesdf, rangedf, basecoin, featconfig,
         end
     end
     sort!(rangedf, :ohlcvrange)
-    addperiodgap!(rangedf)
 
     featuresfname = Dict() # key = settype, value = filename without path
     targetsfname = Dict() # key = settype, value = filename without path
     for settype in levels(samplesets)
-        featuresfname[settype] = settype * "_" * Features.describe(featconfig) * ".jdf"
-        targetsfname[settype] = settype * "_" * Targets.describe(trgconfig) * ".jdf"
-        push!(settypesdf, (coin=ohlcv.base, settype=settype, featuresfname=featuresfname[settype], targetsfname=targetsfname[settype]))
+        featuresfname[settype] = settype * "_features_" * ohlcv.base * ".jdf"
+        targetsfname[settype] = settype * "_targets_" * ohlcv.base * ".jdf"
+        push!(settypesdf, (coin=ohlcv.base, settype=settype, featuresconfig=Features.describe(featconfig), featuresfname=featuresfname[settype], targetsconfig=Targets.describe(trgconfig), targetsfname=targetsfname[settype]))
 
         savedflogfolder(featuresdict[settype], featuresfname[settype])
         savedflogfolder(targetsdict[settype], targetsfname[settype])
@@ -328,43 +327,53 @@ function liquidcoinstest()
     # println(gdf[kpidf[2, :groupindex]])
 end
 
-function AdaTest()
-    EnvConfig.setlogpath("2528-TrendDetector001-Ada")
-    rangedf = DataFrame()
-    settypesdf = DataFrame()
+function featurestargetscollect(coins)
+    EnvConfig.setlogpath("2528-TrendDetector001-CollectSets")
     featconfig = f6config01()
     trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01)
-    fdict, tdict = featurestargetsliquidranges!(settypesdf, rangedf, "ADA", featconfig, trgconfig)
-    println("ADA rangedf: $rangedf")
-    println("ADA settypesdf: $settypesdf")
+    rangedf = DataFrame()
+    settypesdf = DataFrame()
+    coincollect = []
+    for coin in coins
+        fdict, tdict = featurestargetsliquidranges!(settypesdf, rangedf, coin, featconfig, trgconfig)
+        # println("$coin rangedf: $rangedf")
+        println("$coin settypesdf: $settypesdf")
 
-    savedflogfolder(rangedf[!, Not([:period, :gap])], rangefilename())
-    savedflogfolder(settypesdf, settypesfilename())
+        # savedflogfolder(rangedf[!, Not([:period, :gap])], rangefilename())  # with period and gap columns added before
+        savedflogfolder(rangedf, rangefilename())  # without period and gap columns added before
+        savedflogfolder(settypesdf, settypesfilename())
 
-    for settype in ["train", "test", "eval"]
-        println("$settype: featuressize=$(size(fdict[settype])) targetssize=$(size(tdict[settype]))")
+        for settype in ["train", "test", "eval"]
+            println("$settype: featuressize=$(size(fdict[settype])) targetssize=$(size(tdict[settype])) equal samples: $(size(fdict[settype],1)==size(tdict[settype],1))")
+        end
+        push!(coincollect, (coin=coin, fdict=fdict, tdict=tdict))
     end
-
-    #TODO read settypesdf then read features and targets and compare sizes with fdict, tdict
-    rangedf2 = readdflogfolder(rangefilename())
-    addperiodgap!(rangedf2)
-    println("rangedf equal test = $(rangedf==rangedf2)")
-    settypesdf2 = readdflogfolder(settypesfilename())
-    println("settypesdf equal test = $(settypesdf==settypesdf2)")
-    featuresfname = Dict() # key = settype, value = filename without path
-    targetsfname = Dict() # key = settype, value = filename without path
-    featuresdict = Dict() # key = settype, value = DataFrame
-    targetsdict = Dict() # key = settype, value = DataFrame
-    for settype in unique(settypesdf2[!, :settype])
-        featuresfname[settype] = settypesdf2[(settypesdf2[!, :coin] .== "ADA") .&& (settypesdf2[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
-        targetsfname[settype] = settypesdf2[(settypesdf2[!, :coin] .== "ADA") .&& (settypesdf2[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
-        featuresdict[settype] = readdflogfolder(featuresfname[settype])
-        targetsdict[settype] = readdflogfolder(targetsfname[settype])
-        println("features[$settype] size equal test = $(size(featuresdict[settype])==size(fdict[settype]))")
-        println("targets[$settype] size equal test = $(size(targetsdict[settype])==size(tdict[settype]))")
-        println("features[$settype] equal test = $(featuresdict[settype]==fdict[settype])")
-        println("targets[$settype] equal test = $(targetsdict[settype]==tdict[settype])")
+    println("len(coins)=$(length(coins)), len(coincollect)=$(length(coincollect))")
+    for ct in coincollect
+        coin = ct.coin
+        fdict = ct.fdict
+        tdict = ct.tdict
+        rangedf2 = readdflogfolder(rangefilename())
+        # addperiodgap!(rangedf2)
+        println("rangedf equal test = $(rangedf==rangedf2)")
+        settypesdf2 = readdflogfolder(settypesfilename())
+        println("settypesdf equal test = $(settypesdf==settypesdf2)")
+        featuresfname = Dict() # key = settype, value = filename without path
+        targetsfname = Dict() # key = settype, value = filename without path
+        featuresdict = Dict() # key = settype, value = DataFrame
+        targetsdict = Dict() # key = settype, value = DataFrame
+        for settype in unique(settypesdf2[!, :settype])
+            featuresfname[settype] = settypesdf2[(settypesdf2[!, :coin] .== coin) .&& (settypesdf2[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
+            targetsfname[settype] = settypesdf2[(settypesdf2[!, :coin] .== coin) .&& (settypesdf2[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
+            featuresdict[settype] = readdflogfolder(featuresfname[settype])
+            targetsdict[settype] = readdflogfolder(targetsfname[settype])
+            println("features[$settype] size equal test = $(size(featuresdict[settype])==size(fdict[settype]))")
+            println("targets[$settype] size equal test = $(size(targetsdict[settype])==size(tdict[settype]))")
+            println("features[$settype] equal test = $(featuresdict[settype]==fdict[settype])")
+            println("targets[$settype] equal test = $(targetsdict[settype]==tdict[settype])")
+        end
     end
+    # addperiodgap!(rangedf)
 end
 
 
@@ -390,6 +399,6 @@ Classify.verbosity = 1
 # nn = Classify.loadnn("NNTrendDetector10pct30minutes_24-12-21_21-53-16_gitSHA-083e1b7c51352cfd06775b0426632796d5e881eb") # no class balancing
 # evalclassifier(nn)
 
-AdaTest()
+featurestargetscollect(["ADA", "LTC"])
 println("done")
 end # of TrendDetector001

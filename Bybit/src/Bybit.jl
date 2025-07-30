@@ -17,7 +17,7 @@ verbosity =
 """
 verbosity = 1
 
-const _recvwindow = "5000"
+const _recvwindow = "5000000"  # "5000" extended by factor 1000 due to nanoseconds in julia
 const _klineinterval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
 const interval2bybitinterval = Dict(
     "1m" => "1",
@@ -78,12 +78,13 @@ end
 _dict2paramspost(dict::Union{Dict, Nothing}) = isnothing(dict) ? "" : JSON3.write(dict)
 
 function timestamp()
-    if Sys.isapple()
-        Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1000))
-    else
-        Int64(floor(Dates.datetime2unix(Dates.now())))
-        # Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC))))
-    end
+    Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1000))
+    # if Sys.isapple()
+    #     Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1000))
+    # else
+    #     Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC))))
+    #     # Int64(floor(Dates.datetime2unix(Dates.now(Dates.UTC))))
+    # end
     # if Sys.islinux()
     #     # rootpath = joinpath(@__DIR__, "..")
     #     println("Linux, rootpath: $rootpath, homepath: $(homedir())")

@@ -54,7 +54,7 @@ ohlcv(xc::XchCache, base::AbstractString) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
 basenottradable = ["MATIC", "FTM"]
-basestablecoin = ["USD", "USDT", "TUSD", "BUSD", "USDC", "USDE", "EUR", "DAI"]
+basestablecoin = ["USD", "USD1", "USDT", "TUSD", "BUSD", "USDC", "USDE", "EUR", "DAI"]
 quotecoins = ["USDT"]  # , "USDC"]
 baseignore = uppercase.(union(basestablecoin, basenottradable))
 minimumquotevolume = 10  # USDT

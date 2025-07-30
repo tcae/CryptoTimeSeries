@@ -102,7 +102,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     end
     tc.cfg[:, :datetime] .= datetime
     # tc.cfg[:, :validbase] = [CryptoXch.validbase(tc.xc, base) for base in tc.cfg[!, :basecoin]] # is already filtered by getUSDTmarket
-    minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0)
+    minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) # ignore allcoins with less than liquiddailyminimumquotevolume
     tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in assetbases for base in tc.cfg[!, :basecoin]]
