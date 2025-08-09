@@ -20,6 +20,7 @@ classes: binary longbuy yes vs no (=longclose) with hysteresis using likelihood 
 module TrendDetector001
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils
 using CategoricalArrays
+using Distributions
 using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
 
 #TODO regression from last trend pivot as feature 
@@ -204,6 +205,8 @@ function readdflogfolder(filename)
     return df
 end
 
+isdflogfolder(filename) = isdir(EnvConfig.logpath(filename))
+
 trendsineconfig() = Targets.Trend(5, 30, Targets.thresholds((longbuy=0.1, longhold=0.005, shorthold=-0.005, shortbuy=-0.1)))
 
 function sinetest2()
@@ -327,10 +330,7 @@ function liquidcoinstest()
     # println(gdf[kpidf[2, :groupindex]])
 end
 
-function featurestargetscollect(coins)
-    EnvConfig.setlogpath("2528-TrendDetector001-CollectSets")
-    featconfig = f6config01()
-    trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01)
+function featurestargetscollect(coins, featconfig, trgconfig)
     rangedf = DataFrame()
     settypesdf = DataFrame()
     coincollect = []
@@ -376,16 +376,154 @@ function featurestargetscollect(coins)
     # addperiodgap!(rangedf)
 end
 
+classifiermenmonic(coins, coinix) = "model001_" * (isnothing(coinix) ? "mix" : coins[coinix])
 
-EnvConfig.init(production)
-# EnvConfig.init(test)
-# EnvConfig.init(training)
-Ohlcv.verbosity = 1
-CryptoXch.verbosity = 1
-Features.verbosity = 1
-Targets.verbosity = 2
-EnvConfig.verbosity = 1
-Classify.verbosity = 1
+function getlatestclassifier(coins, coinix, featureconfig, targetconfig)
+    if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
+        nn = Classify.loadnn(filename)
+    else
+        nn = Classify.model001(Features.featurecount(featureconfig), [longbuy, allclose], classifiermenmonic(coins, coinix))
+    end
+end
+
+function getfeaturestargets(settypesdf, settype, coin)
+    featuresfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
+    targetsfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
+    features = readdflogfolder(featuresfname)
+    features = Array(features)  # change from df to array
+    features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
+    targets = readdflogfolder(targetsfname)[!, :targets]
+    (verbosity >= 3) && println("typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
+    return features, targets
+end
+
+function adaptclassifierwithcoin!(nn::Classify.NN, settypesdf, coin)
+    trainfeatures, traintargets = getfeaturestargets(settypesdf, "train", coin)
+    # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
+    (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
+    # (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
+    println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
+    adaptnn!(nn, trainfeatures, traintargets)
+    EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
+    Classify.savenn(nn)
+end
+
+function adaptclassifier(coins, coinix, featconfig, trgconfig)
+    @assert length(coins) > 0
+    coinix = isnothing(coinix) || (coinix < firstindex(coins)) || (coinix > lasindex(coins)) ? nothing : coinix
+    # if classifier filedoes not exist then create one
+    nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
+    settypesdf = readdflogfolder(settypesfilename())
+    if isnothing(coinix) # adapt a mix classifier with all coins
+        for coin in coins
+            adaptclassifierwithcoin!(nn, settypesdf, coin)
+        end
+    else  # adapt a coin specific classifier with all coins
+        if !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
+            nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
+            Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
+            adaptclassifierwithcoin!(nn, settypesdf, coins[coinix])
+        end
+    end
+    return nn
+end
+
+function inspect()
+    if isdflogfolder(settypesfilename())
+        settypesdf = readdflogfolder(settypesfilename())
+        println(EnvConfig.logpath(settypesfilename()))
+        println(settypesdf[begin:begin+2, :])
+        # println(describe(settypesdf))
+        println("set types: $(unique(settypesdf[!, :settype]))")
+        println("coins: $(unique(settypesdf[!, :coin]))")
+        ok = true
+        lbls = []
+        for strow in eachrow(settypesdf)
+            fdf = readdflogfolder(strow.featuresfname)
+            if size(fdf, 1) == 0
+                println("empty dataframe for $(EnvConfig.logpath(strow.featuresfname))")
+                ok = false
+            end
+            tdf = readdflogfolder(strow.targetsfname)
+            if size(tdf, 1) == 0
+                println("empty dataframe for $(EnvConfig.logpath(strow.targetsfname))")
+                ok = false
+            else
+                lbls2 = sort(unique(tdf[!, :targets]))
+                if (length(lbls) > 0)
+                    if lbls != lbls2
+                        println("different labels: so far $lbls, $(strow.coin)/$(strow.settype) $lbls2")
+                    end
+                else
+                    lbls = lbls2
+                    println("labels: $(Tuple(lbls)), label strings: $(string.(collect(lbls)))")
+                    println(tdf[begin, :])
+                    println(fdf[begin, :])
+                end
+            end
+        end
+    else
+        @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
+    end
+    rangedf = readdflogfolder(rangefilename())
+    println(EnvConfig.logpath(rangefilename()))
+    println(rangedf[begin:begin+2, :])
+end
+
+println("$PROGRAM_FILE ARGS=$ARGS")
+testmode = "test" in ARGS
+testmode = true
+inspectonly = "inspect" in ARGS
+# inspectonly = true
+
+EnvConfig.init(testmode ? test : training)
+EnvConfig.setlogpath("2528-TrendDetector001-CollectSets-$(EnvConfig.configmode)")
+println("log folder: $(EnvConfig.logfolder())")
+
+if inspectonly
+    verbosity = 1
+    Ohlcv.verbosity = 1
+    CryptoXch.verbosity = 1
+    Features.verbosity = 1
+    Targets.verbosity = 1
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1
+    inspect()
+else
+    verbosity = 3
+    if testmode 
+        Ohlcv.verbosity = 3
+        CryptoXch.verbosity = 3
+        Features.verbosity = 3
+        Targets.verbosity = 2
+        EnvConfig.verbosity = 1
+        Classify.verbosity = 3
+        coins = ["SINE", "DOUBLESINE"]
+    else
+        Ohlcv.verbosity = 1
+        CryptoXch.verbosity = 1
+        Features.verbosity = 1
+        Targets.verbosity = 1
+        EnvConfig.verbosity = 1
+        Classify.verbosity = 1
+        coins = ["ADA", "LTC"]
+    end
+
+    featconfig = f6config01()
+    trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01)
+
+    if !isdflogfolder(settypesfilename())
+        featurestargetscollect(coins, featconfig, trgconfig)
+    else
+        println("skipping featurestargetscollect - seems to be already done")
+    end
+    if isdflogfolder(settypesfilename())
+        println("adapting mix classifier now")
+        adaptclassifier(coins, nothing, featconfig, trgconfig)
+    else
+        @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
+    end
+end
 
 # EnvConfig.setlogpath("2524-TrendDetector001-Sine")
 # nn = sinetest()
@@ -399,6 +537,5 @@ Classify.verbosity = 1
 # nn = Classify.loadnn("NNTrendDetector10pct30minutes_24-12-21_21-53-16_gitSHA-083e1b7c51352cfd06775b0426632796d5e881eb") # no class balancing
 # evalclassifier(nn)
 
-featurestargetscollect(["ADA", "LTC"])
 println("done")
 end # of TrendDetector001

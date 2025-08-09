@@ -35,7 +35,7 @@ else
     println(ad1.basedf)
     cls = Classify.evaluate!(cls, xc, ad1.basedf[!, :base], Classify.STDREGRWINDOWSET, Classify.STDGAINTHRSHLDSET, startdt, enddt)
     kpifilename = EnvConfig.logpath("cls001evaluate.csv")
-    EnvConfig.checkbackup(kpifilename)
+    EnvConfig.savebackup(kpifilename)
     CSV.write(kpifilename, cls.cfg, decimal=',', delim=';')  # decimal as , to consume with European locale
 end
 

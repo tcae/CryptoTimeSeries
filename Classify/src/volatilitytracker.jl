@@ -242,7 +242,7 @@ end
 
 function savestudy(tradedf)
     tradefilename = EnvConfig.logpath(VOLATILITYSTUDYTRADEFILE)
-    EnvConfig.checkbackup(tradefilename)
+    EnvConfig.savebackup(tradefilename)
     try
         JDF.savejdf(tradefilename, tradedf)
         println("$(EnvConfig.now()) saved tradedf as $tradefilename with size $(size(tradedf, 1)) of assets $(unique(tradedf[!, :asset]))")
@@ -295,7 +295,7 @@ function trackasset(bases, startdt=nothing, period=nothing)
     calckpi!(kpidf, tradedf, bases, rkeys, trendrwfactors, buygainthresholds, sellgainthresholds, buygaps, sellgaps, selfmonitorset, stdcheckset, maxconcurrentbuyset, longshortset)
     println(kpidf)
     kpifilename = EnvConfig.logpath(VOLATILITYSTUDYKPIFILE)
-    EnvConfig.checkbackup(kpifilename)
+    EnvConfig.savebackup(kpifilename)
     CSV.write(kpifilename, kpidf, decimal=',', delim=';')  # decimal as , to consume with European locale
     println("done")
 end

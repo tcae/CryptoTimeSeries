@@ -117,9 +117,6 @@ function basequote(symbol)
     return isnothing(range) ? nothing : (basecoin = symbol[begin:range[1]-1], quotecoin = symbol[range])
 end
 
-"Returns a vector of basecoin strings that are supported generated test basecoins of periodic patterns"
-testbasecoin() = TestOhlcv.testbasecoin()
-
 #endregion support
 
 #region time
@@ -217,7 +214,7 @@ Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> wee
 """
 function _ohlcfromexchange(xc::XchCache, base::AbstractString, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
     df = nothing
-    if base in testbasecoin()
+    if base in TestOhlcv.testbasecoin()
         df = TestOhlcv.testdataframe(base, startdt, enddt, interval, cryptoquote)
         # pivot column is already added by TestOhlcv.testdataframe()
     else
@@ -396,7 +393,7 @@ function validsymbol(xc::XchCache, symbol)
     r = Bybit.validsymbol(xc.bc, sym) &&
         !(sym.basecoin in baseignore) &&
         !_isleveraged(sym.basecoin)
-    return r || (basequote(symbol).basecoin in testbasecoin())
+    return r || (basequote(symbol).basecoin in TestOhlcv.testbasecoin())
 end
 
 "Returns a tuple of (minimum base quantity, minimum quote quantity)"
@@ -461,9 +458,28 @@ Returns a dataframe with 24h values of all USDT quotecoin bases that are not in 
 - askprice
 - bidprice
 
-In case of timesimulation(xc) == true a canned USDTmarket file will be used - if one is present.
+getUSDTmarket: 512×6 DataFrame
+ Row │ askprice       bidprice       lastprice      quotevolume24h  pricechangepercent  basecoin
+     │ Float32        Float32        Float32        Float32         Float32             String
+─────┼───────────────────────────────────────────────────────────────────────────────────────────
+   1 │    0.65           0.6499         0.6499           6.51727e6             -0.0536  OP
+
+
+   In case of timesimulation(xc) == true a canned USDTmarket file will be used - if one is present.
 """
 function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
+    if EnvConfig.configmode == test
+        usdtdf = _emptymarkets()
+        for basecoin in TestOhlcv.testbasecoin()
+            ohlcv = TestOhlcv.testohlcv(basecoin, dt - Day(1) + Minute(1), dt)
+            odf = Ohlcv.dataframe(ohlcv)
+            vol24h = sum(odf[!, :basevolume] .* odf[!, :pivot])
+            push!(usdtdf, (basecoin=basecoin, quotevolume24h=vol24h, pricechangepercent=((odf[end, :close] - odf[begin, :open]) / odf[begin, :open]), lastprice=odf[end, :close], askprice=odf[end, :close]*1.00001, bidprice=odf[end, :close]*0.99999))
+            # println("base=$basecoin, rows=$(size(odf, 1)), start=$(odf[begin, :opentime]), stop=$(odf[end, :opentime])")
+        end
+        return usdtdf
+    end
+
     if timesimulation(xc)
         usdtdf = _emptymarkets()
         cfgfilename = _usdtmarketfilename(CryptoXch.USDTMARKETFILE, dt)

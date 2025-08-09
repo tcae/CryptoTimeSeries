@@ -26,9 +26,10 @@ verbosity = 1
 
 
 """
-returns all possible labels (don't change sequence because index is used as class id). "allclose" is default.
+returns all possible labels. "allclose" is default.
 """
-tradelabels() = [string(lbl) for lbl in instances(TradeLabel)]
+# tradelabels() = [string(lbl) for lbl in instances(TradeLabel)]
+tradelabels() = [lbl for lbl in instances(TradeLabel)]
 @enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose=-1 allclose=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5 ignore=9
 
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
@@ -44,10 +45,8 @@ function removebase!(targets::AbstractTargets) error("not implemented") end
 "Add newer targets to match the recent timeline of ohlcv with the newest ohlcv datapoints, i.e. datapoints newer than last(features)"
 function supplement!(targets::AbstractTargets) error("not implemented") end
 
-"Returns a vector with all supported labels ::String, which is a subset(tradelabels())"
-function tradelabels(targets::AbstractTargets) 
-    return tradelabels()
-end
+"Returns a vector with all supported labels ::TradeLabel"
+function tradelabels(targets::AbstractTargets)::AbstractVector error("not implemented") end
 
 "provides a target label Bool vector of the given label"
 function labelbinarytargets(targets::AbstractTargets, label::TradeLabel, firstix::Integer, lastix::Integer) error("not implemented") end
@@ -843,7 +842,7 @@ function supplement!(trd::Trend)
     end
 end
 
-tradelabels(trd::Trend) = ["longbuy", "shortbuy", "allclose"]
+tradelabels(trd::Trend) = [longbuy, shortbuy, allclose]
 
 function timerangecut!(trd::Trend)
     if isnothing(trd.ohlcv)

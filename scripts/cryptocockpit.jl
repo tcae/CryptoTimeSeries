@@ -466,9 +466,12 @@ function spreadtraces(cp, base, ohlcvdf, window, normref)
     @assert size(ohlcvdf, 1) == size(regr, 1) "size(ohlcvdf, 1)=$(size(ohlcvdf, 1)) != size(regr, 1)=$(size(regr, 1))"
 
     xarea = vcat(ohlcvdf[!, :opentime], reverse(ohlcvdf[!, :opentime]))
-    yarea = vcat(regr[!, :regry] * 1.01f0, reverse(regr[!, :regry] * 0.99f0))
+    #TODO replace 1% and 2% BAND AROUND REGRY WITH * STD AND 2 * STD
+    # yarea = vcat(regr[!, :regry] * 1.01f0, reverse(regr[!, :regry] * 0.99f0))
+    yarea = vcat(regr[!, :regry] + regr[!, :std], reverse(regr[!, :regry] - regr[!, :std]))
     s2 = scatter(x=xarea, y=normpercent(cp, yarea, normref), fill="toself", fillcolor="rgba(0,100,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
-    yarea = vcat(regr[!, :regry] * 1.02f0, reverse(regr[!, :regry] * 0.98f0))
+    # yarea = vcat(regr[!, :regry] * 1.02f0, reverse(regr[!, :regry] * 0.98f0))
+    yarea = vcat(regr[!, :regry] + 2 * regr[!, :std], reverse(regr[!, :regry] - 2 * regr[!, :std]))
     s3 = scatter(x=xarea, y=normpercent(cp, yarea, normref), fill="toself", fillcolor="rgba(0,80,80,0.2)", line=attr(color="rgba(255,255,255,0)"), hoverinfo="skip", showlegend=false)
 
     y = regr[!, :regry]

@@ -188,7 +188,7 @@ function write(tc::TradeCache, timestamp::Union{Nothing, DateTime}=nothing)
         return
     end
     cfgfilename = _cfgfilename(nothing)
-    # EnvConfig.checkbackup(cfgfilename)
+    # EnvConfig.savebackup(cfgfilename)
     if isdir(cfgfilename)
         rm(cfgfilename; force=true, recursive=true)
     end
@@ -206,7 +206,7 @@ Will return the already stored trade strategy config, if filename from the same 
 If no trade strategy config can be loaded then `nothing` is returned.
 """
 function readconfig!(tc::TradeCache, datetime)
-    df = DataFrame()
+    tc.cfg = df = DataFrame() # old cfg is in either case discarded
     cfgfilename = _cfgfilename(datetime, "jdf")
     if isdir(cfgfilename)
         df = DataFrame(JDF.loadjdf(cfgfilename))
@@ -245,6 +245,7 @@ function read!(tc::TradeCache, datetime=nothing)
         end
         classifierbases = Classify.bases(tc.cl)
         if (length(classifierbases) != count(tc.cfg[:, :classifieraccepted]))
+            #TODO that can happen, e.g. loading production coins in cockpit and then switching to test - requires xc and classifier cleanup with loading of config
             @error "length(classifierbases)=$(length(classifierbases)) != count(tc.cfg[:, :classifieraccepted])=$(count(tc.cfg[:, :classifieraccepted]))"
         end
         tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]] #! redundant with previous if check?

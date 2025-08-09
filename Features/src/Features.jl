@@ -18,36 +18,39 @@ using EnvConfig, Ohlcv
 "Defines the features interface that shall be provided by all feature implementations."
 abstract type AbstractFeatures <: EnvConfig.AbstractConfiguration end
 
+"Returns the number of configured features"
+function featurecount(features::AbstractFeatures) error("not implemented") end
+
 "Adds a coin with OhlcvData to the feature generation. It will remove any previously added ohlcv and corresponding features."
-function setbase!(features::AbstractFeatures, ohlcv::Ohlcv.OhlcvData) end
+function setbase!(features::AbstractFeatures, ohlcv::Ohlcv.OhlcvData) error("not implemented") end
 
 "Removes any previously added ohlcv and corresponding the features."
-function removebase!(features::AbstractFeatures) end
+function removebase!(features::AbstractFeatures) error("not implemented") end
 
 "Returns the OhlcvData reference of features"
-function ohlcv(features::AbstractFeatures) end
+function ohlcv(features::AbstractFeatures) error("not implemented") end
 
 "Returns a dataframe view that matches the f5 features time range of the last added ohlcv"
-function ohlcvdfview(features::AbstractFeatures) end
+function ohlcvdfview(features::AbstractFeatures) error("not implemented") end
 
 "Provides a description that characterizes the features"
-function describe(features::AbstractFeatures)::String end
+function describe(features::AbstractFeatures)::String error("not implemented") end
 
 "Defines the number of minutes history required to provide the first suitable feature set"
-requiredminutes(features::AbstractFeatures) = 0
+function requiredminutes(features::AbstractFeatures) error("not implemented") end
 
 "Add newer features to match the recent timeline of ohlcv[firstix:lastix] with the newest ohlcv datapoints, i.e. datapoints newer than last(features)"
-function supplement!(features::AbstractFeatures) end
+function supplement!(features::AbstractFeatures) error("not implemented") end
 
 "returns a features dataframe of the requested range"
-function features(features::AbstractFeatures, firstix::Integer, lastix::Integer) end
-function features(features::AbstractFeatures, firstix::DateTime, lastix::DateTime) end
+function features(features::AbstractFeatures, firstix::Integer, lastix::Integer) error("not implemented") end
+function features(features::AbstractFeatures, firstix::DateTime, lastix::DateTime) error("not implemented") end
 
 "returns the opentime vector of features"
-function opentime(features::AbstractFeatures) end
+function opentime(features::AbstractFeatures) error("not implemented") end
 
 "Cuts the features time range to match the ohlcv time range that was used to derive the features"
-function timerangecut!(features::AbstractFeatures) end
+function timerangecut!(features::AbstractFeatures) error("not implemented") end
 
 #endregion abstract-features
 
@@ -876,6 +879,7 @@ fdfcol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.
 
 f6requested(f6::Features006) = f6.requested
 f6all(f6::Features006) = union(f6.required, f6.requested)
+featurecount(f6::Features006) = length(f6requested(f6))
 
 "adds feature configuration of last y position of linear regression characterized by regression window [minutes] and offset [minutes]"
 function addregry!(f6::Features006; window::Integer=15, offset::Integer=0)
@@ -1549,37 +1553,33 @@ function file(f5::Features005)
 end
 
 function write(f5::Features005)
-    if EnvConfig.configmode == production
-        if !isnothing(f5.fdf) && !isnothing(f5.ohlcv)
-            fn = file(f5)
-            if !f5.complete || (size(f5.fdf, 1) == 0)
-                (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to incomplete data=$(f5.complete) or empty data: size(f5.fdf)=$(size(f5.fdf))")
-                return
+    if !isnothing(f5.fdf) && !isnothing(f5.ohlcv)
+        fn = file(f5)
+        if !f5.complete || (size(f5.fdf, 1) == 0)
+            (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to incomplete data=$(f5.complete) or empty data: size(f5.fdf)=$(size(f5.fdf))")
+            return
+        end
+        if !isnothing(f5.latestloadeddt) && (f5.latestloadeddt >= f5.fdf[end, :opentime])
+            (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to already stored data:$(f5.latestloadeddt) >= $(f5.fdf[end, :opentime])")
+            return
+        end
+        df = DataFrame()
+        for configrow in eachrow(f5.cfgdf)
+            if configrow.save
+                savecol = configrow.first == "opentime" ? "opentime" : join([string(configrow.second), string(configrow.third)], "_")
+                df[:, savecol] = f5.fdf[!, configrow.config]
             end
-            if !isnothing(f5.latestloadeddt) && (f5.latestloadeddt >= f5.fdf[end, :opentime])
-                (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to already stored data:$(f5.latestloadeddt) >= $(f5.fdf[end, :opentime])")
-                return
-            end
-            df = DataFrame()
-            for configrow in eachrow(f5.cfgdf)
-                if configrow.save
-                    savecol = configrow.first == "opentime" ? "opentime" : join([string(configrow.second), string(configrow.third)], "_")
-                    df[:, savecol] = f5.fdf[!, configrow.config]
-                end
-            end
-            try
-                JDF.savejdf(fn.filename, df[!, :])
-                (verbosity >= 2) && println("$(EnvConfig.now()) saved F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
-                f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
-            catch e
-                Logging.@error "exception $e detected when writing $(fn.filename)"
-            end
-        else
-            (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5 - nothing to write")
-            (verbosity >= 2) && isnothing(f5.ohlcv) && println("no ohlcv found in F5 - missing base info required to write")
+        end
+        try
+            JDF.savejdf(fn.filename, df[!, :])
+            (verbosity >= 2) && println("$(EnvConfig.now()) saved F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
+            f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
+        catch e
+            Logging.@error "exception $e detected when writing $(fn.filename)"
         end
     else
-        (verbosity >= 2) && println("no F5.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data")
+        (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5 - nothing to write")
+        (verbosity >= 2) && isnothing(f5.ohlcv) && println("no ohlcv found in F5 - missing base info required to write")
     end
 end
 
@@ -2024,22 +2024,18 @@ function file(f4::Features004)
 end
 
 function write(f4::Features004)
-    if EnvConfig.configmode == production
-        @assert _equaltimes(f4)
-        df = _join(f4)
-        if !isnothing(f4.latestloadeddt) && (f4.latestloadeddt >= df[end, :opentime])
-            (verbosity >= 3) && println("$(EnvConfig.now()) F4 not written due to missing supplementations of already stored data")
-            return
-        end
-        fn = file(f4)
-        try
-            JDF.savejdf(fn.filename, df[!, :])
-            (verbosity >= 2) && println("$(EnvConfig.now()) saved F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
-        catch e
-            Logging.@error "exception $e detected when writing $(fn.filename)"
-        end
-    else
-        (verbosity >= 2) && println("no F4.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data")
+    @assert _equaltimes(f4)
+    df = _join(f4)
+    if !isnothing(f4.latestloadeddt) && (f4.latestloadeddt >= df[end, :opentime])
+        (verbosity >= 3) && println("$(EnvConfig.now()) F4 not written due to missing supplementations of already stored data")
+        return
+    end
+    fn = file(f4)
+    try
+        JDF.savejdf(fn.filename, df[!, :])
+        (verbosity >= 2) && println("$(EnvConfig.now()) saved F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
+    catch e
+        Logging.@error "exception $e detected when writing $(fn.filename)"
     end
 end
 

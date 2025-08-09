@@ -352,7 +352,7 @@ function kpioverview(df::AbstractDataFrame, classifiertype)
         end
         # println(rdf)
         rdffilename = EnvConfig.logpath(string(classifiertype) * "simulationresult.csv")
-        EnvConfig.checkbackup(rdffilename)
+        EnvConfig.savebackup(rdffilename)
         CSV.write(rdffilename, rdf, decimal=',', delim=';')  # decimal as , to consume with European locale
         return rdf, gdf
     else
@@ -379,8 +379,15 @@ mutable struct NN
     predictions::Vector{String}  # filename vector without suffix of predictions
 end
 
-function NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix)
+function NN(model, optim, lossfunc, labels, description, mnemonic="", fileprefix="")
     return NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix, String[], "", "", [], String[])
+end
+
+isadapted(nn::NN) = length(nn.losses) > 0
+
+function setmnemonic(nn::NN, mnemonic)
+    nn.mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
+    nn.fileprefix = mnemonic
 end
 
 function Base.show(io::IO, nn::NN)
@@ -828,11 +835,9 @@ function model001(featurecount, labels, mnemonic)::NN
     lossfunc = Flux.logitcrossentropy
 
     description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
-    mnemonic = "NN" * (isnothing(mnemonic) ? "" : "$(mnemonic)")
-    fileprefix = mnemonic * "_" * EnvConfig.runid()
-    lsv = [string(lbl) for lbl in labels]
-    println("NN labels $lsv")
-    nn = NN(model, optim, lossfunc, lsv, description, mnemonic, fileprefix)
+    println("NN labels $(string.(labels))")
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
     return nn
 end
 
@@ -841,14 +846,15 @@ creates and adapts a neural network using `features` with ground truth label pro
 relativedist is a vector
 """
 function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
-    onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
+    # onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
+    onehottargets = Flux.onehotbatch(targets, nn.labels)  # onehot class encoding of an observation as one column
     loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
 
     # Training loop, using the whole data set 1000 times:
     nn.losses = Float32[]
-    testmode!(nn, false)
+    trainmode!(nn)
     minloss = maxloss = missing
-    breakmsg = ""
+    breakmsg = "epoch loop finished without convergence"
     @showprogress for epoch in 1:1000 #1:1000
     # for epoch in 1:200  # 1:1000
         losses = Float32[]
@@ -871,7 +877,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
             break
         end
     end
-    testmode!(nn, true)
+    testmode!(nn)
     nn.optim # parameters, momenta and output have all changed
     println(breakmsg)  # print after showprogress loop to avoid cluttered text output
     println("minloss=$minloss  maxloss=$maxloss")
@@ -989,7 +995,7 @@ end
 
 function nnfilename(fileprefix::String)
     prefix = splitext(fileprefix)[1]
-    return prefix * ".bson"
+    return EnvConfig.logpath(prefix * ".bson")
 end
 
 function compresslosses(losses)
@@ -1007,7 +1013,7 @@ end
 
 function savenn(nn::NN)
     # nn.losses = compresslosses(nn.losses)
-    BSON.@save EnvConfig.logpath(nnfilename(nn.fileprefix)) nn
+    BSON.@save nnfilename(nn.fileprefix) nn
     # @error "save machine to be implemented for pure flux" filename
     # smach = serializable(mach)
     # JLSO.save(filename, :machine => smach)
@@ -1015,7 +1021,7 @@ end
 
 function loadnn(filename)
     nn = model001(1, Targets.tradelabels(), "dummy")  # dummy data struct
-    BSON.@load EnvConfig.logpath(nnfilename(filename)) nn
+    BSON.@load nnfilename(filename) nn
     # loadlosses!(nn)
     return nn
     # @error "load machine to be implemented for pure flux" filename

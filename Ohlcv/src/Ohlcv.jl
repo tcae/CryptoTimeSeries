@@ -594,25 +594,21 @@ function file(ohlcv::OhlcvData)
 end
 
 function write(ohlcv::OhlcvData)
-    if EnvConfig.configmode == production
-        if !isnothing(ohlcv.latestloadeddt) && (size(ohlcv.df, 1) > 0) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
-            (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
-            return
-        end
-        if !(ohlcv.df isa DataFrame)
-            (verbosity >= 2) && println("$(EnvConfig.now()) Ohlcv not written because contains not a DataFrame ($(typeof(ohlcv.df)) cannot be written)")
-            return
-        end
-        fn = file(ohlcv)
-        try
-            JDF.savejdf(fn.filename, ohlcv.df[!, save_cols])  # without :pivot
-            df = ohlcv.df
-            (verbosity >= 2) && println("$(EnvConfig.now()) saved $(fn.filename) of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
-        catch e
-            Logging.@error "exception $e detected"
-        end
-    else
-        (verbosity >= 2) && println("no Ohlcv.write() if EnvConfig.configmode != production to prevent mixing testnet data with real canned data")
+    if !isnothing(ohlcv.latestloadeddt) && (size(ohlcv.df, 1) > 0) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
+        (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
+        return
+    end
+    if !(ohlcv.df isa DataFrame)
+        (verbosity >= 2) && println("$(EnvConfig.now()) Ohlcv not written because contains not a DataFrame ($(typeof(ohlcv.df)) cannot be written)")
+        return
+    end
+    fn = file(ohlcv)
+    try
+        JDF.savejdf(fn.filename, ohlcv.df[!, save_cols])  # without :pivot
+        df = ohlcv.df
+        (verbosity >= 2) && println("$(EnvConfig.now()) saved $(fn.filename) of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+    catch e
+        Logging.@error "exception $e detected"
     end
 end
 

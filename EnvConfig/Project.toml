@@ -1,7 +1,7 @@
 name = "EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.2.13"
+version = "0.2.14"
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"

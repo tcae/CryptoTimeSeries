@@ -167,21 +167,47 @@ function setsplitfilename()::String
     end
 end
 
-function checkbackup(filename)
+function backupfilename(filenameprefix, backupnbr, filenameextension)
+    bfn = join([filenameprefix, string(backupnbr)], "_")
+    if !isnothing(filenameextension)
+        bfn = join([bfn, filenameextension], ".")
+    end
+    return bfn
+end
+
+function savebackup(filename; maxbackups=100)
+    ret = []
     if isdir(filename) || isfile(filename)
-        backupfilename = filename * "_1"
-        sfn = split(filename, "_")
-        backupext = length(sfn) > 1 ? pop!(sfn) : nothing
-        if !isnothing(backupext)
-            backupnbr = tryparse(Int, backupext)
-            if !isnothing(backupnbr)
-                push!(sfn, string(backupnbr + 1))
-                backupfilename = join(sfn, "_")
+        backupnbr = 1
+        sfn1 = rsplit(filename, "."; limit=2)
+        if length(sfn1) > 1
+            filenameprefix = sfn1[1]
+            filenameextension = sfn1[2]
+        else # no filenameextension
+            filenameprefix = filename
+            filenameextension = nothing
+        end
+        bfn = backupfilename(filenameprefix, backupnbr, filenameextension)
+        ret = push!(ret, bfn)
+        while isdir(bfn) || isfile(bfn)
+            if backupnbr == maxbackups
+                rm(backupfilename(filenameprefix, 1, filenameextension)) # remove oldest backup
+                (verbosity >= 3) && println("rm($(backupfilename(filenameprefix, 1, filenameextension)))")
+                for bnr in 2:backupnbr
+                    (verbosity >= 3) && println("mv($(backupfilename(filenameprefix, bnr, filenameextension)), $(backupfilename(filenameprefix, bnr-1, filenameextension)))")
+                    mv(backupfilename(filenameprefix, bnr, filenameextension), backupfilename(filenameprefix, bnr-1, filenameextension))
+                end
+            else
+                backupnbr += 1
+                bfn = backupfilename(filenameprefix, backupnbr, filenameextension)
+                ret = push!(ret, bfn)
             end
         end
-        checkbackup(backupfilename)
-        mv(filename, backupfilename)
+        (verbosity >= 3) && println("folder=$(pwd()) filename=$filename, backupfilename=$bfn, sfn1=$sfn1, filenameprefix=$filenameprefix, backupnbr=$backupnbr, filenameextension=$filenameextension")
+        mv(filename, bfn)
     end
+    (verbosity >= 3) && println("maxbackups=$maxbackups, backupnbr=$backupnbr, ret=$ret")
+    return ret
 end
 
 #region abstract-configuration
