@@ -445,7 +445,7 @@ function setpartitions(rowrange, samplesets::AbstractVector; gapsize=24*60, part
     # @assert length(rowrange) > (partitionsize * length(samplesets)) "length(rowrange)=$(length(rowrange)) > (partitionsize=$(partitionsize) * length(samplesets)=$(length(samplesets)))"
     @assert gapsize >= 0 "gapsize=$(gapsize)"
     #TODO gapsize not always equal (in ca 1% not - see ldf result of TrendDetector001.featurestargetsliquidranges!()) - fix is low prio
-    if length(rowrange) > (partitionsize * length(samplesets))
+    if length(rowrange) < (partitionsize * length(samplesets))
         # rowrange too short 
         return []
     end

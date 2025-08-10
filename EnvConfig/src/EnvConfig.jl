@@ -191,7 +191,7 @@ function savebackup(filename; maxbackups=100)
         ret = push!(ret, bfn)
         while isdir(bfn) || isfile(bfn)
             if backupnbr == maxbackups
-                rm(backupfilename(filenameprefix, 1, filenameextension)) # remove oldest backup
+                rm(backupfilename(filenameprefix, 1, filenameextension), force=true, recursive=true) # remove oldest backup
                 (verbosity >= 3) && println("rm($(backupfilename(filenameprefix, 1, filenameextension)))")
                 for bnr in 2:backupnbr
                     (verbosity >= 3) && println("mv($(backupfilename(filenameprefix, bnr, filenameextension)), $(backupfilename(filenameprefix, bnr-1, filenameextension)))")

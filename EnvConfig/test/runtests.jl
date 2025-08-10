@@ -28,13 +28,16 @@ function testsavebackup()
     rm.(bf)
 
     dirname = "EnvConfigTest"
+    rm(dirname, force=true, recursive=true)
     mkdir(dirname)
+    write(joinpath(dirname, filename), "world1")
     bf = EnvConfig.savebackup(dirname)
     @test all(isdir(f) for f in bf)
     mkdir(dirname)
-    bf = EnvConfig.savebackup(dirname)
+    write(joinpath(dirname, filename), "world2")
+    bf = EnvConfig.savebackup(dirname, maxbackups=1)
     @test all(isdir(f) for f in bf)
-    rm.(bf)
+    rm.(bf, recursive=true)
 end
 
 function testauthentication()
