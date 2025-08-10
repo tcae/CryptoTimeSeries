@@ -166,7 +166,7 @@ function readdflogfolder(filename)
         if isdir(filepath)
             (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath)")
             df = DataFrame(JDF.loadjdf(filepath))
-            (verbosity >= 3) && println(" - $(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
+            (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
         else
             (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(filepath)")
         end
@@ -188,7 +188,7 @@ function featurestargetscollect!(settypesdf, coins, featconfig, trgconfig)
     rangedf = DataFrame()
     coincollect = []
     for coin in coins
-        if coin in settypesdf[!, :coin]
+        if (size(settypesdf, 1) > 0) && (coin in settypesdf[!, :coin])
             (verbosity >= 4) && println("entry for $coin found - skipping features / targets creation")
             continue
         end
@@ -318,7 +318,7 @@ function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
             for coin in coins
                 for settype in settypes()
                     evalfeatures, evaltargets = getfeaturestargets(settypesdf, settype, coin)
-                    if !isnothing(trainfeatures) && !isnothing(traintargets)
+                    if !isnothing(evalfeatures) && !isnothing(evaltargets)
                         dfp = predictdf(dfp, nn, evalfeatures, evaltargets, settype)
                     end
                 end
@@ -330,7 +330,7 @@ function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
                 adaptclassifierwithcoin!(nn, settypesdf, coins[coinix])
                 for settype in settypes()
                     features, targets = getfeaturestargets(settypesdf, settype, coin)
-                    if !isnothing(trainfeatures) && !isnothing(traintargets)
+                    if !isnothing(features) && !isnothing(targets)
                         dfp = predictdf(dfp, nn, features, targets, settype)
                     end
                 end
@@ -466,9 +466,11 @@ else
     (verbosity >= 3) && println("featuresconfig=$(Features.describe(featconfig))")
     (verbosity >= 3) && println("targetsconfig=$(Targets.describe(trgconfig))")
     settypesdf = readdflogfolder(settypesfilename())
-    (verbosity >= 3) && println("unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, settypesdf[!, :coin]))")
-    (verbosity >= 3) && println("coins with features/targets but are missing in the requested set of coins: $(setdiff(settypesdf[!, :coin], coins))")
-    # coins = intersect(coins, settypesdf[!, :coin])
+    if size(settypesdf, 1) > 0
+        (verbosity >= 3) && println("unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, settypesdf[!, :coin]))")
+        (verbosity >= 3) && println("coins with features/targets but are missing in the requested set of coins: $(setdiff(settypesdf[!, :coin], coins))")
+        # coins = intersect(coins, settypesdf[!, :coin])
+    end
 
     featurestargetscollect!(settypesdf, coins, featconfig, trgconfig)
     nnvector = adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
