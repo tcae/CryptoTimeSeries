@@ -6,8 +6,8 @@ module Classify
 using CSV, DataFrames, Logging, Dates
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
-# using CategoricalDistributions
-# using Distributions
+using CategoricalDistributions
+using Distributions
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
@@ -442,9 +442,13 @@ end
 function setpartitions(rowrange, samplesets::AbstractVector; gapsize=24*60, partitionsize=20*24*60, minpartitionsize=min(2*length(samplesets)*gapsize, partitionsize), maxpartitionsize=partitionsize*2)
     @assert length(samplesets) > 0 "length(samplesets)=$(length(samplesets))"
     @assert partitionsize > 0 "partitionsize=$(partitionsize)"
-    @assert length(rowrange) > (partitionsize * length(samplesets)) "length(rowrange)=$(length(rowrange)) > (partitionsize=$(partitionsize) * length(samplesets)=$(length(samplesets)))"
+    # @assert length(rowrange) > (partitionsize * length(samplesets)) "length(rowrange)=$(length(rowrange)) > (partitionsize=$(partitionsize) * length(samplesets)=$(length(samplesets)))"
     @assert gapsize >= 0 "gapsize=$(gapsize)"
     #TODO gapsize not always equal (in ca 1% not - see ldf result of TrendDetector001.featurestargetsliquidranges!()) - fix is low prio
+    if length(rowrange) > (partitionsize * length(samplesets))
+        # rowrange too short 
+        return []
+    end
     sv = CategoricalArray(samplesets)
     psize = _realpartitionsize(rowrange, sv, gapsize, partitionsize, minpartitionsize, maxpartitionsize)
     rix = rowrange[begin]
@@ -469,15 +473,16 @@ function setpartitions(rowrange, samplesets::AbstractVector; gapsize=24*60, part
         six = six % length(sv) + 1
     end
     if !isnothing(p)
-        push!(arr, p)
+        push!(arr, (p.setname, p.range))
     end
-    res = Dict(sn => [] for sn in sv)
-    for p in arr
-            res[p.setname] = push!(res[p.setname], p.range)
-    end
-    result = Dict(String(sn) => rv for (sn, rv) in res)
-    (verbosity >= 3) && println("$([kv for kv in result])")
-    return result
+    return arr
+    # res = Dict(sn => [] for sn in sv)
+    # for p in arr
+    #         res[p.setname] = push!(res[p.setname], p.range)
+    # end
+    # result = Dict(String(sn) => rv for (sn, rv) in res)
+    # (verbosity >= 3) && println("$([kv for kv in result])")
+    # return result
 end
 
 """
@@ -642,7 +647,7 @@ function savepredictions(df, fileprefix)
 end
 
 "creates a DataFrame of predictions for every ohlcv time of a classifier"
-function predictionsdataframe(nn::NN, setranges, targets, predictions, features)
+function predictionsdataframeold(nn::NN, setranges, targets, predictions, features)
     df = DataFrame(permutedims(predictions, (2, 1)), nn.labels)
     # for (ix, label) in enumerate(nn.labels)
     #     df[label, :] = predictions[ix, :]
@@ -661,7 +666,7 @@ function predictionsdataframe(nn::NN, setranges, targets, predictions, features)
     df[:, "targets"] = targets
     df[:, "opentime"] = Features.ohlcvdfview(features)[!, :opentime]
     df[:, "pivot"] = Features.ohlcvdfview(features)[!, :pivot]
-    println("Classify.predictionsdataframe size=$(size(df)) keys=$(names(df))")
+    println("Classify.predictionsdataframeold size=$(size(df)) keys=$(names(df))")
     println(describe(df, :all))
     println("diagnose: features=$features")
     fileprefix = uppercase(Ohlcv.basecoin(Features.ohlcv(features)) * Ohlcv.quotecoin(Features.ohlcv(features))) * "_" * nn.fileprefix
@@ -835,7 +840,6 @@ function model001(featurecount, labels, mnemonic)::NN
     lossfunc = Flux.logitcrossentropy
 
     description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
-    println("NN labels $(string.(labels))")
     nn = NN(model, optim, lossfunc, labels, description)
     setmnemonic(nn, mnemonic)
     return nn
@@ -855,8 +859,8 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     trainmode!(nn)
     minloss = maxloss = missing
     breakmsg = "epoch loop finished without convergence"
-    @showprogress for epoch in 1:1000 #1:1000
-    # for epoch in 1:200  # 1:1000
+    maxepoch = EnvConfig.configmode == test ? 10 : 1000
+    @showprogress for epoch in 1:maxepoch
         losses = Float32[]
         for (x, y) in loader
             loss, grads = Flux.withgradient(nn.model) do m
@@ -913,7 +917,7 @@ function adaptbase(regrwindow, features::Features.AbstractFeatures, pe::Dict, se
     nn.targetsdescription = targetsdescription
     println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
     pred = predict(nn, features)
-    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, features))
+    push!(nn.predictions, predictionsdataframeold(nn, setranges, targets, pred, features))
     # predictiondistribution(pred, nn.mnemonic)
 
     println("saving adapted classifier $(nn.fileprefix)")
@@ -948,7 +952,7 @@ function adaptcombi(nnvec::Vector{NN}, features::Features.AbstractFeatures, pe::
     nn.predecessors = [nn.fileprefix for nn in nnvec]
     println("$(EnvConfig.now()) predicting with combi classifier")
     pred = predict(nn, features)
-    push!(nn.predictions, predictionsdataframe(nn, setranges, targets, pred, features))
+    push!(nn.predictions, predictionsdataframeold(nn, setranges, targets, pred, features))
     # predictiondistribution(pred, nn.mnemonic)
     @assert size(pred, 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred, 2)) == size(features, 2)=$(size(features, 2))"
     @assert size(targets, 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
@@ -1012,6 +1016,7 @@ function compresslosses(losses)
 end
 
 function savenn(nn::NN)
+    (verbosity >= 3) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
     # nn.losses = compresslosses(nn.losses)
     BSON.@save nnfilename(nn.fileprefix) nn
     # @error "save machine to be implemented for pure flux" filename
@@ -1020,7 +1025,8 @@ function savenn(nn::NN)
 end
 
 function loadnn(filename)
-    nn = model001(1, Targets.tradelabels(), "dummy")  # dummy data struct
+    (verbosity >= 3) && println("loading classifier $filename from $(nnfilename(filename))")
+    nn = model001(1, ["dummy1", "dummy2"], "dummy menmonic")  # dummy data struct
     BSON.@load nnfilename(filename) nn
     # loadlosses!(nn)
     return nn
@@ -1167,14 +1173,15 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
     tpr = round.(tpvec ./ (tpvec + fnvec); digits=2)
     fpr = round.(fpvec ./ (fpvec + tnvec); digits=2)
     xcdf = DataFrame("set" => sc, "pred_label" => lc, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
-    println(xcdf)
+    # (verbosity >= 3) && println(xcdf)
     return xcdf
     #TODO next step: take only first of an equal trading signal sequence according to threshold -> how often is a sequence missed?
  end
 
 function predictioncolumns(predictionsdf::AbstractDataFrame)
     nms = names(predictionsdf)
-    [nmix for nmix in eachindex(nms) if nms[nmix] in Targets.tradelabels()]
+    tl = string.(Targets.tradelabels())
+    [nmix for nmix in eachindex(nms) if nms[nmix] in tl]
 end
 
 function confusionmatrix(predictions::AbstractDataFrame)
@@ -1209,7 +1216,7 @@ function confusionmatrix(predictions::AbstractDataFrame)
     for (ix, l) in enumerate(labels)
         cdf[:, ("truth_"*l*"_%")] = round.(cdf[:, ("truth_"*l)] ./ pred_sum * 100; digits=2)
     end
-    println(cdf)
+    # println(cdf)
     return cdf
 end
 

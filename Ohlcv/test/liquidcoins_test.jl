@@ -108,8 +108,11 @@ end
     minliquidminutes=24*60*10
         # ohlcv = getbtc()
     # liquidcheck(ohlcv)
+    count = 0
     for ohlcv in Ohlcv.OhlcvFiles()
-        liquidcheck(ohlcv, minliquidminutes)
+        rv = Ohlcv.liquiditycheck(ohlcv)
+        println("$count: liquid coin test of $(ohlcv.base), length=$(size(Ohlcv.dataframe(ohlcv), 1)), length(rv)=$(length(rv)), rv=$rv")
+        # liquidcheck(ohlcv, minliquidminutes)
         # break
     end
 

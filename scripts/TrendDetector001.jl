@@ -19,8 +19,7 @@ classes: binary longbuy yes vs no (=longclose) with hysteresis using likelihood 
 """
 module TrendDetector001
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils
-using CategoricalArrays
-using Distributions
+using CategoricalArrays, CategoricalDistributions, Distributions
 using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
 
 #TODO regression from last trend pivot as feature 
@@ -109,71 +108,65 @@ end
 """
 The function generates targets files and features files in the current log folder for the set types ["test", "train", "eval"] of the provided base coins ohlcv data.  
 The input log dataframe rangedf is supplemented with the index information of each set type range.  
-It returns a tuple of featuresdict, targetsdict both with keys ["test", "train", "eval"] and dataframe values.   
+It returns a tuple of featurestargetsdf, targetsdict both with keys ["test", "train", "eval"] and dataframe values.   
 """
 function featurestargetsliquidranges!(settypesdf, rangedf, basecoin, featconfig, trgconfig; samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
     (verbosity >= 3) && println("$(EnvConfig.now()) loading $basecoin") 
     ohlcv = Ohlcv.read(basecoin)
     rv = Ohlcv.liquiditycheck(ohlcv)
     ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
+    rangeid = size(rangedf, 1) > 0 ? maximum(rangedf[!, :rangeid]) + 1 : Int16(1)
     
-    samplesets = CategoricalArray(samplesets)
-    featuresdict = Dict() # key = settype, value = DataFrame
-    targetsdict = Dict() # key = settype, value = DataFrame
-    for settype in levels(samplesets)
-        featuresdict[settype] = DataFrame()
-        targetsdict[settype] = DataFrame()
-    end
+    levels = unique(samplesets)
+    push!(levels, "noop")
+    samplesets = CategoricalArray(samplesets, levels=levels)
+    featurestargetsdf = DataFrame()
 
     for rng in rv # rng indices are related to ohlcv dataframe rows
         if rng[end] - rng[begin] > 0
             (verbosity >= 2) && println("$(EnvConfig.now()) calculating features and targets for $(ohlcv.base) range $rng from $(ot[rng[begin]]) until $(ot[rng[end]]) with $(rng[end] - rng[begin]) samples")
             ohlcvview = Ohlcv.ohlcvview(ohlcv, rng)
             Features.setbase!(featconfig, ohlcvview, usecache=true)
-            rngfeatures = Features.features(featconfig)
+            rngfeaturestargets = copy(Features.features(featconfig))
 
-            @assert size(rngfeatures, 1) > 0 "features data of $(ohlcv.base) range $rng with $(rng[end] - rng[begin] + 1) rows from $(ot[rng[begin]]) until $(ot[rng[end]]) not matching features size $(size(rngfeatures, 1))"
-            rngtargets = DataFrame(targets=calctargets!(trgconfig, featconfig))
-            @assert size(rngtargets, 1) > 0 "targets data of $(ohlcv.base) range $rng with $(rng[end] - rng[begin] + 1) rows from $(ot[rng[begin]]) until $(ot[rng[end]]) not matching targets size $(size(rngtargets, 1))"
-            psets = Classify.setpartitions(1:size(rngfeatures, 1), samplesets, partitionsize=partitionsize, gapsize=gapsize, minpartitionsize=minpartitionsize, maxpartitionsize=maxpartitionsize)
+            @assert size(rngfeaturestargets, 1) > 0 "features data of $(ohlcv.base) range $rng with $(rng[end] - rng[begin] + 1) rows from $(ot[rng[begin]]) until $(ot[rng[end]]) not matching features size $(size(rngfeaturestargets, 1))"
+            rngfeaturestargets[:, :targets] = calctargets!(trgconfig, featconfig)
+            rngfeaturestargets[:, :rangeid] .= 0
+            rngfeaturestargets[:, :rix] .= 0
+            rngfeaturestargets[:, :set] = CategoricalVector(fill("noop", size(rngfeaturestargets, 1)), levels=levels)
+            psets = Classify.setpartitions(1:size(rngfeaturestargets, 1), samplesets, partitionsize=partitionsize, gapsize=gapsize, minpartitionsize=minpartitionsize, maxpartitionsize=maxpartitionsize)
 
-            for settype in levels(samplesets)
-                for psrng in psets[settype] # psrng indices are related to rngfeatures rows (not to ohlcv dataframe rows)
-                    six = size(featuresdict[settype], 1) + 1
-                    eix = six + size(rngfeatures[psrng, :], 1) - 1
-                    beforesize = size(featuresdict[settype], 1)
-                    featuresdict[settype] = vcat(featuresdict[settype], rngfeatures[psrng, :])
-                    @assert size(featuresdict[settype], 1) == beforesize + size(rngfeatures[psrng, :], 1) "size(featuresdict[settype], 1)=$(size(featuresdict[settype], 1)) != beforesize=$beforesize + size(rngfeatures[psrng, :], 1)=$(size(rngfeatures[psrng, :], 1))"
-                    beforesize = size(targetsdict[settype], 1)
-                    targetsdict[settype] = vcat(targetsdict[settype], rngtargets[psrng, :])
-                    @assert size(targetsdict[settype], 1) == beforesize + size(rngtargets[psrng, :], 1) "size(targetsdict[settype], 1)=$(size(targetsdict[settype], 1)) != beforesize=$beforesize + size(rngtargets[psrng, :], 1)=$(size(rngtargets[psrng, :], 1))"
-                    sixohlcv = rng[begin] + psrng[begin] - 1
-                    eixohlcv = rng[begin] + psrng[end] - 1
-                    push!(rangedf, (coin=ohlcv.base, settype=settype, ohlcvrange=sixohlcv:eixohlcv, startdt=ot[sixohlcv], enddt=ot[eixohlcv], dfrange=six:eix, liquidrange=rng))
-                end
+            for (settype, psrng) in psets # psrng indices are related to rngfeaturestargets rows (not to ohlcv dataframe rows)
+                # six = size(featurestargetsdf[settype], 1) + 1
+                # eix = six + size(rngfeaturestargets[psrng, :], 1) - 1
+                rngfeaturestargets[psrng, :rangeid] .= rangeid
+                rngfeaturestargets[psrng, :rix] = collect(Int32.(psrng))
+                rngfeaturestargets[psrng, :set] .= settype
+                featurestargetsdf = vcat(featurestargetsdf, rngfeaturestargets[psrng, :])
+                sixohlcv = rng[begin] + psrng[begin] - 1
+                eixohlcv = rng[begin] + psrng[end] - 1
+                push!(rangedf, (coin=ohlcv.base, settype=settype, rangeid=rangeid, ohlcvrange=sixohlcv:eixohlcv, startdt=ot[sixohlcv], enddt=ot[eixohlcv], dfrange=psrng, liquidrange=rng))
+                rangeid += 1
             end
         else
             @error "unexpected zero length range for " ohlcv.base rng rv
         end
     end
-    sort!(rangedf, :ohlcvrange)
+    if size(featurestargetsdf, 1) > 0
+        sort!(rangedf, :ohlcvrange)
 
-    featuresfname = Dict() # key = settype, value = filename without path
-    targetsfname = Dict() # key = settype, value = filename without path
-    for settype in levels(samplesets)
-        featuresfname[settype] = settype * "_features_" * ohlcv.base * ".jdf"
-        targetsfname[settype] = settype * "_targets_" * ohlcv.base * ".jdf"
-        push!(settypesdf, (coin=ohlcv.base, settype=settype, featuresconfig=Features.describe(featconfig), featuresfname=featuresfname[settype], targetsconfig=Targets.describe(trgconfig), targetsfname=targetsfname[settype]))
-
-        savedflogfolder(featuresdict[settype], featuresfname[settype])
-        savedflogfolder(targetsdict[settype], targetsfname[settype])
-
+        featurestargetsfname = "features_targets_" * ohlcv.base * ".jdf"
+        savedflogfolder(featurestargetsdf, featurestargetsfname)
+        push!(settypesdf, (coin=ohlcv.base, featuresconfig=Features.describe(featconfig), targetsconfig=Targets.describe(trgconfig), featurestargetsfname=featurestargetsfname))
+    else
+        @info "skipping $basecoin due to no liquid ranges"
     end
-    return featuresdict, targetsdict
+    return featurestargetsdf
 end
 
 rangefilename() = "ranges.jdf"
 settypesfilename() = "settypesfiledict.jdf"
+predictionsfilename(coin, classifier) = "predictions_$(coin)_$(classifier).jdf"
 
 
 "Saves a given dataframe df in the current log folder using the given filename"
@@ -217,7 +210,7 @@ function sinetest2()
     trgcfg = trendsineconfig()
     rangedf = DataFrame()
     settypesdf = DataFrame()
-    fdict, tdict = featurestargetsliquidranges!(settypesdf, rangedf, ohlcv, featconfig, trgconfig; samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
+    ftdf = featurestargetsliquidranges!(settypesdf, rangedf, ohlcv, featconfig, trgconfig; samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
 end
 
 function sinetest()
@@ -247,7 +240,7 @@ function sinetest()
     println("$(EnvConfig.now()) predicting")
     pred = Classify.predict(nn, features)
     println("$(EnvConfig.now()) predictions to dataframe")
-    push!(nn.predictions, Classify.predictionsdataframe(nn, setranges, targets, pred, featcfg))
+    push!(nn.predictions, Classify.predictionsdataframeold(nn, setranges, targets, pred, featcfg))
     # predictiondistribution(pred, nn.mnemonic)
 
     println("saving adapted classifier $(nn.fileprefix)")
@@ -294,7 +287,7 @@ function BTCtest()
         println("$(EnvConfig.now()) predicting")
         pred = Classify.predict(nn, features)
         println("$(EnvConfig.now()) predictions to dataframe")
-        push!(nn.predictions, Classify.predictionsdataframe(nn, setranges, targets, pred, featcfg))
+        push!(nn.predictions, Classify.predictionsdataframeold(nn, setranges, targets, pred, featcfg))
         # predictiondistribution(pred, nn.mnemonic)
 
         println("saving adapted classifier $(nn.fileprefix)")
@@ -330,47 +323,44 @@ function liquidcoinstest()
     # println(gdf[kpidf[2, :groupindex]])
 end
 
+settypes() = ["train", "test", "eval"]
+
 function featurestargetscollect(coins, featconfig, trgconfig)
     rangedf = DataFrame()
     settypesdf = DataFrame()
     coincollect = []
     for coin in coins
-        fdict, tdict = featurestargetsliquidranges!(settypesdf, rangedf, coin, featconfig, trgconfig)
-        # println("$coin rangedf: $rangedf")
-        println("$coin settypesdf: $settypesdf")
+        ftdf = featurestargetsliquidranges!(settypesdf, rangedf, coin, featconfig, trgconfig)
+        if size(ftdf, 1) > 0
+            # println("$coin rangedf: $rangedf")
+            println("$coin settypesdf: $settypesdf")
 
-        # savedflogfolder(rangedf[!, Not([:period, :gap])], rangefilename())  # with period and gap columns added before
-        savedflogfolder(rangedf, rangefilename())  # without period and gap columns added before
-        savedflogfolder(settypesdf, settypesfilename())
+            # savedflogfolder(rangedf[!, Not([:period, :gap])], rangefilename())  # with period and gap columns added before
+            savedflogfolder(rangedf, rangefilename())  # without period and gap columns added before
+            savedflogfolder(settypesdf, settypesfilename())
 
-        for settype in ["train", "test", "eval"]
-            println("$settype: featuressize=$(size(fdict[settype])) targetssize=$(size(tdict[settype])) equal samples: $(size(fdict[settype],1)==size(tdict[settype],1))")
+            push!(coincollect, (coin=coin, ftdf=ftdf))
         end
-        push!(coincollect, (coin=coin, fdict=fdict, tdict=tdict))
     end
-    println("len(coins)=$(length(coins)), len(coincollect)=$(length(coincollect))")
+    # println("len(coins)=$(length(coins)), len(coincollect)=$(length(coincollect))")
     for ct in coincollect
         coin = ct.coin
-        fdict = ct.fdict
-        tdict = ct.tdict
         rangedf2 = readdflogfolder(rangefilename())
         # addperiodgap!(rangedf2)
-        println("rangedf equal test = $(rangedf==rangedf2)")
+        @assert rangedf==rangedf2 "rangedf=$rangedf \n not equal rangedf2 = $rangedf2"
         settypesdf2 = readdflogfolder(settypesfilename())
-        println("settypesdf equal test = $(settypesdf==settypesdf2)")
-        featuresfname = Dict() # key = settype, value = filename without path
-        targetsfname = Dict() # key = settype, value = filename without path
-        featuresdict = Dict() # key = settype, value = DataFrame
-        targetsdict = Dict() # key = settype, value = DataFrame
-        for settype in unique(settypesdf2[!, :settype])
-            featuresfname[settype] = settypesdf2[(settypesdf2[!, :coin] .== coin) .&& (settypesdf2[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
-            targetsfname[settype] = settypesdf2[(settypesdf2[!, :coin] .== coin) .&& (settypesdf2[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
-            featuresdict[settype] = readdflogfolder(featuresfname[settype])
-            targetsdict[settype] = readdflogfolder(targetsfname[settype])
-            println("features[$settype] size equal test = $(size(featuresdict[settype])==size(fdict[settype]))")
-            println("targets[$settype] size equal test = $(size(targetsdict[settype])==size(tdict[settype]))")
-            println("features[$settype] equal test = $(featuresdict[settype]==fdict[settype])")
-            println("targets[$settype] equal test = $(targetsdict[settype]==tdict[settype])")
+        @assert settypesdf==settypesdf2 "settypesdf=$settypesdf \n not equal settypesdf2=$settypesdf2"
+        @assert size(settypesdf[settypesdf[!, :coin] .== coin, :], 1) == 1 "size(settypesdf[settypesdf[!, :coin] .== coin, :], 1)=$(size(settypesdf[settypesdf[!, :coin] .== coin, :], 1))"
+        ftdf2 = readdflogfolder(settypesdf[settypesdf[!, :coin] .== coin, :featurestargetsfname][begin])
+        @assert ftdf2 == ct.ftdf
+        # println("size(ftdf2)=$(size(ftdf2)) unique(ftdf2[!, :rangeid]$(unique(ftdf2[!, :rangeid]))")
+        rdfview = @view rangedf[rangedf[!, :coin] .== coin, :]
+        for rrow in eachrow(rdfview)
+            ftdfrange = @view ftdf2[ftdf2[!, :rangeid] .== rrow.rangeid, :]
+            # println("rrow=$rrow")
+            @assert length(rrow.dfrange) == size(ftdfrange, 1) "length(rrow.dfrange)=$(length(rrow.dfrange)) != size(ftdfrange, 1)=$(size(ftdfrange, 1))"
+            @assert all(ftdfrange[!, :rangeid] .== rrow.rangeid) "ftdfrange[!, :rangeid]=$(unique(ftdfrange[!, :rangeid])) .!= rrow.rangeid=$(rrow.rangeid)"
+            @assert all(ftdfrange[!, :set] .== rrow.settype) "ftdfrange[!, :set]=$(unique(ftdfrange[!, :set])) .!= rrow.settype=$(rrow.settype)"
         end
     end
     # addperiodgap!(rangedf)
@@ -379,56 +369,140 @@ end
 classifiermenmonic(coins, coinix) = "model001_" * (isnothing(coinix) ? "mix" : coins[coinix])
 
 function getlatestclassifier(coins, coinix, featureconfig, targetconfig)
+    nn = nothing
     if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
-        nn = Classify.loadnn(filename)
+        nn = Classify.loadnn(classifiermenmonic(coins, coinix))
+        println("getlatestclassifier loaded: labels=$(nn.labels)")
     else
         nn = Classify.model001(Features.featurecount(featureconfig), [longbuy, allclose], classifiermenmonic(coins, coinix))
+        println("getlatestclassifier new: labels=$(nn.labels)")
     end
+    @assert !isnothing(nn)
+    return nn
 end
 
 function getfeaturestargets(settypesdf, settype, coin)
-    featuresfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
-    targetsfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
-    features = readdflogfolder(featuresfname)
+    ftdffull = readdflogfolder(settypesdf[settypesdf[!, :coin] .== coin, :featurestargetsfname][begin])
+    ftdf = @view ftdffull[(ftdffull[!, :set] .== settype), :]
+    features = @view ftdf[!, Not([:set, :rix, :rangeid, :targets])]
+    targets = @view ftdf[!, :targets]
+
+
+    # featuresfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
+    # targetsfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
+    # features = readdflogfolder(featuresfname)
     features = Array(features)  # change from df to array
     features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
-    targets = readdflogfolder(targetsfname)[!, :targets]
+    # targets = readdflogfolder(targetsfname)[!, :targets]
     (verbosity >= 3) && println("typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
     return features, targets
 end
 
+function showlosses(nn)
+    println("$(EnvConfig.now()) evaluating classifier $(nn.mnemonic)")
+    packetsize = length(nn.losses) > 20 ? floor(Int, length(nn.losses) / 20) : 1  # only display 20 lines of loss summary
+    startp = lastlosses = nothing
+    for i in eachindex(nn.losses)
+        if i > firstindex(nn.losses)
+            if (i % packetsize == 0) || (i == lastindex(nn.losses))
+                plosses = mean(nn.losses[startp:i])
+                println("epoch $startp-$i loss: $plosses  lossdiff: $((plosses-lastlosses)/lastlosses*100)%")
+                startp = i+1
+                lastlosses = plosses
+            end
+        else
+            println("loss: $(nn.losses[i])")
+            startp = i+1
+            lastlosses = nn.losses[i]
+        end
+    end
+end
+
 function adaptclassifierwithcoin!(nn::Classify.NN, settypesdf, coin)
+    println("$(EnvConfig.now()) adapting classifier for $coin")
     trainfeatures, traintargets = getfeaturestargets(settypesdf, "train", coin)
-    # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
+    println("before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(traintargets)))))")
     (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
     # (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
-    println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    adaptnn!(nn, trainfeatures, traintargets)
+    println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(traintargets)))))")
+    Classify.adaptnn!(nn, trainfeatures, traintargets)
+    (verbosity >= 3) && showlosses(nn)
+
+    # println("$(EnvConfig.now()) predicting")
+    # evalfeatures, evaltargets = getfeaturestargets(settypesdf, "eval", coin)
+    # pred = Classify.predict(nn, evalfeatures)
+    # println("$(EnvConfig.now()) predictions to dataframe")
+    # push!(nn.predictions, Classify.predictionsdataframeold(nn, setranges, targets, pred, featcfg))
+    # # predictiondistribution(pred, nn.mnemonic)
+
+    # println("saving adapted classifier $(nn.fileprefix)")
+    # # println(nn)
+    # Classify.savenn(nn)
+    # evalclassifier(nn)
+
     EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
     Classify.savenn(nn)
 end
 
-function adaptclassifier(coins, coinix, featconfig, trgconfig)
+function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
     @assert length(coins) > 0
-    coinix = isnothing(coinix) || (coinix < firstindex(coins)) || (coinix > lasindex(coins)) ? nothing : coinix
-    # if classifier filedoes not exist then create one
-    nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
-    settypesdf = readdflogfolder(settypesfilename())
-    if isnothing(coinix) # adapt a mix classifier with all coins
-        for coin in coins
-            adaptclassifierwithcoin!(nn, settypesdf, coin)
+    coinix = isnothing(coinix) || (coinix < firstindex(coins)) || (coinix > lastindex(coins)) ? nothing : coinix
+    coin = isnothing(coinix) ? "mix" : coins[coinix]
+    if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
+        println("$coin classifier seems to be adapted - found in $(Classify.nnfilename(classifiermenmonic(coins, coinix)))")
+        nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
+    else
+        println("$(EnvConfig.now()) adapting $coin classifier")
+        # if classifier filedoes not exist then create one
+        nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
+        dfp = nothing
+        if isnothing(coinix) # adapt a mix classifier with all coins
+            for coin in coins
+                adaptclassifierwithcoin!(nn, settypesdf, coin)
+            end
+            for coin in coins
+                for settype in settypes()
+                    evalfeatures, evaltargets = getfeaturestargets(settypesdf, settype, coin)
+                    dfp = predictdf(dfp, nn, evalfeatures, evaltargets, settype)
+                end
+            end
+        else  # adapt a coin specific classifier with all coins
+            if !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
+                nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
+                Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
+                adaptclassifierwithcoin!(nn, settypesdf, coins[coinix])
+                for settype in settypes()
+                    features, targets = getfeaturestargets(settypesdf, settype, coin)
+                    dfp = predictdf(dfp, nn, features, targets, settype)
+                end
+            end
         end
-    else  # adapt a coin specific classifier with all coins
-        if !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
-            nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
-            Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
-            adaptclassifierwithcoin!(nn, settypesdf, coins[coinix])
-        end
+        savedflogfolder(dfp, predictionsfilename(coin, nn.fileprefix))
+        cmdf = Classify.confusionmatrix(dfp)
+        (verbosity >=3) && println("cm: $cmdf")
+        xcmdf = Classify.extendedconfusionmatrix(dfp)
+        (verbosity >=3) && println("xcm: $xcmdf")
+        println("$(EnvConfig.now()) finished adapting $coin classifier")
     end
     return nn
 end
 
-function inspect()
+function adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
+    res = []
+    if isdflogfolder(settypesfilename())
+        nn = adaptclassifier(coins, nothing, featconfig, trgconfig, settypesdf)
+        push!(res, (coin=nothing, nn=nn))
+        for ix in eachindex(coins)
+            nn = adaptclassifier(coins, ix, featconfig, trgconfig, settypesdf)
+            push!(res, (coin=coins[ix], nn=nn))
+        end
+    else
+        @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
+    end
+    return res
+end
+
+function inspect(coins)
     if isdflogfolder(settypesfilename())
         settypesdf = readdflogfolder(settypesfilename())
         println(EnvConfig.logpath(settypesfilename()))
@@ -463,22 +537,56 @@ function inspect()
             end
         end
     else
-        @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
+        @error "missing features/targets dataframe folder $(EnvConfig.logpath(settypesfilename()))"
     end
     rangedf = readdflogfolder(rangefilename())
-    println(EnvConfig.logpath(rangefilename()))
+    println("ranges dataframe file: $(EnvConfig.logpath(rangefilename()))")
     println(rangedf[begin:begin+2, :])
+end
+
+function predictdf(df, nn, features, targets, settype)
+    pred = Classify.predict(nn, features)
+    pred = permutedims(pred, (2, 1))
+    df2 = DataFrame(pred, string.(nn.labels))
+    df2[:, "targets"] = CategoricalVector(string.(targets); levels=string.(nn.labels))
+    # df2[:, "maxix"] = vec(mapslices(argmax, pred, dims=1))  # store column index of max estimate as column
+    df2[:, :set] = CategoricalVector(fill(settype, size(df2, 1)); levels=settypes())
+    df = isnothing(df) ? df2 : vcat(df, df2)
+    return df
 end
 
 println("$PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
-testmode = true
+# testmode = true
 inspectonly = "inspect" in ARGS
 # inspectonly = true
 
 EnvConfig.init(testmode ? test : training)
 EnvConfig.setlogpath("2528-TrendDetector001-CollectSets-$(EnvConfig.configmode)")
 println("log folder: $(EnvConfig.logfolder())")
+
+verbosity = 3
+if testmode 
+    Ohlcv.verbosity = 3
+    CryptoXch.verbosity = 3
+    Features.verbosity = 3
+    Targets.verbosity = 2
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 3
+    coins = ["SINE", "DOUBLESINE"]
+else
+    Ohlcv.verbosity = 1
+    CryptoXch.verbosity = 1
+    Features.verbosity = 1
+    Targets.verbosity = 1
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1
+    coins = []
+    for ohlcv in Ohlcv.OhlcvFiles()
+        push!(coins, ohlcv.base)
+    end
+    println("length(coins)=$(length(coins))")
+end
 
 if inspectonly
     verbosity = 1
@@ -488,40 +596,24 @@ if inspectonly
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
     Classify.verbosity = 1
-    inspect()
+    inspect(coins)
 else
-    verbosity = 3
-    if testmode 
-        Ohlcv.verbosity = 3
-        CryptoXch.verbosity = 3
-        Features.verbosity = 3
-        Targets.verbosity = 2
-        EnvConfig.verbosity = 1
-        Classify.verbosity = 3
-        coins = ["SINE", "DOUBLESINE"]
-    else
-        Ohlcv.verbosity = 1
-        CryptoXch.verbosity = 1
-        Features.verbosity = 1
-        Targets.verbosity = 1
-        EnvConfig.verbosity = 1
-        Classify.verbosity = 1
-        coins = ["ADA", "LTC"]
-    end
-
     featconfig = f6config01()
     trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01)
-
+    println("featuresconfig=$(Features.describe(featconfig))")
+    println("targetsconfig=$(Targets.describe(trgconfig))")
     if !isdflogfolder(settypesfilename())
         featurestargetscollect(coins, featconfig, trgconfig)
     else
         println("skipping featurestargetscollect - seems to be already done")
     end
-    if isdflogfolder(settypesfilename())
-        println("adapting mix classifier now")
-        adaptclassifier(coins, nothing, featconfig, trgconfig)
-    else
-        @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
+    settypesdf = readdflogfolder(settypesfilename())
+    nnvector = adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
+    if verbosity >= 3
+        for nnt in nnvector
+            println("$(nnt.coin) - $(nnt.nn.fileprefix): $(Classify.nnfilename(nnt.nn.fileprefix))")
+            showlosses(nnt.nn)
+        end
     end
 end
 

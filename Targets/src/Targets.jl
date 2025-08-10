@@ -864,7 +864,7 @@ function timerangecut!(trd::Trend)
     supplement!(trd)
 end
 
-describe(trd::Trend) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "NoBase" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_thresholds=longbuy=$(trd.thres.longbuy)+longhold=$(trd.thres.longhold)+shorthold=$(trd.thres.shorthold)+shortbuy=$(trd.thres.shortbuy)"
+describe(trd::Trend) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_thresholds=(longbuy=$(trd.thres.longbuy)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortbuy=$(trd.thres.shortbuy))"
 firstrowix(trd::Trend)::Int = isnothing(trd.df) ? 1 : (size(trd.df, 1) > 0 ? firstindex(trd.df[!, 1]) : 1)
 lastrowix(trd::Trend)::Int = isnothing(trd.df) ? 0 : (size(trd.df, 1) > 0 ? lastindex(trd.df[!, 1]) : 0)
 

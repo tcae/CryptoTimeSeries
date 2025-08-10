@@ -973,12 +973,12 @@ end
 
 function describe(f6::Features006)::String
     if isnothing(f6.ohlcv)
-        base = "NoBaseAssigned"
+        base = "Base?"
     else
         base = f6.ohlcv.base
     end
-    requested = join([fdfcol(f6, f) for f in f6.requested], "+")
-    return "Features006_$(base)_$(f6.requiredminutes)_maxoffset=$(f6.maxoffset)_requested=$requested"
+    requested = join([fdfcol(f6, f) for f in f6.requested], "_")
+    return "Features006_$(base)_requiredminutes=$(f6.requiredminutes)_maxoffset=$(f6.maxoffset)_requested=($requested)"
 end
 
 function Base.show(io::IO, f6::Features006)

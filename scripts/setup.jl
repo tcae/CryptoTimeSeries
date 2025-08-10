@@ -61,7 +61,7 @@ Pkg.add([
     "PrettyPrinting",
     "RollingFunctions", "Statistics",  # Features
     # "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "cuDNN",
-     "StatisticalMeasures", "Distributions", "CategoricalArrays",
+     "StatisticalMeasures", "Distributions", "CategoricalDistributions", "CategoricalArrays",
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -
