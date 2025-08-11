@@ -224,16 +224,16 @@ function getlatestclassifier(coins, coinix, featureconfig, targetconfig)
     nn = nothing
     if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
         nn = Classify.loadnn(classifiermenmonic(coins, coinix))
-        (verbosity >= 3) && println("getlatestclassifier loaded: labels=$(nn.labels)")
+        (verbosity >= 3) && println("getlatestclassifier loaded: nn=$(nn.fileprefix), labels=$(nn.labels)")
     else
         nn = Classify.model001(Features.featurecount(featureconfig), [longbuy, allclose], classifiermenmonic(coins, coinix))
-        (verbosity >= 3) && println("getlatestclassifier new: labels=$(nn.labels)")
+        (verbosity >= 3) && println("getlatestclassifier new: nn=$(nn.fileprefix), labels=$(nn.labels)")
     end
     @assert !isnothing(nn)
     return nn
 end
 
-function getfeaturestargets(settypesdf, settype, coin)
+function _getfeaturestargets(settypesdf, settype, coin)
     subsetdf = @view settypesdf[settypesdf[!, :coin] .== coin, :featurestargetsfname]
     if size(subsetdf, 1) == 0
         (verbosity >= 3) && println("no features / targets data found for $coin")
@@ -247,9 +247,9 @@ function getfeaturestargets(settypesdf, settype, coin)
         return nothing, nothing
     end
     ftdffull = readdflogfolder(subsetdf[begin])
-    ftdf = @view ftdffull[(ftdffull[!, :set] .== settype), :]
-    features = @view ftdf[!, Not([:set, :rix, :rangeid, :targets])]
-    targets = @view ftdf[!, :targets]
+    ftdf = ftdffull[(ftdffull[!, :set] .== settype), :]
+    features = ftdf[!, Not([:set, :rix, :rangeid, :targets])]
+    targets = ftdf[!, :targets]
 
 
     # featuresfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
@@ -258,8 +258,25 @@ function getfeaturestargets(settypesdf, settype, coin)
     features = Array(features)  # change from df to array
     features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
     # targets = readdflogfolder(targetsfname)[!, :targets]
-    (verbosity >= 3) && println("typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
+    (verbosity >= 3) && println("$coin typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
     return features, targets
+end
+
+function getfeaturestargets(settypesdf, settype, coins, coinix)
+    if isnothing(coinix)
+        multifeatures = multitargets = nothing
+        for coin in coins
+            features, targets = _getfeaturestargets(settypesdf, settype, coin)
+            if !isnothing(features) && !isnothing(targets)
+                multifeatures = isnothing(multifeatures) ? features : hcat(multifeatures, features)
+                multitargets = isnothing(multitargets) ? targets : vcat(multitargets, targets)
+                (verbosity >= 3) && println("multicoin: typeof(multifeatures)=$(typeof(multifeatures)), size(multifeatures)=$(size(multifeatures)), typeof(multitargets)=$(typeof(multitargets)), size(multitargets)=$(size(multitargets))") 
+            end
+        end
+        return multifeatures, multitargets
+    else
+        return _getfeaturestargets(settypesdf, settype, coins[coinix])
+    end
 end
 
 function showlosses(nn)
@@ -282,21 +299,29 @@ function showlosses(nn)
     end
 end
 
-function adaptclassifierwithcoin!(nn::Classify.NN, settypesdf, coin)
-    trainfeatures, traintargets = getfeaturestargets(settypesdf, "train", coin)
-    if isnothing(trainfeatures) || isnothing(traintargets)
-        return
+function _adaptclassifier(nn::Classify.NN, coin, coinix)
+    features, targets = getfeaturestargets(settypesdf, "train", coins, coinix)
+    if isnothing(features) || isnothing(targets)
+        return nothing
     end
-    (verbosity >= 2) && println("$(EnvConfig.now()) adapting classifier with $coin data")
-    (verbosity >= 3) && println("before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(traintargets)))))")
-    (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
-    # (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
-    (verbosity >= 3) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(traintargets)))))")
-    Classify.adaptnn!(nn, trainfeatures, traintargets)
+    (verbosity >= 3) && println("before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+    (features), targets = oversample((features), targets)  # all classes are equally trained
+    # (features), targets = undersample((features), targets)  # all classes are equally trained
+    (verbosity >= 3) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+    Classify.adaptnn!(nn, features, targets)
     (verbosity >= 3) && showlosses(nn)
 
     # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
     Classify.savenn(nn)
+    dfp = predictdf(nothing, nn, features, targets, "train")
+    for settype in setdiff(settypes(), ["train"])
+        features, targets = getfeaturestargets(settypesdf, settype, coin, coinix)
+        if !isnothing(features) && !isnothing(targets)
+            dfp = predictdf(dfp, nn, features, targets, settype)
+        end
+    end
+    savedflogfolder(dfp, predictionsfilename(isnothing(coinix) ? "mix" : coins[coinix], nn.fileprefix))
+    return nn, dfp
 end
 
 function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
@@ -310,33 +335,15 @@ function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
         println("$(EnvConfig.now()) adapting $coin classifier")
         # if classifier filedoes not exist then create one
         nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
-        dfp = nothing
-        if isnothing(coinix) # adapt a mix classifier with all coins
-            for coin in coins
-                adaptclassifierwithcoin!(nn, settypesdf, coin)
-            end
-            for coin in coins
-                for settype in settypes()
-                    evalfeatures, evaltargets = getfeaturestargets(settypesdf, settype, coin)
-                    if !isnothing(evalfeatures) && !isnothing(evaltargets)
-                        dfp = predictdf(dfp, nn, evalfeatures, evaltargets, settype)
-                    end
-                end
-            end
-        else  # adapt a coin specific classifier with all coins
-            if !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
-                nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
-                Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
-                adaptclassifierwithcoin!(nn, settypesdf, coins[coinix])
-                for settype in settypes()
-                    features, targets = getfeaturestargets(settypesdf, settype, coin)
-                    if !isnothing(features) && !isnothing(targets)
-                        dfp = predictdf(dfp, nn, features, targets, settype)
-                    end
-                end
-            end
+        if isnothing(coinix) && !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
+            nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
+            Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
         end
-        savedflogfolder(dfp, predictionsfilename(coin, nn.fileprefix))
+        nn, dfp = _adaptclassifier(nn, coins, coinix)
+        if isnothing(nn)
+            # no adaptation took place
+            return nothing
+        end
         cmdf = Classify.confusionmatrix(dfp)
         (verbosity >=3) && println("cm: $cmdf")
         xcmdf = Classify.extendedconfusionmatrix(dfp)
@@ -350,10 +357,15 @@ function adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
     res = []
     if isdflogfolder(settypesfilename())
         nn = adaptclassifier(coins, nothing, featconfig, trgconfig, settypesdf)
-        push!(res, (coin=nothing, nn=nn))
+        if isnothing(nn)
+            return res
+        end
+        push!(res, (coin="mix", nn=nn))
         for ix in eachindex(coins)
             nn = adaptclassifier(coins, ix, featconfig, trgconfig, settypesdf)
-            push!(res, (coin=coins[ix], nn=nn))
+            if !isnothing(nn)
+                push!(res, (coin=coins[ix], nn=nn))
+            end
         end
     else
         @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"

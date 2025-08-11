@@ -1016,7 +1016,7 @@ function compresslosses(losses)
 end
 
 function savenn(nn::NN)
-    (verbosity >= 3) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
+    (verbosity >= 2) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
     # nn.losses = compresslosses(nn.losses)
     BSON.@save nnfilename(nn.fileprefix) nn
     # @error "save machine to be implemented for pure flux" filename
@@ -1025,7 +1025,7 @@ function savenn(nn::NN)
 end
 
 function loadnn(filename)
-    (verbosity >= 3) && println("loading classifier $filename from $(nnfilename(filename))")
+    (verbosity >= 2) && println("loading classifier $filename from $(nnfilename(filename))")
     nn = model001(1, ["dummy1", "dummy2"], "dummy menmonic")  # dummy data struct
     BSON.@load nnfilename(filename) nn
     # loadlosses!(nn)
