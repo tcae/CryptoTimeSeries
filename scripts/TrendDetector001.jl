@@ -143,7 +143,7 @@ end
 
 rangefilename() = "ranges.jdf"
 settypesfilename() = "settypesfiledict.jdf"
-predictionsfilename(coin, classifier) = "predictions_$(coin)_$(classifier).jdf"
+predictionsfilename(coins, coinix, classifier) = "predictions_$(isnothing(coinix) ? "mix" : coins[coinix])_$(classifier).jdf"
 
 
 "Saves a given dataframe df in the current log folder using the given filename"
@@ -202,8 +202,6 @@ function featurestargetscollect!(settypesdf, coins, featconfig, trgconfig)
         rangedf2 = readdflogfolder(rangefilename())
         # addperiodgap!(rangedf2)
         @assert rangedf==rangedf2 "rangedf=$rangedf \n not equal rangedf2 = $rangedf2"
-        settypesdf2 = readdflogfolder(settypesfilename())
-        @assert settypesdf==settypesdf2 "settypesdf=$settypesdf \n not equal settypesdf2=$settypesdf2"
         @assert size(settypesdf[settypesdf[!, :coin] .== ct.coin, :], 1) == 1 "size(settypesdf[settypesdf[!, :coin] .== ct.coin, :], 1)=$(size(settypesdf[settypesdf[!, :coin] .== ct.coin, :], 1))"
         ftdf2 = readdflogfolder(settypesdf[settypesdf[!, :coin] .== ct.coin, :featurestargetsfname][begin])
         @assert ftdf2 == ct.ftdf
@@ -299,7 +297,7 @@ function showlosses(nn)
     end
 end
 
-function _adaptclassifier(nn::Classify.NN, coin, coinix)
+function _adaptclassifier(nn::Classify.NN, coins, coinix)
     features, targets = getfeaturestargets(settypesdf, "train", coins, coinix)
     if isnothing(features) || isnothing(targets)
         return nothing
@@ -313,15 +311,7 @@ function _adaptclassifier(nn::Classify.NN, coin, coinix)
 
     # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
     Classify.savenn(nn)
-    dfp = predictdf(nothing, nn, features, targets, "train")
-    for settype in setdiff(settypes(), ["train"])
-        features, targets = getfeaturestargets(settypesdf, settype, coin, coinix)
-        if !isnothing(features) && !isnothing(targets)
-            dfp = predictdf(dfp, nn, features, targets, settype)
-        end
-    end
-    savedflogfolder(dfp, predictionsfilename(isnothing(coinix) ? "mix" : coins[coinix], nn.fileprefix))
-    return nn, dfp
+    return nn
 end
 
 function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
@@ -329,27 +319,25 @@ function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
     coinix = isnothing(coinix) || (coinix < firstindex(coins)) || (coinix > lastindex(coins)) ? nothing : coinix
     coin = isnothing(coinix) ? "mix" : coins[coinix]
     if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
-        println("$coin classifier seems to be adapted - found in $(Classify.nnfilename(classifiermenmonic(coins, coinix)))")
+        (verbosity >= 2) && println("$coin classifier seems to be adapted - found in $(Classify.nnfilename(classifiermenmonic(coins, coinix)))")
         nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
     else
         println("$(EnvConfig.now()) adapting $coin classifier")
         # if classifier filedoes not exist then create one
         nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
-        if isnothing(coinix) && !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
+        if !isnothing(coinix) && !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
             nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
             Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
         end
-        nn, dfp = _adaptclassifier(nn, coins, coinix)
+        nn = _adaptclassifier(nn, coins, coinix)
         if isnothing(nn)
             # no adaptation took place
             return nothing
         end
-        cmdf = Classify.confusionmatrix(dfp)
-        (verbosity >=3) && println("cm: $cmdf")
-        xcmdf = Classify.extendedconfusionmatrix(dfp)
-        (verbosity >=3) && println("xcm: $xcmdf")
         println("$(EnvConfig.now()) finished adapting $coin classifier")
     end
+    dfp = calculatepredictions(nn, coins, coinix)
+    evaluatepredictions(dfp)
     return nn
 end
 
@@ -371,6 +359,35 @@ function adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
         @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
     end
     return res
+end
+
+function calculatepredictions(coins::AbstractVector, coinix)
+    nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
+    return calculatepredictions(nn, coins, coinix)
+end
+
+function calculatepredictions(nn::Union{Classify.NN, Nothing}, coins::AbstractVector, coinix)
+    dfp = nothing
+    if isnothing(nn)
+        (verbosity >= 2) && println("No classifier found for $coin - no predictions can be calculated")
+    else
+        if isdflogfolder(predictionsfilename(coins, coinix, nn.fileprefix))
+            dfp = readdflogfolder(predictionsfilename(coins, coinix, nn.fileprefix))
+        else
+            for settype in settypes()
+                features, targets = getfeaturestargets(settypesdf, settype, coins, coinix)
+                if !isnothing(features) && !isnothing(targets)
+                    dfp = predictdf(dfp, nn, features, targets, settype)
+                end
+            end
+            if size(dfp, 1) > 0 
+                savedflogfolder(dfp, predictionsfilename(coins, coinix, nn.fileprefix))
+            else
+                (verbosity >= 2) && println("No $coin predictions could be calculated - no result stored")
+            end
+        end
+    end
+    return dfp
 end
 
 function inspect(coins)
@@ -407,6 +424,16 @@ function inspect(coins)
                 end
             end
         end
+
+        allfilenames = readdir(EnvConfig.logfolder())
+        predictionfilenames = filter(filename -> contains(filename, "predictions"), allfilenames)
+        println("prediction filenames: $predictionfilenames")
+        println(predictionfilenames[begin])
+        df = readdflogfolder(predictionfilenames[begin])
+        println("predictions size=$(size(df)): \n$(df[begin:begin+1, :])\n$(describe(df))")
+        println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(df[!, :targets]))))")
+        println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(df[!, :set]))))")
+        println()
     else
         @error "missing features/targets dataframe folder $(EnvConfig.logpath(settypesfilename()))"
     end
@@ -427,6 +454,28 @@ function predictdf(df, nn, features, targets, settype)
     return df
 end
 
+function evaluatepredictions(dfp::Union{AbstractDataFrame, Nothing})
+    if !isnothing(dfp) && (size(dfp, 1) > 0)
+        cmdf = Classify.confusionmatrix(dfp)
+        (verbosity >=3) && println("cm: $cmdf")
+        xcmdf = Classify.extendedconfusionmatrix(dfp)
+        (verbosity >=3) && println("xcm: $xcmdf")
+    else
+        (verbosity >= 1) && println("missing predictions data (dfp=$dfp$(isnothing(dfp) ? "" : ", size(dfp)= $(size(dfp))")) that is required to evaluate")
+    end
+end
+
+function evaluatepredictions(coins::AbstractVector, coinix)
+    coin = isnothing(coinix) ? "mix" : coins[coinix]
+    predictionsfname = predictionsfilename(coins, coinix, Classify.nnfilename(classifiermenmonic(coins, coinix)))
+    if isdflogfolder(predictionsfname)
+        dfp = readdflogfolder(predictionsfname)
+        evaluatepredictions(dfp)
+    else
+        (verbosity >= 1) && println("missing $coin predictions to evaluate")
+    end
+end
+
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
 # testmode = true
@@ -434,6 +483,7 @@ inspectonly = "inspect" in ARGS
 # inspectonly = true
 
 EnvConfig.init(testmode ? test : training)
+EnvConfig.setlogpath("2533-TrendDetector001mk2-CollectSets-$(EnvConfig.configmode)")
 EnvConfig.setlogpath("2528-TrendDetector001-CollectSets-$(EnvConfig.configmode)")
 println("log folder: $(EnvConfig.logfolder())")
 
@@ -459,7 +509,7 @@ else
     # end
     # println("length(coins)=$(length(coins))")
     # println(coins)
-    coins = ["1INCH", "5IRE", "A8", "AAVE", "ACA", "ACH", "ACS", "ADA", "AEG", "AERO", "AEVO", "AGIX", "AGI", "AGLA", "AGLD", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "AMI", "ANIME", "ANKR", "AO", "APEX", "APE", "APP", "APRS", "APT", "ARB", "ARKM", "AR", "ASRR", "ATH", "ATOM", "AVAIL", "AVAX", "AVA", "AVL", "AXL", "AXS", "A", "B3", "BABYDOGE", "BAN", "BBL", "BBQ", "BB", "BCH", "BCUT", "BDXN", "BEAM", "BEL", "BERA", "BICO", "BLAST", "BLOCK", "BLUR", "BMT", "BNB", "BOBA", "BOB", "BOMB", "BOME", "BONK", "BRETT", "BR", "BTC", "BUBBLE", "C98", "CAKE", "CARV", "CATBNB", "CATI", "CELO", "CEL", "CGPT", "CHILLGUY", "CHRP", "CHZ", "CLOUD", "CMETH", "COA", "COMP", "COM", "COOKIE", "COOK", "COQ", "CORE", "COT", "CPOOL", "CRV", "CSPR", "CTA", "CTC", "CTT", "CUDIS", "CYBER", "DBR", "DECHAT", "DEEP", "DEFI", "DEGEN", "DGB", "DIAM", "DMAIL", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DSRUN", "DUEL", "DYDX", "DYM", "EGLD", "EGO", "EIGEN", "ELDE", "ELX", "ENA", "ENJ", "ENS", "EOS", "EPT", "ERA", "ESE", "ES", "ETC", "ETHFI", "ETHW", "ETH", "EVERY", "EXVG", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLIP", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FLUID", "FMB", "FON", "FORT", "FOXY", "FRAG", "FTM", "FTT", "FUEL", "FXS", "F", "G3", "G7", "GALAXIS", "GALA", "GAL", "GAME", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAPE", "GRASS", "GRT", "GSTS", "GST", "GTAI", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOME", "HOOK", "HOT", "HTX", "HUMA", "HVH", "HYPER", "HYPE", "H", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "INSP", "IO", "IP", "IRL", "IZI", "JASMY", "JTO", "JUP", "J", "KAIA", "KAS", "KAVA", "KCAL", "KDA", "KLAY", "KMNO", "KSM", "L3", "LADYS", "LAI", "LAYER", "LA", "LDO", "LENDS", "LEVER", "LFT", "LGX", "LINK", "LL", "LMWR", "LOOKS", "LRC", "LTC", "LUNAI", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "MEMEFI", "MEME", "MERL", "METH", "MEW", "ME", "MILK", "MINA", "MINU", "MIX", "MKR", "MLK", "MNT", "MOCA", "MOG", "MOJO", "MON", "MORPHO", "MOVE", "MOVR", "MOZ", "MPLX", "MVL", "MYRIA", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NEWT", "NEXT", "NGL", "NIBI", "NLK", "NOT", "NS", "NUTS", "NXPC", "NYAN", "OBOL", "ODOS", "OKG", "OL", "OMG", "OMNI", "OM", "ONDO", "ONE", "OP", "ORDER", "ORDI", "ORT", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PFVS", "PLANET", "PLAY", "PLUME", "PNUT", "POKT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PUFFER", "PUFF", "PUMP", "PURSE", "PYTH", "PYUSD", "QNT", "QORPO", "QTUM", "RACA", "RAIN", "RATS", "RDNT", "RED", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RPK", "RSS3", "RUNE", "RVN", "SAFE", "SALD", "SAND", "SATS", "SCA", "SCRT", "SCR", "SC", "SEI", "SEND", "SEOR", "SERAPH", "SFUND", "SHARK", "SHIB", "SHILL", "SHRAP", "SIDUS", "SIGN", "SIS", "SKATE", "SLG", "SMILE", "SNX", "SOLO", "SOLV", "SOL", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQD", "SQR", "SQT", "SSV", "STAR", "STETH", "STG", "STOP", "STREAM", "STRK", "STX", "SUI", "SUNDOG", "SUN", "SUPRA", "SUSHI", "SVL", "SWEAT", "SWELL", "SXT", "S", "TAC", "TAIKO", "TAI", "TAP", "TAVA", "TA", "TENET", "THETA", "THRUST", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TREE", "TRUMP", "TRX", "TWT", "T", "ULTI", "UMA", "UNI", "USD1", "USDC", "USDE", "USTC", "UXLINK", "VANA", "VANRY", "VELAR", "VELO", "VENOM", "VET", "VEXT", "VIRTUAL", "VRA", "VRTX", "VV", "WAL", "WAVES", "WAXP", "WBTC", "WCT", "WELL", "WEMIX", "WEN", "WIF", "WLD", "WLKN", "WOO", "WWY", "W", "XAI", "XAR", "XAUT", "XAVA", "XCAD", "XDC", "XEC", "XION", "XLM", "XO", "XRP3L", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEND", "ZENT", "ZEN", "ZEREBRO", "ZERO", "ZETA", "ZEX", "ZIG", "ZIL", "ZKF", "ZKJ", "ZKL", "ZK", "ZORA", "ZRC", "ZRO", "ZRX", "ZTX"]
+    coins = ["1INCH", "5IRE", "A8", "AAVE", "ACA", "ACH", "ACS", "ADA", "AEG", "AERO", "AEVO", "AGIX", "AGI", "AGLA", "AGLD", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "AMI", "ANIME", "ANKR", "AO", "APEX", "APE", "APP", "APRS", "APT", "ARB", "ARKM", "AR", "ASRR", "ATH", "ATOM", "AVAIL", "AVAX", "AVA", "AVL", "AXL", "AXS", "A", "B3", "BABYDOGE", "BAN", "BBL", "BBQ", "BB", "BCH", "BCUT", "BDXN", "BEAM", "BEL", "BERA", "BICO", "BLAST", "BLOCK", "BLUR", "BMT", "BNB", "BOBA", "BOB", "BOMB", "BOME", "BONK", "BRETT", "BR", "BTC", "BUBBLE", "C98", "CAKE", "CARV", "CATBNB", "CATI", "CELO", "CEL", "CGPT", "CHILLGUY", "CHRP", "CHZ", "CLOUD", "CMETH", "COA", "COMP", "COM", "COOKIE", "COOK", "COQ", "CORE", "COT", "CPOOL", "CRV", "CSPR", "CTA", "CTC", "CTT", "CUDIS", "CYBER", "DBR", "DECHAT", "DEEP", "DEFI", "DEGEN", "DGB", "DIAM", "DMAIL", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DSRUN", "DUEL", "DYDX", "DYM", "EGLD", "EGO", "EIGEN", "ELDE", "ELX", "ENA", "ENJ", "ENS", "EOS", "EPT", "ERA", "ESE", "ES", "ETC", "ETHFI", "ETHW", "ETH", "EVERY", "EXVG", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLIP", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FLUID", "FMB", "FON", "FORT", "FOXY", "FRAG", "FTM", "FTT", "FUEL", "FXS", "F", "G3", "G7", "GALAXIS", "GALA", "GAL", "GAME", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAPE", "GRASS", "GRT", "GSTS", "GST", "GTAI", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOME", "HOOK", "HOT", "HTX", "HUMA", "HVH", "HYPER", "HYPE", "H", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "INSP", "IO", "IP", "IRL", "IZI", "JASMY", "JTO", "JUP", "J", "KAIA", "KAS", "KAVA", "KCAL", "KDA", "KLAY", "KMNO", "KSM", "L3", "LADYS", "LAI", "LAYER", "LA", "LDO", "LENDS", "LEVER", "LFT", "LGX", "LINK", "LL", "LMWR", "LOOKS", "LRC", "LTC", "LUNAI", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "MEMEFI", "MEME", "MERL", "METH", "MEW", "ME", "MILK", "MINA", "MINU", "MIX", "MKR", "MLK", "MNT", "MOCA", "MOG", "MOJO", "MON", "MORPHO", "MOVE", "MOVR", "MOZ", "MPLX", "MVL", "MYRIA", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NEWT", "NEXT", "NGL", "NIBI", "NLK", "NOT", "NS", "NUTS", "NXPC", "NYAN", "OBOL", "ODOS", "OKG", "OL", "OMG", "OMNI", "OM", "ONDO", "ONE", "OP", "ORDER", "ORDI", "ORT", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PFVS", "PLANET", "PLAY", "PLUME", "PNUT", "POKT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PUFFER", "PUFF", "PUMP", "PURSE", "PYTH", "PYUSD", "QNT", "QORPO", "QTUM", "RACA", "RAIN", "RATS", "RDNT", "RED", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RPK", "RSS3", "RUNE", "RVN", "SAFE", "SALD", "SAND", "SATS", "SCA", "SCRT", "SCR", "SC", "SEI", "SEND", "SEOR", "SERAPH", "SFUND", "SHARK", "SHIB", "SHILL", "SHRAP", "SIDUS", "SIGN", "SIS", "SKATE", "SLG", "SMILE", "SNX", "SOLO", "SOLV", "SOL", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQD", "SQR", "SQT", "SSV", "STAR", "STETH", "STG", "STOP", "STREAM", "STRK", "STX", "SUI", "SUNDOG", "SUN", "SUPRA", "SUSHI", "SVL", "SWEAT", "SWELL", "SXT", "S", "TAC", "TAIKO", "TAI", "TAP", "TAVA", "TA", "TENET", "THETA", "THRUST", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TREE", "TRUMP", "TRX", "TWT", "T", "ULTI", "UMA", "UNI", "USTC", "UXLINK", "VANA", "VANRY", "VELAR", "VELO", "VENOM", "VET", "VEXT", "VIRTUAL", "VRA", "VRTX", "VV", "WAL", "WAVES", "WAXP", "WBTC", "WCT", "WELL", "WEMIX", "WEN", "WIF", "WLD", "WLKN", "WOO", "WWY", "W", "XAI", "XAR", "XAUT", "XAVA", "XCAD", "XDC", "XEC", "XION", "XLM", "XO", "XRP3L", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEND", "ZENT", "ZEN", "ZEREBRO", "ZERO", "ZETA", "ZEX", "ZIG", "ZIL", "ZKF", "ZKJ", "ZKL", "ZK", "ZORA", "ZRC", "ZRO", "ZRX", "ZTX"]
     # coins =["BTC"]
 end
 
@@ -475,6 +525,7 @@ if inspectonly
 else
     featconfig = f6config01()
     trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01)
+    trgconfig002 = trendccoinonfig(10, 4*60, 0.05, 0.02)
     (verbosity >= 3) && println("featuresconfig=$(Features.describe(featconfig))")
     (verbosity >= 3) && println("targetsconfig=$(Targets.describe(trgconfig))")
     settypesdf = readdflogfolder(settypesfilename())
@@ -486,7 +537,7 @@ else
 
     featurestargetscollect!(settypesdf, coins, featconfig, trgconfig)
     nnvector = adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
-    if verbosity >= 3
+    if verbosity >= 4
         for nnt in nnvector
             println("$(nnt.coin) - $(nnt.nn.fileprefix): $(Classify.nnfilename(nnt.nn.fileprefix))")
             showlosses(nnt.nn)
