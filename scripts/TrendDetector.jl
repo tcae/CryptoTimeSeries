@@ -377,10 +377,10 @@ function inspect(coins)
     if isdflogfolder(coinfilesdffilename())
         coinfilesdf = readdflogfolder(coinfilesdffilename())
         println(EnvConfig.logpath(coinfilesdffilename()))
-        println(coinfilesdf)
-        println("$(length(setdiff(coins, coinfilesdf[!, :coin]))) unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, coinfilesdf[!, :coin]))")
-        println("$(length(setdiff(coinfilesdf[!, :coin], coins)))) coins with features/targets but are missing in the requested set of coins: $(setdiff(coinfilesdf[!, :coin], coins))")
-        coins = intersect(coins, coinfilesdf[!, :coin])
+        # println(coinfilesdf)
+        # println("$(length(setdiff(coins, coinfilesdf[!, :coin]))) unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, coinfilesdf[!, :coin]))")
+        # println("$(length(setdiff(coinfilesdf[!, :coin], coins)))) coins with features/targets but are missing in the requested set of coins: $(setdiff(coinfilesdf[!, :coin], coins))")
+        # coins = intersect(coins, coinfilesdf[!, :coin])
         # println(coinfilesdf[begin:begin+2, :])
         # println(describe(coinfilesdf))
         println("$(length(coins)) processable coins")
@@ -407,11 +407,17 @@ function inspect(coins)
                 end
             end
         end
+        ftdf = getfeaturestargetsdf(coins) # use coins, instead of coin, to get all features / targets in case of a mix classifier adaptation
+        if size(ftdf, 1) > 0
+            println("describe(ftdf, :all)=$(describe(ftdf, :all))")
+        else
+            println("No features and targets found")
+        end
 
         allfilenames = readdir(EnvConfig.logfolder())
         predictionfilenames = filter(filename -> contains(filename, "predictions"), allfilenames)
         if length(predictionfilenames) > 0
-            println("prediction filenames: $predictionfilenames")
+            # println("prediction filenames: $predictionfilenames")
             println(predictionfilenames[begin])
             df = readdflogfolder(predictionfilenames[begin])
             println("predictions size=$(size(df)): \n$(df[begin:begin+1, :])\n$(describe(df))")
@@ -451,32 +457,34 @@ function _oixdelta(ix, ftdf, rangeid, rangedelta, rangedf, ohlcvdf)
 end
 
 "collects gains of a prediction vector of a specific coin"
-function _getgainsdf(labelvec, ftdf, rangedf, ohlcvdf)
-    gdf = DataFrame(set=String[], label=String[], samplecount=Int32[], gain=Float32[], startdt=DateTime[], enddt=DateTime[], ftstartix=Int32[], ftendix=Int32[])
-    if length(labelvec) == 0
+function _getgainsdf(scores, ftdf, rangedf, ohlcvdf, openthreshold, closethreshold, inlabel, outlabel)
+    gdf = DataFrame() # set=String[], label=String[], samplecount=Int32[], gain=Float32[], startdt=DateTime[], enddt=DateTime[], ftstartix=Int32[], ftendix=Int32[])
+    if length(scores) == 0
         return gdf
     end
-    startix = lastlabel = startprice = starttime = nothing
+    startix = startprice = starttime = labelix = nothing
+    lastlabel = outlabel
     # delta = ftix2ohlcvixoffset(ftdf[begin, :rix], ftdf, rangedf, ohlcvdf)
     # if delta != 0
     #     ftdf[!, :rix] .= ftdf[!, :rix] .+ delta
     # end
     rangeid = nothing
     rangedelta = nothing
-    for ix in eachindex(labelvec)
-        if lastlabel != labelvec[ix]
+    for ix in eachindex(scores)
+        labelix = lastlabel == inlabel ? (scores[ix] > closethreshold ? inlabel : outlabel) : (scores[ix] > openthreshold ? inlabel : outlabel)
+        if labelix != lastlabel
             oix, rangedelta, rangeid = _oixdelta(ix, ftdf, rangeid, rangedelta, rangedf, ohlcvdf)
             ixprice = ohlcvdf[oix, :close]
             ixtime = ohlcvdf[oix, :opentime]
-            # lastlabel is teh correct label to use for the segment because labelvec[ix] is the first label seen after the label changed
-            if !isnothing(startix)
+            # lastlabel is the correct label to use for the segment because labelix is the first label seen after the label changed
+            if lastlabel == inlabel # only add inlabel gains
                 gain = (ixprice - startprice) / startprice
-                push!(gdf, (set=ftdf[ix, :set], label=lastlabel, samplecount=Minute(ixtime-starttime).value, gain=gain, startdt=starttime, enddt=ixtime, ftstartix=startix, ftendix=ix))
+                push!(gdf, (set=ftdf[ix, :set], label=lastlabel, samplecount=Minute(ixtime-starttime).value, gain=gain, startdt=starttime, enddt=ixtime, ftstartix=startix, ftendix=ix, openthreshold=openthreshold, closethreshold=closethreshold))
             end
             startix = ix
             startprice = ixprice
             starttime = ixtime
-            lastlabel = labelvec[ix]
+            lastlabel = labelix
         end
     end
     return gdf
@@ -497,27 +505,34 @@ function getgainsdf(coins; rangedf = rangedf)
     for coin in coins
         dfp = getpredictions(coin)
         if (size(dfp, 1) > 0)
-            ohlcv = Ohlcv.read(coin)
-            ohlcvdf = Ohlcv.dataframe(ohlcv)
-            # rangedf = readdflogfolder(rangefilename())
-            ftdf = getfeaturestargetsdf(coin)
-            diff = dfp[!, :set] .!= ftdf[!, :set]
-            diffdf = DataFrame(dfp=dfp[diff, :set], ftdf=ftdf[diff, :set])
-            @assert dfp[!, :set] == ftdf[!, :set] "dfp[!, :set]=$(length(dfp[!, :set])) != ftdf[!, :set]=$(length(ftdf[!, :set])) diff=$diffdf"
-            prednames = CategoricalArray(Classify.predictioncolumns(dfp), ordered=false)
-            predonly = @view dfp[!, string.(prednames)]
-            scores, maxindex = Classify.maxpredictions(Matrix(predonly), 2)
-            predicted = vec([prednames[ix] for ix in maxindex])
-            gdf = _getgainsdf(predicted, ftdf, rangedf, ohlcvdf)
-            gdf[!, :coin] = fill(coin, size(gdf, 1))
-            gdf[!, :predicted] = fill(true, size(gdf, 1))
-            gaindf = append!(gaindf, gdf)
+            for (openthreshold, closethreshold) in [(0.8, 0.5), (0.7, 0.5), (0.6, 0.5), (0.8, 0.6), (0.7, 0.6), (0.6, 0.55)] # [(0.5, 0.5)]
+                ohlcv = Ohlcv.read(coin)
+                ohlcvdf = Ohlcv.dataframe(ohlcv)
+                # rangedf = readdflogfolder(rangefilename())
+                ftdf = getfeaturestargetsdf(coin)
+                diff = dfp[!, :set] .!= ftdf[!, :set]
+                diffdf = DataFrame(dfp=dfp[diff, :set], ftdf=ftdf[diff, :set])
+                @assert dfp[!, :set] == ftdf[!, :set] "dfp[!, :set]=$(length(dfp[!, :set])) != ftdf[!, :set]=$(length(ftdf[!, :set])) diff=$diffdf"
+                prednames = CategoricalArray(Classify.predictioncolumns(dfp), ordered=false)
+                # assuming binary classification with 2 classes and prednames[1] is the open trade class (longbuy or shortbuy)
+                @assert string(prednames[2]) == "allclose" "prednames=$(prednames)"
+                @assert length(prednames) == 2 "prednames=$(prednames)"
 
-            gdf = _getgainsdf(dfp[!, :targets], ftdf, rangedf, ohlcvdf)
-            gdf[!, :coin] = fill(coin, size(gdf, 1))
-            gdf[!, :predicted] = fill(false, size(gdf, 1))
-            dfp = @view dfp[dfp[!, :set] .!= "noop", :] # exclude gaps between set partitions
-            gaindf = append!(gaindf, gdf)
+                scores = dfp[!, string(prednames[1])]
+                # predonly = @view dfp[!, string.(prednames)]
+                # scores, maxindex = Classify.maxpredictions(Matrix(predonly), 2)
+                # predicted = vec([prednames[ix] for ix in maxindex])
+                gdf = _getgainsdf(scores, ftdf, rangedf, ohlcvdf, openthreshold, closethreshold, prednames[1], prednames[2])
+                gdf[!, :coin] = fill(coin, size(gdf, 1))
+                gdf[!, :predicted] = fill(true, size(gdf, 1))
+                gaindf = append!(gaindf, gdf)
+
+                gdf = _getgainsdf([(t == prednames[1] ? 1f0 : 0f0) for t in dfp[!, :targets]], ftdf, rangedf, ohlcvdf, openthreshold, closethreshold, prednames[1], prednames[2])
+                gdf[!, :coin] = fill(coin, size(gdf, 1))
+                gdf[!, :predicted] = fill(false, size(gdf, 1))
+                dfp = @view dfp[dfp[!, :set] .!= "noop", :] # exclude gaps between set partitions
+                gaindf = append!(gaindf, gdf)
+            end
         else
             (verbosity >= 1) && println("skipping gain collection of $(coin) due to missing predictions due to size(dfp)= $(size(dfp))")
         end
@@ -605,6 +620,11 @@ function averageconfusionmatrix(coins)
     return ccmdf, cxcmdf
 end
 
+"""
+mixonly = only one mix classifier that is used for any coin  
+specificonly = only a dedicated classifier per coin  
+specificmix = common mix classifier with a coin specific adaptation on top  
+"""
 @enum ClassifierMix mixonly specificmix specificonly
 
 """
@@ -636,7 +656,13 @@ mk5config() = (folder="2535-TrendDetector005-$(EnvConfig.configmode)", featconfi
 mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
 mk6config() = (folder="2534-TrendDetector006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
-currentconfig() = mk6config()
+
+"""
+same as mk6 butwith copied mix classifier from mk2
+mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
+"""
+mk7config() = (folder="2534-TrendDetector007-mix-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
+currentconfig() = mk7config()
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
@@ -712,7 +738,7 @@ else
     println(ccmdf)
     gaindf = getgainsdf(coins)
     if size(gaindf, 1) > 0
-        gaindfgroup = groupby(gaindf, [:set, :label, :predicted])
+        gaindfgroup = groupby(gaindf, [:set, :label, :predicted, :openthreshold, :closethreshold])
         # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
         cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum)
     end

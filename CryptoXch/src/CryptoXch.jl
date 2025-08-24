@@ -272,11 +272,13 @@ function _gethistoryohlcv(xc::XchCache, base::AbstractString, startdt::DateTime,
         while (size(df,1) > 0) && (size(res,1) > 0) && (res[end, :opentime] >= df[begin, :opentime])  # replace last row with updated data
             deleteat!(res, size(res, 1))
         end
-        if (size(res, 1) > 0) && (names(df) == names(res))
-            df = vcat(res, df)
-        else
-            (verbosity >= 1) && @error "vcat data frames names not matching df: $(names(df)) - res: $(names(res))"
-            break
+        @assert all(names(df) .== names(res)) "names(df)=$(names(df)) .== names(res)=$(names(res))"
+        if size(res, 1) > 0
+            if size(df, 1) > 0
+                df = vcat(res, df)
+            else
+                df = res
+            end
         end
     end
     return df

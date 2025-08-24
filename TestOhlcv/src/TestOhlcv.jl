@@ -135,9 +135,9 @@ function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
     df = sinedata(2*60, 3000000)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
-    df = df[startdt .<= df.opentime .<= enddt, :]
+    # df = @view df[startdt .<= df.opentime .<= enddt, :]
     # println("test single sinus $(size(df))")
-    df = Ohlcv.accumulate(df, interval)
+    # df = Ohlcv.accumulate(df, interval)
     return df
 end
 
@@ -145,7 +145,7 @@ function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
     # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
     df = sinedata(2*60, 3000000, 0, 10.5)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
-    df = df[startdt .<= df.opentime .<= enddt, :]
+    # df = @view df[startdt .<= df.opentime .<= enddt, :]
     # println("test double sinus $(size(df))")
     df = Ohlcv.accumulate(df, interval)
     return df
@@ -168,6 +168,8 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
         #     println("testdataframe df size: $(size(df,1)) names: $(names(df))  $base $startdt $enddt $interval")
         end
         Ohlcv.addpivot!(df)
+        df = Ohlcv.accumulate(df, interval)
+        df = df[startdt .<= df.opentime .<= enddt, :]
         return df
     else
         @info "unknown testohlcv test base: $base"

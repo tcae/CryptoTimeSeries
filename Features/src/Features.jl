@@ -860,19 +860,19 @@ mutable struct Features006 <: AbstractFeatures
     end
 end
 
-function _check!(f6::Features006, window, offset)
+function _check!(f6::Features006, window, offset, clip, norm)
     @assert 1 < window <= 10*24*60 "1 < window <= 10*24*60 failed: window=$window"
     @assert 0 <= offset "0 <= offset failed: offset=$offset"
     f6.requiredminutes = max(f6.requiredminutes, window + offset)
     f6.maxoffset = max(f6.maxoffset, offset)
 end
 
-_regry(f6::Features006; window, offset=0) = (f="ry", w=window, o=offset)
-_grad(f6::Features006; window, offset=0) = (f="rg", w=window, o=offset)
-_std(f6::Features006; window, offset=0) = (f="rs", w=window, o=offset)
-_mind(f6::Features006; window, offset=0) = (f="mind", w=window, o=offset)
-_maxd(f6::Features006; window, offset=0) = (f="maxd", w=window, o=offset)
-_rv(f6::Features006; short, long, offset=0) = (f="rv", s=short, l=long, o=offset)
+_regry(f6::Features006; window, offset, clip, norm) = (f="ry", w=window, o=offset, c=clip, n=norm)
+_grad(f6::Features006; window, offset, clip, norm) = (f="rg", w=window, o=offset, c=clip, n=norm)
+_std(f6::Features006; window, offset, clip, norm) = (f="rs", w=window, o=offset, c=clip, n=norm)
+_mind(f6::Features006; window, offset, clip, norm) = (f="mind", w=window, o=offset, c=clip, n=norm)
+_maxd(f6::Features006; window, offset, clip, norm) = (f="maxd", w=window, o=offset, c=clip, n=norm)
+_rv(f6::Features006; short, long, offset, clip, norm) = (f="rv", s=short, l=long, o=offset, c=clip, n=norm)
 
 fdfnocol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l], "+") : join([feature.f, feature.w], "+")
 fdfcol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l, feature.o], "+") : join([feature.f, feature.w, feature.o], "+")
@@ -881,58 +881,58 @@ f6requested(f6::Features006) = f6.requested
 f6all(f6::Features006) = union(f6.required, f6.requested)
 featurecount(f6::Features006) = length(f6requested(f6))
 
-"adds feature configuration of last y position of linear regression characterized by regression window [minutes] and offset [minutes]"
-function addregry!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check!(f6, window, offset)
-    g = _grad(f6, window=window, offset=offset)
+"Adds feature configuration of last y price as a ration to the last linear regression price characterized by regression window [minutes] and offset [minutes]. The feature value will be clipped at `clip` and normalized by `norm` if they are not `nothing`."
+function addregry!(f6::Features006; window::Integer=15, offset::Integer=0, clip=1f0, norm=1f0)
+    _check!(f6, window, offset, clip, norm)
+    g = _grad(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.required, g)
-    y = _regry(f6, window=window, offset=offset)
+    y = _regry(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.requested, y)
 end
 
-"adds feature configuration of gradient of linear regression characterized by regression window [minutes] and offset [minutes]"
-function addgrad!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check!(f6, window, offset)
-    y = _regry(f6, window=window, offset=offset)
+"Adds feature configuration of gradient of linear regression characterized by regression window [minutes] and offset [minutes]. The feature value will be clipped at `clip` and normalized by `norm` if they are not `nothing`."
+function addgrad!(f6::Features006; window::Integer=15, offset::Integer=0, clip=1f0, norm=1f0)
+    _check!(f6, window, offset, clip, norm)
+    y = _regry(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.required, y)
-    g = _grad(f6, window=window, offset=offset)
+    g = _grad(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.requested, g)
     return g
 end
 
-"adds feature configuration of standard deviation of linear regression characterized by regression window [minutes] and offset [minutes]"
-function addstd!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check!(f6, window, offset)
-    y = _regry(f6, window=window, offset=offset)
+"Adds feature configuration of standard deviation of linear regression characterized by regression window [minutes] and offset [minutes]. The feature value will be clipped at `clip` and normalized by `norm` if they are not `nothing`."
+function addstd!(f6::Features006; window::Integer=15, offset::Integer=0, clip=1f0, norm=1f0)
+    _check!(f6, window, offset, clip, norm)
+    y = _regry(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.required, y)
-    g = _grad(f6, window=window, offset=offset)
+    g = _grad(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.required, g)
-    s = _std(f6, window=window, offset=offset)
+    s = _std(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.requested, s)
     return s
 end
 
-"adds feature configuration of relative distance of pivot to maximum of range characterized by window [minutes] and offset [minutes]"
-function addmaxdist!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check!(f6, window, offset)
-    md = _maxd(f6, window=window, offset=offset)
+"Adds feature configuration of relative distance of pivot to maximum of range characterized by window [minutes] and offset [minutes]. The feature value will be clipped at `clip` and normalized by `norm` if they are not `nothing`."
+function addmaxdist!(f6::Features006; window::Integer=15, offset::Integer=0, clip=1f0, norm=1f0)
+    _check!(f6, window, offset, clip, norm)
+    md = _maxd(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.requested, md)
     return md
 end
 
-"adds feature configuration of relative distance of pivot to minimum of range characterized by window [minutes] and offset [minutes]"
-function addmindist!(f6::Features006; window::Integer=15, offset::Integer=0)
-    _check!(f6, window, offset)
-    md = _mind(f6, window=window, offset=offset)
+"Adds feature configuration of relative distance of pivot to minimum of range characterized by window [minutes] and offset [minutes]. The feature value will be clipped at `clip` and normalized by `norm` if they are not `nothing`."
+function addmindist!(f6::Features006; window::Integer=15, offset::Integer=0, clip=1f0, norm=1f0)
+    _check!(f6, window, offset, clip, norm)
+    md = _mind(f6, window=window, offset=offset, clip=clip, norm=norm)
     push!(f6.requested, md)
     return md
 end
 
-"adds feature configuration of relative volume of median over a short time range [minutes] relative to a longer time range [minutes] and common offset [minutes]"
-function addrelvol!(f6::Features006; short::Integer=5, long::Integer=60, offset::Integer=0)
+"Adds feature configuration of relative volume of median over a short time range [minutes] relative to a longer time range [minutes] and common offset [minutes]. The feature value will be clipped at `clip` and normalized by `norm` if they are not `nothing`."
+function addrelvol!(f6::Features006; short::Integer=5, long::Integer=60, offset::Integer=0, clip=10f0, norm=10f0)
     @assert 1 < short < long <= 10*24*60 "1 < short < long <= 10*24*60 failed: short=$short long=$long"
     @assert 0 <= offset "0 <= offset failed: offset=$offset"
-    rv = _rv(f6, short=short, long=long, offset=offset)
+    rv = _rv(f6, short=short, long=long, offset=offset, clip=clip, norm=norm)
     push!(f6.requested, rv)
     return rv
 end
@@ -1076,15 +1076,18 @@ function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         rv = f6.fdfno[!, rvcol]
         if !isnothing(odfendix)
             rv1 = relativevolume(view(odf[!, :basevolume], firstindex(odf[!, :basevolume]):odfendix), short, long)
+            rv1 = clipnormshift(rv1, ftup.c, ftup.n, 0f0)
             rv = vcat(rv1, rv)
         end
         if !isnothing(odfstartix)
             lastix = lastindex(odf[!, :basevolume])
             rv2 = relativevolume(view(odf[!, :basevolume], max(firstindex(odf[!, :basevolume]), odfstartix-long):lastix), short, long)
+            rv2 = clipnormshift(rv2, ftup.c, ftup.n, 0f0)
             rv = vcat(rv, view(rv2, (lastindex(rv2)-(lastix-odfstartix)):lastindex(rv2)))
         end
     else
         rv = relativevolume(odf[!, :basevolume], short, long)
+        rv = clipnormshift(rv, ftup.c, ftup.n, 0f0)
     end
     fdfno[:, rvcol] = rv
     return fdfno
@@ -1100,16 +1103,21 @@ function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         md = f6.fdfno[!, mdcol]
         if !isnothing(odfendix)
             md1 = rollingmin(view(odf[!, :low], firstindex(odf[!, :low]):odfendix), window)
+            md1 = clipnormshift(md1, ftup.c, ftup.n, ftup.n)
             md = vcat(md1, md)
         end
         if !isnothing(odfstartix)
             lastix = lastindex(odf[!, :low])
             md2 = rollingmin(view(odf[!, :low], max(firstindex(odf[!, :low]), odfstartix-window):lastix), window)
+            md2 = clipnormshift(md2, ftup.c, ftup.n, ftup.n)
             md = vcat(md, view(md2, (lastindex(md2)-(lastix-odfstartix)):lastindex(md2)))
         end
     else
         md = rollingmin(odf[!, :low], window)
+        md = clipnormshift(md, ftup.c, ftup.n, ftup.n)
     end
+    md = isnothing(ftup.c) ? md : [(mde > 0f0 ? min(ftup.c, mde) : max(-ftup.c, mde)) for mde in md] # clip
+    md = isnothing(ftup.n) ? md : md ./ ftup.n .+ ftup.n # normalize + shift
     fdfno[:, mdcol] = md
     return fdfno
 end
@@ -1124,14 +1132,17 @@ function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         md = f6.fdfno[!, mdcol]
         if !isnothing(odfendix)
             md1 = rollingmax(view(odf[!, :high], firstindex(odf[!, :high]):odfendix), window)
+            md1 = clipnormshift(md1, ftup.c, ftup.n, ftup.n)
             md = vcat(md1, md)
         end
         if !isnothing(odfstartix)
             md2 = rollingmax(view(odf[!, :high], odfstartix:lastindex(odf[!, :high])), window)
+            md2 = clipnormshift(md2, ftup.c, ftup.n, ftup.n)
             md = vcat(md, md2)
         end
     else
         md = rollingmax(odf[!, :high], window)
+        md = clipnormshift(md, ftup.c, ftup.n, ftup.n)
     end
     fdfno[:, mdcol] = md
     return fdfno
@@ -1157,8 +1168,8 @@ function _opentime!(fdfno, f6::Features006, odf, odfendix, odfstartix)
 end
 
 function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
-    rycol = fdfnocol(f6, _regry(f6, window=ftup.w, offset=ftup.o))
-    rgcol = fdfnocol(f6, _grad(f6, window=ftup.w, offset=ftup.o))
+    rycol = fdfnocol(f6, _regry(f6, window=ftup.w, offset=ftup.o, clip=ftup.c, norm=ftup.n))
+    rgcol = fdfnocol(f6, _grad(f6, window=ftup.w, offset=ftup.o, clip=ftup.c, norm=ftup.n))
     window = ftup.w
     if rycol in names(fdfno) # was already calculated
         return fdfno
@@ -1168,16 +1179,22 @@ function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         rg = f6.fdfno[!, rgcol]
         if !isnothing(odfendix)
             ry1, rg1 = rollingregression(view(odf[!, :pivot], firstindex(odf[!, :pivot]):odfendix), window)
+            rg1 = clipnormshift(rg1, ftup.c, ftup.n, ftup.n)
+            ry1 = clipnormshift(ry1, ftup.c, ftup.n, ftup.n)
             rg = vcat(rg1, rg)
             ry = vcat(ry1, ry)
         end
         if !isnothing(odfstartix)
             ry2, rg2 = rollingregression(odf[!, :pivot], window, odfstartix)
+            rg2 = clipnormshift(rg2, ftup.c, ftup.n, ftup.n)
+            ry2 = clipnormshift(ry2, ftup.c, ftup.n, ftup.n)
             rg = vcat(rg, rg2)
             ry = vcat(ry,ry2)
         end
     else
         ry, rg = rollingregression(odf[!, :pivot], window)
+        rg = clipnormshift(rg, ftup.c, ftup.n, ftup.n)
+        ry = clipnormshift(ry, ftup.c, ftup.n, ftup.n)
     end
     fdfno[:, rycol] = ry
     fdfno[:, rgcol] = rg
@@ -1191,8 +1208,8 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         return fdfno
     end
     fdfno = _regrgrady!(fdfno, f6, ftup, odf, odfendix, odfstartix)
-    rycol = fdfnocol(f6, _regry(f6, window=window))
-    rgcol = fdfnocol(f6, _grad(f6, window=window))
+    rycol = fdfnocol(f6, _regry(f6, window=ftup.w, offset=ftup.o, clip=ftup.c, norm=ftup.n))
+    rgcol = fdfnocol(f6, _grad(f6, window=ftup.w, offset=ftup.o, clip=ftup.c, norm=ftup.n))
     if rscol in names(f6.fdfno) 
         rs = f6.fdfno[!, rscol]
         if !isnothing(odfendix)
@@ -1200,6 +1217,7 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
             ryv = view(fdfno[!, rycol], firstindex(odf[!, :pivot]):odfendix)
             rgv = view(fdfno[!, rgcol], firstindex(odf[!, :pivot]):odfendix)
             rs1 = rollingregressionstdmv([odfv[!, :open], odfv[!, :high], odfv[!, :low], odfv[!, :close]], ryv, rgv, window)
+            rs1 = clipnormshift(rs1, ftup.c, ftup.n, 0f0)
             rs = vcat(rs1, rs)
         end
         if !isnothing(odfstartix)
@@ -1207,13 +1225,20 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
             # ryv = view(fdfno[!, rycol], odfstartix:lastindex(odf[!, :pivot]))
             # rgv = view(fdfno[!, rgcol], odfstartix:lastindex(odf[!, :pivot]))
             rs2 = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window, odfstartix)
+            rs2 = clipnormshift(rs2, ftup.c, ftup.n, 0f0)
             rs = vcat(rs, rs2)
         end
     else
         rs = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window)
+        rs = clipnormshift(rs, ftup.c, ftup.n, 0f0)
     end
     fdfno[:, rscol] = rs
     return fdfno
+end
+
+function clipnormshift(vec, clip, norm, shift)
+    vec = isnothing(clip) ? vec : [(el > 0f0 ? min(clip, el) : max(-clip, el)) for el in vec] # clip
+    vec = isnothing(norm) ? vec : vec ./ norm .+ shift # normalize + shift
 end
 
 "Receives an ohlcv datafram and compares against already calculated features whether supplementation have to be calculated before and/or after those."
@@ -1234,13 +1259,15 @@ function _ohlcvdataframes(f6::Features006)
     xodf = odf # default
     podf = parent(odf)
     @assert size(podf, 1) >= size(odf, 1)
-    if size(podf, 1) > size(odf, 1)
-        startix = Ohlcv.rowix(podf[!, :opentime], odf[begin, :opentime])
-        xodfstartix = max(1, startix-requiredminutes(f6)+1)
-        if startix > 1
-            endix = Ohlcv.rowix(podf[!, :opentime], odf[end, :opentime])
-            xodf = view(podf, xodfstartix:endix, :)
-        end
+    startix = Ohlcv.rowix(podf[!, :opentime], odf[begin, :opentime])
+    xodfstartix = max(1, startix-requiredminutes(f6)+1)
+    endix = Ohlcv.rowix(podf[!, :opentime], odf[end, :opentime])
+    if (startix - xodfstartix + 1) < f6.maxoffset # requiredminutes(f6)
+        odfstartix = xodfstartix + f6.maxoffset # requiredminutes(f6) - 1
+        odf = view(podf, odfstartix:endix, :)
+    end
+    if startix > xodfstartix
+        xodf = view(podf, xodfstartix:endix, :)
     end
     return xodf, odf
 end
@@ -1279,7 +1306,7 @@ function _supplementfdfno!(f6::Features006, odf)
 end
 
 function supplement!(f6::Features006)
-    if isnothing(f6.ohlcv) || (size(Ohlcv.dataframe(f6.ohlcv), 1) == 0)
+    if isnothing(f6.ohlcv) || (size(Ohlcv.dataframe(f6.ohlcv), 1) == 0)
         (verbosity >= 2)  && println("no ohlcv found in f6 - nothing to supplement")
         return emptycachef006()
     end

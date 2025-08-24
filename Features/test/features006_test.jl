@@ -10,19 +10,27 @@ verbosity =
 - 2: load and save messages are reported
 - 3: print debug info
 """
-verbosity = 1
-Features.verbosity = 1 # 3
+verbosity = 3
+Features.verbosity = 3
 
 EnvConfig.init(test)
 
 function f6config(ohlcv)
     f6 = Features.Features006()
-    Features.addregry!(f6, window=5, offset=2)
-    Features.addgrad!(f6, window=5, offset=0)
-    Features.addstd!(f6, window=10)
-    Features.addmaxdist!(f6, window=10, offset=5)
-    Features.addmindist!(f6, window=10, offset=10)
-    Features.addrelvol!(f6, short=5, long=60)
+    Features.addregry!(f6, window=5, offset=2, clip=1f0, norm=1f0)
+    Features.addgrad!(f6, window=5, offset=0, clip=1f0, norm=1f0)
+    Features.addstd!(f6, window=10, clip=1f0, norm=1f0)
+    Features.addmaxdist!(f6, window=10, offset=5, clip=1f0, norm=1f0)
+    Features.addmindist!(f6, window=10, offset=10, clip=1f0, norm=1f0)
+    Features.addrelvol!(f6, short=5, long=60, clip=10f0, norm=10f0)
+
+    # Features.addregry!(f6, window=5, offset=2, clip=nothing, norm=nothing)
+    # Features.addgrad!(f6, window=5, offset=0, clip=nothing, norm=nothing)
+    # Features.addstd!(f6, window=10, clip=nothing, norm=nothing)
+    # Features.addmaxdist!(f6, window=10, offset=5, clip=nothing, norm=nothing)
+    # Features.addmindist!(f6, window=10, offset=10, clip=nothing, norm=nothing)
+    # Features.addrelvol!(f6, short=5, long=60, clip=nothing, norm=nothing)
+    
     # println("ohlcvdf=$(ohlcv)")
     Features.setbase!(f6, ohlcv, usecache=false)
     return f6
@@ -31,7 +39,7 @@ end
 #TODO supplement tests of a ohlcv view
 
 @testset "Features006 tests" begin
-    startdt = DateTime("2023-02-17T13:30:00")
+    startdt = DateTime("2025-02-17T13:30:00")
     enddt = startdt + Hour(20) - Minute(1) 
     EnvConfig.init(production)
     xc = CryptoXch.XchCache()
@@ -41,7 +49,7 @@ end
     f6 = f6config(ohlcv)
     (verbosity >= 3) && println("f6 $f6, fdf size=$(size(f6.fdf)), fdfno size=$(size(f6.fdfno)), fdf describe $(describe(f6.fdf)), fdfno describe $(describe(f6.fdfno))")
     os = 2
-    ryf = Features._regry(f6, window=5, offset=os)
+    ryf = Features._regry(f6, window=5, offset=os, clip=1f0, norm=1f0)
     ryffdfcol = Features.fdfcol(f6, ryf)
     ryffdfnocol = Features.fdfnocol(f6, ryf)
     (verbosity >= 3) && println("f6.fdf[end, $ryffdfcol]=$(f6.fdf[end, ryffdfcol]), f6.fdfno[end-$os, $ryffdfnocol]=$(f6.fdfno[end-os, ryffdfnocol])")
@@ -78,6 +86,7 @@ end
                 if !(f6.fdfno[ix, n] == f6short.fdfno[ix, n])
                     if !rep
                         println("NOK f6.fdfno[$ix, $n]=$(f6.fdfno[ix, n]) != f6short.fdfno[$ix, $n]=$(f6short.fdfno[ix, n]) ")
+                        println("NOK f6.fdfno[$(max(ix-20,1)):$(ix+20), $n]=$(f6.fdfno[max(ix-20,1):ix+20, n])\nf6short.fdfno[$(max(ix-20,1)):$(ix+20), $n]=$(f6short.fdfno[max(ix-20,1):ix+20, n])")
                         rep=true
                     end
                 else

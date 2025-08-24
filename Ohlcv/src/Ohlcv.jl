@@ -662,6 +662,7 @@ function timerangecut!(ohlcv::OhlcvData, startdt, enddt)
     enddt = isnothing(enddt) ? ohlcv.df[end, :opentime] : enddt
     endix = Ohlcv.rowix(ohlcv.df[!, :opentime], enddt)
     ohlcv.df = ohlcv.df[startix:endix, :]
+    # ohlcv.df = @view ohlcv.df[startix:endix, :]
     ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)
 end
 
