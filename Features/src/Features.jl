@@ -1116,8 +1116,6 @@ function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         md = rollingmin(odf[!, :low], window)
         md = clipnormshift(md, ftup.c, ftup.n, ftup.n)
     end
-    md = isnothing(ftup.c) ? md : [(mde > 0f0 ? min(ftup.c, mde) : max(-ftup.c, mde)) for mde in md] # clip
-    md = isnothing(ftup.n) ? md : md ./ ftup.n .+ ftup.n # normalize + shift
     fdfno[:, mdcol] = md
     return fdfno
 end
@@ -1236,9 +1234,10 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     return fdfno
 end
 
-function clipnormshift(vec, clip, norm, shift)
-    vec = isnothing(clip) ? vec : [(el > 0f0 ? min(clip, el) : max(-clip, el)) for el in vec] # clip
-    vec = isnothing(norm) ? vec : vec ./ norm .+ shift # normalize + shift
+function clipnormshift(fvec, clip, norm, shift)
+    fvec = isnothing(clip) ? fvec : [(el > 0f0 ? min(clip, el) : max(-clip, el)) for el in fvec] # clip
+    fvec = isnothing(norm) ? fvec : fvec ./ norm .+ shift # normalize + shift
+    return fvec
 end
 
 "Receives an ohlcv datafram and compares against already calculated features whether supplementation have to be calculated before and/or after those."

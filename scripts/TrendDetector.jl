@@ -34,20 +34,39 @@ verbosity = 3
 
 function f6config01()
     featcfg = Features.Features006()
-    Features.addstd!(featcfg, window=5, offset=0)
-    Features.addgrad!(featcfg, window=5, offset=0)
-    Features.addgrad!(featcfg, window=5, offset=5)
-    Features.addgrad!(featcfg, window=5, offset=10)
-    Features.addgrad!(featcfg, window=15, offset=15)
-    Features.addgrad!(featcfg, window=15, offset=30)
-    Features.addgrad!(featcfg, window=15, offset=45)
-    Features.addgrad!(featcfg, window=60, offset=60)
-    Features.addgrad!(featcfg, window=60*4, offset=120)
-    Features.addmaxdist!(featcfg, window=60, offset=0)
-    Features.addmindist!(featcfg, window=60, offset=0)
-    Features.addmaxdist!(featcfg, window=60*5, offset=60)
-    Features.addmindist!(featcfg, window=60*5, offset=60)
-    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0)
+    Features.addstd!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=5, offset=5, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=5, offset=10, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=15, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=30, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=45, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60, offset=60, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*4, offset=120, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=nothing, norm=nothing)
+    return featcfg
+end
+
+function f6config02()
+    featcfg = Features.Features006()
+    Features.addstd!(featcfg, window=5, offset=0, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=5, offset=0, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=5, offset=5, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=5, offset=10, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=15, offset=15, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=15, offset=30, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=15, offset=45, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=60, offset=60, clip=1.5f0, norm=1.5f0)
+    Features.addgrad!(featcfg, window=60*4, offset=120, clip=1.5f0, norm=1.5f0)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=1.5f0, norm=1.5f0)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=1.5f0, norm=1.5f0)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=1.5f0, norm=1.5f0)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=1.5f0, norm=1.5f0)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=10f0, norm=10f0)
     return featcfg
 end
 
@@ -662,7 +681,12 @@ same as mk6 butwith copied mix classifier from mk2
 mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
 mk7config() = (folder="2534-TrendDetector007-mix-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
-currentconfig() = mk7config()
+"""
+same as mk6 butwith copied mix classifier from mk2
+mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
+"""
+mk8config() = (folder="2535-TrendDetector008-mixonly-clipnormshift-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
+currentconfig() = mk8config()
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
@@ -746,5 +770,5 @@ else
 end
 
 
-println("$(EnvConfig.now()) done")
+println("$(EnvConfig.now()) done @ $(currentconfig().folder)")
 end # of TrendDetector
