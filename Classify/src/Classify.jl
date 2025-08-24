@@ -1181,10 +1181,69 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
 function predictioncolumns(predictionsdf::AbstractDataFrame)
     nms = names(predictionsdf)
     tl = string.(Targets.tradelabels())
-    [nmix for nmix in eachindex(nms) if nms[nmix] in tl]
+    [nms[nmix] for nmix in eachindex(nms) if nms[nmix] in tl]
 end
 
+newtargetsdict(predictions) = Dict(zip(levels(predictions[!, :targets]), fill(0, length(levels(predictions[!, :targets])))))
+newclassifydict(predictions, classified) = Dict(zip(levels(classified), [newtargetsdict(predictions) for _ in levels(classified)]))
+
 function confusionmatrix(predictions::AbstractDataFrame)
+    # maxindex -> classified label column
+    # combi -> classified label vs target label -> tp, fp, tn, fn label = cm label
+    # %cm label = per set specific cm label / all cm label 
+    prednames = predictioncolumns(predictions)
+    predonly = @view predictions[!, prednames]
+    scores, maxindex = maxpredictions(Matrix(predonly), 2)
+    predstr = vec([string.(prednames[ix]) for ix in maxindex])
+    # predstr = vec([prednames[ix] for ix in maxindex])
+    # classified = CategoricalVector(predstr, levels=string.(prednames), ordered=false)
+    classified = CategoricalVector(predstr, levels=prednames, ordered=false)
+    setnames = levels(predictions.set)
+    # create cmdict as a dict(key=setname, value=Dict(key=classified label, value=Dict(key=target label, value=count)))
+    cmdict = Dict(zip(setnames, [newclassifydict(predictions, classified) for _ in setnames]))
+    for ix in eachindex(classified)
+        cmdict[predictions[ix, :set]][classified[ix]][predictions[ix, :targets]] += 1
+    end
+    setcount = Dict([(setname, count(predictions[!, :set] .== setname)) for setname in setnames])
+
+    cmdf = DataFrame()
+    for setname in keys(cmdict) # build up data frame column names
+        cmdf[!, "set"] = String[]
+        for cl in keys(cmdict[setname])
+            cmdf[!, "prediction"] = String[]
+            for trg in keys(cmdict[setname][cl])
+                cmdf[!, "truth_" * trg] = Int32[]
+            end
+            # cmdf[!, "truth_all"] = Int32[]
+            # cmdf[!, "set_all"] = Int32[]
+            #!TODO adding Positive predictive value (PPV) related to count
+            # for trg in keys(cmdict[setname][cl])
+            #     cmdf[!, "truth_" * trg * "_%"] = Float32[]
+            # end
+        end
+    end
+    for setname in keys(cmdict) # fill data frame column data
+        for cl in keys(cmdict[setname])
+            row = Any[]
+            push!(row, setname)
+            push!(row, "pred_" * string(cl))
+            count = 0
+            for trg in keys(cmdict[setname][cl])
+                push!(row, cmdict[setname][cl][trg])
+                count += cmdict[setname][cl][trg]
+            end
+            # push!(row, count)
+            # push!(row, setcount[setname])
+            # for trg in keys(cmdict[setname][cl])
+            #     push!(row, round(cmdict[setname][cl][trg] / setcount[setname] * 100; digits=1))
+            # end
+            push!(cmdf, row)
+        end
+    end
+    return sort!(cmdf, [order(:set,rev=true), :prediction])
+end
+
+function confusionmatrix_deprecated(predictions::AbstractDataFrame)
     predonly = predictions[!, predictioncolumns(predictions)]
     # return confusionmatrix(Matrix(predonly), predictions.targets, names(predonly))
 
@@ -1217,7 +1276,7 @@ function confusionmatrix(predictions::AbstractDataFrame)
         cdf[:, ("truth_"*l*"_%")] = round.(cdf[:, ("truth_"*l)] ./ pred_sum * 100; digits=2)
     end
     # println(cdf)
-    return cdf
+    return sort!(cdf, [:set, :predlabel])
 end
 
 function predictionsfilename(fileprefix::String)

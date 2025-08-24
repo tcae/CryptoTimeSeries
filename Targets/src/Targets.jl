@@ -890,7 +890,7 @@ relativegain(trd::Trend, firstix::Integer=firstrowix(trd), lastix::Integer=lastr
 relativegain(trd::Trend, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
 
 function Base.show(io::IO, trd::Trend)
-    println(io, "Trend targets base=$(isnothing(trd.ohlcv) ? "no ohlcv base" : trd.ohlcv.base) maxwindow=$(trd.maxwindow) label thresholds=$(thresholds(trd.thres)) size(df)=$(size(trd.df)) $(isnothing(trd.df) ? "no df" : size(trd.df, 1) > 0 ? "from $(isnothing(trd.df) ? "no df" : trd.df[begin, :opentime]) to $(isnothing(trd.df) ? "no df" : trd.df[end, :opentime]) " : "no time range ")")
+    println(io, "Trend targets base=$(isnothing(trd.ohlcv) ? "no ohlcv base" : trd.ohlcv.base) maxwindow=$(trd.maxwindow) label thresholds=$(thresholds(trd.thres)) $(isnothing(trd.df) ? "no df" : size(trd.df, 1) > 0 ? "from $(isnothing(trd.df) ? "no df" : trd.df[begin, :opentime]) to $(isnothing(trd.df) ? "no df" : trd.df[end, :opentime]) " : "no time range ")")
     # (verbosity >= 3) && println(io, "Features005 cfgdf=$(f5.cfgdf)")
     # (verbosity >= 2) && println(io, "Features005 config=$(f5.cfgdf[!, :config])")
     println(io, "Trend ohlcv=$(trd.ohlcv)")

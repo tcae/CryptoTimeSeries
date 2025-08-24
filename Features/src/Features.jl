@@ -983,7 +983,7 @@ end
 
 function Base.show(io::IO, f6::Features006)
     if isnothing(f6.ohlcv)
-        base = "missing ohlcv" : f6.ohlcv.base
+        base = "missing ohlcv"
         timerangestr = "no time range"
     else
         base = f6.ohlcv.base

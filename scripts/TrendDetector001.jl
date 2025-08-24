@@ -17,7 +17,7 @@ hyper parameters:
 classes: binary longbuy yes vs no (=longclose) with hysteresis using likelihood % of longbuy violate
 
 """
-module TrendDetector001
+module TrendDetector
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils
 using CategoricalArrays, CategoricalDistributions, Distributions
 using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
@@ -51,7 +51,6 @@ function f6config01()
     return featcfg
 end
 
-
 """
 returns targets
 feature base has to be set before calling because that determines the ohlcv and relevant time range
@@ -68,9 +67,40 @@ function calctargets!(trgcfg::Targets.AbstractTargets, featcfg::Features.Abstrac
     targets = [lb ? longbuy : allclose for lb in targets]
     @assert size(features, 1) == length(targets) "size(features, 1)=$(size(features, 1)) != length(targets)=$(length(targets))"
     # (verbosity >= 3) && println(describe(trgcfg.df, :all))
-
     return targets
 end
+
+"Saves a given dataframe df in the current log folder using the given filename"
+function savedflogfolder(df, filename)
+    filepath = EnvConfig.logpath(filename)
+    # try
+        # EnvConfig.savebackup(filepath) # switched off until bug fixed
+        JDF.savejdf(filepath, df)
+        (verbosity >= 2) && println("$(EnvConfig.now()) saved dataframe to $(filepath)")
+    # catch e
+    #     Logging.@error "exception $e detected when writing $(filepath)"
+    # end
+end
+
+"Reads and returns a dataframe from filename in the current log folder"
+function readdflogfolder(filename)
+    df = DataFrame()
+    filepath = EnvConfig.logpath(filename)
+    # try
+        if isdir(filepath)
+            (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath)")
+            df = DataFrame(JDF.loadjdf(filepath))
+            (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
+        else
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(filepath)")
+        end
+    # catch e
+    #     Logging.@error "exception $e detected"
+    # end
+    return df
+end
+
+isdflogfolder(filename) = isdir(EnvConfig.logpath(filename))
 
 "add colums period and gap to previous range in readable canonical form "
 function addperiodgap!(rangedf) 
@@ -83,8 +113,15 @@ The function generates targets files and features files in the current log folde
 The input log dataframe rangedf is supplemented with the index information of each set type range.  
 It returns a tuple of featurestargetsdf, targetsdict both with keys ["test", "train", "eval"] and dataframe values.   
 """
-function featurestargetsliquidranges!(settypesdf, rangedf, basecoin, featconfig, trgconfig; samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
-    (verbosity >= 3) && println("$(EnvConfig.now()) loading $basecoin") 
+function featurestargetsliquidranges!(basecoin, featconfig, trgconfig; coinfilesdf = coinfilesdf, rangedf = rangedf, samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
+    featurestargetsdf = DataFrame()
+    if size(coinfilesdf, 1) > 0
+        cdf = @view coinfilesdf[coinfilesdf[!, :coin] .== basecoin,:]
+        if (size(cdf, 1) > 0) && ismissing(cdf[begin, :featurestargetsfname])
+            return featurestargetsdf
+        end
+    end
+    (verbosity >= 3) && println("$(EnvConfig.now()) loading $basecoin for feature and target calculation") 
     ohlcv = Ohlcv.read(basecoin)
     rv = Ohlcv.liquiditycheck(ohlcv)
     ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
@@ -93,7 +130,6 @@ function featurestargetsliquidranges!(settypesdf, rangedf, basecoin, featconfig,
     levels = unique(samplesets)
     push!(levels, "noop")
     samplesets = CategoricalArray(samplesets, levels=levels)
-    featurestargetsdf = DataFrame()
 
     for rng in rv # rng indices are related to ohlcv dataframe rows
         if rng[end] - rng[begin] > 0
@@ -130,141 +166,64 @@ function featurestargetsliquidranges!(settypesdf, rangedf, basecoin, featconfig,
         sort!(rangedf, [:coin, :ohlcvrange])
         savedflogfolder(rangedf, rangefilename())  # without period and gap columns added before
 
-        featurestargetsfname = "features_targets_" * ohlcv.base * ".jdf"
+        featurestargetsfname = featurestargetsfilename(ohlcv.base)  # "features_targets_" * ohlcv.base * ".jdf"
         savedflogfolder(featurestargetsdf, featurestargetsfname)
-        push!(settypesdf, (coin=ohlcv.base, featuresconfig=Features.describe(featconfig), targetsconfig=Targets.describe(trgconfig), featurestargetsfname=featurestargetsfname))
+        push!(coinfilesdf, (coin=ohlcv.base, featuresconfig=Features.describe(featconfig), targetsconfig=Targets.describe(trgconfig), featurestargetsfname=featurestargetsfname))
     else
-        push!(settypesdf, (coin=ohlcv.base, featuresconfig=Features.describe(featconfig), targetsconfig=Targets.describe(trgconfig), featurestargetsfname=missing), promote=true)
+        push!(coinfilesdf, (coin=ohlcv.base, featuresconfig=Features.describe(featconfig), targetsconfig=Targets.describe(trgconfig), featurestargetsfname=missing), promote=true)
         @info "skipping $basecoin due to no liquid ranges"
     end
-    savedflogfolder(settypesdf, settypesfilename())
+    savedflogfolder(coinfilesdf, coinfilesdffilename())
     return featurestargetsdf
 end
 
 rangefilename() = "ranges.jdf"
-settypesfilename() = "settypesfiledict.jdf"
-predictionsfilename(coins, coinix, classifier) = "predictions_$(isnothing(coinix) ? "mix" : coins[coinix])_$(classifier).jdf"
-
-
-"Saves a given dataframe df in the current log folder using the given filename"
-function savedflogfolder(df, filename)
-    filepath = EnvConfig.logpath(filename)
-    # try
-        # EnvConfig.savebackup(filepath) # switched off until bug fixed
-        JDF.savejdf(filepath, df)
-        (verbosity >= 3) && println("$(EnvConfig.now()) saved dataframe to $(filepath)")
-    # catch e
-    #     Logging.@error "exception $e detected when writing $(filepath)"
-    # end
-end
-
-"Reads and returns a dataframe from filename in the current log folder"
-function readdflogfolder(filename)
-    df = DataFrame()
-    filepath = EnvConfig.logpath(filename)
-    # try
-        if isdir(filepath)
-            (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath)")
-            df = DataFrame(JDF.loadjdf(filepath))
-            (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
-        else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(filepath)")
-        end
-    # catch e
-    #     Logging.@error "exception $e detected"
-    # end
-    return df
-end
-
-isdflogfolder(filename) = isdir(EnvConfig.logpath(filename))
-
-trendsineconfig() = Targets.Trend(5, 30, Targets.thresholds((longbuy=0.1, longhold=0.005, shorthold=-0.005, shortbuy=-0.1)))
+coinfilesdffilename() = "settypesfiledict.jdf"
+featurestargetsfilename(coin) = "features_targets_$coin.jdf"
 
 trendccoinonfig(minwindow, maxwindow, buy, hold) = Targets.Trend(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
 
 settypes() = ["train", "test", "eval"]
 
-function featurestargetscollect!(settypesdf, coins, featconfig, trgconfig)
-    rangedf = DataFrame()
-    coincollect = []
-    for coin in coins
-        if (size(settypesdf, 1) > 0) && (coin in settypesdf[!, :coin])
-            (verbosity >= 4) && println("entry for $coin found - skipping features / targets creation")
-            continue
+function getfeaturestargetsdf(coins, settype=nothing, featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig)
+    ftdf = DataFrame()
+    if isa(coins, AbstractVector) && (length(coins) > 0)
+        for coin in coins
+            ftdf = append!(ftdf, getfeaturestargetsdf(coin, settype))
         end
-        ftdf = featurestargetsliquidranges!(settypesdf, rangedf, coin, featconfig, trgconfig)
-        if size(ftdf, 1) > 0
-            push!(coincollect, (coin=coin, ftdf=ftdf))
-        end
-    end
-    # println("len(coins)=$(length(coins)), len(coincollect)=$(length(coincollect))")
-    for ct in coincollect
-        rangedf2 = readdflogfolder(rangefilename())
-        # addperiodgap!(rangedf2)
-        @assert rangedf==rangedf2 "rangedf=$rangedf \n not equal rangedf2 = $rangedf2"
-        @assert size(settypesdf[settypesdf[!, :coin] .== ct.coin, :], 1) == 1 "size(settypesdf[settypesdf[!, :coin] .== ct.coin, :], 1)=$(size(settypesdf[settypesdf[!, :coin] .== ct.coin, :], 1))"
-        ftdf2 = readdflogfolder(settypesdf[settypesdf[!, :coin] .== ct.coin, :featurestargetsfname][begin])
-        @assert ftdf2 == ct.ftdf
-        rdfview = @view rangedf[rangedf[!, :coin] .== ct.coin, :]
-        for rrow in eachrow(rdfview)
-            ftdfrange = @view ftdf2[ftdf2[!, :rangeid] .== rrow.rangeid, :]
-            @assert length(rrow.dfrange) == size(ftdfrange, 1) "length(rrow.dfrange)=$(length(rrow.dfrange)) != size(ftdfrange, 1)=$(size(ftdfrange, 1))"
-            @assert all(ftdfrange[!, :rangeid] .== rrow.rangeid) "ftdfrange[!, :rangeid]=$(unique(ftdfrange[!, :rangeid])) .!= rrow.rangeid=$(rrow.rangeid)"
-            @assert all(ftdfrange[!, :set] .== rrow.settype) "ftdfrange[!, :set]=$(unique(ftdfrange[!, :set])) .!= rrow.settype=$(rrow.settype)"
-        end
-    end
-    # addperiodgap!(rangedf)
-end
-
-classifiermenmonic(coins, coinix) = "model001_" * (isnothing(coinix) ? "mix" : coins[coinix])
-
-function getlatestclassifier(coins, coinix, featureconfig, targetconfig)
-    nn = nothing
-    if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
-        nn = Classify.loadnn(classifiermenmonic(coins, coinix))
-        (verbosity >= 3) && println("getlatestclassifier loaded: nn=$(nn.fileprefix), labels=$(nn.labels)")
     else
-        nn = Classify.model001(Features.featurecount(featureconfig), [longbuy, allclose], classifiermenmonic(coins, coinix))
-        (verbosity >= 3) && println("getlatestclassifier new: nn=$(nn.fileprefix), labels=$(nn.labels)")
+        @assert isa(coins, AbstractString)
+        coin = coins
+        if isdflogfolder(featurestargetsfilename(coin))
+            ftdffull = readdflogfolder(featurestargetsfilename(coin))
+        else
+            (verbosity >= 3) && println("calculating $coin features and targets")
+            ftdffull = featurestargetsliquidranges!(coin, featconfig, trgconfig)
+        end
+        ftdf = isnothing(settype) ? ftdffull : @view ftdffull[(ftdffull[!, :set] .== settype), :]
     end
-    @assert !isnothing(nn)
-    return nn
+    return ftdf
 end
 
-function _getfeaturestargets(settypesdf, settype, coin)
-    subsetdf = @view settypesdf[settypesdf[!, :coin] .== coin, :featurestargetsfname]
-    if size(subsetdf, 1) == 0
-        (verbosity >= 3) && println("no features / targets data found for $coin")
+function df2featurestargets(ftdf, settype=nothing)
+    if size(ftdf, 1) > 0
+        ftdf = isnothing(settype) ? ftdf : @view ftdf[(ftdf[!, :set] .== settype), :]
+        features = @view ftdf[!, Not([:set, :rix, :rangeid, :targets])]
+        targets = @view ftdf[!, :targets]
+        features = Array(features)  # change from df to array
+        features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
+        (verbosity >= 3) && println("typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
+        return features, targets
+    else
         return nothing, nothing
     end
-    if size(subsetdf, 1) > 1
-        (verbosity >= 1) && println("found more than 1 dataset for $coin: $subsetdf \n using only first")
-    end
-    if ismissing(subsetdf[begin])
-        (verbosity >= 3) && println("no features / targets data were generated for $coin probably due to insufficient liquidity")
-        return nothing, nothing
-    end
-    ftdffull = readdflogfolder(subsetdf[begin])
-    ftdf = ftdffull[(ftdffull[!, :set] .== settype), :]
-    features = ftdf[!, Not([:set, :rix, :rangeid, :targets])]
-    targets = ftdf[!, :targets]
-
-
-    # featuresfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :featuresfname][begin] # begin to reduce String vector to String
-    # targetsfname = settypesdf[(settypesdf[!, :coin] .== coin) .&& (settypesdf[!, :settype] .== settype), :targetsfname][begin] # begin to reduce String vector to String
-    # features = readdflogfolder(featuresfname)
-    features = Array(features)  # change from df to array
-    features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
-    # targets = readdflogfolder(targetsfname)[!, :targets]
-    (verbosity >= 3) && println("$coin typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
-    return features, targets
 end
 
-function getfeaturestargets(settypesdf, settype, coins, coinix)
-    if isnothing(coinix)
+function getfeaturestargets(coins, settype=nothing, featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig)
+    if isa(coins, AbstractVector) && (length(coins) > 0)
         multifeatures = multitargets = nothing
         for coin in coins
-            features, targets = _getfeaturestargets(settypesdf, settype, coin)
+            features, targets = getfeaturestargets(coin, settype)
             if !isnothing(features) && !isnothing(targets)
                 multifeatures = isnothing(multifeatures) ? features : hcat(multifeatures, features)
                 multitargets = isnothing(multitargets) ? targets : vcat(multitargets, targets)
@@ -273,9 +232,44 @@ function getfeaturestargets(settypesdf, settype, coins, coinix)
         end
         return multifeatures, multitargets
     else
-        return _getfeaturestargets(settypesdf, settype, coins[coinix])
+        @assert isa(coins, AbstractString) "typeof(coins)=$(typeof(coins)), isa(coins, AbstractString)=$(isa(coins, AbstractString))"
+        coin = coins
+        if isdflogfolder(featurestargetsfilename(coin))
+            ftdffull = readdflogfolder(featurestargetsfilename(coin))
+        else
+            (verbosity >= 3) && println("calculating $coin features and targets")
+            ftdffull = featurestargetsliquidranges!(coin, featconfig, trgconfig)
+        end
+        if size(ftdffull, 1) == 0
+            return nothing, nothing
+        end
+        ftdf = ftdffull[(ftdffull[!, :set] .== settype), :]
+        features = ftdf[!, Not([:set, :rix, :rangeid, :targets])]
+        targets = ftdf[!, :targets]
+        features = Array(features)  # change from df to array
+        features = permutedims(features, (2, 1))  # Flux expects observations as columns with features of an oberservation as one column
+        (verbosity >= 3) && println("$coin typeof(features)=$(typeof(features)), size(features)=$(size(features)), typeof(targets)=$(typeof(targets)), size(targets)=$(size(targets))") 
+        return features, targets
     end
 end
+
+classifiermenmonic(coins, coinix) = "model001_" * (isnothing(coinix) ? "mix" : coins[coinix])
+classifiermenmonic(coins) = "model001_" * ((isa(coins, AbstractVector) && (length(coins) > 0)) ? "mix" : coins)
+
+function getlatestclassifier(coin, featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, classifiermodel=currentconfig().classifiermodel)
+    nn = nothing
+    if isfile(Classify.nnfilename(classifiermenmonic(coin)))
+        nn = Classify.loadnn(classifiermenmonic(coin))
+        (verbosity >= 3) && println("getlatestclassifier loaded: nn=$(nn.fileprefix), labels=$(nn.labels)")
+    else
+        nn = classifiermodel(Features.featurecount(featconfig), [longbuy, allclose], classifiermenmonic(coin))
+        (verbosity >= 3) && println("getlatestclassifier new: nn=$(nn.fileprefix), labels=$(nn.labels)")
+    end
+    @assert !isnothing(nn)
+    return nn
+end
+
+# getlatestclassifier(coins, coinix, featureconfig, targetconfig) = getlatestclassifier((isnothing(coinix) ? coins : coins[coinix]), featureconfig, targetconfig)
 
 function showlosses(nn)
     println("$(EnvConfig.now()) evaluating classifier $(nn.mnemonic)")
@@ -297,91 +291,73 @@ function showlosses(nn)
     end
 end
 
-function _adaptclassifier(nn::Classify.NN, coins, coinix)
-    features, targets = getfeaturestargets(settypesdf, "train", coins, coinix)
-    if isnothing(features) || isnothing(targets)
-        return nothing
-    end
-    (verbosity >= 3) && println("before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
-    (features), targets = oversample((features), targets)  # all classes are equally trained
-    # (features), targets = undersample((features), targets)  # all classes are equally trained
-    (verbosity >= 3) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
-    Classify.adaptnn!(nn, features, targets)
-    (verbosity >= 3) && showlosses(nn)
-
-    # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
-    Classify.savenn(nn)
-    return nn
-end
-
-function adaptclassifier(coins, coinix, featconfig, trgconfig, settypesdf)
-    @assert length(coins) > 0
-    coinix = isnothing(coinix) || (coinix < firstindex(coins)) || (coinix > lastindex(coins)) ? nothing : coinix
-    coin = isnothing(coinix) ? "mix" : coins[coinix]
-    if isfile(Classify.nnfilename(classifiermenmonic(coins, coinix)))
-        (verbosity >= 2) && println("$coin classifier seems to be adapted - found in $(Classify.nnfilename(classifiermenmonic(coins, coinix)))")
-        nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
+function getclassifier(coins; featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, classifiermix=currentconfig().classifiermix)
+    coin = (isa(coins, AbstractVector) && (length(coins) > 0)) || (classifiermix == mixonly) ? "mix" : coins
+    if isfile(Classify.nnfilename(classifiermenmonic(coin)))
+        nn = getlatestclassifier(coin, featconfig, trgconfig)
+        (verbosity >= 3) && println("$coin classifier file loaded from $(Classify.nnfilename(classifiermenmonic(coin)))")
     else
         println("$(EnvConfig.now()) adapting $coin classifier")
-        # if classifier filedoes not exist then create one
-        nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
-        if !isnothing(coinix) && !Classify.isadapted(nn)  # if single coin classifier is not adapted than take latest mix classifier as baseline
-            nn = getlatestclassifier(coins, nothing, featconfig, trgconfig)
-            Classify.setmnemonic(nn, classifiermenmonic(coins, coinix))
+        # if classifier file does not exist then create one
+        # either a mix classifier is adapted using a vector of coins or a coin specific classifier is adapted - not possible to adapt a mix classifiers without providing multiple coins data
+        @assert ((coin == "mix") && isa(coins, AbstractVector)) || ((coin != "mix") && (classifiermix != mixonly)) "coin=$coin, typeof(coins)=$(typeof(coins)), classifiermix=$classifiermix"
+        if (coin != "mix") 
+            if (classifiermix in [mixonly, specificmix])
+                nn = getlatestclassifier("mix", featconfig, trgconfig)
+                @assert Classify.isadapted(nn) "missing adapted mix classifier, which is prerequisite for $coin"
+                Classify.setmnemonic(nn, classifiermenmonic(coin))
+            else # adapt coin specific classifier without mix baseline 
+                nn = getlatestclassifier(coin, featconfig, trgconfig)
+            end
+        else # adapt mix classifier
+            nn = getlatestclassifier(coin, featconfig, trgconfig)
         end
-        nn = _adaptclassifier(nn, coins, coinix)
+        features, targets = getfeaturestargets(coins, "train") # use coins, instead of coin, to get all features / targets in case of a mix classifier adaptation
+        if isnothing(features) || isnothing(targets)
+            return nothing
+        end
+        (verbosity >= 2) && println("before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+        (features), targets = oversample((features), targets)  # all classes are equally trained
+        # (features), targets = undersample((features), targets)  # all classes are equally trained
+        (verbosity >= 2) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+        Classify.adaptnn!(nn, features, targets)
+        (verbosity >= 3) && showlosses(nn)
         if isnothing(nn)
             # no adaptation took place
             return nothing
+        else
+            # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
+            Classify.savenn(nn)
         end
         println("$(EnvConfig.now()) finished adapting $coin classifier")
     end
-    dfp = calculatepredictions(nn, coins, coinix)
-    evaluatepredictions(dfp)
     return nn
 end
 
-function adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
-    res = []
-    if isdflogfolder(settypesfilename())
-        nn = adaptclassifier(coins, nothing, featconfig, trgconfig, settypesdf)
+predictionsfilename(coins) = "predictions_$((isa(coins, AbstractVector) && (length(coins) > 0)) ? "mix" : coins).jdf"
+
+"""
+Returns the prediction for a single coin. classifiermix determines which classifier to use.
+"""
+function getpredictions(coin; classifiermix=currentconfig().classifiermix)
+    dfp = DataFrame()
+    # coin = (isa(coins, AbstractVector) && (length(coins) > 0)) ? "mix" : coins
+    if isdflogfolder(predictionsfilename(coin))
+        dfp = readdflogfolder(predictionsfilename(coin))
+    else
+        nn = getclassifier(coin, classifiermix=classifiermix)
         if isnothing(nn)
-            return res
-        end
-        push!(res, (coin="mix", nn=nn))
-        for ix in eachindex(coins)
-            nn = adaptclassifier(coins, ix, featconfig, trgconfig, settypesdf)
-            if !isnothing(nn)
-                push!(res, (coin=coins[ix], nn=nn))
-            end
-        end
-    else
-        @error "missing dataframe folder $(EnvConfig.logpath(settypesfilename()))"
-    end
-    return res
-end
-
-function calculatepredictions(coins::AbstractVector, coinix)
-    nn = getlatestclassifier(coins, coinix, featconfig, trgconfig)
-    return calculatepredictions(nn, coins, coinix)
-end
-
-function calculatepredictions(nn::Union{Classify.NN, Nothing}, coins::AbstractVector, coinix)
-    dfp = nothing
-    if isnothing(nn)
-        (verbosity >= 2) && println("No classifier found for $coin - no predictions can be calculated")
-    else
-        if isdflogfolder(predictionsfilename(coins, coinix, nn.fileprefix))
-            dfp = readdflogfolder(predictionsfilename(coins, coinix, nn.fileprefix))
+            (verbosity >= 2) && println("No classifier found for $coin - no predictions can be calculated")
         else
-            for settype in settypes()
-                features, targets = getfeaturestargets(settypesdf, settype, coins, coinix)
-                if !isnothing(features) && !isnothing(targets)
-                    dfp = predictdf(dfp, nn, features, targets, settype)
-                end
-            end
+            ftdf = getfeaturestargetsdf(coin) # calc only coin specific predictions, otherwise the match to ohlcv is no longer possible
+            features, targets = df2featurestargets(ftdf)
+            pred = Classify.predict(nn, features)
+            pred = permutedims(pred, (2, 1))
+            dfp = DataFrame(pred, string.(nn.labels))
+            dfp[!, :targets] = CategoricalVector(string.(targets); levels=string.(nn.labels))  # equals ftdf[!, :targets] but those are TradeLabels and no CategoryVector
+            dfp[!, :set] = ftdf[!, :set]
             if size(dfp, 1) > 0 
-                savedflogfolder(dfp, predictionsfilename(coins, coinix, nn.fileprefix))
+                savedflogfolder(dfp, predictionsfilename(coin))
             else
                 (verbosity >= 2) && println("No $coin predictions could be calculated - no result stored")
             end
@@ -391,19 +367,26 @@ function calculatepredictions(nn::Union{Classify.NN, Nothing}, coins::AbstractVe
 end
 
 function inspect(coins)
-    if isdflogfolder(settypesfilename())
-        settypesdf = readdflogfolder(settypesfilename())
-        println(EnvConfig.logpath(settypesfilename()))
-        println(settypesdf)
-        println("$(length(setdiff(coins, settypesdf[!, :coin]))) unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, settypesdf[!, :coin]))")
-        println("$(length(setdiff(settypesdf[!, :coin], coins)))) coins with features/targets but are missing in the requested set of coins: $(setdiff(settypesdf[!, :coin], coins))")
-        coins = intersect(coins, settypesdf[!, :coin])
-        # println(settypesdf[begin:begin+2, :])
-        # println(describe(settypesdf))
+    TrendDetector.verbosity = 2
+    Ohlcv.verbosity = 1
+    CryptoXch.verbosity = 1
+    Features.verbosity = 1
+    Targets.verbosity = 1
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1
+    if isdflogfolder(coinfilesdffilename())
+        coinfilesdf = readdflogfolder(coinfilesdffilename())
+        println(EnvConfig.logpath(coinfilesdffilename()))
+        println(coinfilesdf)
+        println("$(length(setdiff(coins, coinfilesdf[!, :coin]))) unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, coinfilesdf[!, :coin]))")
+        println("$(length(setdiff(coinfilesdf[!, :coin], coins)))) coins with features/targets but are missing in the requested set of coins: $(setdiff(coinfilesdf[!, :coin], coins))")
+        coins = intersect(coins, coinfilesdf[!, :coin])
+        # println(coinfilesdf[begin:begin+2, :])
+        # println(describe(coinfilesdf))
         println("$(length(coins)) processable coins")
         ok = true
         lbls = []
-        for strow in eachrow(settypesdf)
+        for strow in eachrow(coinfilesdf)
             if ismissing(strow.featurestargetsfname)
                 continue
             end
@@ -427,67 +410,254 @@ function inspect(coins)
 
         allfilenames = readdir(EnvConfig.logfolder())
         predictionfilenames = filter(filename -> contains(filename, "predictions"), allfilenames)
-        println("prediction filenames: $predictionfilenames")
-        println(predictionfilenames[begin])
-        df = readdflogfolder(predictionfilenames[begin])
-        println("predictions size=$(size(df)): \n$(df[begin:begin+1, :])\n$(describe(df))")
-        println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(df[!, :targets]))))")
-        println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(df[!, :set]))))")
+        if length(predictionfilenames) > 0
+            println("prediction filenames: $predictionfilenames")
+            println(predictionfilenames[begin])
+            df = readdflogfolder(predictionfilenames[begin])
+            println("predictions size=$(size(df)): \n$(df[begin:begin+1, :])\n$(describe(df))")
+            println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(df[!, :targets]))))")
+            println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(df[!, :set]))))")
+        else
+            println("no prediction dataframe files in $(EnvConfig.logfolder())")
+        end
         println()
     else
-        @error "missing features/targets dataframe folder $(EnvConfig.logpath(settypesfilename()))"
+        @error "missing coin files dataframe folder $(EnvConfig.logpath(coinfilesdffilename()))"
     end
     rangedf = readdflogfolder(rangefilename())
     println("ranges dataframe file: $(EnvConfig.logpath(rangefilename()))")
     # println(rangedf)
-    println(rangedf[begin:begin+2, :])
+    println(rangedf[[(begin:begin+2)...,(end-1:end)...], :])
 end
 
-function predictdf(df, nn, features, targets, settype)
-    pred = Classify.predict(nn, features)
-    pred = permutedims(pred, (2, 1))
-    df2 = DataFrame(pred, string.(nn.labels))
-    df2[:, "targets"] = CategoricalVector(string.(targets); levels=string.(nn.labels))
-    # df2[:, "maxix"] = vec(mapslices(argmax, pred, dims=1))  # store column index of max estimate as column
-    df2[:, :set] = CategoricalVector(fill(settype, size(df2, 1)); levels=settypes())
-    df = isnothing(df) ? df2 : vcat(df, df2)
-    return df
-end
+function _oixdelta(ix, ftdf, rangeid, rangedelta, rangedf, ohlcvdf)
+    if ftdf[ix, :rangeid] != rangeid
+        rangeid = ftdf[ix, :rangeid]
+        rangerow = @view rangedf[rangedf[!, :rangeid] .== rangeid, :]
+        @assert size(rangerow, 1) == 1 "size(rangerow, 1)=$(size(rangerow, 1)) != 1, rangerow=$rangerow"
+        rangerow = rangerow[begin, :]
 
-function evaluatepredictions(dfp::Union{AbstractDataFrame, Nothing})
-    if !isnothing(dfp) && (size(dfp, 1) > 0)
-        cmdf = Classify.confusionmatrix(dfp)
-        (verbosity >=3) && println("cm: $cmdf")
-        xcmdf = Classify.extendedconfusionmatrix(dfp)
-        (verbosity >=3) && println("xcm: $xcmdf")
-    else
-        (verbosity >= 1) && println("missing predictions data (dfp=$dfp$(isnothing(dfp) ? "" : ", size(dfp)= $(size(dfp))")) that is required to evaluate")
+        if ohlcvdf[rangerow.liquidrange[begin] + rangerow.dfrange[begin] - 1, :opentime] != rangerow.startdt
+            (verbosity >= 3) && println("WARNING: unexpected mismatch of startdt: ohlcvdf[rangerow.liquidrange[begin]=$(rangerow.liquidrange[begin]) + rangerow.dfrange[begin]=$( + rangerow.dfrange[begin]) - 1, :opentime]=$(ohlcvdf[rangerow.liquidrange[begin] + rangerow.dfrange[begin] - 1, :opentime]) != rangerow.startdt=$(rangerow.startdt)") 
+        #     ix = Ohlcv.rowix(ohlcvdf[!, :opentime], rangedt)
+        # else
+        #     ix = rangeix
+        end
+
+        rangedelta = rangerow.liquidrange[begin] - 1
     end
+    oix = ftdf[ix, :rix] + rangedelta
+    return oix, rangedelta, rangeid
 end
 
-function evaluatepredictions(coins::AbstractVector, coinix)
-    coin = isnothing(coinix) ? "mix" : coins[coinix]
-    predictionsfname = predictionsfilename(coins, coinix, Classify.nnfilename(classifiermenmonic(coins, coinix)))
-    if isdflogfolder(predictionsfname)
-        dfp = readdflogfolder(predictionsfname)
-        evaluatepredictions(dfp)
-    else
-        (verbosity >= 1) && println("missing $coin predictions to evaluate")
+"collects gains of a prediction vector of a specific coin"
+function _getgainsdf(labelvec, ftdf, rangedf, ohlcvdf)
+    gdf = DataFrame(set=String[], label=String[], samplecount=Int32[], gain=Float32[], startdt=DateTime[], enddt=DateTime[], ftstartix=Int32[], ftendix=Int32[])
+    if length(labelvec) == 0
+        return gdf
     end
+    startix = lastlabel = startprice = starttime = nothing
+    # delta = ftix2ohlcvixoffset(ftdf[begin, :rix], ftdf, rangedf, ohlcvdf)
+    # if delta != 0
+    #     ftdf[!, :rix] .= ftdf[!, :rix] .+ delta
+    # end
+    rangeid = nothing
+    rangedelta = nothing
+    for ix in eachindex(labelvec)
+        if lastlabel != labelvec[ix]
+            oix, rangedelta, rangeid = _oixdelta(ix, ftdf, rangeid, rangedelta, rangedf, ohlcvdf)
+            ixprice = ohlcvdf[oix, :close]
+            ixtime = ohlcvdf[oix, :opentime]
+            # lastlabel is teh correct label to use for the segment because labelvec[ix] is the first label seen after the label changed
+            if !isnothing(startix)
+                gain = (ixprice - startprice) / startprice
+                push!(gdf, (set=ftdf[ix, :set], label=lastlabel, samplecount=Minute(ixtime-starttime).value, gain=gain, startdt=starttime, enddt=ixtime, ftstartix=startix, ftendix=ix))
+            end
+            startix = ix
+            startprice = ixprice
+            starttime = ixtime
+            lastlabel = labelvec[ix]
+        end
+    end
+    return gdf
 end
+
+gainsfilename() = "gains.jdf"
+
+function getgainsdf(coins; rangedf = rangedf)
+    gaindf = DataFrame()
+    # coin = (isa(coins, AbstractVector) && (length(coins) > 0)) ? "mix" : coins
+    if isdflogfolder(EnvConfig.logpath(gainsfilename()))
+        gaindf = readdflogfolder(EnvConfig.logpath(gainsfilename()))
+        if size(gaindf, 1) > 0
+            return gaindf
+        end
+    end
+    coins = isa(coins, AbstractVector) ? coins : [coins]
+    for coin in coins
+        dfp = getpredictions(coin)
+        if (size(dfp, 1) > 0)
+            ohlcv = Ohlcv.read(coin)
+            ohlcvdf = Ohlcv.dataframe(ohlcv)
+            # rangedf = readdflogfolder(rangefilename())
+            ftdf = getfeaturestargetsdf(coin)
+            diff = dfp[!, :set] .!= ftdf[!, :set]
+            diffdf = DataFrame(dfp=dfp[diff, :set], ftdf=ftdf[diff, :set])
+            @assert dfp[!, :set] == ftdf[!, :set] "dfp[!, :set]=$(length(dfp[!, :set])) != ftdf[!, :set]=$(length(ftdf[!, :set])) diff=$diffdf"
+            prednames = CategoricalArray(Classify.predictioncolumns(dfp), ordered=false)
+            predonly = @view dfp[!, string.(prednames)]
+            scores, maxindex = Classify.maxpredictions(Matrix(predonly), 2)
+            predicted = vec([prednames[ix] for ix in maxindex])
+            gdf = _getgainsdf(predicted, ftdf, rangedf, ohlcvdf)
+            gdf[!, :coin] = fill(coin, size(gdf, 1))
+            gdf[!, :predicted] = fill(true, size(gdf, 1))
+            gaindf = append!(gaindf, gdf)
+
+            gdf = _getgainsdf(dfp[!, :targets], ftdf, rangedf, ohlcvdf)
+            gdf[!, :coin] = fill(coin, size(gdf, 1))
+            gdf[!, :predicted] = fill(false, size(gdf, 1))
+            dfp = @view dfp[dfp[!, :set] .!= "noop", :] # exclude gaps between set partitions
+            gaindf = append!(gaindf, gdf)
+        else
+            (verbosity >= 1) && println("skipping gain collection of $(coin) due to missing predictions due to size(dfp)= $(size(dfp))")
+        end
+    end
+    if size(gaindf, 1) > 0
+        savedflogfolder(gaindf, EnvConfig.logpath(gainsfilename()))
+    end
+    return gaindf
+    # add settype, rangeid, rix (index within rangeid), ohlcvix, ftix (features /targets df index), pix (predictions index), target trend id, classified trend id or missing, pivot gain compared to previous sample if classified as trend
+    # accumulate per trend id gain
+    # count classified trend vs target trends
+    # data columns: coin, set, targetgain, predictgain -> derived data: count(targetgain), mean(targetgain), count(predictgain), mean(predictgain), ratio(count(predictgain), count(targetgain))
+end
+
+confusionfilename() = "confusion.jdf"
+xconfusionfilename() = "xconfusion.jdf"
+
+function getconfusionmatrices(coins)
+
+    function _getconfusionmatrices!(cmdf, xcmdf, coins, coin)
+        dfp = getpredictions(coins)
+        dfp = @view dfp[dfp[!, :set] .!= "noop", :] # exclude gaps between set partitions
+        if (size(dfp, 1) > 0)
+            _cmdf = Classify.confusionmatrix(dfp)
+            insertcols!(_cmdf, 1, :coin => fill(coin, size(_cmdf, 1)))
+            cmdf = isnothing(cmdf) ? _cmdf : append!(cmdf, _cmdf)
+            (verbosity >= 4) && println("$coin cm: $_cmdf")
+
+            _xcmdf = Classify.extendedconfusionmatrix(dfp)
+            insertcols!(_xcmdf, 1, :coin => fill(coin, size(_xcmdf, 1)))
+            xcmdf = isnothing(xcmdf) ? _xcmdf : append!(xcmdf, _xcmdf)
+            (verbosity >= 4) && println("$coin xcm: $_xcmdf")
+            # gaindf = getgainsdf(coins)
+        else
+            (verbosity >= 1) && println("skipping evaluation of $(coins) due to missing predictions (size(dfp)= $(size(dfp)))")
+        end
+    end
+
+    coin = (isa(coins, AbstractVector) && (length(coins) > 0)) ? "mix" : coins
+    xcmdf = DataFrame()
+    cmdf = DataFrame()
+    if isdflogfolder(EnvConfig.logpath(confusionfilename()))
+        cmdf = readdflogfolder(EnvConfig.logpath(confusionfilename()))
+    end
+    if isdflogfolder(EnvConfig.logpath(xconfusionfilename()))
+        xcmdf = readdflogfolder(EnvConfig.logpath(xconfusionfilename()))
+    end
+    if !isnothing(cmdf) && !isnothing(xcmdf) && (size(cmdf, 1) > 0) && (size(xcmdf, 1) > 0)
+        return cmdf, xcmdf
+    end
+    # _getconfusionmatrices!(cmdf, xcmdf, coins, coin) # mix confusion matrix
+    for coin in coins
+        _getconfusionmatrices!(cmdf, xcmdf, coin, coin)
+    end
+    if size(cmdf, 1) > 0
+        savedflogfolder(cmdf, confusionfilename())
+    end
+    if size(xcmdf, 1) > 0
+        savedflogfolder(xcmdf, xconfusionfilename())
+    end
+    return cmdf, xcmdf
+end
+
+function averageconfusionmatrix(coins)
+    cmdf, xcmdf = getconfusionmatrices(coins)
+    if size(cmdf, 1) > 0
+        # cmdfgrp = groupby(cmdf, [:coin, :set, :prediction])
+        cmdf = @view cmdf[cmdf[!, :set] .!= "noop", :] # exclude gaps between set partitions
+        cmdfgrp = groupby(cmdf, [:set, :prediction])
+        ccmdf = combine(cmdfgrp, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
+    else
+        (verbosity >= 2) && println("cannot get confusion matrices")
+        ccmdf = DataFrame()
+    end
+    if size(xcmdf, 1) > 0
+        # cmdfgrp = groupby(xcmdf, [:coin, :set, :prediction])
+        xcmdf = @view xcmdf[xcmdf[!, :set] .!= "noop", :] # exclude gaps between set partitions
+        # println("DEBUG xcmdf=$(xcmdf[1:100, :])")
+        xcmdfgrp = groupby(xcmdf, [:set, :pred_label, :bin])
+        cxcmdf = combine(xcmdfgrp, [:tp, :fp] => ((tp, fp) -> sum(tp) / (sum(tp) + sum(fp)) * 100) => "ppv%")
+    else
+        (verbosity >= 2) && println("cannot get confusion matrices")
+        cxcmdf = DataFrame()
+    end
+    return ccmdf, cxcmdf
+end
+
+@enum ClassifierMix mixonly specificmix specificonly
+
+"""
+mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
+"""
+mk1config() = (folder="2528-TrendDetector001-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001)
+
+"""
+mk2 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
+"""
+mk2config() = (folder="2533-TrendDetector002-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001)
+
+"""
+mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config trendccoinonfig(10, 4*60, 0.05, 0.03) with **poor results**: ppv(longbuy) = 26%
+"""
+mk3config() = (folder="2534-TrendDetector003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.05, 0.03), classifiermix=specificmix, classifiermodel=Classify.model001)
+
+"""
+mk4 = trendccoinonfig(10, 4*60, 0.02, 0.01) with one merged set (allclose=>0.726, longbuy=>0.274)
+"""
+mk4config() = (folder="2534-TrendDetector004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.02, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001)
+
+"""
+mk5 = trendccoinonfig(10, 4*60, 0.007, 0.005) with one merged set (allclose=>?, longbuy=>?)
+"""
+mk5config() = (folder="2535-TrendDetector005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.007, 0.005), classifiermix=specificmix, classifiermodel=Classify.model001)
+
+"""
+mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
+"""
+mk6config() = (folder="2534-TrendDetector006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
+currentconfig() = mk6config()
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
 # testmode = true
 inspectonly = "inspect" in ARGS
+specialonly = "special" in ARGS
 # inspectonly = true
+# specialonly = true
 
 EnvConfig.init(testmode ? test : training)
-EnvConfig.setlogpath("2533-TrendDetector001mk2-CollectSets-$(EnvConfig.configmode)")
-EnvConfig.setlogpath("2528-TrendDetector001-CollectSets-$(EnvConfig.configmode)")
+#* folder1 and folder2 are used to compare folder content
+#* folder is used to process the content of just a single folder
+folder2, _, _ = mk1config() # mk1 = mix adapted with multiple adaptations per coin
+folder1, _, _ = mk2config() # mk2 = mix adapted in just one iteration with all coin features/targets in one set (allclose=>0.494, longbuy=>0.506)
+
+# println(currentconfig())
+folder, featconfig, trgconfig = currentconfig()
+EnvConfig.setlogpath(folder)
 println("log folder: $(EnvConfig.logfolder())")
 
-verbosity = 3
+verbosity = 4
 if testmode 
     Ohlcv.verbosity = 3
     CryptoXch.verbosity = 3
@@ -496,7 +666,8 @@ if testmode
     EnvConfig.verbosity = 1
     Classify.verbosity = 3
     coins = ["SINE", "DOUBLESINE"]
-else
+else # training or production
+    verbosity = 2
     Ohlcv.verbosity = 1
     CryptoXch.verbosity = 1
     Features.verbosity = 1
@@ -509,42 +680,45 @@ else
     # end
     # println("length(coins)=$(length(coins))")
     # println(coins)
-    coins = ["1INCH", "5IRE", "A8", "AAVE", "ACA", "ACH", "ACS", "ADA", "AEG", "AERO", "AEVO", "AGIX", "AGI", "AGLA", "AGLD", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "AMI", "ANIME", "ANKR", "AO", "APEX", "APE", "APP", "APRS", "APT", "ARB", "ARKM", "AR", "ASRR", "ATH", "ATOM", "AVAIL", "AVAX", "AVA", "AVL", "AXL", "AXS", "A", "B3", "BABYDOGE", "BAN", "BBL", "BBQ", "BB", "BCH", "BCUT", "BDXN", "BEAM", "BEL", "BERA", "BICO", "BLAST", "BLOCK", "BLUR", "BMT", "BNB", "BOBA", "BOB", "BOMB", "BOME", "BONK", "BRETT", "BR", "BTC", "BUBBLE", "C98", "CAKE", "CARV", "CATBNB", "CATI", "CELO", "CEL", "CGPT", "CHILLGUY", "CHRP", "CHZ", "CLOUD", "CMETH", "COA", "COMP", "COM", "COOKIE", "COOK", "COQ", "CORE", "COT", "CPOOL", "CRV", "CSPR", "CTA", "CTC", "CTT", "CUDIS", "CYBER", "DBR", "DECHAT", "DEEP", "DEFI", "DEGEN", "DGB", "DIAM", "DMAIL", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DSRUN", "DUEL", "DYDX", "DYM", "EGLD", "EGO", "EIGEN", "ELDE", "ELX", "ENA", "ENJ", "ENS", "EOS", "EPT", "ERA", "ESE", "ES", "ETC", "ETHFI", "ETHW", "ETH", "EVERY", "EXVG", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLIP", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FLUID", "FMB", "FON", "FORT", "FOXY", "FRAG", "FTM", "FTT", "FUEL", "FXS", "F", "G3", "G7", "GALAXIS", "GALA", "GAL", "GAME", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAPE", "GRASS", "GRT", "GSTS", "GST", "GTAI", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOME", "HOOK", "HOT", "HTX", "HUMA", "HVH", "HYPER", "HYPE", "H", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "INSP", "IO", "IP", "IRL", "IZI", "JASMY", "JTO", "JUP", "J", "KAIA", "KAS", "KAVA", "KCAL", "KDA", "KLAY", "KMNO", "KSM", "L3", "LADYS", "LAI", "LAYER", "LA", "LDO", "LENDS", "LEVER", "LFT", "LGX", "LINK", "LL", "LMWR", "LOOKS", "LRC", "LTC", "LUNAI", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "MEMEFI", "MEME", "MERL", "METH", "MEW", "ME", "MILK", "MINA", "MINU", "MIX", "MKR", "MLK", "MNT", "MOCA", "MOG", "MOJO", "MON", "MORPHO", "MOVE", "MOVR", "MOZ", "MPLX", "MVL", "MYRIA", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NEWT", "NEXT", "NGL", "NIBI", "NLK", "NOT", "NS", "NUTS", "NXPC", "NYAN", "OBOL", "ODOS", "OKG", "OL", "OMG", "OMNI", "OM", "ONDO", "ONE", "OP", "ORDER", "ORDI", "ORT", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PFVS", "PLANET", "PLAY", "PLUME", "PNUT", "POKT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PUFFER", "PUFF", "PUMP", "PURSE", "PYTH", "PYUSD", "QNT", "QORPO", "QTUM", "RACA", "RAIN", "RATS", "RDNT", "RED", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RPK", "RSS3", "RUNE", "RVN", "SAFE", "SALD", "SAND", "SATS", "SCA", "SCRT", "SCR", "SC", "SEI", "SEND", "SEOR", "SERAPH", "SFUND", "SHARK", "SHIB", "SHILL", "SHRAP", "SIDUS", "SIGN", "SIS", "SKATE", "SLG", "SMILE", "SNX", "SOLO", "SOLV", "SOL", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQD", "SQR", "SQT", "SSV", "STAR", "STETH", "STG", "STOP", "STREAM", "STRK", "STX", "SUI", "SUNDOG", "SUN", "SUPRA", "SUSHI", "SVL", "SWEAT", "SWELL", "SXT", "S", "TAC", "TAIKO", "TAI", "TAP", "TAVA", "TA", "TENET", "THETA", "THRUST", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TREE", "TRUMP", "TRX", "TWT", "T", "ULTI", "UMA", "UNI", "USTC", "UXLINK", "VANA", "VANRY", "VELAR", "VELO", "VENOM", "VET", "VEXT", "VIRTUAL", "VRA", "VRTX", "VV", "WAL", "WAVES", "WAXP", "WBTC", "WCT", "WELL", "WEMIX", "WEN", "WIF", "WLD", "WLKN", "WOO", "WWY", "W", "XAI", "XAR", "XAUT", "XAVA", "XCAD", "XDC", "XEC", "XION", "XLM", "XO", "XRP3L", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEND", "ZENT", "ZEN", "ZEREBRO", "ZERO", "ZETA", "ZEX", "ZIG", "ZIL", "ZKF", "ZKJ", "ZKL", "ZK", "ZORA", "ZRC", "ZRO", "ZRX", "ZTX"]
+
+    # long version 
+    # coins = ["1INCH", "5IRE", "A8", "AAVE", "ACA", "ACH", "ACS", "ADA", "AEG", "AERO", "AEVO", "AGIX", "AGI", "AGLA", "AGLD", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "AMI", "ANIME", "ANKR", "AO", "APEX", "APE", "APP", "APRS", "APT", "ARB", "ARKM", "AR", "ASRR", "ATH", "ATOM", "AVAIL", "AVAX", "AVA", "AVL", "AXL", "AXS", "A", "B3", "BABYDOGE", "BAN", "BBL", "BBQ", "BB", "BCH", "BCUT", "BDXN", "BEAM", "BEL", "BERA", "BICO", "BLAST", "BLOCK", "BLUR", "BMT", "BNB", "BOBA", "BOB", "BOMB", "BOME", "BONK", "BRETT", "BR", "BTC", "BUBBLE", "C98", "CAKE", "CARV", "CATBNB", "CATI", "CELO", "CEL", "CGPT", "CHILLGUY", "CHRP", "CHZ", "CLOUD", "CMETH", "COA", "COMP", "COM", "COOKIE", "COOK", "COQ", "CORE", "COT", "CPOOL", "CRV", "CSPR", "CTA", "CTC", "CTT", "CUDIS", "CYBER", "DBR", "DECHAT", "DEEP", "DEFI", "DEGEN", "DGB", "DIAM", "DMAIL", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DSRUN", "DUEL", "DYDX", "DYM", "EGLD", "EGO", "EIGEN", "ELDE", "ELX", "ENA", "ENJ", "ENS", "EOS", "EPT", "ERA", "ESE", "ES", "ETC", "ETHFI", "ETHW", "ETH", "EVERY", "EXVG", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLIP", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FLUID", "FMB", "FON", "FORT", "FOXY", "FRAG", "FTM", "FTT", "FUEL", "FXS", "F", "G3", "G7", "GALAXIS", "GALA", "GAL", "GAME", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAPE", "GRASS", "GRT", "GSTS", "GST", "GTAI", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOME", "HOOK", "HOT", "HTX", "HUMA", "HVH", "HYPER", "HYPE", "H", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "INSP", "IO", "IP", "IRL", "IZI", "JASMY", "JTO", "JUP", "J", "KAIA", "KAS", "KAVA", "KCAL", "KDA", "KLAY", "KMNO", "KSM", "L3", "LADYS", "LAI", "LAYER", "LA", "LDO", "LENDS", "LEVER", "LFT", "LGX", "LINK", "LL", "LMWR", "LOOKS", "LRC", "LTC", "LUNAI", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "MEMEFI", "MEME", "MERL", "METH", "MEW", "ME", "MILK", "MINA", "MINU", "MIX", "MKR", "MLK", "MNT", "MOCA", "MOG", "MOJO", "MON", "MORPHO", "MOVE", "MOVR", "MOZ", "MPLX", "MVL", "MYRIA", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NEWT", "NEXT", "NGL", "NIBI", "NLK", "NOT", "NS", "NUTS", "NXPC", "NYAN", "OBOL", "ODOS", "OKG", "OL", "OMG", "OMNI", "OM", "ONDO", "ONE", "OP", "ORDER", "ORDI", "ORT", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PFVS", "PLANET", "PLAY", "PLUME", "PNUT", "POKT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PUFFER", "PUFF", "PUMP", "PURSE", "PYTH", "PYUSD", "QNT", "QORPO", "QTUM", "RACA", "RAIN", "RATS", "RDNT", "RED", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RPK", "RSS3", "RUNE", "RVN", "SAFE", "SALD", "SAND", "SATS", "SCA", "SCRT", "SCR", "SC", "SEI", "SEND", "SEOR", "SERAPH", "SFUND", "SHARK", "SHIB", "SHILL", "SHRAP", "SIDUS", "SIGN", "SIS", "SKATE", "SLG", "SMILE", "SNX", "SOLO", "SOLV", "SOL", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQD", "SQR", "SQT", "SSV", "STAR", "STETH", "STG", "STOP", "STREAM", "STRK", "STX", "SUI", "SUNDOG", "SUN", "SUPRA", "SUSHI", "SVL", "SWEAT", "SWELL", "SXT", "S", "TAC", "TAIKO", "TAI", "TAP", "TAVA", "TA", "TENET", "THETA", "THRUST", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TREE", "TRUMP", "TRX", "TWT", "T", "ULTI", "UMA", "UNI", "USTC", "UXLINK", "VANA", "VANRY", "VELAR", "VELO", "VENOM", "VET", "VEXT", "VIRTUAL", "VRA", "VRTX", "VV", "WAL", "WAVES", "WAXP", "WBTC", "WCT", "WELL", "WEMIX", "WEN", "WIF", "WLD", "WLKN", "WOO", "WWY", "W", "XAI", "XAR", "XAUT", "XAVA", "XCAD", "XDC", "XEC", "XION", "XLM", "XO", "XRP3L", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEND", "ZENT", "ZEN", "ZEREBRO", "ZERO", "ZETA", "ZEX", "ZIG", "ZIL", "ZKF", "ZKJ", "ZKL", "ZK", "ZORA", "ZRC", "ZRO", "ZRX", "ZTX"]
+
+    # test
     # coins =["BTC"]
+
+    # liquid coins
+    coins = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
 end
 
-if inspectonly
-    verbosity = 2
-    Ohlcv.verbosity = 1
-    CryptoXch.verbosity = 1
-    Features.verbosity = 1
-    Targets.verbosity = 1
-    EnvConfig.verbosity = 1
-    Classify.verbosity = 1
+coinfilesdf = readdflogfolder(coinfilesdffilename())
+if size(coinfilesdf, 1) > 0
+    coins = dropmissing(coinfilesdf)[!, :coin]
+end
+# println("Used coins with sufficient liquidity: $coins")
+rangedf = readdflogfolder(rangefilename())
+
+if specialonly
+    # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
+    println("No special task defined")
+elseif inspectonly
     inspect(coins)
 else
-    featconfig = f6config01()
-    trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01)
-    trgconfig002 = trendccoinonfig(10, 4*60, 0.05, 0.02)
-    (verbosity >= 3) && println("featuresconfig=$(Features.describe(featconfig))")
-    (verbosity >= 3) && println("targetsconfig=$(Targets.describe(trgconfig))")
-    settypesdf = readdflogfolder(settypesfilename())
-    if size(settypesdf, 1) > 0
-        (verbosity >= 3) && println("unconsidered coins that have no features/targets (probably due to low liquidity): $(setdiff(coins, settypesdf[!, :coin]))")
-        (verbosity >= 3) && println("coins with features/targets but are missing in the requested set of coins: $(setdiff(settypesdf[!, :coin], coins))")
-        # coins = intersect(coins, settypesdf[!, :coin])
+    (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
+    (verbosity >= 2) && println("targetsconfig=$(Targets.describe(trgconfig))")
+    getclassifier(coins) # ensure preparation of baseline mix classifier 
+    ccmdf,cxcmdf = averageconfusionmatrix(coins)
+    println(cxcmdf)
+    println(ccmdf)
+    gaindf = getgainsdf(coins)
+    if size(gaindf, 1) > 0
+        gaindfgroup = groupby(gaindf, [:set, :label, :predicted])
+        # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
+        cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum)
     end
-
-    featurestargetscollect!(settypesdf, coins, featconfig, trgconfig)
-    nnvector = adaptclassifiers(coins, featconfig, trgconfig, settypesdf)
-    if verbosity >= 4
-        for nnt in nnvector
-            println("$(nnt.coin) - $(nnt.nn.fileprefix): $(Classify.nnfilename(nnt.nn.fileprefix))")
-            showlosses(nnt.nn)
-        end
-    end
+    println(cgaindf)
 end
 
 
 println("$(EnvConfig.now()) done")
-end # of TrendDetector001
+end # of TrendDetector

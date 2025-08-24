@@ -5,7 +5,7 @@ using EnvConfig, Features, Targets, TestOhlcv, Ohlcv, CryptoXch
 
 # with_logger(TimestampTransformerLogger(current_logger(), BeginningMessageLocation();
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
-Targets.verbosity = 1
+Targets.verbosity = 3
 
 EnvConfig.init(test)
 # EnvConfig.init(production)
@@ -36,7 +36,7 @@ function noshorttrends(trd)
 end
 
 @testset "Targets::Trend tests" begin
-    startdt = DateTime("2023-02-17T13:30:00")
+    startdt = DateTime("2025-02-17T13:30:00")
     enddt = startdt + Hour(6)
     # EnvConfig.init(production)
     xc = CryptoXch.XchCache()
