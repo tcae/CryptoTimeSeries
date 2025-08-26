@@ -1076,18 +1076,18 @@ function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         rv = f6.fdfno[!, rvcol]
         if !isnothing(odfendix)
             rv1 = relativevolume(view(odf[!, :basevolume], firstindex(odf[!, :basevolume]):odfendix), short, long)
-            rv1 = clipnormshift(rv1, ftup.c, ftup.n, 0f0)
+            rv1 = clipnormshift(rv1, ftup.c)
             rv = vcat(rv1, rv)
         end
         if !isnothing(odfstartix)
             lastix = lastindex(odf[!, :basevolume])
             rv2 = relativevolume(view(odf[!, :basevolume], max(firstindex(odf[!, :basevolume]), odfstartix-long):lastix), short, long)
-            rv2 = clipnormshift(rv2, ftup.c, ftup.n, 0f0)
+            rv2 = clipnormshift(rv2, ftup.c)
             rv = vcat(rv, view(rv2, (lastindex(rv2)-(lastix-odfstartix)):lastindex(rv2)))
         end
     else
         rv = relativevolume(odf[!, :basevolume], short, long)
-        rv = clipnormshift(rv, ftup.c, ftup.n, 0f0)
+        rv = clipnormshift(rv, ftup.c)
     end
     fdfno[:, rvcol] = rv
     return fdfno
@@ -1103,18 +1103,18 @@ function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         md = f6.fdfno[!, mdcol]
         if !isnothing(odfendix)
             md1 = rollingmin(view(odf[!, :low], firstindex(odf[!, :low]):odfendix), window)
-            md1 = clipnormshift(md1, ftup.c, ftup.n, ftup.n)
+            md1 = clipnormshift(md1, ftup.c)
             md = vcat(md1, md)
         end
         if !isnothing(odfstartix)
             lastix = lastindex(odf[!, :low])
             md2 = rollingmin(view(odf[!, :low], max(firstindex(odf[!, :low]), odfstartix-window):lastix), window)
-            md2 = clipnormshift(md2, ftup.c, ftup.n, ftup.n)
+            md2 = clipnormshift(md2, ftup.c)
             md = vcat(md, view(md2, (lastindex(md2)-(lastix-odfstartix)):lastindex(md2)))
         end
     else
         md = rollingmin(odf[!, :low], window)
-        md = clipnormshift(md, ftup.c, ftup.n, ftup.n)
+        md = clipnormshift(md, ftup.c)
     end
     fdfno[:, mdcol] = md
     return fdfno
@@ -1130,17 +1130,17 @@ function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         md = f6.fdfno[!, mdcol]
         if !isnothing(odfendix)
             md1 = rollingmax(view(odf[!, :high], firstindex(odf[!, :high]):odfendix), window)
-            md1 = clipnormshift(md1, ftup.c, ftup.n, ftup.n)
+            md1 = clipnormshift(md1, ftup.c)
             md = vcat(md1, md)
         end
         if !isnothing(odfstartix)
             md2 = rollingmax(view(odf[!, :high], odfstartix:lastindex(odf[!, :high])), window)
-            md2 = clipnormshift(md2, ftup.c, ftup.n, ftup.n)
+            md2 = clipnormshift(md2, ftup.c)
             md = vcat(md, md2)
         end
     else
         md = rollingmax(odf[!, :high], window)
-        md = clipnormshift(md, ftup.c, ftup.n, ftup.n)
+        md = clipnormshift(md, ftup.c)
     end
     fdfno[:, mdcol] = md
     return fdfno
@@ -1177,22 +1177,22 @@ function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         rg = f6.fdfno[!, rgcol]
         if !isnothing(odfendix)
             ry1, rg1 = rollingregression(view(odf[!, :pivot], firstindex(odf[!, :pivot]):odfendix), window)
-            rg1 = clipnormshift(rg1, ftup.c, ftup.n, ftup.n)
-            ry1 = clipnormshift(ry1, ftup.c, ftup.n, ftup.n)
+            rg1 = clipnormshift(rg1, ftup.c)
+            ry1 = clipnormshift(ry1, ftup.c)
             rg = vcat(rg1, rg)
             ry = vcat(ry1, ry)
         end
         if !isnothing(odfstartix)
             ry2, rg2 = rollingregression(odf[!, :pivot], window, odfstartix)
-            rg2 = clipnormshift(rg2, ftup.c, ftup.n, ftup.n)
-            ry2 = clipnormshift(ry2, ftup.c, ftup.n, ftup.n)
+            rg2 = clipnormshift(rg2, ftup.c)
+            ry2 = clipnormshift(ry2, ftup.c)
             rg = vcat(rg, rg2)
             ry = vcat(ry,ry2)
         end
     else
         ry, rg = rollingregression(odf[!, :pivot], window)
-        rg = clipnormshift(rg, ftup.c, ftup.n, ftup.n)
-        ry = clipnormshift(ry, ftup.c, ftup.n, ftup.n)
+        rg = clipnormshift(rg, ftup.c)
+        ry = clipnormshift(ry, ftup.c)
     end
     fdfno[:, rycol] = ry
     fdfno[:, rgcol] = rg
@@ -1215,7 +1215,7 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
             ryv = view(fdfno[!, rycol], firstindex(odf[!, :pivot]):odfendix)
             rgv = view(fdfno[!, rgcol], firstindex(odf[!, :pivot]):odfendix)
             rs1 = rollingregressionstdmv([odfv[!, :open], odfv[!, :high], odfv[!, :low], odfv[!, :close]], ryv, rgv, window)
-            rs1 = clipnormshift(rs1, ftup.c, ftup.n, 0f0)
+            rs1 = clipnormshift(rs1, ftup.c)
             rs = vcat(rs1, rs)
         end
         if !isnothing(odfstartix)
@@ -1223,20 +1223,23 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
             # ryv = view(fdfno[!, rycol], odfstartix:lastindex(odf[!, :pivot]))
             # rgv = view(fdfno[!, rgcol], odfstartix:lastindex(odf[!, :pivot]))
             rs2 = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window, odfstartix)
-            rs2 = clipnormshift(rs2, ftup.c, ftup.n, 0f0)
+            rs2 = clipnormshift(rs2, ftup.c)
             rs = vcat(rs, rs2)
         end
     else
         rs = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window)
-        rs = clipnormshift(rs, ftup.c, ftup.n, 0f0)
+        rs = clipnormshift(rs, ftup.c)
     end
     fdfno[:, rscol] = rs
     return fdfno
 end
 
-function clipnormshift(fvec, clip, norm, shift)
-    fvec = isnothing(clip) ? fvec : [(el > 0f0 ? min(clip, el) : max(-clip, el)) for el in fvec] # clip
-    fvec = isnothing(norm) ? fvec : fvec ./ norm .+ shift # normalize + shift
+function clipnormshift(fvec, clip)
+    if !isnothing(clip)
+        cfvec = [(el > 0f0 ? min(clip, el) : max(-clip, el)) for el in fvec] # clip
+        # @assert all(-clip .<= cfvec .<= clip) "clip=$clip, (fvec, ix, cfvec)=$((c=0; [(c += 1; c < 10 ? (fvec[ix], ix, cfvec[ix]) : (ix == lastindex(fvec) ? c : "")) for ix in eachindex(fvec) if !(-clip <= cfvec[ix] <= clip)]))"
+        fvec = cfvec
+    end
     return fvec
 end
 

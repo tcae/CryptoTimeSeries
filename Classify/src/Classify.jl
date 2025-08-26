@@ -845,6 +845,50 @@ function model001(featurecount, labels, mnemonic)::NN
     return nn
 end
 
+"""```
+Neural Net description:
+lay_in = featurecount
+lay_out = length(labels)
+lay1 = 3 * lay_in
+lay2 = round(Int, lay1 * 2 / 3)
+lay3 = round(Int, (lay2 + lay_out) / 2)
+model = Chain(
+    BatchNorm(lay_in),
+    Dense(lay_in => lay1, relu),   # activation function inside layer
+    BatchNorm(lay1),
+    Dense(lay1 => lay2, relu),   # activation function inside layer
+    BatchNorm(lay2),
+    Dense(lay2 => lay3, relu),   # activation function inside layer
+    BatchNorm(lay3),
+    Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+lossfunc = Flux.logitcrossentropy
+```
+"""
+function model002(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             #* this initial normalization is the only difference to model001
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        BatchNorm(lay1),
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        BatchNorm(lay2),
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        BatchNorm(lay3),
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
+    return nn
+end
+
 """
 creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
 relativedist is a vector
