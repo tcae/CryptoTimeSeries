@@ -660,7 +660,7 @@ emptytrddf() = DataFrame(Dict(:opentime=>DateTime[], :pivot=>Float32[], :label=>
 Provides 2 independent binary targets as wellas their relative gain
 - minwindow is the minimum number of minutes a trend should have
 - maxwindow is the maximum number of history minutes to detect a trend with given thresholds 
-- required condition: 1 < minwindow < maxwindow <= 4*60
+- required condition: 0 <= minwindow < maxwindow <= 4*60
 - longbuy label for all samples exceeding `thres.longhold` if subsequently threshold `thres.longbuy` is exceeded within the next `maxwindow` minutes
 - shortbuy label for all samples undercutting `thres.longhold` if subsequently threshold `thres.shortbuy` is undercut within the next `maxwindow` minutes
 """
@@ -671,7 +671,7 @@ mutable struct Trend <: AbstractTargets
     ohlcv::Union{OhlcvData, Nothing}
     df::Union{DataFrame, Nothing}
     function Trend(minwindow, maxwindow, thres)
-        @assert 1 < minwindow < maxwindow <= 4*60 "condition violated: 1 < minwindow=$(minwindow) < maxwindow=$(maxwindow) <= 4*60"
+        @assert 0 <= minwindow < maxwindow <= 4*60 "condition violated: 0 <= minwindow=$(minwindow) < maxwindow=$(maxwindow) <= 4*60"
         @assert thres.shortbuy <= thres.shorthold <= thres.longhold <= thres.longbuy "condition violated: thres.shortbuy=$(thres.shortbuy) <= thres.shorthold=$(thres.shorthold) <= thres.longhold=$(thres.longhold) <= fdg.thres.longbuy=$(thres.longbuy)"
         trd = new(minwindow, maxwindow, thres, nothing, nothing)
         return trd

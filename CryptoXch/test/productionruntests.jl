@@ -3,7 +3,7 @@ module CryptoXchProductionTest
 using Dates, DataFrames
 using Test
 
-using Ohlcv, EnvConfig, CryptoXch
+using Ohlcv, EnvConfig, CryptoXch, TestOhlcv
 
 
 
@@ -27,7 +27,7 @@ println("CryptoXchTest runtests")
     # EnvConfig.init(EnvConfig.production)
     ohlcv = Ohlcv.defaultohlcv("btc")
 
-    testcoins = CryptoXch.testbasecoin()
+    testcoins = TestOhlcv.testbasecoin()
     for tc in testcoins
         @test CryptoXch.validbase(xc, tc)
         ohlcv = CryptoXch.cryptodownload(xc, tc, "1m", DateTime("2022-01-02T22:38:03"), DateTime("2022-01-02T22:57:45"))

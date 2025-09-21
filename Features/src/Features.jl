@@ -440,7 +440,7 @@ end
         gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
         intercept = (sum_y - gradient*(sum_x)) / windowsize
         regression_y = intercept + (gradient .* windowsize)
-        (verbosity >= 4) && println("suby=$suby, max(1, startindex-windowsize+1)=$(max(1, startindex-windowsize+1)):end=$(lastindex(y)), gradient=$gradient, intercept=$intercept, regression_y=$regression_y")
+        # (verbosity >= 4) && println("suby=$suby, max(1, startindex-windowsize+1)=$(max(1, startindex-windowsize+1)):end=$(lastindex(y)), gradient=$gradient, intercept=$intercept, regression_y=$regression_y")
     else
         gradient = similar(y, 0)
         intercept = similar(y, 0)

@@ -9,7 +9,7 @@ println("$(EnvConfig.now()): started")
 Classify.verbosity = 1
 Ohlcv.verbosity = 1
 Features.verbosity = 1
-Trade.verbosity = 1
+Trade.verbosity = 2
 CryptoXch.verbosity = 1
 # EnvConfig.init(training)
 EnvConfig.init(production)

@@ -380,7 +380,7 @@ mutable struct NN
 end
 
 function NN(model, optim, lossfunc, labels, description, mnemonic="", fileprefix="")
-    return NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix, String[], "", "", [], String[])
+    return NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix, String[], "", "", Float32[], String[])
 end
 
 isadapted(nn::NN) = length(nn.losses) > 0
@@ -845,25 +845,9 @@ function model001(featurecount, labels, mnemonic)::NN
     return nn
 end
 
-"""```
-Neural Net description:
-lay_in = featurecount
-lay_out = length(labels)
-lay1 = 3 * lay_in
-lay2 = round(Int, lay1 * 2 / 3)
-lay3 = round(Int, (lay2 + lay_out) / 2)
-model = Chain(
-    BatchNorm(lay_in),
-    Dense(lay_in => lay1, relu),   # activation function inside layer
-    BatchNorm(lay1),
-    Dense(lay1 => lay2, relu),   # activation function inside layer
-    BatchNorm(lay2),
-    Dense(lay2 => lay3, relu),   # activation function inside layer
-    BatchNorm(lay3),
-    Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
-optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
-lossfunc = Flux.logitcrossentropy
-```
+"""
+Compared to model001, added initial BatchNorm before input layer  
+This added performance
 """
 function model002(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
@@ -890,6 +874,143 @@ function model002(featurecount, labels, mnemonic)::NN
 end
 
 """
+Compared to model002, removed BatchNorm between layers.  
+This reduced performace by 1% but was significatly faster.
+"""
+function model003(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             # delta to model002: remove all but initial BatchNorm
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
+    return nn
+end
+
+"""
+Compared to model002, added an additional layer.  
+Performace was worse than model002 - surprise
+"""
+function model004(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, lay2 * 2 / 3)
+    lay4 = round(Int, (lay3 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        BatchNorm(lay1),
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        BatchNorm(lay2),
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        BatchNorm(lay3),
+        Dense(lay3 => lay4, relu),   # activation function inside layer
+        BatchNorm(lay4),
+        Dense(lay4 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
+    return nn
+end
+
+"""
+Compared to model002, extended number of layer nodes by changing factor of layer 1 from 3 to 4.  
+Performace was worse than model002 - surprise
+"""
+function model005(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 4 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             #* this initial normalization is the only difference to model001
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        BatchNorm(lay1),
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        BatchNorm(lay2),
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        BatchNorm(lay3),
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
+    return nn
+end
+
+"""
+Compared to model003, removed layer 3.  
+performance impact?
+"""
+function model006(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             # delta to model002: remove all but initial BatchNorm
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
+    return nn
+end
+
+"""
+Compared to model003, reduced number of nodes of layers by reducing factor of layer 1 from 3 to 2.  
+performance impact?
+"""
+function model007(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             # delta to model002: remove all but initial BatchNorm
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, mnemonic)
+    return nn
+end
+
+"converged when losses did not improve in last 4 epochs"
+nnconverged(nn) = (length(nn.losses) > 10) && (nn.losses[end-4] <= nn.losses[end-3] <= nn.losses[end-2] <= nn.losses[end-1] <= nn.losses[end])
+
+"""
 creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
 relativedist is a vector
 """
@@ -899,11 +1020,10 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
 
     # Training loop, using the whole data set 1000 times:
-    nn.losses = Float32[]
     trainmode!(nn)
     minloss = maxloss = missing
     breakmsg = "epoch loop finished without convergence"
-    maxepoch = EnvConfig.configmode == test ? 10 : 1000
+    maxepoch = EnvConfig.configmode == test ? 1000 : 1000
     @showprogress for epoch in 1:maxepoch
         losses = Float32[]
         for (x, y) in loader
@@ -920,7 +1040,8 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
         end
         epochloss = mean(losses)
         push!(nn.losses, epochloss)  # register only mean(losses) over a whole epoch
-        if (epoch > 10) && (nn.losses[end-4] <= nn.losses[end-3] <= nn.losses[end-2] <= nn.losses[end-1] <= nn.losses[end])
+        savenn(nn)
+        if nnconverged(nn)
             breakmsg = "stopping adaptation after epoch $epoch due to no loss reduction ($(nn.losses[end-4:end])) in last 4 epochs"
             break
         end
@@ -1041,10 +1162,7 @@ function savelosses(nn::NN)
     end
 end
 
-function nnfilename(fileprefix::String)
-    prefix = splitext(fileprefix)[1]
-    return EnvConfig.logpath(prefix * ".bson")
-end
+nnfilename(fileprefix::String) = EnvConfig.logpath(splitext(fileprefix)[1] * ".bson")
 
 function compresslosses(losses)
     if length(losses) <= 1000
@@ -1060,7 +1178,7 @@ function compresslosses(losses)
 end
 
 function savenn(nn::NN)
-    (verbosity >= 2) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
+    (verbosity >= 4) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
     # nn.losses = compresslosses(nn.losses)
     BSON.@save nnfilename(nn.fileprefix) nn
     # @error "save machine to be implemented for pure flux" filename

@@ -52,6 +52,7 @@ function f6config01()
 end
 
 function f6config02()
+    error("don't use clipping due to worse results") # disable accidental use of clipping
     featcfg = Features.Features006()
     Features.addstd!(featcfg, window=5, offset=0, clip=1f0)
     Features.addgrad!(featcfg, window=5, offset=0, clip=1f0)
@@ -67,6 +68,33 @@ function f6config02()
     Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=1f0)
     Features.addmindist!(featcfg, window=60*5, offset=60, clip=1f0)
     Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=10f0)
+    return featcfg
+end
+
+function f6config03()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=5, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60, offset=20, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*4, offset=80, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=nothing, norm=nothing)
+    return featcfg
+end
+
+function f6config04()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=15, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60, offset=15, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*4, offset=75, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=nothing, norm=nothing)
     return featcfg
 end
 
@@ -132,7 +160,7 @@ The function generates targets files and features files in the current log folde
 The input log dataframe rangedf is supplemented with the index information of each set type range.  
 It returns a tuple of featurestargetsdf, targetsdict both with keys ["test", "train", "eval"] and dataframe values.   
 """
-function featurestargetsliquidranges!(basecoin, featconfig, trgconfig; coinfilesdf = coinfilesdf, rangedf = rangedf, samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
+function featurestargetsliquidranges!(basecoin, featconfig, trgconfig; startdt=currentconfig().startdt, enddt=currentconfig().enddt, coinfilesdf = coinfilesdf, rangedf = rangedf, samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
     featurestargetsdf = DataFrame()
     if size(coinfilesdf, 1) > 0
         cdf = @view coinfilesdf[coinfilesdf[!, :coin] .== basecoin,:]
@@ -142,6 +170,7 @@ function featurestargetsliquidranges!(basecoin, featconfig, trgconfig; coinfiles
     end
     (verbosity >= 3) && println("$(EnvConfig.now()) loading $basecoin for feature and target calculation") 
     ohlcv = Ohlcv.read(basecoin)
+    Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     rv = Ohlcv.liquiditycheck(ohlcv)
     ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
     rangeid = size(rangedf, 1) > 0 ? maximum(rangedf[!, :rangeid]) + 1 : Int16(1)
@@ -204,7 +233,7 @@ trendccoinonfig(minwindow, maxwindow, buy, hold) = Targets.Trend(minwindow, maxw
 
 settypes() = ["train", "test", "eval"]
 
-function getfeaturestargetsdf(coins, settype=nothing, featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig)
+function getfeaturestargetsdf(coins, settype=nothing; featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, startdt=currentconfig().startdt, enddt=currentconfig().enddt)
     ftdf = DataFrame()
     if isa(coins, AbstractVector) && (length(coins) > 0)
         for coin in coins
@@ -217,7 +246,7 @@ function getfeaturestargetsdf(coins, settype=nothing, featconfig=currentconfig()
             ftdffull = readdflogfolder(featurestargetsfilename(coin))
         else
             (verbosity >= 3) && println("calculating $coin features and targets")
-            ftdffull = featurestargetsliquidranges!(coin, featconfig, trgconfig)
+            ftdffull = featurestargetsliquidranges!(coin, featconfig, trgconfig, startdt=startdt, enddt=enddt)
         end
         ftdf = isnothing(settype) ? ftdffull : @view ftdffull[(ftdffull[!, :set] .== settype), :]
     end
@@ -238,7 +267,7 @@ function df2featurestargets(ftdf, settype=nothing)
     end
 end
 
-function getfeaturestargets(coins, settype=nothing, featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig)
+function getfeaturestargets(coins, settype=nothing; featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, startdt=currentconfig().startdt, enddt=currentconfig().enddt)
     if isa(coins, AbstractVector) && (length(coins) > 0)
         multifeatures = multitargets = nothing
         for coin in coins
@@ -257,7 +286,7 @@ function getfeaturestargets(coins, settype=nothing, featconfig=currentconfig().f
             ftdffull = readdflogfolder(featurestargetsfilename(coin))
         else
             (verbosity >= 3) && println("calculating $coin features and targets")
-            ftdffull = featurestargetsliquidranges!(coin, featconfig, trgconfig)
+            ftdffull = featurestargetsliquidranges!(coin, featconfig, trgconfig, startdt=startdt, enddt=enddt)
         end
         if size(ftdffull, 1) == 0
             return nothing, nothing
@@ -312,13 +341,13 @@ end
 
 function getclassifier(coins; featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, classifiermix=currentconfig().classifiermix)
     coin = (isa(coins, AbstractVector) && (length(coins) > 0)) || (classifiermix == mixonly) ? "mix" : coins
+    requirestraining = true
+    nn = nothing
     if isfile(Classify.nnfilename(classifiermenmonic(coin)))
         nn = getlatestclassifier(coin, featconfig, trgconfig)
         (verbosity >= 3) && println("$coin classifier file loaded from $(Classify.nnfilename(classifiermenmonic(coin)))")
+        requirestraining = !Classify.nnconverged(nn)
     else
-        println("$(EnvConfig.now()) adapting $coin classifier")
-        # if classifier file does not exist then create one
-        # either a mix classifier is adapted using a vector of coins or a coin specific classifier is adapted - not possible to adapt a mix classifiers without providing multiple coins data
         @assert ((coin == "mix") && isa(coins, AbstractVector)) || ((coin != "mix") && (classifiermix != mixonly)) "coin=$coin, typeof(coins)=$(typeof(coins)), classifiermix=$classifiermix"
         if (coin != "mix") 
             if (classifiermix in [mixonly, specificmix])
@@ -331,6 +360,11 @@ function getclassifier(coins; featconfig=currentconfig().featconfig, trgconfig=c
         else # adapt mix classifier
             nn = getlatestclassifier(coin, featconfig, trgconfig)
         end
+    end
+    if requirestraining
+        println("$(EnvConfig.now()) adapting $coin classifier")
+        # if classifier file does not exist then create one
+        # either a mix classifier is adapted using a vector of coins or a coin specific classifier is adapted - not possible to adapt a mix classifiers without providing multiple coins data
         features, targets = getfeaturestargets(coins, "train") # use coins, instead of coin, to get all features / targets in case of a mix classifier adaptation
         if isnothing(features) || isnothing(targets)
             return nothing
@@ -453,6 +487,7 @@ function inspect(coins)
     println("ranges dataframe file: $(EnvConfig.logpath(rangefilename()))")
     # println(rangedf)
     println(rangedf[[(begin:begin+2)...,(end-1:end)...], :])
+    println("\ndescribe(rangedf) $(describe(rangedf))")
 end
 
 function _oixdelta(ix, ftdf, rangeid, rangedelta, rangedf, ohlcvdf)
@@ -498,7 +533,7 @@ function _getgainsdf(scores, ftdf, rangedf, ohlcvdf, openthreshold, closethresho
             # lastlabel is the correct label to use for the segment because labelix is the first label seen after the label changed
             if lastlabel == inlabel # only add inlabel gains
                 gain = (ixprice - startprice) / startprice
-                push!(gdf, (set=ftdf[ix, :set], label=lastlabel, samplecount=Minute(ixtime-starttime).value, gain=gain, startdt=starttime, enddt=ixtime, ftstartix=startix, ftendix=ix, openthreshold=openthreshold, closethreshold=closethreshold))
+                push!(gdf, (set=ftdf[ix, :set], label=lastlabel, samplecount=Minute(ixtime-starttime).value + 1, gain=gain, startdt=starttime, enddt=ixtime, ftstartix=startix, ftendix=ix, openthreshold=openthreshold, closethreshold=closethreshold))
             end
             startix = ix
             startprice = ixprice
@@ -557,13 +592,95 @@ function getgainsdf(coins; rangedf = rangedf)
         end
     end
     if size(gaindf, 1) > 0
+        sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt])
         savedflogfolder(gaindf, EnvConfig.logpath(gainsfilename()))
     end
     return gaindf
-    # add settype, rangeid, rix (index within rangeid), ohlcvix, ftix (features /targets df index), pix (predictions index), target trend id, classified trend id or missing, pivot gain compared to previous sample if classified as trend
-    # accumulate per trend id gain
-    # count classified trend vs target trends
-    # data columns: coin, set, targetgain, predictgain -> derived data: count(targetgain), mean(targetgain), count(predictgain), mean(predictgain), ratio(count(predictgain), count(targetgain))
+end
+
+distancesfilename() = "distances.jdf"
+
+"""
+Provides distance information between neighboring predicted gain segments in form of one data frame row for each precited positive segment with the following columns:  
+- :coin and :set as taken over from gains
+- :label is the predicted label
+- :tpdistnext = in case the predicted segment does overlap with a labeled segment (= true positive) and the next segment is also a true positive segment of the same labeled segment, distance to the next true positive predicted segment
+- :fpdistnext = in case the predicted segment does not overlap with a labeled segment (= false positive), distance to the next predicted segment
+- :distfirst = in case of the first true positive predicted segment of a labeled segment, distance to the beginning of the labeled  sgement to see how long the prediction needs to detect a true positive situation
+- :distlast - in case of the last true positive predcited segment, distance to the end of the labelled segment
+- :startdt, :enddt provide the timestamps of the predicted segment
+- :truestartdt, :trueenddt provide the timestamps of the labelled segment
+"""
+function getdistances(coins; rangedf = rangedf)
+
+    function getdist!(distdf, cprow, cpnextrow, ctrow)
+        distnext = isnothing(cpnextrow) ? missing : Minute(cpnextrow.startdt - cprow.enddt).value
+        @assert isnothing(cpnextrow) || (cprow.enddt < cpnextrow.startdt) "cprow=$cprow \ncpnextrow=$cpnextrow \nctrow=$ctrow"
+        distrow = (coin=cprow.coin, set=cprow.set, label=cprow.label, tpdistnext=missing, fpdistnext=missing, distfirst=missing, distlast=missing, startdt=cprow.startdt, enddt=cprow.enddt, truestartdt=missing, trueenddt=missing)
+        if isnothing(ctrow) # there is no labeled segement to match with - hence, the predicetd segment is false positive
+            distrow = (distrow..., fpdistnext=distnext)
+        else
+            distrow = (distrow..., truestartdt=ctrow.startdt, trueenddt=ctrow.enddt)
+            if cprow.enddt < ctrow.startdt # predicted segment is completely before true segment - hence, the predicted segment is false positive
+                distrow = (distrow..., fpdistnext=distnext)
+            else
+                lastdistrow = size(distdf, 1) > 1 ? distdf[end, :] : nothing
+                distfirst = isnothing(lastdistrow) || (lastdistrow.enddt < ctrow.startdt) ? Minute(cprow.startdt - ctrow.startdt).value : missing
+                distlast = isnothing(cpnextrow) || (ctrow.enddt < cpnextrow.startdt) ? Minute(cprow.enddt - ctrow.enddt).value : missing
+                if !isnothing(cpnextrow) && (ctrow.enddt < cpnextrow.startdt)
+                    distrow = (distrow..., fpdistnext=distnext, distfirst=distfirst, distlast=distlast)
+                else
+                    distrow = (distrow..., tpdistnext=distnext, distfirst=distfirst, distlast=distlast)
+                end
+            end
+        end
+        # (verbosity >= 3) && println("distrow=$distrow, cprow=$cprow, cpnextrow=$cpnextrow, ctrow=$ctrow")
+        push!(distdf, distrow, promote=true)
+    end
+
+    distdf = DataFrame()
+    if isdflogfolder(EnvConfig.logpath(distancesfilename()))
+        distdf = readdflogfolder(EnvConfig.logpath(distancesfilename()))
+        if size(distdf, 1) > 0
+            return distdf
+        end
+    end
+    gaindf = getgainsdf(coins; rangedf = rangedf)
+    if (size(gaindf, 1) > 0)
+        gaindf = @view gaindf[gaindf[!, :openthreshold] .== minimum(gaindf[!, :openthreshold]), :]
+        gaindf = @view gaindf[gaindf[!, :closethreshold] .== minimum(gaindf[!, :closethreshold]), :]
+        gaindfgrp = groupby(gaindf, [:coin, :predicted])
+        coins = isa(coins, AbstractVector) ? coins : [coins]
+        for coin in coins
+            cpgaindf = get(gaindfgrp, (coin, true), DataFrame())
+            ctgaindf = get(gaindfgrp, (coin, false), DataFrame())
+            if size(ctgaindf, 1) > 0
+                @assert issorted(ctgaindf[!, :startdt])
+                ctix = firstindex(ctgaindf, 1)
+            else
+                ctix = nothing
+            end
+            if size(cpgaindf, 1) > 0
+                @assert issorted(cpgaindf[!, :startdt])
+                for cpix in 1:nrow(cpgaindf)
+                    cpnix = cpix < lastindex(cpgaindf, 1) ? cpix + 1 : nothing
+                    while !isnothing(ctix) && (cpgaindf[cpix, :startdt] > ctgaindf[ctix, :enddt])
+                        ctix = ctix < lastindex(ctgaindf, 1) ? ctix + 1 : nothing
+                    end
+                    getdist!(distdf, cpgaindf[cpix, :], (isnothing(cpnix) ? nothing : cpgaindf[cpnix, :]), (isnothing(ctix) ? nothing : ctgaindf[ctix, :]))
+                end
+            else
+                (verbosity >= 1) && println("skipping distances collection of $(coin) due to missing gain predictions due to size(cpgaindf)= $(size(cpgaindf))")
+                # no row if no gain record - even with a truth record 
+            end
+        end
+    else
+        (verbosity >= 1) && println("skipping distances collection of $(coin) due to missing gains due to size(gaindf)= $(size(gaindf))")
+    end
+    if size(distdf, 1) > 0
+        savedflogfolder(distdf, EnvConfig.logpath(distancesfilename()))
+    end
+    return distdf
 end
 
 confusionfilename() = "confusion.jdf"
@@ -639,65 +756,119 @@ function averageconfusionmatrix(coins)
     return ccmdf, cxcmdf
 end
 
+function safe(f, v; default=missing)
+    v = skipmissing(v)
+    isempty(v) ? default : f(v)
+end
 """
 mixonly = only one mix classifier that is used for any coin  
 specificonly = only a dedicated classifier per coin  
 specificmix = common mix classifier with a coin specific adaptation on top  
 """
 @enum ClassifierMix mixonly specificmix specificonly
+# startdt = nothing  # means use all what is stored as canned data
+# enddt = nothing  # means use all what is stored as canned data
+startdt = DateTime("2017-11-17T20:56:00")
+enddt = DateTime("2025-08-10T15:00:00")
 
 """
 mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
 """
-mk1config() = (folder="2528-TrendDetector001-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001)
+mk1config() = (folder="2528-TrendDetector001-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk2 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk2config() = (folder="2533-TrendDetector002-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001)
+mk2config() = (folder="2533-TrendDetector002-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config trendccoinonfig(10, 4*60, 0.05, 0.03) with **poor results**: ppv(longbuy) = 26%
 """
-mk3config() = (folder="2534-TrendDetector003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.05, 0.03), classifiermix=specificmix, classifiermodel=Classify.model001)
+mk3config() = (folder="2534-TrendDetector003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.05, 0.03), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk4 = trendccoinonfig(10, 4*60, 0.02, 0.01) with one merged set (allclose=>0.726, longbuy=>0.274)
 """
-mk4config() = (folder="2534-TrendDetector004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.02, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001)
+mk4config() = (folder="2534-TrendDetector004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.02, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk5 = trendccoinonfig(10, 4*60, 0.007, 0.005) with one merged set (allclose=>?, longbuy=>?)
 """
-mk5config() = (folder="2535-TrendDetector005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.007, 0.005), classifiermix=specificmix, classifiermodel=Classify.model001)
+mk5config() = (folder="2535-TrendDetector005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.007, 0.005), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
-""" **my favorite**  
+"""
 mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk6config() = (folder="2534-TrendDetector006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
+mk6config() = (folder="2534-TrendDetector006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 same as mk6 butwith copied mix classifier from mk2
 mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk7config() = (folder="2534-TrendDetector007-mix-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
+mk7config() = (folder="2534-TrendDetector007-mix-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk8 = mix adapted with all coin features/targets in one set, features are clipped, normalized, shifted, and in addition batch norm layer after initial layer with relu activation in model001
 equal mean, q25, q75, min, max does not look like healthy feature values - longbuy ppv classification performance is with close to 70% also worse
 """
-mk8config() = (folder="2535-TrendDetector008-mixonly-clipnormshift-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001)
+mk8config() = (folder="2535-TrendDetector008-mixonly-clipnormshift-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
+""" **my favorite**  
+mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
 """
-mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer after initial layer with relu activation in model001
-"""
-mk9config() = (folder="2535-TrendDetector009-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002)
+mk9config() = (folder="2535-TrendDetector009-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
 """
 mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
 """
-mk10config() = (folder="2535-TrendDetector010-mixonlymodel002clip-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002)
-currentconfig() = mk10config()
+mk10config() = (folder="2535-TrendDetector010-mixonlymodel002clip-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+"""
+mk11 = mix adapted with all coin features/targets in one set, no clipping, initial batch norm layer but no further internal batch norm layers
+"""
+mk11config() = (folder="2535-TrendDetector011-model003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model003, startdt=startdt, enddt=enddt)
+
+"""
+mk12 = like mk9 but with an additional layer
+"""
+mk12config() = (folder="2535-TrendDetector012-model004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model004, startdt=startdt, enddt=enddt)
+
+"""
+mk13 = like mk9 but with 4/3 broader layers
+"""
+mk13config() = (folder="2535-TrendDetector013-model005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model005, startdt=startdt, enddt=enddt)
+
+"""
+mk14 = like mk11 but removed layer 3
+"""
+mk14config() = (folder="2535-TrendDetector014-model006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model006, startdt=startdt, enddt=enddt)
+
+"""
+mk15 = like mk11 but reduced number of nodes of layers by reducing factor of layer 1 from 3 to 2
+"""
+mk15config() = (folder="2535-TrendDetector015-model007-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model007, startdt=startdt, enddt=enddt)
+
+"""
+mk16 = no tolerance against target disturbances (minwindow=0), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
+"""
+mk16config() = (folder="2537-TrendDetector016-notargetminwindow-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(0, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+"""
+mk17 = short tolerance against target disturbances (minwindow=2), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
+"""
+mk17config() = (folder="2537-TrendDetector017-shorttargetminwindow-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(2, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+"""  
+mk18 = mk9 but with simplified features
+"""
+mk18config() = (folder="2538-TrendDetector018-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config03(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+"""  
+mk19 = mk9 but with simplified features
+"""
+mk19config() = (folder="2538-TrendDetector019-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config04(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+currentconfig() = mk19config()
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
@@ -773,11 +944,25 @@ else
     println(ccmdf)
     gaindf = getgainsdf(coins)
     if size(gaindf, 1) > 0
+        println(describe(gaindf))
+        println(gaindf[1:2,:])
         gaindfgroup = groupby(gaindf, [:set, :label, :predicted, :openthreshold, :closethreshold])
         # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
         cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum)
+        println("cgaindf=$cgaindf")
     end
-    println(cgaindf)
+
+    distdf = getdistances(coins)
+    if size(distdf, 1) > 0
+        println("size(distdf)=$(size(distdf))")
+        println("describe(distdf)=$(describe(distdf))")
+        # println(distdf[.!ismissing.(distdf[!, :tpdistnext]),:])
+        distdfgroup = groupby(distdf, [:set, :label])
+        # println(distdfgroup)
+        # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
+        diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
+    end
+    println(diststatdf)
 end
 
 
