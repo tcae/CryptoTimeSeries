@@ -32,6 +32,60 @@ verbosity =
 """
 verbosity = 3
 
+"""
+mixonly = only one mix classifier that is used for any coin  
+specificonly = only a dedicated classifier per coin  
+specificmix = common mix classifier with a coin specific adaptation on top  
+"""
+@enum ClassifierMix mixonly specificmix specificonly
+
+"""
+inspect = provide a look into files and data structures 
+execute = run training and evaluation
+special = run special tasks for repair, debugging or refactoring
+"""
+@enum TrendDetectorMode inspect execute special
+
+mutable struct TrendDetectorConfig
+    configname::String
+    folder::String
+    featconfig::Features.AbstractFeatures
+    targetconfig::Targets.AbstractTargets
+    classifiermix::ClassifierMix
+    classifiermodel::Classify.NN
+    startdt::DateTime
+    enddt::DateTime
+    rangedf::DataFrame
+    coinfilesdf::DataFrame
+    trenddetectormode::TrendDetectorMode
+    envconfigmode::EnvConfig.ConfigMode
+    partitionconfig::NamedTuple
+    coins::Vector{String}
+    function TrendDetectorConfig(configname; folder="TrendDetector$configname", featconfig, targetconfig, classifiermix=mixonly, classifiermodel=Classify.model002, startdt=DateTime("2017-11-17T20:56:00"), enddt=DateTime("2025-08-10T15:00:00"), rangedf=DataFrame(), coinfilesdf=DataFrame(), trenddetectormode=execute, envconfigmode=test, partitionconfig=partitionconfig02(); coins=String[])
+        EnvConfig.setlogpath(folder)
+        (verbosity >= 2) && println("log folder: $(EnvConfig.logfolder())")
+        (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
+        (verbosity >= 2) && println("targetsconfig=$(Targets.describe(trgconfig))")
+    return new(configname, folder, featconfig, targetconfig, classifiermix, classifiermodel, startdt, enddt, rangedf, coinfilesdf, trenddetectormode, envconfigmode, partitionconfig, coins)
+    end
+end
+
+testcoins() = ["SINE", "DOUBLESINE"]
+traincoins() = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
+traincoins() = ["ETH", "BTC", "ADA", "SOL", "XRP"]
+
+function currentconfig()
+    cfg = mk22config()  # change to the desired configuration
+    rangedf = isdflogfolder(rangefilename()) ? readdflogfolder(rangefilename()) : DataFrame(coin=String[], settype=String[], rangeid=Int16[], ohlcvrange=UnitRange{Int}[], startdt=DateTime[], enddt=DateTime[], dfrange=UnitRange{Int}[], liquidrange=UnitRange{Int}[])
+    coinfilesdf = isdflogfolder(coinfilesdffilename()) ? readdflogfolder(coinfilesdffilename()) : DataFrame(coin=String[], featuresconfig=String[], targetsconfig=String[], featurestargetsfname=Union{Missing, String}[])
+    partitioncfg = partitionconfig01()  # or partitionconfig02()
+    return TrendDetectorConfig(cfg.folder, cfg.featconfig, cfg.trgconfig, cfg.classifiermix, cfg.classifiermodel, cfg.startdt, cfg.enddt, rangedf, coinfilesdf, execute, EnvConfig.configmode(), partitioncfg)
+end
+
+partitionconfig01() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
+partitionconfig02() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=8*60, minpartitionsize=12*60, maxpartitionsize=2*24*60)
+
+" start 3* 5min with short segments and also add a 5min std element for high volatile situations then become larger "
 function f6config01()
     featcfg = Features.Features006()
     Features.addstd!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
@@ -51,6 +105,7 @@ function f6config01()
     return featcfg
 end
 
+"like f6config01 but with clipping to avoid outlier influence - turned not to be good"
 function f6config02()
     error("don't use clipping due to worse results") # disable accidental use of clipping
     featcfg = Features.Features006()
@@ -71,6 +126,7 @@ function f6config02()
     return featcfg
 end
 
+"like f6config01 but without the 5min std element and only with 1* 5min regr"
 function f6config03()
     featcfg = Features.Features006()
     Features.addgrad!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
@@ -85,11 +141,60 @@ function f6config03()
     return featcfg
 end
 
+"like f6config01 but without the 5min std and regr elements - just starting with 15min"
 function f6config04()
     featcfg = Features.Features006()
     Features.addgrad!(featcfg, window=15, offset=0, clip=nothing, norm=nothing)
     Features.addgrad!(featcfg, window=60, offset=15, clip=nothing, norm=nothing)
     Features.addgrad!(featcfg, window=60*4, offset=75, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=nothing, norm=nothing)
+    return featcfg
+end
+
+"like f6config03 but the larger regr grad starting without offset"
+function f6config05()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*4, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=nothing, norm=nothing)
+    return featcfg
+end
+
+"like f6config05 but with an added 12h regr grad"
+function f6config06()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*4, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*12, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addmindist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0, clip=nothing, norm=nothing)
+    return featcfg
+end
+
+"like f6config06 but with an added 3*24h regr grad"
+function f6config07()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=15, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*4, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=60*12, offset=0, clip=nothing, norm=nothing)
+    Features.addgrad!(featcfg, window=3*60*24, offset=0, clip=nothing, norm=nothing)
     Features.addmaxdist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
     Features.addmindist!(featcfg, window=60, offset=0, clip=nothing, norm=nothing)
     Features.addmaxdist!(featcfg, window=60*5, offset=60, clip=nothing, norm=nothing)
@@ -123,7 +228,7 @@ function savedflogfolder(df, filename)
     # try
         # EnvConfig.savebackup(filepath) # switched off until bug fixed
         JDF.savejdf(filepath, df)
-        (verbosity >= 2) && println("$(EnvConfig.now()) saved dataframe to $(filepath)")
+        (verbosity >= 3) && println("$(EnvConfig.now()) saved dataframe to $(filepath)")
     # catch e
     #     Logging.@error "exception $e detected when writing $(filepath)"
     # end
@@ -135,7 +240,7 @@ function readdflogfolder(filename)
     filepath = EnvConfig.logpath(filename)
     # try
         if isdir(filepath)
-            (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath)")
+            (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath) ... ")
             df = DataFrame(JDF.loadjdf(filepath))
             (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
         else
@@ -149,7 +254,7 @@ end
 
 isdflogfolder(filename) = isdir(EnvConfig.logpath(filename))
 
-"add colums period and gap to previous range in readable canonical form "
+"add colums period and gap to previous range in readable form "
 function addperiodgap!(rangedf) 
     rangedf.period = canonicalize.(rangedf[!, :enddt] .- rangedf[!, :startdt])
     rangedf.gap = canonicalize.(rangedf[!, :startdt] .- vcat(rangedf[begin:begin, :startdt], rangedf[begin:end-1, :enddt]))
@@ -181,7 +286,7 @@ function featurestargetsliquidranges!(basecoin, featconfig, trgconfig; startdt=c
 
     for rng in rv # rng indices are related to ohlcv dataframe rows
         if rng[end] - rng[begin] > 0
-            (verbosity >= 2) && println("$(EnvConfig.now()) calculating features and targets for $(ohlcv.base) range $rng from $(ot[rng[begin]]) until $(ot[rng[end]]) with $(rng[end] - rng[begin]) samples")
+            (verbosity >= 3) && println("$(EnvConfig.now()) calculating features and targets for $(ohlcv.base) range $rng from $(ot[rng[begin]]) until $(ot[rng[end]]) with $(rng[end] - rng[begin]) samples")
             ohlcvview = Ohlcv.ohlcvview(ohlcv, rng)
             Features.setbase!(featconfig, ohlcvview, usecache=true)
             rngfeaturestargets = copy(Features.features(featconfig))
@@ -229,7 +334,13 @@ rangefilename() = "ranges.jdf"
 coinfilesdffilename() = "settypesfiledict.jdf"
 featurestargetsfilename(coin) = "features_targets_$coin.jdf"
 
-trendccoinonfig(minwindow, maxwindow, buy, hold) = Targets.Trend(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
+trendtargetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
+targetconfig01() = trendtargetconfig(10, 4*60, 0.01, 0.01)
+targetconfig02() = trendtargetconfig(10, 4*60, 0.05, 0.03)
+targetconfig03() = trendtargetconfig(10, 4*60, 0.02, 0.01)
+targetconfig04() = trendtargetconfig(10, 4*60, 0.007, 0.005)
+targetconfig05() = trendtargetconfig(0, 4*60, 0.01, 0.01)
+targetconfig06() = trendtargetconfig(2, 4*60, 0.01, 0.01)
 
 settypes() = ["train", "test", "eval"]
 
@@ -339,7 +450,7 @@ function showlosses(nn)
     end
 end
 
-function getclassifier(coins; featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, classifiermix=currentconfig().classifiermix)
+function getclassifier(coins; featconfig=currentconfig().featconfig, trgconfig=currentconfig().trgconfig, classifiermix=currentconfig().classifiermix) #, seqlen::Int=3, bucketlen::Int=5)
     coin = (isa(coins, AbstractVector) && (length(coins) > 0)) || (classifiermix == mixonly) ? "mix" : coins
     requirestraining = true
     nn = nothing
@@ -383,6 +494,29 @@ function getclassifier(coins; featconfig=currentconfig().featconfig, trgconfig=c
             Classify.savenn(nn)
         end
         println("$(EnvConfig.now()) finished adapting $coin classifier")
+        #= 
+        # After base feedforward NN is trained, optionally embed into LSTM sequence learner
+        ftdf = getfeaturestargetsdf(coins)
+        if size(ftdf, 1) > 0
+            # prepare features matrix from ftdf (exclude meta columns)
+            feats = ftdf[!, Not([:set, :rix, :rangeid, :targets])]
+            features_mat = permutedims(Array(feats), (2,1))
+            basepred = Classify.predict(nn, features_mat)
+            basepred = permutedims(basepred, (2,1))
+            pred_df = DataFrame(basepred, string.(nn.labels))
+            pred_df[!, :targets] = ftdf[!, :targets]
+            pred_df[!, :set] = ftdf[!, :set]
+            pred_df[!, :rangeid] = ftdf[!, :rangeid]
+            pred_df[!, :rix] = ftdf[!, :rix]
+            # train LSTM on bucketed base predictions using provided seqlen/bucketlen
+            cnn = Classify.train_lstm_on_predictions(nn, pred_df, ftdf; seqlen=seqlen, bucketlen=bucketlen, epochs=10)
+            if !isnothing(cnn)
+                Classify.savecomposite(cnn)
+            end
+        else
+            (verbosity >= 2) && println("no feature/target dataframe available for embedding LSTM")
+        end 
+        =#
     end
     return nn
 end
@@ -516,7 +650,7 @@ function _getgainsdf(scores, ftdf, rangedf, ohlcvdf, openthreshold, closethresho
     if length(scores) == 0
         return gdf
     end
-    startix = startprice = starttime = labelix = nothing
+    startix = startprice = starttime = currentlabel = nothing
     lastlabel = outlabel
     # delta = ftix2ohlcvixoffset(ftdf[begin, :rix], ftdf, rangedf, ohlcvdf)
     # if delta != 0
@@ -525,12 +659,12 @@ function _getgainsdf(scores, ftdf, rangedf, ohlcvdf, openthreshold, closethresho
     rangeid = nothing
     rangedelta = nothing
     for ix in eachindex(scores)
-        labelix = lastlabel == inlabel ? (scores[ix] > closethreshold ? inlabel : outlabel) : (scores[ix] > openthreshold ? inlabel : outlabel)
-        if labelix != lastlabel
+        currentlabel = lastlabel == inlabel ? (scores[ix] > closethreshold ? inlabel : outlabel) : (scores[ix] > openthreshold ? inlabel : outlabel)
+        if currentlabel != lastlabel
             oix, rangedelta, rangeid = _oixdelta(ix, ftdf, rangeid, rangedelta, rangedf, ohlcvdf)
             ixprice = ohlcvdf[oix, :close]
             ixtime = ohlcvdf[oix, :opentime]
-            # lastlabel is the correct label to use for the segment because labelix is the first label seen after the label changed
+            # lastlabel is the correct label to use for the segment because currentlabel is the first label seen after the label changed
             if lastlabel == inlabel # only add inlabel gains
                 gain = (ixprice - startprice) / startprice
                 push!(gdf, (set=ftdf[ix, :set], label=lastlabel, samplecount=Minute(ixtime-starttime).value + 1, gain=gain, startdt=starttime, enddt=ixtime, ftstartix=startix, ftendix=ix, openthreshold=openthreshold, closethreshold=closethreshold))
@@ -538,7 +672,7 @@ function _getgainsdf(scores, ftdf, rangedf, ohlcvdf, openthreshold, closethresho
             startix = ix
             startprice = ixprice
             starttime = ixtime
-            lastlabel = labelix
+            lastlabel = currentlabel
         end
     end
     return gdf
@@ -559,18 +693,16 @@ function getgainsdf(coins; rangedf = rangedf)
     for coin in coins
         dfp = getpredictions(coin)
         if (size(dfp, 1) > 0)
+            prednames = CategoricalArray(Classify.predictioncolumns(dfp), ordered=false)
+            # assuming binary classification with 2 classes and prednames[1] is the open trade class (longbuy or shortbuy)
+            @assert string(prednames[2]) == "allclose" "prednames=$(prednames)"
+            @assert length(prednames) == 2 "prednames=$(prednames)"
+
             for (openthreshold, closethreshold) in [(0.8, 0.5), (0.7, 0.5), (0.6, 0.5), (0.8, 0.6), (0.7, 0.6), (0.6, 0.55)] # [(0.5, 0.5)]
                 ohlcv = Ohlcv.read(coin)
                 ohlcvdf = Ohlcv.dataframe(ohlcv)
                 # rangedf = readdflogfolder(rangefilename())
                 ftdf = getfeaturestargetsdf(coin)
-                diff = dfp[!, :set] .!= ftdf[!, :set]
-                diffdf = DataFrame(dfp=dfp[diff, :set], ftdf=ftdf[diff, :set])
-                @assert dfp[!, :set] == ftdf[!, :set] "dfp[!, :set]=$(length(dfp[!, :set])) != ftdf[!, :set]=$(length(ftdf[!, :set])) diff=$diffdf"
-                prednames = CategoricalArray(Classify.predictioncolumns(dfp), ordered=false)
-                # assuming binary classification with 2 classes and prednames[1] is the open trade class (longbuy or shortbuy)
-                @assert string(prednames[2]) == "allclose" "prednames=$(prednames)"
-                @assert length(prednames) == 2 "prednames=$(prednames)"
 
                 scores = dfp[!, string(prednames[1])]
                 # predonly = @view dfp[!, string.(prednames)]
@@ -581,21 +713,62 @@ function getgainsdf(coins; rangedf = rangedf)
                 gdf[!, :predicted] = fill(true, size(gdf, 1))
                 gaindf = append!(gaindf, gdf)
 
-                gdf = _getgainsdf([(t == prednames[1] ? 1f0 : 0f0) for t in dfp[!, :targets]], ftdf, rangedf, ohlcvdf, openthreshold, closethreshold, prednames[1], prednames[2])
-                gdf[!, :coin] = fill(coin, size(gdf, 1))
-                gdf[!, :predicted] = fill(false, size(gdf, 1))
-                dfp = @view dfp[dfp[!, :set] .!= "noop", :] # exclude gaps between set partitions
-                gaindf = append!(gaindf, gdf)
             end
+            gdf = _getgainsdf([(t == prednames[1] ? 1f0 : 0f0) for t in dfp[!, :targets]], ftdf, rangedf, ohlcvdf, 0.9f0, 0.9f0, prednames[1], prednames[2])
+            gdf[!, :coin] = fill(coin, size(gdf, 1))
+            gdf[!, :predicted] = fill(false, size(gdf, 1))
+            gaindf = append!(gaindf, gdf)
         else
             (verbosity >= 1) && println("skipping gain collection of $(coin) due to missing predictions due to size(dfp)= $(size(dfp))")
         end
     end
+    gaindf = gaindf[gaindf[!, :set] .!= "noop", :] # exclude gaps between set partitions
     if size(gaindf, 1) > 0
         sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt])
         savedflogfolder(gaindf, EnvConfig.logpath(gainsfilename()))
     end
     return gaindf
+end
+
+function gettargetgainsdf(coins; rangedf = rangedf)
+    gaindf = DataFrame()
+    # coin = (isa(coins, AbstractVector) && (length(coins) > 0)) ? "mix" : coins
+    # if isdflogfolder(EnvConfig.logpath(gainsfilename()))
+    #     gaindf = readdflogfolder(EnvConfig.logpath(gainsfilename()))
+    #     if size(gaindf, 1) > 0
+    #         return gaindf
+    #     end
+    # end
+    coins = isa(coins, AbstractVector) ? coins : [coins]
+    ftdf = nothing
+    dfp = nothing
+    for coin in coins
+        dfp = getpredictions(coin)
+        if (size(dfp, 1) > 0)
+            ohlcv = Ohlcv.read(coin)
+            ohlcvdf = Ohlcv.dataframe(ohlcv)
+            # rangedf = readdflogfolder(rangefilename())
+            ftdf = getfeaturestargetsdf(coin)
+
+            prednames = CategoricalArray(Classify.predictioncolumns(dfp), ordered=false)
+            # assuming binary classification with 2 classes and prednames[1] is the open trade class (longbuy or shortbuy)
+            @assert string(prednames[2]) == "allclose" "prednames=$(prednames)"
+            @assert length(prednames) == 2 "prednames=$(prednames)"
+
+            gdf = _getgainsdf([(t == prednames[1] ? 1f0 : 0f0) for t in dfp[!, :targets]], ftdf, rangedf, ohlcvdf, 0.5f0, 0.5f0, prednames[1], prednames[2])
+            gdf[!, :coin] = fill(coin, size(gdf, 1))
+            gdf[!, :predicted] = fill(false, size(gdf, 1))
+            gaindf = append!(gaindf, gdf)
+        else
+            (verbosity >= 1) && println("skipping gain collection of $(coin) due to missing predictions due to size(dfp)= $(size(dfp))")
+        end
+    end
+    gaindf = gaindf[gaindf[!, :set] .!= "noop", :] # exclude gaps between set partitions
+    # if size(gaindf, 1) > 0
+    #     sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt])
+    #     savedflogfolder(gaindf, EnvConfig.logpath(gainsfilename()))
+    # end
+    return gaindf, ftdf, dfp
 end
 
 distancesfilename() = "distances.jdf"
@@ -613,6 +786,9 @@ Provides distance information between neighboring predicted gain segments in for
 """
 function getdistances(coins; rangedf = rangedf)
 
+    """
+    Push next distance row into distdf dataframe. cprow = current predicted gain row, cpnextrow = next predicted gain row, ctrow = current true gain row.
+    """
     function getdist!(distdf, cprow, cpnextrow, ctrow)
         distnext = isnothing(cpnextrow) ? missing : Minute(cpnextrow.startdt - cprow.enddt).value
         @assert isnothing(cpnextrow) || (cprow.enddt < cpnextrow.startdt) "cprow=$cprow \ncpnextrow=$cpnextrow \nctrow=$ctrow"
@@ -625,8 +801,11 @@ function getdistances(coins; rangedf = rangedf)
                 distrow = (distrow..., fpdistnext=distnext)
             else
                 lastdistrow = size(distdf, 1) > 1 ? distdf[end, :] : nothing
+                # only calculate distfirst if there is not another predicted segment before that is also true positive and belongs to the same true segment
                 distfirst = isnothing(lastdistrow) || (lastdistrow.enddt < ctrow.startdt) ? Minute(cprow.startdt - ctrow.startdt).value : missing
+                # only calculate distlast if there is not another predicted segment after that is also true positive and belongs to the same true segment
                 distlast = isnothing(cpnextrow) || (ctrow.enddt < cpnextrow.startdt) ? Minute(cprow.enddt - ctrow.enddt).value : missing
+                # if there is another predicted segment after that is also true positive and belongs to the same true segment, then distnext is tpdistnext otherwise it is a fpdistnext
                 if !isnothing(cpnextrow) && (ctrow.enddt < cpnextrow.startdt)
                     distrow = (distrow..., fpdistnext=distnext, distfirst=distfirst, distlast=distlast)
                 else
@@ -647,13 +826,14 @@ function getdistances(coins; rangedf = rangedf)
     end
     gaindf = getgainsdf(coins; rangedf = rangedf)
     if (size(gaindf, 1) > 0)
+        # limit gains to minimum thresholds as those show best classification results
         gaindf = @view gaindf[gaindf[!, :openthreshold] .== minimum(gaindf[!, :openthreshold]), :]
         gaindf = @view gaindf[gaindf[!, :closethreshold] .== minimum(gaindf[!, :closethreshold]), :]
         gaindfgrp = groupby(gaindf, [:coin, :predicted])
         coins = isa(coins, AbstractVector) ? coins : [coins]
         for coin in coins
-            cpgaindf = get(gaindfgrp, (coin, true), DataFrame())
-            ctgaindf = get(gaindfgrp, (coin, false), DataFrame())
+            cpgaindf = get(gaindfgrp, (coin, true), DataFrame()) # predicted gains
+            ctgaindf = get(gaindfgrp, (coin, false), DataFrame()) # true gains
             if size(ctgaindf, 1) > 0
                 @assert issorted(ctgaindf[!, :startdt])
                 ctix = firstindex(ctgaindf, 1)
@@ -760,167 +940,297 @@ function safe(f, v; default=missing)
     v = skipmissing(v)
     isempty(v) ? default : f(v)
 end
-"""
-mixonly = only one mix classifier that is used for any coin  
-specificonly = only a dedicated classifier per coin  
-specificmix = common mix classifier with a coin specific adaptation on top  
-"""
-@enum ClassifierMix mixonly specificmix specificonly
+
+function _checktargetgain(config, coins)
+    println("_checktargetgain coins=$coins processing $(config.folder)")
+    EnvConfig.setlogpath(config.folder)
+    getclassifier(coins) # ensure preparation of baseline mix classifier 
+    global coinfilesdf = readdflogfolder(coinfilesdffilename())
+    global rangedf = readdflogfolder(rangefilename())
+    gaindf, ftdf, dfp  = gettargetgainsdf(coins, rangedf=rangedf)
+    global coinfilesdf = DataFrame()
+    global rangedf = DataFrame()
+    println("dfp[targets] == ftdftargets] = $(all(dfp[!, :targets] .== CategoricalVector(string.(ftdf[!, :targets]))))")
+    return gaindf, ftdf, dfp
+end
+
+function _checktargets(config, basecoin)
+    println("_checktargets coins=$(basecoin) processing $(config.folder)")
+    EnvConfig.setlogpath(config.folder)
+    global coinfilesdf = DataFrame()  # readdflogfolder(coinfilesdffilename())
+    global rangedf = DataFrame()  # readdflogfolder(rangefilename())
+    # ftdffull = featurestargetsliquidranges!(basecoin, config.featconfig, config.trgconfig, startdt=config.startdt, enddt=config.enddt, coinfilesdf = coinfilesdf, rangedf = rangedf)
+
+    startdt=config.startdt
+    enddt=config.enddt
+    samplesets = ["train", "test", "train", "train", "eval", "train"]
+    partitionsize=24*60
+    gapsize=12*60  # Features.requiredminutes(config.featconfig)
+    minpartitionsize=12*60
+    maxpartitionsize=2*24*60
+    featurestargetsdf = DataFrame()
+    ohlcv = Ohlcv.read(basecoin)
+    Ohlcv.timerangecut!(ohlcv, startdt, enddt)
+    rv = Ohlcv.liquiditycheck(ohlcv)
+    ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
+    rangeid = size(rangedf, 1) > 0 ? maximum(rangedf[!, :rangeid]) + 1 : Int16(1)
+    
+    levels = unique(samplesets)
+    push!(levels, "noop")
+    samplesets = CategoricalArray(samplesets, levels=levels)
+
+    for rng in rv # rng indices are related to ohlcv dataframe rows
+        if rng[end] - rng[begin] > 0
+            (verbosity >= 3) && println("$(EnvConfig.now()) calculating features and targets for $(ohlcv.base) range $rng from $(ot[rng[begin]]) until $(ot[rng[end]]) with $(rng[end] - rng[begin]) samples")
+            ohlcvview = Ohlcv.ohlcvview(ohlcv, rng)
+            Features.setbase!(config.featconfig, ohlcvview, usecache=true)
+            rngfeaturestargets = copy(Features.features(config.featconfig))
+
+            @assert size(rngfeaturestargets, 1) > 0 "features data of $(ohlcv.base) range $rng with $(rng[end] - rng[begin] + 1) rows from $(ot[rng[begin]]) until $(ot[rng[end]]) not matching features size $(size(rngfeaturestargets, 1))"
+            rngfeaturestargets[:, :targets] = calctargets!(config.trgconfig, config.featconfig)
+            rngfeaturestargets[:, :rangeid] .= 0
+            rngfeaturestargets[:, :rix] .= 0
+            rngfeaturestargets[:, :set] = CategoricalVector(fill("noop", size(rngfeaturestargets, 1)), levels=levels)
+            psets = Classify.setpartitions(1:size(rngfeaturestargets, 1), samplesets, partitionsize=partitionsize, gapsize=gapsize, minpartitionsize=minpartitionsize, maxpartitionsize=maxpartitionsize)
+            (verbosity >= 4) && println("Classify.setpartitions($(1:size(rngfeaturestargets, 1)), $samplesets, partitionsize=$partitionsize, gapsize=$gapsize, minpartitionsize=$minpartitionsize, maxpartitionsize=$maxpartitionsize")
+            (verbosity >= 4) && println("$basecoin length(psets)=$(length(psets)) rng=$rng") #  psets=$psets
+
+            for (settype, psrng) in psets # psrng indices are related to rngfeaturestargets rows (not to ohlcv dataframe rows)
+                # six = size(featurestargetsdf[settype], 1) + 1
+                # eix = six + size(rngfeaturestargets[psrng, :], 1) - 1
+                rngfeaturestargets[psrng, :rangeid] .= rangeid
+                rngfeaturestargets[psrng, :rix] = collect(Int32.(psrng))
+                rngfeaturestargets[psrng, :set] .= settype
+                featurestargetsdf = vcat(featurestargetsdf, rngfeaturestargets[psrng, :])
+                sixohlcv = rng[begin] + psrng[begin] - 1
+                eixohlcv = rng[begin] + psrng[end] - 1
+                # push!(rangedf, (coin=ohlcv.base, settype=settype, rangeid=rangeid, ohlcvrange=sixohlcv:eixohlcv, startdt=ot[sixohlcv], enddt=ot[eixohlcv], dfrange=psrng, liquidrange=rng))
+                rangeid += 1
+            end
+        else
+            @error "unexpected zero length range for " ohlcv.base rng rv
+        end
+    end
+    if size(featurestargetsdf, 1) > 0
+        # sort!(rangedf, [:coin, :ohlcvrange])
+        # savedflogfolder(rangedf, rangefilename())  # without period and gap columns added before
+
+        featurestargetsfname = featurestargetsfilename(ohlcv.base)  # "features_targets_" * ohlcv.base * ".jdf"
+        # savedflogfolder(featurestargetsdf, featurestargetsfname)
+        push!(coinfilesdf, (coin=ohlcv.base, featuresconfig=Features.describe(config.featconfig), targetsconfig=Targets.describe(config.trgconfig), featurestargetsfname=featurestargetsfname))
+    else
+        push!(coinfilesdf, (coin=ohlcv.base, featuresconfig=Features.describe(config.featconfig), targetsconfig=Targets.describe(config.trgconfig), featurestargetsfname=missing), promote=true)
+        @info "skipping $basecoin due to no liquid ranges"
+    end
+    # savedflogfolder(coinfilesdf, coinfilesdffilename())
+    return featurestargetsdf
+end
+
+function checktargetgain()
+    EnvConfig.init(test)
+    coins = ["SINE"]
+    mk20config() = (folder="2539-TrendDetector020-$(EnvConfig.configmode)", featconfig = f6config05(), trgconfig = targetconfig06(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+    mk21config() = (folder="2539-TrendDetector021-$(EnvConfig.configmode)", featconfig = f6config06(), trgconfig = targetconfig06(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+    tgdf21, ftdf21, dfp21 = _checktargetgain(mk21config(), coins)
+    tgdf21[:, :config] .= "mk21"
+    tgdf20, ftdf20, dfp20 = _checktargetgain(mk20config(), coins)
+    tgdf20[:, :config] .= "mk20"
+    tgdf = vcat(tgdf20, tgdf21)
+    tgdf = tgdf[tgdf[!, :predicted] .== false, :] # only true targets
+    gaindfgroup = groupby(tgdf, [:config, :set, :label, :predicted, :openthreshold, :closethreshold])
+    # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
+    cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum)
+    println("cgaindf=$cgaindf")
+    # println("dfp20[targets] == dfp21[targets] = $(all(dfp20[!, :targets] .== dfp21[!, :targets]))") #! ERROR: DimensionMismatch: arrays could not be broadcast to a common size; got a dimension with lengths 266586 and 245313
+
+    ftdffull20 = _checktargets(mk20config(), coins[begin])
+    ftdffull21 = _checktargets(mk21config(), coins[begin])
+    println("ftdffull20[targets] == ftdffull21[targets] = $(all(ftdffull20[!, :targets] .== ftdffull21[!, :targets]))")
+    # println("ftdffull20[targets] == ftdffull21[targets] = $(all(ftdffull20 .== ftdffull21))")
+    # println("target gain: $tgdf\n")
+
+end
+
 # startdt = nothing  # means use all what is stored as canned data
 # enddt = nothing  # means use all what is stored as canned data
 startdt = DateTime("2017-11-17T20:56:00")
 enddt = DateTime("2025-08-10T15:00:00")
 
+#region configurations
 """
 mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
 """
-mk1config() = (folder="2528-TrendDetector001-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk1config() = (folder="2528-TrendDetector001-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk2 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk2config() = (folder="2533-TrendDetector002-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk2config() = (folder="2533-TrendDetector002-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
-mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config trendccoinonfig(10, 4*60, 0.05, 0.03) with **poor results**: ppv(longbuy) = 26%
+mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config targetconfig02() with **poor results**: ppv(longbuy) = 26%
 """
-mk3config() = (folder="2534-TrendDetector003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.05, 0.03), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk3config() = (folder="2534-TrendDetector003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig02(), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
-mk4 = trendccoinonfig(10, 4*60, 0.02, 0.01) with one merged set (allclose=>0.726, longbuy=>0.274)
+mk4 = targetconfig03() with one merged set (allclose=>0.726, longbuy=>0.274)
 """
-mk4config() = (folder="2534-TrendDetector004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.02, 0.01), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk4config() = (folder="2534-TrendDetector004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig03(), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
-mk5 = trendccoinonfig(10, 4*60, 0.007, 0.005) with one merged set (allclose=>?, longbuy=>?)
+mk5 = targetconfig04() with one merged set (allclose=>?, longbuy=>?)
 """
-mk5config() = (folder="2535-TrendDetector005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.007, 0.005), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk5config() = (folder="2535-TrendDetector005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig04(), classifiermix=specificmix, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk6config() = (folder="2534-TrendDetector006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk6config() = (folder="2534-TrendDetector006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 same as mk6 butwith copied mix classifier from mk2
 mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk7config() = (folder="2534-TrendDetector007-mix-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk7config() = (folder="2534-TrendDetector007-mix-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """
 mk8 = mix adapted with all coin features/targets in one set, features are clipped, normalized, shifted, and in addition batch norm layer after initial layer with relu activation in model001
 equal mean, q25, q75, min, max does not look like healthy feature values - longbuy ppv classification performance is with close to 70% also worse
 """
-mk8config() = (folder="2535-TrendDetector008-mixonly-clipnormshift-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
+mk8config() = (folder="2535-TrendDetector008-mixonly-clipnormshift-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model001, startdt=startdt, enddt=enddt)
 
 """ **my favorite**  
 mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
 """
-mk9config() = (folder="2535-TrendDetector009-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+mk9config() = (folder="2535-TrendDetector009-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
 """
 mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
 """
-mk10config() = (folder="2535-TrendDetector010-mixonlymodel002clip-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+mk10config() = (folder="2535-TrendDetector010-mixonlymodel002clip-$(EnvConfig.configmode)", featconfig = f6config02(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
 """
 mk11 = mix adapted with all coin features/targets in one set, no clipping, initial batch norm layer but no further internal batch norm layers
 """
-mk11config() = (folder="2535-TrendDetector011-model003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model003, startdt=startdt, enddt=enddt)
+mk11config() = (folder="2535-TrendDetector011-model003-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model003, startdt=startdt, enddt=enddt)
 
 """
 mk12 = like mk9 but with an additional layer
 """
-mk12config() = (folder="2535-TrendDetector012-model004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model004, startdt=startdt, enddt=enddt)
+mk12config() = (folder="2535-TrendDetector012-model004-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model004, startdt=startdt, enddt=enddt)
 
 """
 mk13 = like mk9 but with 4/3 broader layers
 """
-mk13config() = (folder="2535-TrendDetector013-model005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model005, startdt=startdt, enddt=enddt)
+mk13config() = (folder="2535-TrendDetector013-model005-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model005, startdt=startdt, enddt=enddt)
 
 """
 mk14 = like mk11 but removed layer 3
 """
-mk14config() = (folder="2535-TrendDetector014-model006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model006, startdt=startdt, enddt=enddt)
+mk14config() = (folder="2535-TrendDetector014-model006-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model006, startdt=startdt, enddt=enddt)
 
 """
 mk15 = like mk11 but reduced number of nodes of layers by reducing factor of layer 1 from 3 to 2
 """
-mk15config() = (folder="2535-TrendDetector015-model007-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model007, startdt=startdt, enddt=enddt)
+mk15config() = (folder="2535-TrendDetector015-model007-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model007, startdt=startdt, enddt=enddt)
 
 """
 mk16 = no tolerance against target disturbances (minwindow=0), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
 """
-mk16config() = (folder="2537-TrendDetector016-notargetminwindow-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(0, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+mk16config() = (folder="2537-TrendDetector016-notargetminwindow-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig05(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
 """
 mk17 = short tolerance against target disturbances (minwindow=2), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
 """
-mk17config() = (folder="2537-TrendDetector017-shorttargetminwindow-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = trendccoinonfig(2, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+mk17config() = (folder="2537-TrendDetector017-shorttargetminwindow-$(EnvConfig.configmode)", featconfig = f6config01(), trgconfig = targetconfig06(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
 """  
 mk18 = mk9 but with simplified features
 """
-mk18config() = (folder="2538-TrendDetector018-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config03(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+mk18config() = (folder="2538-TrendDetector018-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config03(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
 """  
 mk19 = mk9 but with simplified features
 """
-mk19config() = (folder="2538-TrendDetector019-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config04(), trgconfig = trendccoinonfig(10, 4*60, 0.01, 0.01), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+mk19config() = (folder="2538-TrendDetector019-mixonlymodel002noclip-$(EnvConfig.configmode)", featconfig = f6config04(), trgconfig = targetconfig01(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
 
-currentconfig() = mk19config()
+"""  
+mk20 = mk17 but feature grads without offset
+"""
+mk20config() = (folder="2539-TrendDetector020-$(EnvConfig.configmode)", featconfig = f6config05(), trgconfig = targetconfig06(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+"""  
+mk21 = mk17 but feature grads without offset and 12h regr grad added
+"""
+mk21config() = (folder="2539-TrendDetector021-$(EnvConfig.configmode)", featconfig = f6config06(), trgconfig = targetconfig06(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+
+"""  
+mk22 = mk21 but with 3*24h regr grad added
+"""
+mk22config() = (folder="2539-TrendDetector022-$(EnvConfig.configmode)", featconfig = f6config07(), trgconfig = targetconfig06(), classifiermix=mixonly, classifiermodel=Classify.model002, startdt=startdt, enddt=enddt)
+#* from mk23 onwards the targets receive a fixed partition gap of 8h to get the same targets gains for the same targetconfig
+
+#endregion configurations
+
+currentconfig() = mk20config()
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 testmode = "test" in ARGS
 # testmode = true
 inspectonly = "inspect" in ARGS
-specialonly = "special" in ARGS
 # inspectonly = true
-# specialonly = true
-
-EnvConfig.init(testmode ? test : training)
-#* folder1 and folder2 are used to compare folder content
-#* folder is used to process the content of just a single folder
-folder2, _, _ = mk1config() # mk1 = mix adapted with multiple adaptations per coin
-folder1, _, _ = mk2config() # mk2 = mix adapted in just one iteration with all coin features/targets in one set (allclose=>0.494, longbuy=>0.506)
-
-# println(currentconfig())
-folder, featconfig, trgconfig = currentconfig()
-EnvConfig.setlogpath(folder)
-println("log folder: $(EnvConfig.logfolder())")
+specialonly = "special" in ARGS
+specialonly = true
 
 verbosity = 4
-if testmode 
+if specialonly
     Ohlcv.verbosity = 3
     CryptoXch.verbosity = 3
     Features.verbosity = 3
     Targets.verbosity = 2
     EnvConfig.verbosity = 1
     Classify.verbosity = 3
-    coins = ["SINE", "DOUBLESINE"]
-else # training or production
-    verbosity = 2
-    Ohlcv.verbosity = 1
-    CryptoXch.verbosity = 1
-    Features.verbosity = 1
-    Targets.verbosity = 1
-    EnvConfig.verbosity = 1
-    Classify.verbosity = 1
-    # coins = []
-    # for ohlcv in Ohlcv.OhlcvFiles()
-    #     push!(coins, ohlcv.base)
-    # end
-    # println("length(coins)=$(length(coins))")
-    # println(coins)
+    coins = ["SINE"] # ["SINE", "DOUBLESINE"]
+    EnvConfig.init(test)
+else 
+    if testmode 
+        Ohlcv.verbosity = 3
+        CryptoXch.verbosity = 3
+        Features.verbosity = 3
+        Targets.verbosity = 2
+        EnvConfig.verbosity = 1
+        Classify.verbosity = 3
+        coins = ["SINE", "DOUBLESINE"]
+        EnvConfig.init(test)
+    else # training or production
+        verbosity = 2
+        Ohlcv.verbosity = 1
+        CryptoXch.verbosity = 1
+        Features.verbosity = 1
+        Targets.verbosity = 1
+        EnvConfig.verbosity = 1
+        Classify.verbosity = 1
+        EnvConfig.init(training)
+        # coins = []
+        # for ohlcv in Ohlcv.OhlcvFiles()
+        #     push!(coins, ohlcv.base)
+        # end
+        # println("length(coins)=$(length(coins))")
+        # println(coins)
 
-    # long version 
-    # coins = ["1INCH", "5IRE", "A8", "AAVE", "ACA", "ACH", "ACS", "ADA", "AEG", "AERO", "AEVO", "AGIX", "AGI", "AGLA", "AGLD", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "AMI", "ANIME", "ANKR", "AO", "APEX", "APE", "APP", "APRS", "APT", "ARB", "ARKM", "AR", "ASRR", "ATH", "ATOM", "AVAIL", "AVAX", "AVA", "AVL", "AXL", "AXS", "A", "B3", "BABYDOGE", "BAN", "BBL", "BBQ", "BB", "BCH", "BCUT", "BDXN", "BEAM", "BEL", "BERA", "BICO", "BLAST", "BLOCK", "BLUR", "BMT", "BNB", "BOBA", "BOB", "BOMB", "BOME", "BONK", "BRETT", "BR", "BTC", "BUBBLE", "C98", "CAKE", "CARV", "CATBNB", "CATI", "CELO", "CEL", "CGPT", "CHILLGUY", "CHRP", "CHZ", "CLOUD", "CMETH", "COA", "COMP", "COM", "COOKIE", "COOK", "COQ", "CORE", "COT", "CPOOL", "CRV", "CSPR", "CTA", "CTC", "CTT", "CUDIS", "CYBER", "DBR", "DECHAT", "DEEP", "DEFI", "DEGEN", "DGB", "DIAM", "DMAIL", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DSRUN", "DUEL", "DYDX", "DYM", "EGLD", "EGO", "EIGEN", "ELDE", "ELX", "ENA", "ENJ", "ENS", "EOS", "EPT", "ERA", "ESE", "ES", "ETC", "ETHFI", "ETHW", "ETH", "EVERY", "EXVG", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLIP", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FLUID", "FMB", "FON", "FORT", "FOXY", "FRAG", "FTM", "FTT", "FUEL", "FXS", "F", "G3", "G7", "GALAXIS", "GALA", "GAL", "GAME", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAPE", "GRASS", "GRT", "GSTS", "GST", "GTAI", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOME", "HOOK", "HOT", "HTX", "HUMA", "HVH", "HYPER", "HYPE", "H", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "INSP", "IO", "IP", "IRL", "IZI", "JASMY", "JTO", "JUP", "J", "KAIA", "KAS", "KAVA", "KCAL", "KDA", "KLAY", "KMNO", "KSM", "L3", "LADYS", "LAI", "LAYER", "LA", "LDO", "LENDS", "LEVER", "LFT", "LGX", "LINK", "LL", "LMWR", "LOOKS", "LRC", "LTC", "LUNAI", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "MEMEFI", "MEME", "MERL", "METH", "MEW", "ME", "MILK", "MINA", "MINU", "MIX", "MKR", "MLK", "MNT", "MOCA", "MOG", "MOJO", "MON", "MORPHO", "MOVE", "MOVR", "MOZ", "MPLX", "MVL", "MYRIA", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NEWT", "NEXT", "NGL", "NIBI", "NLK", "NOT", "NS", "NUTS", "NXPC", "NYAN", "OBOL", "ODOS", "OKG", "OL", "OMG", "OMNI", "OM", "ONDO", "ONE", "OP", "ORDER", "ORDI", "ORT", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PFVS", "PLANET", "PLAY", "PLUME", "PNUT", "POKT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PUFFER", "PUFF", "PUMP", "PURSE", "PYTH", "PYUSD", "QNT", "QORPO", "QTUM", "RACA", "RAIN", "RATS", "RDNT", "RED", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RPK", "RSS3", "RUNE", "RVN", "SAFE", "SALD", "SAND", "SATS", "SCA", "SCRT", "SCR", "SC", "SEI", "SEND", "SEOR", "SERAPH", "SFUND", "SHARK", "SHIB", "SHILL", "SHRAP", "SIDUS", "SIGN", "SIS", "SKATE", "SLG", "SMILE", "SNX", "SOLO", "SOLV", "SOL", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQD", "SQR", "SQT", "SSV", "STAR", "STETH", "STG", "STOP", "STREAM", "STRK", "STX", "SUI", "SUNDOG", "SUN", "SUPRA", "SUSHI", "SVL", "SWEAT", "SWELL", "SXT", "S", "TAC", "TAIKO", "TAI", "TAP", "TAVA", "TA", "TENET", "THETA", "THRUST", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TREE", "TRUMP", "TRX", "TWT", "T", "ULTI", "UMA", "UNI", "USTC", "UXLINK", "VANA", "VANRY", "VELAR", "VELO", "VENOM", "VET", "VEXT", "VIRTUAL", "VRA", "VRTX", "VV", "WAL", "WAVES", "WAXP", "WBTC", "WCT", "WELL", "WEMIX", "WEN", "WIF", "WLD", "WLKN", "WOO", "WWY", "W", "XAI", "XAR", "XAUT", "XAVA", "XCAD", "XDC", "XEC", "XION", "XLM", "XO", "XRP3L", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEND", "ZENT", "ZEN", "ZEREBRO", "ZERO", "ZETA", "ZEX", "ZIG", "ZIL", "ZKF", "ZKJ", "ZKL", "ZK", "ZORA", "ZRC", "ZRO", "ZRX", "ZTX"]
+        # long version 
+        # coins = ["1INCH", "5IRE", "A8", "AAVE", "ACA", "ACH", "ACS", "ADA", "AEG", "AERO", "AEVO", "AGIX", "AGI", "AGLA", "AGLD", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "AMI", "ANIME", "ANKR", "AO", "APEX", "APE", "APP", "APRS", "APT", "ARB", "ARKM", "AR", "ASRR", "ATH", "ATOM", "AVAIL", "AVAX", "AVA", "AVL", "AXL", "AXS", "A", "B3", "BABYDOGE", "BAN", "BBL", "BBQ", "BB", "BCH", "BCUT", "BDXN", "BEAM", "BEL", "BERA", "BICO", "BLAST", "BLOCK", "BLUR", "BMT", "BNB", "BOBA", "BOB", "BOMB", "BOME", "BONK", "BRETT", "BR", "BTC", "BUBBLE", "C98", "CAKE", "CARV", "CATBNB", "CATI", "CELO", "CEL", "CGPT", "CHILLGUY", "CHRP", "CHZ", "CLOUD", "CMETH", "COA", "COMP", "COM", "COOKIE", "COOK", "COQ", "CORE", "COT", "CPOOL", "CRV", "CSPR", "CTA", "CTC", "CTT", "CUDIS", "CYBER", "DBR", "DECHAT", "DEEP", "DEFI", "DEGEN", "DGB", "DIAM", "DMAIL", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DSRUN", "DUEL", "DYDX", "DYM", "EGLD", "EGO", "EIGEN", "ELDE", "ELX", "ENA", "ENJ", "ENS", "EOS", "EPT", "ERA", "ESE", "ES", "ETC", "ETHFI", "ETHW", "ETH", "EVERY", "EXVG", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLIP", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FLUID", "FMB", "FON", "FORT", "FOXY", "FRAG", "FTM", "FTT", "FUEL", "FXS", "F", "G3", "G7", "GALAXIS", "GALA", "GAL", "GAME", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAPE", "GRASS", "GRT", "GSTS", "GST", "GTAI", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOME", "HOOK", "HOT", "HTX", "HUMA", "HVH", "HYPER", "HYPE", "H", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "INSP", "IO", "IP", "IRL", "IZI", "JASMY", "JTO", "JUP", "J", "KAIA", "KAS", "KAVA", "KCAL", "KDA", "KLAY", "KMNO", "KSM", "L3", "LADYS", "LAI", "LAYER", "LA", "LDO", "LENDS", "LEVER", "LFT", "LGX", "LINK", "LL", "LMWR", "LOOKS", "LRC", "LTC", "LUNAI", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "MEMEFI", "MEME", "MERL", "METH", "MEW", "ME", "MILK", "MINA", "MINU", "MIX", "MKR", "MLK", "MNT", "MOCA", "MOG", "MOJO", "MON", "MORPHO", "MOVE", "MOVR", "MOZ", "MPLX", "MVL", "MYRIA", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NEWT", "NEXT", "NGL", "NIBI", "NLK", "NOT", "NS", "NUTS", "NXPC", "NYAN", "OBOL", "ODOS", "OKG", "OL", "OMG", "OMNI", "OM", "ONDO", "ONE", "OP", "ORDER", "ORDI", "ORT", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PFVS", "PLANET", "PLAY", "PLUME", "PNUT", "POKT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PUFFER", "PUFF", "PUMP", "PURSE", "PYTH", "PYUSD", "QNT", "QORPO", "QTUM", "RACA", "RAIN", "RATS", "RDNT", "RED", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RPK", "RSS3", "RUNE", "RVN", "SAFE", "SALD", "SAND", "SATS", "SCA", "SCRT", "SCR", "SC", "SEI", "SEND", "SEOR", "SERAPH", "SFUND", "SHARK", "SHIB", "SHILL", "SHRAP", "SIDUS", "SIGN", "SIS", "SKATE", "SLG", "SMILE", "SNX", "SOLO", "SOLV", "SOL", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQD", "SQR", "SQT", "SSV", "STAR", "STETH", "STG", "STOP", "STREAM", "STRK", "STX", "SUI", "SUNDOG", "SUN", "SUPRA", "SUSHI", "SVL", "SWEAT", "SWELL", "SXT", "S", "TAC", "TAIKO", "TAI", "TAP", "TAVA", "TA", "TENET", "THETA", "THRUST", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TREE", "TRUMP", "TRX", "TWT", "T", "ULTI", "UMA", "UNI", "USTC", "UXLINK", "VANA", "VANRY", "VELAR", "VELO", "VENOM", "VET", "VEXT", "VIRTUAL", "VRA", "VRTX", "VV", "WAL", "WAVES", "WAXP", "WBTC", "WCT", "WELL", "WEMIX", "WEN", "WIF", "WLD", "WLKN", "WOO", "WWY", "W", "XAI", "XAR", "XAUT", "XAVA", "XCAD", "XDC", "XEC", "XION", "XLM", "XO", "XRP3L", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEND", "ZENT", "ZEN", "ZEREBRO", "ZERO", "ZETA", "ZEX", "ZIG", "ZIL", "ZKF", "ZKJ", "ZKL", "ZK", "ZORA", "ZRC", "ZRO", "ZRX", "ZTX"]
 
-    # test
-    # coins =["BTC"]
+        # test
+        # coins =["BTC"]
 
-    # liquid coins
-    coins = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
+        # liquid coins
+        coins = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
+    end
+    # println(currentconfig())
+    folder, featconfig, trgconfig = currentconfig()
+    EnvConfig.setlogpath(folder)
+    println("log folder: $(EnvConfig.logfolder())")
 end
 
 coinfilesdf = readdflogfolder(coinfilesdffilename())
@@ -932,7 +1242,8 @@ rangedf = readdflogfolder(rangefilename())
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
-    println("No special task defined")
+    # println("No special task defined")
+    checktargetgain()
 elseif inspectonly
     inspect(coins)
 else
@@ -960,7 +1271,7 @@ else
         distdfgroup = groupby(distdf, [:set, :label])
         # println(distdfgroup)
         # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
-        diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
+        diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(median, x)) => :fpdistnext_median, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
     end
     println(diststatdf)
 end

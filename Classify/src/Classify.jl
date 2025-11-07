@@ -56,6 +56,8 @@ mutable struct TradeAdvice
     investmentid  # nothing until filled by Trade based on a transaction
 end
 
+ 
+
 """
 classifier usage approach: classifier that serves one or more bases but can be trained with arbitrary bases
 - preparation
@@ -396,6 +398,166 @@ function Base.show(io::IO, nn::NN)
     println(io, "NN: predecessors=$(nn.predecessors)")
     println(io, "NN: predictions=$(nn.predictions)")
     println(io, "NN: description=$(nn.description)")
+end
+
+# Composite wrapper: feedforward base NN + LSTM that learns sequences of bucketed
+# classifier outputs. The LSTM operates on averaged classifier probability vectors
+# across buckets of `bucketlen` minutes and learns windows of length `seqlen` buckets.
+mutable struct CompositeNN
+    base::NN
+    lstmmodel::Any
+    lstmoptim::Any
+    lstmloss::Function
+    labels::AbstractVector
+    mnemonic::String
+    fileprefix::String
+    losses::Vector{Float32}
+    seqlen::Int
+    bucketlen::Int
+end
+
+function CompositeNN(base::NN, lstmmodel, lstmoptim, lstmloss, seqlen::Int, bucketlen::Int)
+    return CompositeNN(base, lstmmodel, lstmoptim, lstmloss, base.labels, base.mnemonic * "_LSTM", base.fileprefix * "_lstm", Float32[], seqlen, bucketlen)
+end
+
+compositefilename(fileprefix::String) = EnvConfig.logpath(splitext(fileprefix)[1] * "_composite.bson")
+
+function savecomposite(cnn::CompositeNN)
+    try
+        BSON.@save compositefilename(cnn.fileprefix) cnn
+    catch e
+        Logging.@warn "failed to save composite $(compositefilename(fileprefix)): $e"
+    end
+end
+
+function loadcomposite(fileprefix::String)
+    cnn = nothing
+    try
+        BSON.@load compositefilename(fileprefix) cnn
+    catch e
+        Logging.@warn "failed to load composite $(compositefilename(fileprefix)): $e"
+    end
+    return cnn
+end
+
+"Train an LSTM on per-minute classifier predictions stored in `pred_df`.
+ pred_df: DataFrame with one column per class (string names matching `base.labels`),
+ and columns `:targets`, `:set`, `:rangeid`, `:rix` (as produced by TrendDetector.getfeaturestargetsdf).
+ seqlen: number of buckets in a sequence window. bucketlen: bucket size in minutes.
+ Returns a CompositeNN with trained LSTM attached.
+"
+function train_lstm_on_predictions(base::NN, pred_df::DataFrame, ftdf::DataFrame; seqlen::Int=3, bucketlen::Int=5, hidden::Int=32, epochs::Int=10, batchsize::Int=64)
+
+    labels = base.labels
+    # ensure label columns present
+    classcols = string.(labels)
+    for c in classcols
+        @assert c in names(pred_df) "missing class column $c in pred_df"
+    end
+
+    # group by rangeid to prepare sequences per independent time series
+    grp = groupby(pred_df, :rangeid)
+
+    inputs = Vector{Array{Float32,2}}() # list of (classes seqlen buckets) matrices for each sequence sliding window
+    targets = String[]
+    sets = String[]
+    maps_back = Vector{Tuple{Int,Int,Int}}() # (rangeid, bucket_end_index, bucket_start_rowix) for mapping back
+
+    for g in grp
+        nrows = nrow(g)
+        # number of full buckets
+        nbuckets = fld(nrows, bucketlen)
+        if nbuckets < seqlen # not enough buckets for one window
+            continue
+        end
+        # build bucketed average matrix: classes seqlen nbuckets
+        bucketmat = zeros(Float32, length(classcols), nbuckets)
+        for b in 1:nbuckets #! mistake: the seqlen buckets - each of bucketlen averaged prediction results - need to be calculated for every minute
+            rstart = (b-1)*bucketlen + 1
+            rend = b*bucketlen
+            for (ci, col) in enumerate(classcols)
+                bucketmat[ci, b] = mean(Float32.(g[rstart:rend, Symbol(col)]))
+            end
+        end
+        # sliding windows
+        for be in seqlen:nbuckets
+            window = bucketmat[:, (be-seqlen+1):be] # classes x seqlen
+            push!(inputs, copy(window))
+            # choose target = label at last row of this bucket window
+            last_row = (be-1)*bucketlen + bucketlen
+            targ = String(g[last_row, :targets])
+            push!(targets, targ)
+            push!(sets, String(g[last_row, :set]))
+            push!(maps_back, (first(g[!, :rangeid]), be, last_row))
+        end
+    end
+
+    if length(inputs) == 0
+        @warn "no training samples for LSTM (maybe sequences too short)"
+        return nothing
+    end
+
+    # restrict to training samples
+    train_ix = findall(==("train"), sets)
+    if length(train_ix) == 0
+        @warn "no train set windows found for LSTM"
+        return nothing
+    end
+
+    # prepare batches
+    function make_batch(idxs)
+        b = length(idxs)
+        X = Array{Float32,3}(undef, length(classcols), size(inputs[1], 2), b) # classes x seq x batch
+        for (bi, ix) in enumerate(idxs)
+            X[:, :, bi] = inputs[ix]
+        end
+        ys = targets[idxs]
+        Y = onehotbatch(ys, string.(labels))
+        return X, Y
+    end
+
+    # define LSTM model
+    lstm = LSTM(length(classcols) => hidden)
+    dense = Dense(hidden => length(classcols)) #! shouldn't the relu not part of dense?
+    model = Chain(lstm, x -> Flux.relu.(x), dense)
+    optim = Flux.setup(Flux.Adam(), params(model))
+    lossfn(ŷ, y) = Flux.logitcrossentropy(ŷ, y)
+
+    # training loop
+    train_idxs = train_ix
+    nepoch = epochs
+    for epoch in 1:nepoch
+        shuffle!(train_idxs)
+        for i in 1:batchsize:length(train_idxs)
+            batch_ids = train_idxs[i:min(i+batchsize-1, end)]
+            X, Y = make_batch(batch_ids)
+            Flux.reset!(lstm)
+            gs = Flux.gradient(params(model)) do
+                seq_len = size(X, 2)
+                for t in 1:seq_len
+                    xt = X[:, t, :]
+                    lstm(xt)
+                end
+                h = lstm.h
+                ŷ = dense(h)
+                lossfn(ŷ, Y)
+            end
+            Flux.update!(optim, params(model), gs)
+        end
+    end
+
+    cnn = CompositeNN(base, model, optim, lossfn, seqlen, bucketlen)
+    savecomposite(cnn)
+    return cnn
+end
+
+"Predict with a CompositeNN: returns a DataFrame aligned to `ftdf` rows with class probability columns, :targets and :set.
+ The LSTM refines the base predictions by computing bucket averages and applying the trained LSTM on windows of length `seqlen`.
+ The LSTM output for each bucket is broadcast to the rows of that bucket to return per-minute predictions.
+"
+function predict(cnn::CompositeNN, ftdf::DataFrame)
+    @error "predict(cnn, ftdf) not implemented because predict needs per-minute base predictions. Use predict(cnn.base, features) to compute base predictions and then use expand_lstm_predictions to merge them."
+    return DataFrame()
 end
 
 
@@ -1023,7 +1185,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     trainmode!(nn)
     minloss = maxloss = missing
     breakmsg = "epoch loop finished without convergence"
-    maxepoch = EnvConfig.configmode == test ? 1000 : 1000
+    maxepoch = EnvConfig.configmode == test ? 10 : 1000
     @showprogress for epoch in 1:maxepoch
         losses = Float32[]
         for (x, y) in loader
