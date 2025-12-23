@@ -14,6 +14,7 @@ module Targets
 using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
 export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy
+using Test, CryptoXch # for tests only
 
 """
 verbosity =
@@ -524,6 +525,8 @@ mutable struct FixedDistanceGain <: AbstractTargets
         return fdg
     end
 end
+
+tradelabels(fdg::FixedDistanceGain) = [string(tl) for tl in Targets.tradelabels()]
 
 function setbase!(fdg::FixedDistanceGain, ohlcv::Ohlcv.OhlcvData)
     fdg.ohlcv = ohlcv

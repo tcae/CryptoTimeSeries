@@ -12,6 +12,7 @@ using DataFrames, Statistics, Indicators, JDF
 using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv
+using CryptoXch # for tests only
 
 #region abstract-features
 

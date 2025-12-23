@@ -8,5 +8,4 @@
 # include("../Assets/test/runtests.jl")
 # include("../Trade/test/trade_test.jl")
 using Pkg
-
-Pkg.test(["EnvConfig", "Ohlcv", "Features", "Targets", "Classify", "CryptoXch", "Assets"]; coverage=true)
+Pkg.test(["EnvConfig", "Ohlcv", "Features", "Targets", "Classify", "CryptoXch", "Assets"]; coverage=false)  # coverage=true generates cov files to analyze code coverage of tests
