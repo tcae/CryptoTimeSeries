@@ -246,3 +246,88 @@ end
 
 # Your “choppy” bucket is an output action, not an input token
 # It’s fine to interpret it as “prefer mean-reversion exit behavior”; keep execution logic outside the model.
+
+
+#* 1) Your symbolic sequence (as Julia data)
+# This is seq_len = 3, and we’ll build a batch of 1.
+
+seq = [
+    (:up_small, :continuation, :trend_len_2, :since_event_mid,   :none),
+    (:up_small, :continuation, :trend_len_2, :since_event_early, :E_vol_spike),
+    (:up_small, :continuation, :trend_len_2, :since_event_early, :E_breakout),
+]
+
+#* 2) Encoding function: symbols → ID matrices (seq_len, batch)
+
+"""
+Encode one sequence of tuples into the 5 ID matrices expected by the model.
+Returns (ids_impulse, ids_structure, ids_trendlen, ids_since, ids_event),
+each of shape (seq_len, batch). For a single sequence, batch=1.
+"""
+function encode_sequence(seq)
+    L = length(seq)
+    B = 1
+
+    ids_impulse   = Array{Int}(undef, L, B)
+    ids_structure = Array{Int}(undef, L, B)
+    ids_trendlen  = Array{Int}(undef, L, B)
+    ids_since     = Array{Int}(undef, L, B)
+    ids_event     = Array{Int}(undef, L, B)
+
+    for t in 1:L
+        (imp, st, tr, se, ev) = seq[t]
+        ids_impulse[t,1]   = IMPULSE[imp]
+        ids_structure[t,1] = STRUCTURE[st]
+        ids_trendlen[t,1]  = TREND_LEN[tr]
+        ids_since[t,1]     = SINCE_EVENT[se]
+        ids_event[t,1]     = EVENT[ev]
+    end
+
+    return ids_impulse, ids_structure, ids_trendlen, ids_since, ids_event
+end
+
+#* 3) Call the model (forward pass) and interpret output
+
+# Create model (example config)
+model = TradingTransformer(128; n_layers=4, n_heads=8, d_ff=512)
+
+ids_impulse, ids_structure, ids_trendlen, ids_since, ids_event = encode_sequence(seq)
+
+logits = model(ids_impulse, ids_structure, ids_trendlen, ids_since, ids_event)
+# logits has shape (N_ACTIONS, batch)
+
+# Predicted class index (1..6) for batch element 1
+ŷ = Flux.onecold(logits, 1:N_ACTIONS)[1]
+
+println("Predicted bucket = ", POS_BUCKETS[ŷ])
+
+
+#* 4) If you also want a training batch (add a label)
+# Let’s say your training label for this sequence is :long (index 2).
+
+y = [findfirst(==( :long ), POS_BUCKETS)]  # => [2]
+
+batch = (ids_impulse, ids_structure, ids_trendlen, ids_since, ids_event, y)
+
+opt = Flux.Adam(1e-3)
+train_step!(model, opt, batch)
+
+
+# 5) Why the shapes are correct (Flux attention expects these bias/mask shapes)
+# Flux’s MultiHeadAttention ultimately uses NNlib’s dot-product attention primitives. The docs state:
+
+# bias must be broadcastable to (kv_len, q_len, nheads, batch) and is added to attention scores before softmax [fluxml.ai], [fluxml.ai]
+# mask is broadcastable to the same shape and is applied just before softmax, and NNlib.make_causal_mask can create the causal mask [fluxml.ai], [fluxml.ai]
+
+# That is exactly what our ALiBi bias tensor and causal mask tensor are constructed to match.
+
+# 6) Optional: batching multiple sequences at once
+# If you later have seqs::Vector{Vector{Tuple}} with the same length L, you can create batch matrices (L, B) by looping over b and t. I can provide that exact helper too, but your single-sequence case above is the simplest starting point.
+
+# Quick sanity check (your sequence specifically)
+
+# Minute 1: since_event_mid and no event
+# Minute 2: since_event_early + E_vol_spike
+# Minute 3: since_event_early + E_breakout
+
+# This is perfectly fine — the model sees a phase reset (early) associated with event markers, and can learn to interpret that pattern.
