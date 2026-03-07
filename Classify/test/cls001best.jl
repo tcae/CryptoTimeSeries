@@ -1,7 +1,7 @@
 module Cls001Best
 
 using Test, Dates, Logging, CSV
-using EnvConfig, Classify, CryptoXch, Assets, Features, Ohlcv
+using EnvConfig, Classify, CryptoXch, Features, Ohlcv
 
 
 EnvConfig.init(production)

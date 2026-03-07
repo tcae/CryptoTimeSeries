@@ -29,7 +29,118 @@ setsplitfname = "sets_split.csv"
 testsetsplitfname = "test_sets_split.csv"
 bases = String[]
 trainingbases = String[]
-cryptopath = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "crypto"))
+
+
+function checkfolders(doverbose, dodebug)
+    # ----------------------------
+    # Output helpers
+    # ----------------------------
+    function info(msg)
+        doverbose && println("ℹ️  ", msg)
+    end
+
+    function debug(msg)
+        dodebug && println("🐞 ", msg)
+    end
+
+    function fail(msg)
+        println(stderr, "\n❌ ENVIRONMENT CHECK FAILED\n")
+        println(stderr, msg)
+        println(stderr)
+        exit(1)
+    end
+
+    # ----------------------------
+    # Checks start here
+    # ----------------------------
+    debug("ARGS = $(ARGS)")
+    info("Running environment preflight check")
+
+    # --- Check ONEDRIVE_ROOT ---
+    root = get(ENV, "ONEDRIVE_ROOT", nothing)
+
+    root === nothing && fail("""
+    ONEDRIVE_ROOT is not set.
+
+    This project requires access to a locally synced OneDrive folder.
+
+    SETUP INSTRUCTIONS:
+
+    Windows (PowerShell, run once):
+    setx ONEDRIVE_ROOT "%UserProfile%\\OneDrive"
+
+    macOS (Terminal):
+    echo 'export ONEDRIVE_ROOT="$HOME/OneDrive"' >> ~/.zprofile
+    launchctl setenv ONEDRIVE_ROOT "$HOME/OneDrive"
+
+    Restart your terminal / VS Code / Julia afterward.
+    """)
+
+    debug("ONEDRIVE_ROOT = $root")
+    info("ONEDRIVE_ROOT is set")
+
+    # --- Validate path ---
+    isdir(root) || fail("""
+    ONEDRIVE_ROOT is set but does not exist or is not a directory:
+
+    $root
+
+    Check that:
+    - OneDrive is installed and synced
+    - The path is correct
+    - Files are available locally (not online‑only placeholders)
+    """)
+
+    info("ONEDRIVE_ROOT directory exists")
+
+    # --- Access test ---
+    try
+        files = readdir(root)
+        debug("Found $(length(files)) entries in ONEDRIVE_ROOT")
+    catch e
+        fail("""
+    Cannot read contents of ONEDRIVE_ROOT:
+
+    $root
+
+    Error:
+    $e
+    """)
+    end
+
+    info("ONEDRIVE_ROOT is readable")
+
+    # --- Optional: required subdirectories ---
+    required_subdirs = [
+        "crypto", "crypto/exchanges"
+    ]
+
+    missing = String[]
+    for d in required_subdirs
+        p = joinpath(root, d)
+        isdir(p) || push!(missing, p)
+    end
+
+    if !isempty(missing)
+        fail("""
+    Required project directories are missing:
+
+    $(join("  - " .* missing, "\n"))
+    """)
+    end
+
+    info("Required project directories present")
+
+    # ----------------------------
+    # Success
+    # ----------------------------
+    dodebug && println("\n✅ Environment check passed (debug mode)")
+    doverbose && !dodebug && println("✅ Environment check passed")
+    return root
+end
+
+cryptopath = normpath(joinpath(checkfolders(verbosity > 1, verbosity > 2), "crypto")) # OneDrive folder
+# cryptopath = normpath(joinpath(homedir(), "crypto")) # local folder
 if !isdir(cryptopath)
     @error "missing crypto folder $cryptopath"
 end
@@ -74,23 +185,59 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 "returns string with timestamp and current git instance to reproduce the used source"
 runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
 
-logfilespath = "logs"
+logfilesfolder = "logs"
+# defaultlogfilespath = normpath(joinpath(cryptopath, logfilesfolder))
+defaultlogfilespath = normpath(joinpath(homedir(), "crypto", logfilesfolder))
+logfilespath = defaultlogfilespath
 
 "extends the log path with folder or resets to default if folder=`nothing`"
 function setlogpath(folder=nothing)
     global logfilespath
     if isnothing(folder) || (folder == "")
-        logfilespath = "logs"
+        logfilespath = defaultlogfilespath
     else
-        logfilespath = joinpath("logs", folder)
+        logfilespath = normpath(joinpath(defaultlogfilespath, folder))
     end
-    return mkpath(normpath(joinpath(cryptopath, logfilespath)))
+    return mkpath(logfilespath)
 end
 
 "Returns the full path including filename of the given filename connected with the current log file path"
-logpath(file) = normpath(joinpath(cryptopath, logfilespath, file))
-logsubfolder() = logfilespath == "logs" ? "" : joinpath(splitpath(logfilespath)[2:end])
-logfolder() = normpath(joinpath(cryptopath, logfilespath))
+logpath(file) = normpath(joinpath(logfilespath, file))
+logsubfolder() = splitpath(logfilespath)[end] == logfilesfolder ? "" : splitpath(logfilespath)[end]
+logfolder() = logfilespath
+
+"Saves a given dataframe df in the current log folder using the given filename"
+function savedf(df, filename; folderpath=logfolder())
+    filepath = normpath(joinpath(folderpath, filename))
+    JDF.savejdf(filepath, df)
+    (verbosity >= 3) && println("$(EnvConfig.now()) saved dataframe to $(filepath)")
+end
+
+"Reads and returns a dataframe from filename in the current log folder. Returns `nothing` if file does not exist or is no dataframe file."
+function readdf(filename; folderpath=logfolder())
+    df = nothing
+    filepath = normpath(joinpath(folderpath, filename))
+    if isdir(filepath)
+        (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath) ... ")
+        df = DataFrame(JDF.loadjdf(filepath))
+        (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
+    else
+        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(filepath)")
+    end
+    return df
+end
+
+isfolder(filename) = isdir(EnvConfig.logpath(filename))
+
+function deletefolder(filename; folderpath=logfolder())
+    filepath = normpath(joinpath(folderpath, filename))
+    if isdir(filepath)
+        (verbosity >= 3) && println("$(EnvConfig.now()) deleting folder $(filepath)")
+        rm(filepath; force=true, recursive=true)
+    else
+        (verbosity >= 3) && println("$(EnvConfig.now()) no folder deletion due to missing $(filepath)")
+    end
+end
 
 " set project dir as working dir "
 function setprojectdir()

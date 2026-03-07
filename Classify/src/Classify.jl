@@ -442,7 +442,7 @@ end
 
 "Train an LSTM on per-minute classifier predictions stored in `pred_df`.
  pred_df: DataFrame with one column per class (string names matching `base.labels`),
- and columns `:targets`, `:set`, `:rangeid`, `:rix` (as produced by TrendDetector.getfeaturestargetsdf).
+ and columns `:target`, `:set`, `:rangeid`, `:rix` (as produced by TrendDetector.getfeaturestargetsdf).
  seqlen: number of buckets in a sequence window. bucketlen: bucket size in minutes.
  Returns a CompositeNN with trained LSTM attached.
 "
@@ -485,7 +485,7 @@ function train_lstm_on_predictions(base::NN, pred_df::DataFrame, ftdf::DataFrame
             push!(inputs, copy(window))
             # choose target = label at last row of this bucket window
             last_row = (be-1)*bucketlen + bucketlen
-            targ = String(g[last_row, :targets])
+            targ = String(g[last_row, :target])
             push!(targets, targ)
             push!(sets, String(g[last_row, :set]))
             push!(maps_back, (first(g[!, :rangeid]), be, last_row))
@@ -551,7 +551,7 @@ function train_lstm_on_predictions(base::NN, pred_df::DataFrame, ftdf::DataFrame
     return cnn
 end
 
-"Predict with a CompositeNN: returns a DataFrame aligned to `ftdf` rows with class probability columns, :targets and :set.
+"Predict with a CompositeNN: returns a DataFrame aligned to `ftdf` rows with class probability columns, :target and :set.
  The LSTM refines the base predictions by computing bucket averages and applying the trained LSTM on windows of length `seqlen`.
  The LSTM output for each bucket is broadcast to the rows of that bucket to return per-minute predictions.
 "
@@ -596,7 +596,7 @@ end
     - input
         - `rowrange` is the range of rows that are split in subranges, e.g. 2000:5000
         - `samplesets` is a string vector that denotes the set sequence comprising of samples of partitionsize, e.g. ["train", "test", "train", "train", "eval", "train"]
-        - `gapsize` is the number of rows between partitions of different sets that are not included in any partition
+        - `gapsize` is the number of rows between partitions of different sets that are not included in any partition (should be fixed and not a f(requiredminutes) for stable comparison with different features/targets)
         - `partitionsize` is the number of rows of the smallest allowed partition.
     - gaps will be removed from a subrange to avoid crosstalk bias between ranges
     - a mixture of ranges and individual indices in a vector can be unpacked into a index vector via `[ix for r in rr for ix in r]`
@@ -1001,9 +1001,9 @@ function model001(featurecount, labels, mnemonic)::NN
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out))"
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model001_" * mnemonic)
     return nn
 end
 
@@ -1029,9 +1029,9 @@ function model002(featurecount, labels, mnemonic)::NN
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    description = "BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out))"
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model002_" * mnemonic)
     return nn
 end
 
@@ -1054,9 +1054,9 @@ function model003(featurecount, labels, mnemonic)::NN
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    description = "BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-Dense($(lay1)->$(lay2) relu)-Dense($(lay2)->$(lay3) relu)-Dense($(lay3)->$(lay_out))"
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model003_" * mnemonic)
     return nn
 end
 
@@ -1080,14 +1080,14 @@ function model004(featurecount, labels, mnemonic)::NN
         Dense(lay2 => lay3, relu),   # activation function inside layer
         BatchNorm(lay3),
         Dense(lay3 => lay4, relu),   # activation function inside layer
-        BatchNorm(lay4),
+        BatchNorm(lay4),            #* the additiona layer is the difference to model002
         Dense(lay4 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    description = "BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay4) relu)-BatchNorm($(lay4))-Dense($(lay4)->$(lay_out))"
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model004_" * mnemonic)
     return nn
 end
 
@@ -1098,11 +1098,11 @@ Performace was worse than model002 - surprise
 function model005(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
     lay_out = length(labels)
-    lay1 = 4 * lay_in
+    lay1 = 4 * lay_in               #* this initial normalization is the only difference to model002
     lay2 = round(Int, lay1 * 2 / 3)
     lay3 = round(Int, (lay2 + lay_out) / 2)
     model = Chain(
-        BatchNorm(lay_in),             #* this initial normalization is the only difference to model001
+        BatchNorm(lay_in),             
         Dense(lay_in => lay1, relu),   # activation function inside layer
         BatchNorm(lay1),
         Dense(lay1 => lay2, relu),   # activation function inside layer
@@ -1113,15 +1113,15 @@ function model005(featurecount, labels, mnemonic)::NN
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    description = "BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out))"
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model005_" * mnemonic)
     return nn
 end
 
 """
-Compared to model003, removed layer 3.  
-performance impact?
+Compared to model003, removed layer 3. 
+performance impact? 
 """
 function model006(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
@@ -1133,14 +1133,13 @@ function model006(featurecount, labels, mnemonic)::NN
         BatchNorm(lay_in),             # delta to model002: remove all but initial BatchNorm
         Dense(lay_in => lay1, relu),   # activation function inside layer
         Dense(lay1 => lay2, relu),   # activation function inside layer
-        Dense(lay2 => lay3, relu),   # activation function inside layer
-        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+        Dense(lay2 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
     optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
     lossfunc = Flux.logitcrossentropy
 
-    description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
+    description = "BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-Dense($(lay1)->$(lay2) relu)-Dense($(lay2)->$(lay_out))"
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model006_" * mnemonic)
     return nn
 end
 
@@ -1151,7 +1150,7 @@ performance impact?
 function model007(featurecount, labels, mnemonic)::NN
     lay_in = featurecount
     lay_out = length(labels)
-    lay1 = 3 * lay_in
+    lay1 = 2 * lay_in
     lay2 = round(Int, lay1 * 2 / 3)
     lay3 = round(Int, (lay2 + lay_out) / 2)
     model = Chain(
@@ -1165,7 +1164,7 @@ function model007(featurecount, labels, mnemonic)::NN
 
     description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
     nn = NN(model, optim, lossfunc, labels, description)
-    setmnemonic(nn, mnemonic)
+    setmnemonic(nn, "model007_" * mnemonic)
     return nn
 end
 
@@ -1217,6 +1216,23 @@ end
 
 " Returns a predictions Float Array of size(classes, observations)"
 predict(nn::NN, features) = Flux.softmax(nn.model(features))  # size(classes, observations)
+
+"Returns a DataFrame of predictions of size(observations, classes) with class labels as column names"
+predictdf(nn::NN, features) = DataFrame(permutedims(predict(nn, features), (2, 1)), string.(nn.labels))
+
+"Returns the scores::Float32 of the maximum label::TradeLabel prediction for each observation as a vector of size(observations) as 2 vectors"
+function maxpredict(nn::NN, features)
+    predonly = predict(nn, features)
+    scores, maxindex = maxpredictions(Matrix(predonly), 1)
+    labels = vec([nn.labels[ix] for ix in maxindex])
+    return scores, labels
+end
+
+function maxpredictdf(nn::NN, features)
+    score, label = maxpredict(nn, features)
+    # println("typeof(score)=$(typeof(score)) size(score)=$(size(score)) type(label)=$(typeof(label)) size(label)=$(size(label))")
+    return DataFrame(score=score, label=label)
+end
 
 function predictiondistribution(predictions, classifiertitle)
     maxindex = mapslices(argmax, predictions, dims=1)
@@ -1437,8 +1453,17 @@ function tradeperformance(trades::AbstractDataFrame, labels::Vector)
     return df
 end
 
-"maps a 0.0 <= score <= 1.0  to one of `thresholdbins` bins"
-score2bin(score, thresholdbins) = max(min(floor(Int, score / (1.0/thresholdbins)) + 1, thresholdbins), 1)
+"maps a 0.0 <= score <= 1.0  to 1:`thresholdbins` bins - or 0 if score range is invalid or NaN if score is not a number"
+function score2bin(score, thresholdbins) 
+    if isnan(score)
+        return NaN
+    elseif (score < 0.0) || (score > 1.0)
+        return 0
+    end
+    @assert thresholdbins > 0 "thresholdbins=$thresholdbins must be > 0"
+    @assert 0.0 <= score <= 1.0 "score=$score must be between 0.0 and 1.0"
+    return max(min(floor(Int, score / (1.0/thresholdbins)) + 1, thresholdbins), 1)
+end
 
 "maps the index of one of `thresholdbins` bins to a score"
 bin2score(binix, thresholdbins) = round((binix-1)*1.0/thresholdbins; digits = 2), round(binix*1.0/thresholdbins; digits = 2)
@@ -1446,27 +1471,36 @@ bin2score(binix, thresholdbins) = round((binix-1)*1.0/thresholdbins; digits = 2)
 """
 generates summary statistics from predictions
 """
-function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=10)
-    predonly = predictions[!, predictioncolumns(predictions)]
-    scores, maxindex = maxpredictions(Matrix(predonly), 2)
-    labels = levels(predictions.targets)
+function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thresholdbins=10)
+    @assert isinteger(thresholdbins) && (thresholdbins > 0) "thresholdbins=$thresholdbins must be a positive integer"
+    nancount = outofrangecount = 0
     confcatsyms = [:tp, :tn, :fp, :fn]
     confcat = Dict(zip(confcatsyms, 1:length(confcatsyms)))
     # preallocate collection matrices with columns TP, TN, FP, FN and rows as bins with lower separation value x/thresholdbins per label per set
     setnames = levels(predictions.set)
-    cmc = zeros(Int, length(setnames), length(labels), length(confcatsyms), thresholdbins)
-    for ix in eachindex(maxindex)
-        labelix = maxindex[ix]  # label of maxscore
-        binix = score2bin(scores[ix], thresholdbins)
-        if labelix == levelcode(predictions.targets[ix])
-            cmc[levelcode(predictions.set[ix]), labelix, confcat[:tp], binix] += 1
-        else  # labelix != levelcode(predictions.targets[ix])
-            cmc[levelcode(predictions.set[ix]), labelix, confcat[:fp], binix] += 1
+    cmc = zeros(Int, length(setnames), length(alllabels), length(confcatsyms), thresholdbins)
+    for ix in eachindex(predictions[!, :label])
+        labelix = Targets.tradelabelix(predictions[ix, :label], alllabels)
+        @assert 0.0 <= predictions[ix, :score] <= 1.0 "prediction[$ix]==$(predictions[ix, :])"
+        binix = score2bin(predictions[ix, :score], thresholdbins)
+        if isnan(binix)
+            nancount += 1
+        elseif binix == 0
+            outofrangecount += 1
+        else
+            if predictions[ix, :label] == predictions[ix, :target]
+                cmc[levelcode(predictions.set[ix]), labelix, confcat[:tp], binix] += 1
+            else  
+                cmc[levelcode(predictions.set[ix]), labelix, confcat[:fp], binix] += 1
+            end
         end
     end
-    cm = zeros(Int, length(setnames), length(labels), length(confcatsyms), thresholdbins)
+    if (verbosity >= 1) && (nancount > 0 || outofrangecount > 0)
+        println("extended confusion matrix: nancount=$nancount outofrangecount=$outofrangecount")
+    end
+    cm = zeros(Int, length(setnames), length(alllabels), length(confcatsyms), thresholdbins)
     for six in eachindex(setnames)
-        for lix in eachindex(labels)
+        for lix in eachindex(alllabels)
             for bix in 1:thresholdbins
                 for bix2 in bix:thresholdbins
                     cm[six, lix, confcat[:tp], bix] += cmc[six, lix, confcat[:tp], bix2]
@@ -1479,16 +1513,15 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
             end
         end
     end
-    setnamevec = [setnames[six] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    setnamevec = [setnames[six] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
     sc = categorical(setnamevec; levels=setnames)
-    labelsvec = [labels[lix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
-    lc = categorical(labelsvec; levels=labels)
-    binvec = [(scr = bin2score(bix, thresholdbins); "$bix/[$(scr[1])-$(scr[2])]") for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    labelsvec = [l for six in eachindex(setnames) for l in alllabels for bix in 1:thresholdbins]
+    binvec = [(scr = bin2score(bix, thresholdbins); "$bix/[$(scr[1])-$(scr[2])]") for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
     bc = categorical(binvec)
-    tpvec = [cm[six, lix, confcat[:tp], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
-    tnvec = [cm[six, lix, confcat[:tn], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
-    fpvec = [cm[six, lix, confcat[:fp], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
-    fnvec = [cm[six, lix, confcat[:fn], bix] for six in eachindex(setnames) for lix in eachindex(labels) for bix in 1:thresholdbins]
+    tpvec = [cm[six, lix, confcat[:tp], bix] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
+    tnvec = [cm[six, lix, confcat[:tn], bix] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
+    fpvec = [cm[six, lix, confcat[:fp], bix] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
+    fnvec = [cm[six, lix, confcat[:fn], bix] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
     allvec = tpvec + tnvec + fpvec + fnvec
     tpprc = round.(tpvec ./ allvec .* 100.0; digits=2)
     tnprc = round.(tnvec ./ allvec .* 100.0; digits=2)
@@ -1496,7 +1529,7 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, thresholdbins=1
     fnprc = round.(fnvec ./ allvec .* 100.0; digits=2)
     tpr = round.(tpvec ./ (tpvec + fnvec); digits=2)
     fpr = round.(fpvec ./ (fpvec + tnvec); digits=2)
-    xcdf = DataFrame("set" => sc, "pred_label" => lc, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
+    xcdf = DataFrame("set" => sc, "pred_label" => labelsvec, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
     # (verbosity >= 3) && println(xcdf)
     return xcdf
     #TODO next step: take only first of an equal trading signal sequence according to threshold -> how often is a sequence missed?
@@ -1508,27 +1541,21 @@ function predictioncolumns(predictionsdf::AbstractDataFrame)
     [nms[nmix] for nmix in eachindex(nms) if nms[nmix] in tl]
 end
 
-newtargetsdict(predictions) = Dict(zip(levels(predictions[!, :targets]), fill(0, length(levels(predictions[!, :targets])))))
-newclassifydict(predictions, classified) = Dict(zip(levels(classified), [newtargetsdict(predictions) for _ in levels(classified)]))
+newtargetsdict(alllabels) = Dict(zip(alllabels, fill(0, length(alllabels))))
+newclassifydict(alllabels) = Dict(zip(alllabels, [newtargetsdict(alllabels) for _ in alllabels]))
 
-function confusionmatrix(predictions::AbstractDataFrame)
+function confusionmatrix(predictions::AbstractDataFrame, alllabels::AbstractVector)
     # maxindex -> classified label column
     # combi -> classified label vs target label -> tp, fp, tn, fn label = cm label
     # %cm label = per set specific cm label / all cm label 
-    prednames = predictioncolumns(predictions)
-    predonly = @view predictions[!, prednames]
-    scores, maxindex = maxpredictions(Matrix(predonly), 2)
-    predstr = vec([string.(prednames[ix]) for ix in maxindex])
-    # predstr = vec([prednames[ix] for ix in maxindex])
-    # classified = CategoricalVector(predstr, levels=string.(prednames), ordered=false)
-    classified = CategoricalVector(predstr, levels=prednames, ordered=false)
+    classified = predictions.label
     setnames = levels(predictions.set)
     # create cmdict as a dict(key=setname, value=Dict(key=classified label, value=Dict(key=target label, value=count)))
-    cmdict = Dict(zip(setnames, [newclassifydict(predictions, classified) for _ in setnames]))
+    cmdict = Dict(zip(setnames, [newclassifydict(alllabels) for _ in setnames]))
     for ix in eachindex(classified)
-        cmdict[predictions[ix, :set]][classified[ix]][predictions[ix, :targets]] += 1
+        cmdict[predictions[ix, :set]][classified[ix]][predictions[ix, :target]] += 1
     end
-    setcount = Dict([(setname, count(predictions[!, :set] .== setname)) for setname in setnames])
+    # setcount = Dict([(setname, count(predictions[!, :set] .== setname)) for setname in setnames])
 
     cmdf = DataFrame()
     for setname in keys(cmdict) # build up data frame column names
@@ -1536,14 +1563,11 @@ function confusionmatrix(predictions::AbstractDataFrame)
         for cl in keys(cmdict[setname])
             cmdf[!, "prediction"] = String[]
             for trg in keys(cmdict[setname][cl])
-                cmdf[!, "truth_" * trg] = Int32[]
+                cmdf[!, "truth_" * string(trg)] = Int32[]
             end
-            # cmdf[!, "truth_all"] = Int32[]
-            # cmdf[!, "set_all"] = Int32[]
-            #!TODO adding Positive predictive value (PPV) related to count
-            # for trg in keys(cmdict[setname][cl])
-            #     cmdf[!, "truth_" * trg * "_%"] = Float32[]
-            # end
+            cmdf[!, "allpredicted"] = Int32[]
+            cmdf[!, "truepositive"] = Int32[]
+            cmdf[!, "ppv%"] = Float32[]
         end
     end
     for setname in keys(cmdict) # fill data frame column data
@@ -1551,16 +1575,17 @@ function confusionmatrix(predictions::AbstractDataFrame)
             row = Any[]
             push!(row, setname)
             push!(row, "pred_" * string(cl))
-            count = 0
+            count = tpcount = 0
             for trg in keys(cmdict[setname][cl])
                 push!(row, cmdict[setname][cl][trg])
                 count += cmdict[setname][cl][trg]
+                if cl == trg
+                    tpcount = cmdict[setname][cl][trg]
+                end
             end
-            # push!(row, count)
-            # push!(row, setcount[setname])
-            # for trg in keys(cmdict[setname][cl])
-            #     push!(row, round(cmdict[setname][cl][trg] / setcount[setname] * 100; digits=1))
-            # end
+            push!(row, count)
+            push!(row, tpcount)
+            push!(row, count > 0 ? round(tpcount / count * 100; digits=0) : 0.0)
             push!(cmdf, row)
         end
     end
@@ -1788,14 +1813,14 @@ end
 #     display(plt)
 # end
 
-function confusionmatrix(pred, targets, labels=Targets.tradelabels())
+"Provides a confusion matrix. all 3 vectors shall be of CategoricalVectors. alllabels is a vector of all unique labels, e.g. levels(targets)"
+function confusionmatrix(pred, targets, alllabels)
     predonly = pred[!, predictioncolumns(pred)]
 
     dim = length(targets) == size(pred, 1) ? 2 : 1
     _, maxindex = maxpredictions(Matrix(predonly), dim)
-    targets = [String(targets[ix]) for ix in eachindex(targets)] # convert CategoricalVector to String Vector
-    predlabels = labelvec(maxindex, levels(targets))
-    StatisticalMeasures.ConfusionMatrices.confmat(predlabels, targets)
+    predlabels = categorical(labelvec(maxindex, levels(targets)))
+    return StatisticalMeasures.ConfusionMatrices.confmat(predlabels, targets, levels=alllabels)
 end
 
 function _sumperf(tpdf, setname)
@@ -1815,8 +1840,8 @@ function evaluatepredictions(predictions::AbstractDataFrame, fileprefix)
     assetpair, nntitle = split(fileprefix, "_")[1:2]
     title = assetpair * "_" * nntitle
     # if EnvConfig.configmode == EnvConfig.test
-        cdf = confusionmatrix(predictions)
-        xcdf = extendedconfusionmatrix(predictions)
+        cdf = confusionmatrix(predictions, unique(predictions.targets))
+        xcdf = extendedconfusionmatrix(predictions, unique(predictions.targets))
     # end
     labels = levels(predictions.targets)
     thresholds = [0.01f0 for l in labels]
@@ -1843,8 +1868,9 @@ function evaluatepredictions(predictions::AbstractDataFrame, fileprefix)
                 # println("auc[$s, $title]=$(aucscores)")
                 # rc = Classify.roccurves(sdf)
                 # Classify.plotroccurves(rc, "$s / $title")
+                t = isa(te, CategoricalVector) ? sdf.targets : categorical(sdf.targets)
                 println(title)
-                show(stdout, MIME"text/plain"(), confusionmatrix(sdf, sdf.targets))  # prints the table
+                show(stdout, MIME"text/plain"(), confusionmatrix(sdf, t, levels(t)))  # prints the table
                 println(title)
                 println(filter(row -> row.set == s, cdf, view=true))
                 println(title)

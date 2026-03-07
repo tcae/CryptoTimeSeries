@@ -35,7 +35,7 @@ function noshorttrends(trd)
     return true
 end
 
-@testset "Targets::Trend tests" begin
+@testset "Targets::Trend01 tests" begin
     startdt = DateTime("2025-02-17T13:30:00")
     enddt = startdt + Hour(6)
     # EnvConfig.init(production)
@@ -44,9 +44,9 @@ end
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     # println(describe(ohlcv.df, :all))
 
-    # trd = Targets.Trend(30, Targets.defaultlabelthresholds)
+    # trd = Targets.Trend01(30, Targets.defaultlabelthresholds)
     thres = Targets.LabelThresholds(longbuy=0.11, longhold=0.01, shorthold=-0.01, shortbuy=-0.11)
-    trd = Targets.Trend(3, 30, thres)
+    trd = Targets.Trend01(3, 30, thres)
     minitrenddisturbance!(ohlcv, 100, 4, 0.9 * thres.shortbuy, 0.01 * thres.shortbuy)
     minitrenddisturbance!(ohlcv, 110, 4, 1.1 * thres.shortbuy, 0.01 * thres.shortbuy)
     minitrenddisturbance!(ohlcv, 40, 2, 0.9 * thres.longbuy, 0.01 * thres.longbuy)

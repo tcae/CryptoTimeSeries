@@ -40,6 +40,7 @@ verbosity =
 verbosity = 1
 
 save_cols = [:opentime, :open, :high, :low, :close, :basevolume]
+allcols = [:opentime, :open, :high, :low, :close, :basevolume, :pivot]
 testbases = ["sinus", "triplesinus"]
 periods = Dict(
     "1m" => Dates.Minute(1),
@@ -402,6 +403,11 @@ end
 " liquidity criteria defaults"
 ld = (minquotevol=15000f0, accumulate=5, checkperiod=24*60, startthreshold=0.01, stopthreshold=0.25, minliquidminutes=24*60*10, startdistance=24*60*10)
 
+function liquiditycheck(ohlcv::OhlcvData; minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod, startthreshold=ld.startthreshold, stopthreshold=ld.stopthreshold, minliquidminutes=ld.minliquidminutes, startdistance=ld.startdistance)
+    ohlcvdf = dataframe(ohlcv)
+    return liquiditycheck(ohlcvdf; minquotevol=minquotevol, accumulate=accumulate, checkperiod=checkperiod, startthreshold=startthreshold, stopthreshold=stopthreshold, minliquidminutes=minliquidminutes, startdistance=startdistance)
+end
+
 """
 Returns a vector of ranges that are considered tradable concerning liquidity criteria  
 
@@ -412,10 +418,9 @@ Returns a vector of ranges that are considered tradable concerning liquidity cri
   - a liquid range that meets above criteria is only been considered if it spans more than `minliquidminutes` minutes
   - `startdistance` is the distance from start of ohlcv data in minutes that have been passed before considering any liquid range of that coin
 """
-function liquiditycheck(ohlcv::OhlcvData; minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod, startthreshold=ld.startthreshold, stopthreshold=ld.stopthreshold, minliquidminutes=ld.minliquidminutes, startdistance=ld.startdistance)
+function liquiditycheck(ohlcvdf::AbstractDataFrame; minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod, startthreshold=ld.startthreshold, stopthreshold=ld.stopthreshold, minliquidminutes=ld.minliquidminutes, startdistance=ld.startdistance)
     @assert accumulate <= checkperiod
-    odf = dataframe(ohlcv)
-    quotevol = odf[!, :pivot] .* odf[!, :basevolume]
+    quotevol = ohlcvdf[!, :pivot] .* ohlcvdf[!, :basevolume]
     stopnok = round(Int, checkperiod * stopthreshold) # range stop if number of samples with insufficient volume is higher
     startnok = round(Int, checkperiod * startthreshold) # range start if number of samples with insufficient volume is lower
 
@@ -451,6 +456,14 @@ function liquiditycheck(ohlcv::OhlcvData; minquotevol=ld.minquotevol, accumulate
             end
         else
             deleteat!(res, rix)
+        end
+    end
+    odfl = size(ohlcvdf, 1)
+    for ix in eachindex(res)
+        @assert res[ix][end] <= odfl "liquiditycheck: unexpected range end $(res[ix][end]) > ohlcv dataframe length $odfl"
+        @assert res[ix][begin] < res[ix][end] "liquiditycheck: unexpected range begin $(res[ix][begin]) >= end $(res[ix][end])"
+        if ix > 1
+            @assert res[ix][begin] > res[ix-1][end] "liquiditycheck: unexpected range overlap $(res[ix-1]) and $(res[ix])"
         end
     end
 
