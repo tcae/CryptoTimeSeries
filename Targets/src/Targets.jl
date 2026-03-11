@@ -13,7 +13,7 @@ module Targets
 
 using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
-export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy
+export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy, ignore
 export TrendPhase, down, flat, up
 using Test, CryptoXch # for tests only
 
@@ -162,11 +162,11 @@ end
 
 """
 - defines the relative transaction thresholds
-    - longbuy long at more than *longbuy* gain potential from current price
-    - longhold long above *longhold* gain potential from current price
+    - buy long at more than *longbuy* gain potential from current price
+    - hold long above *longhold* gain potential from current price
     - close long position below *longhold* gain potential from current price
-    - longbuy short at or lower than *shortbuy* loss potential from current price
-    - longhold short below *shorthold* loss potential from current price
+    - buy short at or lower than *shortbuy* loss potential from current price
+    - hold short below *shorthold* loss potential from current price
     - close short position above *shorthold* loss potential from current price
 - Targets.defaultlabelthresholds provides default thresholds
 """
@@ -186,13 +186,13 @@ defaultlabelthresholds = LabelThresholds(0.03, 0.005, -0.005, -0.03)
 Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
 
 - The folllowing invariant is assumed: `longbuy > longhold >= 0 >= shorthold > shortbuy`
-- a gain shall be above `longbuy` threshold for a longbuy (long longbuy) signal
+- a long gain shall be above `longbuy` threshold for a longbuy signal
 - bought assets shall be held (but not bought) if the remaining gain is above `longhold` threshold
 - bought assets shall be closed if the remaining gain is below `longhold` threshold
-- a loss shall be below `shortbuy` for a longclose (short longbuy) signal
-- sold (short longbuy) assets shall be held if the remaining loss is below `shorthold`
-- sold (short longbuy) assets shall be closed if the remaining loss is above `shorthold`
-- all thresholds are relative gain values: if backwardrelative then the relative gain is calculated with the target price otherwise with the current price
+- a short gain shall be below `shortbuy` for a shortbuy signal
+- borrowed (shortbuy) assets shall be held if the remaining loss is below `shorthold`
+- borrowed (shortbuy) assets shall be closed if the remaining loss is above `shorthold`
+- all thresholds are relative gain values: if backward relative then the relative gain is calculated with the target price otherwise with the current price
 
 """
 function getlabels(relativedist, labelthresholds::LabelThresholds)
@@ -904,23 +904,21 @@ end
 
 """
 Provides the following mutual exclusive targets as well as their relative gain:
-- minwindow is the minimum number of minutes a trend should have
 - maxwindow is the maximum number of history minutes to detect a trend with given thresholds 
-- required condition: 0 <= minwindow < maxwindow <= 4*60
+- required condition: 0 <= maxwindow <= 4*60
 - longbuy if label threshold `thres.longbuy` is met within the next `maxwindow` minutes and no undercut of current price before target threshold sample. All samples in between become longhold but they may be promoted to longbuy when they are the current sample
 - shortbuy if label threshold `thres.shortbuy` is met within the next `maxwindow` minutes and no exceed of current price before target threshold sample. All samples in between become shorthold but they may be promoted to shortbuy when they are the current sample
 - allclose if no trend is established within the next `maxwindow` minutes 
 """
 mutable struct Trend02 <: AbstractTargets
-    minwindow::Int # in minutes
     maxwindow::Int # in minutes
     thres::LabelThresholds
     ohlcv::Union{OhlcvData, Nothing}
     df::Union{DataFrame, Nothing}
-    function Trend02(minwindow, maxwindow, thres)
-        @assert 0 <= minwindow < maxwindow <= 4*60 "condition violated: 0 <= minwindow=$(minwindow) < maxwindow=$(maxwindow) <= 4*60"
+    function Trend02(maxwindow, thres)
+        @assert 0 <= maxwindow <= 4*60 "condition violated: 0 <= maxwindow=$(maxwindow) <= 4*60"
         @assert thres.shortbuy <= thres.shorthold <= thres.longhold <= thres.longbuy "condition violated: thres.shortbuy=$(thres.shortbuy) <= thres.shorthold=$(thres.shorthold) <= thres.longhold=$(thres.longhold) <= fdg.thres.longbuy=$(thres.longbuy)"
-        trd = new(minwindow, maxwindow, thres, nothing, nothing)
+        trd = new(maxwindow, thres, nothing, nothing)
         return trd
     end
 end
@@ -939,11 +937,12 @@ end
 """
 because prices can be very volatile no assumption on continous price development can be done and trend need to be checked for each maxwindow move
 
-- samples are checked in sequence according timeline. The current sample under investigation is called focus sample.
-- the focus sample is idenified as long/short buy if one of the following samples (target) within the next maxwindow minutes is exceeding the buy threshold compared to the focus price and no sample in between is undercutting the focus price
-  - all samples in between are preliminary labelled as hold positions if they exceed the hold threshold compared to the focus price
-- if a focus sample is no buy but has a preliminary hold label, then the hold status is confirmed
-- all other samples are labelled as allclose
+- samples are checked in sequence according timeline. The current sample under investigation is called focus sample, which is initially `allclose` but may be revised when processing later focus samples.
+- starting from the focus sample prices, previous samples up to maximum of maxwindow minutes are assessed concerning a label change. 
+- The first sample with a price lower than (current price - longbuy threshold) is a longbuy if there is no sample in between with a higher price than the focus price and no sample in between with a lower price than the longbuy candidate sample. 
+- From that longbuy sample also all previous samples are longbuy samples if they fullfill these criteria.
+- Samples between the closest identified longbuy and the focus sample with a price difference larger than longhold threshold are longhold, which may be promoted to longbuy when processing later focus samples.
+- The same criteria but with opposite price difference sign are applicable for shortbuy, shorthold.
 """
 function supplement!(trd::Trend02)
     if isnothing(trd.ohlcv)
@@ -953,59 +952,96 @@ function supplement!(trd::Trend02)
     odf = Ohlcv.dataframe(trd.ohlcv)
     piv = odf[!, :pivot]
     if length(piv) > 0
-        if size(trd.df, 1) > 0
-            @assert trd.df[begin, :opentime] == odf[begin, :opentime] "$(trd.df[begin, :opentime]) != $(odf[begin, :opentime])"
-            startix = max(firstindex(piv), firstindex(piv) + size(trd.df, 1))
-        else
-            startix = firstindex(piv)
-        end
-        newlen = length(piv) - size(trd.df, 1)
-
-        # len(piv) = 10, len(trd)=5, maxwindow = 3 --> startix = 1+5-3+1=4
-        # recalc the last (maxwindow-1) rows due to new ohlcv max in last maxwindow element
-        # pivnew = view( piv, startix:lastindex(piv))
-        # pvlen = length(pivnew)
-        if newlen > 0
-            deltalen = length(piv) - newlen
-            dfnew = DataFrame(relix = zeros(UInt32, newlen), reldiff = zeros(Float32, newlen), label = fill(allclose, newlen), opentime = odf[startix:lastindex(piv), :opentime])
-            # lastix = firstindex(pivnew)
-            # relix[lastix] = firstindex(pivnew)
-            for ix in eachindex(dfnew[!, :opentime])
-                windowstartix = max(startix + ix - 1 - trd.maxwindow, firstindex(piv))
-                dfnew[ix, :label], dfnew[ix, :relix], dfnew[ix, :reldiff] = _trendinrange(trd, piv, windowstartix, startix + ix - 1, dfnew[ix-1, :label])
-                lastix = ix
-            end
-            if verbosity >= 3
-                dfnew[!, :tmprelix] = copy(relix) .+ deltalen
-                dfnew[!, :tmpreldiff] = copy(reldiff)
-                dfnew[!, :tmplabel] = copy(labels)
-            end
-            trdix = lastindex(pivnew)
-            trdlabel = allclose
-            for ix in reverse(eachindex(pivnew))  # now propagade [longbuy, shortbuy] across their trend
-                if (ix > trdix) && (labels[ix] != trdlabel)
-                    relix[ix] = trdix
-                    reldiff[ix] = (pivnew[ix] - pivnew[trdix]) / pivnew[trdix]
-                    labels[ix] = trdlabel   
-                elseif labels[ix] in [longbuy, shortbuy]
-                    trdix = relix[ix]
-                    trdlabel = labels[ix] 
-                else
-                    labels[ix] = allclose # also overwriting shorthold, longhold
-                    trdix = relix[ix]
-                    trdlabel = labels[ix] 
+        @assert 0 <= size(trd.df, 1) <= length(piv)
+        @assert (size(trd.df, 1) > 0 ? trd.df[begin, :opentime] == odf[begin, :opentime] : true) "$(trd.df[begin, :opentime]) != $(odf[begin, :opentime])"
+        flen = length(piv) - size(trd.df, 1)
+        startix = size(trd.df, 1) + 1
+        filldf = DataFrame(label=fill(allclose, flen), maxgain=fill(0f0, flen), mingain=fill(0f0, flen), opentime=odf[startix:end, :opentime])
+        trd.df = size(trd.df, 1) > 0 ? vcat(trd.df, filldf) : filldf
+        @assert size(trd.df, 1) == length(piv) "size(trd.df, 1)=$(size(trd.df, 1)) != length(piv)=$(length(piv))"
+        @assert trd.df[end, :opentime] == odf[end, :opentime] "$(trd.df[end, :opentime]) != $(odf[end, :opentime])"
+        minix = startix
+        for focusix in startix:lastindex(piv) # iterate with focus sample forward across the to be added samples
+            thistrend = flat
+            lastpdiff = 0f0
+            buyix = nothing
+            windowstartix = max(firstindex(piv), focusix-trd.maxwindow)
+            for assessix in (focusix-1):-1:windowstartix # for each focus look backwards for a potential trend that emerged
+                pdiff = piv[focusix] - piv[assessix]
+                thistrend = (thistrend == flat) && (pdiff != 0f0) ? (pdiff < 0f0 ? down : up) : thistrend
+                if thistrend == up
+                    if pdiff < 0f0 # assess price moves above focus price, which breaks the up trend
+                        break
+                    else
+                        if (pdiff >= lastpdiff)
+                            lastpdiff = pdiff
+                            if (pdiff > trd.thres.longbuy) 
+                                @assert !(trd.df[assessix, :label] in [shortbuy, shorthold]) "expecting different label than $(trd.df[assessix, :label])"
+                                if trd.df[assessix, :label] == longbuy
+                                    break # no need to go further
+                                end
+                                buyix = assessix
+                            end
+                        end
+                    end
+                elseif thistrend == down
+                    if pdiff > 0f0 # passess price moves below focus price, which breaks the down trend
+                        break
+                    else
+                        if (pdiff <= lastpdiff)
+                            lastpdiff = pdiff
+                            if (pdiff < trd.thres.shortbuy) 
+                                @assert !(trd.df[assessix, :label] in [longbuy, longhold]) "expecting different label than $(trd.df[assessix, :label])"
+                                if trd.df[assessix, :label] == shortbuy
+                                    break # no need to go further
+                                end
+                                buyix = assessix
+                            end
+                        end
+                    end
                 end
             end
-            if verbosity >= 3
-                dfnew[!, :tmp2label] = copy(labels)
+            if !isnothing(buyix)
+                for assessix in buyix:(focusix-1) # now adjust label from buyix sample to focus sample
+                    pdiff = piv[focusix] - piv[assessix]
+                    if (pdiff > trd.thres.longbuy) 
+                        trd.df[assessix, :label] = longbuy
+                    elseif (pdiff > trd.thres.longhold) 
+                        trd.df[assessix, :label] = longhold
+                    elseif (pdiff < trd.thres.shortbuy) 
+                        trd.df[assessix, :label] = shortbuy
+                    elseif (pdiff < trd.thres.shorthold) 
+                        trd.df[assessix, :label] = shorthold
+                    else
+                        trd.df[assessix, :label] = allclose
+                    end
+                end
             end
-            _removeshorttrends!(trd, labels)
-            dfnew[!, :relix] = relix .+ deltalen
-            dfnew[!, :reldiff] = reldiff
-            dfnew[!, :label] = labels
+            minix = isnothing(buyix) ? minix : min(minix, buyix)
         end
-        trd.df = deltalen > 0 ? vcat(trd.df[begin:startix-1, :], dfnew) : dfnew
-        @assert size(trd.df, 1) == length(piv) "size(trd.df, 1)=$(size(trd.df, 1)) != length(piv)=$(length(piv))"
+        trendlastix = minix - 1
+        debugix = 0
+        for assessix in minix:lastindex(piv)
+            if trendlastix < assessix
+                thistrend = (trd.df[assessix, :label] in [longbuy, longhold]) ? up : ((trd.df[assessix, :label] in [shortbuy, shorthold]) ? down : flat)
+                for tix in (assessix):lastindex(piv)
+                    debugix = tix
+                    if (thistrend == up)  && (trd.df[tix, :label] in [longbuy, longhold, allclose])
+                        trendlastix = tix
+                    elseif (thistrend == down) && (trd.df[tix, :label] in [shortbuy, shorthold, allclose])
+                        trendlastix = tix
+                    elseif (thistrend == flat) && (trd.df[tix, :label] in [allclose])
+                        trendlastix = tix
+                    else
+                        # println("ERROR: thistrend=$(string(thistrend)), tix=$tix, trd.df[tix, :label]=$(trd.df[tix, :label]), assessix=$assessix, lastindex(piv)=$(lastindex(piv)), size(trd.df, 1)=$(size(trd.df, 1))")
+                        break
+                    end
+                end
+                @assert assessix <= trendlastix <= lastindex(piv) "ERROR: thistrend=$(string(thistrend)), trendlastix=$trendlastix, trd.df[assessix, :label]=$(trd.df[assessix, :label]), trd.df[debugix=$debugix, :label]=$(trd.df[debugix, :label]), assessix=$assessix, lastindex(piv)=$(lastindex(piv)), size(trd.df, 1)=$(size(trd.df, 1))"
+            end
+            trd.df[assessix, :maxgain] = (maximum(odf[assessix:trendlastix, :high]) - piv[assessix]) / piv[assessix]
+            trd.df[assessix, :mingain] = (minimum(odf[assessix:trendlastix, :low]) - piv[assessix]) / piv[assessix]
+        end
     end
 end
 
@@ -1019,19 +1055,13 @@ function timerangecut!(trd::Trend02)
     # cut at start requires maxix correction, cut at end requires recalculation of last maxwindow elements
     startdt = Ohlcv.dataframe(trd.ohlcv)[begin, :opentime]
     startix = Ohlcv.rowix(trd.df[!, :opentime], startdt)
-    startdeltaix = startix - firstindex(trd.df[!, :opentime])
     enddt = Ohlcv.dataframe(trd.ohlcv)[end, :opentime]
     endix = Ohlcv.rowix(trd.df[!, :opentime], enddt)
-    enddeltaix = lastindex(trd.df[!, :opentime]) - endix
-    endix = enddeltaix > 0 ? endix - trd.maxwindow + 1 : endix
     trd.df = trd.df[startix:endix, :]
-    if startdeltaix > 0
-        trd.df[!, :relix] .-= startdeltaix
-    end
-    supplement!(trd)
+    @assert size(trd.df, 1) == size(Ohlcv.dataframe(trd.ohlcv), 1)
 end
 
-describe(trd::Trend02) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_thresholds=(longbuy=$(trd.thres.longbuy)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortbuy=$(trd.thres.shortbuy))"
+describe(trd::Trend02) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_thresholds=(longbuy=$(trd.thres.longbuy)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortbuy=$(trd.thres.shortbuy))"
 firstrowix(trd::Trend02)::Int = isnothing(trd.df) ? 1 : (size(trd.df, 1) > 0 ? firstindex(trd.df[!, 1]) : 1)
 lastrowix(trd::Trend02)::Int = isnothing(trd.df) ? 0 : (size(trd.df, 1) > 0 ? lastindex(trd.df[!, 1]) : 0)
 

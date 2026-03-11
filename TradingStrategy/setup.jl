@@ -14,7 +14,7 @@ Pkg.add([
     "Logging"
     ])
 
-mypackages = ["EnvConfig", "Ohlcv", "Features", "CryptoXch", "Classify"]
+mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets"]
 rootpath = ".."
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)

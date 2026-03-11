@@ -1523,13 +1523,15 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thre
     fpvec = [cm[six, lix, confcat[:fp], bix] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
     fnvec = [cm[six, lix, confcat[:fn], bix] for six in eachindex(setnames) for lix in eachindex(alllabels) for bix in 1:thresholdbins]
     allvec = tpvec + tnvec + fpvec + fnvec
-    tpprc = round.(tpvec ./ allvec .* 100.0; digits=2)
-    tnprc = round.(tnvec ./ allvec .* 100.0; digits=2)
-    fpprc = round.(fpvec ./ allvec .* 100.0; digits=2)
-    fnprc = round.(fnvec ./ allvec .* 100.0; digits=2)
+    tpprc = round.(tpvec ./ allvec .* 100.0; digits=0)
+    tnprc = round.(tnvec ./ allvec .* 100.0; digits=0)
+    fpprc = round.(fpvec ./ allvec .* 100.0; digits=0)
+    fnprc = round.(fnvec ./ allvec .* 100.0; digits=0)
     tpr = round.(tpvec ./ (tpvec + fnvec); digits=2)
     fpr = round.(fpvec ./ (fpvec + tnvec); digits=2)
-    xcdf = DataFrame("set" => sc, "pred_label" => labelsvec, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr)
+    ppvprc = round.(tpvec ./ (tpvec + fpvec) .* 100.0; digits=0)
+    npvprc = round.(tnvec ./ (tnvec + fnvec) .* 100.0; digits=0)
+    xcdf = DataFrame("set" => sc, "pred_label" => labelsvec, "bin" => bc, "tp" => tpvec, "tn" => tnvec, "fp" => fpvec, "fn" => fnvec, "tp%" => tpprc, "tn%" => tnprc, "fp%" => fpprc, "fn%" => fnprc, "tpr" => tpr, "fpr" => fpr, "ppv%" => ppvprc, "npv%" => npvprc)
     # (verbosity >= 3) && println(xcdf)
     return xcdf
     #TODO next step: take only first of an equal trading signal sequence according to threshold -> how often is a sequence missed?

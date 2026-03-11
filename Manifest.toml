@@ -2766,7 +2766,7 @@ uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.19.0"
 
 [[deps.TradingStrategy]]
-deps = ["Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Test"]
+deps = ["Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Targets", "Test"]
 path = "TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
 version = "0.8.0"

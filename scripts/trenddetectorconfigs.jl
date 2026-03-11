@@ -5,21 +5,25 @@ traincoins() = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", 
 partitionconfig01() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
 partitionconfig02() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=8*60, minpartitionsize=12*60, maxpartitionsize=2*24*60)
 
-resultsfilename(coin=nothing) = isnothing(coin) ? "results.jdf" : "results_$coin.jdf" # includes hlcp, sets, ranges, targets, predictions
+resultsfilename(coin=nothing) = isnothing(coin) ? "results.jdf" : "results_$coin.jdf" # includes hlcp, sets, ranges, targets
 featuresfilename(coin=nothing) = isnothing(coin) ? "features.jdf" : "features_$coin.jdf"
+predictionsfilename() = "maxpredictions.jdf"
 confusionfilename() = "confusion.jdf"
 xconfusionfilename() = "xconfusion.jdf"
 distancesfilename() = "distances.jdf"
 gainsfilename() = "gains.jdf"
 
-trendtargetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend01(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
-targetconfig01() = trendtargetconfig(10, 4*60, 0.01, 0.01)
-targetconfig02() = trendtargetconfig(10, 4*60, 0.05, 0.03)
-targetconfig03() = trendtargetconfig(10, 4*60, 0.02, 0.01)
-targetconfig04() = trendtargetconfig(10, 4*60, 0.007, 0.005)
-targetconfig05() = trendtargetconfig(0, 4*60, 0.01, 0.01)
-targetconfig06() = trendtargetconfig(2, 4*60, 0.01, 0.01)
-targetconfig07() = trendtargetconfig(10, 4*60, 0.01, 0.005)
+trend01targetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend01(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
+targetconfig01() = trend01targetconfig(10, 4*60, 0.01, 0.01)
+targetconfig02() = trend01targetconfig(10, 4*60, 0.05, 0.03)
+targetconfig03() = trend01targetconfig(10, 4*60, 0.02, 0.01)
+targetconfig04() = trend01targetconfig(10, 4*60, 0.007, 0.005)
+targetconfig05() = trend01targetconfig(0, 4*60, 0.01, 0.01)
+targetconfig06() = trend01targetconfig(2, 4*60, 0.01, 0.01)
+targetconfig07() = trend01targetconfig(10, 4*60, 0.01, 0.005)
+
+trend02targetconfig(maxwindow, buy, hold) = Targets.Trend02(maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
+targetconfig08() = trend02targetconfig(4*60, 0.01, 0.005)
 
 settypes() = ["train", "test", "eval"]
 
@@ -237,4 +241,9 @@ mk22config() = (configname="022", featconfig = f6config07(), targetconfig = targ
 mk023 = equal to mk9 with the only difference that hold thresholds are lowered to 0.5% instead of being equal to the buy threshold of 1%
 """
 mk023config() = (configname="023", featconfig = f6config01(), targetconfig = targetconfig07(), classifiermodel=Classify.model002)
+
+"""  
+mk024 = equal to mk23 but using Trend02 targets
+"""
+mk024config() = (configname="024", featconfig = f6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002)
 
