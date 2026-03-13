@@ -43,18 +43,19 @@ mutable struct TrendDetectorConfig
     featconfig::Features.AbstractFeatures
     targetconfig::Targets.AbstractTargets
     classifiermodel
+    tradingstrategy::TradingStrategy.GainSegment
     startdt::DateTime
     enddt::DateTime
     trenddetectormode::TrendDetectorMode
     partitionconfig::NamedTuple
     coins::Vector{String}
-    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, startdt, enddt, trenddetectormode=execute, partitionconfig=partitionconfig02(), coins)
+    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, trenddetectormode=execute, partitionconfig=partitionconfig02(), coins)
         EnvConfig.setlogpath(folder)
         (verbosity >= 2) && println("log folder: $(EnvConfig.logfolder())")
         (verbosity >= 2) && println("data range: $startdt - $enddt")
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, startdt, enddt, trenddetectormode, partitionconfig, coins)
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, trenddetectormode, partitionconfig, coins)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
@@ -355,15 +356,15 @@ function getgainsdf(cfg::TrendDetectorConfig)
         # @assert all(resultsview[begin, :set] .== resultsview[!, :set]) "Unexpected different sets $(unique(resultsview[!, :set])) in same range $rng"
 
         for (openthreshold, closethreshold) in [(0.8, 0.5), (0.7, 0.5), (0.6, 0.5), (0.8, 0.6), (0.7, 0.6), (0.6, 0.55)] # [(0.5, 0.5)]
-            gs = TradingStrategy.GainSegment(resultsview, resultsview[!, :score], resultsview[!, :label], 4*60, openthreshold, closethreshold)
-            gdf = TradingStrategy.getgains(gs)
+            TradingStrategy.reset!(cfg.tradingstrategy)
+            gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, resultsview[!, :score], resultsview[!, :label], true, openthreshold=openthreshold, closethreshold=closethreshold)
             if size(gdf, 1) > 0
                 addgainadmin!(gdf, resultsview[begin, :coin], resultsview[begin, :set], true, rng, openthreshold, closethreshold)
                 gaindf = isnothing(gaindf) ? gdf : append!(gaindf, gdf)
             end
         end
-        gs = TradingStrategy.GainSegment(resultsview, fill(1f0, size(resultsview, 1)), resultsview[!, :target], 4*60, 0.9f0, 0.9f0)
-        gdf = TradingStrategy.getgains(gs)
+        TradingStrategy.reset!(cfg.tradingstrategy)
+        gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, fill(1f0, size(resultsview, 1)), resultsview[!, :target], true, openthreshold=0.9f0, closethreshold=0.9f0)
         if size(gdf, 1) > 0
             addgainadmin!(gdf, resultsview[begin, :coin], resultsview[begin, :set], false, rng, 0.9f0, 0.9f0)
             gaindf = isnothing(gaindf) ? gdf : vcat(gaindf, gdf)
@@ -601,7 +602,7 @@ retrain = "retrain" in ARGS
 retrain && println("retrain mode activated - existing classifiers that did not converge will be overwritten")
 # retrain = true
 testmode = "test" in ARGS
-# testmode = true
+testmode = true
 inspectonly = "inspect" in ARGS
 # inspectonly = true
 specialonly = "special" in ARGS
@@ -644,9 +645,7 @@ else
         allowedcoins = traincoins()
     end
 end
-cfg = TrendDetectorConfig(;mk9config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
-# cfg = TrendDetectorConfig(;mk023config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
-# cfg = TrendDetectorConfig(;mk024config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = TrendDetectorConfig(;mk025config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
@@ -670,7 +669,7 @@ else
         # println(gaindf[1:2,:])
         gaindfgroup = groupby(gaindf, [:set, :trend, :predicted, :openthreshold, :closethreshold])
         # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
-        cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum)
+        cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum, :gainfee => sum)
         println("$(EnvConfig.now()) cgaindf=$cgaindf")
     end
 
