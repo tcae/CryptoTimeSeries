@@ -12,7 +12,6 @@ using DataFrames, Statistics, Indicators, JDF
 using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv
-using CryptoXch # for tests only
 
 #region abstract-features
 
@@ -231,6 +230,41 @@ function nextlocalextremepriceindex(prices, startindex, endindex, maxsearch)
 end
 
 gain(prices, baseix, testix) = (baseix > testix ? prices[baseix] - prices[testix] : prices[testix] - prices[baseix]) / abs(prices[baseix])
+
+
+"""
+Calculates the start y coordinate of a straight regression line given by the last y of the line `regry`, the gradient `grad` and the length `window`.
+"""
+startregry(eregry, grad, window) = eregry - grad * (window - 1)
+
+"Returns the relative gain of the given regression relative to start y if `forward` (default) otherwise relative to given end regry"
+function relativegain(endregry, grad, window; relativefee::AbstractFloat=0f0, forward=true)
+    sregry = startregry(endregry, grad, window)
+    return Features.relativegain(sregry, endregry; relativefee=relativefee, forward=forward)
+end
+
+"""
+- returns the relative forward/backward looking gain
+- deducts relativefee from both values
+"""
+function relativegain(startvalue::AbstractFloat, endvalue::AbstractFloat; relativefee::AbstractFloat=0f0, forward::Bool=true)
+    startvalue = startvalue * (1 + relativefee)
+    endvalue = endvalue * (1 - relativefee)
+    if forward
+        gain = (endvalue - startvalue) / startvalue
+    else
+        gain = (endvalue - startvalue) / endvalue
+    end
+    return gain
+end
+
+function relativegain(values::AbstractVector{T}, baseix::Integer, gainix::Integer; relativefee::AbstractFloat=0f0) where {T<:AbstractFloat}
+    if baseix > gainix
+        return relativegain(values[gainix], values[baseix]; relativefee=relativefee, forward=false)
+    else
+        return relativegain(values[baseix], values[gainix]; relativefee=relativefee, forward=true)
+    end
+end
 
 function fillwithextremeix(distancesix, startix, endix)
     while startix < endix
@@ -694,9 +728,81 @@ function relativevolume(volumes, shortwindow, largewindow)
 end
 
 """
-4 rolling features providing the current price distance and the time distance to the last maximum and minimum
+Returns the last `extremescount` extremes of the given ohlcv dataframe from `endix` backwards that 
+exceed between extremes `relativeamplitude` relative price difference, i.e. 0.01 = 1% price difference between min and max.  
+The extremes are returned as a vector of row indices within ohlcvdf. This vector has a length of `extremescount` or less if not enough extremes are found. 
+
+The scan walks backward bar by bar, tracking slope direction in `highs` (for maxima) and `lows` (for minima).
+Every genuine turning point — where the slope changes from rising to falling (max) or falling to rising (min) — is
+recorded as a local extreme. This avoids the pitfall of `nextlocalextremepriceindex`, which finds the farthest
+point of the first monotone run (using ≥/≤, so it extends across plateaus), rather than the nearest turning point.
 """
-function lastextremes(prices, regressions)::AbstractDataFrame
+function lastextremes(ohlcvdf::AbstractDataFrame, endix::Int, relativeamplitude::Float32, extremescount::Int)
+    @assert all([c in propertynames(ohlcvdf) for c in [:high, :low]]) "ohlcvdf must have columns :high and :low, but has $(propertynames(ohlcvdf))"
+    @assert 0 < endix <= size(ohlcvdf, 1) "0 < endix=$(endix) <= size(ohlcvdf,1)=$(size(ohlcvdf,1))"
+    @assert extremescount > 0 "extremescount=$(extremescount) must be > 0"
+    @assert relativeamplitude > 0 "relativeamplitude=$(relativeamplitude) must be > 0"
+
+    highs = ohlcvdf[!, :high]
+    lows  = ohlcvdf[!, :low]
+    startix = firstindex(highs)
+    allextremes = Int[]
+    endix <= startix && return allextremes
+    if endix == startix
+        # Only one bar: it is both max and min
+        if Features.relativegain(highs[endix], lows[endix], forward=true) >= relativeamplitude
+            push!(allextremes, endix)
+        end
+    else
+        # go backwards, check all max and min and remember them until the relativeamplituede distance is reached
+        maxix = minix = endix
+        for ix in endix-1:-1:startix
+            if (highs[ix] > highs[maxix]) || (lows[ix] < lows[minix])
+                maxix = (highs[ix] > highs[maxix]) ? ix : maxix
+                minix = (lows[ix] < lows[minix]) ? ix : minix
+                if length(allextremes) == 0
+                    if (maxix < minix) && (Features.relativegain(highs[maxix], lows[minix], forward=true) >= relativeamplitude)
+                        push!(allextremes, -minix)
+                        push!(allextremes, maxix)
+                        minix = maxix # reset minix to find next minimum from maxix backwards
+                    elseif (minix < maxix) && (Features.relativegain(lows[minix], highs[maxix], forward=true) >= relativeamplitude)
+                        push!(allextremes, maxix)
+                        push!(allextremes, -minix)
+                        maxix = minix # reset maxix to find next maximum from minix backwards
+                    end
+                elseif allextremes[end] < 0  # last extreme is a minix, so we are either looking for a maxix or a correction of an extended minix
+                    if (maxix < minix) && (Features.relativegain(highs[maxix], lows[abs(allextremes[end])], forward=true) >= relativeamplitude)
+                        # add next maximum
+                        push!(allextremes, maxix)
+                        minix = maxix # reset minix to find next minimum from maxix backwards
+                    elseif (minix < maxix) && (Features.relativegain(lows[minix], highs[allextremes[end-1]], forward=true) >= relativeamplitude)
+                        # found lower minix with same maxix 
+                        allextremes[end] = -minix
+                        maxix = minix # reset maxix to find next maximum from minix backwards
+                    end
+                else  # last extreme is a maxix, so we are either looking for a minix or a correction of an extended maxix
+                    @assert allextremes[end] > 0 "unexpected: last extreme should be a maxix (positive) but is $(allextremes[end])"
+                    if (minix < maxix) && (Features.relativegain(lows[minix], highs[allextremes[end]], forward=true) >= relativeamplitude)
+                        # add next minimum
+                        push!(allextremes, -minix)
+                        minix = maxix # reset minix to find next minimum from maxix backwards
+                    elseif (maxix < minix) && (Features.relativegain(highs[maxix], lows[abs(allextremes[end-1])], forward=true) >= relativeamplitude)
+                        # found lower minix with same maxix 
+                        allextremes[end] = maxix
+                        maxix = minix # reset maxix to find next maximum from minix backwards
+                    end
+                end
+            end
+        end
+    end
+
+    return allextremes
+end
+
+"""
+4 rolling features providing the current price distance and the time distance to the last maximum and minimum. of the provided regressions
+"""
+function lastextremes(prices::AbstractVector, regressions::AbstractVector)::AbstractDataFrame
     tmax = 1
     tmin = 2
     pmax = 3
@@ -831,6 +937,8 @@ rollingmax(valuevector, window) = RollingFunctions.runmax(valuevector, window)
 rollingmin(valuevector, window) = RollingFunctions.runmin(valuevector, window)
 
 #endregion FeatureUtilities
+
+include("Features004.jl")
 
 #region Features006
 
@@ -1092,6 +1200,7 @@ function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     return fdfno
 end
 
+"returns pivot normalized differences between min and pivot"
 function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     mdcol = fdfnocol(f6, ftup)
     window = ftup.w
@@ -1112,10 +1221,11 @@ function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         md = rollingmin(odf[!, :low], window)
     end
-    fdfno[:, mdcol] = md
+    fdfno[:, mdcol] = md # normalization in supplement! with offset considered
     return fdfno
 end
 
+"returns pivot normalized differences between max and pivot"
 function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     mdcol = fdfnocol(f6, ftup)
     window = ftup.w
@@ -1135,7 +1245,7 @@ function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         md = rollingmax(odf[!, :high], window)
     end
-    fdfno[:, mdcol] = md
+    fdfno[:, mdcol] = md # normalization in supplement! with offset considered
     return fdfno
 end
 
@@ -1158,6 +1268,7 @@ function _opentime!(fdfno, f6::Features006, odf, odfendix, odfstartix)
     return fdfno
 end
 
+"returns pivot normalized differences between regression end point and pivot"
 function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     rycol = fdfnocol(f6, _regry(f6, window=ftup.w, offset=ftup.o))
     rgcol = fdfnocol(f6, _grad(f6, window=ftup.w, offset=ftup.o))
@@ -1181,7 +1292,7 @@ function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         ry, rg = rollingregression(odf[!, :pivot], window)
     end
-    fdfno[:, rycol] = ry
+    fdfno[:, rycol] = ry # normalization in supplement! with offset considered
     fdfno[:, rgcol] = rg
     return fdfno
 end
@@ -1298,8 +1409,11 @@ function supplement!(f6::Features006)
     for f in f6requested(f6)
         fdfc = fdfcol(f6, f)
         fdfnoc = fdfnocol(f6, f)
-        if f.f in ["ry", "rg", "rs", "rv"] fdf[:, fdfc] = view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)
-        elseif f.f in ["mind", "maxd"] fdf[:, fdfc] = (piv .- view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)) ./ piv # relative distance in respect to pivot
+        if f.f in ["rg", "rs", "rv"] 
+            fdf[:, fdfc] = view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)
+        elseif f.f in ["ry", "mind", "maxd"] 
+            # take difference to pivot and normalize by pivot to get relative distance
+            fdf[:, fdfc] = (piv .- view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)) ./ piv 
         else error("unknown Feature006 feature type")
         end
     end
@@ -1828,365 +1942,6 @@ function Base.show(io::IO, f5::Features005)
 end
 
 #endregion Features005
-
-#region Features004
-"Features004 is a simplified subset of Features002 without regression extremes and relative volume but with save and read functions and implemented as DataFrame"
-
-regressionwindows004 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
-regressionwindows004dict = Dict("1h" => 1*60, "4h" => 4*60, "12h" => 12*60, "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
-
-"""
-Provides per regressionwindow gradient, regression line price, standard deviation.
-"""
-mutable struct Features004 <: AbstractFeatures
-    basecoin::String
-    quotecoin::String
-    ohlcvoffset
-    rw::Dict{Integer, AbstractDataFrame}  # keys: regression window in minutes, values: dataframe with columns :opentime, :regry, :grad, :std
-    latestloadeddt  # nothing or latest DateTime of loaded data
-    # opentime::Vector{DateTime}
-    # grad::Vector{Float32} # rolling regression gradients; length == ohlcv - requiredminutes
-    # regry::Vector{Float32}  # rolling regression price; length == ohlcv - requiredminutes
-    # std::Vector{Float32}  # standard deviation of regression window; length == ohlcv - requiredminutes
-    Features004(basecoin::String, quotecoin::String) = new(basecoin, quotecoin, nothing, Dict(), nothing)
-end
-
-"Provides Features004 of the given ohlcv within the requested time range. Canned data will be read and supplemented with calculated data."
-function Features004(ohlcv; firstix=firstindex(ohlcv.df.opentime), lastix=lastindex(ohlcv.df.opentime), regrwindows=regressionwindows004, usecache=false)::Union{Nothing, Features004}
-    startix = maxregrwindow = maximum(regrwindows)  # all dataframes to start at the same time to make performance comparable and f4 handling easier
-    f4 = Features004(ohlcv.base, ohlcv.quotecoin)
-    df = Ohlcv.dataframe(ohlcv)
-    if !(firstindex(df[!, :opentime]) <= startix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
-        (verbosity >= 2) && @warn "$(ohlcv.base): $(firstindex(df[!, :opentime])) <= $startix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
-        return nothing
-    end
-    dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
-    if usecache
-        f4 = read!(f4, dfv[startix, :opentime], dfv[end, :opentime])
-    end
-    for window in regrwindows
-        if !(window in keys(f4.rw))
-            f4.rw[window] = DataFrame(opentime=DateTime[], regry=Float32[], grad=Float32[], std=Float32[])
-        end
-    end
-    return isnothing(supplement!(f4, ohlcv; firstix=firstix, lastix=lastix)) ? nothing : f4
-end
-
-# obsolete TODO add regression test
-mnemonic(f4::Features004) = uppercase(f4.basecoin) * "_" * uppercase(f4.quotecoin) * "_" * "_F4"
-ohlcvix(f4::Features004, featureix) = featureix + f4.ohlcvoffset
-featureix(f4::Features004, ohlcvix) = ohlcvix - f4.ohlcvoffset
-
-function consistent(f4::Features004, ohlcv::Ohlcv.OhlcvData)
-    checkok = true
-    if ohlcv.base != f4.basecoin
-        @warn "bases of ohlcv=$(ohlcv.base) != f4=$(f4.basecoin)"
-        checkok = false
-    end
-    for (rw, rwdf) in f4.rw
-        if rwdf[end,:opentime] != ohlcv.df[end, :opentime]
-            @warn "f4 of $(ohlcv.base) rw[$rw][end,:opentime]=$(rwdf[end,:opentime]) != ohlcv.df[end, :opentime]=$(ohlcv.df[end, :opentime])"
-            checkok = false
-        end
-        if rwdf[begin,:opentime] - Minute(requiredminutes(f4)-1) != ohlcv.df[begin, :opentime]
-            @warn "f4 of $(ohlcv.base) rw[$rw][begin,:opentime]-requiredminutes(f4)+1=$(rwdf[begin,:opentime]-Minute(requiredminutes(f4)-1)) != ohlcv.df[begin, :opentime]=$(ohlcv.df[begin, :opentime])"
-            checkok = false
-        end
-        if isnothing(f4.ohlcvoffset)
-            @warn "isnothing(f4.ohlcvoffset) of $(ohlcv.base) "
-            checkok = false
-        elseif rwdf[begin,:opentime] != ohlcv.df[ohlcvix(f4, firstindex(rwdf[!,:opentime])), :opentime]
-            @warn "f4 of $(ohlcv.base) rw[$rw][begin,:opentime]=$(rwdf[begin,:opentime]) != ohlcv.df[ohlcvix(f4, firstindex(rwdf[!,:opentime])), :opentime]=$(ohlcv.df[ohlcvix(f4, firstindex(rwdf[!,:opentime])), :opentime])"
-            checkok = false
-        end
-    end
-    startequal = all([rwdf[begin,:opentime] == first(values(f4.rw))[begin,:opentime] for (rw, rwdf) in f4.rw])
-    if !startequal
-        @warn "different F4 start dates: $([(regr=rw, startdt=rwdf[begin,:opentime]) for (rw, rwdf) in f4.rw])"
-        checkok = false
-    end
-    endequal = all([rwdf[end,:opentime] == first(values(f4.rw))[end,:opentime] for (rw, rwdf) in f4.rw])
-    if !endequal
-        @warn "different F4 end dates: $([(regr=rw, enddt=rwdf[end,:opentime]) for (rw, rwdf) in f4.rw])"
-        checkok = false
-    end
-    lengthequal = all([size(rwdf, 1) == size(first(values(f4.rw)), 1) for (rw, rwdf) in f4.rw])
-    if !lengthequal
-        @warn "different F4 data length: $([(regr=rw, length=size(rwdf, 1)) for (rw, rwdf) in f4.rw])"
-        checkok = false
-    end
-    return checkok
-end
-
-function featureoffset!(f4::Features004, ohlcv::Ohlcv.OhlcvData)
-    f4.ohlcvoffset = nothing
-    if (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0) && (size(ohlcv.df, 1) > 0)
-        fix = nothing
-        f4df = first(values(f4.rw))
-        # fix = (ohlcv.df[begin,:opentime] <= f4df[begin, :opentime]) && (ohlcv.df[end,:opentime] >= f4df[begin, :opentime]) ? firstindex(f4df[!, :opentime]) : (ohlcv.df[begin,:opentime] <= f4df[end, :opentime] && ohlcv.df[end,:opentime] >= f4df[end, :opentime] ?  lastindex(f4df[!, :opentime]) : nothing)
-        if ohlcv.df[begin,:opentime] <= f4df[begin, :opentime] <= ohlcv.df[end,:opentime]
-            fix = firstindex(f4df[!, :opentime])
-        elseif ohlcv.df[begin,:opentime] <= f4df[end, :opentime] <= ohlcv.df[end,:opentime]
-            fix = lastindex(f4df[!, :opentime])
-        end
-        if !isnothing(fix)
-            oix = Ohlcv.rowix(ohlcv.df[!,:opentime], f4df[fix, :opentime])
-            if f4df[fix, :opentime] == ohlcv.df[oix, :opentime]
-                f4.ohlcvoffset = oix - fix
-            end
-        else
-            (verbosity >= 3) && @warn "could not calc $(ohlcv.base) f4offset ohlcv.begin=$(ohlcv.df[begin,:opentime]), ohlcv.end=$(ohlcv.df[end,:opentime]), f4df.begin=$(f4df[begin, :opentime]), f4df.end=$(f4df[end, :opentime])"
-        end
-    end
-    return f4.ohlcvoffset
-end
-
-function _equaltimes(f4)
-    times = [(df[begin, :opentime], size(df, 1), df[end, :opentime]) for df in values(f4.rw)]
-    if length(times) > 0
-        if all([times[1] == t for t in times])
-            return true
-        else
-            times = [(regr=regr, first=df[begin, :opentime], length=size(df, 1), last=df[end, :opentime]) for (regr, df) in f4.rw]
-            @warn "F4 dataframes not equal: $times"
-            return false
-        end
-    else
-        @warn "F4 dataframes missing"
-        return false
-    end
-end
-
-function _join(f4)
-    df = DataFrame()
-    for (regr, rdf) in f4.rw
-        for cname in names(rdf)
-            if cname == "opentime"
-                df[:, cname] = rdf[!, cname]
-            else
-                df[:, join([string(regr), cname], "_")] = rdf[!, cname]
-            end
-        end
-    end
-    return df
-end
-
-function timerangecut!(f4::Features004, startdt, enddt)
-    (length(f4.rw) == 0) && @warn "empty f4 for $(f4.basecoin)"
-    for (regr, rdf) in f4.rw
-        if isnothing(rdf) || (size(rdf, 1) == 0)
-            @warn "unexpected missing f4 data $f4"
-            return
-        end
-        startdt = isnothing(startdt) ? rdf[begin, :opentime] : startdt
-        startix = Ohlcv.rowix(rdf[!, :opentime], startdt)
-        enddt = isnothing(enddt) ? rdf[end, :opentime] : enddt
-        endix = Ohlcv.rowix(rdf[!, :opentime], enddt)
-        f4.rw[regr] = rdf[startix:endix, :]
-        # println("startdt=$startdt enddt=$enddt size(rdf)=$(size(rdf)) rdf=$(describe(rdf, :all)) ")
-        # if !isnothing(startdt) && !isnothing(enddt)
-        #     subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t .<= floor(enddt, Minute(1)))
-        # elseif !isnothing(startdt)
-        #     subset!(rdf, :opentime => t -> floor(startdt, Minute(1)) .<= t)
-        # elseif !isnothing(enddt)
-        #     subset!(rdf, :opentime => t -> t .<= floor(enddt, Minute(1)))
-        # end
-    end
-end
-
-function _split!(f4, df)
-    @assert length(f4.rw) == 0
-    ot = nothing
-    for cname in names(df)
-        if cname == "opentime"
-            ot = df[!, cname]
-        else
-            cnamevec = split(cname, "_")
-            if length(cnamevec) != 2
-                @error "unexpected f4.rw dataframe column name: $cnamevec"
-            end
-            regr = parse(Int, cnamevec[1])
-            if !(regr in keys(f4.rw))
-                f4.rw[regr] = DataFrame()
-            end
-            f4.rw[regr][:, cnamevec[2]] = df[!, cname]
-        end
-    end
-    for (regr, rdf) in f4.rw
-        rdf[:, "opentime"] = ot
-    end
-    return f4
-end
-
-function file(f4::Features004)
-    mnm = mnemonic(f4)
-    filename = EnvConfig.datafile(mnm, "Features004")
-    if isdir(filename)
-        return (filename=filename, existing=true)
-    else
-        return (filename=filename, existing=false)
-    end
-end
-
-function write(f4::Features004)
-    @assert _equaltimes(f4)
-    df = _join(f4)
-    if !isnothing(f4.latestloadeddt) && (f4.latestloadeddt >= df[end, :opentime])
-        (verbosity >= 3) && println("$(EnvConfig.now()) F4 not written due to missing supplementations of already stored data")
-        return
-    end
-    fn = file(f4)
-    try
-        JDF.savejdf(fn.filename, df[!, :])
-        (verbosity >= 2) && println("$(EnvConfig.now()) saved F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
-    catch e
-        Logging.@error "exception $e detected when writing $(fn.filename)"
-    end
-end
-
-read!(f4::Features004)::Features004 = read!(f4, nothing, nothing)
-
-function read!(f4::Features004, startdt, enddt)::Features004
-    fn = file(f4)
-    # try
-        if fn.existing
-            (verbosity >= 3) && println("$(EnvConfig.now()) start loading F4 data of $(f4.basecoin) from $(fn.filename)")
-            df = DataFrame(JDF.loadjdf(fn.filename))
-            startdt = isnothing(startdt) ? df[begin, :opentime] : startdt
-            enddt = isnothing(enddt) ? df[end, :opentime] : enddt
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
-            if (size(df, 1) > 0) && (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
-                (verbosity >= 4) && println("f4cache $(fn.filename) names: $(names(df))")
-                f4.latestloadeddt = df[end, :opentime]
-                startix = Ohlcv.rowix(df[!, :opentime], startdt)
-                startix = df[startix, :opentime] < startdt ? min(lastindex(df[!, :opentime]), startix+1) : startix
-                endix = Ohlcv.rowix(df[!, :opentime], enddt)
-                endix = df[endix, :opentime] > enddt ? max(firstindex(df[!, :opentime]), endix-1) : endix
-                df = df[startix:endix, :]
-                f4 = _split!(f4, df)
-            end
-        else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
-        end
-    # catch e
-    #     Logging.@warn "exception $e detected"
-    # end
-    return f4
-end
-
-function delete(f4::Features004)
-    fn = file(f4)
-    if fn.existing
-        rm(fn.filename; force=true, recursive=true)
-    end
-end
-
-mutable struct Features004Files
-    filenames
-    Features004Files() = new(nothing)
-end
-
-# function Base.iterate(of::OhlcvFiles, state=1)
-# end
-
-function Base.iterate(f4f::Features004Files, state=1)
-    if isnothing(f4f.filenames)
-        allff = readdir(EnvConfig.datafolderpath("Features004"), join=false, sort=false)
-        fileixlist = findall(f -> endswith(f, "_F4.jdf"), allff)
-        f4f.filenames = [allff[ix] for ix in fileixlist]
-        if length(f4f.filenames) > 0
-            state = firstindex(f4f.filenames)
-        else
-            return nothing
-        end
-    end
-    if state > lastindex(f4f.filenames)
-        return nothing
-    end
-    # fn = split(of.filenames[state], "/")[end]
-    fnparts = split(f4f.filenames[state], "_")
-    # return (basecoin=fnparts[1], quotecoin=fnparts[2], interval=fnparts[3]), state+1
-    basecoin=fnparts[1]
-    quotecoin=fnparts[2]
-    f4 = Features.Features004(String(basecoin), String(quotecoin))
-    read!(f4, nothing, nothing)
-    return f4, state+1
-end
-
-"Supplements Features004 with the newest ohlcv datapoints, i.e. datapoints newer than last(f4)"
-function supplement!(f4::Features004, ohlcv::Ohlcv.OhlcvData; firstix=firstindex(ohlcv.df[!, :opentime]), lastix=lastindex(ohlcv.df[!, :opentime]))
-    usecache = (length(f4.rw) > 0) && (size(first(values(f4.rw)), 1) > 0)
-    Ohlcv.pivot!(ohlcv)
-    df = Ohlcv.dataframe(ohlcv)
-    maxregrwindow = maximum(regrwindows(f4))  # all dataframes to start at the same time to make performance comparable and f4 handling easier
-    if !(firstindex(df[!, :opentime]) <= firstix <= lastix <= lastindex(df[!, :opentime])) || ((lastix - (max(firstix, maxregrwindow)-maxregrwindow)) < maxregrwindow)
-        @warn "$(firstindex(df[!, :opentime])) <= $firstix <= $lastix <= $(lastindex(df[!, :opentime])); size(dfv, 1)=$((lastix - (max(firstix, maxregrwindow)-maxregrwindow))) < maxregrwindow=$maxregrwindow"
-        return nothing
-    end
-    # dfv = view(df, (max(firstix, maxregrwindow)-maxregrwindow+1):lastix, :)
-    # dfv = view(df, max(firstix-maxregrwindow+1, 1):lastix, :)
-    pivot = df.pivot
-    startafterix = endbeforeix = nothing
-    ot = df[!, "opentime"]
-    if usecache
-        otstored = first(values(f4.rw))[!, "opentime"]
-        endbeforeix = Ohlcv.rowix(ot, otstored[begin]) - 1
-        endbeforeix = endbeforeix < firstix ? nothing : endbeforeix
-        startafterix = Ohlcv.rowix(ot, otstored[end]) + 1
-        startafterix = startafterix > lastindex(ot) ? nothing : startafterix
-    end
-    for window in regrwindows(f4)
-        if usecache && (window in keys(f4.rw)) && (size(f4.rw[window], 1) > 0)
-            if !isnothing(endbeforeix)
-                dfv = view(df, 1:endbeforeix, :)
-                (verbosity >= 3) && println("$(EnvConfig.now()) F4 endbeforeix=$endbeforeix with window=$window and firstix=$firstix for $(endbeforeix-firstix+1) rows")
-                regry, grad = rollingregression(dfv.pivot, window, firstix)
-                std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, firstix)
-                dft = DataFrame(opentime=view(ot, firstix:endbeforeix), regry=regry, grad=grad, std=std)
-                prepend!(f4.rw[window], dft)
-            end
-            if !isnothing(startafterix)
-                dfv = view(df, 1:lastix, :)
-                (verbosity >= 3) && println("$(EnvConfig.now()) F4 startafterix=$startafterix with window=$window for $(size(df, 1)-startafterix+1) rows")
-                regry, grad = rollingregression(dfv.pivot, window, startafterix)
-                std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, startafterix)
-                dft = DataFrame(opentime=view(ot, startafterix:lastix), regry=regry, grad=grad, std=std)
-                append!(f4.rw[window], dft)
-            end
-        else
-            dfv = view(df, 1:lastix, :)
-            (verbosity >= 3) && println("$(EnvConfig.now()) F4 full calc from firstix=$firstix until lastix=$lastix with window=$window for $(lastix-firstix+1) rows")
-            regry, grad = rollingregression(dfv.pivot, window, firstix)
-            std = rollingregressionstdmv([dfv.open, dfv.high, dfv.low, dfv.close], regry, grad, window, firstix)
-            f4.rw[window] = DataFrame(opentime=view(ot, firstix:lastix), regry=regry, grad=grad, std=std)
-        end
-    end
-    return isnothing(featureoffset!(f4, ohlcv)) ? nothing : f4
-end
-
-requiredminutes(f4::Features004) = maximum(regrwindows(f4))
-
-function Base.show(io::IO, f4::Features004)
-    print(io, "Features004 base=$(f4.basecoin) quote=$(f4.quotecoin) offset=$(f4.ohlcvoffset) from $(first(values(f4.rw))[begin, :opentime]) until $(first(values(f4.rw))[end, :opentime]), $(["$regr:size=$(size(df)) names=$(names(df)), " for (regr,df) in f4.rw])")
-    # for (key, value) in f4.rw
-    #     println(io, "Features004 base=$(f4.basecoin), regr key: $key of size=$(size(value))")
-    #     (verbosity >= 3) && println(io, describe(value, :first, :last, :min, :mean, :max, :nuniqueall, :nnonmissing, :nmissing, :eltype))
-    # end
-end
-
-grad(f4::Features004, regrminutes) =     f4.rw[regrminutes][!, :grad]
-regry(f4::Features004, regrminutes) =    f4.rw[regrminutes][!, :regry]
-std(f4::Features004, regrminutes) =      f4.rw[regrminutes][!, :std]
-opentime(f4::Features004, regrminutes) = f4.rw[regrminutes][!, :opentime]
-opentime(f4::Features004) = first(f4.rw)[2][!, :opentime]  # opentime array from all rw members shall start and end equally
-regrwindows(f4::Features004) = keys(f4.rw)
-
-function features(f4::Features004, firstix, lastix)::AbstractDataFrame
-    #TODO
-    @error "to be implemented"
-end
-
-#endregion Features004
 
 #region Features002
 "Features002 is a feature set used in trading strategy"

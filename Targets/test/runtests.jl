@@ -3,7 +3,7 @@ module TargetsTest
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test
 using Logging, LoggingExtras
-using EnvConfig, Features, Targets, TestOhlcv, Ohlcv, CryptoXch
+using EnvConfig, Features, Targets, TestOhlcv, Ohlcv
 
 # with_logger(TimestampTransformerLogger(current_logger(), BeginningMessageLocation();
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
@@ -22,6 +22,11 @@ logger = EarlyFilteredLogger(all_logger) do args
 end
 
 include("trend_test.jl")
+include("trend02_overlap_supplement_test.jl")
+include("trend02_directional_detection_test.jl")
+include("trend02_crosscheck_test.jl")
+include("trend04_crosscheck_test.jl")
+include("bounds01_test.jl")
 # include("fixeddistancegain_test.jl") fails due to changes in Targets
 
 @testset "Targets Labelthresholds" begin

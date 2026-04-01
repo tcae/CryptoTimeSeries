@@ -1,7 +1,7 @@
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test
 using Logging, LoggingExtras
-using EnvConfig, Features, Targets, TestOhlcv, Ohlcv, CryptoXch
+using EnvConfig, Features, Targets, TestOhlcv, Ohlcv
 
 # with_logger(TimestampTransformerLogger(current_logger(), BeginningMessageLocation();
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
@@ -15,16 +15,15 @@ println("\nconfig mode = $(EnvConfig.configmode)")
     startdt = DateTime("2023-02-17T13:30:00")
     enddt = startdt + Hour(5)
     # EnvConfig.init(production)
-    xc = CryptoXch.XchCache()
-    ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
-    Ohlcv.timerangecut!(ohlcv, startdt, enddt)
+    # xc = CryptoXch.XchCache()
+    ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
     # println(describe(ohlcv.df, :all))
 
     # fdg = Targets.FixedDistanceGain(30, Targets.defaultlabelthresholds)
     fdg = Targets.FixedDistanceGain(30, Targets.LabelThresholds(longbuy=0.11, longhold=0.001, shorthold=-0.001, shortbuy=-0.11))
     Targets.setbase!(fdg, ohlcv)
 
-    println("trade labels: $(Targets.tradelabels(fdg))")
+    println("trade labels: $(Targets.uniquelabels(fdg))")
     # println(Targets.df(fdg, DateTime("2023-02-17T13:31:00"), DateTime("2023-02-17T13:39:00")))
     # println(fdg.df)
     # println(describe(fdg.df, :all))
@@ -54,7 +53,7 @@ println("\nconfig mode = $(EnvConfig.configmode)")
     @test all(gaincheck .== Targets.relativegain(fdg))
 
     # extend 5 minutes
-    ohlcvxt = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt+Minute(5), enddt+Minute(5))
+    ohlcvxt = TestOhlcv.testohlcv("SINE", startdt+Minute(5), enddt+Minute(5))
     ohlcv.df = ohlcvxt.df
     Ohlcv.timerangecut!(ohlcv, startdt+Minute(5), enddt+Minute(5))
     Targets.supplement!(fdg)

@@ -48,7 +48,7 @@ function gradientgains(prices, regressions)
     nextix = Features.nextextremeindex(regressions, lastix)
     while nextix > 0
         if (lastix < nextix) && (regressions[lastix] > 0)
-            gains[ix] = Targets.relativegain(prices, lastix, nextix) - 2 * fee
+            gains[ix] = Features.relativegain(prices, lastix, nextix) - 2 * fee
             ix += 1
         end
         lastix = nextix
@@ -67,7 +67,7 @@ function gradientextremesindex(prices, regressions)
     nextix = Features.nextextremeindex(regressions, lastix)
     while nextix > 0
         if regressions[lastix] > 0
-            gains[ix] = Targets.relativegain(prices, lastix, nextix) - 2 * fee
+            gains[ix] = Features.relativegain(prices, lastix, nextix) - 2 * fee
             ix += 1
         end
         lastix = nextix
@@ -90,11 +90,11 @@ function singlebasegradientgain(prices, regressions)
                 lastix = ix
                 gains[ix] = gains[ix - 1] * (1 - fee)  # longbuy
             else
-                gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix))
+                gains[ix] = gains[lastix] * (1 + Features.relativegain(prices, lastix, ix))
             end
         else  # regressions[ix] <= 0.0
             if regressions[ix - 1] > 0.0  # start of downslope
-                gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix) - fee)  # longclose
+                gains[ix] = gains[lastix] * (1 + Features.relativegain(prices, lastix, ix) - fee)  # longclose
             else
                 gains[ix] = gains[ix - 1]
             end
@@ -125,11 +125,11 @@ function singlebasegradientgainhistory(prices, regressions; lastupgainthreshold,
                     gains[ix] = gains[ix - 1]
                 end
             else
-                gains[ix] = lastix > 0 ? gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix)) : gains[ix - 1]
+                gains[ix] = lastix > 0 ? gains[lastix] * (1 + Features.relativegain(prices, lastix, ix)) : gains[ix - 1]
             end
         else  # regressions[ix] <= 0.0
             if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
-                gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix) - fee)  # longclose
+                gains[ix] = gains[lastix] * (1 + Features.relativegain(prices, lastix, ix) - fee)  # longclose
             else
                 gains[ix] = gains[ix - 1]
             end
@@ -202,11 +202,11 @@ end
 #                     gains[ix] = gains[ix - 1]
 #                 end
 #             else
-#                 gains[ix] = lastix > 0 ? gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix)) : gains[ix - 1]
+#                 gains[ix] = lastix > 0 ? gains[lastix] * (1 + Features.relativegain(prices, lastix, ix)) : gains[ix - 1]
 #             end
 #         else  # regressions[ix] <= 0.0
 #             if (regressions[ix - 1] > 0.0 ) && (lastix > 0) # end of gain considered upslope
-#                 gains[ix] = gains[lastix] * (1 + Targets.relativegain(prices, lastix, ix) - fee)  # longclose
+#                 gains[ix] = gains[lastix] * (1 + Features.relativegain(prices, lastix, ix) - fee)  # longclose
 #             else
 #                 gains[ix] = gains[ix - 1]
 #             end
@@ -246,15 +246,15 @@ function steepestbasegain(prices::AbstractDataFrame, regressions::AbstractDataFr
                 lastix = rix
                 gains[rix] = gains[rix - 1] * (1 - fee)  # longbuy
             elseif bestix[rix - 1] == bestix[rix]
-                gains[rix] = gains[lastix] * (1 + Targets.relativegain(prices[!, bases[bestix[rix]]], lastix, rix))
+                gains[rix] = gains[lastix] * (1 + Features.relativegain(prices[!, bases[bestix[rix]]], lastix, rix))
             else  # (bestix[rix-1] != bestix[rix]) && (regressions[rix-1, bestix[rix-1]] > 0.0)
-                gains[rix] = gains[lastix] * (1 + Targets.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # longclose to change currency
+                gains[rix] = gains[lastix] * (1 + Features.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # longclose to change currency
                 gains[rix] = gains[rix] * (1 - fee)  # longbuy
                 lastix = rix
             end
         else  # regressions[rix] <= 0.0
             if regressions[rix - 1, bases[bestix[rix - 1]]] > 0.0  # start of downslope
-                gains[rix] = gains[lastix] * (1 + Targets.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # longclose
+                gains[rix] = gains[lastix] * (1 + Features.relativegain(prices[!, bases[bestix[rix - 1]]], lastix, rix) - fee)  # longclose
             else
                 gains[rix] = gains[rix - 1]
             end
@@ -467,7 +467,7 @@ function gainfromix!(slopesix, prices, fromix, toix)
         startix = startix < fromix ? fromix : startix
         endix = endix > toix ? toix : endix
         if startix < endix
-            gain += Targets.relativegain(prices, startix, endix) - 2 * fee
+            gain += Features.relativegain(prices, startix, endix) - 2 * fee
             if lastendix > startix
                 @warn "lastendix=$lastendix > startix=$startix, endix=$endix"
                 display(slopesix)
@@ -502,7 +502,7 @@ function checkgains(prices, regressions, slopesix)
     ggains = gradientgains(prices, regressions)
     g = zeros(Float32, (size(slopesix, 1)))
     for (ix, (startix, endix)) in enumerate(slopesix)
-        g[ix] = Targets.relativegain(prices, startix, endix) - 2 * fee
+        g[ix] = Features.relativegain(prices, startix, endix) - 2 * fee
     end
     g2 = gainfromix!(slopesix, prices, 1, size(prices, 1))
     println("len(ggains)=$(size(ggains, 1)), ggain=$(sum(ggains)), len(slopesix)=$(size(slopesix, 1)), len(g)=$(size(g, 1)), g=$(sum(g)), g2=$g2")
@@ -644,7 +644,7 @@ function gainperregressionwindow(bases = EnvConfig.trainingbases)
             buyix = Features.nextextremeindex(regr, 1)
             sellix = buyix > 0 ? Features.nextextremeindex(regr, buyix) : 0
             while sellix !=0
-                gain = Targets.relativegain(ohlcv.df.pivot, buyix, sellix)
+                gain = Features.relativegain(ohlcv.df.pivot, buyix, sellix)
                 gix = searchsortedlast(gainborders, gain) + 1
                 histo[bix, rix, gix] += 1
                 buyix = sellix
@@ -682,7 +682,7 @@ function gainperregressionwindowlastgain(bases = EnvConfig.trainingbases, regres
             buyix = Features.nextextremeindex(regr, 1)
             sellix = buyix > 0 ? Features.nextextremeindex(regr, buyix) : 0
             while sellix !=0
-                gain = Targets.relativegain(ohlcv.df.pivot, buyix, sellix)
+                gain = Features.relativegain(ohlcv.df.pivot, buyix, sellix)
                 gix = searchsortedlast(gainborders, gain) + 1
                 histo[rix, gix, lastgix2] += 1
                 lastgix2 = lastgix1
@@ -743,7 +743,7 @@ function gainperregressionwindowlastgain2(bases = EnvConfig.trainingbases, regre
 
                 lastbuyix = buyix
                 lastsellix = sellix
-                # gain = Targets.relativegain(ohlcv.df.pivot, buyix, sellix)
+                # gain = Features.relativegain(ohlcv.df.pivot, buyix, sellix)
                 # gix = searchsortedlast(gainborders, gain) + 1
                 histo[rix, gix, lastgix] += 1
                 buyix = sellix

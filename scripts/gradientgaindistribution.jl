@@ -91,7 +91,7 @@ function slope2histo!(histo, prices, regressions, buyix)
         end
 
         if isequal(gradgains[regix], missing)  # only consider a gradient once in a particular slope
-            gain = Targets.relativegain(prices, buyix, sellix)
+            gain = Features.relativegain(prices, buyix, sellix)
             gradgains[regix] = gain
             # println("gradgains[$sampleregix, $endregix] = $gain")
         end

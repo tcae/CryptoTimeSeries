@@ -665,15 +665,19 @@ end
 """
 Removes ohlcv data rows that are outside the date boundaries (nothing= no boundary) and adjusts ohlcv.ix to stay within the new data range.
 """
-function timerangecut!(ohlcv::OhlcvData, startdt, enddt)
+function timerangecut!(ohlcv::OhlcvData, startdt::Union{Nothing, DateTime}, enddt::Union{Nothing, DateTime})
     if isnothing(ohlcv) || isnothing(ohlcv.df) || (size(ohlcv.df, 1) == 0)
         return
     end
-    ixdt = ohlcv.df[ohlcv.ix, :opentime]
     startdt = isnothing(startdt) ? ohlcv.df[begin, :opentime] : startdt
     startix = Ohlcv.rowix(ohlcv.df[!, :opentime], startdt)
     enddt = isnothing(enddt) ? ohlcv.df[end, :opentime] : enddt
     endix = Ohlcv.rowix(ohlcv.df[!, :opentime], enddt)
+    timerangecut!(ohlcv, startix, endix)
+end
+
+function timerangecut!(ohlcv::OhlcvData, startix::Int, endix::Int)
+    ixdt = ohlcv.df[ohlcv.ix, :opentime]
     ohlcv.df = ohlcv.df[startix:endix, :]
     # ohlcv.df = @view ohlcv.df[startix:endix, :]
     ohlcv.ix = Ohlcv.rowix(ohlcv, ixdt)

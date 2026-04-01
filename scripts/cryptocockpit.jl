@@ -43,7 +43,7 @@ function loadohlcv!(cp, base, interval)
 end
 
 function updateassets!(cp, download=false)
-    assets = CryptoXch.portfolio!(cp.tc.xc)
+    assets = DataFrame((coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], usdtprice=Float32[], usdtvalue=Float32[])) # CryptoXch.portfolio!(cp.tc.xc)
     cp.coin = Dict()
     if !download 
         Trade.read!(cp.tc)
@@ -112,8 +112,8 @@ end
 
 include("../scripts/cockpitdatatablecolors.jl")
 
-# EnvConfig.init(EnvConfig.production)
-EnvConfig.init(production)
+EnvConfig.init(EnvConfig.test)
+# EnvConfig.init(production)
 const CP = CockpitData()
 # app = dash(external_stylesheets = ["dashboard.css"], assets_folder="/home/tor/TorProjects/CryptoTimeSeries/scripts/")
 println("css dir: $(CP.cssdir)")

@@ -2,7 +2,7 @@ module TestTradeLabels
 using Targets
 
 
-println("Targets.tradelabels() = $(Targets.tradelabels()), typeof(Targets.tradelabels()) = $(typeof(Targets.tradelabels()))")
+println("Targets.uniquelabels() = $(Targets.uniquelabels()), typeof(Targets.uniquelabels()) = $(typeof(Targets.uniquelabels()))")
 println("Targets.tradelabelstrings() = $(Targets.tradelabelstrings()), typeof(Targets.tradelabelstrings()) = $(typeof(Targets.tradelabelstrings()))")
 println("Targets.tradelabel(\"longbuy\") = $(Targets.tradelabel("longbuy")). $(typeof(Targets.tradelabel("longbuy")))")
 println("longbuy > shortclose = $(longbuy > shortclose)")

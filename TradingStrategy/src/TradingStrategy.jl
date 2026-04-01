@@ -11,7 +11,7 @@ Provides strategies to translate classifier predictions into trading actions.
 module TradingStrategy
 
 using DataFrames, Dates
-using EnvConfig, Ohlcv, Features, Targets
+using EnvConfig, Ohlcv, Features, Targets, Classify
 
 """
 verbosity =
@@ -27,6 +27,14 @@ abstract type AbstractSingleSymbolTrading <: EnvConfig.AbstractConfiguration end
 
 "Defines the multi symbol trading interface that shall be provided by all trading strategy implementations."
 abstract type AbstractMultiSymbolTrading <: EnvConfig.AbstractConfiguration end
+
+"Maps label strings to the trade label symbols used in Targets."
+const _LSTM_LABEL_MAP = Dict(
+    "longbuy" => longbuy,
+    "longclose" => longclose,
+    "shortbuy" => shortbuy,
+    "shortclose" => shortclose,
+)
 
 "Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set."
 function setbase!(targets::AbstractSingleSymbolTrading, ohlcv::Ohlcv.OhlcvData) error("not implemented") end
@@ -54,7 +62,7 @@ Transforms a named tuple of trade label names with score thresholds and returns 
 Any missing trade label that is found in the predictions is mapped to a neighbor trade label.
 """
 function unused_scoreacceptnt2dict(scorethreshold)::Dict
-    d = Dict() # Dict([(tl, nothing) for tl in Targets.tradelabels()])
+    d = Dict() # Dict([(tl, nothing) for tl in Targets.uniquelabels()])
     (verbosity >= 3) && println(scorethreshold)
     tls = keys(scorethreshold) 
     for tlsix in eachindex(tls)
@@ -63,7 +71,7 @@ function unused_scoreacceptnt2dict(scorethreshold)::Dict
     end
     (verbosity >= 3) && println("dict of named tuple: $d")
     # map missing values to provided values
-    tll = Targets.tradelabels()
+    tll = Targets.uniquelabels()
     tli = Int.(tll)
     for tl in tll
         if tl == ignore
@@ -93,7 +101,7 @@ Transforms a named tuple of trade label names with score thresholds and returns 
 Any missing trade label that is found in the predictions will result in a dict key error.
 """
 function scorethresholdnt2dict(scorethreshold)::Dict
-    d = Dict() # Dict([(tl, nothing) for tl in Targets.tradelabels()])
+    d = Dict() # Dict([(tl, nothing) for tl in Targets.uniquelabels()])
     (verbosity >= 4) && println(scorethreshold)
     tls = keys(scorethreshold) 
     for tlsix in eachindex(tls)
@@ -125,6 +133,135 @@ mutable struct TradeAction
     orderlabel::Union{TradeLabel, Nothing} # used: longbuy, longclose, shortclose, shortbuy
     orderlimit::Union{Float32, Nothing} # order limit or nothing if no limit order placed
     amountfactor::Float32
+end
+
+"""
+LSTM-based action decider that maps class probabilities to trade actions.
+
+The expected default class order is:
+`["longbuy", "longclose", "shortbuy", "shortclose"]`.
+"""
+mutable struct LstmTradeDecider <: AbstractSingleSymbolTrading
+    labels::Vector{TradeLabel}
+    scorethresholds::Dict{TradeLabel, Float32}
+    fallbacklabel::TradeLabel
+    ohlcv::Union{Nothing, Ohlcv.OhlcvData}
+end
+
+"""
+Create a new `LstmTradeDecider`.
+
+# Arguments
+- `labels`: model output labels as strings, aligned with probability vector order
+- `scorethresholds`: per-label acceptance score thresholds
+- `fallbacklabel`: label used when confidence is below threshold
+"""
+function LstmTradeDecider(; labels=["longbuy", "longclose", "shortbuy", "shortclose"], scorethresholds=(longbuy=0.5f0, longclose=0.5f0, shortbuy=0.5f0, shortclose=0.5f0), fallbacklabel::TradeLabel=allclose)
+    @assert length(labels) > 0 "labels length must be > 0; got $(length(labels))"
+    mapped = TradeLabel[]
+    for label in labels
+        @assert label in keys(_LSTM_LABEL_MAP) "unsupported label=$label; expected one of $(collect(keys(_LSTM_LABEL_MAP)))"
+        push!(mapped, _LSTM_LABEL_MAP[label])
+    end
+    thresholds = Dict{TradeLabel, Float32}()
+    for (k, v) in pairs(scorethresholds)
+        tlabel = Targets.tradelabel(String(k))
+        thresholds[tlabel] = Float32(v)
+    end
+    return LstmTradeDecider(mapped, thresholds, fallbacklabel, nothing)
+end
+
+"Stores OHLCV reference for interface compatibility with single-symbol strategies."
+function setbase!(decider::LstmTradeDecider, ohlcv::Ohlcv.OhlcvData)
+    decider.ohlcv = ohlcv
+    return decider
+end
+
+"Resolves the final order label to be emitted for a selected trade label."
+function _label2orderlabel(label::TradeLabel, assettype::TrendPhase)
+    if label in [longbuy, longclose, shortbuy, shortclose]
+        return label
+    elseif label == allclose
+        if assettype == up
+            return longclose
+        elseif assettype == down
+            return shortclose
+        else
+            return nothing
+        end
+    else
+        return nothing
+    end
+end
+
+"""
+Maps a single probability vector to one trade action.
+
+The max-probability class is selected first. If its probability is below the
+configured class threshold, `fallbacklabel` is used.
+"""
+function lstm_trade_action(decider::LstmTradeDecider, probs::AbstractVector{<:Real}; assettype::TrendPhase=flat)
+    @assert length(probs) == length(decider.labels) "length(probs)=$(length(probs)) must equal number of decider labels=$(length(decider.labels))"
+    predix = argmax(probs)
+    predlabel = decider.labels[predix]
+    predscore = Float32(probs[predix])
+    threshold = get(decider.scorethresholds, predlabel, 1f0)
+    selected = predscore >= threshold ? predlabel : decider.fallbacklabel
+    orderlabel = _label2orderlabel(selected, assettype)
+    return TradeAction(false, orderlabel, nothing, 1f0)
+end
+
+"Maps all probability columns `(nclasses, nsamples)` to one `TradeAction` per sample."
+function lstm_trade_actions(decider::LstmTradeDecider, probsmat::AbstractMatrix{<:Real}; assettype::TrendPhase=flat)
+    @assert size(probsmat, 1) == length(decider.labels) "size(probsmat, 1)=$(size(probsmat, 1)) must equal number of decider labels=$(length(decider.labels))"
+    actions = Vector{TradeAction}(undef, size(probsmat, 2))
+    for ix in 1:size(probsmat, 2)
+        actions[ix] = lstm_trade_action(decider, view(probsmat, :, ix), assettype=assettype)
+    end
+    return actions
+end
+
+"""
+Runs the trained Classify LSTM model on tensor windows and maps probabilities to
+trade actions.
+
+Returns a named tuple with `actions` and `probs`.
+"""
+function lstm_trade_actions(decider::LstmTradeDecider, model, X::Array{Float32,3}; assettype::TrendPhase=flat)
+    probs = Classify.predict_lstm_trade_signals(model, X)
+    actions = lstm_trade_actions(decider, probs; assettype=assettype)
+    return (actions=actions, probs=probs)
+end
+
+"""
+Builds windows from an LSTM contract, predicts probabilities using a
+trained Classify LSTM model, and maps probabilities to trade actions.
+
+Returns a named tuple with `actions`, `probs`, and aligned window metadata
+(`targets`, `sets`, `rangeids`, `endrix`).
+"""
+function lstm_trade_actions(decider::LstmTradeDecider, model, contract::Classify.LstmBoundsTrendFeatures; seqlen::Int, assettype::TrendPhase=flat)
+    windows = Classify.lstm_tensor_windows(contract; seqlen=seqlen)
+    if size(windows.X, 3) == 0
+        return (
+            actions=TradeAction[],
+            probs=Array{Float32}(undef, length(decider.labels), 0),
+            targets=String[],
+            sets=String[],
+            rangeids=Int32[],
+            endrix=Int32[],
+        )
+    end
+    probs = Classify.predict_lstm_trade_signals(model, windows.X)
+    actions = lstm_trade_actions(decider, probs; assettype=assettype)
+    return (
+        actions=actions,
+        probs=probs,
+        targets=windows.targets,
+        sets=windows.sets,
+        rangeids=windows.rangeids,
+        endrix=windows.endrix,
+    )
 end
 
 mutable struct GainSegment

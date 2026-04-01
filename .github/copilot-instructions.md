@@ -1,0 +1,35 @@
+---
+applyTo: '*.jl'
+---
+#Project guidelines for Julia files
+- use docstrings for all functions and types
+- write unit tests for all functions and types of a module and place these unit tests in the test subfolder of the module
+- follow the Julia style guide: https://docs.julialang.org/en/v1/manual/style-guide/
+- use meaningful variable and function names
+- avoid global variables
+- write comments to explain complex code
+- keep functions short and focused on a single task
+- use type annotations for function arguments and return types when appropriate
+- avoid using `!` in function names unless the function modifies its arguments
+- use `const` for global variables that do not change
+- organize code into modules and packages for better maintainability
+- the following workspace local packages should be maintained and build the architecture of CryptoTimeSeries:
+    - EnvConfig - for environment configuration management and utilities (e.g., loading environment variables, managing configuration files). It is not dependent from other packages of the workspace
+    - CryptoXch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project and provides also a simulation mode that uses historic OHLCV (open, close high, low, volume) data. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
+    - Ohlcv - for handling OHLCV data structures and related utilities 
+    - Features - for features calculation used to train tading signals 
+    - Targets - for target calculation used to train trading signals 
+    - TestOhlcv - for artificial OHLCV data generation and testing utilities
+    - Classify - to train and infer trading signals.
+    - Trade - for trade execution and asset risk management
+    - Assets - for bookkeeping of trades and asset management
+    - TradingStrategy - is providing trade actions to optimize the gain of buy and sell actions. It uses Classify
+- CryptoTimeSeries - the main workspace that ties everything together and provides high-level functionality
+- CryptoTimeSeries/scripts - folder that provides scripts that use all of the above packages to implement the full trading pipeline  but no other program or script is dependent on them
+- use `Pkg` for managing dependencies
+- circular packages dependencies are not allowed
+- within a package place the module in the src subfolder of the package and test files in the test subfolder of the package 
+- write performance-critical code in a way that is easy to optimize later
+- follow the conventions for error handling using `try`, `catch`, and `throw`
+- use the Test module with `@test` and `@testset` macros for writing unit tests
+- for @assert always provide an explanation text that includes the real value of the tested parameters

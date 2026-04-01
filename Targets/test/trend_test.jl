@@ -1,11 +1,11 @@
 using Dates, DataFrames  # , Logging, LoggingFacilities, NamedArrays
 using Test
 using Logging, LoggingExtras
-using EnvConfig, Features, Targets, TestOhlcv, Ohlcv, CryptoXch
+using EnvConfig, Features, Targets, TestOhlcv, Ohlcv
 
 # with_logger(TimestampTransformerLogger(current_logger(), BeginningMessageLocation();
 #                                               format = "yyyy-mm-dd HH:MM:SSz")) do
-Targets.verbosity = 3
+Targets.verbosity = 1
 
 EnvConfig.init(test)
 # EnvConfig.init(production)
@@ -39,8 +39,7 @@ end
     startdt = DateTime("2025-02-17T13:30:00")
     enddt = startdt + Hour(6)
     # EnvConfig.init(production)
-    xc = CryptoXch.XchCache()
-    ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
+    ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt, "1m")
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     # println(describe(ohlcv.df, :all))
 
@@ -53,7 +52,7 @@ end
     minitrenddisturbance!(ohlcv, 150, 4, 1.1 * thres.longbuy, 0.01 * thres.longbuy)
     Targets.setbase!(trd, ohlcv)
 
-    # println("trade labels: $(Targets.tradelabels(trd))")
+    # println("trade labels: $(Targets.uniquelabels(trd))")
     # println(Targets.df(trd, DateTime("2023-02-17T13:31:00"), DateTime("2023-02-17T13:39:00")))
     # println(trd.df)
     # println(describe(trd.df, :all))
@@ -63,11 +62,15 @@ end
     # println(Targets.labels(trd))
 
 
-    ixcheck = [ix - trd.maxwindow < trd.df[ix, :relix] <= ix for ix in eachindex(trd.df[!,:relix])]
+    ixcheck = [firstindex(ohlcv.df[!, :opentime]) <= trd.df[ix, :relix] <= ix for ix in eachindex(trd.df[!,:relix])]
     gaincheck = [(ohlcv.df[ix, :pivot] .- ohlcv.df[trd.df[ix, :relix], :pivot]) / ohlcv.df[trd.df[ix, :relix], :pivot] for ix in eachindex(ohlcv.df[!, :opentime])]
     if (Targets.verbosity >= 3)
+        tmp2labels = :tmp2label in names(trd.df) ? trd.df[!, :tmp2label] : fill(allclose, size(trd.df, 1))
+        tmprelix = :tmprelix in names(trd.df) ? trd.df[!, :tmprelix] : copy(trd.df[!, :relix])
+        tmpreldiff = :tmpreldiff in names(trd.df) ? trd.df[!, :tmpreldiff] : copy(trd.df[!, :reldiff])
+        tmplabels = :tmplabel in names(trd.df) ? trd.df[!, :tmplabel] : copy(trd.df[!, :label])
         df = DataFrame((opentime=ohlcv.df.opentime, pivot=ohlcv.df.pivot, targettime=trd.df.opentime, relix=trd.df.relix, reldiff=trd.df.reldiff, 
-            labels=Targets.labels(trd), tmp2labels=trd.df.tmp2label, tmprelix=trd.df.tmprelix, tmpreldiff=trd.df.tmpreldiff, tmplabels=trd.df.tmplabel, ixcheck=ixcheck, 
+            labels=Targets.labels(trd), tmp2labels=tmp2labels, tmprelix=tmprelix, tmpreldiff=tmpreldiff, tmplabels=tmplabels, ixcheck=ixcheck, 
             relativegain=Targets.relativegain(trd), gaincheck=gaincheck, gainchecktest=(gaincheck .== Targets.relativegain(trd)),
             longbuybinarytargets=Targets.labelbinarytargets(trd, longbuy), longbuyrelativegain=Targets.labelrelativegain(trd, longbuy), 
             shortbuybinarytargets=Targets.labelbinarytargets(trd, shortbuy), shortbuyrelativegain=Targets.labelrelativegain(trd, shortbuy)
@@ -90,7 +93,7 @@ end
     # @test all(gaincheck .== Targets.relativegain(trd))
 
     # extend 5 minutes
-    ohlcvxt = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt+Minute(5), enddt+Minute(5))
+    ohlcvxt = TestOhlcv.testohlcv("SINE", startdt+Minute(5), enddt+Minute(5), "1m")
     ohlcv.df = ohlcvxt.df
     Ohlcv.timerangecut!(ohlcv, startdt+Minute(5), enddt+Minute(5))
     Targets.supplement!(trd)
@@ -106,4 +109,5 @@ end
     @test length(Targets.relativegain(trd)) == 0
     ret="end"
 end  # of testset
+
 return 

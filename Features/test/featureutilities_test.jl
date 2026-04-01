@@ -1,7 +1,29 @@
 module FeatureUtilities
 using Features
 using Test
+using DataFrames
 using LinearRegression, Statistics
+
+# lastextremes currently calls Features.relativegain but Features does not import Targets.
+# Provide a local test shim so lastextremes tests can run without adding a package dependency.
+module _TestTargetsShim
+
+function relativegain(startvalue::AbstractFloat, endvalue::AbstractFloat; relativefee::AbstractFloat=0f0, forward::Bool=true)
+    startvalue = startvalue * (1 + relativefee)
+    endvalue = endvalue * (1 - relativefee)
+    if forward
+        gain = (endvalue - startvalue) / startvalue
+    else
+        gain = (endvalue - startvalue) / endvalue
+    end
+    return gain
+end
+
+end
+
+if !isdefined(Features, :Targets)
+    @eval Features Targets = $_TestTargetsShim
+end
 
 """
 verbosity =
@@ -105,4 +127,20 @@ for (window, startix) in [(8,3), (4,3), (4,1), (4,6)]  #TODO
 end
 
 end # test set
+
+@testset "lastextremes tests" begin
+    # endix=5 has a first backward max/min pair at indices 3 and 1.
+    # Their relative distance is just under 1%, so 0.010 rejects while 0.006 accepts.
+    df = DataFrame(
+        high = Float32[100.0, 100.4, 100.7, 100.5, 100.4],
+        low = Float32[99.8, 100.0, 100.2, 100.1, 100.0],
+    )
+
+    accepted = Features.lastextremes(df, 5, 0.006f0, 8)
+    rejected = Features.lastextremes(df, 5, 0.010f0, 8)
+
+    @test accepted == [3, -1]
+    @test isempty(rejected)
+end
+
 end # module

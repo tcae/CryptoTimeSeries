@@ -9,7 +9,7 @@ Provides
 """
 module EnvConfig
 using Logging, Dates, Pkg, JSON3, DataFrames, JDF
-export authorization, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!
+export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!
 
 """
 verbosity =
@@ -163,20 +163,112 @@ struct Authentication
     key::String
     secret::String
 
-    function Authentication()
-        auth = Dict()
-        if configmode != test
-            filename = normpath(joinpath(authpath, "auth.json"))
-        else  # must be test
-            filename = normpath(joinpath(authpath, "authtest.json"))
+    function Authentication(name::Union{Nothing, AbstractString}=nothing)
+        filename = configmode != test ? normpath(joinpath(authpath, "auth.json")) : normpath(joinpath(authpath, "authtest.json"))
+        authroot = open(filename, "r") do f
+            JSON3.read(read(f, String), Dict)
         end
-        dicttxt = open(filename, "r") do f
-            read(f, String)  # file information to string
+        entries, defaultname = _authentries(authroot)
+        @assert length(entries) > 0 "no valid auth entries found in $filename"
+
+        selectedname = isnothing(name) ? (isnothing(defaultname) ? String(entries[1]["name"]) : defaultname) : String(name)
+        selectedix = findfirst(entry -> lowercase(String(entry["name"])) == lowercase(selectedname), entries)
+        if isnothing(selectedix)
+            available = [String(entry["name"]) for entry in entries]
+            error("authentication tuple name=$selectedname not found in $filename. available=$available")
         end
-        auth = JSON3.read(dicttxt, Dict)  # parse and transform data
-        # println(mode, auth)
-        new(auth["name"], auth["key"], auth["secret"])
+
+        selected = entries[selectedix]
+        @assert haskey(selected, "key") && haskey(selected, "secret") "selected auth entry $(selectedname) is missing key/secret"
+        new(String(selected["name"]), String(selected["key"]), String(selected["secret"]))
     end
+end
+
+"""
+Set global authorization credentials by tuple name from the auth file.
+If `name` is `nothing`, default entry is selected.
+"""
+function setauthorization!(name::Union{Nothing, AbstractString}=nothing)
+    global authorization
+    authorization = Authentication(name)
+    return authorization
+end
+
+"""
+Parse auth root dictionary and return `(entries, defaultname)`.
+
+Supports both legacy and extended formats:
+- legacy: single top-level `name/key/secret`
+- extended: top-level `default` + `credentials` (vector or dict)
+"""
+function _authentries(authroot::Dict)
+    entries = Dict[]
+    defaultname = haskey(authroot, "default") ? String(authroot["default"]) : nothing
+
+    if haskey(authroot, "credentials")
+        credentials = authroot["credentials"]
+        if credentials isa AbstractVector
+            for raw in credentials
+                if raw isa AbstractDict
+                    entry = Dict(raw)
+                    haskey(entry, "name") || continue
+                    haskey(entry, "key") || continue
+                    haskey(entry, "secret") || continue
+                    push!(entries, entry)
+                end
+            end
+        elseif credentials isa AbstractDict
+            for (tuple_name, raw) in Dict(credentials)
+                if raw isa AbstractDict
+                    entry = Dict(raw)
+                    if !haskey(entry, "name")
+                        entry["name"] = String(tuple_name)
+                    end
+                    haskey(entry, "key") || continue
+                    haskey(entry, "secret") || continue
+                    push!(entries, entry)
+                end
+            end
+        end
+    end
+
+    if length(entries) == 0
+        # Legacy single-entry format: {"name":...,"key":...,"secret":...}
+        if haskey(authroot, "name") && haskey(authroot, "key") && haskey(authroot, "secret")
+            push!(entries, Dict(
+                "name" => authroot["name"],
+                "key" => authroot["key"],
+                "secret" => authroot["secret"],
+            ))
+        else
+            # Alternative extended format: top-level map of tuples
+            for (tuple_name, raw) in authroot
+                if raw isa AbstractDict
+                    entry = Dict(raw)
+                    haskey(entry, "key") || continue
+                    haskey(entry, "secret") || continue
+                    if !haskey(entry, "name")
+                        entry["name"] = String(tuple_name)
+                    end
+                    push!(entries, entry)
+                end
+            end
+        end
+    end
+
+    return entries, defaultname
+end
+
+"""
+Returns list of authentication tuple names found in the active auth file.
+"""
+function authenticationnames()::Vector{String}
+    filename = configmode != test ? normpath(joinpath(authpath, "auth.json")) : normpath(joinpath(authpath, "authtest.json"))
+    authroot = open(filename, "r") do f
+        JSON3.read(read(f, String), Dict)
+    end
+    entries, _ = _authentries(authroot)
+    return [String(entry["name"]) for entry in entries]
 end
 
 timestr(dt) = isnothing(dt) ? "nodatetime" : Dates.format(dt, EnvConfig.datetimeformat)
@@ -269,12 +361,12 @@ function getdatafolder(folder, newfolder=false)
     return folder
 end
 
-function init(mode::Mode; newdatafolder=false)
+function init(mode::Mode; newdatafolder=false, authname::Union{Nothing, AbstractString}=nothing)
     global configmode = mode
     global bases, trainingbases, datafolder
     global authorization
 
-    authorization = Authentication()
+    authorization = Authentication(authname)
     if configmode == production
         bases = [
             "btc"]

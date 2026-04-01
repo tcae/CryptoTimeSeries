@@ -83,7 +83,10 @@
 		],
 		"csv-preview.resizeColumns": "all",
 		"julia.NumThreads": 0,
-		"julia.numTestProcesses": 1
+		"julia.numTestProcesses": 1,
+		"chat.tools.terminal.autoApprove": {
+			"julia": true
+		}
 	},
 	"launch": {
 		"version": "0.2.0",

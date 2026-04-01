@@ -2,7 +2,7 @@
 
 julia_version = "1.10.10"
 manifest_format = "2.0"
-project_hash = "54661d4a90b1e2df896de76be5b51d204d76d6c8"
+project_hash = "50f63502e024e1bb25a0df99e4d4c6b7d10ce94d"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -337,6 +337,18 @@ deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
 git-tree-sha1 = "43032da5832754f58d14a91ffbe86d5f176acda9"
 uuid = "f7e6163d-2fa5-5f23-b69c-1db539e41963"
 version = "0.2.1+0"
+
+[[deps.KrakenFutures]]
+deps = ["Base64", "DataFrames", "Dates", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
+path = "../KrakenFutures"
+uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
+version = "0.1.0"
+
+[[deps.KrakenSpot]]
+deps = ["Base64", "DataFrames", "Dates", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
+path = "../KrakenSpot"
+uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
+version = "0.1.0"
 
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"

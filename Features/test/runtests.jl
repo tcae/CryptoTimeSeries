@@ -4,7 +4,7 @@ using Dates, DataFrames
 using Test
 using LinearRegression
 
-using EnvConfig, Ohlcv, Features, CryptoXch, TestOhlcv
+using EnvConfig, Ohlcv, Features, TestOhlcv
 
 include("featureutilities_test.jl")
 include("features006_test.jl")

@@ -6,7 +6,7 @@
 module CryptoXch
 
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings
-using Bybit, EnvConfig, Ohlcv, TestOhlcv
+using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TestOhlcv
 import Ohlcv: intervalperiod
 
 """
@@ -21,30 +21,119 @@ verbosity = 1
 @enum Sidefactor buy=1 sell=-1 invaid = 0
 @enum SimMode nosimulation bybitsim cryptoxchsim
 
+const EXCHANGE_BYBIT::String = "Bybit"
+const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
+const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
+
+function _normalizeexchange(exchange::AbstractString)::String
+    ex = lowercase(strip(exchange))
+    if ex == lowercase(EXCHANGE_BYBIT)
+        return EXCHANGE_BYBIT
+    elseif ex == lowercase(EXCHANGE_KRAKENFUTURES)
+        return EXCHANGE_KRAKENFUTURES
+    elseif ex == lowercase(EXCHANGE_KRAKENSPOT)
+        return EXCHANGE_KRAKENSPOT
+    end
+    throw(ArgumentError("unsupported exchange=$(exchange), supported=[$(EXCHANGE_BYBIT), $(EXCHANGE_KRAKENFUTURES), $(EXCHANGE_KRAKENSPOT)]"))
+end
+
+function _exchangeModule(exchange::AbstractString)
+    ex = _normalizeexchange(exchange)
+    if ex == EXCHANGE_BYBIT
+        return Bybit
+    elseif ex == EXCHANGE_KRAKENFUTURES
+        return KrakenFutures
+    end
+    return KrakenSpot
+end
+
+_exchangeemptyorders(exchange::AbstractString)::DataFrame = _exchangeModule(exchange).emptyorders()
+
+function _exchangefromauthname(authname::AbstractString)::Union{Nothing, String}
+    n = lowercase(strip(authname))
+    if occursin("krakenfutures", n) || occursin("kraken-futures", n)
+        return EXCHANGE_KRAKENFUTURES
+    elseif occursin("krakenspot", n) || occursin("kraken-spot", n)
+        return EXCHANGE_KRAKENSPOT
+    elseif occursin("bybit", n)
+        return EXCHANGE_BYBIT
+    end
+    return nothing
+end
+
+function _authfromname(authname::Union{Nothing, AbstractString})
+    if isnothing(authname)
+        return EnvConfig.authorization
+    end
+    return EnvConfig.Authentication(String(authname))
+end
+
+function _exchangecache(exchange::AbstractString, simmode::SimMode, authname::Union{Nothing, AbstractString}=nothing)
+    ex = _normalizeexchange(exchange)
+    auth = _authfromname(authname)
+    publickey = isnothing(auth) ? "" : String(auth.key)
+    secretkey = isnothing(auth) ? "" : String(auth.secret)
+    if ex == EXCHANGE_BYBIT
+        return Bybit.BybitCache(simmode == bybitsim, publickey, secretkey)
+    elseif ex == EXCHANGE_KRAKENFUTURES
+        (simmode == bybitsim) && @warn "simmode=$(simmode) is Bybit-specific and ignored for exchange=$(ex)"
+        return KrakenFutures.KrakenFuturesCache(publickey=publickey, secretkey=secretkey)
+    end
+    (simmode == bybitsim) && @warn "simmode=$(simmode) is Bybit-specific and ignored for exchange=$(ex)"
+    return KrakenSpot.KrakenSpotCache(publickey=publickey, secretkey=secretkey)
+end
+
 mutable struct XchCache
     orders  # ::DataFrame
     closedorders  # ::DataFrame
     assets  # :: DataFrame
     bases  # ::Dict{String, Ohlcv.OhlcvData}
-    bc  # ::Union{Nothing, Bybit.BybitCache}
-    feerate  # 0.001 = 0.1% at Bybit maker = taker fee  #TODO store exchange info and account fee rate and use it in offline backtest simulation
+    bc  # exchange specific cache, e.g. Bybit.BybitCache or KrakenSpot.KrakenSpotCache
+    exchange::String
+    authname::Union{Nothing, String}
+    feerate  # 0.001 = 0.1% maker/taker fee by default  #TODO store exchange info and account fee rate and use it in offline backtest simulation
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mnemonic  # String or nothing
     mc::Dict # MC = module constants
-    function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing)
+    function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, exchange::String=EXCHANGE_BYBIT, authname::Union{Nothing, AbstractString}=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         # simmode = cryptoxchsim # does not call Bybit for account specific functions but uses CryptoXch simulation
         # simmode = bybitsim # does not use CryptoXch simulation but Bybit Testnet simulation
         # simmode = nosimulation # uses production mode of Bybit without any exchange simulation
+        if !isnothing(authname)
+            inferred = _exchangefromauthname(String(authname))
+            if !isnothing(inferred) && (exchange != inferred)
+                (verbosity >= 2) && @info "XchCache exchange $(exchange) overridden by authname=$(authname) -> $(inferred)"
+                exchange = inferred
+            end
+        end
+        exchange = _normalizeexchange(exchange)
+        authname = isnothing(authname) ? nothing : String(authname)
         simmode = EnvConfig.configmode == production ? simmode = nosimulation : simmode = cryptoxchsim
-        xc = new(_emptyorders(), _emptyorders(), _emptyassets(), Dict(), Bybit.BybitCache(simmode == bybitsim), 0.001, startdt, nothing, enddt, mnemonic, Dict())
+        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode, authname), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict())
         xc.mc[:simmode] = simmode
         return xc
     end
 end
+
+exchange(xc::XchCache)::String = xc.exchange
+authname(xc::XchCache) = xc.authname
+_exchangeModule(xc::XchCache) = _exchangeModule(xc.exchange)
+
+_exchangeservertime(xc::XchCache) = _exchangeModule(xc).servertime(xc.bc)
+_exchangesymbolinfo(xc::XchCache, symbol) = _exchangeModule(xc).symbolinfo(xc.bc, symbol)
+_exchangevalidsymbol(xc::XchCache, sym) = _exchangeModule(xc).validsymbol(xc.bc, sym)
+_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _exchangeModule(xc).getklines(xc.bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
+_exchangeget24h(xc::XchCache) = _exchangeModule(xc).get24h(xc.bc)
+_exchangebalances(xc::XchCache) = _exchangeModule(xc).balances(xc.bc)
+_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _exchangeModule(xc).openorders(xc.bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
+_exchangeorder(xc::XchCache, orderid) = _exchangeModule(xc).order(xc.bc, orderid)
+_exchangecancelorder(xc::XchCache, symbol, orderid) = _exchangeModule(xc).cancelorder(xc.bc, symbol, orderid)
+_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0) = _exchangeModule(xc).createorder(xc.bc, symbol, orderside, basequantity, price, maker, marginleverage=marginleverage)
+_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = _exchangeModule(xc).amendorder(xc.bc, symbol, orderid; basequantity=basequantity, limitprice=limitprice)
 
 setstartdt(xc::XchCache, dt::DateTime) = (xc.startdt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
 setenddt(xc::XchCache, dt::DateTime) = (xc.enddt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
@@ -149,8 +238,8 @@ function Base.iterate(xc::XchCache, currentdt=nothing)
 end
 
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
-tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(Bybit.servertime(xc.bc), Minute(1)) : xc.currentdt
-# tradetime(xc::XchCache) = (xc.mc[:simmode] != cryptoxchsim) ? Bybit.servertime(xc.bc) : Dates.now(UTC)
+tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(_exchangeservertime(xc), Minute(1)) : xc.currentdt
+# tradetime(xc::XchCache) = (xc.mc[:simmode] != cryptoxchsim) ? _exchangeservertime(xc) : Dates.now(UTC)
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
 
@@ -158,7 +247,7 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
     if !isnothing(xc.enddt)  # then backtest
         return
     end
-    sleepperiod = (dt + Second(2)) - Bybit.servertime(xc.bc)
+    sleepperiod = (dt + Second(2)) - _exchangeservertime(xc)
     if sleepperiod <= Dates.Second(0)
         return
     end
@@ -219,7 +308,7 @@ function _ohlcfromexchange(xc::XchCache, base::AbstractString, startdt::DateTime
         # pivot column is already added by TestOhlcv.testdataframe()
     else
         symbol = uppercase(base*cryptoquote)
-        df = Bybit.getklines(xc.bc, symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
+        df = _exchangegetklines(xc, symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
         Ohlcv.addpivot!(df)
     end
     return df
@@ -391,8 +480,8 @@ end
 #region public
 
 function validsymbol(xc::XchCache, symbol)
-    sym = Bybit.symbolinfo(xc.bc, symbol)
-    r = Bybit.validsymbol(xc.bc, sym) &&
+    sym = _exchangesymbolinfo(xc, symbol)
+    r = _exchangevalidsymbol(xc, sym) &&
         !(sym.basecoin in baseignore) &&
         !_isleveraged(sym.basecoin)
     return r || (basequote(symbol).basecoin in TestOhlcv.testbasecoin())
@@ -400,10 +489,10 @@ end
 
 "Returns a tuple of (minimum base quantity, minimum quote quantity)"
 function minimumqty(xc::XchCache, sym::AbstractString)
-    syminfo = Bybit.symbolinfo(xc.bc, sym)
+    syminfo = _exchangesymbolinfo(xc, sym)
     if isnothing(syminfo)
         if validsymbol(xc, sym)
-            (verbosity >= 1) && @error "cannot find symbol $sym in Bybit exchange info"
+            (verbosity >= 1) && @error "cannot find symbol $sym in $(exchange(xc)) exchange info"
         end
         return nothing
     end
@@ -429,9 +518,9 @@ function minimumquotequantity(xc::XchCache, base::AbstractString, price=(base in
 end
 
 function precision(xc::XchCache, sym::AbstractString)
-    syminfo = Bybit.symbolinfo(xc.bc, sym)
+    syminfo = _exchangesymbolinfo(xc, sym)
     if isnothing(syminfo)
-        (verbosity >= 1) && @error "cannot find symbol $sym in Bybit exchange info"
+        (verbosity >= 1) && @error "cannot find symbol $sym in $(exchange(xc)) exchange info"
         return nothing
     end
     return (baseprecision=syminfo.baseprecision, quoteprecision=syminfo.quoteprecision)
@@ -508,7 +597,7 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
             (verbosity >=2) && println("No USDT market data file $cfgfilename for $dt found")
         end
     else  # production
-        usdtdf = Bybit.get24h(xc.bc)
+        usdtdf = _exchangeget24h(xc)
         bq = [basequote(s) for s in usdtdf.symbol]  # create vector of pairs (basecoin, quotecoin)
         @assert length(bq) == size(usdtdf, 1)
         usdtdf[!, :basecoin] = [isnothing(bqe) ? missing : bqe.basecoin for bqe in bq]
@@ -532,7 +621,7 @@ end
 function balances(xc::XchCache; ignoresmallvolume=true)
     bdf = nothing
     if (xc.mc[:simmode] != cryptoxchsim)
-        bdf = Bybit.balances(xc.bc)
+        bdf = _exchangebalances(xc)
         select = [!(coin in baseignore) || (coin == EnvConfig.cryptoquote) for coin in bdf[!, :coin]]
         bdf = bdf[select, :]
     else  # simulation
@@ -622,8 +711,8 @@ Returns an AbstractDataFrame of open **spot** orders with columns:
 """
 function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
     if (xc.mc[:simmode] != cryptoxchsim)
-        oo = Bybit.openorders(xc.bc, symbol=symboltoken(base))
-        return size(oo) == (0,0) ? _emptyorders() : oo
+        oo = _exchangeopenorders(xc, symbol=symboltoken(base))
+        return size(oo) == (0,0) ? _emptyorders(exchange(xc)) : oo
     else  # simulation
         if isnothing(xc)
             (verbosity >= 1) && @error "cannot simulate getopenorders() with uninitialized CryptoXch cache"
@@ -641,7 +730,7 @@ end
 "Returns a named tuple with elements equal to columns of getopenorders() dataframe of the identified order or `nothing` if order is not found"
 function getorder(xc::XchCache, orderid)
     if (xc.mc[:simmode] != cryptoxchsim)
-        return Bybit.order(xc.bc, orderid)
+        return _exchangeorder(xc, orderid)
     else  # simulation
         orderindex = _orderrefresh(xc, orderid)
         coix = isnothing(orderindex) ? findlast(x -> x == orderid, xc.closedorders[!, :orderid]) : nothing
@@ -652,7 +741,7 @@ end
 "Returns orderid in case of a successful cancellation"
 function cancelorder(xc::XchCache, base, orderid)
     if (xc.mc[:simmode] != cryptoxchsim)
-        return Bybit.cancelorder(xc.bc, symboltoken(base), orderid)
+        return _exchangecancelorder(xc, symboltoken(base), orderid)
     else  # simulation
         return _cancelordersimulation(xc, orderid)
     end
@@ -667,7 +756,7 @@ Returns `nothing` in case order execution fails.
 function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0)
     base = uppercase(base)
     if (xc.mc[:simmode] != cryptoxchsim)
-        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
+        oocreate = _exchangecreateorder(xc, symboltoken(base), "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
@@ -685,7 +774,7 @@ Returns `nothing` in case order execution fails.
 function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0)
     base = uppercase(base)
     if (xc.mc[:simmode] != cryptoxchsim)
-        oocreate = Bybit.createorder(xc.bc, symboltoken(base), "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
+        oocreate = _exchangecreateorder(xc, symboltoken(base), "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
         (verbosity >= 3) && @info "$(tradetime(cache)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
@@ -696,11 +785,11 @@ end
 
 function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing)
     if (xc.mc[:simmode] != cryptoxchsim)
-        oo = Bybit.order(xc.bc, orderid) #TODO in order to avoid this unnecessary order request the interface of Bybit.amendorder need to remove symbol param
+        oo = _exchangeorder(xc, orderid) #TODO in order to avoid this unnecessary order request the interface of exchange.amendorder need to remove symbol param
         if isnothing(oo)
             return nothing
         end
-        ooamend = Bybit.amendorder(xc.bc, oo.symbol, orderid; basequantity=basequantity, limitprice=limitprice)
+        ooamend = _exchangeamendorder(xc, oo.symbol, orderid; basequantity=basequantity, limitprice=limitprice)
         return isnothing(ooamend) ? nothing : ooamend.orderid
     else  # simulation
         return _changeordersimulation(xc::XchCache, orderid; limitprice=limitprice, basequantity=basequantity)
@@ -984,7 +1073,7 @@ function _createordersimulation(xc::XchCache, base, side::Sidefactor, baseqty, l
     dtnow = ohlcv.df.opentime[ohlcv.ix]
     sym = symboltoken(base)
     if isnothing(limitprice)  # no limitprice indicates maker=true
-        syminfo = Bybit.symbolinfo(xc.bc, sym)
+        syminfo = _exchangesymbolinfo(xc, sym)
         limitprice = side == buy ? ohlcv.df[ohlcv.ix, :close] - syminfo.ticksize : ohlcv.df[ohlcv.ix, :close] + syminfo.ticksize
         timeinforce = "PostOnly"
     else
@@ -1045,8 +1134,8 @@ end
 _emptyassets()::DataFrame = DataFrame(coin=String31[], free=Float32[], locked=Float32[], marginfree=Float32[], marginlocked=Float32[], assetborrowed=Float32[], orderborrowed=Float32[], accruedinterest=Float32[])
 
 "provides an empty dataframe for simulation (with lastcheck as extra column)"
-function _emptyorders()::DataFrame
-    df = Bybit.emptyorders()
+function _emptyorders(exchange::AbstractString=EXCHANGE_BYBIT)::DataFrame
+    df = _exchangeemptyorders(exchange)
     insertcols!(df, :marginleverage => Vector{Int32}(undef, 0))
 end
 

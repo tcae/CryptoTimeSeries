@@ -45,13 +45,25 @@ BYBIT_APIREST = "https://api.bybit.com"
 BYBIT_TESTNET_APIREST = "https://api-testnet.bybit.com"
 
 "Initializes Bybit if testnet==true then the Bybit Testnet is used"
-function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test)::BybitCache
+function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, publickey::Union{Nothing, AbstractString}=nothing, secretkey::Union{Nothing, AbstractString}=nothing)::BybitCache
     apirest = testnet ? BYBIT_TESTNET_APIREST : BYBIT_APIREST
-    bc = BybitCache(nothing, apirest, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    if isnothing(publickey) || isnothing(secretkey)
+        if isnothing(EnvConfig.authorization)
+            pk = ""
+            sk = ""
+        else
+            pk = String(EnvConfig.authorization.key)
+            sk = String(EnvConfig.authorization.secret)
+        end
+    else
+        pk = String(publickey)
+        sk = String(secretkey)
+    end
+    bc = BybitCache(nothing, apirest, pk, sk)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.cryptoquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    return BybitCache(xchinfo, apirest, EnvConfig.authorization.key, EnvConfig.authorization.secret)
+    return BybitCache(xchinfo, apirest, pk, sk)
 end
 
 function apiKS()

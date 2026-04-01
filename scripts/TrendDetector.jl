@@ -1,23 +1,7 @@
-using Classify
-
-"""
-- start with Testohlcv to check learning works
-- find out how many blocks of a coin are formed by using only liquid coins
-- use liquid ranges to determine test, eval, train ranges and store them in persistent dataframe
-- generate features and targets for all coins and store them in earmarked as test, eval, train into a common DataFrame
-- then adapt with all coins to get a one classifier for all coins
-
-hyper parameters:
-- trend gain: 1%, 2%, 4%
-- trend breaking gain: 0.5%, 1%
-
-classes: binary longbuy yes vs no (=longclose) with hysteresis using likelihood % of longbuy violate
-
-"""
 module TrendDetector
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils, StatisticalMeasures
 using CategoricalArrays, CategoricalDistributions, Distributions
-using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets, TradingStrategy
+using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy
 
 #TODO regression from last trend pivot as feature 
 """
@@ -46,21 +30,23 @@ mutable struct TrendDetectorConfig
     tradingstrategy::TradingStrategy.GainSegment
     startdt::DateTime
     enddt::DateTime
-    trenddetectormode::TrendDetectorMode
+    opmode::TrendDetectorMode
     partitionconfig::NamedTuple
     coins::Vector{String}
-    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, trenddetectormode=execute, partitionconfig=partitionconfig02(), coins)
+    oversampling::Bool
+    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=partitionconfig02(), coins, oversampling=true)
         EnvConfig.setlogpath(folder)
         (verbosity >= 2) && println("log folder: $(EnvConfig.logfolder())")
         (verbosity >= 2) && println("data range: $startdt - $enddt")
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, trenddetectormode, partitionconfig, coins)
+        (verbosity >= 2) && println("oversampling=$oversampling")
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
 
-include("trenddetectorconfigs.jl")
+include("optimizationconfigs.jl")
 
 """
 returns targets
@@ -73,7 +59,7 @@ function calctargets!(trgcfg::Targets.AbstractTargets, featcfg::Features.Abstrac
     (verbosity >= 4) && println("$(EnvConfig.now()) target calculation from $(fot[begin]) until $(fot[end])")
     Targets.setbase!(trgcfg, ohlcv)
     targets = Targets.labels(trgcfg, fot[begin], fot[end])
-    Targets.labeldistribution(targets)
+    # Targets.labeldistribution(targets)
     @assert size(features, 1) == length(targets) "size(features, 1)=$(size(features, 1)) != length(targets)=$(length(targets))"
     # (verbosity >= 3) && println(describe(trgcfg.df, :all))
     return targets
@@ -96,6 +82,7 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
         samplesets = CategoricalArray(samplesets, levels=levels)
         skippedcoins = String[]
         processedcoins = String[]
+        targetissuesdf = DataFrame()
         for coinix in eachindex(cfg.coins)
             coin = cfg.coins[coinix]
             coinresultsdf = coinfeaturesdf = nothing
@@ -121,8 +108,15 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
                     rngfeatures = Features.features(cfg.featconfig)
                     rngresults = DataFrame(target=calctargets!(cfg.targetconfig, cfg.featconfig))
                     @assert size(rngresults, 1) == size(rngfeatures, 1) == size(Ohlcv.dataframe(rngohlcv), 1) "unexpected mismatch of targets length $(size(rngresults, 1)), features size $(size(rngfeatures, 1)) and ohlcv size $(size(Ohlcv.dataframe(rngohlcv), 1)) for $(ohlcv.base) range $rng"
-
                     rngresults = hcat(rngresults, Ohlcv.dataframe(rngohlcv)[!, [:opentime, :high, :low, :close, :pivot]]) 
+                    issues = Targets.crosscheck(cfg.targetconfig, rngresults[!, :target], rngresults[!, :pivot])
+                    if !isnothing(issues) && (length(issues) > 0)
+                        if size(targetissuesdf, 1) > 0
+                            targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=fill(coin, length(issues)), rangeid=fill(rangeid, length(issues))))
+                        else
+                            targetissuesdf = DataFrame(issue=issues, coin=fill(coin, length(issues)), rangeid=fill(rangeid, length(issues)))
+                        end
+                    end
                     rngresults[:, :rangeid] .= 0
                     rngresults[:, :set] = CategoricalVector(fill(samplesets[1], size(rngfeatures, 1)), levels=levels) # arbitrary value to initialize the column with correct type
                     allowmissing!(rngresults, :set)
@@ -150,6 +144,9 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
                 @assert size(coinresultsdf, 1) == size(coinfeaturesdf, 1) "unexpected mismatch of coinresultsdf and coinfeaturesdf size with coinresultsdf size $(size(coinresultsdf, 1)) and coinfeaturesdf size $(size(coinfeaturesdf, 1))"
                 EnvConfig.savedf(coinresultsdf, resultsfilename(coin))
                 EnvConfig.savedf(coinfeaturesdf, featuresfilename(coin))
+                if size(targetissuesdf, 1) > 0
+                    EnvConfig.savedf(targetissuesdf, targetissuesfilename())
+                end
                 coinfeaturesdf = coinresultsdf = nothing # free memory
                 push!(processedcoins, coin)
             else
@@ -188,8 +185,8 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             @assert (!isnothing(resultsdf) && (size(resultsdf, 1) > 0)) "unexpected inconsistency: length(processedcoins)=$(length(processedcoins)), (isnothing(resultsdf)=$(isnothing(resultsdf)) || (size(resultsdf, 1)=$((isnothing(resultsdf) ? "nothing" : (size(resultsdf, 1)))) == 0))"
             if size(resultsdf, 1) > 0
                 resultsdf[:, :sampleix] = collect(1:size(resultsdf, 1)) # sampleix is a unique index for each sample in the complete resultsdf 
-                resultsdf[:, :label] = fill(allclose, size(resultsdf, 1))
-                resultsdf[:, :score] = zeros(Float32, size(resultsdf, 1))
+                # resultsdf[:, :label] = fill(allclose, size(resultsdf, 1))
+                # resultsdf[:, :score] = zeros(Float32, size(resultsdf, 1))
                 EnvConfig.savedf(resultsdf, resultsfilename())
             end
             coinresultsdf = resultsdf = nothing # free memory
@@ -230,7 +227,7 @@ end
 classifiermenmonic(coins=nothing, coinix=nothing) = "mix"
 
 function getlatestclassifier(cfg::TrendDetectorConfig)
-    nn = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.tradelabels(cfg.targetconfig), classifiermenmonic()) # to get correct filename
+    nn = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), classifiermenmonic()) # to get correct filename
     (verbosity >= 3) && println("getlatestclassifier classifier file: $(Classify.nnfilename(nn.fileprefix)), isfile=$(isfile(Classify.nnfilename(nn.fileprefix)))")
     if isfile(Classify.nnfilename(nn.fileprefix))
         nn = Classify.loadnn(nn.fileprefix)
@@ -264,6 +261,7 @@ function showlosses(nn)
     end
 end
 
+
 function getclassifier(cfg::TrendDetectorConfig)
     nn = getlatestclassifier(cfg)
     if !Classify.isadapted(nn) || (!Classify.nnconverged(nn) && retrain)
@@ -278,11 +276,15 @@ function getclassifier(cfg::TrendDetectorConfig)
         features = df2features(featuresdf, cfg)
         targets = resultsdf[!, :target]
         (verbosity >= 3) && println("$(EnvConfig.now()) size(featuresdf)=$(size(featuresdf)), size(features)=$(size(features)), size(targets)=$(size(targets)) for training mix classifier"  )
-        (verbosity >= 2) && println("$(EnvConfig.now()) before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
         resultsdf = featuresdf = nothing # free memory
-        (features), targets = oversample((features), targets)  # all classes are equally trained
-        # (features), targets = undersample((features), targets)  # all classes are equally trained
-        (verbosity >= 2) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+        if cfg.oversampling
+            (verbosity >= 2) && println("$(EnvConfig.now()) before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+            (features), targets = oversample((features), targets)  # all classes are equally trained
+            # (features), targets = undersample((features), targets)  # all classes are equally trained
+            (verbosity >= 2) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+        else
+            (verbosity >= 2) && println("$(EnvConfig.now()) no oversampling applied - class distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+        end
         Classify.adaptnn!(nn, features, targets)
         (verbosity >= 3) && showlosses(nn)
         if isnothing(nn)
@@ -303,6 +305,7 @@ The returned DataFrame provides one score::Float32 column and one label::TradeLa
 """
 function getmaxpredictionsdf(cfg::TrendDetectorConfig)
     predictionsdf = EnvConfig.readdf(predictionsfilename()) 
+    # predictions are stored in a predictionsdf to avoid loading every time also features bu eventually you want the whole resultdf with predictions
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
         nn = getclassifier(cfg)
         resultsdf, featuresdf = getfeaturestargetsdf(cfg) 
@@ -314,13 +317,16 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
         if (size(resultsdf, 1) > 0)
             EnvConfig.savedf(predictionsdf, predictionsfilename())
         end
-    else
+    end
+    if !isnothing(predictionsdf) && (size(predictionsdf, 1) > 0)
         @assert EnvConfig.isfolder(resultsfilename()) "unexpected missing resultsfile"
         resultsdf = EnvConfig.readdf(resultsfilename())
         @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(predictionsdf, 1) > 0) "size mismatch: size(resultsdf, 1)=$(snothing(resultsdf) ? "nothing" : size(resultsdf, 1)), size(predictionsdf, 1)=$(size(predictionsdf, 1))"
+        resultsdf[:, :score] = predictionsdf[!, :score]
+        resultsdf[:, :label] = predictionsdf[!, :label]
+    else
+        resultsdf = nothing
     end
-    resultsdf[:, :score] = predictionsdf[!, :score]
-    resultsdf[:, :label] = predictionsdf[!, :label]
     return resultsdf
 end
 
@@ -496,18 +502,18 @@ function getconfusionmatrices(cfg::TrendDetectorConfig)
     (verbosity >= 2) && print("$(EnvConfig.now()) calculating confusion matrices                             \r")
     (verbosity >= 3) && println()
     if (size(dfp, 1) > 0)
-        # predictedlabel = categorical(string.(dfp[!, :label]), levels=string.(Targets.tradelabels(cfg.targetconfig)))
+        # predictedlabel = categorical(string.(dfp[!, :label]), levels=string.(Targets.uniquelabels(cfg.targetconfig)))
         # println("predictedllabels=$(unique(predictedlabel)), levels=$(levels(predictedlabel))")
-        # targetlabel = categorical(string.(dfp[!, :target]), levels=string.(Targets.tradelabels(cfg.targetconfig)))
+        # targetlabel = categorical(string.(dfp[!, :target]), levels=string.(Targets.uniquelabels(cfg.targetconfig)))
         # println("targetlabels=$(unique(targetlabel)), levels=$(levels(targetlabel))")
         # cm = StatisticalMeasures.ConfusionMatrices.confmat(predictedlabel, targetlabel)
         # println("describe(predictions): $(describe(dfp))")
         # display(cm)
-        cmdf = Classify.confusionmatrix(dfp, Targets.tradelabels(cfg.targetconfig))
+        cmdf = Classify.confusionmatrix(dfp, Targets.uniquelabels(cfg.targetconfig))
         if size(cmdf, 1) > 0
             EnvConfig.savedf(cmdf, confusionfilename())
         end
-        xcmdf = Classify.extendedconfusionmatrix(dfp, Targets.tradelabels(cfg.targetconfig))
+        xcmdf = Classify.extendedconfusionmatrix(dfp, Targets.uniquelabels(cfg.targetconfig))
         if size(xcmdf, 1) > 0
             EnvConfig.savedf(xcmdf, xconfusionfilename())
         end
@@ -559,13 +565,29 @@ end
 function introspection(cfg::TrendDetectorConfig)
     TrendDetector.verbosity = 2
     Ohlcv.verbosity = 1
-    CryptoXch.verbosity = 1
     Features.verbosity = 1
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
     Classify.verbosity = 1
+    targetissuesdf = EnvConfig.readdf(targetissuesfilename())
+    if isnothing(targetissuesdf) || size(targetissuesdf, 1) == 0
+        println("No target issues file found")
+    else
+        println("size(targetissuesdf) = $(size(targetissuesdf))")
+        println("describe(targetissuesdf, :all)=$(describe(targetissuesdf, :all))")
+        println(targetissuesdf)
+    end
+    featuresdf = EnvConfig.readdf(featuresfilename())
+    if isnothing(featuresdf) || size(featuresdf, 1) == 0
+        println("No features file found in $(EnvConfig.logfolder()) - size(featuresdf)=$(isnothing(featuresdf) ? "nothing" : size(featuresdf))")
+    else
+        println("size(featuresdf) = $(size(featuresdf))")
+        println("describe(featuresdf, :all)=$(describe(featuresdf, :all))")
+    end
     resultsdf = EnvConfig.readdf(resultsfilename())
-    if isnothing(resultsdf) || size(resultsdf, 1) > 0
+    if isnothing(resultsdf) || size(resultsdf, 1) == 0
+        println("No results file found in $(EnvConfig.logfolder()) - size(resultsdf)=$(isnothing(resultsdf) ? "nothing" : size(resultsdf))")
+    else
         println("size(resultsdf) = $(size(resultsdf))")
         println("describe(resultsdf, :all)=$(describe(resultsdf, :all))")
         println("$(unique(resultsdf[!, :coin])) processable coins")
@@ -575,6 +597,7 @@ function introspection(cfg::TrendDetectorConfig)
             coin_results = @view resultsdf[resultsdf[!, :coin] .== coin, :]
             print("\rcoin=$coin, sopentime sorted = $(issorted(coin_results[!, :opentime])), rangeid sorted = $(issorted(coin_results[!, :rangeid]))")
         end
+        println()
         # println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :targets]))))")
         # println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :set]))))")
         gainsdf = getgainsdf(cfg)
@@ -586,8 +609,6 @@ function introspection(cfg::TrendDetectorConfig)
                 println("coinview[1:10, :]=$(coinview[1:10, :])")
             end
         end
-    else
-        println("No results file found in $(EnvConfig.logfolder()) - size(resultsdf)=$(isnothing(resultsdf) ? "nothing" : size(resultsdf))")
     end
 end
 
@@ -601,8 +622,8 @@ retrain = false
 retrain = "retrain" in ARGS
 retrain && println("retrain mode activated - existing classifiers that did not converge will be overwritten")
 # retrain = true
-testmode = "test" in ARGS
 testmode = true
+testmode = "test" in ARGS ? true : "train" in ARGS ? false : testmode
 inspectonly = "inspect" in ARGS
 # inspectonly = true
 specialonly = "special" in ARGS
@@ -613,7 +634,6 @@ verbosity = 2
 allowedcoins = []
 if specialonly
     Ohlcv.verbosity = 3
-    CryptoXch.verbosity = 3
     Features.verbosity = 1
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
@@ -624,7 +644,6 @@ else
     if testmode 
         verbosity = 2
         Ohlcv.verbosity = 1 # 3
-        CryptoXch.verbosity = 1 # 3
         Features.verbosity = 1 # 3
         Targets.verbosity = 1 # 3
         EnvConfig.verbosity = 1
@@ -636,7 +655,6 @@ else
     else # training or production
         verbosity = 2
         Ohlcv.verbosity = 1
-        CryptoXch.verbosity = 1
         Features.verbosity = 1
         Targets.verbosity = 1
         EnvConfig.verbosity = 1
@@ -645,7 +663,7 @@ else
         allowedcoins = traincoins()
     end
 end
-cfg = TrendDetectorConfig(;mk025config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = TrendDetectorConfig(;mk025Cconfig()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])

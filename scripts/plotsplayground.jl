@@ -1,4 +1,4 @@
-using Plots
+using Plots, TestOhlcv, Ohlcv, Targets, Dates
 
 function test1()
     x = range(0, 10, length=100)
@@ -22,4 +22,10 @@ function test2()
     ylabel!("y")
 end
 
-test2()
+function testsine()
+    plotlyjs()   # set the backend to Plotly
+
+end
+
+# test2()
+testsine()

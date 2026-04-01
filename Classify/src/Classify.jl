@@ -8,7 +8,7 @@ using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
 using CategoricalDistributions
 using Distributions
-using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, CryptoXch
+using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
 DEBUG = false
@@ -22,6 +22,9 @@ verbosity =
 """
 verbosity = 1
 
+
+export lstm_bounds_trend_features, lstm_tensor_windows
+export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals
 
 #region abstractclassifier
 """
@@ -303,18 +306,15 @@ end
 Instantiates and evaluates all provided classifier types and logs all trades in df.
 - basecoins is a String vector of basecoin names
 - startdt and enddt further constraints the timerange
+Evaluates using cached OHLCV data via Ohlcv.read() (following TrendDetector pattern)
 """
 function evaluateclassifiers(classifiertypevector, basecoins, startdt, enddt)
     df = readsimulation()
     (verbosity >=3) && println("$(EnvConfig.now()): successfully read classifier simulation trades with $(size(df, 1)) entries")
-    xc = CryptoXch.XchCache(startdt=startdt, enddt=enddt)
-    CryptoXch.addbases!(xc, basecoins, startdt, enddt)
     for clt in classifiertypevector
         cl = clt()
         for base in basecoins
-            ohlcv = CryptoXch.ohlcv(xc, base)
-            # ohlcv = Ohlcv.defaultohlcv(row.basecoin)
-            # Ohlcv.read!(ohlcv)
+            ohlcv = Ohlcv.read(base)
             otime = Ohlcv.dataframe(ohlcv)[!, :opentime]
             sdt = isnothing(startdt) ? otime[begin] : floor(startdt, Minute(1))
             edt = isnothing(enddt) ? otime[end] : floor(enddt, Minute(1))
@@ -370,6 +370,7 @@ mutable struct NN
     model
     optim
     lossfunc
+    valuecorrection::Function
     labels::AbstractVector  # in fixed sequence as index == class id
     description
     mnemonic::String
@@ -381,8 +382,15 @@ mutable struct NN
     predictions::Vector{String}  # filename vector without suffix of predictions
 end
 
-function NN(model, optim, lossfunc, labels, description, mnemonic="", fileprefix="")
-    return NN(model, optim, lossfunc, labels, description, mnemonic, fileprefix, String[], "", "", Float32[], String[])
+_identitycorrection(y_raw::AbstractMatrix) = y_raw
+
+# Regressor output layout is [center; width], with width constrained to non-negative.
+function _centerwidthclamp(y_raw::AbstractMatrix)
+    return vcat(@view(y_raw[1:1, :]), clamp.(@view(y_raw[2:2, :]), 0f0, Inf32))
+end
+
+function NN(model, optim, lossfunc, labels, description, mnemonic="", fileprefix=""; valuecorrection::Function=_identitycorrection)
+    return NN(model, optim, lossfunc, valuecorrection, labels, description, mnemonic, fileprefix, String[], "", "", Float32[], String[])
 end
 
 isadapted(nn::NN) = length(nn.losses) > 0
@@ -551,13 +559,296 @@ function train_lstm_on_predictions(base::NN, pred_df::DataFrame, ftdf::DataFrame
     return cnn
 end
 
-"Predict with a CompositeNN: returns a DataFrame aligned to `ftdf` rows with class probability columns, :target and :set.
+"Predict with a CompositeNN given base predictions: returns a DataFrame aligned to base_pred_df rows with class probability columns.
  The LSTM refines the base predictions by computing bucket averages and applying the trained LSTM on windows of length `seqlen`.
  The LSTM output for each bucket is broadcast to the rows of that bucket to return per-minute predictions.
+ 
+ base_pred_df: DataFrame with class label columns (one per label in cnn.labels), plus :target, :set, :rangeid, :rix columns
 "
-function predict(cnn::CompositeNN, ftdf::DataFrame)
-    @error "predict(cnn, ftdf) not implemented because predict needs per-minute base predictions. Use predict(cnn.base, features) to compute base predictions and then use expand_lstm_predictions to merge them."
-    return DataFrame()
+function predict(cnn::CompositeNN, base_pred_df::DataFrame)
+    labels = cnn.labels
+    classcols = string.(labels)
+    
+    # Ensure required columns present
+    for c in classcols
+        @assert c in names(base_pred_df) "missing class column \$c in base_pred_df"
+    end
+    for c in [:target, :set, :rangeid, :rix]
+        @assert c in names(base_pred_df) "missing required column \$c in base_pred_df"
+    end
+    
+    # Initialize output with base predictions
+    result = select(base_pred_df, vcat(:rix, classcols, [:target, :set, :rangeid]))
+    result_ords = sort(result, :rix)[:, 1:end-3]  # drop trailing index columns for sorting
+    
+    # Get bucket-averaged predictions and bucket-to-row mappings
+    bucketed_preds_result = _bucket_predictions_with_indices(base_pred_df, cnn.bucketlen, classcols)
+    
+    if isnothing(bucketed_preds_result)
+        # Not enough data to apply LSTM, return base predictions
+        return select(result, vcat(classcols, [:target, :set]))
+    end
+    
+    bucketed_preds, bucket_to_rows, bucket_to_rangeid = bucketed_preds_result
+    
+    # Run LSTM inference on bucketed predictions
+    lstm_refined_preds = _apply_lstm_inference(cnn, bucketed_preds, classcols)
+    
+    if isnothing(lstm_refined_preds)
+        return select(result, vcat(classcols, [:target, :set]))
+    end
+    
+    # Expand LSTM refined predictions back to per-minute level
+    for (bucket_idx, row_ixs) in enumerate(bucket_to_rows)
+        if bucket_idx <= length(lstm_refined_preds)
+            lstm_pred_vec = lstm_refined_preds[bucket_idx]
+            for row_ix in row_ixs
+                for (ci, col) in enumerate(classcols)
+                    result[row_ix, Symbol(col)] = lstm_pred_vec[ci]
+                end
+            end
+        end
+    end
+    
+    # Return with original row order preserved
+    sort_ix = sortperm(result_ords[!, :rix])
+    return select(result[sort_ix, :], vcat(classcols, [:target, :set]))
+end
+
+"Internal: Bucket per-minute predictions into averaged bucket predictions while tracking row indices.
+ Returns: (bucketed_inputs, bucket_to_row_indices, bucket_to_rangeid) or nothing if insufficient data
+  - bucketed_inputs: Vector of class-probability vectors (one per bucket)
+  - bucket_to_row_indices: Vector mapping bucket index to row indices in original DataFrame
+  - bucket_to_rangeid: Vector mapping bucket index to its rangeid
+"
+function _bucket_predictions_with_indices(pred_df::DataFrame, bucketlen::Int, classcols::Vector{String})
+    grp = groupby(pred_df, :rangeid)
+    
+    bucketed_preds = Vector{Vector{Float32}}()
+    bucket_to_row_idx = Vector{Vector{Int}}()
+    bucket_to_rangeid = Vector{Int}()
+    
+    for g in grp
+        nrows = nrow(g)
+        nbuckets = fld(nrows, bucketlen)
+        
+        if nbuckets == 0
+            continue # skip rangeids with too few samples
+        end
+        
+        rangeid = first(g[!, :rangeid])
+        row_ixs_in_group = 1:nrows  # indices within this group
+        
+        # Create bucketed average vectors
+        for b in 1:nbuckets
+            rstart = (b-1)*bucketlen + 1
+            rend = b*bucketlen
+            
+            # Compute average prediction vector for this bucket
+            bucket_avg = Float32[mean(g[rstart:rend, Symbol(col)]) for col in classcols]
+            
+            push!(bucketed_preds, bucket_avg)
+            push!(bucket_to_rangeid, rangeid)
+            push!(bucket_to_row_idx, collect(rstart:rend))
+        end
+    end
+    
+    if length(bucketed_preds) == 0
+        return nothing
+    end
+    
+    return (bucketed_preds, bucket_to_row_idx, bucket_to_rangeid)
+end
+
+"Internal: Apply LSTM inference on bucketed predictions.
+ Returns a vector of refined class probability predictions (one vector per bucket) or nothing on error.
+"
+function _apply_lstm_inference(cnn::CompositeNN, bucketed_preds::Vector, classcols::Vector{String})
+    try
+        outputs = Vector{Vector{Float32}}()
+        
+        # Re-run the LSTM architecture (same structure as training)
+        lstm_layer = cnn.lstmmodel[1]  # extract LSTM
+        dense_layer = cnn.lstmmodel[3]  # extract final dense layer
+        
+        # Process each bucketed prediction through LSTM
+        for bucket_pred in bucketed_preds
+            # Reset LSTM state
+            Flux.reset!(lstm_layer)
+            
+            # Convert to matrix format: classes x 1 (single time step)
+            x = reshape(bucket_pred, length(bucket_pred), 1)
+            
+            # Pass through LSTM to get hidden state
+            h = lstm_layer(x[:, 1])
+            
+            # Pass hidden state through dense output layer
+            ŷ = dense_layer(h)
+            
+            # Apply softmax to get probability distribution
+            pred_probs = Flux.softmax(ŷ)
+            
+            push!(outputs, pred_probs)
+        end
+        
+        return outputs
+        
+    catch e
+        Logging.@warn "LSTM inference failed: \$e"
+        return nothing
+    end
+end
+
+"""
+Contract object for LSTM input preparation that combines bounds regressor outputs
+with trend classifier probabilities.
+
+`features` must have shape `(nfeatures, nsamples)` where rows are ordered according
+to `feature_names`. The default feature order is:
+`trend_prob_*`, `center`, `width`, `lower`, `upper`.
+"""
+struct LstmBoundsTrendFeatures
+    features::Matrix{Float32}
+    feature_names::Vector{String}
+    targets::Vector{String}
+    sets::Vector{String}
+    rangeids::Vector{Int32}
+    rix::Vector{Int32}
+end
+
+"""
+Build `LstmBoundsTrendFeatures` from a row-aligned dataframe.
+
+Required columns:
+- trend probabilities from `trendprobcols`
+- `centercol`, `widthcol`
+- `targetcol`, `setcol`, `rangeidcol`, `rixcol`
+
+Derived bounds columns are computed as:
+`lower = center - width/2`, `upper = center + width/2`.
+"""
+function lstm_bounds_trend_features(df::AbstractDataFrame;
+    trendprobcols::Vector{Symbol},
+    centercol::Symbol=:pred_center,
+    widthcol::Symbol=:pred_width,
+    targetcol::Symbol=:target,
+    setcol::Symbol=:set,
+    rangeidcol::Symbol=:rangeid,
+    rixcol::Symbol=:sampleix)
+
+    @assert length(trendprobcols) > 0 "trendprobcols must not be empty"
+
+    required = vcat(trendprobcols, [centercol, widthcol, targetcol, setcol, rangeidcol, rixcol])
+    required_str = string.(required)
+    for col in required_str
+        @assert col in names(df) "missing required column $(col); names(df)=$(names(df))"
+    end
+
+    center = Float32.(df[!, centercol])
+    width = Float32.(df[!, widthcol])
+    @assert all(width .>= 0f0) "width must be >= 0; minimum(width)=$(minimum(width))"
+
+    lower = center .- width ./ 2f0
+    upper = center .+ width ./ 2f0
+    @assert all(lower .<= upper) "expected lower <= upper for all rows"
+
+    nsamples = nrow(df)
+    ntrend = length(trendprobcols)
+    nfeatures = ntrend + 4 # trend probs + center + width + lower + upper
+    feats = Matrix{Float32}(undef, nfeatures, nsamples)
+
+    fidx = 1
+    fnames = String[]
+    for col in trendprobcols
+        feats[fidx, :] = Float32.(df[!, col])
+        push!(fnames, "trend_prob_$(String(col))")
+        fidx += 1
+    end
+    feats[fidx, :] = center
+    push!(fnames, "center")
+    fidx += 1
+    feats[fidx, :] = width
+    push!(fnames, "width")
+    fidx += 1
+    feats[fidx, :] = lower
+    push!(fnames, "lower")
+    fidx += 1
+    feats[fidx, :] = upper
+    push!(fnames, "upper")
+
+    targets = string.(df[!, targetcol])
+    sets = string.(df[!, setcol])
+    rangeids = Int32.(df[!, rangeidcol])
+    rix = Int32.(df[!, rixcol])
+
+    @assert size(feats, 2) == length(targets) == length(sets) == length(rangeids) == length(rix) "contract length mismatch: size(feats,2)=$(size(feats,2)) length(targets)=$(length(targets)) length(sets)=$(length(sets)) length(rangeids)=$(length(rangeids)) length(rix)=$(length(rix))"
+
+    return LstmBoundsTrendFeatures(feats, fnames, targets, sets, rangeids, rix)
+end
+
+"""
+Create sliding LSTM windows with output tensor shape `(nfeatures, seqlen, nbatch)`.
+
+Windows are built per `rangeids` sequence to avoid crossing independent ranges.
+Returns `(X, targets, sets, rangeids, endrix)` where metadata vectors are aligned
+to the batch axis of `X`.
+"""
+function lstm_tensor_windows(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
+    @assert seqlen > 0 "seqlen=$(seqlen) must be > 0"
+
+    nfeatures, nsamples = size(contract.features)
+    if nsamples < seqlen
+        xempty = Array{Float32, 3}(undef, nfeatures, seqlen, 0)
+        return (X=xempty, targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
+    end
+
+    order = sortperm(contract.rix)
+    feats = contract.features[:, order]
+    targets = contract.targets[order]
+    sets = contract.sets[order]
+    rangeids = contract.rangeids[order]
+    rix = contract.rix[order]
+
+    windows = Vector{Matrix{Float32}}()
+    yvec = String[]
+    svec = String[]
+    ridvec = Int32[]
+    endrix = Int32[]
+
+    i = 1
+    while i <= nsamples
+        rid = rangeids[i]
+        j = i
+        while (j <= nsamples) && (rangeids[j] == rid)
+            j += 1
+        end
+        lastidx = j - 1
+        seglen = lastidx - i + 1
+        if seglen >= seqlen
+            for wend in (i + seqlen - 1):lastidx
+                wstart = wend - seqlen + 1
+                push!(windows, copy(feats[:, wstart:wend]))
+                push!(yvec, targets[wend])
+                push!(svec, sets[wend])
+                push!(ridvec, rid)
+                push!(endrix, rix[wend])
+            end
+        end
+        i = j
+    end
+
+    if length(windows) == 0
+        xempty = Array{Float32, 3}(undef, nfeatures, seqlen, 0)
+        return (X=xempty, targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
+    end
+
+    nbatch = length(windows)
+    X = Array{Float32, 3}(undef, nfeatures, seqlen, nbatch)
+    for (bi, win) in enumerate(windows)
+        X[:, :, bi] = win
+    end
+
+    return (X=X, targets=yvec, sets=svec, rangeids=ridvec, endrix=endrix)
 end
 
 
@@ -792,7 +1083,7 @@ function loadpredictions(filename)
     end
     # checktargetsequence(df[!, "targets"])
     # checklabeldistribution(df[!, "targets"])
-    Targets.labeldistribution(df[!, "targets"])
+    # Targets.labeldistribution(df[!, "targets"])
     return df
 end
 
@@ -855,7 +1146,7 @@ end
 "Target consistency check that a longhold or close signal can only follow a longbuy or longclose signal"
 function checktargetsequence(targets::CategoricalArray)
     labels = levels(targets)
-    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels())
+    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.uniquelabels())
     # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
     longbuy = levelcode(first(targets)) in [longholdix, allcloseix] ? longbuyix : (levelcode(first(targets)) == shortholdix ? shortbuyix : ignoreix)
     for (ix, tl) in enumerate(targets)
@@ -1168,8 +1459,47 @@ function model007(featurecount, labels, mnemonic)::NN
     return nn
 end
 
+"""
+Regressor model for a center and width estimation. The clamping makes it an application specific regressor.
+"""
+function boundsregressor001(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    @assert lay_out == 2 "Unexpected (instead of 2) number ($lay_out) of regressor output variables [$labels] to estimate"
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             #* this initial normalization is the only difference to model001
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        BatchNorm(lay1),
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        BatchNorm(lay2),
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        BatchNorm(lay3),
+        Dense(lay3 => lay_out))   # no activation function inside layer
+    optim = Flux.setup(Flux.Adam(0.001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.mse  # loss(ŷ, y) convention [1](https://fluxml.ai/Flux.jl/v0.12/models/losses/)[2](https://fluxml.ai/Flux.jl/stable/reference/models/losses/)
+    # If your data has outliers, consider Flux.Losses.huber_loss instead of pure MSE.
+
+    description = "Regressor for center/width output: BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out))"
+    nn = NN(model, optim, lossfunc, labels, description; valuecorrection=_centerwidthclamp)
+    setmnemonic(nn, "regressor001_" * mnemonic)
+    return nn
+end
+
 "converged when losses did not improve in last 4 epochs"
 nnconverged(nn) = (length(nn.losses) > 10) && (nn.losses[end-4] <= nn.losses[end-3] <= nn.losses[end-2] <= nn.losses[end-1] <= nn.losses[end])
+
+# using Flux
+# using NNlib: softplus
+
+function adaptboundsregressor!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix)
+    # Bounds regressor expects [center; width] in Y and uses nn.valuecorrection for width range correction.
+    @assert size(features, 2) == size(Y, 2)   # same number of observations
+    @assert size(Y, 1) == 2            # centerwidth
+    return adaptnn!(nn, features, Y)
+end
 
 """
 creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
@@ -1178,7 +1508,18 @@ relativedist is a vector
 function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
     # onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
     onehottargets = Flux.onehotbatch(targets, nn.labels)  # onehot class encoding of an observation as one column
-    loader = Flux.DataLoader((features, onehottargets), batchsize=64, shuffle=true);
+    return adaptnn!(nn, features, onehottargets)
+end
+
+"""
+Common adaptation loop for matrix targets.
+Uses nn.valuecorrection to transform raw model outputs before loss evaluation.
+"""
+function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix)
+    X = Float32.(features)
+    Yf = Float32.(Y)
+    @assert size(X, 2) == size(Yf, 2) "size(X,2)=$(size(X,2)) must equal size(Y,2)=$(size(Yf,2))"
+    loader = Flux.DataLoader((X, Yf), batchsize=64, shuffle=true)
 
     # Training loop, using the whole data set 1000 times:
     trainmode!(nn)
@@ -1190,7 +1531,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
         for (x, y) in loader
             loss, grads = Flux.withgradient(nn.model) do m
                 # Evaluate model and loss inside gradient context:
-                y_hat = m(x)
+                y_hat = nn.valuecorrection(m(x))
                 #y_hat is a Float32 matrix , y is a boolean matrix both of size (classes, batchsize). The loss function returns a single Float32 number
                 nn.lossfunc(y_hat, y)
             end
@@ -1254,7 +1595,7 @@ function adaptbase(regrwindow, features::Features.AbstractFeatures, pe::Dict, se
     (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
     println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
-    nn = model001(size(trainfeatures, 1), Targets.tradelabels(), Features.periodlabels(regrwindow))
+    nn = model001(size(trainfeatures, 1), Targets.uniquelabels(), Features.periodlabels(regrwindow))
     nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
@@ -1288,7 +1629,7 @@ function adaptcombi(nnvec::Vector{NN}, features::Features.AbstractFeatures, pe::
     (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
     # println("after oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
     println("$(EnvConfig.now()) adapting machine for combi classifier")
-    nn = model001(size(trainfeatures, 1), Targets.tradelabels(), "combi")
+    nn = model001(size(trainfeatures, 1), Targets.uniquelabels(), "combi")
     nn = adaptnn!(nn, trainfeatures, traintargets)
     nn.featuresdescription = featuresdescription
     nn.targetsdescription = targetsdescription
@@ -1393,7 +1734,7 @@ function trades(predictions::AbstractDataFrame, thresholds::Vector)
     predonly = predictions[!, predictioncolumns(predictions)]
     scores, maxindex = maxpredictions(Matrix(predonly), 2)
     labels = levels(predictions.targets)
-    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.tradelabels())
+    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.uniquelabels())
     buytrade = (tradeix=allcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
     holdtrade = (tradeix=allcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
 
@@ -1457,11 +1798,8 @@ end
 function score2bin(score, thresholdbins) 
     if isnan(score)
         return NaN
-    elseif (score < 0.0) || (score > 1.0)
-        return 0
     end
     @assert thresholdbins > 0 "thresholdbins=$thresholdbins must be > 0"
-    @assert 0.0 <= score <= 1.0 "score=$score must be between 0.0 and 1.0"
     return max(min(floor(Int, score / (1.0/thresholdbins)) + 1, thresholdbins), 1)
 end
 
@@ -1539,7 +1877,7 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thre
 
 function predictioncolumns(predictionsdf::AbstractDataFrame)
     nms = names(predictionsdf)
-    tl = string.(Targets.tradelabels())
+    tl = string.(Targets.uniquelabels())
     [nms[nmix] for nmix in eachindex(nms) if nms[nmix] in tl]
 end
 
@@ -1635,9 +1973,9 @@ function predictionsfilename(fileprefix::String)
     return prefix * ".jdf"
 end
 
-labelvec(labelindexvec, labels=Targets.tradelabels()) = [labels[i] for i in labelindexvec]
+labelvec(labelindexvec, labels=Targets.uniquelabels()) = [labels[i] for i in labelindexvec]
 
-labelindexvec(labelvec, labels=Targets.tradelabels()) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
+labelindexvec(labelvec, labels=Targets.uniquelabels()) = [findfirst(x -> x == focuslabel, labels) for focuslabel in labelvec]
 
 "returns a (scores, labelindices) tuple of best predictions. Without labels the index is the index within levels(df.targets).
 dim=1 indicates predictions of the same column are compared while dim=2 indicates that predictions of the same row are compared."
@@ -1662,7 +2000,7 @@ end
 #     maxindex = zeros(UInt32, size(predictions, 1))
 #     for (lix, label) in enumerate(names(predictions))
 #         if eltype(predictions[!, label]) <: AbstractFloat
-#             if !(label in Targets.tradelabels())
+#             if !(label in Targets.uniquelabels())
 #                 @warn "unexpected predictions class: $label"
 #             end
 #             vec = predictions[!, label]
@@ -1714,7 +2052,7 @@ end
 "returns a (scores, booltargets) tuple of binary predictions of class `label`, i.e. booltargets[ix] == true if bestscore is assigned to focuslabel"
 function binarypredictions end
 
-function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.tradelabels())
+function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labels=Targets.uniquelabels())
     flix = findfirst(x -> x == focuslabel, labels)
     @assert !isnothing(flix) && (firstindex(labels) <= flix <= lastindex(labels)) "$focuslabel==$(isnothing(flix) ? "nothing" : flix) not found in $labels[$(firstindex(labels)):$(lastindex(labels))]"
     @assert length(labels) == size(predictions, 1) "length(labels)=$(length(labels)) == size(predictions, 1)=$(size(predictions, 1))"
@@ -1727,7 +2065,7 @@ function binarypredictions(predictions::AbstractMatrix, focuslabel::String, labe
     return (length(ixvec) > 0 ? predictions[flix, :] : []), ixvec
 end
 
-function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.tradelabels())
+function binarypredictions(predictions::AbstractDataFrame, focuslabel::String, labels=Targets.uniquelabels())
     @assert focuslabel in labels
     if size(predictions, 1) == 0
         return [],[]
@@ -1751,7 +2089,7 @@ function smauc(scores, predlabels)
     return auc(ŷ, y)  # StatisticalMeasures package
 end
 
-function aucscores(pred, labels=Targets.tradelabels())
+function aucscores(pred, labels=Targets.uniquelabels())
     aucdict = Dict()
     if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
@@ -1767,7 +2105,7 @@ function aucscores(pred, labels=Targets.tradelabels())
     return aucdict
 end
 
-# aucscores(pred, labels=Targets.tradelabels()) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
+# aucscores(pred, labels=Targets.uniquelabels()) = Dict(String(focuslabel) => auc(binarypredictions(pred, focuslabel, labels)...) for focuslabel in labels)
     # auc_scores = []
     # for class_label in unique(targets)
     #     class_scores, class_events = binarypredictions(pred, targets, class_label)
@@ -1778,7 +2116,7 @@ end
 # end
 
 "Returns a Dict of class => roc tuple of vectors for false_positive_rates, true_positive_rates, thresholds"
-function roccurves(pred, labels=Targets.tradelabels())
+function roccurves(pred, labels=Targets.uniquelabels())
     rocdict = Dict()
     if typeof(pred) == DataFrame ? (size(pred, 1) > 0) : (size(pred, 2) > 0)
         for focuslabel in labels
@@ -1990,897 +2328,11 @@ end
 
 #endregion Evaluation
 
-#region Classifier013
-
-mutable struct BaseClassifier013
-    ohlcv::Ohlcv.OhlcvData
-    f5::Union{Nothing, Features.Features005}
-    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
-    cfgid::Int16
-    function BaseClassifier013(ohlcv::Ohlcv.OhlcvData, f5=Features.Features005(Features.featurespecification005(Features.regressionfeaturespec005(),[],[])))
-        Features.setbase!(f5, ohlcv, usecache=true)
-        cl = isnothing(f5) ? nothing : new(ohlcv, f5, 0)
-        return cl
-    end
-end
-
-function Base.show(io::IO, bc::BaseClassifier013)
-    println(io, "BaseClassifier013[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f5=$(!isnothing(bc.f5)), cfgid=$(bc.cfgid)")
-end
-
-function writetargetsfeatures(bc::BaseClassifier013)
-    if !isnothing(bc.f5)
-        Features.write(bc.f5)
-    end
-end
-
-supplement!(bc::BaseClassifier013) = Features.supplement!(bc.f5)
-
-const REGRESSIONWINDOW013 = Int32[rw for rw in Features.regressionwindows005 if 12*60 <= rw <= 24*60]
-const LONGGAINTHRESHOLD013 = Float32[0.02f0, 0.04f0, 1f0]
-const SHORTGAINTHRESHOLD013 = Float32[-0.02f0, -0.04f0, -1f0]
-const LONGSELLTHRESHOLD013 = Float32[0.01f0]
-const SHORTSELLTHRESHOLD013 = Float32[-0.01f0]
-const SELLTHRESHOLDFACTOR013 = Float32[0.25f0]
-const OPTPARAMS013 = Dict(
-    "regrwindow" => REGRESSIONWINDOW013,
-    "longgainthreshold" => LONGGAINTHRESHOLD013,
-    "shortgainthreshold" => SHORTGAINTHRESHOLD013,
-    "longsellthreshold" => LONGSELLTHRESHOLD013,
-    "shortsellthreshold" => SHORTSELLTHRESHOLD013,
-    "sellthresholdfactor" => SELLTHRESHOLDFACTOR013
-)
-
-"""
-Classifier013 idea
-- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longbuy
-- longclose if gain is decreased to gain threshold / x or pivot crosses regression line 
-- longclose criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then longclose otherwise follow longclose criteria above
-
-"""
-mutable struct Classifier013 <: AbstractClassifier
-    bc::Dict{AbstractString, BaseClassifier013}
-    cfg::Union{Nothing, DataFrame}  # configurations
-    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
-    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    function Classifier013(optparams=OPTPARAMS013)
-        cl = new(Dict(), DataFrame(), optparams, nothing)
-        readconfigurations!(cl, optparams)
-        @assert !isnothing(cl.cfg)
-        return cl
-    end
-end
-
-function addbase!(cl::Classifier013, ohlcv::Ohlcv.OhlcvData)
-    bc = BaseClassifier013(ohlcv)
-    if isnothing(bc)
-        @error "$(typeof(cl)): Failed to add $ohlcv"
-    else
-        cl.bc[ohlcv.base] = bc
-    end
-end
-
-function supplement!(cl::Classifier013)
-    for bcl in values(cl.bc)
-        supplement!(bcl)
-    end
-end
-
-function writetargetsfeatures(cl::Classifier013)
-    for bcl in values(cl.bc)
-        writetargetsfeatures(bcl)
-    end
-end
-
-# requiredminutes(cl::Classifier013)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
-requiredminutes(cl::Classifier013)::Integer =  maximum(Features.regressionwindows005)
-
-
-function advice(cl::Classifier013, base::AbstractString, dt::DateTime; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    bc = ohlcv = nothing
-    if base in keys(cl.bc)
-        bc = cl.bc[base]
-        ohlcv = bc.ohlcv
-    else
-        (verbosity >= 2) && @warn "$base not found in Classifier013"
-        return nothing
-    end
-    oix = Ohlcv.rowix(ohlcv, dt)
-    return advice(cl, ohlcv, oix, investment=investment)
-end
-
-function advice(cl::Classifier013, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    if ohlcvix < requiredminutes(cl)
-        return nothing
-    end
-    base = ohlcv.base
-    bc = cl.bc[base]
-    cfg = configuration(cl, bc.cfgid)
-    piv = Ohlcv.pivot!(ohlcv)
-    fix = Features.featureix(bc.f5, ohlcvix)
-    regrwindow = nothing
-    if !isnothing(investment)
-        if configureclassifier!(cl, base, investment.configid)
-            regrwindow = cfg.regrwindow
-        else
-            @error "cannot configure string(cl) with configid from $investment"
-        end
-    end
-    lastgrad = nothing
-    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], 0f0, 1f0, nothing)
-    if !isnothing(regrwindow) # check longclose condition
-        regry = Features.regry(bc.f5, regrwindow)[fix]
-        grad = Features.grad(bc.f5, regrwindow)[fix]
-        gain = Targets.relativegain(regry, grad, regrwindow, forward=false)
-        ta.hourlygain = Targets.relativegain(regry, grad, 60, forward=false)
-        if investment.tradelabel in [longhold, longbuy, longstrongbuy]
-            if (gain < cfg.longgainthreshold * cfg.sellthresholdfactor) && (piv[ohlcvix] >= regry * (1 + cfg.longsellthreshold))
-                ta.tradelabel = longclose
-            else
-                ta.tradelabel = longhold
-            end
-        elseif investment.tradelabel in [shortstrongbuy, shortbuy, shorthold]
-            if (gain > cfg.shortgainthreshold * cfg.sellthresholdfactor) && (piv[ohlcvix] <= regry * (1 + cfg.shortsellthreshold))
-                ta.tradelabel = shortclose
-            else
-                ta.tradelabel = shorthold
-            end
-        end
-    end
-    longbuyenabled = shortbuyenabled = true
-    for rw in Features.regressionwindows005
-        regry = Features.regry(bc.f5, rw)[fix]
-        grad = Features.grad(bc.f5, rw)[fix]
-        gain = Targets.relativegain(regry, grad, rw, forward=false)
-        if gain < 0f0
-            longbuyenabled = false  # no long buy if a smaller regression window has negative gradient
-        elseif gain > 0f0
-            shortbuyenabled = false  # no short buy if a smaller regression window has positive gradient
-        end
-        if !isnothing(regrwindow) && (rw > regrwindow) # no focus on longer term windows
-            break
-        elseif gain >= cfg.longgainthreshold
-            # if longbuyenabled && (isnothing(lastgrad) || (lastgrad >= grad))  # check that trend is still there and not a short term peak that is flatten out
-                # longbuy condition in place - ay be with shorter rw as established regrwindow
-                bc.cfgid = configurationid(cl, (cfg..., regrwindow=rw))
-                regrwindow = rw
-                ta.hourlygain = Targets.relativegain(regry, grad, 60, forward=false)
-                ta.tradelabel = longbuy
-                break
-            # end
-        elseif gain <= cfg.shortgainthreshold
-            # if shortbuyenabled && (isnothing(lastgrad) || (lastgrad <= grad))  # check that trend is still there and not a short term peak that is flatten out
-                # shortbuy condition in place - may be with shorter rw as established regrwindow
-                bc.cfgid = configurationid(cl, (cfg..., regrwindow=rw))
-                regrwindow = rw
-                ta.hourlygain = Targets.relativegain(regry, grad, 60, forward=false)
-                ta.tradelabel = shortbuy
-                break
-            # end
-        end
-        lastgrad = grad
-    end
-    return ta
-end
-
-configurationid4base(cl::Classifier013, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
-
-function configureclassifier!(cl::Classifier013, base::AbstractString, configid::Integer)
-    if base in keys(cl.bc)
-        cl.bc[base].cfgid = configid
-        return true
-    else
-        @error "cannot find $base in Classifier013"
-        return false
-    end
-end
-
-#endregion Classifier013
-
-#region Classifier011
-
-mutable struct BaseClassifier011
-    ohlcv::Ohlcv.OhlcvData
-    f4::Union{Nothing, Features.Features004}
-    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
-    cfgid::Int16
-    function BaseClassifier011(ohlcv::Ohlcv.OhlcvData, cfgid, f4=Features.Features004(ohlcv, usecache=true))
-        cl = isnothing(f4) ? nothing : new(ohlcv, f4, cfgid)
-        return cl
-    end
-end
-
-function Base.show(io::IO, bc::BaseClassifier011)
-    println(io, "BaseClassifier011[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
-end
-
-function writetargetsfeatures(bc::BaseClassifier011)
-    if !isnothing(bc.f4)
-        Features.write(bc.f4)
-    end
-end
-
-supplement!(bc::BaseClassifier011) = Features.supplement!(bc.f4, bc.ohlcv)
-
-const REGRWINDOW011 = Int16[60]
-const LONGTRENDTHRESHOLD011 = Float32[1f0] # , 0.04f0, 0.06f0, 1f0]  # 1f0 == switch off long trend following
-const SHORTTRENDTHRESHOLD011 = Float32[-1f0] # , -0.04f0, -0.06f0, -1f0]  # -1f0 == switch off short trend following
-const VOLATILITYBUYTHRESHOLD011 = Float32[-0.005f0]
-const VOLATILITYSELLTHRESHOLD011 = Float32[0.005f0]
-const VOLATILITYSHORTTHRESHOLD011 = Float32[-1f0] # 0f0, -1f0]  # -1f0 == switch off volatility short investments
-const VOLATILITYLONGTHRESHOLD011 = Float32[-0.005f0]  # 1f0 == switch off volatility long investments
-const OPTPARAMS011 = Dict(
-    "regrwindow" => REGRWINDOW011,
-    "longtrendthreshold" => LONGTRENDTHRESHOLD011,
-    "shorttrendthreshold" => SHORTTRENDTHRESHOLD011,
-    "volatilitybuythreshold" => VOLATILITYBUYTHRESHOLD011,   # symetric for long and short
-    "volatilitysellthreshold" => VOLATILITYSELLTHRESHOLD011, # symetric for long and short
-    "volatilityshortthreshold" => VOLATILITYSHORTTHRESHOLD011,
-    "volatilitylongthreshold" => VOLATILITYLONGTHRESHOLD011
-)
-
-"""
-Classifier011 idea
-- leverage long and short volatility trades in times of flat slopes
-- follow the regression long and short if their gradient exceeds thresholds
-- use fixed regression window
-"""
-mutable struct Classifier011 <: AbstractClassifier  #* is also used as ohlcv and f4 anchor in cryptocockpit
-    bc::Dict{AbstractString, BaseClassifier011}
-    cfg::Union{Nothing, DataFrame}  # configurations
-    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
-    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    defaultcfgid
-    function Classifier011(optparams=OPTPARAMS011)
-        cl = new(Dict(), DataFrame(), optparams, nothing, 1)
-        readconfigurations!(cl, optparams)
-        @assert !isnothing(cl.cfg)
-        return cl
-    end
-end
-
-function addbase!(cl::Classifier011, ohlcv::Ohlcv.OhlcvData)
-    bc = BaseClassifier011(ohlcv, cl.defaultcfgid)
-    if isnothing(bc)
-        @error "$(typeof(cl)): Failed to add $ohlcv"
-    else
-        cl.bc[ohlcv.base] = bc
-    end
-end
-
-function supplement!(cl::Classifier011)
-    for bcl in values(cl.bc)
-        supplement!(bcl)
-    end
-end
-
-function writetargetsfeatures(cl::Classifier011)
-    for bcl in values(cl.bc)
-        writetargetsfeatures(bcl)
-    end
-end
-
-# requiredminutes(cl::Classifier011)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
-requiredminutes(cl::Classifier011)::Integer =  maximum(Features.regressionwindows004)
-
-
-function advice(cl::Classifier011, base::AbstractString, dt::DateTime; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    bc = ohlcv = nothing
-    if base in keys(cl.bc)
-        bc = cl.bc[base]
-        ohlcv = bc.ohlcv
-    else
-        (verbosity >= 2) && @warn "$base not found in Classifier011"
-        return nothing
-    end
-    oix = Ohlcv.rowix(ohlcv, dt)
-    return advice(cl, ohlcv, oix, investment=investment)
-end
-
-
-#TODO implement batchadvice - see Trade
-#TODO implement self evaluation on regular basis - transparent for Trade?
-function advice(cl::Classifier011, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    if ohlcvix < requiredminutes(cl)
-        return nothing
-    end
-    base = ohlcv.base
-    bc = cl.bc[base]
-    cfg = configuration(cl, bc.cfgid)
-    piv = Ohlcv.pivot!(ohlcv)
-    fix = Features.featureix(bc.f4, ohlcvix)
-    regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
-    grad = Features.grad(bc.f4, cfg.regrwindow)[fix]
-    ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
-    volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
-    volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
-
-    if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
-        ta.tradelabel = longbuy
-    elseif (piv[ohlcvix-1] >= volatilityupprice) && (ra < cfg.longtrendthreshold)
-        ta.tradelabel = longclose
-    elseif ((piv[ohlcvix] > volatilityupprice) && (ra <= cfg.volatilityshortthreshold)) || (ra <= cfg.shorttrendthreshold)
-        ta.tradelabel = shortbuy
-    elseif (piv[ohlcvix-1] <= volatilitydownprice) && (ra > cfg.shorttrendthreshold)
-        ta.tradelabel = shortclose
-    elseif (ra >= cfg.volatilitylongthreshold)
-        ta.tradelabel = longhold
-    elseif (ra <= cfg.volatilityshortthreshold)
-        ta.tradelabel = shorthold
-    else
-        ta.tradelabel = allclose
-    end
-    return ta
-end
-
-configurationid4base(cl::Classifier011, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
-
-function configureclassifier!(cl::Classifier011, base::AbstractString, configid::Integer)
-    if base in keys(cl.bc)
-        cl.bc[base].cfgid = configid
-        return true
-    else
-        @error "cannot find $base in Classifier011"
-        return false
-    end
-end
-
-function configureclassifier!(cl::Classifier011, configid::Integer, updatedbases::Bool)
-    cl.defaultcfgid = configid
-    if updatedbases
-        for base in keys(cl.bc)
-            cl.bc[base].cfgid = configid
-        end
-    end
-end
-
-#endregion Classifier011
-
-#region Classifier014
-"""
-idea: stay close volatility crossing to leverage overall swing as well as volatility, considering that a swing is often followed buy volatile ending
-
-- focus regression is the largest one with touchpoints in first and second half of the regression line
-- each rergression line has its own volatility buy and sell amplitudes
-- buy when 
-    - buy volatility amplitude is reached
-    - gain over focus regression length exceeds threshold AND next smaller regression gradient is equal or greater, which prevents buy when smaller regression flattens out
-- sell when
-  - volatility is reached and gain over focus regression length does not exceed threshold
-"""
-mutable struct BaseClassifier014
-    ohlcv::Ohlcv.OhlcvData
-    f5::Union{Nothing, Features.Features005}
-    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
-    cfgid::Int16
-    function BaseClassifier014(ohlcv::Ohlcv.OhlcvData, f5=Features.Features005(Features.featurespecification005(Features.regressionfeaturespec005(),[],[])))
-        Features.setbase!(f5, ohlcv, usecache=true)
-        cl = isnothing(f5) ? nothing : new(ohlcv, f5, 0)
-        return cl
-    end
-end
-
-function Base.show(io::IO, bc::BaseClassifier014)
-    println(io, "BaseClassifier014[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f5=$(!isnothing(bc.f5)), cfgid=$(bc.cfgid)")
-end
-
-function writetargetsfeatures(bc::BaseClassifier014)
-    if !isnothing(bc.f5)
-        Features.write(bc.f5)
-    end
-end
-
-supplement!(bc::BaseClassifier014) = Features.supplement!(bc.f5)
-
-const REGRESSIONWINDOW014 = Int32[rw for rw in Features.regressionwindows005 if 4*60 <= rw <= 24*60]
-const LONGTRENDTHRESHOLD014 = Float32[0.02f0]  # 1f0 == switch off long trend following
-const SHORTTRENDTHRESHOLD014 = Float32[-0.02f0]  # -1f0 == switch off short trend following
-const VOLATILITYBUYTHRESHOLD014 = Float32[-0.01f0, -0.02f0]
-const VOLATILITYSELLTHRESHOLD014 = Float32[0.01f0, 0.02f0]
-const VOLATILITYSHORTTHRESHOLD014 = Float32[0f0]  # -1f0 == switch off volatility short investments
-const VOLATILITYLONGTHRESHOLD014 = Float32[0f0]  # 1f0 == switch off volatility long investments
-const AUTOSWITCH014 = Int32[1, 2, 3]  # swithc between regrwindows 1=stay at 24h, 2= switch between 24h and 12h, 3= switch between 24h, 12h, 4h 
-const OPTPARAMS014 = Dict(
-    "regrwindow" => REGRESSIONWINDOW014,
-    "longtrendthreshold" => LONGTRENDTHRESHOLD014,
-    "shorttrendthreshold" => SHORTTRENDTHRESHOLD014,
-    "volatilitybuythreshold" => VOLATILITYBUYTHRESHOLD014,   # symetric for long and short
-    "volatilitysellthreshold" => VOLATILITYSELLTHRESHOLD014, # symetric for long and short
-    "volatilityshortthreshold" => VOLATILITYSHORTTHRESHOLD014,
-    "volatilitylongthreshold" => VOLATILITYLONGTHRESHOLD014,
-    "autoswitch" => AUTOSWITCH014
-)
-
-"""
-Classifier014 idea
-- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longbuy
-- longclose if gain is decreased to gain threshold / x or pivot crosses regression line 
-- longclose criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then longclose otherwise follow longclose criteria above
-
-"""
-mutable struct Classifier014 <: AbstractClassifier
-    bc::Dict{AbstractString, BaseClassifier014}
-    cfg::Union{Nothing, DataFrame}  # configurations
-    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
-    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    defaultcfgid
-    function Classifier014(optparams=OPTPARAMS014)
-        cl = new(Dict(), DataFrame(), optparams, DataFrame(), 1)
-        readconfigurations!(cl, optparams)
-        @assert !isnothing(cl.cfg)
-        return cl
-    end
-end
-
-function addbase!(cl::Classifier014, ohlcv::Ohlcv.OhlcvData)
-    bc = BaseClassifier014(ohlcv)
-    if isnothing(bc)
-        @error "$(typeof(cl)): Failed to add $ohlcv"
-    else
-        cl.bc[ohlcv.base] = bc
-    end
-end
-
-function supplement!(cl::Classifier014)
-    for bcl in values(cl.bc)
-        supplement!(bcl)
-    end
-end
-
-function writetargetsfeatures(cl::Classifier014)
-    for bcl in values(cl.bc)
-        writetargetsfeatures(bcl)
-    end
-end
-
-# requiredminutes(cl::Classifier014)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
-requiredminutes(cl::Classifier014)::Integer =  maximum(Features.regressionwindows005)
-
-
-function advice(cl::Classifier014, base::AbstractString, dt::DateTime; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    bc = ohlcv = nothing
-    if base in keys(cl.bc)
-        bc = cl.bc[base]
-        ohlcv = bc.ohlcv
-    else
-        (verbosity >= 2) && @warn "$base not found in Classifier014"
-        return nothing
-    end
-    oix = Ohlcv.rowix(ohlcv, dt)
-    return advice(cl, ohlcv, oix, investment=investment)
-end
-
-"checks whether all regression lines in rws were touched or crossed in the first half as well as the second half of the regression line"
-function regressiontouched(piv, pix, f5, fix, rws)
-    res = Dict()
-    checkminutes = 24*60
-    halftime = round(Int, checkminutes / 2)
-    if (pix < checkminutes) || (fix < checkminutes)
-        [res[rw] = (rw == rws[end]) for rw in rws]  # no history => stay with longest regression window
-    else
-        for rw in rws
-            regry = Features.regry(f5, rw)
-            c1 = c2 = 0
-            dl = nothing
-
-            function _check(c, dl, ix)
-                d = piv[pix-ix] - regry[fix-ix]
-                if isnothing(dl) ? (d == 0) : (dl * d <= 0)
-                    # change and on different sides of regression line
-                    c += 1
-                    dl = d
-                end
-                return c, dl
-            end
-
-            for ix in 0:halftime-1
-                c2, dl = _check(c2, dl, ix)
-            end
-            for ix in halftime:checkminutes-1
-                c1, dl = _check(c1, dl, ix)
-            end
-            res[rw] = ((c1>0) && (c2>0))
-        end
-    end
-    return res
-end
-
-function advice(cl::Classifier014, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    if ohlcvix < requiredminutes(cl)
-        return nothing
-    end
-    base = ohlcv.base
-    bc = cl.bc[base]
-    cfg = configuration(cl, bc.cfgid)
-    piv = Ohlcv.pivot!(ohlcv)
-    fix = Features.featureix(bc.f5, ohlcvix)
-    touched = regressiontouched(piv, ohlcvix, bc.f5, fix, REGRESSIONWINDOW014)
-    regrwindow = REGRESSIONWINDOW014[end]
-    for rw in reverse(REGRESSIONWINDOW014)
-        if touched[rw]
-            regrwindow = rw
-            break
-        end
-    end
-    regry = Features.regry(bc.f5, regrwindow)[fix]
-    grad = Features.grad(bc.f5, regrwindow)[fix]
-    ra = Targets.relativegain(regry, grad, regrwindow, forward=false)
-    volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
-    volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
-
-    if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
-        ta.tradelabel = longbuy
-    elseif (piv[ohlcvix-1] >= volatilityupprice) && (ra < cfg.longtrendthreshold)
-        ta.tradelabel = longclose
-    elseif ((piv[ohlcvix] > volatilityupprice) && (ra <= cfg.volatilityshortthreshold)) || (ra <= cfg.shorttrendthreshold)
-        ta.tradelabel = shortbuy
-    elseif (piv[ohlcvix-1] <= volatilitydownprice) && (ra > cfg.shorttrendthreshold)
-        ta.tradelabel = shortclose
-    else
-        ta.tradelabel = shorthold
-    end
-    push!(cl.dbgdf, (otime=Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], tradelabel=ta.tradelabel, cfgid=bc.cfgid, rw=regrwindow, cfg...))
-    return ta
-end
-
-configurationid4base(cl::Classifier014, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
-
-function configureclassifier!(cl::Classifier014, base::AbstractString, configid::Integer)
-    if base in keys(cl.bc)
-        cl.bc[base].cfgid = configid
-        return true
-    else
-        @error "cannot find $base in Classifier014"
-        return false
-    end
-end
-
-function configureclassifier!(cl::Classifier014, configid::Integer, updatedbases::Bool)
-    cl.defaultcfgid = configid
-    if updatedbases
-        for base in keys(cl.bc)
-            cl.bc[base].cfgid = configid
-        end
-    end
-end
-
-#endregion Classifier014
-
-
-#region Classifier015
-
-mutable struct BaseClassifier015
-    ohlcv::Ohlcv.OhlcvData
-    f4::Union{Nothing, Features.Features004}
-    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
-    cfgid::Int16
-    function BaseClassifier015(ohlcv::Ohlcv.OhlcvData, cfgid, f4=Features.Features004(ohlcv, usecache=true))
-        cl = isnothing(f4) ? nothing : new(ohlcv, f4, cfgid)
-        return cl
-    end
-end
-
-function Base.show(io::IO, bc::BaseClassifier015)
-    println(io, "BaseClassifier015[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f4=$(!isnothing(bc.f4)), cfgid=$(bc.cfgid)")
-end
-
-function writetargetsfeatures(bc::BaseClassifier015)
-    if !isnothing(bc.f4)
-        Features.write(bc.f4)
-    end
-end
-
-supplement!(bc::BaseClassifier015) = Features.supplement!(bc.f4, bc.ohlcv)
-
-const REGRWINDOW015 = Int16[24*60]
-const LONGTRENDTHRESHOLD015 = Float32[0.02f0] # , 0.04f0, 0.06f0, 1f0]  # 1f0 == switch off long trend following
-const SHORTTRENDTHRESHOLD015 = Float32[-0.02f0] # , -0.04f0, -0.06f0, -1f0]  # -1f0 == switch off short trend following
-const VOLATILITYBUYTHRESHOLD015 = Float32[-0.01f0, -0.02f0]
-const VOLATILITYSELLTHRESHOLD015 = Float32[0.01f0, 0.02f0]
-const VOLATILITYSHORTTHRESHOLD015 = Float32[0f0] # , -1f0]  # -1f0 == switch off volatility short investments
-const VOLATILITYLONGTHRESHOLD015 = Float32[0f0] # , 1f0]  # 1f0 == switch off volatility long investments
-const OPTPARAMS015 = Dict(
-    "regrwindow" => REGRWINDOW015,
-    "longtrendthreshold" => LONGTRENDTHRESHOLD015,
-    "shorttrendthreshold" => SHORTTRENDTHRESHOLD015,
-    "volatilitybuythreshold" => VOLATILITYBUYTHRESHOLD015,   # symetric for long and short
-    "volatilitysellthreshold" => VOLATILITYSELLTHRESHOLD015, # symetric for long and short
-    "volatilityshortthreshold" => VOLATILITYSHORTTHRESHOLD015,
-    "volatilitylongthreshold" => VOLATILITYLONGTHRESHOLD015
-)
-
-"""
-Classifier015 idea
-- leverage long and short volatility trades in times of flat slopes
-- follow the regression long and short if their gradient exceeds thresholds
-- use fixed regression window
-"""
-mutable struct Classifier015 <: AbstractClassifier
-    bc::Dict{AbstractString, BaseClassifier015}
-    cfg::Union{Nothing, DataFrame}  # configurations
-    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
-    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    defaultcfgid
-    function Classifier015(optparams=OPTPARAMS015)
-        cl = new(Dict(), DataFrame(), optparams, nothing, 1)
-        readconfigurations!(cl, optparams)
-        @assert !isnothing(cl.cfg)
-        return cl
-    end
-end
-
-function addbase!(cl::Classifier015, ohlcv::Ohlcv.OhlcvData)
-    bc = BaseClassifier015(ohlcv, cl.defaultcfgid)
-    if isnothing(bc)
-        @error "$(typeof(cl)): Failed to add $ohlcv"
-    else
-        cl.bc[ohlcv.base] = bc
-    end
-end
-
-function supplement!(cl::Classifier015)
-    for bcl in values(cl.bc)
-        supplement!(bcl)
-    end
-end
-
-function writetargetsfeatures(cl::Classifier015)
-    for bcl in values(cl.bc)
-        writetargetsfeatures(bcl)
-    end
-end
-
-# requiredminutes(cl::Classifier015)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
-requiredminutes(cl::Classifier015)::Integer =  maximum(Features.regressionwindows004)
-
-
-function advice(cl::Classifier015, base::AbstractString, dt::DateTime; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    bc = ohlcv = nothing
-    if base in keys(cl.bc)
-        bc = cl.bc[base]
-        ohlcv = bc.ohlcv
-    else
-        (verbosity >= 2) && @warn "$base not found in Classifier015"
-        return nothing
-    end
-    oix = Ohlcv.rowix(ohlcv, dt)
-    return advice(cl, ohlcv, oix, investment=investment)
-end
-
-
-#TODO implement batchadvice - see Trade
-#TODO implement self evaluation on regular basis - transparent for Trade?
-function advice(cl::Classifier015, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    if ohlcvix < requiredminutes(cl)
-        return nothing
-    end
-    base = ohlcv.base
-    bc = cl.bc[base]
-    cfg = configuration(cl, bc.cfgid)
-    piv = Ohlcv.pivot!(ohlcv)
-    fix = Features.featureix(bc.f4, ohlcvix)
-    regry = Features.regry(bc.f4, cfg.regrwindow)[fix]
-    grad = Features.grad(bc.f4, cfg.regrwindow)[fix]
-    ra = Targets.relativegain(regry, grad, cfg.regrwindow, forward=false)
-    volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
-    volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
-
-    if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
-        ta.tradelabel = longbuy
-    elseif (piv[ohlcvix-1] >= volatilityupprice) && (ra < cfg.longtrendthreshold)
-        ta.tradelabel = longclose
-    elseif ((piv[ohlcvix] > volatilityupprice) && (ra <= cfg.volatilityshortthreshold)) || (ra <= cfg.shorttrendthreshold)
-        ta.tradelabel = shortbuy
-    elseif (piv[ohlcvix-1] <= volatilitydownprice) && (ra > cfg.shorttrendthreshold)
-        ta.tradelabel = shortclose
-    else
-        ta.tradelabel = shorthold
-    end
-    return ta
-end
-
-configurationid4base(cl::Classifier015, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
-
-function configureclassifier!(cl::Classifier015, base::AbstractString, configid::Integer)
-    if base in keys(cl.bc)
-        cl.bc[base].cfgid = configid
-        return true
-    else
-        @error "cannot find $base in Classifier015"
-        return false
-    end
-end
-
-function configureclassifier!(cl::Classifier015, configid::Integer, updatedbases::Bool)
-    cl.defaultcfgid = configid
-    if updatedbases
-        for base in keys(cl.bc)
-            cl.bc[base].cfgid = configid
-        end
-    end
-end
-
-#endregion Classifier015
-
-
-#region Classifier016
-
-const REGRESSIONWINDOW016 = Int32[rw for rw in Features.regressionwindows005 if rw <= 4*60]
-
-"per base and pre regression variables"
-mutable struct BaseRegr016 #TODO should move to Features
-    lastndiff  # vector with the last N extreme differences
-    lastxpiv  # price of last extreme
-    BaseRegr016(lastn) = new(zeros(Float32, lastn), nothing)
-end
-
-mutable struct BaseClassifier016
-    ohlcv::Ohlcv.OhlcvData
-    f5::Union{Nothing, Features.Features005}
-    reprpar::Dict  # key = regression window, value = BaseRegr016
-    function BaseClassifier016(ohlcv::Ohlcv.OhlcvData, lastn, f5=Features.Features005(Features.featurespecification005(Features.regressionfeaturespec005(REGRESSIONWINDOW016, ["grad", "regry"]),[],[])))
-        Features.setbase!(f5, ohlcv, usecache=true)
-        cl = isnothing(f5) ? nothing : new(ohlcv, f5, Dict([rw => BaseRegr016(lastn) for rw in REGRESSIONWINDOW016]))
-        return cl
-    end
-end
-
-function Base.show(io::IO, bc::BaseClassifier016)
-    println(io, "BaseClassifier016[$(bc.ohlcv.base)]: ohlcv.ix=$(bc.ohlcv.ix),  ohlcv length=$(size(bc.ohlcv.df,1)), has f5=$(!isnothing(bc.f5)), cfgid=$(bc.cfgid)")
-end
-
-function writetargetsfeatures(bc::BaseClassifier016)
-    if !isnothing(bc.f5)
-        Features.write(bc.f5)
-    end
-end
-
-supplement!(bc::BaseClassifier016) = Features.supplement!(bc.f5)
-
-const BUYTHRESHOLD016 = Float32[0.02f0]  # onlybuy if one of the last N differences exceeded that threshold
-const SEPARATELONGSHORT016 = Bool[true, false]  # separate long from short differences for buy decision 
-const LASTN016 = Int32[2, 4]
-const SHORTESTREGRESSION016 = REGRESSIONWINDOW016[begin:end-1]
-const LONGESTREGRESSION016 = REGRESSIONWINDOW016[end]
-const OPTPARAMS016 = Dict(
-    "regrwindow" => REGRESSIONWINDOW016,
-    "buythreshold" => BUYTHRESHOLD016,
-    "separatelongshort" => SEPARATELONGSHORT016,
-    "lastn" => LASTN016, 
-    "shortestregression" => SHORTESTREGRESSION016
-)
-
-"""
-Classifier016 idea
-- a) the smallest regression is always best following the real price line and is the start to buy and sell at extremes
-- b) if the N (e.g. N=2 to consider the last uphill as well as last downhill) differences in extremes don't exceed a minimumm threshold then consider the next longer regession 
-and repeat step a) with it
-"""
-mutable struct Classifier016 <: AbstractClassifier
-    bc::Dict{AbstractString, BaseClassifier016}
-    cfg::Union{Nothing, DataFrame}  # configurations
-    optparams::Dict  # maps parameter name strings to vectors of valid parameter values to be evaluated
-    "cfgid: id to retrieve configuration parameters; uninitialized == 0"
-    cfgid::Int
-    dbgdf::Union{Nothing, DataFrame} # debug DataFrame if required
-    function Classifier016(optparams=OPTPARAMS016)
-        cl = new(Dict(), DataFrame(), optparams, 1, DataFrame())
-        readconfigurations!(cl, optparams)
-        @assert !isnothing(cl.cfg)
-        return cl
-    end
-end
-
-function addbase!(cl::Classifier016, ohlcv::Ohlcv.OhlcvData)
-    cfg = configuration(cl, bc.cfgid)
-    bc = BaseClassifier016(ohlcv, cfg.lastn)
-    if isnothing(bc)
-        @error "$(typeof(cl)): Failed to add $ohlcv"
-    else
-        cl.bc[ohlcv.base] = bc
-    end
-end
-
-function supplement!(cl::Classifier016)
-    for bcl in values(cl.bc)
-        supplement!(bcl)
-    end
-end
-
-function writetargetsfeatures(cl::Classifier016)
-    for bcl in values(cl.bc)
-        writetargetsfeatures(bcl)
-    end
-end
-
-# requiredminutes(cl::Classifier016)::Integer =  isnothing(cl.cfg) || (size(cl.cfg, 1) == 0) ? requiredminutes() : max(maximum(cl.cfg[!,:regrwindow]),maximum(cl.cfg[!,:trendwindow])) + 1
-requiredminutes(cl::Classifier016)::Integer =  maximum(Features.regressionwindows005)
-
-
-function advice(cl::Classifier016, base::AbstractString, dt::DateTime; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    bc = ohlcv = nothing
-    if base in keys(cl.bc)
-        bc = cl.bc[base]
-        ohlcv = bc.ohlcv
-    else
-        (verbosity >= 2) && @warn "$base not found in Classifier016"
-        return nothing
-    end
-    oix = Ohlcv.rowix(ohlcv, dt)
-    return advice(cl, ohlcv, oix, investment=investment)
-end
-
-function advice(cl::Classifier016, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
-    if ohlcvix < requiredminutes(cl)
-        return nothing
-    end
-    base = ohlcv.base
-    bc = cl.bc[base]
-    cfg = configuration(cl, bc.cfgid)
-    piv = Ohlcv.pivot!(ohlcv)
-    fix = Features.featureix(bc.f5, ohlcvix)
-
-
-
-
-    #TODO advice not yet implemented
-    error("advice not yet implemented")
-
-    touched = regressiontouched(piv, ohlcvix, bc.f5, fix, REGRESSIONWINDOW016)
-    regrwindow = REGRESSIONWINDOW016[end]
-    for rw in reverse(REGRESSIONWINDOW016)
-        if touched[rw]
-            regrwindow = rw
-            break
-        end
-    end
-    regry = Features.regry(bc.f5, regrwindow)[fix]
-    grad = Features.grad(bc.f5, regrwindow)[fix]
-    ra = Targets.relativegain(regry, grad, regrwindow, forward=false)
-    volatilitydownprice = regry * (1 + cfg.volatilitybuythreshold)
-    volatilityupprice = regry * (1 + cfg.volatilitysellthreshold)
-    ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Targets.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
-
-    if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
-        ta.tradelabel = longbuy
-    elseif (piv[ohlcvix-1] >= volatilityupprice) && (ra < cfg.longtrendthreshold)
-        ta.tradelabel = longclose
-    elseif ((piv[ohlcvix] > volatilityupprice) && (ra <= cfg.volatilityshortthreshold)) || (ra <= cfg.shorttrendthreshold)
-        ta.tradelabel = shortbuy
-    elseif (piv[ohlcvix-1] <= volatilitydownprice) && (ra > cfg.shorttrendthreshold)
-        ta.tradelabel = shortclose
-    else
-        ta.tradelabel = shorthold
-    end
-    push!(cl.dbgdf, (otime=Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], tradelabel=ta.tradelabel, cfgid=bc.cfgid, rw=regrwindow, cfg...))
-    return ta
-end
-
-configurationid4base(cl::Classifier016, base::AbstractString)::Integer = base in keys(cl.bc) ? cl.bc[base].cfgid : 0
-
-function configureclassifier!(cl::Classifier016, base::AbstractString, configid::Integer)
-    if base in keys(cl.bc)
-        cl.bc[base].cfgid = configid
-        return true
-    else
-        @error "cannot find $base in Classifier016"
-        return false
-    end
-end
-
-function configureclassifier!(cl::Classifier016, configid::Integer, updatedbases::Bool)
-    cl.defaultcfgid = configid
-    if updatedbases
-        for base in keys(cl.bc)
-            cl.bc[base].cfgid = configid
-        end
-    end
-end
-
-#endregion Classifier016
+include("Classifier011.jl")
+include("Classifier013.jl")
+include("Classifier014.jl")
+include("Classifier015.jl")
+include("Classifier016.jl")
 
 """
 idea:

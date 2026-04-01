@@ -1,7 +1,7 @@
 using Dates, DataFrames
 using Test
 
-using EnvConfig, Ohlcv, Features, CryptoXch, TestOhlcv
+using EnvConfig, Ohlcv, Features, TestOhlcv
 
 """
 verbosity =
@@ -17,20 +17,13 @@ EnvConfig.init(test)
 
 function f6config(ohlcv)
     f6 = Features.Features006()
-    Features.addregry!(f6, window=5, offset=2, clip=1f0, norm=1f0)
-    Features.addgrad!(f6, window=5, offset=0, clip=1f0, norm=1f0)
-    Features.addstd!(f6, window=10, clip=1f0, norm=1f0)
-    Features.addmaxdist!(f6, window=10, offset=5, clip=1f0, norm=1f0)
-    Features.addmindist!(f6, window=10, offset=10, clip=1f0, norm=1f0)
-    Features.addrelvol!(f6, short=5, long=60, clip=10f0, norm=10f0)
+    Features.addregry!(f6, window=5, offset=2)
+    Features.addgrad!(f6, window=5, offset=0)
+    Features.addstd!(f6, window=10)
+    Features.addmaxdist!(f6, window=10, offset=5)
+    Features.addmindist!(f6, window=10, offset=10)
+    Features.addrelvol!(f6, short=5, long=60)
 
-    # Features.addregry!(f6, window=5, offset=2, clip=nothing, norm=nothing)
-    # Features.addgrad!(f6, window=5, offset=0, clip=nothing, norm=nothing)
-    # Features.addstd!(f6, window=10, clip=nothing, norm=nothing)
-    # Features.addmaxdist!(f6, window=10, offset=5, clip=nothing, norm=nothing)
-    # Features.addmindist!(f6, window=10, offset=10, clip=nothing, norm=nothing)
-    # Features.addrelvol!(f6, short=5, long=60, clip=nothing, norm=nothing)
-    
     # println("ohlcvdf=$(ohlcv)")
     Features.setbase!(f6, ohlcv, usecache=false)
     return f6
@@ -42,24 +35,24 @@ end
     startdt = DateTime("2025-02-17T13:30:00")
     enddt = startdt + Hour(20) - Minute(1) 
     EnvConfig.init(production)
-    xc = CryptoXch.XchCache()
-    ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
+    ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
+    odf = Ohlcv.dataframe(ohlcv)
     (verbosity >= 3) && println("stardt=$startdt enddt=$enddt ohlcv=$ohlcv")
     # Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     f6 = f6config(ohlcv)
     (verbosity >= 3) && println("f6 $f6, fdf size=$(size(f6.fdf)), fdfno size=$(size(f6.fdfno)), fdf describe $(describe(f6.fdf)), fdfno describe $(describe(f6.fdfno))")
     os = 2
-    ryf = Features._regry(f6, window=5, offset=os, clip=1f0, norm=1f0)
+    ryf = Features._regry(f6, window=5, offset=os)
     ryffdfcol = Features.fdfcol(f6, ryf)
     ryffdfnocol = Features.fdfnocol(f6, ryf)
-    (verbosity >= 3) && println("f6.fdf[end, $ryffdfcol]=$(f6.fdf[end, ryffdfcol]), f6.fdfno[end-$os, $ryffdfnocol]=$(f6.fdfno[end-os, ryffdfnocol])")
-    @test f6.fdf[end, ryffdfcol] == f6.fdfno[end-os, ryffdfnocol]
+    (verbosity >= 3) && println("f6.fdf[end, $ryffdfcol]=$(f6.fdf[end, ryffdfcol]), f6.fdfno[end-$os, $ryffdfnocol]=$(f6.fdfno[end-os, ryffdfnocol]), odf[end, :pivot]=$(odf[end, :pivot])")
+    @test f6.fdf[end, ryffdfcol] == ((odf[end, :pivot] - f6.fdfno[end-os, ryffdfnocol]) / odf[end, :pivot]) # relative regression residual to pivot price
 
     @test size(f6.fdf, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1) - f6.maxoffset
     @test size(f6.fdfno, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1)
     # println(names(Features.features(f6)))
 
-    ohlcvshort = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt-Hour(1))
+    ohlcvshort = TestOhlcv.testohlcv("SINE", startdt, enddt-Hour(1))
     (verbosity >= 3) && println("stardt=$startdt enddt=$enddt ohlcvshort=$ohlcvshort")
     # Ohlcv.timerangecut!(ohlcvshort, startdt, enddt-Hour(1))
     f6short = f6config(ohlcvshort)
@@ -112,7 +105,7 @@ end
     @test all(Matrix(f6.fdf) .== Matrix(f6short.fdf))
 
     (verbosity >= 3) && (Features.verbosity = 3)
-    ohlcv = CryptoXch.cryptodownload(xc, "BTC", "1m", startdt, enddt)
+    ohlcv = TestOhlcv.testohlcv("SINE", startdt, enddt)
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     f6 = Features.Features006()
     Features.addregry!(f6, window=4*60, offset=2)
