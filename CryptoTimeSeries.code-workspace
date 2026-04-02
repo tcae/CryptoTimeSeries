@@ -85,7 +85,13 @@
 		"julia.NumThreads": 0,
 		"julia.numTestProcesses": 1,
 		"chat.tools.terminal.autoApprove": {
-			"julia": true
+			"julia": true,
+			"git remote": true,
+			"command": true,
+			"/^perl -0777 -i -pe 's@#region Trend02\\.\\*\\?#endregion Trend02@#region Trend02\\\\n# Trend02 removed\\. Trend04 is the supported trend target implementation\\.\\\\n#endregion Trend02@s; s@#region Trend01\\.\\*\\?#endregion Trend01@#region Trend01\\\\n# Trend01 removed\\. Trend04 is the supported trend target implementation\\.\\\\n#endregion Trend01@s' Targets/src/Targets\\.jl$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
 		}
 	},
 	"launch": {
