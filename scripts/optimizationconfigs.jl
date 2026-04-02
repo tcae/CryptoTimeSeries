@@ -17,21 +17,20 @@ targetissuesfilename() = "targetissues.jdf"
 tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm01!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
 tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm02!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
 
-trend01targetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend01(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
-trend02targetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend02(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
+# Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
 
-targetconfig01() = trend01targetconfig(10, 4*60, 0.01, 0.01)
-targetconfig02() = trend01targetconfig(10, 4*60, 0.05, 0.03)
-targetconfig03() = trend01targetconfig(10, 4*60, 0.02, 0.01)
-targetconfig04() = trend01targetconfig(10, 4*60, 0.007, 0.005)
-targetconfig05() = trend01targetconfig(0, 4*60, 0.01, 0.01)
-targetconfig06() = trend01targetconfig(2, 4*60, 0.01, 0.01)
-targetconfig07() = trend01targetconfig(10, 4*60, 0.01, 0.005)
-targetconfig09() = trend01targetconfig(10, 2*60, 0.01, 0.01)
-targetconfig10() = trend01targetconfig(10, 1*60, 0.01, 0.01)
+targetconfig01() = trend04targetconfig(10, 4*60, 0.01, 0.01)
+targetconfig02() = trend04targetconfig(10, 4*60, 0.05, 0.03)
+targetconfig03() = trend04targetconfig(10, 4*60, 0.02, 0.01)
+targetconfig04() = trend04targetconfig(10, 4*60, 0.007, 0.005)
+targetconfig05() = trend04targetconfig(0, 4*60, 0.01, 0.01)
+targetconfig06() = trend04targetconfig(2, 4*60, 0.01, 0.01)
+targetconfig07() = trend04targetconfig(10, 4*60, 0.01, 0.005)
+targetconfig09() = trend04targetconfig(10, 2*60, 0.01, 0.01)
+targetconfig10() = trend04targetconfig(10, 1*60, 0.01, 0.01)
 
-targetconfig08() = trend02targetconfig(10, 2*60, 0.01, 0.005) # Trend02
+targetconfig08() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend02 replaced by Trend04
 targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
 
 boundstargetsconfig01(window) = Targets.Bounds01(window, relpricediff=true)
@@ -266,7 +265,7 @@ mk023 = equal to mk9 with the only difference that hold thresholds are lowered t
 mk023config() = (configname="023", featconfig = trendf6config01(), targetconfig = targetconfig07(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """  
-mk024 = equal to mk23 but using Trend02 targets
+mk024 = equal to mk23 but Trend01/Trend02 were replaced by Trend04 targets
 """
 mk024config() = (configname="024", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 

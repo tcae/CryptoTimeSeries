@@ -1,5 +1,23 @@
+using Dates, DataFrames
 using Test
 using Targets
+using Ohlcv
+
+function testohlcvfrompivots(pivots::Vector{Float32}; startdt::DateTime=DateTime("2025-01-01T00:00:00"))
+    rows = length(pivots)
+    df = DataFrame(
+        opentime=[startdt + Minute(ix - 1) for ix in 1:rows],
+        open=copy(pivots),
+        high=copy(pivots),
+        low=copy(pivots),
+        close=copy(pivots),
+        basevolume=fill(1f0, rows),
+        pivot=copy(pivots)
+    )
+    ohlcv = Ohlcv.defaultohlcv("TEST")
+    Ohlcv.setdataframe!(ohlcv, df)
+    return ohlcv
+end
 
 @testset "Targets::Trend04 crosscheck mitigation tests" begin
     @testset "monotonic continuations keep buy extension" begin

@@ -21,10 +21,6 @@ logger = EarlyFilteredLogger(all_logger) do args
     return r
 end
 
-include("trend_test.jl")
-include("trend02_overlap_supplement_test.jl")
-include("trend02_directional_detection_test.jl")
-include("trend02_crosscheck_test.jl")
 include("trend04_crosscheck_test.jl")
 include("bounds01_test.jl")
 # include("fixeddistancegain_test.jl") fails due to changes in Targets
