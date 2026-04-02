@@ -277,6 +277,8 @@ mk025config() = (configname="025", featconfig = trendf6config01(), targetconfig 
 mk025bconfig() = (configname="025b", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 mk025Cconfig() = (configname="025C", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 mk025Dconfig() = (configname="025D", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+# mk25D and mk25E are the same config but in teh meanwhile the missing hold was fixed
+mk025Econfig() = (configname="025E", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 
 """ **my favorite**  
 mk9 = mk9 with short term target, i.e. maxwindow 1h

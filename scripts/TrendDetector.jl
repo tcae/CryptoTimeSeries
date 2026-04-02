@@ -36,6 +36,7 @@ mutable struct TrendDetectorConfig
     oversampling::Bool
     function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=partitionconfig02(), coins, oversampling=true)
         EnvConfig.setlogpath(folder)
+        (verbosity >= 2) && println("verbosity: $verbosity")
         (verbosity >= 2) && println("log folder: $(EnvConfig.logfolder())")
         (verbosity >= 2) && println("data range: $startdt - $enddt")
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
@@ -87,7 +88,8 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             coin = cfg.coins[coinix]
             coinresultsdf = coinfeaturesdf = nothing
             resultsdf = featuresdf = nothing
-            (verbosity >= 3) && println("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets")
+            (verbosity >= 2) && print("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets                     \r")
+            (verbosity >= 3) && println()
             ohlcv = Ohlcv.read(coin)
             ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
             cfg.startdt = isnothing(cfg.startdt) ? ot[begin] : cfg.startdt
@@ -202,7 +204,7 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             resultsdf = EnvConfig.readdf(resultsfilename())
             featuresdf = EnvConfig.readdf(featuresfilename())
         end
-        println()
+        (verbosity >= 2) && println()
         (verbosity >= 2) && println("$(EnvConfig.now()) processed $(length(processedcoins)), skipped $(length(skippedcoins)) coins")
         (verbosity >= 3) && println("$(EnvConfig.now()) processed $processedcoins")
         (verbosity >= 3) && (length(skippedcoins) > 0) && println("skipped to process $skippedcoins due to no liquid ranges")
@@ -663,7 +665,7 @@ else
         allowedcoins = traincoins()
     end
 end
-cfg = TrendDetectorConfig(;mk025Cconfig()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = TrendDetectorConfig(;mk025Econfig()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])

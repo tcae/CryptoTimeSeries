@@ -26,6 +26,36 @@ verbosity =
 """
 verbosity = 1
 
+const _trend04diag_enabled = Ref(false)
+const _trend04diag_counts = Dict{String, Int}()
+
+"""
+Enable or disable Trend04 diagnostics.
+
+When enabled, Trend04 internals collect lightweight counters about hold candidate
+acceptance/rejection paths to support root-cause analysis.
+"""
+function enable_trend04_diagnostics!(enabled::Bool=true)
+    _trend04diag_enabled[] = enabled
+    return enabled
+end
+
+"""Reset Trend04 diagnostic counters."""
+function reset_trend04_diagnostics!()
+    empty!(_trend04diag_counts)
+    return _trend04diag_counts
+end
+
+"""Return a copy of Trend04 diagnostic counters."""
+trend04_diagnostics() = Dict(_trend04diag_counts)
+
+function _trend04diaginc!(key::AbstractString)
+    if _trend04diag_enabled[]
+        _trend04diag_counts[key] = get(_trend04diag_counts, key, 0) + 1
+    end
+    return nothing
+end
+
 
 """
 returns all possible labels. "allclose" is default.
@@ -1405,6 +1435,7 @@ Updates trd.df[maxbackix:endix, [:label, :relix]] based on the backtrace to:
 - fall back to default close segment
 """
 function _filltrendanchor!(trd::Trend04, maxbackix, endix)
+    _trend04diaginc!("calls.filltrendanchor")
     piv = Ohlcv.dataframe(trd.ohlcv)[!, :pivot]
     labels = trd.df[!, :label]
     relix = trd.df[!, :relix]
@@ -1421,27 +1452,44 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
         end
         if labels[ix] in [longbuy, longhold]
             if _reldiff(piv, ix, endix) < 0 # price decline, break backtrace but check if hold, shortbuy or allclose
-                # Check cumulative gain from original entry anchor: if still above hold threshold,
-                # the position remains profitable and we stay in hold rather than reversing.
                 anchorix = (labels[ix] == longbuy) ? relix[ix] : relix[relix[ix]] # single or double-deref to bestlongix
                 holdrelix = (labels[ix] == longbuy) ? ix : relix[ix] # ixbuy: last buy bar, preserved by _fillsegment! for hold
-                # Hold continuation should be measured from the last buy extreme once we are
-                # already in hold mode, otherwise the original entry anchor can keep a stale
-                # hold active for too long and suppress natural direction changes.
+                # Hold semantic: price is expected to continue rising but small dips (within the
+                # shorthold tolerance from the last buy peak) are acceptable. Use the buy peak
+                # (holdrelix) as reference and shorthold as dip-tolerance threshold.
                 holdcheckix = holdrelix
-                if _reldiff(piv, holdcheckix, endix) >= trd.thres.longhold
+                _trend04diaginc!("cand.longhold.reversal")
+                    if _reldiff(piv, holdcheckix, endix) >= trd.thres.shorthold &&
+                        (minimum(view(piv, ix:endix)) >= piv[holdrelix] * (1 + trd.thres.shorthold))
+                    _trend04diaginc!("acc.longhold.reversal")
                     labels[endix] = longhold
                     relix[endix] = holdrelix
                     _fillsegment!(labels, relix, endix)
                 else
+                    _trend04diaginc!("rej.longhold.reversal.threshold")
                     # Anchor reversal at local high so a short range starts at its segment extreme.
                     searchrange = (ix + 1):endix
                     _, maxrelix = findmax(view(piv, searchrange))
                     newix = first(searchrange) + maxrelix - 1
-                    if ((endix - newix + 1) >= trd.minwindow) && (_reldiff(piv, newix, endix) <= trd.thres.shortbuy) && (piv[endix] == minimum(view(piv, newix:endix)))
+                    opposite_span = endix - newix + 1
+                    opposite_short_ok = (_reldiff(piv, newix, endix) <= trd.thres.shortbuy) && (piv[endix] == minimum(view(piv, newix:endix)))
+                    if (opposite_span >= trd.minwindow) && opposite_short_ok
                         labels[endix] = shortbuy
                         relix[endix] = newix 
                         _fillsegment!(labels, relix, endix)
+                    elseif opposite_short_ok && (opposite_span < trd.minwindow)
+                        # Micro short peak from long trend: explicit transient class (diagnostics)
+                        # and keep longhold continuity if entry-anchor hold is still valid.
+                        _trend04diaginc!("transient.micro.shortpeak.from_long")
+                        if _reldiff(piv, holdrelix, endix) >= trd.thres.shorthold
+                            _trend04diaginc!("acc.longhold.from_micro_shortpeak")
+                            labels[endix] = longhold
+                            relix[endix] = holdrelix
+                            _fillsegment!(labels, relix, endix)
+                        else
+                            labels[endix] = allclose
+                            relix[endix] = newix
+                        end
                     else # price declined but not enough for a shortbuy, so it is for now no long trend anymore
                         labels[endix] = allclose
                         relix[endix] = newix 
@@ -1461,21 +1509,29 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
                     localbuyreldiff = _reldiff(piv, ix, endix)
                     localbuyspan = endix - ix + 1
                     islocalstartlow = piv[ix] == minimum(view(piv, ix:endix))
-                    holdcheckix = relix[ix]
+                    # Hold continues as long as price stays within shorthold dip-tolerance of
+                    # the last buy peak (ixbuy). Use the same reference and threshold as the
+                    # reversal path for consistency.
+                    holdcheckix = relix[ix]  # ixbuy: last buy bar = buy peak
+                    _trend04diaginc!("cand.longhold.from_longhold")
                     # Compare vs last buy bar (the peak), not just the previous hold bar.
                     # This prevents small bounces within the declining hold phase from
                     # triggering a new buy sub-segment spuriously.
                     # Use strict > to avoid equal-amplitude periodic signals creating spurious buys.
                     isnewhigh = piv[endix] > piv[ixbuy]
                     if isnewhigh && islocalstartlow && (localbuyspan >= trd.minwindow) && (_reldiff(piv, anchorix, endix) >= trd.thres.longbuy) && (localbuyreldiff >= trd.thres.longbuy)
+                        _trend04diaginc!("rej.longhold.promoted_longbuy")
                         labels[endix] = longbuy
                         relix[endix] = ix # buy sub-segment starts after last hold bar, preserving earlier hold bars
                         _fillsegment!(labels, relix, endix)
-                    elseif (_reldiff(piv, holdcheckix, endix) >= trd.thres.longhold) # use entry anchor only while it is not stale; otherwise use latest buy extreme
+                          elseif (!isnewhigh) && (_reldiff(piv, holdcheckix, endix) >= trd.thres.shorthold) &&
+                                       (minimum(view(piv, ix:endix)) >= piv[holdcheckix] * (1 + trd.thres.shorthold))
+                        _trend04diaginc!("acc.longhold.from_longhold")
                         labels[endix] = longhold
                         relix[endix] = relix[ix] # extend hold segment by anchor take over because there is no sell buy transaction for the hold phase extension
                         _fillsegment!(labels, relix, endix)
                     else
+                        _trend04diaginc!("rej.longhold.from_longhold.threshold")
                         newix = ix + 1 # new segment starts one minute later after the end point of the previous segment
                         labels[endix] = allclose
                         relix[endix] = newix
@@ -1485,15 +1541,19 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
                     anchorix = relix[ix]  # relix[lastbuybar] = bestlongix (original entry anchor)
                     isnewhigh = piv[endix] >= piv[ix]  # only needs to exceed last directional extreme, not intermediate allclose bars
                     isanchormin = piv[anchorix] == minimum(view(piv, anchorix:endix))
+                    _trend04diaginc!("cand.longhold.from_longbuy")
                     if isnewhigh && isanchormin && (_reldiff(piv, anchorix, endix) >= trd.thres.longbuy) # minwindow condition is ensured in continuation case
+                        _trend04diaginc!("rej.longhold.continues_longbuy")
                         labels[endix] = longbuy 
                         relix[endix] = relix[ix] # extend segment; there is no sell-buy transaction for the buy phase extension
                         _fillsegment!(labels, relix, endix)
                     elseif (_reldiff(piv, ix, endix) >= trd.thres.longhold)
+                        _trend04diaginc!("acc.longhold.from_longbuy")
                         labels[endix] = longhold
                         relix[endix] = ix # the hold phase starts after the previous buy sample; _fillsegment! skips ix itself (last buy bar)
                         _fillsegment!(labels, relix, endix)
                     else # price not above hold threshold from entry anchor, so no long trend anymore
+                        _trend04diaginc!("rej.longhold.from_longbuy.threshold")
                         newix = ix + 1 # new segment starts one minute later after the end point of the previous segment
                         labels[endix] = allclose
                         relix[endix] = newix 
@@ -1504,31 +1564,48 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
             end
         elseif labels[ix] in [shortbuy, shorthold]
             if _reldiff(piv, ix, endix) > 0 # price increase, break backtrace but check if hold, longbuy or allclose
-                # Check cumulative gain from original entry anchor: if still above hold threshold,
-                # the position remains profitable and we stay in hold rather than reversing.
                 anchorix = (labels[ix] == shortbuy) ? relix[ix] : relix[relix[ix]] # single or double-deref to bestshortix
                 holdrelix = (labels[ix] == shortbuy) ? ix : relix[ix] # ixshortbuy: last shortbuy bar, preserved by _fillsegment! for hold
-                # Hold continuation should be measured from the last shortbuy extreme once we
-                # are already in hold mode, otherwise the original entry anchor can keep a
-                # stale hold active for too long and suppress natural direction changes.
+                # Hold semantic: price is expected to continue falling but small recoveries
+                # (within longhold tolerance above the last shortbuy trough) are acceptable.
+                # Use the sell trough (holdrelix) as reference and longhold as rally-tolerance.
                 holdcheckix = holdrelix
-                if _reldiff(piv, holdcheckix, endix) <= trd.thres.shorthold
+                _trend04diaginc!("cand.shorthold.reversal")
+                    if _reldiff(piv, holdcheckix, endix) <= trd.thres.longhold &&
+                        (maximum(view(piv, ix:endix)) <= piv[holdrelix] * (1 + trd.thres.longhold))
+                    _trend04diaginc!("acc.shorthold.reversal")
                     labels[endix] = shorthold
                     relix[endix] = holdrelix
                     _fillsegment!(labels, relix, endix)
                 else
+                    _trend04diaginc!("rej.shorthold.reversal.threshold")
                     # Anchor reversal at local low so a long range starts at its segment extreme.
                     searchrange = (ix + 1):endix
                     _, minrelix = findmin(view(piv, searchrange))
                     newix = first(searchrange) + minrelix - 1
-                if ((endix - newix + 1) >= trd.minwindow) && (_reldiff(piv, newix, endix) >= trd.thres.longbuy) && (piv[endix] == maximum(view(piv, newix:endix)))
-                    labels[endix] = longbuy
-                    relix[endix] = newix 
-                    _fillsegment!(labels, relix, endix)
-                else # price increased but not enough for a longbuy, so it is for now no short trend anymore
-                    labels[endix] = allclose
-                    relix[endix] = newix  
-                end
+                    opposite_span = endix - newix + 1
+                    opposite_long_ok = (_reldiff(piv, newix, endix) >= trd.thres.longbuy) && (piv[endix] == maximum(view(piv, newix:endix)))
+                    if (opposite_span >= trd.minwindow) && opposite_long_ok
+                        labels[endix] = longbuy
+                        relix[endix] = newix 
+                        _fillsegment!(labels, relix, endix)
+                    elseif opposite_long_ok && (opposite_span < trd.minwindow)
+                        # Micro long peak from short trend: explicit transient class (diagnostics)
+                        # and keep shorthold continuity if entry-anchor hold is still valid.
+                        _trend04diaginc!("transient.micro.longpeak.from_short")
+                        if _reldiff(piv, holdrelix, endix) <= trd.thres.longhold
+                            _trend04diaginc!("acc.shorthold.from_micro_longpeak")
+                            labels[endix] = shorthold
+                            relix[endix] = holdrelix
+                            _fillsegment!(labels, relix, endix)
+                        else
+                            labels[endix] = allclose
+                            relix[endix] = newix
+                        end
+                    else # price increased but not enough for a longbuy, so it is for now no short trend anymore
+                        labels[endix] = allclose
+                        relix[endix] = newix  
+                    end
                 end # end else (reversal)
                 break # anchor found at hold/opposite trend, stop backtrace
             else # pdiff <=0 , i.e. continuation of short trend either hold or buy
@@ -1544,21 +1621,29 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
                     localbuyreldiff = _reldiff(piv, ix, endix)
                     localbuyspan = endix - ix + 1
                     islocalstarthigh = piv[ix] == maximum(view(piv, ix:endix))
-                    holdcheckix = relix[ix]
+                    # Hold continues as long as price stays within longhold rally-tolerance of
+                    # the last shortbuy trough (ixshortbuy). Use the same reference and threshold
+                    # as the reversal path for consistency.
+                    holdcheckix = relix[ix]  # ixshortbuy: last shortbuy bar = sell trough
+                    _trend04diaginc!("cand.shorthold.from_shorthold")
                     # Compare vs last shortbuy bar (the trough), not just the previous hold bar.
                     # This prevents small reversals within the recovering hold phase from
                     # triggering a new shortbuy sub-segment spuriously.
                     # Use strict < to avoid equal-amplitude periodic signals creating spurious buys.
                     isnewlow = piv[endix] < piv[ixshortbuy]
                     if isnewlow && islocalstarthigh && (localbuyspan >= trd.minwindow) && (_reldiff(piv, anchorix, endix) <= trd.thres.shortbuy) && (localbuyreldiff <= trd.thres.shortbuy)
+                        _trend04diaginc!("rej.shorthold.promoted_shortbuy")
                         labels[endix] = shortbuy
                         relix[endix] = ix # buy sub-segment starts after last hold bar, preserving earlier short hold bars
                         _fillsegment!(labels, relix, endix)
-                    elseif (_reldiff(piv, holdcheckix, endix) <= trd.thres.shorthold) # use entry anchor only while it is not stale; otherwise use latest shortbuy extreme
+                          elseif (!isnewlow) && (_reldiff(piv, holdcheckix, endix) <= trd.thres.longhold) &&
+                                       (maximum(view(piv, ix:endix)) <= piv[holdcheckix] * (1 + trd.thres.longhold))
+                        _trend04diaginc!("acc.shorthold.from_shorthold")
                         labels[endix] = shorthold
                         relix[endix] = relix[ix] # extend hold segment by anchor take over because there is no sell buy transaction for the hold phase extension
                         _fillsegment!(labels, relix, endix)
                     else
+                        _trend04diaginc!("rej.shorthold.from_shorthold.threshold")
                         newix = ix + 1 # new segment starts one minute later after the end point of the previous segment
                         labels[endix] = allclose
                         relix[endix] = newix
@@ -1568,15 +1653,19 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
                     anchorix = relix[ix]  # relix[lastshortbuybar] = bestshortix (original entry anchor)
                     isnewlow = piv[endix] <= piv[ix]  # only needs to exceed last directional extreme, not intermediate allclose bars
                     isanchormax = piv[anchorix] == maximum(view(piv, anchorix:endix))
+                    _trend04diaginc!("cand.shorthold.from_shortbuy")
                     if isnewlow && isanchormax && (_reldiff(piv, anchorix, endix) <= trd.thres.shortbuy) # minwindow condition is ensured in continuation case
+                        _trend04diaginc!("rej.shorthold.continues_shortbuy")
                         labels[endix] = shortbuy
                         relix[endix] = relix[ix] # extend segment; there is no sell-buy transaction for the buy phase extension
                         _fillsegment!(labels, relix, endix)
                     elseif (_reldiff(piv, ix, endix) <= trd.thres.shorthold)
+                        _trend04diaginc!("acc.shorthold.from_shortbuy")
                         labels[endix] = shorthold
                         relix[endix] = ix # the hold phase starts after the previous shortbuy sample; _fillsegment! skips ix itself (last shortbuy bar)
                         _fillsegment!(labels, relix, endix)
                     else # price not below hold threshold from entry anchor, so no short trend anymore
+                        _trend04diaginc!("rej.shorthold.from_shortbuy.threshold")
                         newix = ix + 1 # new segment starts one minute later after the end point of the previous segment
                         labels[endix] = allclose
                         relix[endix] = newix 
@@ -1625,6 +1714,7 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
             relix[endix] = maxbackcloseix  # is not used
         end
     end
+    _trend04diaginc!("label." * string(labels[endix]))
 end
 
 function supplement!(trd::Trend04)
@@ -1653,7 +1743,7 @@ function supplement!(trd::Trend04)
                 maxbackix = max(firstindex(trd.df, 1), ix - trd.maxwindow + 1)
                 _filltrendanchor!(trd, maxbackix, ix)
             end
-            println()
+            (verbosity >= 3) && println()
             @assert all(in.(trd.df[!, :label], Ref([longbuy, longhold, shortbuy, shorthold, allclose]))) "unique(labels)=$(unique(trd.df[!, :label]))"
         end
     end
@@ -1889,23 +1979,22 @@ function crosscheck(trd::Trend04, labels::AbstractVector{<:TradeLabel}, pivots::
             end
         elseif lbl == longhold
             # Use cumulative gain from original buy entry anchor (double-dereference through ixbuy).
-            # Hold can appear during price decline, so measuring from the last buy bar gives a
-            # negative reldiff; measuring from entry correctly reflects retained position value.
-            hold_anchor = (!isnothing(relix_arr)) ? relix_arr[relix_arr[lss]] : lss - 1
+            # Hold semantic: price expected to continue rising; small dips up to |shorthold| below
+            # the last buy peak are acceptable. Use the END bar's relix (single-deref: ixbuy = last
+            # buy peak) since multi-step hold extensions can have different anchors at start vs end.
+            hold_anchor = (!isnothing(relix_arr)) ? relix_arr[lse] : lss - 1
             reldiff_hold = _reldiff(pivots, hold_anchor, lse)
-            # Hold = "position is still profitable at hold level: gain from entry >= hold threshold".
-            # No buy exclusion check: hold is valid even when cumulative gain >= buy threshold,
-            # because during the declining phase price may still be above buy level from entry.
-            if reldiff_hold < trd.thres.longhold
+            # Hold is valid as long as price hasn't dipped more than |shorthold| below the buy peak.
+            if reldiff_hold < trd.thres.shorthold
                 push!(issues, "longhold segment $(lss):$(lse) violates hold threshold: reldiff=$(reldiff_hold) < longhold=$(trd.thres.longhold)")
             end
         elseif lbl == shorthold
-            # Symmetric to longhold: use cumulative gain from original short entry anchor.
-            hold_anchor = (!isnothing(relix_arr)) ? relix_arr[relix_arr[lss]] : lss - 1
+            # Symmetric to longhold: use the END bar's relix (single-deref: ixshortbuy = sell
+            # trough); rally from trough must not exceed longhold%.
+            hold_anchor = (!isnothing(relix_arr)) ? relix_arr[lse] : lss - 1
             reldiff_hold = _reldiff(pivots, hold_anchor, lse)
-            # Hold = "position is still profitable at hold level: gain from entry <= shorthold threshold".
-            # No buy exclusion check: hold is valid even when cumulative gain <= shortbuy threshold.
-            if reldiff_hold > trd.thres.shorthold
+            # Hold is valid as long as price hasn't rallied more than longhold above the sell trough.
+            if reldiff_hold > trd.thres.longhold
                 push!(issues, "shorthold segment $(lss):$(lse) violates hold threshold: reldiff=$(reldiff_hold) > shorthold=$(trd.thres.shorthold)")
             end
         end
