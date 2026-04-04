@@ -74,6 +74,10 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
         resultsdf = EnvConfig.readdf(resultsfilename())
         featuresdf = EnvConfig.readdf(featuresfilename())
         @assert isnothing(resultsdf) == isnothing(featuresdf) "unexpected mismatch of resultsdf and featuresdf existence with resultsdf existence $(isnothing(resultsdf)) and featuresdf existence $(isnothing(featuresdf))"
+        if !isnothing(resultsdf) && (:sampleix in propertynames(resultsdf))
+            select!(resultsdf, Not(:sampleix))
+            EnvConfig.savedf(resultsdf, resultsfilename())
+        end
         @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of resultsdf and featuresdf size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1))"
     else
         rangeid = Int16(1) # shall be unique across coins
@@ -186,7 +190,6 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             end
             @assert (!isnothing(resultsdf) && (size(resultsdf, 1) > 0)) "unexpected inconsistency: length(processedcoins)=$(length(processedcoins)), (isnothing(resultsdf)=$(isnothing(resultsdf)) || (size(resultsdf, 1)=$((isnothing(resultsdf) ? "nothing" : (size(resultsdf, 1)))) == 0))"
             if size(resultsdf, 1) > 0
-                resultsdf[:, :sampleix] = collect(1:size(resultsdf, 1)) # sampleix is a unique index for each sample in the complete resultsdf 
                 # resultsdf[:, :label] = fill(allclose, size(resultsdf, 1))
                 # resultsdf[:, :score] = zeros(Float32, size(resultsdf, 1))
                 EnvConfig.savedf(resultsdf, resultsfilename())
@@ -323,6 +326,10 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
     if !isnothing(predictionsdf) && (size(predictionsdf, 1) > 0)
         @assert EnvConfig.isfolder(resultsfilename()) "unexpected missing resultsfile"
         resultsdf = EnvConfig.readdf(resultsfilename())
+        if !isnothing(resultsdf) && (:sampleix in propertynames(resultsdf))
+            select!(resultsdf, Not(:sampleix))
+            EnvConfig.savedf(resultsdf, resultsfilename())
+        end
         @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(predictionsdf, 1) > 0) "size mismatch: size(resultsdf, 1)=$(snothing(resultsdf) ? "nothing" : size(resultsdf, 1)), size(predictionsdf, 1)=$(size(predictionsdf, 1))"
         resultsdf[:, :score] = predictionsdf[!, :score]
         resultsdf[:, :label] = predictionsdf[!, :label]
@@ -341,52 +348,79 @@ function addgainadmin!(gdf, coin, sampleset, predicted, rangeid, openthreshold, 
     gdf[!, :closethreshold] = fill(closethreshold, size(gdf, 1))
 end
 
+function isfreshcache(cachefile::AbstractString, dependencyfiles::AbstractVector{<:AbstractString})
+    cachepath = EnvConfig.logpath(cachefile)
+    EnvConfig.isfolder(cachepath) || return false
+    cachemtime = stat(cachepath).mtime
+    for depfile in dependencyfiles
+        deppath = EnvConfig.logpath(depfile)
+        if EnvConfig.isfolder(deppath) && (stat(deppath).mtime > cachemtime)
+            return false
+        end
+    end
+    return true
+end
+
+const GAIN_THRESHOLDS = ((0.8f0, 0.5f0), (0.7f0, 0.5f0), (0.6f0, 0.5f0), (0.8f0, 0.6f0), (0.7f0, 0.6f0), (0.6f0, 0.55f0))
+const TRUE_GAIN_THRESHOLD = (0.9f0, 0.9f0)
+
 function getgainsdf(cfg::TrendDetectorConfig)
-    gaindf = nothing
-    # if EnvConfig.isfolder(gainsfilename())
-    #     gaindf = EnvConfig.readdf(gainsfilename())
-    #     if size(gaindf, 1) > 0
-    #         return gaindf
-    #     end
-    # end
+    if isfreshcache(gainsfilename(), [resultsfilename(), predictionsfilename()])
+        gaindf = EnvConfig.readdf(gainsfilename())
+        if !isnothing(gaindf) && (size(gaindf, 1) > 0)
+            return gaindf
+        end
+    end
+
     resultsdf = getmaxpredictionsdf(cfg)
     if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
         return nothing
     end
-    ranges = unique(resultsdf[!, :rangeid])
-    for rngix in eachindex(ranges)
-        rng = ranges[rngix]
-        resultsview = @view resultsdf[resultsdf[!, :rangeid] .== rng, :]
-        (verbosity >= 2) && print("$(EnvConfig.now()) calculating gains for range ($rngix/$(length(ranges))) $rng                             \r")
+
+    rangegroups = groupby(resultsdf, :rangeid)
+    gainparts = DataFrame[]
+    sizehint!(gainparts, (length(GAIN_THRESHOLDS) + 1) * length(rangegroups))
+
+    for (rngix, resultsview) in enumerate(rangegroups)
+        rng = resultsview[begin, :rangeid]
+        (verbosity >= 2) && print("$(EnvConfig.now()) calculating gains for range ($rngix/$(length(rangegroups))) $rng                             \r")
         (verbosity >= 3) && println()
         @assert size(resultsview, 1) > 0 "unexpected empty resultsview for rangeid $rng"
-        # @assert issorted(resultsview[!, :opentime]) "unexpected unsorted opentime in resultsview for rangeid $rng"
-        # @assert all(resultsview[begin, :set] .== resultsview[!, :set]) "Unexpected different sets $(unique(resultsview[!, :set])) in same range $rng"
 
-        for (openthreshold, closethreshold) in [(0.8, 0.5), (0.7, 0.5), (0.6, 0.5), (0.8, 0.6), (0.7, 0.6), (0.6, 0.55)] # [(0.5, 0.5)]
+        coin = resultsview[begin, :coin]
+        sampleset = resultsview[begin, :set]
+        scores = resultsview[!, :score]
+        labels = resultsview[!, :label]
+        targets = resultsview[!, :target]
+        truescores = fill(1f0, size(resultsview, 1))
+
+        for (openthreshold, closethreshold) in GAIN_THRESHOLDS
             TradingStrategy.reset!(cfg.tradingstrategy)
-            gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, resultsview[!, :score], resultsview[!, :label], true, openthreshold=openthreshold, closethreshold=closethreshold)
+            gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, scores, labels, true, openthreshold=openthreshold, closethreshold=closethreshold)
             if size(gdf, 1) > 0
-                addgainadmin!(gdf, resultsview[begin, :coin], resultsview[begin, :set], true, rng, openthreshold, closethreshold)
-                gaindf = isnothing(gaindf) ? gdf : append!(gaindf, gdf)
+                addgainadmin!(gdf, coin, sampleset, true, rng, openthreshold, closethreshold)
+                push!(gainparts, gdf)
             end
         end
+
         TradingStrategy.reset!(cfg.tradingstrategy)
-        gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, fill(1f0, size(resultsview, 1)), resultsview[!, :target], true, openthreshold=0.9f0, closethreshold=0.9f0)
+        true_open, true_close = TRUE_GAIN_THRESHOLD
+        gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, truescores, targets, true, openthreshold=true_open, closethreshold=true_close)
         if size(gdf, 1) > 0
-            addgainadmin!(gdf, resultsview[begin, :coin], resultsview[begin, :set], false, rng, 0.9f0, 0.9f0)
-            gaindf = isnothing(gaindf) ? gdf : vcat(gaindf, gdf)
+            addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close)
+            push!(gainparts, gdf)
         end
     end
-    # println("describe(gaindf)=$(describe(gaindf)), size(gaindf)=$(size(gaindf))")
+
+    gaindf = isempty(gainparts) ? nothing : reduce(vcat, gainparts)
     if !isnothing(gaindf) && (size(gaindf, 1) > 0)
         gaindf = gaindf[.!ismissing.(gaindf[!, :set]), :] # exclude gaps between set partitions
         if size(gaindf, 1) > 0
-            sort!(gaindf, [:coin, :predicted, :trend, :openthreshold, :closethreshold, :startdt])
+            sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt, :trend])
             EnvConfig.savedf(gaindf, gainsfilename())
         end
     end
-    (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(ranges)) ranges")
+    (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")
     return gaindf
 end
 
@@ -403,80 +437,143 @@ Provides distance information between neighboring predicted gain segments in for
 - :truestartdt, :trueenddt provide the timestamps of the labelled segment
 """
 function getdistances(cfg::TrendDetectorConfig)
-
-    """
-    Push next distance row into distdf dataframe. cprow = current predicted gain row, cpnextrow = next predicted gain row, ctrow = current true gain row.
-    """
-    function getdist!(distdf, cprow, cpnextrow, ctrow)
-        distnext = isnothing(cpnextrow) ? missing : Minute(cpnextrow.startdt - cprow.enddt).value
-        @assert isnothing(cpnextrow) || (cprow.enddt < cpnextrow.startdt) "cprow=$cprow \ncpnextrow=$cpnextrow \nctrow=$ctrow"
-        distrow = (coin=cprow.coin, set=cprow.set, trend=cprow.trend, tpdistnext=missing, fpdistnext=missing, distfirst=missing, distlast=missing, startdt=cprow.startdt, enddt=cprow.enddt, truestartdt=missing, trueenddt=missing)
-        if isnothing(ctrow) # there is no labeled segement to match with - hence, the predicetd segment is false positive
-            distrow = (distrow..., fpdistnext=distnext)
-        else
-            distrow = (distrow..., truestartdt=ctrow.startdt, trueenddt=ctrow.enddt)
-            if cprow.enddt < ctrow.startdt # predicted segment is completely before true segment - hence, the predicted segment is false positive
-                distrow = (distrow..., fpdistnext=distnext)
-            else
-                lastdistrow = size(distdf, 1) > 1 ? distdf[end, :] : nothing
-                # only calculate distfirst if there is not another predicted segment before that is also true positive and belongs to the same true segment
-                distfirst = isnothing(lastdistrow) || (lastdistrow.enddt < ctrow.startdt) ? Minute(cprow.startdt - ctrow.startdt).value : missing
-                # only calculate distlast if there is not another predicted segment after that is also true positive and belongs to the same true segment
-                distlast = isnothing(cpnextrow) || (ctrow.enddt < cpnextrow.startdt) ? Minute(cprow.enddt - ctrow.enddt).value : missing
-                # if there is another predicted segment after that is also true positive and belongs to the same true segment, then distnext is tpdistnext otherwise it is a fpdistnext
-                if !isnothing(cpnextrow) && (ctrow.enddt < cpnextrow.startdt)
-                    distrow = (distrow..., fpdistnext=distnext, distfirst=distfirst, distlast=distlast)
-                else
-                    distrow = (distrow..., tpdistnext=distnext, distfirst=distfirst, distlast=distlast)
-                end
-            end
-        end
-        # (verbosity >= 3) && println("distrow=$distrow, cprow=$cprow, cpnextrow=$cpnextrow, ctrow=$ctrow")
-        push!(distdf, distrow, promote=true)
-    end
-
-    distdf = DataFrame()
-    if EnvConfig.isfolder(EnvConfig.logpath(distancesfilename()))
+    if isfreshcache(distancesfilename(), [gainsfilename()])
         distdf = EnvConfig.readdf(distancesfilename())
-        if size(distdf, 1) > 0
+        if !isnothing(distdf) && (size(distdf, 1) > 0)
             return distdf
         end
     end
+
     gaindf = getgainsdf(cfg)
-    if !isnothing(gaindf) && (size(gaindf, 1) > 0)
-        # limit gains to minimum thresholds as those show best classification results
-        gaindf1 = @view gaindf[(gaindf[!, :openthreshold] .== minimum(gaindf[!, :openthreshold])) .&& (gaindf[!, :closethreshold] .== minimum(gaindf[!, :closethreshold])), :]
-        gaindfgrp = groupby(gaindf1, [:coin, :predicted])
-        for coinix in eachindex(cfg.coins)
-            coin = cfg.coins[coinix]
-            (verbosity >= 2) && print("$(EnvConfig.now()) calculating distances for $coin ($coinix/$(length(cfg.coins)))                             \r")
-            (verbosity >= 3) && println()
-            cpgaindf = get(gaindfgrp, (coin, true), DataFrame()) # predicted gains
-            ctgaindf = get(gaindfgrp, (coin, false), DataFrame()) # true gains
-            if size(ctgaindf, 1) > 0
-                @assert issorted(ctgaindf[!, :startdt])
-                ctix = firstindex(ctgaindf, 1)
-            else
-                ctix = nothing
+    if isnothing(gaindf) || (size(gaindf, 1) == 0)
+        (verbosity >= 1) && println("skipping distances collection due to missing gains")
+        return DataFrame()
+    end
+
+    predmask = gaindf[!, :predicted] .== true
+    if !any(predmask)
+        (verbosity >= 1) && println("skipping distances collection due to missing predicted gains")
+        return DataFrame()
+    end
+
+    # Limit predicted gains to the best threshold pair, but keep all labeled truth gains.
+    openmin = minimum(gaindf[predmask, :openthreshold])
+    closemin = minimum(gaindf[predmask, :closethreshold])
+    usemask = (gaindf[!, :predicted] .== false) .|| ((gaindf[!, :predicted] .== true) .&& (gaindf[!, :openthreshold] .== openmin) .&& (gaindf[!, :closethreshold] .== closemin))
+    gaindf1 = @view gaindf[usemask, :]
+    gaindfgrp = groupby(gaindf1, [:coin, :predicted, :trend])
+    trendlevels = unique(gaindf1[!, :trend])
+
+    coinvals = String[]
+    setvals = String[]
+    trendvals = eltype(gaindf1[!, :trend])[]
+    tpdistnextvals = Union{Missing, Int64}[]
+    fpdistnextvals = Union{Missing, Int64}[]
+    distfirstvals = Union{Missing, Int64}[]
+    distlastvals = Union{Missing, Int64}[]
+    startdtvals = DateTime[]
+    enddtvals = DateTime[]
+    truestartdtvals = Union{Missing, DateTime}[]
+    trueenddtvals = Union{Missing, DateTime}[]
+
+    for coinix in eachindex(cfg.coins)
+        coin = cfg.coins[coinix]
+        (verbosity >= 2) && print("$(EnvConfig.now()) calculating distances for $coin ($coinix/$(length(cfg.coins)))                             \r")
+        (verbosity >= 3) && println()
+
+        haspredictions = false
+        for trend in trendlevels
+            cpgaindf = get(gaindfgrp, (coin, true, trend), DataFrame())   # predicted gains of one trend
+            if size(cpgaindf, 1) == 0
+                continue
             end
-            if size(cpgaindf, 1) > 0
-                @assert issorted(cpgaindf[!, :startdt])
-                for cpix in eachindex(cpgaindf[!, :startdt])
-                    cpnix = cpix < lastindex(cpgaindf, 1) ? cpix + 1 : nothing
-                    while !isnothing(ctix) && (cpgaindf[cpix, :startdt] > ctgaindf[ctix, :enddt])
-                        ctix = ctix < lastindex(ctgaindf, 1) ? ctix + 1 : nothing
-                    end
-                    getdist!(distdf, cpgaindf[cpix, :], (isnothing(cpnix) ? nothing : cpgaindf[cpnix, :]), (isnothing(ctix) ? nothing : ctgaindf[ctix, :]))
-                end
+            haspredictions = true
+            ctgaindf = get(gaindfgrp, (coin, false, trend), DataFrame())  # labeled gains of the same trend
+
+            if (size(cpgaindf, 1) > 1) && !issorted(cpgaindf[!, :startdt])
+                cpgaindf = sort(cpgaindf, :startdt)
+            end
+            if (size(ctgaindf, 1) > 1) && !issorted(ctgaindf[!, :startdt])
+                ctgaindf = sort(ctgaindf, :startdt)
+            end
+
+            cpstart = cpgaindf[!, :startdt]
+            cpend = cpgaindf[!, :enddt]
+            cpset = cpgaindf[!, :set]
+
+            if size(ctgaindf, 1) > 0
+                ctstart = ctgaindf[!, :startdt]
+                ctend = ctgaindf[!, :enddt]
+                ctix = firstindex(ctstart)
             else
-                (verbosity >= 1) && println("skipping distances collection of $(coin) due to missing gain predictions due to size(cpgaindf)= $(size(cpgaindf))")
-                # no row if no gain record - even with a truth record 
+                ctix = 0
+            end
+
+            for cpix in eachindex(cpstart)
+                cpnix = cpix < lastindex(cpstart) ? cpix + 1 : 0
+                distnext = cpnix == 0 ? missing : Minute(cpstart[cpnix] - cpend[cpix]).value
+                @assert (cpnix == 0) || (cpend[cpix] < cpstart[cpnix]) "cpgaindf[cpix=$cpix, :]=$(cpgaindf[cpix, :]), cpgaindf[cpnix=$cpnix, :]=$(cpgaindf[cpnix, :])"
+
+                while (ctix != 0) && (cpstart[cpix] > ctend[ctix])
+                    ctix = ctix < lastindex(ctend) ? ctix + 1 : 0
+                end
+
+                tpdistnext = fpdistnext = distfirst = distlast = missing
+                truestartdt = trueenddt = missing
+
+                if ctix == 0
+                    fpdistnext = distnext
+                else
+                    truestartdt = ctstart[ctix]
+                    trueenddt = ctend[ctix]
+                    if cpend[cpix] < truestartdt
+                        fpdistnext = distnext
+                    else
+                        prev_same_true = (cpix > firstindex(cpstart)) && (cpend[cpix - 1] >= truestartdt)
+                        distfirst = prev_same_true ? missing : Minute(cpstart[cpix] - truestartdt).value
+                        next_same_true = (cpnix != 0) && !(trueenddt < cpstart[cpnix])
+                        distlast = next_same_true ? missing : Minute(cpend[cpix] - trueenddt).value
+                        if next_same_true
+                            tpdistnext = distnext
+                        else
+                            fpdistnext = distnext
+                        end
+                    end
+                end
+
+                push!(coinvals, coin)
+                push!(setvals, string(cpset[cpix]))
+                push!(trendvals, trend)
+                push!(tpdistnextvals, tpdistnext)
+                push!(fpdistnextvals, fpdistnext)
+                push!(distfirstvals, distfirst)
+                push!(distlastvals, distlast)
+                push!(startdtvals, cpstart[cpix])
+                push!(enddtvals, cpend[cpix])
+                push!(truestartdtvals, truestartdt)
+                push!(trueenddtvals, trueenddt)
             end
         end
-    else
-        (verbosity >= 1) && println("skipping distances collection of $(coin) due to missing gains due to size(gaindf)= $(size(gaindf))")
+
+        if !haspredictions
+            (verbosity >= 1) && println("skipping distances collection of $(coin) due to missing gain predictions")
+        end
     end
-    if !isnothing(distdf) && (size(distdf, 1) > 0)
+
+    distdf = DataFrame(
+        coin=coinvals,
+        set=setvals,
+        trend=trendvals,
+        tpdistnext=tpdistnextvals,
+        fpdistnext=fpdistnextvals,
+        distfirst=distfirstvals,
+        distlast=distlastvals,
+        startdt=startdtvals,
+        enddt=enddtvals,
+        truestartdt=truestartdtvals,
+        trueenddt=trueenddtvals,
+    )
+    if size(distdf, 1) > 0
         EnvConfig.savedf(distdf, distancesfilename())
     end
     (verbosity >= 2) && print("$(EnvConfig.now()) calculated distances for $(length(cfg.coins)) coins                             \r")
@@ -599,18 +696,25 @@ function introspection(cfg::TrendDetectorConfig)
             coin_results = @view resultsdf[resultsdf[!, :coin] .== coin, :]
             print("\rcoin=$coin, sopentime sorted = $(issorted(coin_results[!, :opentime])), rangeid sorted = $(issorted(coin_results[!, :rangeid]))")
         end
-        println()
-        # println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :targets]))))")
-        # println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :set]))))")
-        gainsdf = getgainsdf(cfg)
-        if !isnothing(gainsdf) && (size(gainsdf, 1) > 0)
-            println("describe(gainsdf, :all)=$(describe(gainsdf, :all))")
-            for coin in cfg.coins
-                coinview = @view gainsdf[gainsdf[!, :coin] .== coin, :]
-                # println("coin=$coin, describe(coinview, :all)=$(describe(coinview, :all))")
-                println("coinview[1:10, :]=$(coinview[1:10, :])")
-            end
-        end
+        # println()
+        # # println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :targets]))))")
+        # # println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :set]))))")
+        # gainsdf = getgainsdf(cfg)
+        # if !isnothing(gainsdf) && (size(gainsdf, 1) > 0)
+        #     println("describe(gainsdf, :all)=$(describe(gainsdf, :all))")
+        #     for coin in cfg.coins
+        #         coinview = @view gainsdf[gainsdf[!, :coin] .== coin, :]
+        #         # println("coin=$coin, describe(coinview, :all)=$(describe(coinview, :all))")
+        #         println("coinview[1:10, :]=$(coinview[1:10, :])")
+        #     end
+        # end
+    end
+    preddf = EnvConfig.readdf(predictionsfilename())
+    if !isnothing(preddf) && (size(preddf, 1) > 0)
+        println("$(predictionsfilename()): size(preddf) = $(size(preddf))")
+        println("describe(preddf, :all)=$(describe(preddf, :all))")
+    else
+        println("No results file found in $(EnvConfig.logfolder()) - size(preddf)=$(isnothing(preddf) ? "nothing" : size(preddf))")
     end
 end
 
@@ -630,41 +734,40 @@ inspectonly = "inspect" in ARGS
 # inspectonly = true
 specialonly = "special" in ARGS
 # specialonly = true
-
+inspectonly = specialonly ? true : inspectonly # if specialonly then also do inspection
 
 verbosity = 2
 allowedcoins = []
+if testmode 
+    verbosity = 2
+    Ohlcv.verbosity = 1 # 3
+    Features.verbosity = 1 # 3
+    Targets.verbosity = 1 # 3
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1 # 3
+    allowedcoins = testcoins()
+    EnvConfig.init(test)
+    startdt = DateTime("2025-01-17T20:56:00")
+    enddt = DateTime("2025-08-10T15:00:00")
+else # training or production
+    verbosity = 2
+    Ohlcv.verbosity = 1
+    Features.verbosity = 1
+    Targets.verbosity = 1
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1
+    EnvConfig.init(training)
+    allowedcoins = traincoins()
+end
+
 if specialonly
     Ohlcv.verbosity = 3
     Features.verbosity = 1
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
     Classify.verbosity = 1
-    allowedcoins = ["SINE", "DOUBLESINE"]
-    EnvConfig.init(test)
-else 
-    if testmode 
-        verbosity = 2
-        Ohlcv.verbosity = 1 # 3
-        Features.verbosity = 1 # 3
-        Targets.verbosity = 1 # 3
-        EnvConfig.verbosity = 1
-        Classify.verbosity = 1 # 3
-        allowedcoins = testcoins()
-        EnvConfig.init(test)
-        startdt = DateTime("2025-01-17T20:56:00")
-        enddt = DateTime("2025-08-10T15:00:00")
-    else # training or production
-        verbosity = 2
-        Ohlcv.verbosity = 1
-        Features.verbosity = 1
-        Targets.verbosity = 1
-        EnvConfig.verbosity = 1
-        Classify.verbosity = 1
-        EnvConfig.init(training)
-        allowedcoins = traincoins()
-    end
 end
+
 cfg = TrendDetectorConfig(;mk025Econfig()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly

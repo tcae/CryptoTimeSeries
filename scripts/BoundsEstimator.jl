@@ -12,7 +12,23 @@ verbosity =
 """
 verbosity = 3
 const BOUNDS_LABELS = ["center", "width"]
+const BOUNDS_RATIO_FORMAT = "relative_v1"
 softplus(x::Real) = log1p(exp(-abs(x))) + max(x, 0)
+
+function has_current_target_format(df::AbstractDataFrame)
+    reqcols = (:centertarget, :widthtarget)
+    all(c -> c in propertynames(df), reqcols) || return false
+    if :bounds_target_format in propertynames(df)
+        return all(==("$(BOUNDS_RATIO_FORMAT)"), df[!, :bounds_target_format])
+    end
+    return true
+end
+
+function has_current_prediction_format(df::AbstractDataFrame)
+    reqcols = (:centerpred, :widthpred)
+    all(c -> c in propertynames(df), reqcols) || return false
+    return :bounds_prediction_format ∉ propertynames(df)
+end
 
 """
 Compute normalized bounds targets from absolute OHLC-derived center/width and pivot.
@@ -51,8 +67,8 @@ function denormalize_predicted_bounds(pred_center_ratio::AbstractVector{<:Real},
     w = Float32.(pred_width_ratio)
     pred_center_abs = (1f0 .+ c) .* p
     pred_width_abs = w .* p
-    pred_lower_abs = clamp.(pred_center_abs .- pred_width_abs ./ 2f0, 0f0, Inf)
-    pred_upper_abs = clamp.(pred_center_abs .+ pred_width_abs ./ 2f0, 0f0, Inf)
+    pred_lower_abs = clamp.(pred_center_abs .- pred_width_abs ./ 2f0, 0f0, Inf32)
+    pred_upper_abs = clamp.(pred_center_abs .+ pred_width_abs ./ 2f0, 0f0, Inf32)
     return pred_lower_abs, pred_upper_abs
 end
 
@@ -78,8 +94,12 @@ mutable struct BoundsEstimatorConfig
     coins::Vector{String}
     function BoundsEstimatorConfig(;configname, folder="Bounds-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, regressormodel, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=partitionconfig02(), coins)
         EnvConfig.setlogpath(folder)
+        @assert hasproperty(targetconfig, :window) "condition violated: targetconfig=$(typeof(targetconfig)) must provide a positive window field"
+        window = Int(getproperty(targetconfig, :window))
+        @assert window > 0 "condition violated: targetconfig.window=$(window) must be > 0"
         (verbosity >= 2) && println("log folder: $(EnvConfig.logfolder())")
         (verbosity >= 2) && println("data range: $startdt - $enddt")
+        (verbosity >= 2) && println("bounds quality window=$(window)")
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
         return new(configname, folder, featconfig, targetconfig, regressormodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins)
@@ -90,7 +110,7 @@ cfg = nothing # to be set to a BoundsEstimatorConfig instance in main
 include("optimizationconfigs.jl")
 
 """
-returns targets  as DataFrame with columns :lowbound, :highbound and :opentime aligned to features and ohlcv dataframe rows.
+returns targets as DataFrame with columns :centertarget and :widthtarget aligned to features and ohlcv dataframe rows.
 feature base has to be set before calling because that determines the ohlcv and relevant time range
 """
 function calctargets!(trgcfg::Targets.AbstractTargets, featcfg::Features.AbstractFeatures)
@@ -99,8 +119,7 @@ function calctargets!(trgcfg::Targets.AbstractTargets, featcfg::Features.Abstrac
     fot = Features.opentime(featcfg)
     (verbosity >= 4) && println("$(EnvConfig.now()) target calculation from $(fot[begin]) until $(fot[end])")
     Targets.setbase!(trgcfg, ohlcv)
-    targets = Targets.lowboundhighbound(trgcfg, fot[begin], fot[end])
-    targets = Targets.lowhigh2centerwidth(targets[!,:lowbound], targets[!, :highbound])
+    targets = Targets.centerwidth(trgcfg, fot[begin], fot[end]; relpricediff=true)
     # Targets.labeldistribution(targets)
     @assert size(features, 1) == size(targets, 1) "size(features, 1)=$(size(features, 1)) != size(targets, 1)=$(size(targets, 1))"
     # (verbosity >= 3) && println(describe(trgcfg.df, :all))
@@ -108,9 +127,10 @@ function calctargets!(trgcfg::Targets.AbstractTargets, featcfg::Features.Abstrac
 end
 
 "Returns the new rangeid after processing the given coin and its ranges. If it is unchanged then nothing was processed for the coin and it was skipped due to empty ranges or results."
-function getfeaturestargets(cfg::BoundsEstimatorConfig, coin, rangeid, samplesets)
+function getfeaturestargets(cfg::BoundsEstimatorConfig, coinix, rangeid, samplesets)
     levels = unique(samplesets)
     coinresultsdf = coinfeaturesdf = nothing
+    coin = cfg.coins[coinix]
     (verbosity >= 3) && println("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets")
     ohlcv = Ohlcv.read(coin)
     ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
@@ -177,8 +197,25 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
         resultsdf = EnvConfig.readdf(resultsfilename())
         featuresdf = EnvConfig.readdf(featuresfilename())
         @assert isnothing(resultsdf) == isnothing(featuresdf) "unexpected mismatch of resultsdf and featuresdf existence with resultsdf existence $(isnothing(resultsdf)) and featuresdf existence $(isnothing(featuresdf))"
-        @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of resultsdf and featuresdf size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1))"
-    else
+        if !isnothing(resultsdf) && (:sampleix in propertynames(resultsdf))
+            select!(resultsdf, Not(:sampleix))
+            EnvConfig.savedf(resultsdf, resultsfilename())
+        end
+        if !isnothing(resultsdf) && !has_current_target_format(resultsdf)
+            @warn "ignoring stale results/features cache with outdated bounds target format; expected=$(BOUNDS_RATIO_FORMAT), names=$(names(resultsdf))"
+            EnvConfig.deletefolder(resultsfilename())
+            EnvConfig.deletefolder(featuresfilename())
+            resultsdf = nothing
+            featuresdf = nothing
+        elseif !isnothing(resultsdf)
+            if :bounds_target_format in propertynames(resultsdf)
+                select!(resultsdf, Not(:bounds_target_format))
+                EnvConfig.savedf(resultsdf, resultsfilename())
+            end
+            @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of resultsdf and featuresdf size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1))"
+        end
+    end
+    if isnothing(resultsdf)
         rangeid = Int16(1) # shall be unique across coins
         samplesets = cfg.partitionconfig.samplesets
         samplesets = CategoricalArray(samplesets, levels=unique(samplesets))
@@ -186,7 +223,7 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
         processedcoins = String[]
         for coinix in eachindex(cfg.coins)
             coin = cfg.coins[coinix]
-            if getfeaturestargets(cfg, coin, rangeid, samplesets) > rangeid 
+            if getfeaturestargets(cfg, coinix, rangeid, samplesets) > rangeid 
                 push!(processedcoins, coin)
             else
                 # if rangeid is unchanged then nothing was processed for the coin and it was skipped due to empty ranges or results
@@ -224,7 +261,6 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
             end
             @assert (!isnothing(resultsdf) && (size(resultsdf, 1) > 0)) "unexpected inconsistency: length(processedcoins)=$(length(processedcoins)), (isnothing(resultsdf)=$(isnothing(resultsdf)) || (size(resultsdf, 1)=$((isnothing(resultsdf) ? "nothing" : (size(resultsdf, 1)))) == 0))"
             if size(resultsdf, 1) > 0
-                resultsdf[:, :sampleix] = collect(1:size(resultsdf, 1)) # sampleix is a unique index for each sample in the complete resultsdf 
                 EnvConfig.savedf(resultsdf, resultsfilename())
             end
             coinresultsdf = resultsdf = nothing # free memory
@@ -249,8 +285,7 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
     return resultsdf, featuresdf
 end
 
-function df2features(featuresdf::AbstractDataFrame, cfg::BoundsEstimatorConfig, settype=nothing)
-    featuresdf = isnothing(settype) ? featuresdf : @view featuresdf[(featuresdf[!, :set] .== settype), :]
+function df2features(featuresdf::AbstractDataFrame, cfg::BoundsEstimatorConfig)
     if size(featuresdf, 1) > 0
         features = @view featuresdf[!, Features.requestedcolumns(cfg.featconfig)]
         features = Array(features)  # change from df to array
@@ -262,8 +297,7 @@ function df2features(featuresdf::AbstractDataFrame, cfg::BoundsEstimatorConfig, 
     end
 end
 
-function df2targets(resultsdf::AbstractDataFrame, settype=nothing)
-    resultsdf = isnothing(settype) ? resultsdf : @view resultsdf[(resultsdf[!, :set] .== settype), :]
+function df2targets(resultsdf::AbstractDataFrame)
     if size(resultsdf, 1) > 0
         targets = Array(resultsdf[!, [:centertarget, :widthtarget]])  # change from df to array
         targets = Float32.(permutedims(targets, (2, 1)))  # Flux expects observations as columns with features of an oberservation as one column
@@ -274,7 +308,7 @@ function df2targets(resultsdf::AbstractDataFrame, settype=nothing)
     end
 end
 
-regressormenmonic(coins=nothing, coinix=nothing) = "mix"
+regressormenmonic(coins=nothing, coinix=nothing) = "mix_$(BOUNDS_RATIO_FORMAT)"
 
 function getlatestregressor(cfg::BoundsEstimatorConfig)
     nn = cfg.regressormodel(Features.featurecount(cfg.featconfig), BOUNDS_LABELS, regressormenmonic()) # to get correct filename
@@ -315,8 +349,10 @@ function getregressor(cfg::BoundsEstimatorConfig)
         println("$(EnvConfig.now()) adapting one mix regressor for all coins")
         # if regressor file does not exist then create one
         resultsdf, featuresdf = getfeaturestargetsdf(cfg) 
-        features = df2features(featuresdf, cfg, "train")
-        targets = df2targets(resultsdf, "train")
+        featuresdf = @view featuresdf[(resultsdf[!, :set] .== "train"), :]
+        resultsdf = @view resultsdf[(resultsdf[!, :set] .== "train"), :]
+        features = df2features(featuresdf, cfg)
+        targets = df2targets(resultsdf)
         (verbosity >= 3) && println("$(EnvConfig.now()) size(featuresdf)=$(isnothing(featuresdf) ? "nothing" : size(featuresdf)), size(resultsdf)=$(isnothing(resultsdf) ? "nothing" : size(resultsdf)), size(features)=$(isnothing(features) ? "nothing" : size(features)), size(targets)=$(isnothing(targets) ? "nothing" : size(targets)) for training bounds regressor"  )
         if isnothing(targets) || isnothing(features) || (size(targets, 2) == 0) || (size(features, 2) == 0)
             return nothing
@@ -346,8 +382,10 @@ function getboundspredictionsdf(cfg::BoundsEstimatorConfig)
     end
 
     predictionsdf = EnvConfig.readdf(predictionsfilename()) 
-    if !isnothing(predictionsdf)
-        @assert all([:centerpred, :widthpred] .∈ propertynames(predictionsdf)) "unexpected columns in predictionsdf with names=$(names(predictionsdf))"
+    if !isnothing(predictionsdf) && !has_current_prediction_format(predictionsdf)
+        @warn "ignoring stale predictions cache with legacy marker or missing prediction columns; names=$(names(predictionsdf))"
+        EnvConfig.deletefolder(predictionsfilename())
+        predictionsdf = nothing
     end
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
         nn = getregressor(cfg)
@@ -361,14 +399,26 @@ function getboundspredictionsdf(cfg::BoundsEstimatorConfig)
             features = df2features(featuresdf, cfg)
             predictionsdf = predictbounds(nn, features)
             @assert size(predictionsdf, 1) == size(featuresdf, 1) == size(resultsdf, 1) "size(predictionsdf, 1)=$(size(predictionsdf, 1)) != size(featuresdf, 1)=$(size(featuresdf, 1)) != size(resultsdf, 1)=$(size(resultsdf, 1)) for mix"
-            EnvConfig.savedf(resultsdf, predictionsfilename())
+            EnvConfig.savedf(predictionsdf, predictionsfilename())
         end
     end
     if !isnothing(predictionsdf) && size(predictionsdf, 1) > 0
         # now we have the predictions -> add them to resultsdf
         @assert EnvConfig.isfolder(resultsfilename()) "unexpected missing resultsfile"
         resultsdf = EnvConfig.readdf(resultsfilename())
-        @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(predictionsdf, 1) > 0) "size mismatch: size(resultsdf, 1)=$(snothing(resultsdf) ? "nothing" : size(resultsdf, 1)), size(predictionsdf, 1)=$(size(predictionsdf, 1))"
+        if !isnothing(resultsdf)
+            cleaned = false
+            if :bounds_target_format in propertynames(resultsdf)
+                select!(resultsdf, Not(:bounds_target_format))
+                cleaned = true
+            end
+            if :sampleix in propertynames(resultsdf)
+                select!(resultsdf, Not(:sampleix))
+                cleaned = true
+            end
+            cleaned && EnvConfig.savedf(resultsdf, resultsfilename())
+        end
+        @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(predictionsdf, 1) > 0) "size mismatch: size(resultsdf, 1)=$(isnothing(resultsdf) ? "nothing" : size(resultsdf, 1)), size(predictionsdf, 1)=$(size(predictionsdf, 1))"
         resultsdf[:, :widthpred] = predictionsdf[!, :widthpred]
         resultsdf[:, :centerpred] = predictionsdf[!, :centerpred]
     else
@@ -384,20 +434,34 @@ trend probability columns and bounds regressor outputs.
 
 Required by default:
 - bounds: `:centerpred`, `:widthpred`
-- admin: `:target`, `:set`, `:rangeid`, `:sampleix`
+- admin: `:target`, `:set`, `:rangeid`
 - trend probabilities: provided via `trendprobcols`
+
+A temporary in-memory row index is generated when no explicit row-id column is present.
 """
 function build_lstm_contract(merged_df::AbstractDataFrame; trendprobcols::Vector{Symbol})
     @assert length(trendprobcols) > 0 "trendprobcols must not be empty"
+
+    contractdf = merged_df
+    if :sampleix in propertynames(contractdf)
+        rixcol = :sampleix
+    elseif :rowix in propertynames(contractdf)
+        rixcol = :rowix
+    else
+        contractdf = copy(merged_df)
+        contractdf[!, :rowix] = Int32.(1:size(contractdf, 1))
+        rixcol = :rowix
+    end
+
     return Classify.lstm_bounds_trend_features(
-        merged_df;
+        contractdf;
         trendprobcols=trendprobcols,
         centercol=:centerpred,
         widthcol=:widthpred,
         targetcol=:target,
         setcol=:set,
         rangeidcol=:rangeid,
-        rixcol=:sampleix,
+        rixcol=rixcol,
     )
 end
 
@@ -417,28 +481,205 @@ function get_lstm_contract(cfg::BoundsEstimatorConfig; trendprobcols::Vector{Sym
 end
 
 """
-what is bounds quality?
+what is bounds quality? context: the upper bound is a long sell or short buy limit price and the lower bound is a long buy or short sell limit price.
+if the price stays within the upper and lower limit across the corresponding window sample span then the bounds are not good because the price does not reach the limits to trigger a buy or sell action.
 - get deal done (buy/sell) before trend changes to the worse
-  - how many bound estimations matched within window?
-  - how many bound estimations matched with the every sample changing window?
+  - how many bound estimations matched within the corresponding sample related window (that changes position with every sample?
   - what was the gain vs. close price when estimation was done?
-- for those that did not match: how long did it take and how many percetange lost?
+- for those that did not match: how long did it take (sample after the sample under consideration) to exceed bounds and how many percetange lost?
 """
 function getboundsqualitydf(cfg::BoundsEstimatorConfig)
     pdf = getboundspredictionsdf(cfg)
     if isnothing(pdf) || size(pdf, 1) == 0
-        return DataFrame()
+        return (high=DataFrame(), low=DataFrame())
     end
-    evaldf = copy(pdf)
-    evaldf[!, :err_center] = abs.(evaldf[!, :centerpred] .- evaldf[!, :centertarget])
-    evaldf[!, :err_width] = abs.(evaldf[!, :widthpred] .- evaldf[!, :widthtarget])
-    evaldf[!, :contains_close] = (evaldf[!, :pred_lower] .<= evaldf[!, :close]) .&& (evaldf[!, :close] .<= evaldf[!, :pred_upper])
-    grp = groupby(evaldf, :set)
-    return combine(grp,
-        :err_center => mean => :mae_center,
-        :err_width => mean => :mae_width,
-        :contains_close => (x -> mean(Float32.(x)) * 100f0) => :close_in_predicted_band_pct,
-        nrow => :rows)
+    reqcols = [:centerpred, :widthpred, :centertarget, :widthtarget, :pivot, :high, :low, :close, :set, :coin, :rangeid, :opentime]
+    missingcols = [c for c in reqcols if !(c in propertynames(pdf))]
+    @assert isempty(missingcols) "missing required columns in predictions/results dataframe: missingcols=$(missingcols), names=$(names(pdf))"
+
+    n = size(pdf, 1)
+    @assert hasproperty(cfg.targetconfig, :window) "condition violated: targetconfig=$(typeof(cfg.targetconfig)) must provide a positive window field"
+    window = Int(getproperty(cfg.targetconfig, :window))
+    @assert window > 0 "invalid targetconfig.window=$(window)"
+
+    centerpred = Float32.(pdf[!, :centerpred])
+    widthpred = Float32.(pdf[!, :widthpred])
+    centertarget = Float32.(pdf[!, :centertarget])
+    widthtarget = Float32.(pdf[!, :widthtarget])
+    pivotcol = Float32.(pdf[!, :pivot])
+    highcol = Float32.(pdf[!, :high])
+    lowcol = Float32.(pdf[!, :low])
+    closecol = Float32.(pdf[!, :close])
+    setcol = string.(pdf[!, :set])
+    setnames = unique(setcol)
+    setlookup = Dict(name => ix for (ix, name) in enumerate(setnames))
+    setix = Int[setlookup[s] for s in setcol]
+    nsets = length(setnames)
+
+    pred_center_abs = (1f0 .+ centerpred) .* pivotcol
+    pred_width_abs = widthpred .* pivotcol
+    pred_lower = clamp.(pred_center_abs .- pred_width_abs ./ 2f0, 0f0, Inf32)
+    pred_upper = clamp.(pred_center_abs .+ pred_width_abs ./ 2f0, 0f0, Inf32)
+    target_center_abs = (1f0 .+ centertarget) .* pivotcol
+    target_width_abs = widthtarget .* pivotcol
+
+    err_center = abs.(pred_center_abs .- target_center_abs)
+    err_width = abs.(pred_width_abs .- target_width_abs)
+
+    rows = zeros(Int, nsets)
+    sum_err_center = zeros(Float64, nsets)
+    sum_err_width = zeros(Float64, nsets)
+
+    high_hit_count = zeros(Int, nsets)
+    sum_samples_to_first_high_hit = zeros(Float64, nsets)
+    count_samples_to_first_high_hit = zeros(Int, nsets)
+    sum_high_hit_gain_vs_close_pct = zeros(Float64, nsets)
+    count_high_hit_gain_vs_close_pct = zeros(Int, nsets)
+    sum_samples_to_first_high_exceed_after_window = zeros(Float64, nsets)
+    count_samples_to_first_high_exceed_after_window = zeros(Int, nsets)
+    sum_high_loss_vs_close_pct_after_window = zeros(Float64, nsets)
+    count_high_loss_vs_close_pct_after_window = zeros(Int, nsets)
+
+    low_hit_count = zeros(Int, nsets)
+    sum_samples_to_first_low_hit = zeros(Float64, nsets)
+    count_samples_to_first_low_hit = zeros(Int, nsets)
+    sum_low_hit_gain_vs_close_pct = zeros(Float64, nsets)
+    count_low_hit_gain_vs_close_pct = zeros(Int, nsets)
+    sum_samples_to_first_low_exceed_after_window = zeros(Float64, nsets)
+    count_samples_to_first_low_exceed_after_window = zeros(Int, nsets)
+    sum_low_loss_vs_close_pct_after_window = zeros(Float64, nsets)
+    count_low_loss_vs_close_pct_after_window = zeros(Int, nsets)
+
+    @inbounds for i in eachindex(setix)
+        s = setix[i]
+        rows[s] += 1
+        sum_err_center[s] += err_center[i]
+        sum_err_width[s] += err_width[i]
+    end
+
+    function build_extrema_trees!(max_tree::Vector{Float32}, min_tree::Vector{Float32}, gidx, node::Int, left::Int, right::Int)
+        if left == right
+            gi = gidx[left]
+            max_tree[node] = highcol[gi]
+            min_tree[node] = lowcol[gi]
+            return nothing
+        end
+        mid = (left + right) >>> 1
+        leftnode = node << 1
+        rightnode = leftnode + 1
+        build_extrema_trees!(max_tree, min_tree, gidx, leftnode, left, mid)
+        build_extrema_trees!(max_tree, min_tree, gidx, rightnode, mid + 1, right)
+        max_tree[node] = max(max_tree[leftnode], max_tree[rightnode])
+        min_tree[node] = min(min_tree[leftnode], min_tree[rightnode])
+        return nothing
+    end
+
+    function first_high_hit(max_tree::Vector{Float32}, threshold::Float32, qleft::Int, qright::Int, node::Int, left::Int, right::Int)::Int
+        if (qright < left) || (right < qleft) || (max_tree[node] < threshold)
+            return 0
+        elseif left == right
+            return left
+        end
+        mid = (left + right) >>> 1
+        leftnode = node << 1
+        hitix = first_high_hit(max_tree, threshold, qleft, qright, leftnode, left, mid)
+        return hitix > 0 ? hitix : first_high_hit(max_tree, threshold, qleft, qright, leftnode + 1, mid + 1, right)
+    end
+
+    function first_low_hit(min_tree::Vector{Float32}, threshold::Float32, qleft::Int, qright::Int, node::Int, left::Int, right::Int)::Int
+        if (qright < left) || (right < qleft) || (min_tree[node] > threshold)
+            return 0
+        elseif left == right
+            return left
+        end
+        mid = (left + right) >>> 1
+        leftnode = node << 1
+        hitix = first_low_hit(min_tree, threshold, qleft, qright, leftnode, left, mid)
+        return hitix > 0 ? hitix : first_low_hit(min_tree, threshold, qleft, qright, leftnode + 1, mid + 1, right)
+    end
+
+    for g in groupby(pdf, [:coin, :rangeid])
+        gidx = parentindices(g)[1]
+        glen = length(gidx)
+        max_tree = fill(-Inf32, max(1, 4 * glen))
+        min_tree = fill(Inf32, max(1, 4 * glen))
+        build_extrema_trees!(max_tree, min_tree, gidx, 1, 1, glen)
+
+        @inbounds for localix in 1:glen
+            firstfuture = localix + 1
+            firstfuture > glen && continue
+
+            i = gidx[localix]
+            s = setix[i]
+            lastfuture = min(localix + window, glen)
+            close_i = closecol[i]
+            up_i = pred_upper[i]
+            low_i = pred_lower[i]
+
+            high_hit_localix = first_high_hit(max_tree, up_i, firstfuture, lastfuture, 1, 1, glen)
+            low_hit_localix = first_low_hit(min_tree, low_i, firstfuture, lastfuture, 1, 1, glen)
+
+            if high_hit_localix > 0
+                high_hit_count[s] += 1
+                sum_samples_to_first_high_hit[s] += high_hit_localix - localix
+                count_samples_to_first_high_hit[s] += 1
+                sum_high_hit_gain_vs_close_pct[s] += 100f0 * (up_i - close_i) / close_i
+                count_high_hit_gain_vs_close_pct[s] += 1
+            elseif lastfuture < glen
+                late_high_hit_localix = first_high_hit(max_tree, up_i, lastfuture + 1, glen, 1, 1, glen)
+                if late_high_hit_localix > 0
+                    j = gidx[late_high_hit_localix]
+                    sum_samples_to_first_high_exceed_after_window[s] += late_high_hit_localix - localix
+                    count_samples_to_first_high_exceed_after_window[s] += 1
+                    sum_high_loss_vs_close_pct_after_window[s] += 100f0 * abs(closecol[j] - close_i) / close_i
+                    count_high_loss_vs_close_pct_after_window[s] += 1
+                end
+            end
+
+            if low_hit_localix > 0
+                low_hit_count[s] += 1
+                sum_samples_to_first_low_hit[s] += low_hit_localix - localix
+                count_samples_to_first_low_hit[s] += 1
+                sum_low_hit_gain_vs_close_pct[s] += 100f0 * (close_i - low_i) / close_i
+                count_low_hit_gain_vs_close_pct[s] += 1
+            elseif lastfuture < glen
+                late_low_hit_localix = first_low_hit(min_tree, low_i, lastfuture + 1, glen, 1, 1, glen)
+                if late_low_hit_localix > 0
+                    j = gidx[late_low_hit_localix]
+                    sum_samples_to_first_low_exceed_after_window[s] += late_low_hit_localix - localix
+                    count_samples_to_first_low_exceed_after_window[s] += 1
+                    sum_low_loss_vs_close_pct_after_window[s] += 100f0 * abs(closecol[j] - close_i) / close_i
+                    count_low_loss_vs_close_pct_after_window[s] += 1
+                end
+            end
+        end
+    end
+
+    mean_or_missing(sumv::Float64, countv::Int) = countv == 0 ? missing : (sumv / countv)
+
+    highdf = DataFrame(
+        set=setnames,
+        mae_center=sum_err_center ./ rows,
+        mae_width=sum_err_width ./ rows,
+        high_hit_within_window_pct=Float32.(100 .* high_hit_count ./ rows),
+        mean_samples_to_first_high_hit=[mean_or_missing(sum_samples_to_first_high_hit[ix], count_samples_to_first_high_hit[ix]) for ix in eachindex(setnames)],
+        mean_high_hit_gain_vs_close_pct=[mean_or_missing(sum_high_hit_gain_vs_close_pct[ix], count_high_hit_gain_vs_close_pct[ix]) for ix in eachindex(setnames)],
+        mean_samples_to_first_high_exceed_after_window=[mean_or_missing(sum_samples_to_first_high_exceed_after_window[ix], count_samples_to_first_high_exceed_after_window[ix]) for ix in eachindex(setnames)],
+        mean_high_loss_vs_close_pct_after_window=[mean_or_missing(sum_high_loss_vs_close_pct_after_window[ix], count_high_loss_vs_close_pct_after_window[ix]) for ix in eachindex(setnames)],
+        rows=rows,
+    )
+    lowdf = DataFrame(
+        set=setnames,
+        mae_center=sum_err_center ./ rows,
+        mae_width=sum_err_width ./ rows,
+        low_hit_within_window_pct=Float32.(100 .* low_hit_count ./ rows),
+        mean_samples_to_first_low_hit=[mean_or_missing(sum_samples_to_first_low_hit[ix], count_samples_to_first_low_hit[ix]) for ix in eachindex(setnames)],
+        mean_low_hit_gain_vs_close_pct=[mean_or_missing(sum_low_hit_gain_vs_close_pct[ix], count_low_hit_gain_vs_close_pct[ix]) for ix in eachindex(setnames)],
+        mean_samples_to_first_low_exceed_after_window=[mean_or_missing(sum_samples_to_first_low_exceed_after_window[ix], count_samples_to_first_low_exceed_after_window[ix]) for ix in eachindex(setnames)],
+        mean_low_loss_vs_close_pct_after_window=[mean_or_missing(sum_low_loss_vs_close_pct_after_window[ix], count_low_loss_vs_close_pct_after_window[ix]) for ix in eachindex(setnames)],
+        rows=rows,
+    )
+    return (high=highdf, low=lowdf)
 end
 
 
@@ -455,30 +696,32 @@ function introspection(cfg::BoundsEstimatorConfig)
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
     Classify.verbosity = 1
+    featdf = EnvConfig.readdf(featuresfilename())
+    if !isnothing(featdf) && (size(featdf, 1) > 0)
+        println("$(featuresfilename()): size(featdf) = $(size(featdf))")
+        println("describe(featdf, :all)=$(describe(featdf, :all))")
+    else
+        println("No results file found in $(EnvConfig.logfolder()) - size(featdf)=$(isnothing(featdf) ? "nothing" : size(featdf))")
+    end
     resultsdf = EnvConfig.readdf(resultsfilename())
     if !isnothing(resultsdf) && (size(resultsdf, 1) > 0)
-        println("size(resultsdf) = $(size(resultsdf))")
+        println("$(resultsfilename()): size(resultsdf) = $(size(resultsdf))")
         println("describe(resultsdf, :all)=$(describe(resultsdf, :all))")
         println("$(unique(resultsdf[!, :coin])) processable coins")
-        println("used targets: $(unique(resultsdf[!, :target]))")
         println("rangeid sorted = $(issorted(resultsdf[!, :rangeid]))")
-        for coin in cfg.coins
-            coin_results = @view resultsdf[resultsdf[!, :coin] .== coin, :]
-            print("\rcoin=$coin, sopentime sorted = $(issorted(coin_results[!, :opentime])), rangeid sorted = $(issorted(coin_results[!, :rangeid]))")
-        end
-        # println("target distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :targets]))))")
-        # println("set distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(resultsdf[!, :set]))))")
-        gainsdf = getgainsdf(cfg)
-        if !isnothing(gainsdf) && (size(gainsdf, 1) > 0)
-            println("describe(gainsdf, :all)=$(describe(gainsdf, :all))")
-            for coin in cfg.coins
-                coinview = @view gainsdf[gainsdf[!, :coin] .== coin, :]
-                # println("coin=$coin, describe(coinview, :all)=$(describe(coinview, :all))")
-                println("coinview[1:10, :]=$(coinview[1:10, :])")
-            end
-        end
+        # for coin in cfg.coins
+        #     coin_results = @view resultsdf[resultsdf[!, :coin] .== coin, :]
+        #     print("\rcoin=$coin, sopentime sorted = $(issorted(coin_results[!, :opentime])), rangeid sorted = $(issorted(coin_results[!, :rangeid]))")
+        # end
     else
         println("No results file found in $(EnvConfig.logfolder()) - size(resultsdf)=$(isnothing(resultsdf) ? "nothing" : size(resultsdf))")
+    end
+    preddf = EnvConfig.readdf(predictionsfilename())
+    if !isnothing(preddf) && (size(preddf, 1) > 0)
+        println("$(predictionsfilename()): size(preddf) = $(size(preddf))")
+        println("describe(preddf, :all)=$(describe(preddf, :all))")
+    else
+        println("No results file found in $(EnvConfig.logfolder()) - size(preddf)=$(isnothing(preddf) ? "nothing" : size(preddf))")
     end
 end
 
@@ -487,90 +730,92 @@ end
 startdt = DateTime("2017-11-17T20:56:00")
 enddt = DateTime("2025-08-10T15:00:00")
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
-    retrain = false
-    retrain = "retrain" in ARGS
-    retrain && println("retrain mode activated - existing regressors that did not converge will be overwritten")
-    # retrain = true
-    testmode = true
-    testmode = "test" in ARGS ? true : "train" in ARGS ? false : testmode
-    inspectonly = "inspect" in ARGS
-    # inspectonly = true
-    specialonly = "special" in ARGS
-    # specialonly = true
+println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
+retrain = false
+retrain = "retrain" in ARGS
+retrain && println("retrain mode activated - existing regressors that did not converge will be overwritten")
+# retrain = true
+testmode = true
+testmode = "test" in ARGS ? true : "train" in ARGS ? false : testmode
+inspectonly = "inspect" in ARGS
+# inspectonly = true
+specialonly = "special" in ARGS
+# specialonly = true
 
 
+verbosity = 2
+allowedcoins = []
+
+if testmode 
     verbosity = 2
-    allowedcoins = []
-    if specialonly
-        Ohlcv.verbosity = 3
-        CryptoXch.verbosity = 3
-        Features.verbosity = 1
-        Targets.verbosity = 1
-        EnvConfig.verbosity = 1
-        Classify.verbosity = 1
-        allowedcoins = ["SINE", "DOUBLESINE"]
-        EnvConfig.init(test)
-    else 
-        if testmode 
-            verbosity = 2
-            Ohlcv.verbosity = 1 # 3
-            CryptoXch.verbosity = 1 # 3
-            Features.verbosity = 1 # 3
-            Targets.verbosity = 1 # 3
-            EnvConfig.verbosity = 1
-            Classify.verbosity = 1 # 3
-            allowedcoins = testcoins()
-            EnvConfig.init(test)
-            startdt = DateTime("2025-01-17T20:56:00")
-            enddt = DateTime("2025-08-10T15:00:00")
-        else # training or production
-            verbosity = 2
-            Ohlcv.verbosity = 1
-            CryptoXch.verbosity = 1
-            Features.verbosity = 1
-            Targets.verbosity = 1
-            EnvConfig.verbosity = 1
-            Classify.verbosity = 1
-            EnvConfig.init(training)
-            allowedcoins = traincoins()
-        end
-    end
-    cfg = BoundsEstimatorConfig(;boundsmk025config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
-
-    if specialonly
-        # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
-        println("No special task defined")
-    elseif inspectonly
-        introspection(cfg)
-    else
-        pred = getboundspredictionsdf(cfg)
-        if !isnothing(pred) && (size(pred, 1) > 0)
-            println("$(EnvConfig.now()) bounds predictions rows=$(size(pred, 1))")
-            println("$(EnvConfig.now()) bounds predictions sample=$(first(pred, min(5, size(pred, 1))))")
-        end
-        qdf = getboundsqualitydf(cfg)
-        if size(qdf, 1) > 0
-            println("$(EnvConfig.now()) bounds quality by set: $qdf")
-        end
-
-        # distdf = getdistances(cfg)
-        # if !isnothing(distdf) && (size(distdf, 1) > 0)
-        #     println("size(distdf)=$(size(distdf))")
-        #     println("describe(distdf)=$(describe(distdf))")
-        #     # println(distdf[.!ismissing.(distdf[!, :tpdistnext]),:])
-        #     distdfgroup = groupby(distdf, [:set, :trend])
-        #     # println(distdfgroup)
-        #     # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
-        #     diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(median, x)) => :fpdistnext_median, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
-        #     println("$(EnvConfig.now()) Distances: $(diststatdf)")
-        # else
-        #     println("$(EnvConfig.now()) no distance data available")
-        # end
-    end
-
-
-    println("$(EnvConfig.now()) done @ $(cfg.folder)")
+    Ohlcv.verbosity = 1 # 3
+    CryptoXch.verbosity = 1 # 3
+    Features.verbosity = 1 # 3
+    Targets.verbosity = 1 # 3
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1 # 3
+    allowedcoins = testcoins()
+    EnvConfig.init(test)
+    startdt = DateTime("2025-01-17T20:56:00")
+    enddt = DateTime("2025-08-10T15:00:00")
+else # training or production
+    verbosity = 2
+    Ohlcv.verbosity = 1
+    CryptoXch.verbosity = 1
+    Features.verbosity = 1
+    Targets.verbosity = 1
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1
+    EnvConfig.init(training)
+    allowedcoins = traincoins()
 end
+
+if specialonly
+    Ohlcv.verbosity = 3
+    CryptoXch.verbosity = 3
+    Features.verbosity = 1
+    Targets.verbosity = 1
+    EnvConfig.verbosity = 1
+    Classify.verbosity = 1
+end
+
+cfg = BoundsEstimatorConfig(;boundsmk002config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+
+if specialonly
+    # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
+    println("No special task defined")
+elseif inspectonly
+    introspection(cfg)
+else
+    pred = getboundspredictionsdf(cfg)
+    if !isnothing(pred) && (size(pred, 1) > 0)
+        println("$(EnvConfig.now()) bounds predictions rows=$(size(pred, 1))")
+        println("$(EnvConfig.now()) bounds predictions sample=$(first(pred, min(5, size(pred, 1))))")
+    end
+    qdf = getboundsqualitydf(cfg)
+    if size(qdf.high, 1) > 0
+        println("$(EnvConfig.now()) bounds high quality by set: $(qdf.high)")
+    end
+    if size(qdf.low, 1) > 0
+        println("$(EnvConfig.now()) bounds low quality by set: $(qdf.low)")
+    end
+
+    # distdf = getdistances(cfg)
+    # if !isnothing(distdf) && (size(distdf, 1) > 0)
+    #     println("size(distdf)=$(size(distdf))")
+    #     println("describe(distdf)=$(describe(distdf))")
+    #     # println(distdf[.!ismissing.(distdf[!, :tpdistnext]),:])
+    #     distdfgroup = groupby(distdf, [:set, :trend])
+    #     # println(distdfgroup)
+    #     # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
+    #     diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(median, x)) => :fpdistnext_median, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
+    #     println("$(EnvConfig.now()) Distances: $(diststatdf)")
+    # else
+    #     println("$(EnvConfig.now()) no distance data available")
+    # end
+end
+
+
+println("$(EnvConfig.now()) done @ $(cfg.folder)")
+
 end # of BoundsEstimator

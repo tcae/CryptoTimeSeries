@@ -33,7 +33,7 @@ targetconfig10() = trend04targetconfig(10, 1*60, 0.01, 0.01)
 targetconfig08() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend02 replaced by Trend04
 targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
 
-boundstargetsconfig01(window) = Targets.Bounds01(window, relpricediff=true)
+boundstargetsconfig01(window) = Targets.Bounds01(window)
 
 
 settypes() = ["train", "test", "eval"]
@@ -285,10 +285,10 @@ mk9 = mk9 with short term target, i.e. maxwindow 1h
 mk026config() = (configname="026", featconfig = trendf6config01(), targetconfig = targetconfig10(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 "Bounds estimator for short term limits"
-boundsmk025config() = (configname="025", featconfig = boundsf6config01(15), targetconfig = boundstargetsconfig01(15), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
+boundsmk001config() = (configname="001", featconfig = boundsf6config01(15), targetconfig = boundstargetsconfig01(15), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
 
 "Bounds estimator for mid term limits"
-boundsmk026config() = (configname="026", featconfig = boundsf6config01(4*60), targetconfig = boundstargetsconfig01(4*60), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
+boundsmk002config() = (configname="002", featconfig = boundsf6config01(4*60), targetconfig = boundstargetsconfig01(4*60), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
 
 "Trade advice LSTM baseline config matching optimized trend/bounds setup 025."
 tradeadvicemk025config() = (configname="025", trendconfigref="025", boundsconfigref="025", seqlen=3, hidden_dim=32, maxepoch=200, batchsize=64)

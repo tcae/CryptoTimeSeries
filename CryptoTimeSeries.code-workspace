@@ -92,6 +92,10 @@
 				"approve": true,
 				"matchCommandLine": true
 			}
+		},
+		"github.copilot.enable": {
+			"julia": true,
+			"python": true
 		}
 	},
 	"launch": {

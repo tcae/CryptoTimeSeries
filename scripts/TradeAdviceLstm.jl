@@ -138,7 +138,7 @@ function get_trend_probabilities(cfg::TradeAdviceLstmConfig)
     @assert size(resultsdf, 1) == size(featuresdf, 1) "trend results/features row mismatch: $(size(resultsdf, 1)) != $(size(featuresdf, 1))"
 
     fcols = Features.requestedcolumns(cfg.trendconfig.featconfig)
-    @assert all(c -> c in names(featuresdf), fcols) "trend features dataframe missing required columns"
+    @assert all(c -> c in propertynames(featuresdf), fcols) "trend features dataframe missing required columns"
     X = permutedims(Matrix(featuresdf[!, fcols]), (2, 1))
 
     probsdf = _with_log_subfolder(trfolder) do
@@ -153,13 +153,24 @@ function get_trend_probabilities(cfg::TradeAdviceLstmConfig)
 end
 
 """
-Load optimized bounds estimator outputs aligned to sample rows.
+Load optimized bounds estimator outputs aligned to trend rows using stable admin keys.
 """
 function get_bounds_predictions(cfg::TradeAdviceLstmConfig)
     bfolder = boundsfolder(cfg)
-    bdf = _load_df_or_assert(bfolder, predictionsfilename())
-    required = [:sampleix, :pred_center, :pred_width]
-    @assert all(c -> c in names(bdf), required) "bounds predictions missing required columns $(required)"
+    resultsdf = _load_df_or_assert(bfolder, resultsfilename())
+    predictionsdf = _load_df_or_assert(bfolder, predictionsfilename())
+
+    keycols = [:coin, :rangeid, :opentime]
+    @assert all(c -> c in propertynames(resultsdf), keycols) "bounds results missing required join keys $(keycols)"
+    @assert size(resultsdf, 1) == size(predictionsdf, 1) "bounds results/predictions row mismatch: $(size(resultsdf, 1)) != $(size(predictionsdf, 1))"
+
+    centercol = :centerpred in propertynames(predictionsdf) ? :centerpred : (:pred_center in propertynames(predictionsdf) ? :pred_center : nothing)
+    widthcol = :widthpred in propertynames(predictionsdf) ? :widthpred : (:pred_width in propertynames(predictionsdf) ? :pred_width : nothing)
+    @assert !isnothing(centercol) && !isnothing(widthcol) "bounds predictions must contain center/width columns; names=$(names(predictionsdf))"
+
+    bdf = copy(resultsdf[!, keycols])
+    bdf[!, :centerpred] = Float32.(predictionsdf[!, centercol])
+    bdf[!, :widthpred] = Float32.(predictionsdf[!, widthcol])
     return bdf
 end
 
@@ -170,14 +181,16 @@ function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
     trend_results, trend_probs = get_trend_probabilities(cfg)
     bounds_pred = get_bounds_predictions(cfg)
 
-    cols = [:sampleix, :rangeid, :set, :target, :opentime, :high, :low, :close, :pivot]
-    @assert all(c -> c in names(trend_results), cols) "trend results missing required columns"
+    keycols = [:coin, :rangeid, :opentime]
+    cols = [:coin, :rangeid, :set, :target, :opentime, :high, :low, :close, :pivot]
+    @assert all(c -> c in propertynames(trend_results), cols) "trend results missing required columns"
 
-    mdf = innerjoin(trend_results[!, cols], bounds_pred[!, [:sampleix, :pred_center, :pred_width]], on=:sampleix)
+    mdf = innerjoin(trend_results[!, cols], bounds_pred, on=keycols)
     @assert size(mdf, 1) > 0 "empty merge between trend and bounds data"
+    @assert size(mdf, 1) == size(trend_results, 1) == size(bounds_pred, 1) "unexpected merge row mismatch: size(mdf, 1)=$(size(mdf, 1)), size(trend_results, 1)=$(size(trend_results, 1)), size(bounds_pred, 1)=$(size(bounds_pred, 1))"
 
     for c in [:longbuy, :shortbuy, :allclose]
-        if c in names(trend_probs)
+        if c in propertynames(trend_probs)
             mdf[!, c] = Float32.(trend_probs[!, c])
         else
             mdf[!, c] = zeros(Float32, size(mdf, 1))
@@ -185,7 +198,7 @@ function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
     end
 
     # Fallback if allclose is not directly available from classifier labels.
-    if !(:allclose in names(trend_probs))
+    if !(:allclose in propertynames(trend_probs))
         mdf[!, :allclose] = max.(1f0 .- mdf[!, :longbuy] .- mdf[!, :shortbuy], 0f0)
     end
 
@@ -196,10 +209,12 @@ function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
     end
     mdf[!, :target] = mapped_target
 
-    # Keep deterministic order for window generation.
-    sort!(mdf, [:rangeid, :sampleix])
-
+    # Keep deterministic order for window generation and persist the compact merged inputs.
+    sort!(mdf, [:coin, :rangeid, :opentime])
     EnvConfig.savedf(mdf, lstmmergedfilename())
+
+    mdf = copy(mdf)
+    mdf[!, :rowix] = Int32.(1:size(mdf, 1))
     return mdf
 end
 
@@ -207,12 +222,12 @@ function train_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame)
     contract = Classify.lstm_bounds_trend_features(
         mdf;
         trendprobcols=[:longbuy, :shortbuy, :allclose],
-        centercol=:pred_center,
-        widthcol=:pred_width,
+        centercol=:centerpred,
+        widthcol=:widthpred,
         targetcol=:target,
         setcol=:set,
         rangeidcol=:rangeid,
-        rixcol=:sampleix,
+        rixcol=:rowix,
     )
 
     res = Classify.train_lstm_trade_signals!(contract, cfg.seqlen; hidden_dim=cfg.hidden_dim, maxepoch=cfg.maxepoch, batchsize=cfg.batchsize)
@@ -231,14 +246,15 @@ function evaluate_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame, contr
     predlabel = [LSTM_LABELS[ci[1]] for ci in predix]
     predscore = [Float32(probs[ci[1], ix]) for (ix, ci) in enumerate(predix)]
 
-    admincols = [:sampleix, :opentime, :high, :low, :close, :pivot, :set, :rangeid]
+    admincols = [:rowix, :opentime, :high, :low, :close, :pivot, :set, :rangeid, :coin]
     admindf = mdf[!, admincols]
     evaldf = innerjoin(
-        DataFrame(sampleix=windows.endrix, target=windows.targets, pred_label=predlabel, score=predscore),
+        DataFrame(rowix=windows.endrix, target=windows.targets, pred_label=predlabel, score=predscore),
         admindf,
-        on=:sampleix,
+        on=:rowix,
     )
     @assert size(evaldf, 1) == length(windows.targets) "window/admin merge mismatch"
+    select!(evaldf, Not(:rowix))
 
     evaldf[!, :label] = Targets.tradelabel.(evaldf[!, :pred_label])
     evaldf[!, :target] = Targets.tradelabel.(string.(evaldf[!, :target]))
