@@ -768,7 +768,7 @@ if specialonly
     Classify.verbosity = 1
 end
 
-cfg = TrendDetectorConfig(;mk025Econfig()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = TrendDetectorConfig(;mk025config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])

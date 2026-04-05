@@ -63,6 +63,15 @@ using DataFrames
         @test_throws AssertionError TradingStrategy.lstm_trade_actions(decider, rand(Float32, 3, 2))
     end
 
+    @testset "extended hold labels map to no order" begin
+        decider = TradingStrategy.LstmTradeDecider(
+            labels=["longbuy", "longhold", "longclose", "shortbuy", "shorthold", "shortclose", "allclose"],
+            scorethresholds=(longbuy=0.5f0, longhold=0.5f0, longclose=0.5f0, shortbuy=0.5f0, shorthold=0.5f0, shortclose=0.5f0, allclose=0.5f0),
+        )
+        ta = TradingStrategy.lstm_trade_action(decider, Float32[0.05, 0.7, 0.05, 0.05, 0.05, 0.05, 0.05])
+        @test isnothing(ta.orderlabel)
+    end
+
     @testset "integration with Phase-2 prediction (tensor input)" begin
         decider = TradingStrategy.LstmTradeDecider(scorethresholds=(longbuy=0.5f0, longclose=0.5f0, shortbuy=0.5f0, shortclose=0.5f0))
         model = x -> begin

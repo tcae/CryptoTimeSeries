@@ -290,15 +290,40 @@ boundsmk001config() = (configname="001", featconfig = boundsf6config01(15), targ
 "Bounds estimator for mid term limits"
 boundsmk002config() = (configname="002", featconfig = boundsf6config01(4*60), targetconfig = boundstargetsconfig01(4*60), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
 
-"Trade advice LSTM baseline config matching optimized trend/bounds setup 025."
-tradeadvicemk025config() = (configname="025", trendconfigref="025", boundsconfigref="025", seqlen=3, hidden_dim=32, maxepoch=200, batchsize=64)
+"Trade advice LSTM baseline config matching optimized trend/bounds setup 025 and using eval-only threshold tuning with opposite-signal timeout exits."
+tradeadvicemk025config() = (
+    configname="001",
+    trendconfigref="025",
+    boundsconfigref="001",
+    seqlen=3,
+    hidden_dim=32,
+    maxepoch=200,
+    batchsize=64,
+    entryfraction=0.1f0,
+    exitfraction=0.1f0,
+    openthresholds=Float32[0.8f0, 0.7f0, 0.6f0],
+    closethresholds=Float32[0.6f0, 0.55f0, 0.5f0],
+    entrytimeout=2,
+    exittimeout=2,
+    exitstrategy=:opposite_signal_market,
+)
 
-"Trade advice LSTM baseline config matching optimized trend/bounds setup 026."
-tradeadvicemk026config() = (configname="026", trendconfigref="026", boundsconfigref="026", seqlen=3, hidden_dim=32, maxepoch=200, batchsize=64)
+"Alternative eval-sweep with a slightly longer sequence and tighter thresholds for comparison on the eval split."
+tradeadvicemk026config() = (
+    configname="002",
+    trendconfigref="025E",
+    boundsconfigref="001",
+    seqlen=5,
+    hidden_dim=48,
+    maxepoch=200,
+    batchsize=64,
+    entryfraction=0.1f0,
+    exitfraction=0.1f0,
+    openthresholds=Float32[0.85f0, 0.75f0, 0.65f0],
+    closethresholds=Float32[0.65f0, 0.6f0, 0.55f0],
+    entrytimeout=2,
+    exittimeout=3,
+    exitstrategy=:opposite_signal_market,
+)
 
-"Trade advice LSTM mixed config using newer trend classifier with stable bounds estimator."
-tradeadvicemk027config() = (configname="027", trendconfigref="026", boundsconfigref="025", seqlen=5, hidden_dim=48, maxepoch=200, batchsize=64)
-
-"Trade advice LSTM mixed config using stable trend classifier with newer bounds estimator."
-tradeadvicemk028config() = (configname="028", trendconfigref="025", boundsconfigref="026", seqlen=5, hidden_dim=48, maxepoch=200, batchsize=64)
 

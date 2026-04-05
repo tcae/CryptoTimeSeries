@@ -120,30 +120,14 @@ end
 
 
 """
-    lstm_trade_signal_model(nfeatures::Int, seqlen::Int, hidden_dim::Int=32; labels=["longbuy", "longclose", "shortbuy", "shortclose"])
+    lstm_trade_signal_model(nfeatures::Int, seqlen::Int, hidden_dim::Int=32; labels=[...])
 
-Create an LSTM neural network for 4-class trade signal classification.
+Create an LSTM neural network for trade-signal classification.
 
 Architecture:
 - LSTM layer: `LSTM(nfeatures → hidden_dim)` processes sequences
-- Dense layer: `Dense(hidden_dim → 4)` outputs logits for 4 trade classes
+- Dense layer: `Dense(hidden_dim → nclasses)` outputs logits for the supplied trade classes
 - **Output: raw logits (no activation)** for use with logitcrossentropy loss
-
-# Arguments
-- `nfeatures::Int`: Number of input features (from lstm_bounds_trend_features)
-- `seqlen::Int`: Sequence length (window size)
-- `hidden_dim::Int`: LSTM hidden state dimension (default: 32)
-- `labels::Vector{String}`: Trade class labels in order (default: longbuy, longclose, shortbuy, shortclose)
-
-# Returns
-- `model::Flux.Chain`: Trainable model for use with DataLoader + logitcrossentropy loss
-
-# Example
-```julia
-model = lstm_trade_signal_model(7, 3)  # 7 features, seqlen=3, hidden_dim=32
-X = randn(Float32, 7, 3, 64)  # (nfeatures, seqlen, batch_size)
-ŷ = model(X)  # (4, 64) raw logits
-```
 """
 function lstm_trade_signal_model(nfeatures::Int, seqlen::Int, hidden_dim::Int=32; 
     labels=["longbuy", "longclose", "shortbuy", "shortclose"])
@@ -151,9 +135,9 @@ function lstm_trade_signal_model(nfeatures::Int, seqlen::Int, hidden_dim::Int=32
     @assert nfeatures > 0 "nfeatures must be > 0; got $nfeatures"
     @assert seqlen > 0 "seqlen must be > 0; got $seqlen"
     @assert hidden_dim > 0 "hidden_dim must be > 0; got $hidden_dim"
-    @assert length(labels) == 4 "labels must have exactly 4 classes; got $(length(labels))"
+    @assert length(labels) >= 2 "labels must contain at least 2 classes; got $(length(labels))"
     
-    nclasses = 4
+    nclasses = length(labels)
     
     model = Flux.Chain(
         Flux.LSTM(nfeatures => hidden_dim),  # Sequence processing: (nfeatures, seqlen, batch) → (hidden_dim, seqlen, batch)
@@ -195,7 +179,7 @@ result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=32)
 ```
 """
 function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int; 
-    hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64)
+    hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64, labels::Union{Nothing,Vector{String}}=nothing)
     
     # Build sliding windows
     windows = lstm_tensor_windows(contract; seqlen=seqlen)
@@ -206,8 +190,17 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
     @assert size(X, 3) > 0 "No training windows generated; check contract and seqlen"
     
     nfeatures = size(X, 1)
-    nclasses = 4
-    trade_labels = ["longbuy", "longclose", "shortbuy", "shortclose"]
+    labelorder = Dict(
+        "longbuy" => 1,
+        "longhold" => 2,
+        "longclose" => 3,
+        "shortbuy" => 4,
+        "shorthold" => 5,
+        "shortclose" => 6,
+        "allclose" => 7,
+    )
+    trade_labels = isnothing(labels) ? sort(unique(String.(targets)); by=label -> get(labelorder, label, length(labelorder) + 1)) : String.(labels)
+    @assert length(trade_labels) >= 2 "trade_labels must contain at least 2 classes; got trade_labels=$(trade_labels)"
     
     # Initialize model and optimizer
     model, _ = lstm_trade_signal_model(nfeatures, seqlen, hidden_dim; labels=trade_labels)

@@ -31,9 +31,12 @@ abstract type AbstractMultiSymbolTrading <: EnvConfig.AbstractConfiguration end
 "Maps label strings to the trade label symbols used in Targets."
 const _LSTM_LABEL_MAP = Dict(
     "longbuy" => longbuy,
+    "longhold" => longhold,
     "longclose" => longclose,
     "shortbuy" => shortbuy,
+    "shorthold" => shorthold,
     "shortclose" => shortclose,
+    "allclose" => allclose,
 )
 
 "Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set."
@@ -212,7 +215,7 @@ function lstm_trade_action(decider::LstmTradeDecider, probs::AbstractVector{<:Re
     predix = argmax(probs)
     predlabel = decider.labels[predix]
     predscore = Float32(probs[predix])
-    threshold = get(decider.scorethresholds, predlabel, 1f0)
+    threshold = get(decider.scorethresholds, predlabel, 0.5f0)
     selected = predscore >= threshold ? predlabel : decider.fallbacklabel
     orderlabel = _label2orderlabel(selected, assettype)
     return TradeAction(false, orderlabel, nothing, 1f0)
@@ -269,6 +272,219 @@ function lstm_trade_actions(decider::LstmTradeDecider, model, contract::Classify
         rangeids=windows.rangeids,
         endrix=windows.endrix,
     )
+end
+
+"Returns the predicted lower/upper band for one row of a predictions dataframe."
+function _predicted_band(predictionsdf::AbstractDataFrame, ix::Integer)
+    centercol = :centerpred in propertynames(predictionsdf) ? :centerpred : (:pred_center in propertynames(predictionsdf) ? :pred_center : nothing)
+    widthcol = :widthpred in propertynames(predictionsdf) ? :widthpred : (:pred_width in propertynames(predictionsdf) ? :pred_width : nothing)
+    @assert !isnothing(centercol) && !isnothing(widthcol) "predictionsdf must contain centerpred/widthpred or pred_center/pred_width; names=$(names(predictionsdf))"
+    center = Float32(predictionsdf[ix, centercol])
+    width = max(Float32(predictionsdf[ix, widthcol]), 0f0)
+    halfwidth = width / 2f0
+    return (center - halfwidth, center + halfwidth)
+end
+
+@inline _price_in_bar(price::Float32, low::Real, high::Real) = (Float32(low) <= price) && (price <= Float32(high))
+
+"Returns an empty dataframe for limit-aware entry/exit trade pairs."
+function emptytradepairdf()::DataFrame
+    return DataFrame(
+        trend=TrendPhase[],
+        samplecount=Int[],
+        minutes=Int[],
+        gain=Float32[],
+        gainfee=Float32[],
+        startdt=DateTime[],
+        enddt=DateTime[],
+        startix=Int[],
+        endix=Int[],
+        entryprice=Float32[],
+        exitprice=Float32[],
+        entrylimit=Float32[],
+        exitlimit=Float32[],
+        entryfilled=Bool[],
+        exitfilled=Bool[],
+        missedexit=Bool[],
+        entryreason=String[],
+        exitreason=String[],
+    )
+end
+
+"Appends one realized limit-aware trade pair to the simulation dataframe."
+function _pushtradepair!(tradedf::DataFrame, trend::TrendPhase, predictionsdf::AbstractDataFrame, startix::Integer, endix::Integer, entryprice::Float32, exitprice::Float32, entrylimit::Float32, exitlimit::Float32, entryfee::Float32, exitfee::Float32, entryfilled::Bool, exitfilled::Bool, missedexit::Bool, entryreason::AbstractString, exitreason::AbstractString)
+    @assert (trend == up) || (trend == down) "trend must be up or down; got trend=$(trend)"
+    startdt = predictionsdf[startix, :opentime]
+    enddt = predictionsdf[endix, :opentime]
+    rawgain = trend == up ? (exitprice - entryprice) / entryprice : -(exitprice - entryprice) / entryprice
+    minutes = Int(div(Dates.value(enddt - startdt), 60000)) + 1
+    push!(tradedf, (
+        trend,
+        Int(endix - startix + 1),
+        minutes,
+        rawgain,
+        rawgain - entryfee - exitfee,
+        startdt,
+        enddt,
+        Int(startix),
+        Int(endix),
+        entryprice,
+        exitprice,
+        entrylimit,
+        exitlimit,
+        entryfilled,
+        exitfilled,
+        missedexit,
+        String(entryreason),
+        String(exitreason),
+    ))
+    return tradedf
+end
+
+"Returns the initial state used by `simulate_limit_trade_pairs`."
+function _initial_limit_state()
+    return (
+        assettype=flat,
+        buyix=0,
+        buyprice=0f0,
+        entrylimit=Float32(NaN),
+        entryfee=0f0,
+        pendingentry=false,
+        pendingentryix=0,
+        pendingentrytrend=flat,
+        pendingentrylimit=Float32(NaN),
+        pendingexit=false,
+        pendingexitix=0,
+        pendingexitlimit=Float32(NaN),
+    )
+end
+
+"""
+    simulate_limit_trade_pairs(predictionsdf, scores, labels; ...)
+
+Simulate explicit entry/exit trade pairs from row-aligned LSTM predictions and
+bounds estimates. Entry limits are placed at the predicted lower band for long
+trades and upper band for short trades. Exit limits use the opposite band. If an
+exit limit is not hit within `exittimeout` bars, the position is force-closed at
+market, so missed exits can realize losses.
+"""
+function simulate_limit_trade_pairs(predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector; openthreshold::AbstractFloat=0.6f0, closethreshold::AbstractFloat=0.5f0, entrytimeout::Int=2, exittimeout::Int=2, makerfee::AbstractFloat=0.0015f0, takerfee::AbstractFloat=0.002f0, exitstrategy::Symbol=:opposite_signal_market, forceclose::Bool=true)
+    nrows = size(predictionsdf, 1)
+    @assert nrows == length(scores) == length(labels) "size(predictionsdf, 1)=$nrows must match length(scores)=$(length(scores)) and length(labels)=$(length(labels))"
+    @assert entrytimeout >= 0 "entrytimeout=$(entrytimeout) must be >= 0"
+    @assert exittimeout >= 0 "exittimeout=$(exittimeout) must be >= 0"
+    @assert exitstrategy in (:opposite_signal_market,) "unsupported exitstrategy=$exitstrategy; expected :opposite_signal_market"
+    @assert all(c -> c in propertynames(predictionsdf), [:opentime, :high, :low, :close]) "predictionsdf must contain opentime/high/low/close; names=$(names(predictionsdf))"
+
+    tradedf = emptytradepairdf()
+    if nrows == 0
+        return tradedf
+    end
+
+    state = _initial_limit_state()
+
+    function open_position!(ix::Int, trend::TrendPhase, price::Float32, limit::Float32)
+        state = merge(state, (assettype=trend, buyix=ix, buyprice=price, entrylimit=limit, entryfee=Float32(makerfee), pendingentry=false, pendingentryix=0, pendingentrytrend=flat, pendingentrylimit=Float32(NaN), pendingexit=false, pendingexitix=0, pendingexitlimit=Float32(NaN)))
+        return state
+    end
+
+    function close_position!(ix::Int, exitprice::Float32, exitlimit::Float32, exitfilled::Bool, missedexit::Bool, exitreason::String)
+        if state.assettype in (up, down)
+            exitfee = exitfilled ? Float32(makerfee) : Float32(takerfee)
+            _pushtradepair!(tradedf, state.assettype, predictionsdf, state.buyix, ix, state.buyprice, exitprice, state.entrylimit, exitlimit, state.entryfee, exitfee, true, exitfilled, missedexit, "limit_fill", exitreason)
+        end
+        state = merge(state, (assettype=flat, buyix=0, buyprice=0f0, entrylimit=Float32(NaN), entryfee=0f0, pendingexit=false, pendingexitix=0, pendingexitlimit=Float32(NaN)))
+        return state
+    end
+
+    @inbounds for ix in 1:nrows
+        low = Float32(predictionsdf[ix, :low])
+        high = Float32(predictionsdf[ix, :high])
+        close = Float32(predictionsdf[ix, :close])
+        label = labels[ix]
+        score = Float32(scores[ix])
+        lower, upper = _predicted_band(predictionsdf, ix)
+
+        longopen = islongopenlabel(label) && (score >= openthreshold)
+        shortopen = isshortopenlabel(label) && (score >= openthreshold)
+        longclose = islongcloselabel(label) && (score >= closethreshold)
+        shortclose = isshortcloselabel(label) && (score >= closethreshold)
+
+        if state.pendingentry
+            if _price_in_bar(state.pendingentrylimit, low, high)
+                state = open_position!(ix, state.pendingentrytrend, state.pendingentrylimit, state.pendingentrylimit)
+            elseif (ix - state.pendingentryix) >= entrytimeout
+                state = merge(state, (pendingentry=false, pendingentryix=0, pendingentrytrend=flat, pendingentrylimit=Float32(NaN)))
+            elseif ((state.pendingentrytrend == up) && shortopen) || ((state.pendingentrytrend == down) && longopen)
+                state = merge(state, (pendingentry=false, pendingentryix=0, pendingentrytrend=flat, pendingentrylimit=Float32(NaN)))
+            end
+        end
+
+        if (state.assettype in (up, down)) && state.pendingexit
+            if _price_in_bar(state.pendingexitlimit, low, high)
+                state = close_position!(ix, state.pendingexitlimit, state.pendingexitlimit, true, false, "limit_fill")
+            elseif (ix - state.pendingexitix) >= exittimeout
+                state = close_position!(ix, close, state.pendingexitlimit, false, true, "timeout_market")
+            end
+        end
+
+        if state.assettype == flat
+            if !state.pendingentry
+                if longopen
+                    state = merge(state, (pendingentry=true, pendingentryix=ix, pendingentrytrend=up, pendingentrylimit=lower))
+                    if _price_in_bar(state.pendingentrylimit, low, high)
+                        state = open_position!(ix, up, state.pendingentrylimit, state.pendingentrylimit)
+                    end
+                elseif shortopen
+                    state = merge(state, (pendingentry=true, pendingentryix=ix, pendingentrytrend=down, pendingentrylimit=upper))
+                    if _price_in_bar(state.pendingentrylimit, low, high)
+                        state = open_position!(ix, down, state.pendingentrylimit, state.pendingentrylimit)
+                    end
+                end
+            end
+        elseif state.assettype == up
+            if longclose
+                state = merge(state, (pendingexit=true, pendingexitix=ix, pendingexitlimit=upper))
+                if _price_in_bar(state.pendingexitlimit, low, high)
+                    state = close_position!(ix, state.pendingexitlimit, state.pendingexitlimit, true, false, "limit_fill")
+                end
+            elseif shortopen
+                missedexit = state.pendingexit
+                exitlimit = state.pendingexit ? state.pendingexitlimit : Float32(NaN)
+                state = close_position!(ix, close, exitlimit, false, missedexit, "opposite_signal_market")
+                state = merge(state, (pendingentry=true, pendingentryix=ix, pendingentrytrend=down, pendingentrylimit=upper))
+                if _price_in_bar(state.pendingentrylimit, low, high)
+                    state = open_position!(ix, down, state.pendingentrylimit, state.pendingentrylimit)
+                end
+            end
+        else
+            if shortclose
+                state = merge(state, (pendingexit=true, pendingexitix=ix, pendingexitlimit=lower))
+                if _price_in_bar(state.pendingexitlimit, low, high)
+                    state = close_position!(ix, state.pendingexitlimit, state.pendingexitlimit, true, false, "limit_fill")
+                end
+            elseif longopen
+                missedexit = state.pendingexit
+                exitlimit = state.pendingexit ? state.pendingexitlimit : Float32(NaN)
+                state = close_position!(ix, close, exitlimit, false, missedexit, "opposite_signal_market")
+                state = merge(state, (pendingentry=true, pendingentryix=ix, pendingentrytrend=up, pendingentrylimit=lower))
+                if _price_in_bar(state.pendingentrylimit, low, high)
+                    state = open_position!(ix, up, state.pendingentrylimit, state.pendingentrylimit)
+                end
+            end
+        end
+    end
+
+    if forceclose && (state.assettype in (up, down))
+        lastix = nrows
+        lastclose = Float32(predictionsdf[lastix, :close])
+        missedexit = state.pendingexit
+        exitlimit = state.pendingexit ? state.pendingexitlimit : Float32(NaN)
+        reason = missedexit ? "final_market_after_missed_limit" : "final_market"
+        close_position!(lastix, lastclose, exitlimit, false, missedexit, reason)
+    end
+
+    return tradedf
 end
 
 function emptygaindf()::DataFrame
