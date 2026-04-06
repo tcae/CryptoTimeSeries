@@ -194,6 +194,14 @@ end
     Targets.setbase!(shorttrd, testohlcvfrompivots(Float32[100.0, 94.0, 95.8]))
     @test shorttrd.df[2, :label] == shortbuy
     @test shorttrd.df[3, :label] == allclose
+
+    recoveringlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
+    Targets.setbase!(recoveringlong, testohlcvfrompivots(Float32[100.0, 106.0, 102.0, 104.5]))
+    @test recoveringlong.df[3, :label] == longhold
+
+    recoveringshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
+    Targets.setbase!(recoveringshort, testohlcvfrompivots(Float32[100.0, 94.0, 98.0, 95.5]))
+    @test recoveringshort.df[3, :label] == shorthold
 end
 
 # ---------------------------------------------------------------------------
@@ -407,4 +415,75 @@ end
         println("Trend04 SINE crosscheck issues:\n" * join(issues, "\n"))
     end
     @test isempty(issues)
+end
+
+@testset "Trend04 BTC real-data regression Jan-May 2025" begin
+    prevmode = EnvConfig.configmode
+    try
+        EnvConfig.init(training)
+        startdt = DateTime("2025-01-30T00:00:00")
+        enddt = DateTime("2025-05-30T23:59:00")
+        expectedrows = length(startdt:Minute(1):enddt)
+
+        ohlcv = Ohlcv.read("BTC")
+        @test size(Ohlcv.dataframe(ohlcv), 1) > 0
+
+        Ohlcv.timerangecut!(ohlcv, startdt, enddt)
+        odf = Ohlcv.dataframe(ohlcv)
+        @test size(odf, 1) == expectedrows
+        @test odf[begin, :opentime] == startdt
+        @test odf[end, :opentime] == enddt
+
+        thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+        trd = Targets.Trend04(2, 360, thres)
+        Targets.setbase!(trd, ohlcv)
+
+        labels = trd.df[!, :label]
+        @test count(==(longbuy), labels) > 0
+        @test count(==(longhold), labels) > 0
+        @test count(==(shortbuy), labels) > 0
+        @test count(==(shorthold), labels) > 0
+        @test count(==(allclose), labels) > 0
+
+        issues = Targets.crosscheck(trd)
+        if !isempty(issues)
+            println("Trend04 BTC Jan-May 2025 crosscheck issues:\n" * join(issues, "\n"))
+        end
+        @test isempty(issues)
+    finally
+        EnvConfig.init(prevmode)
+    end
+end
+
+@testset "Trend04 complete BTC real-data regression (optional slow test)" begin
+    # z shell command: RUN_SLOW_BTC_TREND04=1 julia --project=. test/runtests.jl
+    if get(ENV, "RUN_SLOW_BTC_TREND04", "0") != "1"
+        @test_skip true
+    else
+        prevmode = EnvConfig.configmode
+        try
+            EnvConfig.init(training)
+            ohlcv = Ohlcv.read("BTC")
+            @test size(Ohlcv.dataframe(ohlcv), 1) > 0
+
+            thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+            trd = Targets.Trend04(10, 240, thres)
+            Targets.setbase!(trd, ohlcv)
+
+            labels = trd.df[!, :label]
+            @test count(==(longbuy), labels) > 0
+            @test count(==(longhold), labels) > 0
+            @test count(==(shortbuy), labels) > 0
+            @test count(==(shorthold), labels) > 0
+            @test count(==(allclose), labels) > 0
+
+            issues = Targets.crosscheck(trd)
+            if !isempty(issues)
+                println("Trend04 complete BTC crosscheck issues:\n" * join(issues, "\n"))
+            end
+            @test isempty(issues)
+        finally
+            EnvConfig.init(prevmode)
+        end
+    end
 end

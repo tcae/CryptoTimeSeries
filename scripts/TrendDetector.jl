@@ -92,7 +92,7 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             coin = cfg.coins[coinix]
             coinresultsdf = coinfeaturesdf = nothing
             resultsdf = featuresdf = nothing
-            (verbosity >= 2) && print("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets                     \r")
+            (verbosity >= 2) && print("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets                                                          \r")
             (verbosity >= 3) && println()
             ohlcv = Ohlcv.read(coin)
             ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
@@ -100,7 +100,7 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             startix = Ohlcv.rowix(ot, cfg.startdt)
             cfg.enddt = isnothing(cfg.enddt) ? ot[end] : cfg.enddt
             endix = Ohlcv.rowix(ot, cfg.enddt)
-            @assert startix < endix "unexpected startix $startix >= endix $endix for $coin with startdt $(cfg.startdt) and enddt $(cfg.enddt)"
+            @assert startix < endix "unexpected startix $startix >= endix $endix for $coin with startdt $(cfg.startdt) and enddt $(cfg.enddt)              "
             rv = Ohlcv.liquiditycheck(Ohlcv.ohlcvview(ohlcv, startix:endix))
 
             for rngix in eachindex(rv) # rng indices are related to the ohlcvview dataframe rows
@@ -768,7 +768,7 @@ if specialonly
     Classify.verbosity = 1
 end
 
-cfg = TrendDetectorConfig(;mk009config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = TrendDetectorConfig(;mk028config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])

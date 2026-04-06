@@ -205,7 +205,7 @@ equal mean, q25, q75, min, max does not look like healthy feature values - longb
 """ **my favorite**  
 mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
 """
-mk009config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk009config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=true)
 
 """
 mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
@@ -302,6 +302,12 @@ mk026config() = (configname="026", featconfig = trendf6config01(), targetconfig 
 mk27 = long term trend with long term window and 5% ambition
 """
 mk027config() = (configname="027", featconfig = trendf6config08(), targetconfig = targetconfig12(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+
+"""   
+mk028 = mk009 without oversampling
+"""
+mk028config() = (configname="028", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+
 
 "Bounds estimator for short term limits"
 boundsmk001config() = (configname="001", featconfig = boundsf6config01(15), targetconfig = boundstargetsconfig01(15), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
