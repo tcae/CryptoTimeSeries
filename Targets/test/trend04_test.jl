@@ -182,6 +182,20 @@ end
     @test collect(dt_sub) == collect(sub)
 end
 
+@testset "Trend04 hold requires current hold threshold" begin
+    longthres = Targets.LabelThresholds(longbuy=0.06f0, longhold=0.05f0, shorthold=-0.01f0, shortbuy=-0.06f0)
+    longtrd = Targets.Trend04(1, 10, longthres)
+    Targets.setbase!(longtrd, testohlcvfrompivots(Float32[100.0, 106.0, 104.95]))
+    @test longtrd.df[2, :label] == longbuy
+    @test longtrd.df[3, :label] == allclose
+
+    shortthres = Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.05f0, shortbuy=-0.06f0)
+    shorttrd = Targets.Trend04(1, 10, shortthres)
+    Targets.setbase!(shorttrd, testohlcvfrompivots(Float32[100.0, 94.0, 95.8]))
+    @test shorttrd.df[2, :label] == shortbuy
+    @test shorttrd.df[3, :label] == allclose
+end
+
 # ---------------------------------------------------------------------------
 # relativegain()
 # ---------------------------------------------------------------------------

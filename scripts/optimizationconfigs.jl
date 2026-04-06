@@ -27,11 +27,11 @@ targetconfig04() = trend04targetconfig(10, 4*60, 0.007, 0.005)
 targetconfig05() = trend04targetconfig(0, 4*60, 0.01, 0.01)
 targetconfig06() = trend04targetconfig(2, 4*60, 0.01, 0.01)
 targetconfig07() = trend04targetconfig(10, 4*60, 0.01, 0.005)
+targetconfig08() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend02 replaced by Trend04
 targetconfig09() = trend04targetconfig(10, 2*60, 0.01, 0.01)
 targetconfig10() = trend04targetconfig(10, 1*60, 0.01, 0.01)
-
-targetconfig08() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend02 replaced by Trend04
 targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
+targetconfig12() = trend04targetconfig(10, 24*60, 0.05, 0.03) # Trend04 with long term target
 
 boundstargetsconfig01(window) = Targets.Bounds01(window)
 
@@ -135,6 +135,20 @@ function trendf6config07()
     return featcfg
 end
 
+"long trend features without offset"
+function trendf6config08()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0)
+    Features.addgrad!(featcfg, window=15, offset=0)
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addmindist!(featcfg, window=12*60, offset=0)
+    Features.addmaxdist!(featcfg, window=24*60, offset=0)
+    Features.addmindist!(featcfg, window=3*24*60, offset=0)
+    Features.addrelvol!(featcfg, short=15, long=3*24*60, offset=0)
+    return featcfg
+end
+
 "provide direction with standard deviation and their upper and lower relative bounds distance for given window"
 function boundsf6config01(window)
     featcfg = Features.Features006()
@@ -149,114 +163,114 @@ end
 """
 mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
 """
-mk1config() = (configname="001", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk001config() = (configname="001", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 mk2 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk2config() = (configname="002", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk002config() = (configname="002", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config targetconfig02() with **poor results**: ppv(longbuy) = 26%
 """
-mk3config() = (configname="003", featconfig = trendf6config01(), targetconfig = targetconfig02(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk003config() = (configname="003", featconfig = trendf6config01(), targetconfig = targetconfig02(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 mk4 = targetconfig03() with one merged set (allclose=>0.726, longbuy=>0.274)
 """
-mk4config() = (configname="004", featconfig = trendf6config01(), targetconfig = targetconfig03(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk004config() = (configname="004", featconfig = trendf6config01(), targetconfig = targetconfig03(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 mk5 = targetconfig04() with one merged set (allclose=>?, longbuy=>?)
 """
-mk5config() = (configname="005", featconfig = trendf6config01(), targetconfig = targetconfig04(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk005config() = (configname="005", featconfig = trendf6config01(), targetconfig = targetconfig04(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk6config() = (configname="006", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk006config() = (configname="006", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 same as mk6 butwith copied mix classifier from mk2
 mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk7config() = (configname="007", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk007config() = (configname="007", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
 
 """
 mk8 = mix adapted with all coin features/targets in one set, features are clipped, normalized, shifted, and in addition batch norm layer after initial layer with relu activation in model001
 equal mean, q25, q75, min, max does not look like healthy feature values - longbuy ppv classification performance is with close to 70% also worse
 """
-# mk8config() = (configname="008", featconfig = trendf6config02(), targetconfig = targetconfig01(), classifiermodel=Classify.model001)
+# mk008config() = (configname="008", featconfig = trendf6config02(), targetconfig = targetconfig01(), classifiermodel=Classify.model001)
 
 """ **my favorite**  
 mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
 """
-mk9config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk009config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """
 mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
 """
-# mk10config() = (configname="010", featconfig = trendf6config02(), targetconfig = targetconfig01(), classifiermodel=Classify.model002)
+# mk010config() = (configname="010", featconfig = trendf6config02(), targetconfig = targetconfig01(), classifiermodel=Classify.model002)
 
 """
 mk11 = mix adapted with all coin features/targets in one set, no clipping, initial batch norm layer but no further internal batch norm layers
 """
-mk11config() = (configname="011", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model003, tradingstrategy=tradingstrategy02())
+mk011config() = (configname="011", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model003, tradingstrategy=tradingstrategy02())
 
 """
 mk12 = like mk9 but with an additional layer
 """
-mk12config() = (configname="012", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model004, tradingstrategy=tradingstrategy02())
+mk012config() = (configname="012", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model004, tradingstrategy=tradingstrategy02())
 
 """
 mk13 = like mk9 but with 4/3 broader layers
 """
-mk13config() = (configname="013", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model005, tradingstrategy=tradingstrategy02())
+mk013config() = (configname="013", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model005, tradingstrategy=tradingstrategy02())
 
 """
 mk14 = like mk11 but removed layer 3
 """
-mk14config() = (configname="014", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model006, tradingstrategy=tradingstrategy02())
+mk014config() = (configname="014", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model006, tradingstrategy=tradingstrategy02())
 
 """
 mk15 = like mk11 but reduced number of nodes of layers by reducing factor of layer 1 from 3 to 2
 """
-mk15config() = (configname="015", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model007, tradingstrategy=tradingstrategy02())
+mk015config() = (configname="015", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model007, tradingstrategy=tradingstrategy02())
 
 """
 mk16 = no tolerance against target disturbances (minwindow=0), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
 """
-mk16config() = (configname="016", featconfig = trendf6config01(), targetconfig = targetconfig05(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk016config() = (configname="016", featconfig = trendf6config01(), targetconfig = targetconfig05(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """
 mk17 = short tolerance against target disturbances (minwindow=2), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
 """
-mk17config() = (configname="017", featconfig = trendf6config01(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk017config() = (configname="017", featconfig = trendf6config01(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """  
 mk18 = mk9 but with simplified features
 """
-mk18config() = (configname="018", featconfig = trendf6config03(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk018config() = (configname="018", featconfig = trendf6config03(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """  
 mk19 = mk9 but with simplified features
 """
-mk19config() = (configname="019", featconfig = trendf6config04(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk019config() = (configname="019", featconfig = trendf6config04(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """  
 mk20 = mk17 but feature grads without offset
 """
-mk20config() = (configname="020", featconfig = trendf6config05(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk020config() = (configname="020", featconfig = trendf6config05(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """  
 mk21 = mk17 but feature grads without offset and 12h regr grad added
 """
-mk21config() = (configname="021", featconfig = trendf6config06(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk021config() = (configname="021", featconfig = trendf6config06(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 """  
 mk22 = mk21 but with 3*24h regr grad added
 """
-mk22config() = (configname="022", featconfig = trendf6config07(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk022config() = (configname="022", featconfig = trendf6config07(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 #* from mk23 onwards partitionconfig02() shall be used with a fixed partition gap of 8h to get the same targets gains for the same targetconfig but different requiredminutes(features)
 
 """  
@@ -269,7 +283,7 @@ mk024 = equal to mk23 but Trend01/Trend02 were replaced by Trend04 targets
 """
 mk024config() = (configname="024", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
-""" **my favorite**  
+"""
 mk9 = mk9 with short term target, i.e. maxwindow 2h
 """
 mk025config() = (configname="025", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
@@ -279,10 +293,15 @@ mk025Dconfig() = (configname="025D", featconfig = trendf6config01(), targetconfi
 # mk25D and mk25E are the same config but in teh meanwhile the missing hold was fixed
 mk025Econfig() = (configname="025E", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 
-""" **my favorite**  
+"""
 mk9 = mk9 with short term target, i.e. maxwindow 1h
 """
 mk026config() = (configname="026", featconfig = trendf6config01(), targetconfig = targetconfig10(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+
+"""
+mk27 = long term trend with long term window and 5% ambition
+"""
+mk027config() = (configname="027", featconfig = trendf6config08(), targetconfig = targetconfig12(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
 "Bounds estimator for short term limits"
 boundsmk001config() = (configname="001", featconfig = boundsf6config01(15), targetconfig = boundstargetsconfig01(15), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())

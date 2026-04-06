@@ -42,7 +42,7 @@ mutable struct TrendDetectorConfig
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
         (verbosity >= 2) && println("oversampling=$oversampling")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins)
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, oversampling)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
@@ -768,7 +768,7 @@ if specialonly
     Classify.verbosity = 1
 end
 
-cfg = TrendDetectorConfig(;mk025config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = TrendDetectorConfig(;mk009config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
