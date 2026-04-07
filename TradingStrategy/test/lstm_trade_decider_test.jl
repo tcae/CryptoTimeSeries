@@ -17,6 +17,27 @@ using DataFrames
         @test decider.fallbacklabel == allclose
     end
 
+    @testset "phase labels trigger actions on starts and ends" begin
+        decider = TradingStrategy.LstmTradeDecider(
+            labels=["up", "down", "flat"],
+            scorethresholds=(up=0.6f0, down=0.6f0, flat=0.6f0),
+            fallbacklabel=flat,
+        )
+        @test decider.labels == Any[up, down, flat]
+
+        ta_open = TradingStrategy.lstm_trade_action(decider, Float32[0.9, 0.05, 0.05]; assettype=flat)
+        @test ta_open.orderlabel == longbuy
+
+        ta_close = TradingStrategy.lstm_trade_action(decider, Float32[0.05, 0.05, 0.9]; assettype=up)
+        @test ta_close.orderlabel == longclose
+
+        ta_reverse = TradingStrategy.lstm_trade_action(decider, Float32[0.05, 0.9, 0.05]; assettype=up)
+        @test ta_reverse.orderlabel == longclose
+
+        tlseq = TradingStrategy.phase_sequence_trade_labels(["flat", "up", "up", "flat", "down", "flat"])
+        @test tlseq == TradeLabel[allclose, longbuy, longhold, longclose, shortbuy, shortclose]
+    end
+
     @testset "single sample action mapping" begin
         decider = TradingStrategy.LstmTradeDecider(scorethresholds=(longbuy=0.6f0, longclose=0.6f0, shortbuy=0.6f0, shortclose=0.6f0))
 

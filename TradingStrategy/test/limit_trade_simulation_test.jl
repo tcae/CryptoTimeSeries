@@ -5,6 +5,34 @@ using Targets
 using TradingStrategy
 
 @testset "Limit trade simulation" begin
+    @testset "market trade simulation uses close prices on phase transitions" begin
+        base = DateTime(2024, 1, 1)
+        df = DataFrame(
+            opentime=[base + Minute(i - 1) for i in 1:4],
+            high=Float32[101, 103, 105, 104],
+            low=Float32[99, 101, 103, 102],
+            close=Float32[100, 102, 104, 103],
+            score=Float32[0.9, 0.95, 0.9, 0.95],
+            label=["flat", "up", "up", "flat"],
+        )
+
+        tradedf = TradingStrategy.simulate_market_trade_pairs(
+            df,
+            df[!, :score],
+            df[!, :label];
+            openthreshold=0.6f0,
+            closethreshold=0.5f0,
+            makerfee=0f0,
+            takerfee=0f0,
+        )
+
+        @test nrow(tradedf) == 1
+        @test tradedf[1, :trend] == up
+        @test tradedf[1, :startix] == 2
+        @test tradedf[1, :endix] == 4
+        @test tradedf[1, :gain] == (103f0 - 102f0) / 102f0
+    end
+
     @testset "missed exit falls back to timed market exit" begin
         base = DateTime(2024, 1, 1)
         df = DataFrame(
@@ -37,6 +65,36 @@ using TradingStrategy
         @test tradedf[1, :missedexit] == true
         @test tradedf[1, :exitreason] == "timeout_market"
         @test tradedf[1, :gainfee] < 0f0
+    end
+
+    @testset "phase labels are converted internally" begin
+        base = DateTime(2024, 1, 3)
+        df = DataFrame(
+            opentime=[base + Minute(i - 1) for i in 1:3],
+            high=Float32[101, 97, 96],
+            low=Float32[98, 95, 94],
+            close=Float32[100, 96, 95],
+            centerpred=Float32[100, 96, 96],
+            widthpred=Float32[4, 2, 2],
+            score=Float32[0.95, 0.90, 0.90],
+            label=["up", "flat", "flat"],
+        )
+
+        tradedf = TradingStrategy.simulate_limit_trade_pairs(
+            df,
+            df[!, :score],
+            df[!, :label];
+            openthreshold=0.6f0,
+            closethreshold=0.5f0,
+            entrytimeout=1,
+            exittimeout=1,
+            makerfee=0f0,
+            takerfee=0f0,
+        )
+
+        @test nrow(tradedf) == 1
+        @test tradedf[1, :trend] == up
+        @test tradedf[1, :entryfilled] == true
     end
 
     @testset "missed entry expires without trade" begin

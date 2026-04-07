@@ -28,6 +28,27 @@ using Classify, DataFrames, Test, Random
     )
     
     @test size(contract.features) == (7, 12)
+
+    @testset "generic contract and hidden feature extraction" begin
+        generic_contract = Classify.lstm_feature_contract(
+            select(df, :sampleix, :rangeid, :set, :target, :longbuy, :shortbuy, :allclose);
+            featurecols=[:longbuy, :shortbuy, :allclose],
+            targetcol=:target,
+            setcol=:set,
+            rangeidcol=:rangeid,
+            rixcol=:sampleix,
+        )
+        @test size(generic_contract.features) == (3, 12)
+        @test generic_contract.feature_names == ["longbuy", "shortbuy", "allclose"]
+
+        nn = Classify.model002(7, ["up", "down", "flat"], "phase_test")
+        hidden = Classify.penultimatefeatures(nn, rand(Float32, 7, 5))
+        lay1 = 3 * 7
+        lay2 = round(Int, lay1 * 2 / 3)
+        lay3 = round(Int, (lay2 + 3) / 2)
+        @test size(hidden) == (lay3, 5)
+        @test all(isfinite, hidden)
+    end
     
     @testset "LSTM model initialization" begin
         nfeatures = 7

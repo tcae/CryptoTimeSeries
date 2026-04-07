@@ -2,16 +2,16 @@ using Test
 using Targets
 
 @testset "TradePairs target derivation" begin
-    @testset "constructor assertions and label set" begin
+    @testset "constructor exposes phase label set" begin
         trd = Targets.Trend04(10, 120, Targets.thresholds((longbuy=0.01f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.01f0)))
         tp = Targets.TradePairs(trd; entryfraction=0.1f0, exitfraction=0.1f0)
-        @test tp.entryfraction == 0.1f0
-        @test tp.exitfraction == 0.1f0
-        @test Targets.longclose in Targets.uniquelabels(tp)
-        @test Targets.shortclose in Targets.uniquelabels(tp)
+        @test tp.trendtarget === trd
+        @test Targets.up in Targets.uniquelabels(tp)
+        @test Targets.down in Targets.uniquelabels(tp)
+        @test Targets.flat in Targets.uniquelabels(tp)
     end
 
-    @testset "vector label derivation creates sparse buy and close zones" begin
+    @testset "vector label derivation creates phase segments" begin
         trd = Targets.Trend04(10, 120, Targets.thresholds((longbuy=0.01f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.01f0)))
         tp = Targets.TradePairs(trd; entryfraction=0.1f0, exitfraction=0.1f0)
 
@@ -25,12 +25,10 @@ using Targets
 
         pairlabels = Targets.tradepairlabels(tp, baselabels, pivots; groups=groups)
 
-        @test pairlabels[1:5] == TradeLabel[longbuy, longbuy, longhold, longclose, longclose]
-        @test pairlabels[6] == allclose
-        @test pairlabels[7:10] == TradeLabel[shortbuy, shortbuy, shorthold, shortclose]
+        @test pairlabels == TrendPhase[up, up, up, up, up, flat, down, down, down, down]
     end
 
-    @testset "setbase! populates derived labels" begin
+    @testset "setbase! populates derived phase labels" begin
         pivots = Float32[1.0, 1.001, 1.002, 1.006, 1.010, 1.009, 1.008, 1.002, 1.0]
         ohlcv = testohlcvfrompivots(pivots)
         tp = Targets.TradePairs(

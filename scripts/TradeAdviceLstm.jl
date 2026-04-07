@@ -14,7 +14,7 @@ verbosity =
 """
 verbosity = 2
 
-const LSTM_LABELS = ["longbuy", "longhold", "longclose", "shortbuy", "shorthold", "shortclose", "allclose"]
+const LSTM_LABELS = ["up", "down", "flat"]
 
 function _stripconfigsuffix(name::AbstractString)
     return replace(strip(name), r"config$" => "")
@@ -24,13 +24,6 @@ function _resolve_trendconfig(configref::AbstractString)
     raw = lowercase(_stripconfigsuffix(configref))
     symbol = startswith(raw, "mk") ? Symbol(raw * "config") : Symbol("mk" * raw * "config")
     @assert isdefined(@__MODULE__, symbol) "unknown trend config '$configref'; expected function $(symbol) in optimizationconfigs.jl"
-    return getfield(@__MODULE__, symbol)()
-end
-
-function _resolve_boundsconfig(configref::AbstractString)
-    raw = lowercase(_stripconfigsuffix(configref))
-    symbol = startswith(raw, "boundsmk") ? Symbol(raw * "config") : startswith(raw, "mk") ? Symbol("bounds" * raw * "config") : Symbol("boundsmk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown bounds config '$configref'; expected function $(symbol) in optimizationconfigs.jl"
     return getfield(@__MODULE__, symbol)()
 end
 
@@ -65,31 +58,26 @@ function _parse_float32_list(raw::AbstractString)
     return parsed
 end
 
-"""Configuration for the end-to-end LSTM trade-advice backtest pipeline."""
+"""Configuration for the end-to-end LSTM trend-smoothing backtest pipeline."""
 mutable struct TradeAdviceLstmConfig
     configname::String
     folder::String
     trendconfig::NamedTuple
-    boundsconfig::NamedTuple
     seqlen::Int
     hidden_dim::Int
     maxepoch::Int
     batchsize::Int
-    entryfraction::Float32
-    exitfraction::Float32
-    openthresholds::Vector{Float32}
-    closethresholds::Vector{Float32}
-    entrytimeout::Int
-    exittimeout::Int
-    exitstrategy::Symbol
+    openthresholds::Vector{Float32} # config of classifier score thresholds to be evaluated for opening trades; expected to be in [0, 1] 
+    closethresholds::Vector{Float32} # config of classifier score thresholds to be evaluated for closing trades; expected to be in [0, 1]
+    entrytimeout::Int  # currently unused
+    exittimeout::Int # currently unused
+    exitstrategy::Symbol # currently unused
     mode::EnvConfig.Mode
-    function TradeAdviceLstmConfig(;configname="025", folder="TradeAdviceLstm-$configname-$(EnvConfig.configmode)", trendconfig=mk025config(), boundsconfig=boundsmk001config(), seqlen::Int=3, hidden_dim::Int=32, maxepoch::Int=200, batchsize::Int=64, entryfraction::AbstractFloat=0.1f0, exitfraction::AbstractFloat=0.1f0, openthresholds::Vector{Float32}=Float32[0.8f0, 0.7f0, 0.6f0], closethresholds::Vector{Float32}=Float32[0.6f0, 0.55f0, 0.5f0], entrytimeout::Int=2, exittimeout::Int=2, exitstrategy::Symbol=:opposite_signal_market, mode::EnvConfig.Mode=EnvConfig.configmode)
+    function TradeAdviceLstmConfig(;configname="025", folder="TradeAdviceLstm-$configname-$(EnvConfig.configmode)", trendconfig=mk025config(), seqlen::Int=3, hidden_dim::Int=32, maxepoch::Int=200, batchsize::Int=64, openthresholds::Vector{Float32}=Float32[0.8f0, 0.7f0, 0.6f0], closethresholds::Vector{Float32}=Float32[0.6f0, 0.55f0, 0.5f0], entrytimeout::Int=2, exittimeout::Int=2, exitstrategy::Symbol=:opposite_signal_market, mode::EnvConfig.Mode=EnvConfig.configmode)
         @assert seqlen > 0 "seqlen=$seqlen must be > 0"
         @assert hidden_dim > 0 "hidden_dim=$hidden_dim must be > 0"
         @assert maxepoch > 0 "maxepoch=$maxepoch must be > 0"
         @assert batchsize > 0 "batchsize=$batchsize must be > 0"
-        @assert 0f0 < entryfraction <= 1f0 "entryfraction=$(entryfraction) must satisfy 0 < entryfraction <= 1"
-        @assert 0f0 < exitfraction <= 1f0 "exitfraction=$(exitfraction) must satisfy 0 < exitfraction <= 1"
         @assert entrytimeout >= 0 "entrytimeout=$entrytimeout must be >= 0"
         @assert exittimeout >= 0 "exittimeout=$exittimeout must be >= 0"
         @assert !isempty(openthresholds) "openthresholds must not be empty"
@@ -98,7 +86,7 @@ mutable struct TradeAdviceLstmConfig
         @assert all(0f0 .<= closethresholds .<= 1f0) "expected closethresholds within [0, 1]; got closethresholds=$(closethresholds)"
         @assert exitstrategy in (:opposite_signal_market,) "unsupported exitstrategy=$exitstrategy; expected :opposite_signal_market"
         EnvConfig.setlogpath(folder)
-        return new(configname, folder, trendconfig, boundsconfig, seqlen, hidden_dim, maxepoch, batchsize, Float32(entryfraction), Float32(exitfraction), openthresholds, closethresholds, entrytimeout, exittimeout, exitstrategy, mode)
+        return new(configname, folder, trendconfig, seqlen, hidden_dim, maxepoch, batchsize, openthresholds, closethresholds, entrytimeout, exittimeout, exitstrategy, mode)
     end
 end
 
@@ -110,12 +98,13 @@ lstmlossesfilename() = "lstm_losses.jdf"
 lstmpredictionsfilename() = "lstm_predictions.jdf"
 lstmconfusionfilename() = "lstm_confusion.jdf"
 lstmxconfusionfilename() = "lstm_xconfusion.jdf"
+lstmsequencesfilename() = "lstm_sequences.jdf"
+lstmdistancesfilename() = "lstm_distances.jdf"
 lstmpairsfilename() = "lstm_transaction_pairs.jdf"
 lstmgainsfilename() = "lstm_gains.jdf"
 summaryfilename() = "summary.jdf"
 
 trendfolder(cfg::TradeAdviceLstmConfig) = "Trend-$(cfg.trendconfig.configname)-$(cfg.mode)"
-boundsfolder(cfg::TradeAdviceLstmConfig) = "Bounds-$(cfg.boundsconfig.configname)-$(cfg.mode)"
 
 function _with_log_subfolder(folder::AbstractString, f::Function)
     previous = EnvConfig.logsubfolder()
@@ -145,108 +134,295 @@ function _load_df_or_assert(folder::AbstractString, filename::AbstractString)
     return df
 end
 
-function _tradepairstarget(cfg::TradeAdviceLstmConfig)
-    @assert cfg.trendconfig.targetconfig isa Targets.Trend04 "TradeAdviceLstm currently expects cfg.trendconfig.targetconfig to be Targets.Trend04; got $(typeof(cfg.trendconfig.targetconfig))"
-    return Targets.TradePairs(cfg.trendconfig.targetconfig; entryfraction=cfg.entryfraction, exitfraction=cfg.exitfraction)
+@inline function _trendlabel2phase(label)::String
+    lbl = lowercase(strip(string(label)))
+    if (lbl == "longbuy") || (lbl == "longhold")
+        return "up"
+    elseif (lbl == "shortbuy") || (lbl == "shorthold")
+        return "down"
+    elseif lbl in ("allclose", "longclose", "shortclose", "ignore")
+        return "flat"
+    end
+    @warn "unexpected trend label $(label); mapping to flat"
+    return "flat"
+end
+
+@inline _phase2trendphase(phase::AbstractString) = phase == "up" ? up : (phase == "down" ? down : flat)
+@inline _phasegain(phase::AbstractString, startprice::Real, endprice::Real)::Float32 = phase == "up" ? Float32((endprice - startprice) / startprice) : (phase == "down" ? Float32(-(endprice - startprice) / startprice) : 0f0)
+
+function _lstm_featurecols(mdf::AbstractDataFrame)
+    cols = [Symbol(name) for name in names(mdf) if startswith(String(name), "lay3_")]
+    @assert !isempty(cols) "expected lay3_* feature columns in merged LSTM dataframe; names=$(names(mdf))"
+    return cols
+end
+
+_sequence_minutes(startdt::DateTime, enddt::DateTime)::Int = Int(div(Dates.value(enddt - startdt), 60000)) + 1
+
+function _overlap_minutes(start1::DateTime, end1::DateTime, start2::DateTime, end2::DateTime)::Int
+    ovstart = max(start1, start2)
+    ovend = min(end1, end2)
+    return ovstart > ovend ? 0 : _sequence_minutes(ovstart, ovend)
+end
+
+function _phase_score_table(evaldf::AbstractDataFrame, labels::Vector{String}; thresholdbins::Int=10)
+    @assert thresholdbins > 0 "thresholdbins=$(thresholdbins) must be > 0"
+    rows = NamedTuple[]
+    setnames = sort!(collect(unique(string.(evaldf[!, :set]))))
+    for setname in setnames
+        sdf = @view evaldf[string.(evaldf[!, :set]) .== setname, :]
+        for label in labels
+            for bix in 1:thresholdbins
+                low = Float32((bix - 1) / thresholdbins)
+                high = Float32(bix / thresholdbins)
+                predmask = (sdf[!, :label] .== label) .&& (Float32.(sdf[!, :score]) .>= low)
+                tp = count(predmask .&& (sdf[!, :target] .== label))
+                fp = count(predmask .&& (sdf[!, :target] .!= label))
+                fn = count((sdf[!, :target] .== label) .&& .!predmask)
+                ppv = (tp + fp) == 0 ? missing : Float32(round(tp / (tp + fp) * 100; digits=1))
+                recall = (tp + fn) == 0 ? missing : Float32(round(tp / (tp + fn) * 100; digits=1))
+                push!(rows, (set=setname, pred_label=label, bin="$bix/[$(round(low; digits=2))-$(round(high; digits=2))]", tp=tp, fp=fp, fn=fn, ppv=ppv, recall=recall))
+            end
+        end
+    end
+    return isempty(rows) ? DataFrame() : DataFrame(rows)
+end
+
+function _phase_sequences(evaldf::AbstractDataFrame, labelcol::Symbol; predicted::Bool)
+    rows = NamedTuple[]
+    if size(evaldf, 1) == 0
+        return DataFrame()
+    end
+
+    ordered = sort(copy(evaldf), [:coin, :rangeid, :opentime])
+    for g in groupby(ordered, [:coin, :rangeid, :set])
+        phases = string.(g[!, labelcol])
+        scores = :score in propertynames(g) ? Float32.(g[!, :score]) : fill(1f0, size(g, 1))
+        i = 1
+        while i <= size(g, 1)
+            phase = phases[i]
+            j = i
+            while (j < size(g, 1)) && (phases[j + 1] == phase)
+                j += 1
+            end
+            startdt = g[i, :opentime]
+            enddt = g[j, :opentime]
+            startprice = Float32(g[i, :pivot])
+            endprice = Float32(g[j, :pivot])
+            push!(rows, (
+                coin=String(g[i, :coin]),
+                rangeid=Int32(g[i, :rangeid]),
+                set=String(g[i, :set]),
+                predicted=predicted,
+                phase=phase,
+                startdt=startdt,
+                enddt=enddt,
+                startix=Int(i),
+                endix=Int(j),
+                minutes=_sequence_minutes(startdt, enddt),
+                startprice=startprice,
+                endprice=endprice,
+                gain=_phasegain(phase, startprice, endprice),
+                meanscore=predicted ? Float32(mean(scores[i:j])) : missing,
+            ))
+            i = j + 1
+        end
+    end
+    return isempty(rows) ? DataFrame() : DataFrame(rows)
+end
+
+function _sequence_distances(seqdf::AbstractDataFrame)
+    rows = NamedTuple[]
+    if size(seqdf, 1) == 0
+        return DataFrame()
+    end
+
+    directional = @view seqdf[seqdf[!, :phase] .!= "flat", :]
+    if size(directional, 1) == 0
+        return DataFrame()
+    end
+
+    for g in groupby(directional, [:coin, :rangeid, :set, :phase])
+        pred = sort(g[g[!, :predicted] .== true, :], :startdt)
+        truth = sort(g[g[!, :predicted] .== false, :], :startdt)
+        matched_truth = falses(size(truth, 1))
+
+        for prow in eachrow(pred)
+            overlaps = size(truth, 1) == 0 ? Int[] : [_overlap_minutes(prow.startdt, prow.enddt, trow.startdt, trow.enddt) for trow in eachrow(truth)]
+            bestoverlap = isempty(overlaps) ? 0 : maximum(overlaps)
+            if bestoverlap > 0
+                bestix = argmax(overlaps)
+                matched_truth[bestix] = true
+                trow = truth[bestix, :]
+                push!(rows, (
+                    coin=String(prow.coin),
+                    rangeid=Int32(prow.rangeid),
+                    set=String(prow.set),
+                    phase=String(prow.phase),
+                    source="predicted",
+                    matched=true,
+                    overlap_minutes=bestoverlap,
+                    pred_minutes=Int(prow.minutes),
+                    target_minutes=Int(trow.minutes),
+                    minutesdiff=Int(prow.minutes - trow.minutes),
+                    startdist=Minute(prow.startdt - trow.startdt).value,
+                    enddist=Minute(prow.enddt - trow.enddt).value,
+                    pred_gain=Float32(prow.gain),
+                    target_gain=Float32(trow.gain),
+                    gaindiff=Float32(prow.gain - trow.gain),
+                    startdt=prow.startdt,
+                    enddt=prow.enddt,
+                    truestartdt=trow.startdt,
+                    trueenddt=trow.enddt,
+                ))
+            else
+                push!(rows, (
+                    coin=String(prow.coin),
+                    rangeid=Int32(prow.rangeid),
+                    set=String(prow.set),
+                    phase=String(prow.phase),
+                    source="predicted",
+                    matched=false,
+                    overlap_minutes=0,
+                    pred_minutes=Int(prow.minutes),
+                    target_minutes=missing,
+                    minutesdiff=missing,
+                    startdist=missing,
+                    enddist=missing,
+                    pred_gain=Float32(prow.gain),
+                    target_gain=missing,
+                    gaindiff=missing,
+                    startdt=prow.startdt,
+                    enddt=prow.enddt,
+                    truestartdt=missing,
+                    trueenddt=missing,
+                ))
+            end
+        end
+
+        for truthix in eachindex(matched_truth)
+            if !matched_truth[truthix]
+                trow = truth[truthix, :]
+                push!(rows, (
+                    coin=String(trow.coin),
+                    rangeid=Int32(trow.rangeid),
+                    set=String(trow.set),
+                    phase=String(trow.phase),
+                    source="target_only",
+                    matched=false,
+                    overlap_minutes=0,
+                    pred_minutes=0,
+                    target_minutes=Int(trow.minutes),
+                    minutesdiff=missing,
+                    startdist=missing,
+                    enddist=missing,
+                    pred_gain=0f0,
+                    target_gain=Float32(trow.gain),
+                    gaindiff=missing,
+                    startdt=trow.startdt,
+                    enddt=trow.enddt,
+                    truestartdt=trow.startdt,
+                    trueenddt=trow.enddt,
+                ))
+            end
+        end
+    end
+
+    return isempty(rows) ? DataFrame() : DataFrame(rows)
+end
+
+function _sequence_summary(distdf::AbstractDataFrame, setname::AbstractString)
+    if size(distdf, 1) == 0
+        return (predicted_segments=0, matched_segments=0, mean_minutesdiff=missing, mean_abs_startdist=missing, mean_abs_enddist=missing, mean_gaindiff=missing)
+    end
+
+    setmask = (distdf[!, :set] .== setname) .&& (distdf[!, :source] .== "predicted")
+    sdf = @view distdf[setmask, :]
+    matched = @view sdf[sdf[!, :matched] .== true, :]
+    return (
+        predicted_segments=size(sdf, 1),
+        matched_segments=size(matched, 1),
+        mean_minutesdiff=_safe_mean_or_missing(size(matched, 1) == 0 ? Int[] : collect(skipmissing(matched[!, :minutesdiff]))),
+        mean_abs_startdist=_safe_mean_or_missing(size(matched, 1) == 0 ? Int[] : abs.(collect(skipmissing(matched[!, :startdist])))),
+        mean_abs_enddist=_safe_mean_or_missing(size(matched, 1) == 0 ? Int[] : abs.(collect(skipmissing(matched[!, :enddist])))),
+        mean_gaindiff=_safe_mean_or_missing(size(matched, 1) == 0 ? Float32[] : Float32.(collect(skipmissing(matched[!, :gaindiff])))),
+    )
 end
 
 """
-Load optimized trend classifier outputs and return class probabilities aligned to trend results rows.
+Load optimized TrendDetector hidden activations and return the penultimate
+`model002` features aligned to the trend results rows.
 """
-function get_trend_probabilities(cfg::TradeAdviceLstmConfig)
+function get_trend_hidden_features(cfg::TradeAdviceLstmConfig)
     trfolder = trendfolder(cfg)
     resultsdf = _load_df_or_assert(trfolder, resultsfilename())
     featuresdf = _load_df_or_assert(trfolder, featuresfilename())
 
+    if (!(:label in propertynames(resultsdf)) || !(:score in propertynames(resultsdf)))
+        predictionsdf = _load_df_or_assert(trfolder, predictionsfilename())
+        @assert size(predictionsdf, 1) == size(resultsdf, 1) "trend results/predictions row mismatch: $(size(resultsdf, 1)) != $(size(predictionsdf, 1))"
+        resultsdf = copy(resultsdf)
+        resultsdf[!, :label] = predictionsdf[!, :label]
+        resultsdf[!, :score] = Float32.(predictionsdf[!, :score])
+    end
+
+    @assert all(col -> col in propertynames(resultsdf), [:target, :label, :score]) "trend results missing required target/prediction columns; names=$(names(resultsdf))"
     @assert size(resultsdf, 1) == size(featuresdf, 1) "trend results/features row mismatch: $(size(resultsdf, 1)) != $(size(featuresdf, 1))"
 
     fcols = Features.requestedcolumns(cfg.trendconfig.featconfig)
     @assert all(c -> c in names(featuresdf), fcols) "trend features dataframe missing required columns: required=$(fcols) available=$(names(featuresdf))"
     X = permutedims(Matrix(featuresdf[!, fcols]), (2, 1))
 
-    probsdf = _with_log_subfolder(trfolder) do
+    hiddenmat = _with_log_subfolder(trfolder) do
         nn = cfg.trendconfig.classifiermodel(Features.featurecount(cfg.trendconfig.featconfig), Targets.uniquelabels(cfg.trendconfig.targetconfig), "mix")
         @assert isfile(Classify.nnfilename(nn.fileprefix)) "optimized trend classifier file not found: $(Classify.nnfilename(nn.fileprefix)). Run scripts/TrendDetector.jl first."
         nn = Classify.loadnn(nn.fileprefix)
-        Classify.predictdf(nn, X)
+        Classify.penultimatefeatures(nn, X)
     end
 
-    @assert size(probsdf, 1) == size(resultsdf, 1) "trend probabilities/results row mismatch"
-    return resultsdf, probsdf
-end
-
-"""
-Load optimized bounds estimator outputs aligned to trend rows using stable admin keys.
-"""
-function get_bounds_predictions(cfg::TradeAdviceLstmConfig)
-    bfolder = boundsfolder(cfg)
-    resultsdf = _load_df_or_assert(bfolder, resultsfilename())
-    predictionsdf = _load_df_or_assert(bfolder, predictionsfilename())
-
+    @assert size(hiddenmat, 2) == size(resultsdf, 1) "trend hidden features/results row mismatch"
     keycols = [:coin, :rangeid, :opentime]
-    @assert all(c -> c in propertynames(resultsdf), keycols) "bounds results missing required join keys $(keycols)"
-    @assert size(resultsdf, 1) == size(predictionsdf, 1) "bounds results/predictions row mismatch: $(size(resultsdf, 1)) != $(size(predictionsdf, 1))"
-
-    centercol = :centerpred in propertynames(predictionsdf) ? :centerpred : (:pred_center in propertynames(predictionsdf) ? :pred_center : nothing)
-    widthcol = :widthpred in propertynames(predictionsdf) ? :widthpred : (:pred_width in propertynames(predictionsdf) ? :pred_width : nothing)
-    @assert !isnothing(centercol) && !isnothing(widthcol) "bounds predictions must contain center/width columns; names=$(names(predictionsdf))"
-
-    bdf = copy(resultsdf[!, keycols])
-    bdf[!, :centerpred] = Float32.(predictionsdf[!, centercol])
-    bdf[!, :widthpred] = Float32.(predictionsdf[!, widthcol])
-    return bdf
+    hiddenfdf = copy(resultsdf[!, keycols])
+    for featix in 1:size(hiddenmat, 1)
+        hiddenfdf[!, Symbol("lay3_" * lpad(string(featix), 3, '0'))] = Float32.(vec(hiddenmat[featix, :]))
+    end
+    return resultsdf, hiddenfdf
 end
 
 """
-Merge optimized trend + bounds outputs and build an LSTM contract dataframe.
+Merge TrendDetector lay3 activations with the TrendDetector outputs and build the
+LSTM input dataframe.
+
+The LSTM is trained on the coarse phase target `up/down/flat` and later compared
+against the TrendDetector phase baseline using close-price trade execution.
 """
 function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
-    trend_results, trend_probs = get_trend_probabilities(cfg)
-    bounds_pred = get_bounds_predictions(cfg)
+    trend_results, trend_hidden = get_trend_hidden_features(cfg)
 
     keycols = [:coin, :rangeid, :opentime]
-    cols = [:coin, :rangeid, :set, :target, :opentime, :high, :low, :close, :pivot]
+    cols = [:coin, :rangeid, :set, :target, :label, :score, :opentime, :high, :low, :close, :pivot]
     @assert all(c -> c in propertynames(trend_results), cols) "trend results missing required columns"
 
-    mdf = innerjoin(trend_results[!, cols], bounds_pred, on=keycols)
-    @assert size(mdf, 1) > 0 "empty merge between trend and bounds data"
-    if (size(mdf, 1) != size(trend_results, 1)) || (size(mdf, 1) != size(bounds_pred, 1))
-        (verbosity >= 1) && @warn "trend/bounds merge dropped non-overlapping rows" merged_rows=size(mdf, 1) trend_rows=size(trend_results, 1) bounds_rows=size(bounds_pred, 1)
-    end
+    mdf = innerjoin(trend_results[!, cols], trend_hidden, on=keycols)
+    @assert size(mdf, 1) > 0 "empty merge between trend rows and lay3 features"
 
-    trendprobcols = [:longbuy, :longhold, :shortbuy, :shorthold, :allclose]
-    probdf = copy(trend_results[!, keycols])
-    for c in trendprobcols
-        if c in propertynames(trend_probs)
-            probdf[!, c] = Float32.(trend_probs[!, c])
-        else
-            probdf[!, c] = zeros(Float32, size(probdf, 1))
-        end
-    end
-    mdf = leftjoin(mdf, probdf, on=keycols)
-
-    # Fallback if allclose is not directly available from classifier labels.
-    if !(:allclose in propertynames(trend_probs))
-        mdf[!, :allclose] = max.(1f0 .- mdf[!, :longbuy] .- mdf[!, :longhold] .- mdf[!, :shortbuy] .- mdf[!, :shorthold], 0f0)
-    end
-
-    # Keep deterministic order for target derivation, window generation, and persistence.
     sort!(mdf, [:coin, :rangeid, :opentime])
-    pairtargets = _tradepairstarget(cfg)
-    mdf[!, :target] = string.(Targets.tradepairlabels(pairtargets, mdf; labelcol=:target, pivotcol=:pivot, groupcols=[:coin, :rangeid]))
-    EnvConfig.savedf(mdf, lstmmergedfilename())
-
     mdf = copy(mdf)
+    rename!(mdf, :label => :trend_label, :score => :trend_score)
+    mdf[!, :trend_target] = string.(mdf[!, :target])
+    mdf[!, :trend_label] = string.(mdf[!, :trend_label])
+    mdf[!, :trend_phase] = _trendlabel2phase.(mdf[!, :trend_label])
+    mdf[!, :trend_score] = Float32.(mdf[!, :trend_score])
+    mdf[!, :target] = _trendlabel2phase.(mdf[!, :trend_target])
     mdf[!, :rowix] = Int32.(1:size(mdf, 1))
+    EnvConfig.savedf(mdf, lstmmergedfilename())
     return mdf
 end
 
 function train_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame)
-    contract = Classify.lstm_bounds_trend_features(
+    featurecols = _lstm_featurecols(mdf)
+    contract = Classify.lstm_feature_contract(
         mdf;
-        trendprobcols=[:longbuy, :longhold, :shortbuy, :shorthold, :allclose],
-        centercol=:centerpred,
-        widthcol=:widthpred,
+        featurecols=featurecols,
         targetcol=:target,
         setcol=:set,
         rangeidcol=:rangeid,
@@ -266,30 +442,42 @@ function evaluate_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame, contr
 
     probs = Classify.predict_lstm_trade_signals(trainres.model, windows.X)
     predix = vec(argmax(probs; dims=1))
-    predlabel = [trainres.labels[ci[1]] for ci in predix]
+    predlabel = [String(trainres.labels[ci[1]]) for ci in predix]
     predscore = [Float32(probs[ci[1], ix]) for (ix, ci) in enumerate(predix)]
 
-    admincols = [:rowix, :opentime, :high, :low, :close, :pivot, :set, :rangeid, :coin, :centerpred, :widthpred]
+    admincols = [:rowix, :opentime, :high, :low, :close, :pivot, :set, :rangeid, :coin, :trend_target, :trend_label, :trend_phase, :trend_score]
     admindf = mdf[!, admincols]
     evaldf = innerjoin(
-        DataFrame(rowix=windows.endrix, target=windows.targets, pred_label=predlabel, score=predscore),
+        DataFrame(rowix=windows.endrix, target=String.(windows.targets), label=predlabel, score=predscore),
         admindf,
         on=:rowix,
     )
     @assert size(evaldf, 1) == length(windows.targets) "window/admin merge mismatch"
-    select!(evaldf, Not(:rowix))
-
-    evaldf[!, :label] = Targets.tradelabel.(evaldf[!, :pred_label])
-    evaldf[!, :target] = Targets.tradelabel.(string.(evaldf[!, :target]))
+    sort!(evaldf, [:coin, :rangeid, :opentime])
     evaldf[!, :set] = CategoricalVector(string.(evaldf[!, :set]), levels=settypes())
 
-    EnvConfig.savedf(evaldf, lstmpredictionsfilename())
+    EnvConfig.savedf(select(evaldf, Not(:rowix)), lstmpredictionsfilename())
 
-    alltl = Targets.tradelabel.(trainres.labels)
-    cmdf = Classify.confusionmatrix(evaldf, alltl)
-    xcmdf = Classify.extendedconfusionmatrix(evaldf, alltl)
-    EnvConfig.savedf(cmdf, lstmconfusionfilename())
-    EnvConfig.savedf(xcmdf, lstmxconfusionfilename())
+    cmdf = Classify.confusionmatrix(evaldf, String.(trainres.labels))
+    xcmdf = _phase_score_table(evaldf, String.(trainres.labels))
+    size(cmdf, 1) > 0 && EnvConfig.savedf(cmdf, lstmconfusionfilename())
+    size(xcmdf, 1) > 0 && EnvConfig.savedf(xcmdf, lstmxconfusionfilename())
+
+    predseqdf = _phase_sequences(evaldf, :label; predicted=true)
+    trueseqdf = _phase_sequences(evaldf, :target; predicted=false)
+    if (size(predseqdf, 1) == 0) && (size(trueseqdf, 1) == 0)
+        seqdf = DataFrame()
+    elseif size(predseqdf, 1) == 0
+        seqdf = trueseqdf
+    elseif size(trueseqdf, 1) == 0
+        seqdf = predseqdf
+    else
+        seqdf = vcat(predseqdf, trueseqdf; cols=:union)
+    end
+    size(seqdf, 1) > 0 && EnvConfig.savedf(seqdf, lstmsequencesfilename())
+
+    distdf = _sequence_distances(seqdf)
+    size(distdf, 1) > 0 && EnvConfig.savedf(distdf, lstmdistancesfilename())
 
     strategy = cfg.trendconfig.tradingstrategy
     makerfee = Float32(strategy.makerfee)
@@ -298,52 +486,72 @@ function evaluate_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame, contr
     @assert !isempty(thresholdpairs) "no valid threshold pairs from openthresholds=$(cfg.openthresholds) and closethresholds=$(cfg.closethresholds)"
 
     gainparts = DataFrame[]
-    for rid in unique(evaldf[!, :rangeid])
-        rangedf = sort(evaldf[evaldf[!, :rangeid] .== rid, :], :opentime)
+    for grouped in groupby(evaldf, [:coin, :rangeid])
+        rangedf = sort(DataFrame(grouped), :opentime)
+        coin = string(rangedf[begin, :coin])
+        setname = string(rangedf[begin, :set])
+        rid = rangedf[begin, :rangeid]
+
         for (openthreshold, closethreshold) in thresholdpairs
-            gdf = TradingStrategy.simulate_limit_trade_pairs(
+            lstmgdf = TradingStrategy.simulate_market_trade_pairs(
                 rangedf,
                 rangedf[!, :score],
                 rangedf[!, :label];
                 openthreshold=openthreshold,
                 closethreshold=closethreshold,
-                entrytimeout=cfg.entrytimeout,
-                exittimeout=cfg.exittimeout,
                 makerfee=makerfee,
                 takerfee=takerfee,
-                exitstrategy=cfg.exitstrategy,
             )
-            if size(gdf, 1) > 0
-                gdf[!, :rangeid] = fill(rid, size(gdf, 1))
-                gdf[!, :coin] = fill(string(rangedf[begin, :coin]), size(gdf, 1))
-                gdf[!, :set] = fill(string(rangedf[begin, :set]), size(gdf, 1))
-                gdf[!, :predicted] = fill(true, size(gdf, 1))
-                gdf[!, :openthreshold] = fill(Float32(openthreshold), size(gdf, 1))
-                gdf[!, :closethreshold] = fill(Float32(closethreshold), size(gdf, 1))
-                push!(gainparts, gdf)
+            if size(lstmgdf, 1) > 0
+                lstmgdf[!, :coin] = fill(coin, size(lstmgdf, 1))
+                lstmgdf[!, :set] = fill(setname, size(lstmgdf, 1))
+                lstmgdf[!, :source] = fill("lstm", size(lstmgdf, 1))
+                lstmgdf[!, :predicted] = fill(true, size(lstmgdf, 1))
+                lstmgdf[!, :rangeid] = fill(rid, size(lstmgdf, 1))
+                lstmgdf[!, :openthreshold] = fill(Float32(openthreshold), size(lstmgdf, 1))
+                lstmgdf[!, :closethreshold] = fill(Float32(closethreshold), size(lstmgdf, 1))
+                push!(gainparts, lstmgdf)
+            end
+
+            trendgdf = TradingStrategy.simulate_market_trade_pairs(
+                rangedf,
+                rangedf[!, :trend_score],
+                rangedf[!, :trend_phase];
+                openthreshold=openthreshold,
+                closethreshold=closethreshold,
+                makerfee=makerfee,
+                takerfee=takerfee,
+            )
+            if size(trendgdf, 1) > 0
+                trendgdf[!, :coin] = fill(coin, size(trendgdf, 1))
+                trendgdf[!, :set] = fill(setname, size(trendgdf, 1))
+                trendgdf[!, :source] = fill("trend", size(trendgdf, 1))
+                trendgdf[!, :predicted] = fill(true, size(trendgdf, 1))
+                trendgdf[!, :rangeid] = fill(rid, size(trendgdf, 1))
+                trendgdf[!, :openthreshold] = fill(Float32(openthreshold), size(trendgdf, 1))
+                trendgdf[!, :closethreshold] = fill(Float32(closethreshold), size(trendgdf, 1))
+                push!(gainparts, trendgdf)
             end
         end
 
-        gdf = TradingStrategy.simulate_limit_trade_pairs(
+        targetgdf = TradingStrategy.simulate_market_trade_pairs(
             rangedf,
             fill(1f0, size(rangedf, 1)),
             rangedf[!, :target];
             openthreshold=0.9f0,
             closethreshold=0.9f0,
-            entrytimeout=cfg.entrytimeout,
-            exittimeout=cfg.exittimeout,
             makerfee=makerfee,
             takerfee=takerfee,
-            exitstrategy=cfg.exitstrategy,
         )
-        if size(gdf, 1) > 0
-            gdf[!, :rangeid] = fill(rid, size(gdf, 1))
-            gdf[!, :coin] = fill(string(rangedf[begin, :coin]), size(gdf, 1))
-            gdf[!, :set] = fill(string(rangedf[begin, :set]), size(gdf, 1))
-            gdf[!, :predicted] = fill(false, size(gdf, 1))
-            gdf[!, :openthreshold] = fill(0.9f0, size(gdf, 1))
-            gdf[!, :closethreshold] = fill(0.9f0, size(gdf, 1))
-            push!(gainparts, gdf)
+        if size(targetgdf, 1) > 0
+            targetgdf[!, :coin] = fill(coin, size(targetgdf, 1))
+            targetgdf[!, :set] = fill(setname, size(targetgdf, 1))
+            targetgdf[!, :source] = fill("target", size(targetgdf, 1))
+            targetgdf[!, :predicted] = fill(false, size(targetgdf, 1))
+            targetgdf[!, :rangeid] = fill(rid, size(targetgdf, 1))
+            targetgdf[!, :openthreshold] = fill(0.9f0, size(targetgdf, 1))
+            targetgdf[!, :closethreshold] = fill(0.9f0, size(targetgdf, 1))
+            push!(gainparts, targetgdf)
         end
     end
 
@@ -353,7 +561,7 @@ function evaluate_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame, contr
         EnvConfig.savedf(gaindf, lstmgainsfilename())
     end
 
-    return evaldf, cmdf, xcmdf, gaindf
+    return evaldf, cmdf, xcmdf, seqdf, distdf, gaindf
 end
 
 function _safe_mean_or_missing(values)
@@ -364,60 +572,81 @@ function _safe_sum_or_zero(values)
     return isempty(values) ? 0f0 : Float32(sum(Float32.(values)))
 end
 
-function _best_eval_trade_summary(gaindf::AbstractDataFrame)
-    if size(gaindf, 1) == 0
-        return (openthreshold=missing, closethreshold=missing, eval_segments=0, eval_gainfee=0f0, test_segments=0, test_gainfee=0f0)
+_safe_diff_or_missing(a, b) = (ismissing(a) || ismissing(b)) ? missing : Float32(a - b)
+
+function _best_eval_trade_summary(gaindf::AbstractDataFrame, source::AbstractString)
+    emptyres = (
+        source=source,
+        openthreshold=missing,
+        closethreshold=missing,
+        eval_segments=0,
+        eval_mean_gain=missing,
+        eval_mean_gainfee=missing,
+        eval_gainfee_sum=0f0,
+        test_segments=0,
+        test_mean_gain=missing,
+        test_mean_gainfee=missing,
+        test_gainfee_sum=0f0,
+    )
+    if size(gaindf, 1) == 0 || (:source ∉ propertynames(gaindf))
+        return emptyres
     end
 
-    evalpred = gaindf[(gaindf[!, :set] .== "eval") .&& (gaindf[!, :predicted] .== true), :]
-    if size(evalpred, 1) == 0
-        return (openthreshold=missing, closethreshold=missing, eval_segments=0, eval_gainfee=0f0, test_segments=0, test_gainfee=0f0)
+    evalrows = gaindf[(gaindf[!, :set] .== "eval") .&& (gaindf[!, :source] .== source), :]
+    if size(evalrows, 1) == 0
+        return emptyres
     end
 
     grouped = combine(
-        groupby(evalpred, [:openthreshold, :closethreshold]),
+        groupby(evalrows, [:openthreshold, :closethreshold]),
         nrow => :eval_segments,
-        :gainfee => _safe_sum_or_zero => :eval_gainfee,
+        :gain => _safe_mean_or_missing => :eval_mean_gain,
+        :gainfee => _safe_mean_or_missing => :eval_mean_gainfee,
+        :gainfee => _safe_sum_or_zero => :eval_gainfee_sum,
     )
-    sort!(grouped, [order(:eval_gainfee, rev=true), order(:eval_segments, rev=true)])
+    sort!(grouped, [order(:eval_mean_gainfee, rev=true), order(:eval_mean_gain, rev=true), order(:eval_segments, rev=true)])
     best = grouped[1, :]
 
-    testpred = gaindf[
+    testrows = gaindf[
         (gaindf[!, :set] .== "test") .&&
-        (gaindf[!, :predicted] .== true) .&&
+        (gaindf[!, :source] .== source) .&&
         (gaindf[!, :openthreshold] .== best.openthreshold) .&&
         (gaindf[!, :closethreshold] .== best.closethreshold),
         :,
     ]
 
     return (
+        source=source,
         openthreshold=best.openthreshold,
         closethreshold=best.closethreshold,
         eval_segments=best.eval_segments,
-        eval_gainfee=best.eval_gainfee,
-        test_segments=size(testpred, 1),
-        test_gainfee=_safe_sum_or_zero(size(testpred, 1) == 0 ? Float32[] : testpred[!, :gainfee]),
+        eval_mean_gain=best.eval_mean_gain,
+        eval_mean_gainfee=best.eval_mean_gainfee,
+        eval_gainfee_sum=best.eval_gainfee_sum,
+        test_segments=size(testrows, 1),
+        test_mean_gain=_safe_mean_or_missing(size(testrows, 1) == 0 ? Float32[] : testrows[!, :gain]),
+        test_mean_gainfee=_safe_mean_or_missing(size(testrows, 1) == 0 ? Float32[] : testrows[!, :gainfee]),
+        test_gainfee_sum=_safe_sum_or_zero(size(testrows, 1) == 0 ? Float32[] : testrows[!, :gainfee]),
     )
 end
 
-function buildsummmary(cfg::TradeAdviceLstmConfig, trainres, cmdf::AbstractDataFrame, gaindf::AbstractDataFrame)
+function buildsummmary(cfg::TradeAdviceLstmConfig, trainres, cmdf::AbstractDataFrame, distdf::AbstractDataFrame, gaindf::AbstractDataFrame)
     ppvcol = Symbol("ppv%")
     evalcmdf = size(cmdf, 1) == 0 ? DataFrame() : @view cmdf[cmdf[!, :set] .== "eval", :]
     testcmdf = size(cmdf, 1) == 0 ? DataFrame() : @view cmdf[cmdf[!, :set] .== "test", :]
-    besttrade = _best_eval_trade_summary(gaindf)
-    evaltrue = size(gaindf, 1) == 0 ? DataFrame() : @view gaindf[(gaindf[!, :set] .== "eval") .&& (gaindf[!, :predicted] .== false), :]
+    lstmtrade = _best_eval_trade_summary(gaindf, "lstm")
+    trendtrade = _best_eval_trade_summary(gaindf, "trend")
+    targettrade = _best_eval_trade_summary(gaindf, "target")
+    evalseq = _sequence_summary(distdf, "eval")
+    testseq = _sequence_summary(distdf, "test")
     summarydf = DataFrame([(
         configname=cfg.configname,
         trendconfig=cfg.trendconfig.configname,
-        boundsconfig=cfg.boundsconfig.configname,
         trendfolder=trendfolder(cfg),
-        boundsfolder=boundsfolder(cfg),
         seqlen=cfg.seqlen,
         hidden_dim=cfg.hidden_dim,
         maxepoch=cfg.maxepoch,
         batchsize=cfg.batchsize,
-        entryfraction=cfg.entryfraction,
-        exitfraction=cfg.exitfraction,
         entrytimeout=cfg.entrytimeout,
         exittimeout=cfg.exittimeout,
         exitstrategy=String(cfg.exitstrategy),
@@ -426,14 +655,46 @@ function buildsummmary(cfg::TradeAdviceLstmConfig, trainres, cmdf::AbstractDataF
         final_eval_loss=Float32(trainres.eval_losses[end]),
         eval_mean_ppv=_safe_mean_or_missing(size(evalcmdf, 1) == 0 ? Float32[] : evalcmdf[!, ppvcol]),
         test_mean_ppv=_safe_mean_or_missing(size(testcmdf, 1) == 0 ? Float32[] : testcmdf[!, ppvcol]),
-        best_openthreshold=besttrade.openthreshold,
-        best_closethreshold=besttrade.closethreshold,
-        eval_pred_segments=besttrade.eval_segments,
-        test_pred_segments=besttrade.test_segments,
-        eval_true_segments=size(evaltrue, 1),
-        eval_pred_gainfee_sum=besttrade.eval_gainfee,
-        test_pred_gainfee_sum=besttrade.test_gainfee,
-        eval_true_gainfee_sum=_safe_sum_or_zero(size(evaltrue, 1) == 0 ? Float32[] : evaltrue[!, :gainfee]),
+        eval_phase_segments=evalseq.predicted_segments,
+        test_phase_segments=testseq.predicted_segments,
+        eval_phase_matches=evalseq.matched_segments,
+        test_phase_matches=testseq.matched_segments,
+        eval_mean_minutesdiff=evalseq.mean_minutesdiff,
+        test_mean_minutesdiff=testseq.mean_minutesdiff,
+        eval_mean_abs_startdist=evalseq.mean_abs_startdist,
+        test_mean_abs_startdist=testseq.mean_abs_startdist,
+        eval_mean_abs_enddist=evalseq.mean_abs_enddist,
+        test_mean_abs_enddist=testseq.mean_abs_enddist,
+        eval_mean_gaindiff=evalseq.mean_gaindiff,
+        test_mean_gaindiff=testseq.mean_gaindiff,
+        best_openthreshold=lstmtrade.openthreshold,
+        best_closethreshold=lstmtrade.closethreshold,
+        eval_pred_segments=lstmtrade.eval_segments,
+        test_pred_segments=lstmtrade.test_segments,
+        eval_true_segments=targettrade.eval_segments,
+        eval_pred_gainfee_sum=lstmtrade.eval_gainfee_sum,
+        test_pred_gainfee_sum=lstmtrade.test_gainfee_sum,
+        eval_true_gainfee_sum=targettrade.eval_gainfee_sum,
+        eval_lstm_mean_gain=lstmtrade.eval_mean_gain,
+        test_lstm_mean_gain=lstmtrade.test_mean_gain,
+        eval_trend_mean_gain=trendtrade.eval_mean_gain,
+        test_trend_mean_gain=trendtrade.test_mean_gain,
+        eval_target_mean_gain=targettrade.eval_mean_gain,
+        test_target_mean_gain=targettrade.test_mean_gain,
+        eval_lstm_mean_gainfee=lstmtrade.eval_mean_gainfee,
+        test_lstm_mean_gainfee=lstmtrade.test_mean_gainfee,
+        eval_trend_mean_gainfee=trendtrade.eval_mean_gainfee,
+        test_trend_mean_gainfee=trendtrade.test_mean_gainfee,
+        eval_target_mean_gainfee=targettrade.eval_mean_gainfee,
+        test_target_mean_gainfee=targettrade.test_mean_gainfee,
+        eval_gain_delta=_safe_diff_or_missing(lstmtrade.eval_mean_gain, trendtrade.eval_mean_gain),
+        test_gain_delta=_safe_diff_or_missing(lstmtrade.test_mean_gain, trendtrade.test_mean_gain),
+        eval_gainfee_delta=_safe_diff_or_missing(lstmtrade.eval_mean_gainfee, trendtrade.eval_mean_gainfee),
+        test_gainfee_delta=_safe_diff_or_missing(lstmtrade.test_mean_gainfee, trendtrade.test_mean_gainfee),
+        trend_best_openthreshold=trendtrade.openthreshold,
+        trend_best_closethreshold=trendtrade.closethreshold,
+        trend_eval_segments=trendtrade.eval_segments,
+        trend_test_segments=trendtrade.test_segments,
     )])
     EnvConfig.savedf(summarydf, summaryfilename())
     return summarydf
@@ -470,38 +731,34 @@ function collect_tradeadvice_summaries(cfg::TradeAdviceLstmConfig)
 end
 
 function run_pipeline(cfg::TradeAdviceLstmConfig)
-    (verbosity >= 2) && println("$(EnvConfig.now()) TradeAdviceLstm pipeline start with trend=$(trendfolder(cfg)) bounds=$(boundsfolder(cfg))")
+    (verbosity >= 2) && println("$(EnvConfig.now()) TradeAdviceLstm pipeline start with trend=$(trendfolder(cfg))")
     mdf = build_lstm_input_df(cfg)
     contract, trainres = train_lstm(cfg, mdf)
-    evaldf, cmdf, xcmdf, gaindf = evaluate_lstm(cfg, mdf, contract, trainres)
-    summarydf = buildsummmary(cfg, trainres, cmdf, gaindf)
+    evaldf, cmdf, xcmdf, seqdf, distdf, gaindf = evaluate_lstm(cfg, mdf, contract, trainres)
+    summarydf = buildsummmary(cfg, trainres, cmdf, distdf, gaindf)
     comparisondf = collect_tradeadvice_summaries(cfg)
 
     println("$(EnvConfig.now()) LSTM training epochs=$(length(trainres.losses)) final_train_loss=$(trainres.losses[end]) final_eval_loss=$(trainres.eval_losses[end])")
     println("$(EnvConfig.now()) LSTM confusion matrix rows=$(size(cmdf, 1)) extended rows=$(size(xcmdf, 1))")
-    println("$(EnvConfig.now()) LSTM predictions rows=$(size(evaldf, 1)) gains rows=$(size(gaindf, 1))")
+    println("$(EnvConfig.now()) LSTM predictions rows=$(size(evaldf, 1)) sequences rows=$(size(seqdf, 1)) distances rows=$(size(distdf, 1)) gains rows=$(size(gaindf, 1))")
     println("$(EnvConfig.now()) TradeAdviceLstm summary: $summarydf")
     if size(comparisondf, 1) > 0
         println("$(EnvConfig.now()) TradeAdviceLstm comparison table: $comparisondf")
     end
-    return (inputdf=mdf, trainres=trainres, evaldf=evaldf, cmdf=cmdf, xcmdf=xcmdf, gaindf=gaindf, summarydf=summarydf, comparisondf=comparisondf)
+    return (inputdf=mdf, trainres=trainres, evaldf=evaldf, cmdf=cmdf, xcmdf=xcmdf, seqdf=seqdf, distdf=distdf, gaindf=gaindf, summarydf=summarydf, comparisondf=comparisondf)
 end
 
 function buildcfg(args::Vector{String})
     tradeadviceref = _argvalue(args, "tradeadvice", nothing)
     tradeadvicecfg = isnothing(tradeadviceref) ? nothing : _resolve_tradeadviceconfig(tradeadviceref)
     trendref = _argvalue(args, "trend", isnothing(tradeadvicecfg) ? "025" : string(tradeadvicecfg.trendconfigref))
-    boundsref = _argvalue(args, "bounds", isnothing(tradeadvicecfg) ? "001" : string(tradeadvicecfg.boundsconfigref))
     trendconfig = _resolve_trendconfig(trendref)
-    boundsconfig = _resolve_boundsconfig(boundsref)
-    configname = _argvalue(args, "configname", isnothing(tradeadvicecfg) ? "trend$(trendconfig.configname)_bounds$(boundsconfig.configname)" : string(tradeadvicecfg.configname))
+    configname = _argvalue(args, "configname", isnothing(tradeadvicecfg) ? "trend$(trendconfig.configname)" : string(tradeadvicecfg.configname))
     folder = _argvalue(args, "folder", "TradeAdviceLstm-$configname-$(EnvConfig.configmode)")
     seqlen = parse(Int, _argvalue(args, "seqlen", string(_ntget(tradeadvicecfg, :seqlen, 3))))
     hidden_dim = parse(Int, _argvalue(args, "hidden", _argvalue(args, "hidden_dim", string(_ntget(tradeadvicecfg, :hidden_dim, 32)))))
     maxepoch = parse(Int, _argvalue(args, "maxepoch", isnothing(tradeadvicecfg) ? ("train" in args ? "200" : "20") : string(tradeadvicecfg.maxepoch)))
     batchsize = parse(Int, _argvalue(args, "batchsize", string(_ntget(tradeadvicecfg, :batchsize, 64))))
-    entryfraction = parse(Float32, _argvalue(args, "entryfraction", string(_ntget(tradeadvicecfg, :entryfraction, 0.1f0))))
-    exitfraction = parse(Float32, _argvalue(args, "exitfraction", string(_ntget(tradeadvicecfg, :exitfraction, 0.1f0))))
     default_opens = join(string.(Float32.(_ntget(tradeadvicecfg, :openthresholds, Float32[0.8f0, 0.7f0, 0.6f0]))), ",")
     default_closes = join(string.(Float32.(_ntget(tradeadvicecfg, :closethresholds, Float32[0.6f0, 0.55f0, 0.5f0]))), ",")
     openthresholds = _parse_float32_list(_argvalue(args, "openthresholds", default_opens))
@@ -509,7 +766,7 @@ function buildcfg(args::Vector{String})
     entrytimeout = parse(Int, _argvalue(args, "entrytimeout", string(_ntget(tradeadvicecfg, :entrytimeout, 2))))
     exittimeout = parse(Int, _argvalue(args, "exittimeout", string(_ntget(tradeadvicecfg, :exittimeout, 2))))
     exitstrategy = Symbol(_argvalue(args, "exitstrategy", string(_ntget(tradeadvicecfg, :exitstrategy, :opposite_signal_market))))
-    return TradeAdviceLstmConfig(; configname=configname, folder=folder, trendconfig=trendconfig, boundsconfig=boundsconfig, seqlen=seqlen, hidden_dim=hidden_dim, maxepoch=maxepoch, batchsize=batchsize, entryfraction=entryfraction, exitfraction=exitfraction, openthresholds=openthresholds, closethresholds=closethresholds, entrytimeout=entrytimeout, exittimeout=exittimeout, exitstrategy=exitstrategy, mode=EnvConfig.configmode)
+    return TradeAdviceLstmConfig(; configname=configname, folder=folder, trendconfig=trendconfig, seqlen=seqlen, hidden_dim=hidden_dim, maxepoch=maxepoch, batchsize=batchsize, openthresholds=openthresholds, closethresholds=closethresholds, entrytimeout=entrytimeout, exittimeout=exittimeout, exitstrategy=exitstrategy, mode=EnvConfig.configmode)
 end
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
@@ -529,10 +786,8 @@ cfg = buildcfg(ARGS)
 if inspectonly
     println("Using log folder $(EnvConfig.logfolder())")
     println("Selected trend config: $(cfg.trendconfig.configname)")
-    println("Selected bounds config: $(cfg.boundsconfig.configname)")
-    println("LSTM params: seqlen=$(cfg.seqlen) hidden_dim=$(cfg.hidden_dim) maxepoch=$(cfg.maxepoch) batchsize=$(cfg.batchsize) entryfraction=$(cfg.entryfraction) exitfraction=$(cfg.exitfraction) entrytimeout=$(cfg.entrytimeout) exittimeout=$(cfg.exittimeout)")
+    println("LSTM params: seqlen=$(cfg.seqlen) hidden_dim=$(cfg.hidden_dim) maxepoch=$(cfg.maxepoch) batchsize=$(cfg.batchsize) entrytimeout=$(cfg.entrytimeout) exittimeout=$(cfg.exittimeout)")
     println("Trend source folder: $(trendfolder(cfg))")
-    println("Bounds source folder: $(boundsfolder(cfg))")
 elseif compareonly
     comparisondf = collect_tradeadvice_summaries(cfg)
     println("$(EnvConfig.now()) available TradeAdvice summaries: $comparisondf")

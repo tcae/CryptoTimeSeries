@@ -1431,93 +1431,50 @@ end
 
 #region TradePairs
 
-@inline _islongtradepairlabel(label::TradeLabel) = (label == longbuy) || (label == longhold) || (label == longclose)
-@inline _isshorttradepairlabel(label::TradeLabel) = (label == shortbuy) || (label == shorthold) || (label == shortclose)
+@inline _islongtradepairlabel(label::TradeLabel) = (label == longbuy) || (label == longhold)
+@inline _isshorttradepairlabel(label::TradeLabel) = (label == shortbuy) || (label == shorthold)
 
 """
-Trade lifecycle targets derived from `Trend04` labels.
+Trend-phase targets derived from `Trend04` labels.
 
-`TradePairs` converts dense `Trend04` trend labels into sparse trade-pair
-lifecycle labels:
-- `longbuy` / `shortbuy` only near the beginning of a detected trend
-- `longclose` / `shortclose` only near the end of a detected trend
-- `longhold` / `shorthold` in between
-- `allclose` outside a trend
+`TradePairs` now exposes the smoother phase representation used by the LSTM:
+- `up` while a long trend is active
+- `down` while a short trend is active
+- `flat` outside directional trends
 
-The entry and exit zones are expressed as fractions of the absolute Trend04 buy
-threshold. For example, with `entryfraction=0.1` and a Trend04 buy threshold of
-`1%`, the buy zone covers the first `0.1%` of the trend gain.
+The previous `entryfraction` / `exitfraction` split is intentionally ignored.
+Trade actions are derived later from phase transitions: entering `up`/`down`
+opens a trade and returning to `flat` closes it.
 """
 mutable struct TradePairs <: AbstractTargets
     trendtarget::Trend04
-    entryfraction::Float32
-    exitfraction::Float32
     ohlcv::Union{OhlcvData, Nothing}
     df::Union{DataFrame, Nothing}
     function TradePairs(trendtarget::Trend04; entryfraction::AbstractFloat=0.1f0, exitfraction::AbstractFloat=0.1f0)
-        @assert 0f0 < entryfraction <= 1f0 "entryfraction=$(entryfraction) must satisfy 0 < entryfraction <= 1"
-        @assert 0f0 < exitfraction <= 1f0 "exitfraction=$(exitfraction) must satisfy 0 < exitfraction <= 1"
-        return new(trendtarget, Float32(entryfraction), Float32(exitfraction), nothing, nothing)
+        return new(trendtarget, nothing, nothing)
     end
 end
 
 TradePairs(minwindow::Int, maxwindow::Int, thres::LabelThresholds; entryfraction::AbstractFloat=0.1f0, exitfraction::AbstractFloat=0.1f0) = TradePairs(Trend04(minwindow, maxwindow, thres); entryfraction=entryfraction, exitfraction=exitfraction)
 
-"Return the ordered trade-pair class labels used by `TradePairs`."
-uniquelabels(tp::TradePairs) = [longbuy, longhold, longclose, shortbuy, shorthold, shortclose, allclose]
+"Return the ordered phase labels used by `TradePairs`."
+uniquelabels(tp::TradePairs) = [up, down, flat]
 
-function _tradepair_referencegain(tp::TradePairs, trend::TrendPhase)::Float32
-    if trend == up
-        return Float32(abs(tp.trendtarget.thres.longbuy))
-    elseif trend == down
-        return Float32(abs(tp.trendtarget.thres.shortbuy))
-    else
-        return 0f0
-    end
-end
-
-function _apply_tradepair_segment!(outlabels::AbstractVector{TradeLabel}, pivots::AbstractVector{<:AbstractFloat}, startix::Int, endix::Int, trend::TrendPhase, entrygain::Float32, exitgain::Float32)
+function _apply_tradepair_segment!(outlabels::AbstractVector{TrendPhase}, pivots::AbstractVector{<:AbstractFloat}, startix::Int, endix::Int, trend::TrendPhase)
     @assert (trend == up) || (trend == down) "trend=$(trend) must be up or down"
-    startprice = Float32(pivots[startix])
-    if endix <= startix
-        outlabels[startix] = trend == up ? longbuy : shortbuy
-        return outlabels
-    end
-
-    endprice = Float32(pivots[endix])
-    totalgain = trend == up ? (endprice - startprice) / startprice : (startprice - endprice) / startprice
-    if totalgain <= 0f0
-        outlabels[startix:endix] .= allclose
-        outlabels[startix] = trend == up ? longbuy : shortbuy
-        outlabels[endix] = trend == up ? longclose : shortclose
-        return outlabels
-    end
-
-    holdlabel = trend == up ? longhold : shorthold
-    buylabel = trend == up ? longbuy : shortbuy
-    closelabel = trend == up ? longclose : shortclose
-
-    for ix in startix:endix
-        progressgain = trend == up ? (Float32(pivots[ix]) - startprice) / startprice : (startprice - Float32(pivots[ix])) / startprice
-        remaininggain = trend == up ? (endprice - Float32(pivots[ix])) / startprice : (Float32(pivots[ix]) - endprice) / startprice
-        if (ix == startix) || (progressgain <= entrygain)
-            outlabels[ix] = buylabel
-        elseif (ix == endix) || (remaininggain <= exitgain)
-            outlabels[ix] = closelabel
-        else
-            outlabels[ix] = holdlabel
-        end
-    end
+    @assert firstindex(outlabels) <= startix <= endix <= lastindex(outlabels) "invalid segment bounds: startix=$(startix) endix=$(endix) lastindex(outlabels)=$(lastindex(outlabels))"
+    outlabels[startix:endix] .= trend
     return outlabels
 end
 
 """
     tradepairlabels(tp::TradePairs, labels, pivots; groups=nothing)
 
-Convert dense `Trend04` labels into sparse trade-pair lifecycle labels.
-`groups` can be used to prevent pair segments from crossing independent ranges.
+Convert dense `Trend04` labels into the coarse phase labels `up`, `down`, and
+`flat`. `groups` can be used to prevent trend segments from crossing independent
+ranges.
 """
-function tradepairlabels(tp::TradePairs, labels::AbstractVector, pivots::AbstractVector{<:AbstractFloat}; groups=nothing)::Vector{TradeLabel}
+function tradepairlabels(tp::TradePairs, labels::AbstractVector, pivots::AbstractVector{<:AbstractFloat}; groups=nothing)::Vector{TrendPhase}
     n = length(labels)
     @assert length(pivots) == n "length(pivots)=$(length(pivots)) must equal length(labels)=$(n)"
 
@@ -1525,7 +1482,7 @@ function tradepairlabels(tp::TradePairs, labels::AbstractVector, pivots::Abstrac
     groupvec = isnothing(groups) ? fill(1, n) : collect(groups)
     @assert length(groupvec) == n "length(groups)=$(length(groupvec)) must equal length(labels)=$(n)"
 
-    outlabels = fill(allclose, n)
+    outlabels = fill(flat, n)
     i = firstindex(tlabels)
     while i <= lastindex(tlabels)
         label = tlabels[i]
@@ -1537,11 +1494,10 @@ function tradepairlabels(tp::TradePairs, labels::AbstractVector, pivots::Abstrac
                 j += 1
             end
             endix = j - 1
-            refgain = _tradepair_referencegain(tp, trend)
-            _apply_tradepair_segment!(outlabels, pivots, i, endix, trend, refgain * tp.entryfraction, refgain * tp.exitfraction)
+            _apply_tradepair_segment!(outlabels, pivots, i, endix, trend)
             i = endix + 1
         else
-            outlabels[i] = allclose
+            outlabels[i] = flat
             i += 1
         end
     end
@@ -1602,20 +1558,20 @@ function timerangecut!(tp::TradePairs)
     supplement!(tp)
 end
 
-describe(tp::TradePairs) = "$(typeof(tp))_entryfraction=$(tp.entryfraction)_exitfraction=$(tp.exitfraction)_$(describe(tp.trendtarget))"
+describe(tp::TradePairs) = "$(typeof(tp))_phase-targets_$(describe(tp.trendtarget))"
 firstrowix(tp::TradePairs)::Int = isnothing(tp.df) ? 1 : (size(tp.df, 1) > 0 ? firstindex(tp.df[!, 1]) : 1)
 lastrowix(tp::TradePairs)::Int = isnothing(tp.df) ? 0 : (size(tp.df, 1) > 0 ? lastindex(tp.df[!, 1]) : 0)
 
 function df(tp::TradePairs, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp))::AbstractDataFrame
-    return isnothing(tp.df) ? DataFrame(opentime=DateTime[], relix=Int[], trendlabel=TradeLabel[], label=TradeLabel[]) : view(tp.df, firstix:lastix, :)
+    return isnothing(tp.df) ? DataFrame(opentime=DateTime[], relix=Int[], trendlabel=TradeLabel[], label=TrendPhase[]) : view(tp.df, firstix:lastix, :)
 end
 
 df(tp::TradePairs, startdt::DateTime, enddt::DateTime) = df(tp, Ohlcv.rowix(tp.df[!, :opentime], startdt), Ohlcv.rowix(tp.df[!, :opentime], enddt))
-labelbinarytargets(tp::TradePairs, label::TradeLabel, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp)) = labels(tp, firstix, lastix) .== label
-labelbinarytargets(tp::TradePairs, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(tp, label, Ohlcv.rowix(tp.df[!, :opentime], startdt), Ohlcv.rowix(tp.df[!, :opentime], enddt))
-labelrelativegain(tp::TradePairs, label::TradeLabel, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp)) = labelbinarytargets(tp, label, firstix, lastix) .* relativegain(tp, firstix, lastix)
-labelrelativegain(tp::TradePairs, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelrelativegain(tp, label, Ohlcv.rowix(tp.df[!, :opentime], startdt), Ohlcv.rowix(tp.df[!, :opentime], enddt))
-labels(tp::TradePairs, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp))::AbstractVector = isnothing(tp.df) ? TradeLabel[] : view(tp.df, firstix:lastix, :label)
+labelbinarytargets(tp::TradePairs, label, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp)) = labels(tp, firstix, lastix) .== label
+labelbinarytargets(tp::TradePairs, label, startdt::DateTime, enddt::DateTime) = labelbinarytargets(tp, label, Ohlcv.rowix(tp.df[!, :opentime], startdt), Ohlcv.rowix(tp.df[!, :opentime], enddt))
+labelrelativegain(tp::TradePairs, label, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp)) = labelbinarytargets(tp, label, firstix, lastix) .* relativegain(tp, firstix, lastix)
+labelrelativegain(tp::TradePairs, label, startdt::DateTime, enddt::DateTime) = labelrelativegain(tp, label, Ohlcv.rowix(tp.df[!, :opentime], startdt), Ohlcv.rowix(tp.df[!, :opentime], enddt))
+labels(tp::TradePairs, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp))::AbstractVector = isnothing(tp.df) ? TrendPhase[] : view(tp.df, firstix:lastix, :label)
 labels(tp::TradePairs, startdt::DateTime, enddt::DateTime) = labels(tp, Ohlcv.rowix(tp.df[!, :opentime], startdt), Ohlcv.rowix(tp.df[!, :opentime], enddt))
 relativegain(tp::TradePairs, firstix::Integer=firstrowix(tp), lastix::Integer=lastrowix(tp))::AbstractVector = relativegain(tp.trendtarget, firstix, lastix)
 relativegain(tp::TradePairs, startdt::DateTime, enddt::DateTime) = relativegain(tp.trendtarget, startdt, enddt)
@@ -1627,7 +1583,7 @@ function Base.show(io::IO, tp::TradePairs)
     else
         "from $(tp.df[begin, :opentime]) to $(tp.df[end, :opentime])"
     end
-    println(io, "TradePairs targets base=$(basemsg) entryfraction=$(tp.entryfraction) exitfraction=$(tp.exitfraction) $(rangemsg)")
+    println(io, "TradePairs phase targets base=$(basemsg) $(rangemsg)")
     println(io, "TradePairs trendtarget=$(tp.trendtarget)")
 end
 #endregion TradePairs

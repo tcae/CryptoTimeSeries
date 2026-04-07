@@ -39,6 +39,25 @@ const _LSTM_LABEL_MAP = Dict(
     "allclose" => allclose,
 )
 
+"Maps coarse trend-phase class names to the corresponding `TrendPhase`."
+const _LSTM_PHASE_MAP = Dict(
+    "up" => up,
+    "down" => down,
+    "flat" => flat,
+)
+
+_mapsignal(label::TradeLabel) = label
+_mapsignal(label::TrendPhase) = label
+function _mapsignal(label)
+    key = lowercase(strip(string(label)))
+    if key in keys(_LSTM_LABEL_MAP)
+        return _LSTM_LABEL_MAP[key]
+    elseif key in keys(_LSTM_PHASE_MAP)
+        return _LSTM_PHASE_MAP[key]
+    end
+    @assert false "unsupported LSTM label=$(label); expected one of $(sort!(vcat(collect(keys(_LSTM_LABEL_MAP)), collect(keys(_LSTM_PHASE_MAP)))))"
+end
+
 "Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set."
 function setbase!(targets::AbstractSingleSymbolTrading, ohlcv::Ohlcv.OhlcvData) error("not implemented") end
 
@@ -152,9 +171,9 @@ The expected default class order is:
 `["longbuy", "longclose", "shortbuy", "shortclose"]`.
 """
 mutable struct LstmTradeDecider <: AbstractSingleSymbolTrading
-    labels::Vector{TradeLabel}
-    scorethresholds::Dict{TradeLabel, Float32}
-    fallbacklabel::TradeLabel
+    labels::Vector{Any}
+    scorethresholds::Dict{Any, Float32}
+    fallbacklabel::Union{TradeLabel, TrendPhase}
     ohlcv::Union{Nothing, Ohlcv.OhlcvData}
 end
 
@@ -162,21 +181,20 @@ end
 Create a new `LstmTradeDecider`.
 
 # Arguments
-- `labels`: model output labels as strings, aligned with probability vector order
+- `labels`: model output labels as strings, aligned with probability vector order;
+  supports both legacy trade labels and coarse phase labels `up/down/flat`
 - `scorethresholds`: per-label acceptance score thresholds
-- `fallbacklabel`: label used when confidence is below threshold
+- `fallbacklabel`: label or phase used when confidence is below threshold
 """
-function LstmTradeDecider(; labels=["longbuy", "longclose", "shortbuy", "shortclose"], scorethresholds=(longbuy=0.5f0, longclose=0.5f0, shortbuy=0.5f0, shortclose=0.5f0), fallbacklabel::TradeLabel=allclose)
+function LstmTradeDecider(; labels=["longbuy", "longclose", "shortbuy", "shortclose"], scorethresholds=(longbuy=0.5f0, longclose=0.5f0, shortbuy=0.5f0, shortclose=0.5f0), fallbacklabel::Union{TradeLabel, TrendPhase}=allclose)
     @assert length(labels) > 0 "labels length must be > 0; got $(length(labels))"
-    mapped = TradeLabel[]
+    mapped = Any[]
     for label in labels
-        @assert label in keys(_LSTM_LABEL_MAP) "unsupported label=$label; expected one of $(collect(keys(_LSTM_LABEL_MAP)))"
-        push!(mapped, _LSTM_LABEL_MAP[label])
+        push!(mapped, _mapsignal(label))
     end
-    thresholds = Dict{TradeLabel, Float32}()
+    thresholds = Dict{Any, Float32}()
     for (k, v) in pairs(scorethresholds)
-        tlabel = Targets.tradelabel(String(k))
-        thresholds[tlabel] = Float32(v)
+        thresholds[_mapsignal(String(k))] = Float32(v)
     end
     return LstmTradeDecider(mapped, thresholds, fallbacklabel, nothing)
 end
@@ -192,6 +210,37 @@ function _label2orderlabel(label::TradeLabel, assettype::TrendPhase)
     if label in [longbuy, longclose, shortbuy, shortclose]
         return label
     elseif label == allclose
+        if assettype == up
+            return longclose
+        elseif assettype == down
+            return shortclose
+        else
+            return nothing
+        end
+    else
+        return nothing
+    end
+end
+
+"Resolves a coarse phase prediction to the corresponding trade action for the current asset state."
+function _label2orderlabel(phase::TrendPhase, assettype::TrendPhase)
+    if phase == up
+        if assettype == down
+            return shortclose
+        elseif assettype == flat
+            return longbuy
+        else
+            return nothing
+        end
+    elseif phase == down
+        if assettype == up
+            return longclose
+        elseif assettype == flat
+            return shortbuy
+        else
+            return nothing
+        end
+    elseif phase == flat
         if assettype == up
             return longclose
         elseif assettype == down
@@ -287,6 +336,45 @@ end
 
 @inline _price_in_bar(price::Float32, low::Real, high::Real) = (Float32(low) <= price) && (price <= Float32(high))
 
+"""
+Convert a phase sequence (`up`, `down`, `flat`) into lifecycle trade labels.
+
+The first directional sample emits a buy label, continued directional samples emit
+hold labels, and returning to `flat` emits the corresponding close label.
+Direct reversals emit the opposite open signal, which the simulator interprets as
+close-and-reverse logic at the same close price.
+"""
+function phase_sequence_trade_labels(phases::AbstractVector)
+    tradelabels = fill(allclose, length(phases))
+    prevphase = flat
+    for ix in eachindex(phases)
+        phase = _mapsignal(phases[ix])
+        if phase isa TradeLabel
+            tradelabels[ix] = phase
+            if islongopenlabel(phase) || (phase == longhold)
+                prevphase = up
+            elseif isshortopenlabel(phase) || (phase == shorthold)
+                prevphase = down
+            elseif islongcloselabel(phase) || isshortcloselabel(phase)
+                prevphase = flat
+            end
+            continue
+        end
+
+        if phase == up
+            tradelabels[ix] = prevphase == up ? longhold : longbuy
+        elseif phase == down
+            tradelabels[ix] = prevphase == down ? shorthold : shortbuy
+        else
+            tradelabels[ix] = prevphase == up ? longclose : (prevphase == down ? shortclose : allclose)
+        end
+        prevphase = phase
+    end
+    return tradelabels
+end
+
+_normalize_limit_labels(labels::AbstractVector) = all(label -> label isa TradeLabel, labels) ? collect(labels) : phase_sequence_trade_labels(labels)
+
 "Returns an empty dataframe for limit-aware entry/exit trade pairs."
 function emptytradepairdf()::DataFrame
     return DataFrame(
@@ -367,10 +455,15 @@ bounds estimates. Entry limits are placed at the predicted lower band for long
 trades and upper band for short trades. Exit limits use the opposite band. If an
 exit limit is not hit within `exittimeout` bars, the position is force-closed at
 market, so missed exits can realize losses.
+
+`labels` may either be direct trade labels (`longbuy`, `shortclose`, ...) or a
+coarse trend-phase sequence (`up`, `down`, `flat`). Phase sequences are converted
+internally so that actions are only emitted when a trend starts or ends.
 """
 function simulate_limit_trade_pairs(predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector; openthreshold::AbstractFloat=0.6f0, closethreshold::AbstractFloat=0.5f0, entrytimeout::Int=2, exittimeout::Int=2, makerfee::AbstractFloat=0.0015f0, takerfee::AbstractFloat=0.002f0, exitstrategy::Symbol=:opposite_signal_market, forceclose::Bool=true)
     nrows = size(predictionsdf, 1)
-    @assert nrows == length(scores) == length(labels) "size(predictionsdf, 1)=$nrows must match length(scores)=$(length(scores)) and length(labels)=$(length(labels))"
+    normlabels = _normalize_limit_labels(labels)
+    @assert nrows == length(scores) == length(normlabels) "size(predictionsdf, 1)=$nrows must match length(scores)=$(length(scores)) and length(labels)=$(length(normlabels))"
     @assert entrytimeout >= 0 "entrytimeout=$(entrytimeout) must be >= 0"
     @assert exittimeout >= 0 "exittimeout=$(exittimeout) must be >= 0"
     @assert exitstrategy in (:opposite_signal_market,) "unsupported exitstrategy=$exitstrategy; expected :opposite_signal_market"
@@ -401,7 +494,7 @@ function simulate_limit_trade_pairs(predictionsdf::AbstractDataFrame, scores::Ab
         low = Float32(predictionsdf[ix, :low])
         high = Float32(predictionsdf[ix, :high])
         close = Float32(predictionsdf[ix, :close])
-        label = labels[ix]
+        label = normlabels[ix]
         score = Float32(scores[ix])
         lower, upper = _predicted_band(predictionsdf, ix)
 
@@ -485,6 +578,36 @@ function simulate_limit_trade_pairs(predictionsdf::AbstractDataFrame, scores::Ab
     end
 
     return tradedf
+end
+
+"""
+    simulate_market_trade_pairs(predictionsdf, scores, labels; ...)
+
+Simulate trade pairs using the row `:close` price whenever an open or close
+signal is issued. `labels` may be direct trade labels or the coarse phase labels
+`up`, `down`, and `flat`.
+"""
+function simulate_market_trade_pairs(predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector; openthreshold::AbstractFloat=0.6f0, closethreshold::AbstractFloat=0.5f0, makerfee::AbstractFloat=0.0015f0, takerfee::AbstractFloat=0.002f0, forceclose::Bool=true)
+    nrows = size(predictionsdf, 1)
+    normlabels = _normalize_limit_labels(labels)
+    @assert nrows == length(scores) == length(normlabels) "size(predictionsdf, 1)=$nrows must match length(scores)=$(length(scores)) and length(labels)=$(length(normlabels))"
+    @assert all(c -> c in propertynames(predictionsdf), [:opentime, :close]) "predictionsdf must contain opentime/close; names=$(names(predictionsdf))"
+
+    if nrows == 0
+        return emptygaindf()
+    end
+
+    gs = GainSegment(
+        ;
+        maxwindow=max(1, nrows),
+        openthreshold=Float32(openthreshold),
+        closethreshold=Float32(closethreshold),
+        algorithm=algorithm02!,
+        makerfee=Float32(makerfee),
+        takerfee=Float32(takerfee),
+    )
+    gdf = getgains(gs, predictionsdf, Float32.(scores), normlabels, forceclose; lastix=nrows, openthreshold=Float32(openthreshold), closethreshold=Float32(closethreshold))
+    return copy(gdf)
 end
 
 function emptygaindf()::DataFrame

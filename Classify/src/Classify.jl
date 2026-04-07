@@ -23,8 +23,8 @@ verbosity =
 verbosity = 1
 
 
-export lstm_bounds_trend_features, lstm_tensor_windows
-export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals
+export lstm_bounds_trend_features, lstm_feature_contract, lstm_tensor_windows
+export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals, penultimatefeatures
 
 #region abstractclassifier
 """
@@ -784,6 +784,39 @@ function lstm_bounds_trend_features(df::AbstractDataFrame;
     @assert size(feats, 2) == length(targets) == length(sets) == length(rangeids) == length(rix) "contract length mismatch: size(feats,2)=$(size(feats,2)) length(targets)=$(length(targets)) length(sets)=$(length(sets)) length(rangeids)=$(length(rangeids)) length(rix)=$(length(rix))"
 
     return LstmBoundsTrendFeatures(feats, fnames, targets, sets, rangeids, rix)
+end
+
+"""
+Build a generic `LstmBoundsTrendFeatures` contract from arbitrary row-aligned
+feature columns.
+
+Despite the historical type name, this contract is generic and can be reused for
+any sequential LSTM feature set, including hidden activations exported from a
+TrendDetector classifier.
+"""
+function lstm_feature_contract(df::AbstractDataFrame;
+    featurecols::Vector{Symbol},
+    targetcol::Symbol=:target,
+    setcol::Symbol=:set,
+    rangeidcol::Symbol=:rangeid,
+    rixcol::Symbol=:sampleix)
+
+    @assert !isempty(featurecols) "featurecols must not be empty"
+    required = vcat(featurecols, [targetcol, setcol, rangeidcol, rixcol])
+    required_str = string.(required)
+    for col in required_str
+        @assert col in names(df) "missing required column $(col); names(df)=$(names(df))"
+    end
+
+    feats = permutedims(Float32.(Matrix(df[!, featurecols])), (2, 1))
+    targets = string.(df[!, targetcol])
+    sets = string.(df[!, setcol])
+    rangeids = Int32.(df[!, rangeidcol])
+    rix = Int32.(df[!, rixcol])
+
+    @assert size(feats, 2) == length(targets) == length(sets) == length(rangeids) == length(rix) "contract length mismatch: size(feats,2)=$(size(feats,2)) length(targets)=$(length(targets)) length(sets)=$(length(sets)) length(rangeids)=$(length(rangeids)) length(rix)=$(length(rix))"
+
+    return LstmBoundsTrendFeatures(feats, string.(featurecols), targets, sets, rangeids, rix)
 end
 
 """
@@ -1557,6 +1590,26 @@ end
 
 " Returns a predictions Float Array of size(classes, observations)"
 predict(nn::NN, features) = Flux.softmax(nn.model(features))  # size(classes, observations)
+
+"""
+Return the hidden activations before the final output layer of `nn`.
+
+For `model002`, the default behavior evaluates the full network up to the
+normalized `lay3` representation and omits only the final classifier head.
+"""
+function penultimatefeatures(nn::NN, features::AbstractMatrix; stoplayer::Int=length(nn.model.layers) - 1)
+    X = Float32.(features)
+    @assert hasproperty(nn.model, :layers) "nn.model must expose a layers field; got $(typeof(nn.model))"
+    nlayers = length(nn.model.layers)
+    @assert 1 <= stoplayer < nlayers "stoplayer=$(stoplayer) must satisfy 1 <= stoplayer < number of layers $(nlayers)"
+
+    Flux.testmode!(nn.model)
+    hidden = X
+    for lix in 1:stoplayer
+        hidden = nn.model.layers[lix](hidden)
+    end
+    return Float32.(hidden)
+end
 
 "Returns a DataFrame of predictions of size(observations, classes) with class labels as column names"
 predictdf(nn::NN, features) = DataFrame(permutedims(predict(nn, features), (2, 1)), string.(nn.labels))

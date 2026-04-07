@@ -207,6 +207,12 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
             EnvConfig.deletefolder(featuresfilename())
             resultsdf = nothing
             featuresdf = nothing
+        elseif !isnothing(resultsdf) && !issorted(resultsdf[!, :rangeid])
+            @warn "ignoring stale results/features cache with non-monotonic rangeid ordering; rebuilding bounds cache" minimum_rangeid=minimum(resultsdf[!, :rangeid]) maximum_rangeid=maximum(resultsdf[!, :rangeid])
+            EnvConfig.deletefolder(resultsfilename())
+            EnvConfig.deletefolder(featuresfilename())
+            resultsdf = nothing
+            featuresdf = nothing
         elseif !isnothing(resultsdf)
             if :bounds_target_format in propertynames(resultsdf)
                 select!(resultsdf, Not(:bounds_target_format))
@@ -223,7 +229,9 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
         processedcoins = String[]
         for coinix in eachindex(cfg.coins)
             coin = cfg.coins[coinix]
-            if getfeaturestargets(cfg, coinix, rangeid, samplesets) > rangeid 
+            nextrangeid = getfeaturestargets(cfg, coinix, rangeid, samplesets)
+            if nextrangeid > rangeid
+                rangeid = nextrangeid
                 push!(processedcoins, coin)
             else
                 # if rangeid is unchanged then nothing was processed for the coin and it was skipped due to empty ranges or results
@@ -386,6 +394,16 @@ function getboundspredictionsdf(cfg::BoundsEstimatorConfig)
         @warn "ignoring stale predictions cache with legacy marker or missing prediction columns; names=$(names(predictionsdf))"
         EnvConfig.deletefolder(predictionsfilename())
         predictionsdf = nothing
+    end
+    if !isnothing(predictionsdf) && EnvConfig.isfolder(resultsfilename())
+        cachedresults = EnvConfig.readdf(resultsfilename())
+        if !isnothing(cachedresults) && !issorted(cachedresults[!, :rangeid])
+            @warn "ignoring stale bounds caches with non-monotonic rangeid ordering; rebuilding predictions/results/features caches"
+            EnvConfig.deletefolder(predictionsfilename())
+            EnvConfig.deletefolder(resultsfilename())
+            EnvConfig.deletefolder(featuresfilename())
+            predictionsdf = nothing
+        end
     end
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
         nn = getregressor(cfg)
@@ -779,7 +797,7 @@ if specialonly
     Classify.verbosity = 1
 end
 
-cfg = BoundsEstimatorConfig(;boundsmk001boundsconfig()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+cfg = BoundsEstimatorConfig(;boundsmk001config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 
 if specialonly
     # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])
