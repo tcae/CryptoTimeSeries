@@ -294,7 +294,7 @@ mk025Dconfig() = (configname="025D", featconfig = trendf6config01(), targetconfi
 mk025Econfig() = (configname="025E", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 
 """
-mk9 = mk9 with short term target, i.e. maxwindow 1h
+mk026 = mk9 with short term target, i.e. maxwindow 1h
 """
 mk026config() = (configname="026", featconfig = trendf6config01(), targetconfig = targetconfig10(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
 
@@ -307,6 +307,12 @@ mk027config() = (configname="027", featconfig = trendf6config08(), targetconfig 
 mk028 = mk009 without oversampling
 """
 mk028config() = (configname="028", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+
+"""   
+mk029 = mk009 without oversamplingbut implementation for hold equally strict than for buy (no config change)
+"""
+mk029config() = (configname="029", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+
 
 
 "Bounds estimator for short term limits"

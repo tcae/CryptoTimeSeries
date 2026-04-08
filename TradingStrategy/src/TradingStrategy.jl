@@ -300,8 +300,8 @@ Returns a named tuple with `actions`, `probs`, and aligned window metadata
 (`targets`, `sets`, `rangeids`, `endrix`).
 """
 function lstm_trade_actions(decider::LstmTradeDecider, model, contract::Classify.LstmBoundsTrendFeatures; seqlen::Int, assettype::TrendPhase=flat)
-    windows = Classify.lstm_tensor_windows(contract; seqlen=seqlen)
-    if size(windows.X, 3) == 0
+    predres = Classify.predict_lstm_trade_signals(model, contract; seqlen=seqlen)
+    if size(predres.probs, 2) == 0
         return (
             actions=TradeAction[],
             probs=Array{Float32}(undef, length(decider.labels), 0),
@@ -311,15 +311,14 @@ function lstm_trade_actions(decider::LstmTradeDecider, model, contract::Classify
             endrix=Int32[],
         )
     end
-    probs = Classify.predict_lstm_trade_signals(model, windows.X)
-    actions = lstm_trade_actions(decider, probs; assettype=assettype)
+    actions = lstm_trade_actions(decider, predres.probs; assettype=assettype)
     return (
         actions=actions,
-        probs=probs,
-        targets=windows.targets,
-        sets=windows.sets,
-        rangeids=windows.rangeids,
-        endrix=windows.endrix,
+        probs=predres.probs,
+        targets=predres.targets,
+        sets=predres.sets,
+        rangeids=predres.rangeids,
+        endrix=predres.endrix,
     )
 end
 

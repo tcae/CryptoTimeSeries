@@ -3,7 +3,7 @@ Train and evaluate the trading signal classifiers
 """
 module Classify
 
-using CSV, DataFrames, Logging, Dates
+using CSV, DataFrames, Logging, Dates, Random
 using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
 using CategoricalArrays
 using CategoricalDistributions
@@ -787,6 +787,48 @@ function lstm_bounds_trend_features(df::AbstractDataFrame;
 end
 
 """
+Materialize selected dataframe feature columns into a `Float32` matrix of shape
+`(nfeatures, nsamples)` without creating a large intermediate wide matrix.
+"""
+function _dataframe_feature_matrix(df::AbstractDataFrame, featurecols::AbstractVector; rows=axes(df, 1))
+    nfeatures = length(featurecols)
+    nsamples = length(rows)
+    feats = Matrix{Float32}(undef, nfeatures, nsamples)
+
+    for (fidx, col) in enumerate(featurecols)
+        coldata = df[!, col]
+        for (j, srcix) in enumerate(rows)
+            feats[fidx, j] = Float32(coldata[srcix])
+        end
+    end
+
+    return feats
+end
+
+"""
+Build a generic `LstmBoundsTrendFeatures` contract directly from a precomputed
+feature matrix and aligned metadata vectors.
+"""
+function lstm_feature_contract(features::AbstractMatrix;
+    feature_names::Vector{String},
+    targets::AbstractVector,
+    sets::AbstractVector,
+    rangeids::AbstractVector,
+    rix::AbstractVector)
+
+    feats = features isa Matrix{Float32} ? features : Matrix{Float32}(features)
+    targets_str = string.(targets)
+    sets_str = string.(sets)
+    rangeids_i32 = Int32.(rangeids)
+    rix_i32 = Int32.(rix)
+
+    @assert size(feats, 1) == length(feature_names) "feature_names length mismatch: size(feats,1)=$(size(feats,1)) length(feature_names)=$(length(feature_names))"
+    @assert size(feats, 2) == length(targets_str) == length(sets_str) == length(rangeids_i32) == length(rix_i32) "contract length mismatch: size(feats,2)=$(size(feats,2)) length(targets)=$(length(targets_str)) length(sets)=$(length(sets_str)) length(rangeids)=$(length(rangeids_i32)) length(rix)=$(length(rix_i32))"
+
+    return LstmBoundsTrendFeatures(feats, copy(feature_names), targets_str, sets_str, rangeids_i32, rix_i32)
+end
+
+"""
 Build a generic `LstmBoundsTrendFeatures` contract from arbitrary row-aligned
 feature columns.
 
@@ -795,7 +837,7 @@ any sequential LSTM feature set, including hidden activations exported from a
 TrendDetector classifier.
 """
 function lstm_feature_contract(df::AbstractDataFrame;
-    featurecols::Vector{Symbol},
+    featurecols::AbstractVector,
     targetcol::Symbol=:target,
     setcol::Symbol=:set,
     rangeidcol::Symbol=:rangeid,
@@ -808,46 +850,62 @@ function lstm_feature_contract(df::AbstractDataFrame;
         @assert col in names(df) "missing required column $(col); names(df)=$(names(df))"
     end
 
-    feats = permutedims(Float32.(Matrix(df[!, featurecols])), (2, 1))
-    targets = string.(df[!, targetcol])
-    sets = string.(df[!, setcol])
-    rangeids = Int32.(df[!, rangeidcol])
-    rix = Int32.(df[!, rixcol])
-
-    @assert size(feats, 2) == length(targets) == length(sets) == length(rangeids) == length(rix) "contract length mismatch: size(feats,2)=$(size(feats,2)) length(targets)=$(length(targets)) length(sets)=$(length(sets)) length(rangeids)=$(length(rangeids)) length(rix)=$(length(rix))"
-
-    return LstmBoundsTrendFeatures(feats, string.(featurecols), targets, sets, rangeids, rix)
+    feats = _dataframe_feature_matrix(df, featurecols)
+    return lstm_feature_contract(
+        feats;
+        feature_names=string.(featurecols),
+        targets=df[!, targetcol],
+        sets=df[!, setcol],
+        rangeids=df[!, rangeidcol],
+        rix=df[!, rixcol],
+    )
 end
 
 """
-Create sliding LSTM windows with output tensor shape `(nfeatures, seqlen, nbatch)`.
-
-Windows are built per `rangeids` sequence to avoid crossing independent ranges.
-Returns `(X, targets, sets, rangeids, endrix)` where metadata vectors are aligned
-to the batch axis of `X`.
+Count how many sliding windows can be formed inside contiguous `rangeids` blocks.
 """
-function lstm_tensor_windows(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
+function _count_lstm_windows(rangeids::AbstractVector{<:Integer}, seqlen::Int)::Int
+    total = 0
+    i = 1
+    nsamples = length(rangeids)
+    while i <= nsamples
+        rid = rangeids[i]
+        j = i
+        while (j <= nsamples) && (rangeids[j] == rid)
+            j += 1
+        end
+        seglen = j - i
+        total += max(seglen - seqlen + 1, 0)
+        i = j
+    end
+    return total
+end
+
+"""
+Build compact metadata for LSTM windows without materializing the full 3D tensor.
+"""
+function _lstm_window_index(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
     @assert seqlen > 0 "seqlen=$(seqlen) must be > 0"
 
     nfeatures, nsamples = size(contract.features)
+    order = sortperm(contract.rix)
     if nsamples < seqlen
-        xempty = Array{Float32, 3}(undef, nfeatures, seqlen, 0)
-        return (X=xempty, targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
+        return (nfeatures=nfeatures, seqlen=seqlen, order=order, endpos=Int[], targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
     end
 
-    order = sortperm(contract.rix)
-    feats = contract.features[:, order]
     targets = contract.targets[order]
     sets = contract.sets[order]
     rangeids = contract.rangeids[order]
     rix = contract.rix[order]
 
-    windows = Vector{Matrix{Float32}}()
-    yvec = String[]
-    svec = String[]
-    ridvec = Int32[]
-    endrix = Int32[]
+    nwindows = _count_lstm_windows(rangeids, seqlen)
+    endpos = Vector{Int}(undef, nwindows)
+    yvec = Vector{String}(undef, nwindows)
+    svec = Vector{String}(undef, nwindows)
+    ridvec = Vector{Int32}(undef, nwindows)
+    endrix = Vector{Int32}(undef, nwindows)
 
+    wi = 1
     i = 1
     while i <= nsamples
         rid = rangeids[i]
@@ -859,29 +917,58 @@ function lstm_tensor_windows(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
         seglen = lastidx - i + 1
         if seglen >= seqlen
             for wend in (i + seqlen - 1):lastidx
-                wstart = wend - seqlen + 1
-                push!(windows, copy(feats[:, wstart:wend]))
-                push!(yvec, targets[wend])
-                push!(svec, sets[wend])
-                push!(ridvec, rid)
-                push!(endrix, rix[wend])
+                endpos[wi] = wend
+                yvec[wi] = targets[wend]
+                svec[wi] = sets[wend]
+                ridvec[wi] = rid
+                endrix[wi] = rix[wend]
+                wi += 1
             end
         end
         i = j
     end
 
-    if length(windows) == 0
-        xempty = Array{Float32, 3}(undef, nfeatures, seqlen, 0)
+    @assert wi == nwindows + 1 "window indexing mismatch: wi=$(wi) nwindows=$(nwindows)"
+    return (nfeatures=nfeatures, seqlen=seqlen, order=order, endpos=endpos, targets=yvec, sets=svec, rangeids=ridvec, endrix=endrix)
+end
+
+"""
+Materialize only the requested LSTM windows into a dense tensor.
+"""
+function _lstm_window_tensor(contract::LstmBoundsTrendFeatures, windowindex, windowix::AbstractVector{<:Integer})
+    nwindows = length(windowix)
+    X = Array{Float32, 3}(undef, windowindex.nfeatures, windowindex.seqlen, nwindows)
+    feats = contract.features
+    order = windowindex.order
+
+    for (bi, wi) in enumerate(windowix)
+        wend = windowindex.endpos[wi]
+        wstart = wend - windowindex.seqlen + 1
+        for seqix in 1:windowindex.seqlen
+            srcix = order[wstart + seqix - 1]
+            @views X[:, seqix, bi] .= feats[:, srcix]
+        end
+    end
+
+    return X
+end
+
+"""
+Create sliding LSTM windows with output tensor shape `(nfeatures, seqlen, nbatch)`.
+
+Windows are built per `rangeids` sequence to avoid crossing independent ranges.
+Returns `(X, targets, sets, rangeids, endrix)` where metadata vectors are aligned
+to the batch axis of `X`.
+"""
+function lstm_tensor_windows(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
+    windowindex = _lstm_window_index(contract; seqlen=seqlen)
+    if isempty(windowindex.endpos)
+        xempty = Array{Float32, 3}(undef, windowindex.nfeatures, seqlen, 0)
         return (X=xempty, targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
     end
 
-    nbatch = length(windows)
-    X = Array{Float32, 3}(undef, nfeatures, seqlen, nbatch)
-    for (bi, win) in enumerate(windows)
-        X[:, :, bi] = win
-    end
-
-    return (X=X, targets=yvec, sets=svec, rangeids=ridvec, endrix=endrix)
+    X = _lstm_window_tensor(contract, windowindex, 1:length(windowindex.endpos))
+    return (X=X, targets=windowindex.targets, sets=windowindex.sets, rangeids=windowindex.rangeids, endrix=windowindex.endrix)
 end
 
 
@@ -1598,7 +1685,7 @@ For `model002`, the default behavior evaluates the full network up to the
 normalized `lay3` representation and omits only the final classifier head.
 """
 function penultimatefeatures(nn::NN, features::AbstractMatrix; stoplayer::Int=length(nn.model.layers) - 1)
-    X = Float32.(features)
+    X = features isa Matrix{Float32} ? features : Float32.(features)
     @assert hasproperty(nn.model, :layers) "nn.model must expose a layers field; got $(typeof(nn.model))"
     nlayers = length(nn.model.layers)
     @assert 1 <= stoplayer < nlayers "stoplayer=$(stoplayer) must satisfy 1 <= stoplayer < number of layers $(nlayers)"
@@ -1609,6 +1696,34 @@ function penultimatefeatures(nn::NN, features::AbstractMatrix; stoplayer::Int=le
         hidden = nn.model.layers[lix](hidden)
     end
     return Float32.(hidden)
+end
+
+"""
+Return the penultimate activations for dataframe-backed feature columns while
+materializing only one batch at a time.
+"""
+function penultimatefeatures(nn::NN, df::AbstractDataFrame, featurecols::AbstractVector;
+    stoplayer::Int=length(nn.model.layers) - 1, batchsize::Int=4096)
+    @assert !isempty(featurecols) "featurecols must not be empty"
+    @assert batchsize > 0 "batchsize=$(batchsize) must be > 0"
+
+    nobs = nrow(df)
+    if nobs == 0
+        return Matrix{Float32}(undef, 0, 0)
+    end
+
+    hidden = Matrix{Float32}(undef, 0, 0)
+    for start in 1:batchsize:nobs
+        stop = min(start + batchsize - 1, nobs)
+        x_batch = _dataframe_feature_matrix(df, featurecols; rows=start:stop)
+        hidden_batch = penultimatefeatures(nn, x_batch; stoplayer=stoplayer)
+        if size(hidden, 1) == 0
+            hidden = Matrix{Float32}(undef, size(hidden_batch, 1), nobs)
+        end
+        hidden[:, start:stop] .= hidden_batch
+    end
+
+    return hidden
 end
 
 "Returns a DataFrame of predictions of size(observations, classes) with class labels as column names"

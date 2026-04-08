@@ -789,6 +789,34 @@ _reldiff(piv, ix, endix) = (piv[endix] - piv[ix]) / piv[ix]
 @inline _is_further_extreme(endval::Real, refval::Real, side::Symbol; strict::Bool=false)::Bool = side == :long ? (strict ? (endval > refval) : (endval >= refval)) : (strict ? (endval < refval) : (endval <= refval))
 @inline _is_local_start_extreme(piv, ix::Int, endix::Int, side::Symbol)::Bool = side == :long ? (piv[ix] == minimum(view(piv, ix:endix))) : (piv[ix] == maximum(view(piv, ix:endix)))
 @inline _is_anchor_extreme(piv, anchorix::Int, endix::Int, side::Symbol)::Bool = side == :long ? (piv[anchorix] == minimum(view(piv, anchorix:endix))) : (piv[anchorix] == maximum(view(piv, anchorix:endix)))
+@inline _is_segment_end_extreme(piv, startix::Int, endix::Int, side::Symbol)::Bool = side == :long ? (piv[endix] == maximum(view(piv, startix:endix))) : (piv[endix] == minimum(view(piv, startix:endix)))
+
+@inline function _threshold_reached(rd::Real, trd::Trend04, side::Symbol, thresholdkind::Symbol)::Bool
+    if thresholdkind == :buy
+        return _buy_threshold_met(rd, trd, side)
+    elseif thresholdkind == :hold
+        return _hold_reached(rd, trd, side)
+    end
+    throw(ArgumentError("unsupported thresholdkind=$(thresholdkind); expected :buy or :hold"))
+end
+
+function _segment_threshold_met(piv, startix::Int, endix::Int, trd::Trend04, side::Symbol, thresholdkind::Symbol)::Bool
+    (startix < firstindex(piv) || startix > endix) && return false
+    span = endix - startix + 1
+    (span < trd.minwindow || span > trd.maxwindow) && return false
+    rd = _reldiff(piv, startix, endix)
+    return _is_local_start_extreme(piv, startix, endix, side) &&
+           _is_segment_end_extreme(piv, startix, endix, side) &&
+           _threshold_reached(rd, trd, side, thresholdkind)
+end
+
+function _anchor_threshold_met(piv, anchorix::Int, endix::Int, trd::Trend04, side::Symbol, thresholdkind::Symbol)::Bool
+    (anchorix < firstindex(piv) || anchorix > endix) && return false
+    span = endix - anchorix + 1
+    (span < trd.minwindow || span > trd.maxwindow) && return false
+    return _is_anchor_extreme(piv, anchorix, endix, side) &&
+           _threshold_reached(_reldiff(piv, anchorix, endix), trd, side, thresholdkind)
+end
 
 function _crosscheck_buy_anchor(labels, relix_arr, lss::Int, prev_same_side_hold::Bool)::Int
     anchor = relix_arr[lss]
@@ -829,9 +857,9 @@ function _meets_hold_within_window(piv, startix::Int, trd::Trend04, side::Symbol
     futureend <= startix && return false
 
     oppositerun = 0
-    for ix in (startix + 1):futureend
-        rd = _reldiff(piv, startix, ix)
-        if _hold_reached(rd, trd, side)
+    for endix in (startix + 1):futureend
+        rd = _reldiff(piv, startix, endix)
+        if _segment_threshold_met(piv, startix, endix, trd, side, :hold)
             return true
         elseif _opposite_hold_break(rd, trd, side)
             oppositerun += 1
@@ -861,6 +889,18 @@ as long as they stay shorter than `trd.minwindow`.
 """
 _meets_shorthold_within_window(piv, startix::Int, trd::Trend04)::Bool = _meets_hold_within_window(piv, startix, trd, :short)
 
+function _continuation_anchorix(piv, startix::Int, endix::Int, side::Symbol)::Int
+    startix > endix && return endix
+    searchrange = startix:endix
+    if side == :long
+        _, minrelix = findmin(view(piv, searchrange))
+        return first(searchrange) + minrelix - 1
+    else
+        _, maxrelix = findmax(view(piv, searchrange))
+        return first(searchrange) + maxrelix - 1
+    end
+end
+
 function _reversal_anchorix(piv, holdrelix::Int, endix::Int, side::Symbol)::Int
     searchrange = holdrelix:endix
     if side == :long
@@ -870,6 +910,33 @@ function _reversal_anchorix(piv, holdrelix::Int, endix::Int, side::Symbol)::Int
         _, minrelix = findmin(view(piv, searchrange))
         return first(searchrange) + minrelix - 1
     end
+end
+
+function _last_valid_segment_end(piv, anchorix::Int, tailend::Int, trd::Trend04, side::Symbol, thresholdkind::Symbol)
+    upper = min(lastindex(piv), tailend)
+    for ix in upper:-1:anchorix
+        if _segment_threshold_met(piv, anchorix, ix, trd, side, thresholdkind)
+            return ix
+        end
+    end
+    return nothing
+end
+
+function _trim_buy_tail!(piv, labels, relix, anchorix::Int, tailend::Int, trd::Trend04, side::Symbol)
+    (tailend < anchorix) && return nothing
+    lastvalidix = _last_valid_segment_end(piv, anchorix, tailend, trd, side, :buy)
+    trimstart = isnothing(lastvalidix) ? anchorix : (lastvalidix + 1)
+    trimstart > tailend && return nothing
+
+    samelabels = side == :long ? (longbuy, longhold) : (shortbuy, shorthold)
+    fillrelix = isnothing(lastvalidix) ? anchorix : lastvalidix
+    for ix in trimstart:tailend
+        if labels[ix] in samelabels
+            labels[ix] = allclose
+            relix[ix] = fillrelix
+        end
+    end
+    return nothing
 end
 
 function _opposite_buy_ok(piv, newix::Int, endix::Int, trd::Trend04, side::Symbol)::Bool
@@ -884,9 +951,13 @@ function _handle_trend_reversal!(piv, labels, relix, trd::Trend04, ix::Int, endi
     holdlabel = _holdlabel(side)
     holdname = _holdname(side)
     holdrelix = (labels[ix] == buylabel) ? ix : relix[ix]
+    anchorix = (labels[ix] == buylabel) ? relix[ix] : relix[holdrelix]
+
+    holdcandidate = _anchor_threshold_met(piv, anchorix, endix, trd, side, :hold) &&
+                    _meets_hold_within_window(piv, endix, trd, side)
 
     _trend04diaginc!("cand." * holdname * ".reversal")
-    if _meets_hold_within_window(piv, endix, trd, side)
+    if holdcandidate
         _trend04diaginc!("acc." * holdname * ".reversal")
         labels[endix] = holdlabel
         relix[endix] = holdrelix
@@ -900,6 +971,7 @@ function _handle_trend_reversal!(piv, labels, relix, trd::Trend04, ix::Int, endi
     opposite_buy_ok = _opposite_buy_ok(piv, newix, endix, trd, side)
 
     if (opposite_span >= trd.minwindow) && opposite_buy_ok
+        _trim_buy_tail!(piv, labels, relix, anchorix, newix - 1, trd, side)
         labels[endix] = _oppositebuylabel(side)
         relix[endix] = newix
         _fillsegment!(labels, relix, endix)
@@ -907,7 +979,7 @@ function _handle_trend_reversal!(piv, labels, relix, trd::Trend04, ix::Int, endi
         transient_key = side == :long ? "transient.micro.shortpeak.from_long" : "transient.micro.longpeak.from_short"
         acc_key = side == :long ? ("acc." * holdname * ".from_micro_shortpeak") : ("acc." * holdname * ".from_micro_longpeak")
         _trend04diaginc!(transient_key)
-        if _preserves_hold_across_micro_peak(_reldiff(piv, holdrelix, endix), trd, side) && _meets_hold_within_window(piv, endix, trd, side)
+        if _preserves_hold_across_micro_peak(_reldiff(piv, holdrelix, endix), trd, side) && holdcandidate
             _trend04diaginc!(acc_key)
             labels[endix] = holdlabel
             relix[endix] = holdrelix
@@ -931,20 +1003,19 @@ function _handle_trend_continuation!(piv, labels, relix, trd::Trend04, ix::Int, 
     if labels[ix] == holdlabel
         anchorix = relix[relix[ix]]
         lastbuyix = relix[ix]
-        localbuyreldiff = _reldiff(piv, ix, endix)
-        localbuyspan = endix - ix + 1
-        islocalstartextreme = _is_local_start_extreme(piv, ix, endix, side)
-        isnewextreme = _is_further_extreme(piv[endix], piv[lastbuyix], side; strict=true)
+        localstartix = _continuation_anchorix(piv, ix, endix, side)
+        canpromotebuy = _segment_threshold_met(piv, anchorix, endix, trd, side, :buy) &&
+                        _segment_threshold_met(piv, localstartix, endix, trd, side, :buy)
+        cancontinuehold = _anchor_threshold_met(piv, anchorix, endix, trd, side, :hold) &&
+                          _meets_hold_within_window(piv, endix, trd, side)
 
         _trend04diaginc!("cand." * holdname * ".from_" * holdname)
-        if isnewextreme && islocalstartextreme && (localbuyspan >= trd.minwindow) &&
-           _buy_threshold_met(_reldiff(piv, anchorix, endix), trd, side) &&
-           _buy_threshold_met(localbuyreldiff, trd, side)
+        if canpromotebuy
             _trend04diaginc!("rej." * holdname * ".promoted_" * buyname)
             labels[endix] = buylabel
             relix[endix] = ix
             _fillsegment!(labels, relix, endix)
-        elseif (!isnewextreme) && _meets_hold_within_window(piv, endix, trd, side)
+        elseif cancontinuehold
             _trend04diaginc!("acc." * holdname * ".from_" * holdname)
             labels[endix] = holdlabel
             relix[endix] = relix[ix]
@@ -960,22 +1031,24 @@ function _handle_trend_continuation!(piv, labels, relix, trd::Trend04, ix::Int, 
         # A buy segment may only continue on a genuinely new directional extreme.
         # Using a strict comparison avoids flat plateaus keeping longbuy/shortbuy alive
         # for too long on real BTC data.
-        isnewextreme = _is_further_extreme(piv[endix], piv[ix], side; strict=true)
-        isanchorextreme = _is_anchor_extreme(piv, anchorix, endix, side)
+        cancontinuebuy = _segment_threshold_met(piv, anchorix, endix, trd, side, :buy)
+        cancontinuehold = _anchor_threshold_met(piv, anchorix, endix, trd, side, :hold) &&
+                          _meets_hold_within_window(piv, endix, trd, side)
 
         _trend04diaginc!("cand." * holdname * ".from_" * buyname)
-        if isnewextreme && isanchorextreme && _buy_threshold_met(_reldiff(piv, anchorix, endix), trd, side)
+        if cancontinuebuy
             _trend04diaginc!("rej." * holdname * ".continues_" * buyname)
             labels[endix] = buylabel
             relix[endix] = relix[ix]
             _fillsegment!(labels, relix, endix)
-        elseif _meets_hold_within_window(piv, endix, trd, side)
+        elseif cancontinuehold
             _trend04diaginc!("acc." * holdname * ".from_" * buyname)
             labels[endix] = holdlabel
             relix[endix] = ix
             _fillsegment!(labels, relix, endix, piv, trd)
         else
             _trend04diaginc!("rej." * holdname * ".from_" * buyname * ".threshold")
+            _trim_buy_tail!(piv, labels, relix, anchorix, endix - 1, trd, side)
             labels[endix] = allclose
             relix[endix] = ix + 1
             _fillsegment!(labels, relix, endix)

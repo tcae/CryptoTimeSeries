@@ -122,9 +122,13 @@ end
 
 _with_log_subfolder(f::Function, folder::AbstractString) = _with_log_subfolder(folder, f)
 
+function _logsroot()
+    current = EnvConfig.logfolder()
+    return EnvConfig.logsubfolder() == "" ? current : normpath(dirname(current))
+end
+
 function _folderpath(subfolder::AbstractString)
-    EnvConfig.setlogpath()
-    return normpath(joinpath(EnvConfig.logfolder(), subfolder))
+    return normpath(joinpath(_logsroot(), subfolder))
 end
 
 function _load_df_or_assert(folder::AbstractString, filename::AbstractString)
@@ -370,22 +374,24 @@ function get_trend_hidden_features(cfg::TradeAdviceLstmConfig)
 
     fcols = Features.requestedcolumns(cfg.trendconfig.featconfig)
     @assert all(c -> c in names(featuresdf), fcols) "trend features dataframe missing required columns: required=$(fcols) available=$(names(featuresdf))"
-    X = permutedims(Matrix(featuresdf[!, fcols]), (2, 1))
 
     hiddenmat = _with_log_subfolder(trfolder) do
         nn = cfg.trendconfig.classifiermodel(Features.featurecount(cfg.trendconfig.featconfig), Targets.uniquelabels(cfg.trendconfig.targetconfig), "mix")
         @assert isfile(Classify.nnfilename(nn.fileprefix)) "optimized trend classifier file not found: $(Classify.nnfilename(nn.fileprefix)). Run scripts/TrendDetector.jl first."
         nn = Classify.loadnn(nn.fileprefix)
-        Classify.penultimatefeatures(nn, X)
+        Classify.penultimatefeatures(nn, featuresdf, fcols; batchsize=max(1024, cfg.batchsize * 64))
     end
 
     @assert size(hiddenmat, 2) == size(resultsdf, 1) "trend hidden features/results row mismatch"
-    keycols = [:coin, :rangeid, :opentime]
-    hiddenfdf = copy(resultsdf[!, keycols])
-    for featix in 1:size(hiddenmat, 1)
-        hiddenfdf[!, Symbol("lay3_" * lpad(string(featix), 3, '0'))] = Float32.(vec(hiddenmat[featix, :]))
-    end
-    return resultsdf, hiddenfdf
+    hiddennames = ["lay3_" * lpad(string(featix), 3, '0') for featix in 1:size(hiddenmat, 1)]
+    GC.gc()
+    return resultsdf, hiddenmat, hiddennames
+end
+
+function _rowperm_by_keycols(df::AbstractDataFrame, keycols::Vector{Symbol})
+    perm = collect(1:size(df, 1))
+    sort!(perm; by=ix -> Tuple(df[ix, col] for col in keycols))
+    return perm
 end
 
 """
@@ -396,17 +402,18 @@ The LSTM is trained on the coarse phase target `up/down/flat` and later compared
 against the TrendDetector phase baseline using close-price trade execution.
 """
 function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
-    trend_results, trend_hidden = get_trend_hidden_features(cfg)
+    trend_results, hiddenmat, hiddennames = get_trend_hidden_features(cfg)
 
-    keycols = [:coin, :rangeid, :opentime]
     cols = [:coin, :rangeid, :set, :target, :label, :score, :opentime, :high, :low, :close, :pivot]
     @assert all(c -> c in propertynames(trend_results), cols) "trend results missing required columns"
 
-    mdf = innerjoin(trend_results[!, cols], trend_hidden, on=keycols)
-    @assert size(mdf, 1) > 0 "empty merge between trend rows and lay3 features"
+    mdf = copy(trend_results[!, cols])
+    @assert size(mdf, 1) > 0 "empty trend results for LSTM input"
 
-    sort!(mdf, [:coin, :rangeid, :opentime])
-    mdf = copy(mdf)
+    perm = _rowperm_by_keycols(mdf, [:coin, :rangeid, :opentime])
+    mdf = mdf[perm, :]
+    hiddenmat = hiddenmat[:, perm]
+
     rename!(mdf, :label => :trend_label, :score => :trend_score)
     mdf[!, :trend_target] = string.(mdf[!, :target])
     mdf[!, :trend_label] = string.(mdf[!, :trend_label])
@@ -414,45 +421,46 @@ function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
     mdf[!, :trend_score] = Float32.(mdf[!, :trend_score])
     mdf[!, :target] = _trendlabel2phase.(mdf[!, :trend_target])
     mdf[!, :rowix] = Int32.(1:size(mdf, 1))
-    EnvConfig.savedf(mdf, lstmmergedfilename())
-    return mdf
-end
 
-function train_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame)
-    featurecols = _lstm_featurecols(mdf)
     contract = Classify.lstm_feature_contract(
-        mdf;
-        featurecols=featurecols,
-        targetcol=:target,
-        setcol=:set,
-        rangeidcol=:rangeid,
-        rixcol=:rowix,
+        hiddenmat;
+        feature_names=hiddennames,
+        targets=mdf[!, :target],
+        sets=mdf[!, :set],
+        rangeids=mdf[!, :rangeid],
+        rix=mdf[!, :rowix],
     )
 
+    EnvConfig.savedf(mdf, lstmmergedfilename())
+    GC.gc()
+    return mdf, contract
+end
+
+function train_lstm(cfg::TradeAdviceLstmConfig, contract)
     res = Classify.train_lstm_trade_signals!(contract, cfg.seqlen; hidden_dim=cfg.hidden_dim, maxepoch=cfg.maxepoch, batchsize=cfg.batchsize, labels=LSTM_LABELS)
 
     lossesdf = DataFrame(epoch=collect(1:length(res.losses)), train_loss=Float32.(res.losses), eval_loss=Float32.(res.eval_losses))
     EnvConfig.savedf(lossesdf, lstmlossesfilename())
-    return contract, res
+    GC.gc()
+    return res
 end
 
 function evaluate_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame, contract, trainres)
-    windows = Classify.lstm_tensor_windows(contract; seqlen=cfg.seqlen)
-    @assert size(windows.X, 3) > 0 "no windows generated for evaluation"
+    predres = Classify.predict_lstm_trade_signals(trainres.model, contract; seqlen=cfg.seqlen, batchsize=cfg.batchsize)
+    @assert size(predres.probs, 2) > 0 "no windows generated for evaluation"
 
-    probs = Classify.predict_lstm_trade_signals(trainres.model, windows.X)
-    predix = vec(argmax(probs; dims=1))
+    predix = vec(argmax(predres.probs; dims=1))
     predlabel = [String(trainres.labels[ci[1]]) for ci in predix]
-    predscore = [Float32(probs[ci[1], ix]) for (ix, ci) in enumerate(predix)]
+    predscore = [Float32(predres.probs[ci[1], ix]) for (ix, ci) in enumerate(predix)]
 
     admincols = [:rowix, :opentime, :high, :low, :close, :pivot, :set, :rangeid, :coin, :trend_target, :trend_label, :trend_phase, :trend_score]
     admindf = mdf[!, admincols]
     evaldf = innerjoin(
-        DataFrame(rowix=windows.endrix, target=String.(windows.targets), label=predlabel, score=predscore),
+        DataFrame(rowix=predres.endrix, target=String.(predres.targets), label=predlabel, score=predscore),
         admindf,
         on=:rowix,
     )
-    @assert size(evaldf, 1) == length(windows.targets) "window/admin merge mismatch"
+    @assert size(evaldf, 1) == length(predres.targets) "window/admin merge mismatch"
     sort!(evaldf, [:coin, :rangeid, :opentime])
     evaldf[!, :set] = CategoricalVector(string.(evaldf[!, :set]), levels=settypes())
 
@@ -566,6 +574,20 @@ end
 
 function _safe_mean_or_missing(values)
     return isempty(values) ? missing : Float32(mean(Float32.(values)))
+end
+
+function _transpose_summarydf(summarydf::AbstractDataFrame)
+    if size(summarydf, 1) == 0
+        return DataFrame(metric=String[], value=Any[])
+    end
+    @assert size(summarydf, 1) == 1 "expected single-row summary dataframe for display; got $(size(summarydf, 1)) rows"
+    return DataFrame(metric=String.(names(summarydf)), value=Any[summarydf[1, col] for col in names(summarydf)])
+end
+
+function _print_df(label::AbstractString, df::AbstractDataFrame)
+    println(label)
+    show(stdout, MIME("text/plain"), df; allrows=true, allcols=true, truncate=0)
+    println()
 end
 
 function _safe_sum_or_zero(values)
@@ -731,21 +753,24 @@ function collect_tradeadvice_summaries(cfg::TradeAdviceLstmConfig)
 end
 
 function run_pipeline(cfg::TradeAdviceLstmConfig)
-    (verbosity >= 2) && println("$(EnvConfig.now()) TradeAdviceLstm pipeline start with trend=$(trendfolder(cfg))")
-    mdf = build_lstm_input_df(cfg)
-    contract, trainres = train_lstm(cfg, mdf)
-    evaldf, cmdf, xcmdf, seqdf, distdf, gaindf = evaluate_lstm(cfg, mdf, contract, trainres)
-    summarydf = buildsummmary(cfg, trainres, cmdf, distdf, gaindf)
-    comparisondf = collect_tradeadvice_summaries(cfg)
+    return _with_log_subfolder(cfg.folder) do
+        (verbosity >= 2) && println("$(EnvConfig.now()) TradeAdviceLstm pipeline start with trend=$(trendfolder(cfg))")
+        mdf, contract = build_lstm_input_df(cfg)
+        trainres = train_lstm(cfg, contract)
+        GC.gc()
+        evaldf, cmdf, xcmdf, seqdf, distdf, gaindf = evaluate_lstm(cfg, mdf, contract, trainres)
+        summarydf = buildsummmary(cfg, trainres, cmdf, distdf, gaindf)
+        comparisondf = collect_tradeadvice_summaries(cfg)
 
-    println("$(EnvConfig.now()) LSTM training epochs=$(length(trainres.losses)) final_train_loss=$(trainres.losses[end]) final_eval_loss=$(trainres.eval_losses[end])")
-    println("$(EnvConfig.now()) LSTM confusion matrix rows=$(size(cmdf, 1)) extended rows=$(size(xcmdf, 1))")
-    println("$(EnvConfig.now()) LSTM predictions rows=$(size(evaldf, 1)) sequences rows=$(size(seqdf, 1)) distances rows=$(size(distdf, 1)) gains rows=$(size(gaindf, 1))")
-    println("$(EnvConfig.now()) TradeAdviceLstm summary: $summarydf")
-    if size(comparisondf, 1) > 0
-        println("$(EnvConfig.now()) TradeAdviceLstm comparison table: $comparisondf")
+        println("$(EnvConfig.now()) LSTM training epochs=$(length(trainres.losses)) final_train_loss=$(trainres.losses[end]) final_eval_loss=$(trainres.eval_losses[end])")
+        println("$(EnvConfig.now()) LSTM confusion matrix rows=$(size(cmdf, 1)) extended rows=$(size(xcmdf, 1))")
+        println("$(EnvConfig.now()) LSTM predictions rows=$(size(evaldf, 1)) sequences rows=$(size(seqdf, 1)) distances rows=$(size(distdf, 1)) gains rows=$(size(gaindf, 1))")
+        _print_df("$(EnvConfig.now()) TradeAdviceLstm summary (transposed):", _transpose_summarydf(summarydf))
+        if size(comparisondf, 1) > 0
+            println("$(EnvConfig.now()) TradeAdviceLstm comparison table: $comparisondf")
+        end
+        return (inputdf=mdf, trainres=trainres, evaldf=evaldf, cmdf=cmdf, xcmdf=xcmdf, seqdf=seqdf, distdf=distdf, gaindf=gaindf, summarydf=summarydf, comparisondf=comparisondf)
     end
-    return (inputdf=mdf, trainres=trainres, evaldf=evaldf, cmdf=cmdf, xcmdf=xcmdf, seqdf=seqdf, distdf=distdf, gaindf=gaindf, summarydf=summarydf, comparisondf=comparisondf)
 end
 
 function buildcfg(args::Vector{String})
@@ -755,7 +780,7 @@ function buildcfg(args::Vector{String})
     trendconfig = _resolve_trendconfig(trendref)
     configname = _argvalue(args, "configname", isnothing(tradeadvicecfg) ? "trend$(trendconfig.configname)" : string(tradeadvicecfg.configname))
     folder = _argvalue(args, "folder", "TradeAdviceLstm-$configname-$(EnvConfig.configmode)")
-    seqlen = parse(Int, _argvalue(args, "seqlen", string(_ntget(tradeadvicecfg, :seqlen, 3))))
+    seqlen = parse(Int, _argvalue(args, "seqlen", string(_ntget(tradeadvicecfg, :seqlen, 30))))
     hidden_dim = parse(Int, _argvalue(args, "hidden", _argvalue(args, "hidden_dim", string(_ntget(tradeadvicecfg, :hidden_dim, 32)))))
     maxepoch = parse(Int, _argvalue(args, "maxepoch", isnothing(tradeadvicecfg) ? ("train" in args ? "200" : "20") : string(tradeadvicecfg.maxepoch)))
     batchsize = parse(Int, _argvalue(args, "batchsize", string(_ntget(tradeadvicecfg, :batchsize, 64))))
@@ -788,6 +813,12 @@ if inspectonly
     println("Selected trend config: $(cfg.trendconfig.configname)")
     println("LSTM params: seqlen=$(cfg.seqlen) hidden_dim=$(cfg.hidden_dim) maxepoch=$(cfg.maxepoch) batchsize=$(cfg.batchsize) entrytimeout=$(cfg.entrytimeout) exittimeout=$(cfg.exittimeout)")
     println("Trend source folder: $(trendfolder(cfg))")
+    summarydf = EnvConfig.readdf(summaryfilename(); folderpath=_folderpath(cfg.folder))
+    if isnothing(summarydf) || (size(summarydf, 1) == 0)
+        println("No TradeAdvice summary found yet in $(_folderpath(cfg.folder))")
+    else
+        _print_df("Saved TradeAdvice summary (transposed):", _transpose_summarydf(summarydf))
+    end
 elseif compareonly
     comparisondf = collect_tradeadvice_summaries(cfg)
     println("$(EnvConfig.now()) available TradeAdvice summaries: $comparisondf")

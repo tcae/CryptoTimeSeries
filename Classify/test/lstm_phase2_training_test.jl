@@ -42,11 +42,16 @@ using Classify, DataFrames, Test, Random
         @test generic_contract.feature_names == ["longbuy", "shortbuy", "allclose"]
 
         nn = Classify.model002(7, ["up", "down", "flat"], "phase_test")
-        hidden = Classify.penultimatefeatures(nn, rand(Float32, 7, 5))
+        featuremat = rand(Float32, 7, 5)
+        hidden = Classify.penultimatefeatures(nn, featuremat)
+        featuredf = DataFrame([Symbol("f" * string(ix)) => vec(featuremat[ix, :]) for ix in 1:size(featuremat, 1)])
+        hidden_batched = Classify.penultimatefeatures(nn, featuredf, Symbol.(names(featuredf)); batchsize=2)
         lay1 = 3 * 7
         lay2 = round(Int, lay1 * 2 / 3)
         lay3 = round(Int, (lay2 + 3) / 2)
         @test size(hidden) == (lay3, 5)
+        @test size(hidden_batched) == size(hidden)
+        @test hidden_batched ≈ hidden
         @test all(isfinite, hidden)
     end
     
@@ -68,6 +73,9 @@ using Classify, DataFrames, Test, Random
         @test haskey(result, :model)
         @test haskey(result, :losses)
         @test haskey(result, :eval_losses)
+        @test haskey(result, :checkpointfile)
+        @test endswith(result.checkpointfile, ".bson")
+        @test isfile(result.checkpointfile)
         @test length(result.losses) > 0
         @test length(result.losses) >= 1
         
@@ -93,6 +101,22 @@ using Classify, DataFrames, Test, Random
         
         col_sums = sum(probs; dims=1)
         @test all(isapprox.(vec(col_sums), 1.0f0; atol=1e-5))
+    end
+
+    @testset "LSTM streamed contract prediction" begin
+        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=5, batchsize=2)
+        model = result.model
+
+        windows = Classify.lstm_tensor_windows(contract; seqlen=3)
+        dense_probs = Classify.predict_lstm_trade_signals(model, windows.X)
+        streamed = Classify.predict_lstm_trade_signals(model, contract; seqlen=3, batchsize=2)
+
+        @test size(streamed.probs) == size(dense_probs)
+        @test all(isapprox.(streamed.probs, dense_probs; atol=1e-5))
+        @test streamed.targets == windows.targets
+        @test streamed.sets == windows.sets
+        @test streamed.rangeids == windows.rangeids
+        @test streamed.endrix == windows.endrix
     end
     
     @testset "LSTM prediction classes" begin

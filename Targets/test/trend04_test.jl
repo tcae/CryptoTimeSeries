@@ -198,10 +198,24 @@ end
     recoveringlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
     Targets.setbase!(recoveringlong, testohlcvfrompivots(Float32[100.0, 106.0, 102.0, 104.5]))
     @test recoveringlong.df[3, :label] == longhold
+    @test recoveringlong.df[4, :label] == allclose
 
     recoveringshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
     Targets.setbase!(recoveringshort, testohlcvfrompivots(Float32[100.0, 94.0, 98.0, 95.5]))
     @test recoveringshort.df[3, :label] == shorthold
+    @test recoveringshort.df[4, :label] == allclose
+
+    delayedlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
+    Targets.setbase!(delayedlong, testohlcvfrompivots(Float32[100.0, 106.0, 103.0, 102.0, 104.5]))
+    @test delayedlong.df[3, :label] == allclose
+    @test delayedlong.df[4, :label] == longhold
+    @test delayedlong.df[5, :label] == allclose
+
+    delayedshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
+    Targets.setbase!(delayedshort, testohlcvfrompivots(Float32[100.0, 94.0, 97.0, 98.0, 95.5]))
+    @test delayedshort.df[3, :label] == allclose
+    @test delayedshort.df[4, :label] == shorthold
+    @test delayedshort.df[5, :label] == allclose
 end
 
 # ---------------------------------------------------------------------------

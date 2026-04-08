@@ -148,17 +148,76 @@ function lstm_trade_signal_model(nfeatures::Int, seqlen::Int, hidden_dim::Int=32
 end
 
 """
-    train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int; 
-                             hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64)
+    lstm_checkpoint_filename(fileprefix::AbstractString="LstmTradeSignalModel")
+
+Return the BSON checkpoint path for a persisted LSTM trade-signal model inside the
+currently active `EnvConfig` log folder.
+"""
+lstm_checkpoint_filename(fileprefix::AbstractString="LstmTradeSignalModel") = EnvConfig.logpath(splitext(fileprefix)[1] * ".bson")
+
+"""
+    save_lstm_checkpoint(model, optim, losses, eval_losses, labels, seqlen, hidden_dim, epoch;
+                         fileprefix::AbstractString="LstmTradeSignalModel")
+
+Persist the current LSTM training state to a BSON checkpoint file and return the
+full checkpoint path.
+"""
+function save_lstm_checkpoint(model, optim, losses, eval_losses, labels, seqlen::Int, hidden_dim::Int, epoch::Int;
+    fileprefix::AbstractString="LstmTradeSignalModel")
+    checkpointfile = lstm_checkpoint_filename(fileprefix)
+    checkpoint = (
+        model=model,
+        optim=optim,
+        losses=copy(losses),
+        eval_losses=copy(eval_losses),
+        labels=copy(labels),
+        seqlen=seqlen,
+        hidden_dim=hidden_dim,
+        epoch=epoch,
+        savedat=Dates.now(),
+    )
+    (verbosity >= 2) && println("$(EnvConfig.now()) saving LSTM checkpoint epoch=$(epoch) to $(checkpointfile)")
+    BSON.@save checkpointfile checkpoint
+    return checkpointfile
+end
+
+"""
+Compute the mean LSTM loss over a set of windows while materializing only one
+batch at a time.
+"""
+function _mean_lstm_trade_signal_loss(model, lossfunc, contract::LstmBoundsTrendFeatures, windowindex,
+    sampleix::AbstractVector{<:Integer}, trade_labels::Vector{String}, batchsize::Int)::Float32
+    isempty(sampleix) && return NaN32
+
+    total_loss = 0f0
+    total_count = 0
+    for start in 1:batchsize:length(sampleix)
+        stop = min(start + batchsize - 1, length(sampleix))
+        batch_ix = sampleix[start:stop]
+        x_batch = _lstm_window_tensor(contract, windowindex, batch_ix)
+        y_batch = Flux.onehotbatch(windowindex.targets[batch_ix], trade_labels)
+        Flux.testmode!(model)
+        Flux.reset!(model)
+        ŷ = model(x_batch)
+        ŷ_final = ŷ[:, end, :]
+        batch_loss = Float32(lossfunc(ŷ_final, y_batch))
+        count = length(batch_ix)
+        total_loss += batch_loss * count
+        total_count += count
+    end
+
+    return total_count == 0 ? NaN32 : total_loss / total_count
+end
+
+"""
+    train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int;
+                              hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64,
+                              labels=nothing, fileprefix::AbstractString="LstmTradeSignalModel")
 
 Train an LSTM trade signal classifier on contract data.
 
-Follows the same training pattern as `adaptnn!()` in Classify:
-- Uses Flux.DataLoader for batching with automatic shuffling
-- Loss function: logitcrossentropy (expects raw logits, one-hot targets)
-- Optimizer: Adam(0.001, (0.9, 0.999)) with stateful optimizer state
-- Convergence: Stops if 5 consecutive epochs show non-decreasing loss
-- **Saves model after every epoch** to BSON for recovery
+The training loop keeps memory bounded by materializing only the current batch of
+sliding windows instead of building duplicated full-dataset tensors.
 
 # Arguments
 - `contract::LstmBoundsTrendFeatures`: Contract with features, targets, sets
@@ -166,9 +225,11 @@ Follows the same training pattern as `adaptnn!()` in Classify:
 - `hidden_dim::Int`: LSTM hidden dimension (default: 32)
 - `maxepoch::Int`: Maximum training epochs (default: 1000)
 - `batchsize::Int`: Training batch size (default: 64)
+- `labels`: Optional explicit class label order
+- `fileprefix::AbstractString`: Checkpoint filename prefix in the current log folder
 
 # Returns
-- `model_state::NamedTuple`: `(model=trained_model, optim=optimizer_state, losses=loss_history, labels=classes)`
+- `model_state::NamedTuple`: `(model=trained_model, optim=optimizer_state, losses=loss_history, eval_losses=eval_loss_history, labels=classes, checkpointfile=path)`
 
 # Example
 ```julia
@@ -176,20 +237,20 @@ windows = Classify.lstm_tensor_windows(contract; seqlen=3)
 result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=32)
 # result.model is trained for prediction
 # result.losses is vector of epoch mean losses
+# result.checkpointfile points to the saved BSON checkpoint
 ```
 """
-function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int; 
-    hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64, labels::Union{Nothing,Vector{String}}=nothing)
-    
-    # Build sliding windows
-    windows = lstm_tensor_windows(contract; seqlen=seqlen)
-    X = windows.X  # (nfeatures, seqlen, nbatch)
-    targets = windows.targets  # String labels per window
-    sets = windows.sets  # "train", "eval", "test"
-    
-    @assert size(X, 3) > 0 "No training windows generated; check contract and seqlen"
-    
-    nfeatures = size(X, 1)
+function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int;
+    hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64,
+    labels::Union{Nothing,Vector{String}}=nothing, fileprefix::AbstractString="LstmTradeSignalModel")
+
+    windowindex = _lstm_window_index(contract; seqlen=seqlen)
+    targets = windowindex.targets
+    sets = windowindex.sets
+
+    @assert !isempty(windowindex.endpos) "No training windows generated; check contract and seqlen"
+
+    nfeatures = windowindex.nfeatures
     labelorder = Dict(
         "longbuy" => 1,
         "longhold" => 2,
@@ -201,79 +262,105 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
     )
     trade_labels = isnothing(labels) ? sort(unique(String.(targets)); by=label -> get(labelorder, label, length(labelorder) + 1)) : String.(labels)
     @assert length(trade_labels) >= 2 "trade_labels must contain at least 2 classes; got trade_labels=$(trade_labels)"
-    
-    # Initialize model and optimizer
+
     model, _ = lstm_trade_signal_model(nfeatures, seqlen, hidden_dim; labels=trade_labels)
     optim = Flux.setup(Flux.Adam(0.001, (0.9, 0.999)), model)
-    
-    # Partition into train/eval sets
-    train_mask = sets .== "train"
-    eval_mask = sets .== "eval"
-    
-    X_train = X[:, :, train_mask]  # (nfeatures, seqlen, ntrain)
-    y_train = targets[train_mask]   # Vector of train labels
-    
-    X_eval = X[:, :, eval_mask]
-    y_eval = targets[eval_mask]
-    
-    @assert size(X_train, 3) > 0 "No training samples in contract; check set partitioning"
-    (verbosity >= 2) && println("$(EnvConfig.now()) LSTM training with $(size(X_train, 3)) training samples, $(size(X_eval, 3)) eval samples")
-    
-    # Convert targets to one-hot
-    y_train_onehot = Flux.onehotbatch(y_train, trade_labels)  # (nclasses, ntrain)
-    y_eval_onehot = Flux.onehotbatch(y_eval, trade_labels)    # (nclasses, neval)
-    
-    # Create DataLoader for training
-    loader = Flux.DataLoader((X_train, y_train_onehot), batchsize=batchsize, shuffle=true)
-    
+
+    train_ix = findall(==("train"), sets)
+    eval_ix = findall(==("eval"), sets)
+
+    @assert !isempty(train_ix) "No training samples in contract; check set partitioning"
+    (verbosity >= 2) && println("$(EnvConfig.now()) LSTM training with $(length(train_ix)) training samples, $(length(eval_ix)) eval samples")
+
+    batchsize = max(1, batchsize)
     lossfunc = Flux.logitcrossentropy
     losses = Float32[]
     eval_losses = Float32[]
-    
+    shuffled_train_ix = copy(train_ix)
+
     Flux.trainmode!(model)
-    testmode_original = false  # Track if we were in test mode initially
-    
+    checkpointfile = lstm_checkpoint_filename(fileprefix)
+
     @showprogress for epoch in 1:maxepoch
-        # Training loop
-        epoch_losses = Float32[]
-        for (x_batch, y_batch) in loader
+        Random.shuffle!(shuffled_train_ix)
+        epoch_loss_sum = 0f0
+        epoch_count = 0
+
+        for start in 1:batchsize:length(shuffled_train_ix)
+            stop = min(start + batchsize - 1, length(shuffled_train_ix))
+            batch_ix = shuffled_train_ix[start:stop]
+            x_batch = _lstm_window_tensor(contract, windowindex, batch_ix)
+            y_batch = Flux.onehotbatch(targets[batch_ix], trade_labels)
+
+            Flux.reset!(model)
             loss, grads = Flux.withgradient(model) do m
-                ŷ = m(x_batch)  # (nclasses, seqlen, batch) → we take last timestep
-                ŷ_final = ŷ[:, end, :]  # Take final timestep: (nclasses, batch)
+                ŷ = m(x_batch)
+                ŷ_final = ŷ[:, end, :]
                 lossfunc(ŷ_final, y_batch)
             end
             Flux.update!(optim, model, grads[1])
-            push!(epoch_losses, loss)
+
+            count = length(batch_ix)
+            epoch_loss_sum += Float32(loss) * count
+            epoch_count += count
         end
-        
-        # Compute epoch loss
-        epoch_loss = mean(epoch_losses)
+
+        epoch_loss = epoch_count == 0 ? NaN32 : epoch_loss_sum / epoch_count
         push!(losses, epoch_loss)
-        
-        # Evaluate on eval set
-        Flux.testmode!(model)
-        ŷ_eval = model(X_eval)  # (nclasses, seqlen, neval)
-        ŷ_eval_final = ŷ_eval[:, end, :]  # (nclasses, neval)
-        eval_loss = lossfunc(ŷ_eval_final, y_eval_onehot)
+
+        eval_loss = isempty(eval_ix) ? epoch_loss : _mean_lstm_trade_signal_loss(model, lossfunc, contract, windowindex, eval_ix, trade_labels, batchsize)
         push!(eval_losses, eval_loss)
         Flux.trainmode!(model)
-        
+
         if (verbosity >= 3)
             println("Epoch $epoch: train_loss=$(round(epoch_loss; digits=4)) eval_loss=$(round(eval_loss; digits=4))")
         end
-        
-        # Convergence check: 5 consecutive epochs of non-decreasing loss
-        if length(losses) > 5 && 
+
+        checkpointfile = save_lstm_checkpoint(model, optim, losses, eval_losses, trade_labels, seqlen, hidden_dim, epoch; fileprefix=fileprefix)
+
+        if length(losses) > 5 &&
            losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end]
             (verbosity >= 2) && println("Converged at epoch $epoch (5 consecutive non-decreasing loss epochs)")
             break
         end
     end
-    
+
     Flux.testmode!(model)
-    (verbosity >= 2) && println("$(EnvConfig.now()) LSTM training complete with $(length(losses)) epochs")
-    
-    return (model=model, optim=optim, losses=losses, eval_losses=eval_losses, labels=trade_labels)
+    (verbosity >= 2) && println("$(EnvConfig.now()) LSTM training complete with $(length(losses)) epochs; checkpoint=$(checkpointfile)")
+
+    return (model=model, optim=optim, losses=losses, eval_losses=eval_losses, labels=trade_labels, checkpointfile=checkpointfile)
+end
+
+"""
+    predict_lstm_trade_signals(model, contract::LstmBoundsTrendFeatures; seqlen::Int,
+                               batchsize::Int=1024)
+
+Predict trade-signal probabilities for all windows in `contract` while only
+materializing one batch at a time.
+
+Returns `(probs, targets, sets, rangeids, endrix)` with metadata aligned to the
+columns of `probs`.
+"""
+function predict_lstm_trade_signals(model, contract::LstmBoundsTrendFeatures; seqlen::Int, batchsize::Int=1024)
+    windowindex = _lstm_window_index(contract; seqlen=seqlen)
+    nwindows = length(windowindex.endpos)
+    if nwindows == 0
+        return (probs=Array{Float32, 2}(undef, 0, 0), targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
+    end
+
+    batchsize = max(1, batchsize)
+    probs = Array{Float32, 2}(undef, 0, 0)
+    for start in 1:batchsize:nwindows
+        stop = min(start + batchsize - 1, nwindows)
+        x_batch = _lstm_window_tensor(contract, windowindex, start:stop)
+        batch_probs = predict_lstm_trade_signals(model, x_batch)
+        if size(probs, 1) == 0
+            probs = Array{Float32, 2}(undef, size(batch_probs, 1), nwindows)
+        end
+        probs[:, start:stop] .= batch_probs
+    end
+
+    return (probs=probs, targets=windowindex.targets, sets=windowindex.sets, rangeids=windowindex.rangeids, endrix=windowindex.endrix)
 end
 
 """
@@ -303,12 +390,13 @@ argmax(probs; dims=1)  # Predicted class per sample
 """
 function predict_lstm_trade_signals(model, X::Array{Float32,3})::Array{Float32,2}
     @assert size(X, 1) > 0 && size(X, 2) > 0 && size(X, 3) > 0 "Invalid input shape: $X"
-    
+
     Flux.testmode!(model)
+    Flux.reset!(model)
     ŷ = model(X)  # (nclasses, seqlen, batch)
     ŷ_final = ŷ[:, end, :]  # Take final timestep: (nclasses, batch)
     probs = softmax(ŷ_final; dims=1)  # Apply softmax per sample
-    
+
     return probs
 end
 
