@@ -1131,30 +1131,39 @@ function read!(f6::Features006)::DataFrame
         return emptycachef006()
     end
     fn = file(f6)
+    requestedf4cols = String["opentime"]
+    for f in f6all(f6)
+        if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
+            push!(requestedf4cols, _f4regrcol(f6, f.w, f.f))
+        end
+    end
     # try
-    if fn.existing
+    df = _read_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin; columns=requestedf4cols)
+    if size(df, 1) > 0
+        (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df))")
+    elseif fn.existing
         (verbosity >= 3) && println("$(EnvConfig.now()) start loading f6 data of $(f6.ohlcv.base) from $(fn.filename)")
         df = DataFrame(JDF.loadjdf(fn.filename))
         (verbosity >= 2) && println("$(EnvConfig.now()) loaded f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df)) from $(fn.filename)")
-        if size(df, 1) == 0
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(fn.filename)")
-            df = emptycachef006()
-        else
-            fdfno = DataFrame()
-            for f in f6all(f6)
-                if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
-                    f4col = _f4regrcol(f6, f.w, f.f)
-                    f6col = fdfnocol(f6, f)
-                    fdfno[:, f6col] = df[!, f4col]
-                end
-            end
-            if size(df, 2) > 0
-                fdfno[:, "opentime"] = df[!, "opentime"]
+    else
+        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow copy for $(f6.ohlcv.base)")
+        df = emptycachef006()
+    end
+
+    if size(df, 1) == 0
+        fdfno = emptycachef006()
+    else
+        fdfno = DataFrame()
+        for f in f6all(f6)
+            if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
+                f4col = _f4regrcol(f6, f.w, f.f)
+                f6col = fdfnocol(f6, f)
+                fdfno[:, f6col] = df[!, f4col]
             end
         end
-    else
-        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
-        fdfno = emptycachef006()
+        if size(df, 2) > 0
+            fdfno[:, "opentime"] = df[!, "opentime"]
+        end
     end
     f6.fdfno = fdfno
     # catch e
@@ -1691,7 +1700,9 @@ function write(f5::Features005)
         end
         try
             JDF.savejdf(fn.filename, df[!, :])
+            arrowpaths = _write_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin, df)
             (verbosity >= 2) && println("$(EnvConfig.now()) saved F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
+            (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved $(length(arrowpaths)) shared F4 Arrow column files for $(f5.ohlcv.base)")
             f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
         catch e
             Logging.@error "exception $e detected when writing $(fn.filename)"
@@ -1708,9 +1719,34 @@ function read!(f5::Features005)::DataFrame
         return emptycachef005()
     end
     fn = file(f5)
+    requestedcols = String[]
+    for configrow in eachrow(f5.cfgdf)
+        if configrow.save
+            push!(requestedcols, configrow.first == "opentime" ? "opentime" : join([string(configrow.second), string(configrow.third)], "_"))
+        end
+    end
     # try
     f5.complete = true
-    if fn.existing
+    df = _read_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin; columns=requestedcols)
+    if size(df, 1) > 0
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared F4 Arrow data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows")
+            startix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[begin, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? firstindex(df[!, :opentime]) : nothing
+            endix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[end, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? lastindex(df[!, :opentime]) : nothing
+            if !isnothing(startix)
+                if isnothing(endix) # df[begin] is inside and df[end] is outside ohlcv time range
+                    endix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[end, :opentime])
+                    df = df[startix:endix, :]
+                # else no df change
+                end
+            else
+                if !isnothing(endix) # df[begin] is outside and df[end] is inside ohlcv time range
+                    startix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[begin, :opentime])
+                    df = df[startix:endix, :]
+                else # both df[begin] and df[end] are outside ohlcv time range
+                    df = emptycachef005()
+                end
+            end
+    elseif fn.existing
             (verbosity >= 3) && println("$(EnvConfig.now()) start loading F5 data of $(f5.ohlcv.base) from $(fn.filename)")
             df = DataFrame(JDF.loadjdf(fn.filename))
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
@@ -1736,7 +1772,7 @@ function read!(f5::Features005)::DataFrame
                 end
             end
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow copy for $(f5.ohlcv.base)")
             df = emptycachef005()
         end
         f5.fdf = df

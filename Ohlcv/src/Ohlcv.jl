@@ -606,6 +606,22 @@ function file(ohlcv::OhlcvData)
     end
 end
 
+"""Write a non-destructive Arrow copy of shared OHLCV data to `coins/<pair>/ohlcv.arrow`."""
+function write_arrow(ohlcv::OhlcvData)
+    if !(ohlcv.df isa DataFrame) || (size(ohlcv.df, 1) == 0)
+        return nothing
+    end
+    folderpath = EnvConfig.coinfolderpath(ohlcv.base, ohlcv.quotecoin)
+    return EnvConfig.savedf(ohlcv.df[!, save_cols], "ohlcv"; folderpath=folderpath, format=:arrow)
+end
+
+"""Read a shared Arrow OHLCV copy from `coins/<pair>/ohlcv.arrow`, if available."""
+function read_arrow(ohlcv::OhlcvData)
+    folderpath = EnvConfig.coinfolderpath(ohlcv.base, ohlcv.quotecoin)
+    df = EnvConfig.readdf("ohlcv"; folderpath=folderpath, format=:arrow)
+    return isnothing(df) ? DataFrame() : DataFrame(df)
+end
+
 function write(ohlcv::OhlcvData)
     if !isnothing(ohlcv.latestloadeddt) && (size(ohlcv.df, 1) > 0) && (ohlcv.latestloadeddt >= ohlcv.df[end, :opentime])
         (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
@@ -618,8 +634,10 @@ function write(ohlcv::OhlcvData)
     fn = file(ohlcv)
     try
         JDF.savejdf(fn.filename, ohlcv.df[!, save_cols])  # without :pivot
+        arrowpath = write_arrow(ohlcv)
         df = ohlcv.df
         (verbosity >= 2) && println("$(EnvConfig.now()) saved $(fn.filename) of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+        (verbosity >= 3) && !isnothing(arrowpath) && println("$(EnvConfig.now()) saved shared OHLCV Arrow copy to $(arrowpath)")
     catch e
         Logging.@error "exception $e detected"
     end
@@ -629,13 +647,18 @@ function read!(ohlcv::OhlcvData)::OhlcvData
     fn = file(ohlcv)
     df = DataFrame()
     try
-        if fn.existing
+        shareddf = read_arrow(ohlcv)
+        if size(shareddf, 1) > 0
+            df = shareddf
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared OHLCV Arrow data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
+            ohlcv.latestloadeddt = df[end, :opentime]
+        elseif fn.existing
             (verbosity >= 3) && println("$(EnvConfig.now()) loading OHLCV data of $(ohlcv.base) from  $(fn.filename)")
             df = DataFrame(JDF.loadjdf(fn.filename))
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(size(df, 1) > 0 ? df[1, :opentime] : "N/A due to empty") until $(size(df, 1) > 0 ? df[end, :opentime] : "N/A due to empty") with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
             ohlcv.latestloadeddt = size(df, 1) > 0 ? df[end, :opentime] : nothing
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared Arrow copy for $(ohlcv.base)")
         end
     catch e
         Logging.@error "exception $e detected"

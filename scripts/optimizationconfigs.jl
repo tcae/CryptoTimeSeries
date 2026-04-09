@@ -10,8 +10,8 @@ featuresfilename(coin=nothing) = isnothing(coin) ? "features.jdf" : "features_$c
 predictionsfilename() = "maxpredictions.jdf"
 confusionfilename() = "confusion.jdf"
 xconfusionfilename() = "xconfusion.jdf"
-distancesfilename() = "distances.jdf"
-gainsfilename() = "gains.jdf"
+distancesfilename() = joinpath("trades", "distances.jdf")
+gainsfilename() = joinpath("trades", "gains_all.jdf")
 targetissuesfilename() = "targetissues.jdf"
 
 tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm01!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
@@ -309,7 +309,7 @@ mk028 = mk009 without oversampling
 mk028config() = (configname="028", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 
 """   
-mk029 = mk009 without oversamplingbut implementation for hold equally strict than for buy (no config change)
+mk029 = mk009 without oversampling but implementation for hold equally strict than for buy (no config change)
 """
 mk029config() = (configname="029", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 

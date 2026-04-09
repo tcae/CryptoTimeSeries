@@ -198,6 +198,7 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
         featuresdf = EnvConfig.readdf(featuresfilename())
         @assert isnothing(resultsdf) == isnothing(featuresdf) "unexpected mismatch of resultsdf and featuresdf existence with resultsdf existence $(isnothing(resultsdf)) and featuresdf existence $(isnothing(featuresdf))"
         if !isnothing(resultsdf) && (:sampleix in propertynames(resultsdf))
+            resultsdf = DataFrame(resultsdf)
             select!(resultsdf, Not(:sampleix))
             EnvConfig.savedf(resultsdf, resultsfilename())
         end
@@ -215,6 +216,7 @@ function getfeaturestargetsdf(cfg::BoundsEstimatorConfig)
             featuresdf = nothing
         elseif !isnothing(resultsdf)
             if :bounds_target_format in propertynames(resultsdf)
+                resultsdf = DataFrame(resultsdf)
                 select!(resultsdf, Not(:bounds_target_format))
                 EnvConfig.savedf(resultsdf, resultsfilename())
             end
@@ -425,6 +427,7 @@ function getboundspredictionsdf(cfg::BoundsEstimatorConfig)
         @assert EnvConfig.isfolder(resultsfilename()) "unexpected missing resultsfile"
         resultsdf = EnvConfig.readdf(resultsfilename())
         if !isnothing(resultsdf)
+            resultsdf = DataFrame(resultsdf)
             cleaned = false
             if :bounds_target_format in propertynames(resultsdf)
                 select!(resultsdf, Not(:bounds_target_format))

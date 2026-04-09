@@ -221,15 +221,15 @@ function calckpi!(kpidf, tradedf, assets, rkeys, trendrwfactors, buygainthreshol
 end
 
 const VOLATILITYSTUDYKPIFILE = "volatilitykpi.csv"
-const VOLATILITYSTUDYTRADEFILE = "volatilitytrades.jdf"
+const VOLATILITYSTUDYTRADEFILE = "volatilitytrades"
 
 function loadstudy()
     df = DataFrame()
     try
-        # kpifilename = EnvConfig.logpath(VOLATILITYSTUDYKPIFILE)
-        tradefilename = EnvConfig.logpath(VOLATILITYSTUDYTRADEFILE)
-        if isdir(tradefilename)
-            df = DataFrame(JDF.loadjdf(tradefilename))
+        tradefilename = EnvConfig.tablepath(VOLATILITYSTUDYTRADEFILE; format=:auto)
+        loaded = EnvConfig.readdf(VOLATILITYSTUDYTRADEFILE)
+        if !isnothing(loaded)
+            df = loaded
             println("loaded trade data of assets $(unique(df[!, :asset])) with size $(size(df)) from $tradefilename")
         else
             println("no data found for $tradefilename")
@@ -241,11 +241,11 @@ function loadstudy()
 end
 
 function savestudy(tradedf)
-    tradefilename = EnvConfig.logpath(VOLATILITYSTUDYTRADEFILE)
+    tradefilename = EnvConfig.tablepath(VOLATILITYSTUDYTRADEFILE; format=:auto)
     EnvConfig.savebackup(tradefilename)
     try
-        JDF.savejdf(tradefilename, tradedf)
-        println("$(EnvConfig.now()) saved tradedf as $tradefilename with size $(size(tradedf, 1)) of assets $(unique(tradedf[!, :asset]))")
+        filepath = EnvConfig.savedf(tradedf, VOLATILITYSTUDYTRADEFILE)
+        println("$(EnvConfig.now()) saved tradedf as $filepath with size $(size(tradedf, 1)) of assets $(unique(tradedf[!, :asset]))")
     catch e
         Logging.@warn "$(EnvConfig.now()) exception $e detected when saving $tradefilename with df size=$(size(tradedf))"
     end

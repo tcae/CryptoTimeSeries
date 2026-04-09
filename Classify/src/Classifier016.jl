@@ -163,22 +163,88 @@ Persist the current LSTM training state to a BSON checkpoint file and return the
 full checkpoint path.
 """
 function save_lstm_checkpoint(model, optim, losses, eval_losses, labels, seqlen::Int, hidden_dim::Int, epoch::Int;
-    fileprefix::AbstractString="LstmTradeSignalModel")
+    fileprefix::AbstractString="LstmTradeSignalModel", nfeatures::Int)
     checkpointfile = lstm_checkpoint_filename(fileprefix)
-    checkpoint = (
-        model=model,
-        optim=optim,
-        losses=copy(losses),
-        eval_losses=copy(eval_losses),
-        labels=copy(labels),
-        seqlen=seqlen,
-        hidden_dim=hidden_dim,
-        epoch=epoch,
-        savedat=Dates.now(),
+    checkpoint = Dict{Symbol, Any}(
+        :checkpoint_version => 2,
+        :model_state => Flux.state(model),
+        :losses => Float32.(losses),
+        :eval_losses => Float32.(eval_losses),
+        :labels => String.(labels),
+        :nfeatures => nfeatures,
+        :seqlen => seqlen,
+        :hidden_dim => hidden_dim,
+        :epoch => epoch,
+        :savedat => Dates.now(),
     )
     (verbosity >= 2) && println("$(EnvConfig.now()) saving LSTM checkpoint epoch=$(epoch) to $(checkpointfile)")
     BSON.@save checkpointfile checkpoint
     return checkpointfile
+end
+
+"Return the normalized contents of a safe versioned LSTM checkpoint dictionary."
+function _normalize_lstm_checkpoint(checkpoint)
+    checkpoint isa AbstractDict || return nothing
+    required = (:checkpoint_version, :model_state, :losses, :eval_losses, :labels, :nfeatures, :seqlen, :hidden_dim, :epoch)
+    all(key -> haskey(checkpoint, key), required) || return nothing
+    return (
+        checkpoint_version = Int(checkpoint[:checkpoint_version]),
+        model_state = checkpoint[:model_state],
+        losses = Float32.(checkpoint[:losses]),
+        eval_losses = Float32.(checkpoint[:eval_losses]),
+        labels = String.(checkpoint[:labels]),
+        nfeatures = Int(checkpoint[:nfeatures]),
+        seqlen = Int(checkpoint[:seqlen]),
+        hidden_dim = Int(checkpoint[:hidden_dim]),
+        epoch = Int(checkpoint[:epoch]),
+        savedat = get(checkpoint, :savedat, missing),
+    )
+end
+
+"""
+    load_lstm_checkpoint(fileprefix::AbstractString="LstmTradeSignalModel")
+
+Load the saved LSTM training checkpoint from the active log folder and return
+it as a normalized named tuple, or `nothing` if no checkpoint exists yet.
+Legacy BSON object-graph checkpoints are ignored rather than deserialized,
+because they can crash newer Julia/Flux/BSON combinations.
+"""
+function load_lstm_checkpoint(fileprefix::AbstractString="LstmTradeSignalModel")
+    checkpointfile = lstm_checkpoint_filename(fileprefix)
+    isfile(checkpointfile) || return nothing
+
+    raw = nothing
+    try
+        raw = BSON.parse(checkpointfile)
+    catch e
+        @warn "Ignoring unreadable LSTM checkpoint at $(checkpointfile); starting fresh" exception=e
+        return nothing
+    end
+
+    rawcheckpoint = get(raw, :checkpoint, nothing)
+    if isnothing(rawcheckpoint)
+        @warn "Ignoring malformed LSTM checkpoint at $(checkpointfile); missing :checkpoint payload"
+        return nothing
+    end
+    if (rawcheckpoint isa AbstractDict) && !haskey(rawcheckpoint, :checkpoint_version)
+        @warn "Ignoring legacy LSTM checkpoint at $(checkpointfile); it uses the older BSON object-graph format that is unsafe in the current environment"
+        return nothing
+    end
+
+    checkpoint = nothing
+    try
+        BSON.@load checkpointfile checkpoint
+    catch e
+        @warn "Ignoring unreadable LSTM checkpoint at $(checkpointfile); starting fresh" exception=e
+        return nothing
+    end
+
+    normalized = _normalize_lstm_checkpoint(checkpoint)
+    if isnothing(normalized)
+        @warn "Ignoring malformed LSTM checkpoint at $(checkpointfile); required fields are missing"
+        return nothing
+    end
+    return normalized
 end
 
 """
@@ -197,7 +263,7 @@ function _mean_lstm_trade_signal_loss(model, lossfunc, contract::LstmBoundsTrend
         x_batch = _lstm_window_tensor(contract, windowindex, batch_ix)
         y_batch = Flux.onehotbatch(windowindex.targets[batch_ix], trade_labels)
         Flux.testmode!(model)
-        Flux.reset!(model)
+        # Flux.reset!(model) # reset!(m) is deprecated. You can remove this call as it is no more needed.
         ŷ = model(x_batch)
         ŷ_final = ŷ[:, end, :]
         batch_loss = Float32(lossfunc(ŷ_final, y_batch))
@@ -212,12 +278,15 @@ end
 """
     train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int;
                               hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64,
-                              labels=nothing, fileprefix::AbstractString="LstmTradeSignalModel")
+                              labels=nothing, fileprefix::AbstractString="LstmTradeSignalModel",
+                              resume::Bool=true)
 
 Train an LSTM trade signal classifier on contract data.
 
 The training loop keeps memory bounded by materializing only the current batch of
-sliding windows instead of building duplicated full-dataset tensors.
+sliding windows instead of building duplicated full-dataset tensors. When
+`resume=true`, an existing checkpoint with the same `fileprefix` is reused so a
+stopped run can continue from its last completed epoch.
 
 # Arguments
 - `contract::LstmBoundsTrendFeatures`: Contract with features, targets, sets
@@ -227,6 +296,7 @@ sliding windows instead of building duplicated full-dataset tensors.
 - `batchsize::Int`: Training batch size (default: 64)
 - `labels`: Optional explicit class label order
 - `fileprefix::AbstractString`: Checkpoint filename prefix in the current log folder
+- `resume::Bool`: Resume from an existing compatible checkpoint when available
 
 # Returns
 - `model_state::NamedTuple`: `(model=trained_model, optim=optimizer_state, losses=loss_history, eval_losses=eval_loss_history, labels=classes, checkpointfile=path)`
@@ -242,7 +312,8 @@ result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=32)
 """
 function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int;
     hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64,
-    labels::Union{Nothing,Vector{String}}=nothing, fileprefix::AbstractString="LstmTradeSignalModel")
+    labels::Union{Nothing,Vector{String}}=nothing, fileprefix::AbstractString="LstmTradeSignalModel",
+    resume::Bool=true)
 
     windowindex = _lstm_window_index(contract; seqlen=seqlen)
     targets = windowindex.targets
@@ -263,8 +334,39 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
     trade_labels = isnothing(labels) ? sort(unique(String.(targets)); by=label -> get(labelorder, label, length(labelorder) + 1)) : String.(labels)
     @assert length(trade_labels) >= 2 "trade_labels must contain at least 2 classes; got trade_labels=$(trade_labels)"
 
-    model, _ = lstm_trade_signal_model(nfeatures, seqlen, hidden_dim; labels=trade_labels)
-    optim = Flux.setup(Flux.Adam(0.001, (0.9, 0.999)), model)
+    checkpointfile = lstm_checkpoint_filename(fileprefix)
+    checkpoint = resume ? load_lstm_checkpoint(fileprefix) : nothing
+    checkpoint_compatible = !isnothing(checkpoint) &&
+        Int(checkpoint.nfeatures) == nfeatures &&
+        Int(checkpoint.seqlen) == seqlen &&
+        Int(checkpoint.hidden_dim) == hidden_dim &&
+        String.(checkpoint.labels) == trade_labels
+
+    if checkpoint_compatible
+        model, _ = lstm_trade_signal_model(nfeatures, seqlen, hidden_dim; labels=trade_labels)
+        try
+            Flux.loadmodel!(model, checkpoint.model_state)
+            losses = Float32.(checkpoint.losses)
+            eval_losses = Float32.(checkpoint.eval_losses)
+            start_epoch = Int(checkpoint.epoch)
+            optim = Flux.setup(Flux.Adam(0.001, (0.9, 0.999)), model)
+            (verbosity >= 2) && println("$(EnvConfig.now()) resuming LSTM checkpoint from epoch=$(start_epoch) at $(checkpointfile)")
+        catch e
+            checkpoint_compatible = false
+            @warn "Ignoring incompatible LSTM checkpoint state at $(checkpointfile); starting fresh" exception=e
+        end
+    end
+
+    if !checkpoint_compatible
+        if !isnothing(checkpoint)
+            @warn "Ignoring incompatible LSTM checkpoint at $(checkpointfile); requested nfeatures=$(nfeatures), seqlen=$(seqlen), hidden_dim=$(hidden_dim), labels=$(trade_labels), checkpoint nfeatures=$(checkpoint.nfeatures), seqlen=$(checkpoint.seqlen), hidden_dim=$(checkpoint.hidden_dim), labels=$(String.(checkpoint.labels))"
+        end
+        model, _ = lstm_trade_signal_model(nfeatures, seqlen, hidden_dim; labels=trade_labels)
+        optim = Flux.setup(Flux.Adam(0.001, (0.9, 0.999)), model)
+        losses = Float32[]
+        eval_losses = Float32[]
+        start_epoch = 0
+    end
 
     train_ix = findall(==("train"), sets)
     eval_ix = findall(==("eval"), sets)
@@ -274,14 +376,11 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
 
     batchsize = max(1, batchsize)
     lossfunc = Flux.logitcrossentropy
-    losses = Float32[]
-    eval_losses = Float32[]
     shuffled_train_ix = copy(train_ix)
 
     Flux.trainmode!(model)
-    checkpointfile = lstm_checkpoint_filename(fileprefix)
 
-    @showprogress for epoch in 1:maxepoch
+    @showprogress for epoch in (start_epoch + 1):maxepoch
         Random.shuffle!(shuffled_train_ix)
         epoch_loss_sum = 0f0
         epoch_count = 0
@@ -292,7 +391,7 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
             x_batch = _lstm_window_tensor(contract, windowindex, batch_ix)
             y_batch = Flux.onehotbatch(targets[batch_ix], trade_labels)
 
-            Flux.reset!(model)
+            # Flux.reset!(model) # reset!(m) is deprecated. You can remove this call as it is no more needed.
             loss, grads = Flux.withgradient(model) do m
                 ŷ = m(x_batch)
                 ŷ_final = ŷ[:, end, :]
@@ -316,7 +415,7 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
             println("Epoch $epoch: train_loss=$(round(epoch_loss; digits=4)) eval_loss=$(round(eval_loss; digits=4))")
         end
 
-        checkpointfile = save_lstm_checkpoint(model, optim, losses, eval_losses, trade_labels, seqlen, hidden_dim, epoch; fileprefix=fileprefix)
+        checkpointfile = save_lstm_checkpoint(model, optim, losses, eval_losses, trade_labels, seqlen, hidden_dim, epoch; fileprefix=fileprefix, nfeatures=nfeatures)
 
         if length(losses) > 5 &&
            losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end]
@@ -392,7 +491,7 @@ function predict_lstm_trade_signals(model, X::Array{Float32,3})::Array{Float32,2
     @assert size(X, 1) > 0 && size(X, 2) > 0 && size(X, 3) > 0 "Invalid input shape: $X"
 
     Flux.testmode!(model)
-    Flux.reset!(model)
+    # Flux.reset!(model) # reset!(m) is deprecated. You can remove this call as it is no more needed.
     ŷ = model(X)  # (nclasses, seqlen, batch)
     ŷ_final = ŷ[:, end, :]  # Take final timestep: (nclasses, batch)
     probs = softmax(ŷ_final; dims=1)  # Apply softmax per sample

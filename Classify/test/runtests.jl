@@ -10,6 +10,7 @@ using Classify, Features, Targets
 include("setpartitions_test.jl")
 include("lstm_contract_test.jl")
 include("lstm_phase2_training_test.jl")
+include("storage_format_test.jl")
 
 
 @testset "Classify tests" begin

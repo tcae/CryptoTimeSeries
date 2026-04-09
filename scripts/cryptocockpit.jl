@@ -155,6 +155,16 @@ function _root_logfolder()
     return root
 end
 
+function _config_tableexists(folder::AbstractString, filename::AbstractString)
+    folderpath = joinpath(_root_logfolder(), folder)
+    return EnvConfig.tableexists(filename; folderpath=folderpath, format=:auto)
+end
+
+function _load_cockpit_f4(ohlcv::Ohlcv.OhlcvData)
+    f4 = Features.Features004(ohlcv; usecache=true)
+    return isnothing(f4) ? Features.Features004(ohlcv.base, ohlcv.quotecoin) : f4
+end
+
 function _has_cached_output(kind::Symbol, sym::Symbol)
     try
         cfg = getfield(@__MODULE__, sym)()
@@ -163,7 +173,7 @@ function _has_cached_output(kind::Symbol, sym::Symbol)
                 folder = _config_subfolder("Trend", cfg, mode)
                 _with_log_subfolder(folder) do
                     model = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), "mix")
-                    isfile(Classify.nnfilename(model.fileprefix)) || isfile(joinpath(_root_logfolder(), folder, "results.jdf"))
+                    isfile(Classify.nnfilename(model.fileprefix)) || _config_tableexists(folder, "results")
                 end
             end
         elseif kind == :bounds
@@ -171,13 +181,13 @@ function _has_cached_output(kind::Symbol, sym::Symbol)
                 folder = _config_subfolder("Bounds", cfg, mode)
                 _with_log_subfolder(folder) do
                     model = cfg.regressormodel(Features.featurecount(cfg.featconfig), ["center", "width"], "mix_relative_v1")
-                    isfile(Classify.nnfilename(model.fileprefix)) || isfile(joinpath(_root_logfolder(), folder, "maxpredictions.jdf"))
+                    isfile(Classify.nnfilename(model.fileprefix)) || _config_tableexists(folder, "maxpredictions")
                 end
             end
         elseif kind == :tradeadvice
             root = _root_logfolder()
-            return any(mode -> isfile(joinpath(root, _config_subfolder("TradeAdviceLstm", cfg, mode), "lstm_predictions.jdf")), _cockpit_model_modes()) ||
-                   isfile(joinpath(root, "lstm_predictions.jdf"))
+            return any(mode -> EnvConfig.tableexists("lstm_predictions"; folderpath=joinpath(root, _config_subfolder("TradeAdviceLstm", cfg, mode)), format=:auto), _cockpit_model_modes()) ||
+                   EnvConfig.tableexists("lstm_predictions"; folderpath=root, format=:auto)
         end
     catch err
         @debug "skipping config without usable cache" kind sym exception=(err, catch_backtrace())
@@ -229,10 +239,11 @@ end
 function loadohlcv!(cp, base, interval)
     if !(base in keys(cp.coin))
         ohlcv = CryptoXch.ohlcv(cp.tc.xc, base)
-        f4 = cp.tc.cl.bc[base].f4                      #* this is a Classifier011 hack !!!!! any other classifier in tc will derail it
         cp.coin[base] = CoinData(Dict(), nothing)
         cp.coin[base].ohlcv["1m"] = ohlcv
-        cp.coin[base].f4 = f4
+        cp.coin[base].f4 = _load_cockpit_f4(ohlcv)
+    elseif isnothing(cp.coin[base].f4) || isempty(cp.coin[base].f4.rw)
+        cp.coin[base].f4 = _load_cockpit_f4(cp.coin[base].ohlcv["1m"])
     end
     if !(interval in keys(cp.coin[base].ohlcv))
         @assert interval in ["5m", "1h", "1d", "3d"] "$interval not in [5m, 1h, 1d, 3d]"
@@ -675,10 +686,10 @@ function _load_lstm_overlay_from_interface(base::AbstractString, startdt, enddt,
         folder in seen && continue
         push!(seen, folder)
         df = isempty(folder) ? _cached_artifact("lstm:root") do
-            EnvConfig.readdf("lstm_predictions.jdf")
+            EnvConfig.readdf("lstm_predictions")
         end : _cached_artifact("lstm:" * folder) do
             _with_log_subfolder(folder) do
-                EnvConfig.readdf("lstm_predictions.jdf")
+                EnvConfig.readdf("lstm_predictions")
             end
         end
         if !isnothing(df) && size(df, 1) > 0 && (:opentime in propertynames(df))
@@ -1041,7 +1052,10 @@ end
 
 function spreadtraces(cp, base, ohlcvdf, window, normref)
     traces = []
-    regr = (base in keys(cp.coin)) && (window in keys(cp.coin[base].f4.rw)) ? cp.coin[base].f4.rw[window] : nothing
+    if (base in keys(cp.coin)) && (isnothing(cp.coin[base].f4) || !(window in keys(cp.coin[base].f4.rw)))
+        cp.coin[base].f4 = _load_cockpit_f4(cp.coin[base].ohlcv["1m"])
+    end
+    regr = (base in keys(cp.coin)) && !isnothing(cp.coin[base].f4) && (window in keys(cp.coin[base].f4.rw)) ? cp.coin[base].f4.rw[window] : nothing
     if isnothing(regr)
         @warn "no f4 regression data found for $base"
         return []

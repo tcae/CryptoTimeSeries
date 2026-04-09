@@ -477,7 +477,7 @@ function load_lstm_overlay(slice::NamedTuple, tradecfg::NamedTuple)::Union{Nothi
         df = EnvConfig.readdf("lstm_predictions.jdf"; folderpath=folderpath)
         if !isnothing(df) && size(df, 1) > 0 && (:opentime in propertynames(df))
             mask = (string.(df[!, :coin]) .== slice.ohlcv.base) .& (slice.startdt .<= df[!, :opentime] .<= slice.enddt)
-            subdf = df[mask, :]
+            subdf = DataFrame(df[mask, :])
             if size(subdf, 1) > 0
                 sort!(subdf, :opentime)
                 return subdf

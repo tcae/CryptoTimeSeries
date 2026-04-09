@@ -7,7 +7,7 @@ It generates the OHLCV data, executes the trades in a loop and selects the basec
 """
 module Trade
 
-using Dates, DataFrames, Profile, Logging, CSV, JDF, Statistics
+using Dates, DataFrames, Profile, Logging, CSV, Statistics
 using EnvConfig, Ohlcv, CryptoXch, Classify, Features, Targets
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
@@ -172,32 +172,29 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     return tc
 end
 
-function _cfgfilename(timestamp::Union{Nothing, DateTime}, ext="jdf")
-    if isnothing(timestamp)
-        cfgfilename = TRADECONFIGFILE
-    else
-        cfgfilename = join([TRADECONFIGFILE, Dates.format(timestamp, "yy-mm-dd")], "_")
-    end
-    return EnvConfig.datafile(cfgfilename, TRADECONFIGFILE, ".jdf")
+_cfgstem(timestamp::Union{Nothing, DateTime}) = isnothing(timestamp) ? TRADECONFIGFILE : join([TRADECONFIGFILE, Dates.format(timestamp, "yy-mm-dd")], "_")
+_cfgfolder(folderpath=nothing) = isnothing(folderpath) ? EnvConfig.datafolderpath(TRADECONFIGFILE) : normpath(folderpath)
+
+function _cfgfilename(timestamp::Union{Nothing, DateTime}; folderpath=nothing, format::Symbol=:auto)
+    return EnvConfig.tablepath(_cfgstem(timestamp); folderpath=_cfgfolder(folderpath), format=format)
 end
 
 "Saves the trade configuration. If timestamp!=nothing then save 2x with and without timestamp in filename otherwise only without timestamp"
-function write(tc::TradeCache, timestamp::Union{Nothing, DateTime}=nothing)
+function write(tc::TradeCache, timestamp::Union{Nothing, DateTime}=nothing; folderpath=nothing, format::Symbol=EnvConfig.dfformat())
     if (size(tc.cfg, 1) == 0)
         @warn "trade config is empty - not stored"
         return
     end
-    cfgfilename = _cfgfilename(nothing)
-    # EnvConfig.savebackup(cfgfilename)
-    if isdir(cfgfilename)
-        rm(cfgfilename; force=true, recursive=true)
-    end
-    (verbosity >=3) && println("saving trade config in cfgfilename=$cfgfilename")
-    JDF.savejdf(cfgfilename, tc.cfg)  # parent(tc.cfg))
+    cfgfolder = _cfgfolder(folderpath)
+    cfgstem = _cfgstem(nothing)
+    EnvConfig.deletefolder(cfgstem; folderpath=cfgfolder)
+    cfgfilename = EnvConfig.savedf(tc.cfg, cfgstem; folderpath=cfgfolder, format=format)
+    (verbosity >= 3) && println("saving trade config in cfgfilename=$cfgfilename")
     if !isnothing(timestamp)
-        cfgfilename = _cfgfilename(timestamp)
-        (verbosity >=3) && println("saving trade config in cfgfilename=$cfgfilename")
-        JDF.savejdf(cfgfilename, tc.cfg)  # parent(tc.cfg))
+        cfgstem = _cfgstem(timestamp)
+        EnvConfig.deletefolder(cfgstem; folderpath=cfgfolder)
+        cfgfilename = EnvConfig.savedf(tc.cfg, cfgstem; folderpath=cfgfolder, format=format)
+        (verbosity >= 3) && println("saving trade config in cfgfilename=$cfgfilename")
     end
 end
 
@@ -205,20 +202,20 @@ end
 Will return the already stored trade strategy config, if filename from the same date exists but does not load the ohlcv and classifier features.
 If no trade strategy config can be loaded then `nothing` is returned.
 """
-function readconfig!(tc::TradeCache, datetime)
+function readconfig!(tc::TradeCache, datetime; folderpath=nothing, format::Symbol=EnvConfig.dfformat())
     tc.cfg = df = DataFrame() # old cfg is in either case discarded
-    cfgfilename = _cfgfilename(datetime, "jdf")
-    if isdir(cfgfilename)
-        df = DataFrame(JDF.loadjdf(cfgfilename))
-    end
-    if !isnothing(df) && (size(df, 1) > 0 )
+    cfgfolder = _cfgfolder(folderpath)
+    cfgstem = _cfgstem(datetime)
+    cfgfilename = _cfgfilename(datetime; folderpath=cfgfolder, format=:auto)
+    df = something(EnvConfig.readdf(cfgstem; folderpath=cfgfolder, format=format, copycols=true), DataFrame())
+    if size(df, 1) > 0
         (verbosity >= 2) && println("\r$(EnvConfig.now()) loaded trade config from $cfgfilename")
         tc.cfg = df
         tc.cfg[:, :whitelisted] = [coin in tc.mc[:whitelistcoins] for coin in tc.cfg[!, :basecoin]]
         tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& (tc.cfg[:, :minquotevol] .&& tc.cfg[!, :continuousminvol]) .&& tc.cfg[!, :whitelisted]
         return tc
     else
-        (verbosity >=2) && !isnothing(df) && println("Loading $cfgfilename failed")
+        (verbosity >= 2) && println("Loading $cfgfilename failed")
         return nothing
     end
 end
@@ -227,9 +224,9 @@ end
 Will return the already stored trade strategy config, if filename from the same date exists. Also loads the ohlcv and classifier features.
 If no trade strategy config can be loaded then `nothing` is returned.
 """
-function read!(tc::TradeCache, datetime=nothing)
+function read!(tc::TradeCache, datetime=nothing; folderpath=nothing, format::Symbol=EnvConfig.dfformat())
     datetime = isnothing(datetime) ? nothing : floor(datetime, Minute(1))
-    tc = readconfig!(tc, datetime)
+    tc = readconfig!(tc, datetime; folderpath=folderpath, format=format)
     df = nothing
     checkinclude(basecoin) = !(basecoin in CryptoXch.baseignore)
     if !isnothing(tc) && !isnothing(tc.cfg) && (size(tc.cfg, 1) > 0)
@@ -268,8 +265,8 @@ function addassetsconfig!(tc::TradeCache, assets=CryptoXch.portfolio!(tc.xc))
 end
 
 "Returns the current TradeConfig dataframe with usdtprice and usdtvalue added as well as the portfolio dataframe as a tuple"
-function assetsconfig!(tc::TradeCache, datetime=nothing)
-    tc = readconfig!(tc, datetime)
+function assetsconfig!(tc::TradeCache, datetime=nothing; folderpath=nothing, format::Symbol=EnvConfig.dfformat())
+    tc = readconfig!(tc, datetime; folderpath=folderpath, format=format)
     return addassetsconfig!(tc)
 end
 

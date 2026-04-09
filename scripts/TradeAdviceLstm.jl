@@ -3,6 +3,8 @@ using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics
 using CategoricalArrays
 using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy
 
+const Tables = DataFrames.Tables
+
 include("optimizationconfigs.jl")
 
 """
@@ -99,9 +101,9 @@ lstmpredictionsfilename() = "lstm_predictions.jdf"
 lstmconfusionfilename() = "lstm_confusion.jdf"
 lstmxconfusionfilename() = "lstm_xconfusion.jdf"
 lstmsequencesfilename() = "lstm_sequences.jdf"
-lstmdistancesfilename() = "lstm_distances.jdf"
-lstmpairsfilename() = "lstm_transaction_pairs.jdf"
-lstmgainsfilename() = "lstm_gains.jdf"
+lstmdistancesfilename() = joinpath("trades", "lstm_distances.jdf")
+lstmpairsfilename() = joinpath("trades", "lstm_transaction_pairs_all.jdf")
+lstmgainsfilename() = joinpath("trades", "lstm_gains_all.jdf")
 summaryfilename() = "summary.jdf"
 
 trendfolder(cfg::TradeAdviceLstmConfig) = "Trend-$(cfg.trendconfig.configname)-$(cfg.mode)"
@@ -131,15 +133,84 @@ function _folderpath(subfolder::AbstractString)
     return normpath(joinpath(_logsroot(), subfolder))
 end
 
-function _load_df_or_assert(folder::AbstractString, filename::AbstractString)
+function _arrowartifactstem(filename::AbstractString)::String
+    base = splitext(basename(filename))[1]
+    if base == "features"
+        return joinpath("features", "all")
+    elseif base == "targets"
+        return joinpath("targets", "all")
+    elseif base == "results"
+        return joinpath("results", "all")
+    elseif base == "maxpredictions"
+        return joinpath("predictions", "maxpredictions")
+    elseif base == "predictions"
+        return joinpath("predictions", "all")
+    elseif base == "trades"
+        return joinpath("trades", "all")
+    end
+    return base
+end
+
+function _table_rowcount(table)::Int
+    table isa AbstractDataFrame && return size(table, 1)
+    schema = Tables.schema(table)
+    if isnothing(schema) || isempty(schema.names)
+        return 0
+    end
+    return length(Tables.getcolumn(Tables.columns(table), first(schema.names)))
+end
+
+function _table_colnames(table)::Vector{String}
+    table isa AbstractDataFrame && return names(table)
+    schema = Tables.schema(table)
+    return isnothing(schema) ? String[] : string.(collect(schema.names))
+end
+
+function _load_df_or_assert(folder::AbstractString, filename::AbstractString; format::Symbol=:jdf)
     fp = _folderpath(folder)
-    df = EnvConfig.readdf(filename; folderpath=fp)
-    @assert !isnothing(df) && size(df, 1) > 0 "missing or empty $filename in $fp"
+    stem = format == :arrow ? _arrowartifactstem(filename) : filename
+    df = EnvConfig.readdf(stem; folderpath=fp, format=format)
+    if isnothing(df) && (format != :jdf)
+        df = EnvConfig.readdf(filename; folderpath=fp, format=:jdf)
+    end
+    @assert !isnothing(df) && size(df, 1) > 0 "missing or empty $(filename) in $(fp)"
     return df
 end
 
+function _load_table_or_assert(folder::AbstractString, filename::AbstractString; format::Symbol=:jdf, materialize::Bool=true)
+    fp = _folderpath(folder)
+    stem = format == :arrow ? _arrowartifactstem(filename) : filename
+    table = EnvConfig.readtable(stem; folderpath=fp, format=:auto, preferred=format, materialize=materialize)
+    if isnothing(table) && (format != :jdf)
+        table = EnvConfig.readtable(filename; folderpath=fp, format=:jdf, preferred=:jdf, materialize=materialize)
+    end
+    @assert !isnothing(table) && (_table_rowcount(table) > 0) "missing or empty $(filename) in $(fp)"
+    return table
+end
+
+@inline function _tradelabel_string(label)
+    if label isa Targets.TradeLabel
+        return string(label)
+    elseif label isa Integer
+        try
+            return string(Targets.tradelabel(Int(label)))
+        catch
+            return string(label)
+        end
+    end
+    raw = strip(string(label))
+    parsed = tryparse(Int, raw)
+    if !isnothing(parsed)
+        try
+            return string(Targets.tradelabel(parsed))
+        catch
+        end
+    end
+    return raw
+end
+
 @inline function _trendlabel2phase(label)::String
-    lbl = lowercase(strip(string(label)))
+    lbl = lowercase(strip(_tradelabel_string(label)))
     if (lbl == "longbuy") || (lbl == "longhold")
         return "up"
     elseif (lbl == "shortbuy") || (lbl == "shorthold")
@@ -358,11 +429,11 @@ Load optimized TrendDetector hidden activations and return the penultimate
 """
 function get_trend_hidden_features(cfg::TradeAdviceLstmConfig)
     trfolder = trendfolder(cfg)
-    resultsdf = _load_df_or_assert(trfolder, resultsfilename())
-    featuresdf = _load_df_or_assert(trfolder, featuresfilename())
+    resultsdf = _load_df_or_assert(trfolder, resultsfilename(); format=:arrow)
+    featuretable = _load_table_or_assert(trfolder, featuresfilename(); format=:arrow, materialize=false)
 
     if (!(:label in propertynames(resultsdf)) || !(:score in propertynames(resultsdf)))
-        predictionsdf = _load_df_or_assert(trfolder, predictionsfilename())
+        predictionsdf = _load_df_or_assert(trfolder, predictionsfilename(); format=:arrow)
         @assert size(predictionsdf, 1) == size(resultsdf, 1) "trend results/predictions row mismatch: $(size(resultsdf, 1)) != $(size(predictionsdf, 1))"
         resultsdf = copy(resultsdf)
         resultsdf[!, :label] = predictionsdf[!, :label]
@@ -370,16 +441,17 @@ function get_trend_hidden_features(cfg::TradeAdviceLstmConfig)
     end
 
     @assert all(col -> col in propertynames(resultsdf), [:target, :label, :score]) "trend results missing required target/prediction columns; names=$(names(resultsdf))"
-    @assert size(resultsdf, 1) == size(featuresdf, 1) "trend results/features row mismatch: $(size(resultsdf, 1)) != $(size(featuresdf, 1))"
+    @assert size(resultsdf, 1) == _table_rowcount(featuretable) "trend results/features row mismatch: $(size(resultsdf, 1)) != $(_table_rowcount(featuretable))"
 
     fcols = Features.requestedcolumns(cfg.trendconfig.featconfig)
-    @assert all(c -> c in names(featuresdf), fcols) "trend features dataframe missing required columns: required=$(fcols) available=$(names(featuresdf))"
+    available = _table_colnames(featuretable)
+    @assert all(c -> string(c) in available, fcols) "trend features table missing required columns: required=$(fcols) available=$(available)"
 
     hiddenmat = _with_log_subfolder(trfolder) do
         nn = cfg.trendconfig.classifiermodel(Features.featurecount(cfg.trendconfig.featconfig), Targets.uniquelabels(cfg.trendconfig.targetconfig), "mix")
         @assert isfile(Classify.nnfilename(nn.fileprefix)) "optimized trend classifier file not found: $(Classify.nnfilename(nn.fileprefix)). Run scripts/TrendDetector.jl first."
         nn = Classify.loadnn(nn.fileprefix)
-        Classify.penultimatefeatures(nn, featuresdf, fcols; batchsize=max(1024, cfg.batchsize * 64))
+        Classify.penultimatefeatures(nn, featuretable, fcols; batchsize=max(1024, cfg.batchsize * 64))
     end
 
     @assert size(hiddenmat, 2) == size(resultsdf, 1) "trend hidden features/results row mismatch"
@@ -415,8 +487,8 @@ function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
     hiddenmat = hiddenmat[:, perm]
 
     rename!(mdf, :label => :trend_label, :score => :trend_score)
-    mdf[!, :trend_target] = string.(mdf[!, :target])
-    mdf[!, :trend_label] = string.(mdf[!, :trend_label])
+    mdf[!, :trend_target] = _tradelabel_string.(mdf[!, :target])
+    mdf[!, :trend_label] = _tradelabel_string.(mdf[!, :trend_label])
     mdf[!, :trend_phase] = _trendlabel2phase.(mdf[!, :trend_label])
     mdf[!, :trend_score] = Float32.(mdf[!, :trend_score])
     mdf[!, :target] = _trendlabel2phase.(mdf[!, :trend_target])
@@ -436,11 +508,41 @@ function build_lstm_input_df(cfg::TradeAdviceLstmConfig)
     return mdf, contract
 end
 
-function train_lstm(cfg::TradeAdviceLstmConfig, contract)
-    res = Classify.train_lstm_trade_signals!(contract, cfg.seqlen; hidden_dim=cfg.hidden_dim, maxepoch=cfg.maxepoch, batchsize=cfg.batchsize, labels=LSTM_LABELS)
-
-    lossesdf = DataFrame(epoch=collect(1:length(res.losses)), train_loss=Float32.(res.losses), eval_loss=Float32.(res.eval_losses))
+function _save_lstm_losses(trainres)
+    lossesdf = DataFrame(epoch=collect(1:length(trainres.losses)), train_loss=Float32.(trainres.losses), eval_loss=Float32.(trainres.eval_losses))
     EnvConfig.savedf(lossesdf, lstmlossesfilename())
+    return lossesdf
+end
+
+"""Train a fresh LSTM classifier for the current `TradeAdviceLstm` run."""
+function train_lstm(cfg::TradeAdviceLstmConfig, contract)
+    res = Classify.train_lstm_trade_signals!(contract, cfg.seqlen; hidden_dim=cfg.hidden_dim, maxepoch=cfg.maxepoch, batchsize=cfg.batchsize, labels=LSTM_LABELS, resume=false)
+    _save_lstm_losses(res)
+    GC.gc()
+    return merge(res, (source="retrained",))
+end
+
+"""Load the last saved LSTM classifier checkpoint for inference-only pipeline runs."""
+function load_lstm(cfg::TradeAdviceLstmConfig)
+    checkpoint = Classify.load_lstm_checkpoint()
+    checkpointfile = Classify.lstm_checkpoint_filename()
+    @assert !isnothing(checkpoint) "missing saved LSTM classifier at $(checkpointfile); rerun with `retrain` to fit one first"
+    @assert Int(checkpoint.seqlen) == cfg.seqlen "saved LSTM checkpoint seqlen=$(checkpoint.seqlen) does not match cfg.seqlen=$(cfg.seqlen); rerun with `retrain`"
+    @assert Int(checkpoint.hidden_dim) == cfg.hidden_dim "saved LSTM checkpoint hidden_dim=$(checkpoint.hidden_dim) does not match cfg.hidden_dim=$(cfg.hidden_dim); rerun with `retrain`"
+
+    labels = String.(checkpoint.labels)
+    @assert labels == LSTM_LABELS "saved LSTM checkpoint labels=$(labels) do not match expected labels=$(LSTM_LABELS); rerun with `retrain`"
+
+    res = (
+        model=checkpoint.model,
+        optim=checkpoint.optim,
+        losses=Float32.(checkpoint.losses),
+        eval_losses=Float32.(checkpoint.eval_losses),
+        labels=labels,
+        checkpointfile=checkpointfile,
+        source="checkpoint",
+    )
+    _save_lstm_losses(res)
     GC.gc()
     return res
 end
@@ -565,8 +667,8 @@ function evaluate_lstm(cfg::TradeAdviceLstmConfig, mdf::AbstractDataFrame, contr
 
     gaindf = isempty(gainparts) ? DataFrame() : reduce(vcat, gainparts; cols=:union)
     if size(gaindf, 1) > 0
-        EnvConfig.savedf(gaindf, lstmpairsfilename())
-        EnvConfig.savedf(gaindf, lstmgainsfilename())
+        TradingStrategy.savetrades(gaindf; stem="lstm_transaction_pairs")
+        TradingStrategy.savetrades(gaindf; stem="lstm_gains")
     end
 
     return evaldf, cmdf, xcmdf, seqdf, distdf, gaindf
@@ -752,17 +854,18 @@ function collect_tradeadvice_summaries(cfg::TradeAdviceLstmConfig)
     return comparison
 end
 
-function run_pipeline(cfg::TradeAdviceLstmConfig)
+function run_pipeline(cfg::TradeAdviceLstmConfig; retrain::Bool=false)
     return _with_log_subfolder(cfg.folder) do
-        (verbosity >= 2) && println("$(EnvConfig.now()) TradeAdviceLstm pipeline start with trend=$(trendfolder(cfg))")
+        action = retrain ? "retrain" : "reuse-checkpoint"
+        (verbosity >= 2) && println("$(EnvConfig.now()) TradeAdviceLstm pipeline start with trend=$(trendfolder(cfg)) action=$(action)")
         mdf, contract = build_lstm_input_df(cfg)
-        trainres = train_lstm(cfg, contract)
+        trainres = retrain ? train_lstm(cfg, contract) : load_lstm(cfg)
         GC.gc()
         evaldf, cmdf, xcmdf, seqdf, distdf, gaindf = evaluate_lstm(cfg, mdf, contract, trainres)
         summarydf = buildsummmary(cfg, trainres, cmdf, distdf, gaindf)
         comparisondf = collect_tradeadvice_summaries(cfg)
 
-        println("$(EnvConfig.now()) LSTM training epochs=$(length(trainres.losses)) final_train_loss=$(trainres.losses[end]) final_eval_loss=$(trainres.eval_losses[end])")
+        println("$(EnvConfig.now()) LSTM model source=$(trainres.source) epochs=$(length(trainres.losses)) final_train_loss=$(trainres.losses[end]) final_eval_loss=$(trainres.eval_losses[end])")
         println("$(EnvConfig.now()) LSTM confusion matrix rows=$(size(cmdf, 1)) extended rows=$(size(xcmdf, 1))")
         println("$(EnvConfig.now()) LSTM predictions rows=$(size(evaldf, 1)) sequences rows=$(size(seqdf, 1)) distances rows=$(size(distdf, 1)) gains rows=$(size(gaindf, 1))")
         _print_df("$(EnvConfig.now()) TradeAdviceLstm summary (transposed):", _transpose_summarydf(summarydf))
@@ -774,6 +877,7 @@ function run_pipeline(cfg::TradeAdviceLstmConfig)
 end
 
 function buildcfg(args::Vector{String})
+    retrainrequested = "retrain" in args
     tradeadviceref = _argvalue(args, "tradeadvice", nothing)
     tradeadvicecfg = isnothing(tradeadviceref) ? nothing : _resolve_tradeadviceconfig(tradeadviceref)
     trendref = _argvalue(args, "trend", isnothing(tradeadvicecfg) ? "025" : string(tradeadvicecfg.trendconfigref))
@@ -782,7 +886,7 @@ function buildcfg(args::Vector{String})
     folder = _argvalue(args, "folder", "TradeAdviceLstm-$configname-$(EnvConfig.configmode)")
     seqlen = parse(Int, _argvalue(args, "seqlen", string(_ntget(tradeadvicecfg, :seqlen, 30))))
     hidden_dim = parse(Int, _argvalue(args, "hidden", _argvalue(args, "hidden_dim", string(_ntget(tradeadvicecfg, :hidden_dim, 32)))))
-    maxepoch = parse(Int, _argvalue(args, "maxepoch", isnothing(tradeadvicecfg) ? ("train" in args ? "200" : "20") : string(tradeadvicecfg.maxepoch)))
+    maxepoch = parse(Int, _argvalue(args, "maxepoch", isnothing(tradeadvicecfg) ? (retrainrequested ? "200" : "20") : string(tradeadvicecfg.maxepoch)))
     batchsize = parse(Int, _argvalue(args, "batchsize", string(_ntget(tradeadvicecfg, :batchsize, 64))))
     default_opens = join(string.(Float32.(_ntget(tradeadvicecfg, :openthresholds, Float32[0.8f0, 0.7f0, 0.6f0]))), ",")
     default_closes = join(string.(Float32.(_ntget(tradeadvicecfg, :closethresholds, Float32[0.6f0, 0.55f0, 0.5f0]))), ",")
@@ -796,7 +900,9 @@ end
 
 println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$ARGS")
 
-testmode = "train" in ARGS ? false : true
+retrain = "retrain" in ARGS
+trainmode = ("train" in ARGS) || retrain
+testmode = !trainmode
 inspectonly = "inspect" in ARGS
 compareonly = "compare" in ARGS
 
@@ -812,6 +918,7 @@ if inspectonly
     println("Using log folder $(EnvConfig.logfolder())")
     println("Selected trend config: $(cfg.trendconfig.configname)")
     println("LSTM params: seqlen=$(cfg.seqlen) hidden_dim=$(cfg.hidden_dim) maxepoch=$(cfg.maxepoch) batchsize=$(cfg.batchsize) entrytimeout=$(cfg.entrytimeout) exittimeout=$(cfg.exittimeout)")
+    println("Run mode: $(trainmode ? "training" : "test") retrain=$(retrain)")
     println("Trend source folder: $(trendfolder(cfg))")
     summarydf = EnvConfig.readdf(summaryfilename(); folderpath=_folderpath(cfg.folder))
     if isnothing(summarydf) || (size(summarydf, 1) == 0)
@@ -823,7 +930,7 @@ elseif compareonly
     comparisondf = collect_tradeadvice_summaries(cfg)
     println("$(EnvConfig.now()) available TradeAdvice summaries: $comparisondf")
 else
-    run_pipeline(cfg)
+    run_pipeline(cfg; retrain=retrain)
 end
 
 println("$(EnvConfig.now()) done @ $(cfg.folder)")

@@ -75,6 +75,7 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
         featuresdf = EnvConfig.readdf(featuresfilename())
         @assert isnothing(resultsdf) == isnothing(featuresdf) "unexpected mismatch of resultsdf and featuresdf existence with resultsdf existence $(isnothing(resultsdf)) and featuresdf existence $(isnothing(featuresdf))"
         if !isnothing(resultsdf) && (:sampleix in propertynames(resultsdf))
+            resultsdf = DataFrame(resultsdf)
             select!(resultsdf, Not(:sampleix))
             EnvConfig.savedf(resultsdf, resultsfilename())
         end
@@ -326,9 +327,12 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
     if !isnothing(predictionsdf) && (size(predictionsdf, 1) > 0)
         @assert EnvConfig.isfolder(resultsfilename()) "unexpected missing resultsfile"
         resultsdf = EnvConfig.readdf(resultsfilename())
-        if !isnothing(resultsdf) && (:sampleix in propertynames(resultsdf))
-            select!(resultsdf, Not(:sampleix))
-            EnvConfig.savedf(resultsdf, resultsfilename())
+        if !isnothing(resultsdf)
+            resultsdf = DataFrame(resultsdf)
+            if :sampleix in propertynames(resultsdf)
+                select!(resultsdf, Not(:sampleix))
+                EnvConfig.savedf(resultsdf, resultsfilename())
+            end
         end
         @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(predictionsdf, 1) > 0) "size mismatch: size(resultsdf, 1)=$(snothing(resultsdf) ? "nothing" : size(resultsdf, 1)), size(predictionsdf, 1)=$(size(predictionsdf, 1))"
         resultsdf[:, :score] = predictionsdf[!, :score]
@@ -349,13 +353,15 @@ function addgainadmin!(gdf, coin, sampleset, predicted, rangeid, openthreshold, 
 end
 
 function isfreshcache(cachefile::AbstractString, dependencyfiles::AbstractVector{<:AbstractString})
-    cachepath = EnvConfig.logpath(cachefile)
-    EnvConfig.isfolder(cachepath) || return false
+    EnvConfig.tableexists(cachefile) || return false
+    cachepath = EnvConfig.tablepath(cachefile; format=:auto)
     cachemtime = stat(cachepath).mtime
     for depfile in dependencyfiles
-        deppath = EnvConfig.logpath(depfile)
-        if EnvConfig.isfolder(deppath) && (stat(deppath).mtime > cachemtime)
-            return false
+        if EnvConfig.tableexists(depfile)
+            deppath = EnvConfig.tablepath(depfile; format=:auto)
+            if stat(deppath).mtime > cachemtime
+                return false
+            end
         end
     end
     return true
@@ -366,8 +372,8 @@ const TRUE_GAIN_THRESHOLD = (0.9f0, 0.9f0)
 
 function getgainsdf(cfg::TrendDetectorConfig)
     if isfreshcache(gainsfilename(), [resultsfilename(), predictionsfilename()])
-        gaindf = EnvConfig.readdf(gainsfilename())
-        if !isnothing(gaindf) && (size(gaindf, 1) > 0)
+        gaindf = TradingStrategy.loadtrades(; stem="gains")
+        if size(gaindf, 1) > 0
             return gaindf
         end
     end
@@ -417,7 +423,7 @@ function getgainsdf(cfg::TrendDetectorConfig)
         gaindf = gaindf[.!ismissing.(gaindf[!, :set]), :] # exclude gaps between set partitions
         if size(gaindf, 1) > 0
             sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt, :trend])
-            EnvConfig.savedf(gaindf, gainsfilename())
+            TradingStrategy.savetrades(gaindf; stem="gains")
         end
     end
     (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")

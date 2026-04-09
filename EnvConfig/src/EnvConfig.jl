@@ -8,8 +8,9 @@ Provides
 
 """
 module EnvConfig
-using Logging, Dates, Pkg, JSON3, DataFrames, JDF
-export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!
+using Logging, Dates, Pkg, JSON3, DataFrames, JDF, Arrow
+using CategoricalArrays
+export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, coinfolderpath, coinfile
 
 """
 verbosity =
@@ -278,8 +279,10 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
 
 logfilesfolder = "logs"
+coinsfolder = "coins"
 # defaultlogfilespath = normpath(joinpath(cryptopath, logfilesfolder))
 defaultlogfilespath = normpath(joinpath(homedir(), "crypto", logfilesfolder))
+defaultcoinspath = normpath(joinpath(dirname(defaultlogfilespath), coinsfolder))
 logfilespath = defaultlogfilespath
 
 "extends the log path with folder or resets to default if folder=`nothing`"
@@ -298,36 +301,286 @@ logpath(file) = normpath(joinpath(logfilespath, file))
 logsubfolder() = splitpath(logfilespath)[end] == logfilesfolder ? "" : splitpath(logfilespath)[end]
 logfolder() = logfilespath
 
-"Saves a given dataframe df in the current log folder using the given filename"
-function savedf(df, filename; folderpath=logfolder())
-    filepath = normpath(joinpath(folderpath, filename))
-    JDF.savejdf(filepath, df)
-    (verbosity >= 3) && println("$(EnvConfig.now()) saved dataframe to $(filepath)")
+const defaultdfformat = Ref{Symbol}(:jdf)
+
+"Return the preferred default storage format for `savedf` / `readdf`."
+dfformat() = defaultdfformat[]
+
+"Set the preferred default storage format for `savedf` / `readdf`."
+function setdfformat!(format::Symbol)
+    @assert format in (:jdf, :arrow) "format=$(format) must be :jdf or :arrow"
+    defaultdfformat[] = format
+    return format
 end
 
-"Reads and returns a dataframe from filename in the current log folder. Returns `nothing` if file does not exist or is no dataframe file."
-function readdf(filename; folderpath=logfolder())
-    df = nothing
-    filepath = normpath(joinpath(folderpath, filename))
-    if isdir(filepath)
-        (verbosity >= 4) && print("$(EnvConfig.now()) loading dataframe from  $(filepath) ... ")
-        df = DataFrame(JDF.loadjdf(filepath))
-        (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
-    else
-        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(filepath)")
+"Return the file extension for a supported table storage format."
+function _table_extension(format::Symbol)::String
+    if format == :jdf
+        return ".jdf"
+    elseif format == :arrow
+        return ".arrow"
+    end
+    throw(ArgumentError("unsupported table format=$(format); expected :jdf or :arrow"))
+end
+
+"Normalize a table filename to the requested on-disk format."
+function _table_filename(filename::AbstractString, format::Symbol)::String
+    base, ext = splitext(filename)
+    lowered = lowercase(ext)
+    expected = _table_extension(format)
+    return lowered == expected ? filename : (isempty(lowered) ? filename * expected : base * expected)
+end
+
+const _legacy_table_layout = Dict(
+    "results" => joinpath("results", "all"),
+    "features" => joinpath("features", "all"),
+    "targets" => joinpath("targets", "all"),
+    "predictions" => joinpath("predictions", "all"),
+    "maxpredictions" => joinpath("predictions", "maxpredictions"),
+    "gains" => joinpath("trades", "gains_all"),
+    "distances" => joinpath("trades", "distances"),
+    "lstm_gains" => joinpath("trades", "lstm_gains_all"),
+    "lstm_transaction_pairs" => joinpath("trades", "lstm_transaction_pairs_all"),
+)
+const _modern_table_layout = Dict(v => k for (k, v) in _legacy_table_layout)
+
+"Return the preferred modern/legacy storage stems to try for one logical artifact."
+function _table_stems(filename::AbstractString)
+    normalized = replace(normpath(String(filename)), '\\' => '/')
+    base, _ = splitext(normalized)
+    primary = get(_legacy_table_layout, base, base)
+    stems = [primary]
+    if haskey(_legacy_table_layout, base)
+        push!(stems, base)
+    elseif haskey(_modern_table_layout, base)
+        push!(stems, _modern_table_layout[base])
+    end
+    return unique(stems)
+end
+
+"Return the full path for a stored table in the requested format. With `format=:auto`, return the first existing candidate path or the preferred default candidate when none exists yet."
+function tablepath(filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, preferred::Symbol=dfformat())
+    if format == :auto
+        candidates = _table_candidates(filename; preferred=preferred)
+        for candidate in candidates
+            candidate_format = endswith(lowercase(candidate), ".arrow") ? :arrow : :jdf
+            filepath = normpath(joinpath(folderpath, candidate))
+            if _table_storage_exists(filepath, candidate_format)
+                return filepath
+            end
+        end
+        return normpath(joinpath(folderpath, first(candidates)))
+    end
+    @assert format in (:jdf, :arrow) "format=$(format) must be :auto, :jdf or :arrow"
+    return normpath(joinpath(folderpath, _table_filename(filename, format)))
+end
+
+function _table_candidates(filename::AbstractString; preferred::Symbol=dfformat())
+    normalized = replace(normpath(String(filename)), '\\' => '/')
+    _, ext = splitext(normalized)
+    lowered = lowercase(ext)
+    @assert preferred in (:jdf, :arrow) "preferred=$(preferred) must be :jdf or :arrow"
+
+    candidates = String[]
+    for stem in _table_stems(normalized)
+        if lowered == ".arrow"
+            append!(candidates, preferred == :jdf ? [stem * ".jdf", stem * ".arrow"] : [stem * ".arrow", stem * ".jdf"])
+        elseif lowered == ".jdf"
+            append!(candidates, preferred == :arrow ? [stem * ".arrow", stem * ".jdf"] : [stem * ".jdf", stem * ".arrow"])
+        else
+            append!(candidates, preferred == :arrow ? [stem * ".arrow", stem * ".jdf"] : [stem * ".jdf", stem * ".arrow"])
+        end
+    end
+    return unique(candidates)
+end
+
+_table_storage_exists(filepath::AbstractString, format::Symbol)::Bool = format == :jdf ? isdir(filepath) : isfile(filepath)
+
+_arrow_stringify(value) = ismissing(value) ? missing : string(value)
+
+"Return `true` if a column element type can be stored in Arrow without coercion."
+function _arrow_native_type(T::Type)::Bool
+    return T <: Union{Missing, Bool, Integer, AbstractFloat, AbstractString, Dates.TimeType, AbstractChar}
+end
+
+"Return the smallest signed integer type that can represent the observed enum codes."
+function _smallest_signed_type(lo::Int, hi::Int)::DataType
+    if (typemin(Int8) <= lo) && (hi <= typemax(Int8))
+        return Int8
+    elseif (typemin(Int16) <= lo) && (hi <= typemax(Int16))
+        return Int16
+    elseif (typemin(Int32) <= lo) && (hi <= typemax(Int32))
+        return Int32
+    end
+    return Int64
+end
+
+"Return the smallest unsigned integer type that can represent the observed values."
+function _smallest_unsigned_type(hi::Int)::DataType
+    if hi <= typemax(UInt8)
+        return UInt8
+    elseif hi <= typemax(UInt16)
+        return UInt16
+    elseif hi <= typemax(UInt32)
+        return UInt32
+    end
+    return UInt64
+end
+
+"Determine a compact storage type for an enum-backed column."
+function _enum_storage_type(values)::DataType
+    seen = false
+    lo = typemax(Int)
+    hi = typemin(Int)
+    for value in values
+        ismissing(value) && continue
+        seen = true
+        code = Int(value)
+        lo = min(lo, code)
+        hi = max(hi, code)
+    end
+    return seen ? _smallest_signed_type(lo, hi) : Int8
+end
+
+"Determine a compact integer storage type for a numeric column based on its observed range."
+function _integer_storage_type(values, T::Type)::DataType
+    seen = false
+    lo = typemax(Int)
+    hi = typemin(Int)
+    for value in values
+        ismissing(value) && continue
+        seen = true
+        intval = Int(value)
+        lo = min(lo, intval)
+        hi = max(hi, intval)
+    end
+    if !seen
+        return T <: Unsigned ? UInt8 : Int8
+    elseif lo >= 0
+        return _smallest_unsigned_type(hi)
+    end
+    return _smallest_signed_type(lo, hi)
+end
+
+"Convert enum-backed values to compact signed integer codes while preserving missings."
+function _enum_codes(values)
+    storagetype = _enum_storage_type(values)
+    return [ismissing(value) ? missing : storagetype(Int(value)) for value in values]
+end
+
+"Convert integer columns to the smallest compatible signed or unsigned type while preserving missings."
+function _compact_integer_values(values)
+    storagetype = _integer_storage_type(values, Base.nonmissingtype(eltype(values)))
+    return [ismissing(value) ? missing : storagetype(value) for value in values]
+end
+
+"Convert non-native Arrow columns to compact enum codes or categorical strings while preserving missings."
+function _arrow_safe_table(table)
+    df = DataFrame(table)
+    for name in names(df)
+        column = df[!, name]
+        T = Base.nonmissingtype(eltype(column))
+        if T <: Enum
+            df[!, name] = _enum_codes(column)
+        elseif (T <: Integer) && !(T <: Bool)
+            df[!, name] = _compact_integer_values(column)
+        elseif !_arrow_native_type(T)
+            normalized = _arrow_stringify.(column)
+            df[!, name] = CategoricalArray(normalized)
+        end
     end
     return df
 end
 
-isfolder(filename) = isdir(EnvConfig.logpath(filename))
+"Return whether a stored table exists in the requested or auto-detected format."
+function tableexists(filename::AbstractString; folderpath=logfolder(), format::Symbol=:auto)::Bool
+    if format == :auto
+        for candidate in _table_candidates(filename; preferred=dfformat())
+            candidate_format = endswith(lowercase(candidate), ".arrow") ? :arrow : :jdf
+            if _table_storage_exists(normpath(joinpath(folderpath, candidate)), candidate_format)
+                return true
+            end
+        end
+        return false
+    end
+    @assert format in (:jdf, :arrow) "format=$(format) must be :auto, :jdf or :arrow"
+    return _table_storage_exists(tablepath(filename; folderpath=folderpath, format=format), format)
+end
+
+"Write a table in JDF or Arrow format and return the resulting path."
+function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf)
+    @assert format in (:jdf, :arrow) "format=$(format) must be :jdf or :arrow"
+    filepath = tablepath(filename; folderpath=folderpath, format=format)
+    mkpath(dirname(filepath))
+    if format == :jdf
+        JDF.savejdf(filepath, DataFrame(table))
+    else
+        Arrow.write(filepath, _arrow_safe_table(table))
+    end
+    (verbosity >= 3) && println("$(EnvConfig.now()) saved $(format) table to $(filepath)")
+    return filepath
+end
+
+"Read a stored table in JDF or Arrow format. With `format=:auto`, the preferred default format is tried first and the other format is used as fallback. Set `materialize=false` to keep Arrow tables in their lazy form, and `copycols=true` only when the caller needs to mutate the loaded dataframe."
+function readtable(filename::AbstractString; folderpath=logfolder(), format::Symbol=:auto, preferred::Symbol=dfformat(), materialize::Bool=true, copycols::Bool=false)
+    if format == :auto
+        for candidate in _table_candidates(filename; preferred=preferred)
+            candidate_format = endswith(lowercase(candidate), ".arrow") ? :arrow : :jdf
+            filepath = normpath(joinpath(folderpath, candidate))
+            if _table_storage_exists(filepath, candidate_format)
+                return readtable(candidate; folderpath=folderpath, format=candidate_format, preferred=preferred, materialize=materialize, copycols=copycols)
+            end
+        end
+        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(normpath(joinpath(folderpath, filename)))")
+        return nothing
+    end
+
+    @assert format in (:jdf, :arrow) "format=$(format) must be :auto, :jdf or :arrow"
+    filepath = tablepath(filename; folderpath=folderpath, format=format)
+    if !_table_storage_exists(filepath, format)
+        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(filepath)")
+        return nothing
+    end
+
+    if format == :jdf
+        (verbosity >= 4) && print("$(EnvConfig.now()) loading JDF dataframe from $(filepath) ... ")
+        df = DataFrame(JDF.loadjdf(filepath))
+        (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
+        return df
+    end
+
+    (verbosity >= 4) && print("$(EnvConfig.now()) loading Arrow table from $(filepath) ... ")
+    table = Arrow.Table(filepath)
+    if materialize
+        df = DataFrame(table; copycols=copycols)
+        (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
+        return df
+    end
+    return table
+end
+
+"Save a dataframe using the preferred or explicitly supplied storage format."
+savedf(df, filename; folderpath=logfolder(), format::Symbol=dfformat()) = writetable(df, filename; folderpath=folderpath, format=format)
+
+"Read a dataframe using the preferred or explicitly supplied storage format, with fallback to the alternate format when available. Use `copycols=true` only when the caller intends to mutate the returned dataframe."
+readdf(filename; folderpath=logfolder(), format::Symbol=dfformat(), copycols::Bool=false) = readtable(filename; folderpath=folderpath, format=:auto, preferred=format, copycols=copycols)
+
+"Backward-compatible cache existence check that works for both JDF directories and Arrow files."
+isfolder(filename; folderpath=logfolder()) = tableexists(filename; folderpath=folderpath, format=:auto)
 
 function deletefolder(filename; folderpath=logfolder())
-    filepath = normpath(joinpath(folderpath, filename))
-    if isdir(filepath)
-        (verbosity >= 3) && println("$(EnvConfig.now()) deleting folder $(filepath)")
-        rm(filepath; force=true, recursive=true)
-    else
-        (verbosity >= 3) && println("$(EnvConfig.now()) no folder deletion due to missing $(filepath)")
+    deleted = false
+    candidates = unique(vcat([filename], _table_candidates(filename; preferred=dfformat())))
+    for candidate in candidates
+        filepath = normpath(joinpath(folderpath, candidate))
+        if isdir(filepath) || isfile(filepath)
+            (verbosity >= 3) && println("$(EnvConfig.now()) deleting $(filepath)")
+            rm(filepath; force=true, recursive=true)
+            deleted = true
+        end
+    end
+    if !deleted
+        (verbosity >= 3) && println("$(EnvConfig.now()) no deletion due to missing $(normpath(joinpath(folderpath, filename)))")
     end
 end
 
@@ -349,6 +602,41 @@ function datafile(mnemonic::String, subfolder=nothing, extension=".jdf")
     end
     # no file existence checks here because it may be new file
     return isnothing(subfolder) ? normpath(joinpath(cryptopath, datafolder, mnemonic * extension)) : normpath(joinpath(cryptopath, datafolder, subfolder, mnemonic * extension))
+end
+
+"""Return the local root folder for shared per-coin Arrow artifacts created during Phase 2, colocated with `logs/` under `~/crypto/coins`."""
+function coinspath()
+    isdir(defaultcoinspath) || mkpath(defaultcoinspath)
+    return defaultcoinspath
+end
+
+"""
+    coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=cryptoquote, subfolder=nothing)
+
+Return the folder for a shared coin-pair artifact under `coins/`, creating it on
+first use. Examples include `coins/BTCUSDT/ohlcv.arrow` and
+`coins/BTCUSDT/f4/grad_15.arrow`.
+"""
+function coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=cryptoquote, subfolder=nothing)
+    pairfolder = uppercase(basecoin) * "-" * uppercase(quotecoin)
+    folderpath = isnothing(subfolder) ? normpath(joinpath(coinspath(), pairfolder)) : normpath(joinpath(coinspath(), pairfolder, subfolder))
+    if !isdir(folderpath)
+        println("EnvConfig $(now()): creating folder $folderpath")
+        mkpath(folderpath)
+    end
+    return folderpath
+end
+
+"""
+    coinfile(basecoin::AbstractString, quotecoin::AbstractString, artifact::AbstractString;
+             subfolder=nothing, extension=".arrow")
+
+Return the full path of a shared per-coin artifact file under `coins/` without
+changing the legacy JDF storage paths.
+"""
+function coinfile(basecoin::AbstractString, quotecoin::AbstractString, artifact::AbstractString; subfolder=nothing, extension=".arrow")
+    ext = startswith(extension, ".") ? extension : "." * extension
+    return normpath(joinpath(coinfolderpath(basecoin, quotecoin, subfolder), artifact * ext))
 end
 
 function getdatafolder(folder, newfolder=false)

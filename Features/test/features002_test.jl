@@ -313,11 +313,23 @@ f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, l
 f4s = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-4, lastix=lastindex(ohlcv.df[!, "opentime"])-3, regrwindows=[15, 60], usecache=false)
 Features.write(f4s)
 @test Features.file(f4s).existing == true
+@test isfile(EnvConfig.coinfile(f4s.basecoin, f4s.quotecoin, "grad_15"; subfolder="f4", extension=".arrow"))
+rm(Features.file(f4s).filename; force=true, recursive=true)
+@test Features.file(f4s).existing == false
 f4r = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=true)
-# Features.Features004 should read the stored f4s data and supplement missing data before and after
+# Features.Features004 should read the shared Arrow copy and supplement missing data before and after
 for (regr, df) in f4r.rw
     @test f4.rw[regr]==select!(f4r.rw[regr], names(f4.rw[regr]))  # select! is required to match sequence of columns after read from file
 end
+
+f6cache = Features.Features006()
+Features.addgrad!(f6cache; window=15, offset=0)
+f6cache.ohlcv = ohlcv
+f6df = Features.read!(f6cache)
+@test size(f6df, 1) > 0
+@test "rg+15" in names(f6df)
+@test "ry+15" in names(f6df)
+
 Features.delete(f4s)
 @test Features.file(f4s).existing == false
 

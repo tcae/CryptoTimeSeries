@@ -199,6 +199,57 @@ function file(f4::Features004)
     end
 end
 
+_f4_arrow_filename(name::AbstractString) = replace(String(name), r"[^A-Za-z0-9_.-]" => "_")
+
+"""Write non-destructive per-column Arrow copies of shared F4 data to `coins/<pair>/f4/`."""
+function _write_shared_f4_arrow(basecoin::AbstractString, quotecoin::AbstractString, df::AbstractDataFrame)
+    if (size(df, 1) == 0) || !("opentime" in names(df))
+        return String[]
+    end
+    folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin, "f4")
+    outpaths = String[]
+    for col in names(df)
+        if String(col) == "opentime"
+            continue
+        end
+        colsym = col isa Symbol ? col : Symbol(col)
+        push!(outpaths, EnvConfig.savedf(select(df, :opentime, colsym), _f4_arrow_filename(String(col)); folderpath=folderpath, format=:arrow))
+    end
+    return outpaths
+end
+
+"""Read shared F4 Arrow column files from `coins/<pair>/f4/` and rebuild the combined dataframe."""
+function _read_shared_f4_arrow(basecoin::AbstractString, quotecoin::AbstractString; columns::Union{Nothing,AbstractVector}=nothing)
+    folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin, "f4")
+    isdir(folderpath) || return DataFrame()
+
+    stems = if isnothing(columns)
+        [splitext(file)[1] for file in readdir(folderpath; join=false, sort=true) if endswith(file, ".arrow")]
+    else
+        [_f4_arrow_filename(String(col)) for col in columns if String(col) != "opentime"]
+    end
+    isempty(stems) && return DataFrame()
+
+    pieces = DataFrame[]
+    for stem in stems
+        df = EnvConfig.readdf(stem; folderpath=folderpath, format=:arrow)
+        if !isnothing(df) && (size(df, 1) > 0)
+            push!(pieces, DataFrame(df))
+        end
+    end
+    isempty(pieces) && return DataFrame()
+
+    result = pieces[1]
+    for piece in pieces[2:end]
+        result = innerjoin(result, piece; on=:opentime)
+    end
+    sort!(result, :opentime)
+    return result
+end
+
+"""Write non-destructive per-column Arrow copies of `Features004` shared cache data."""
+write_arrow(f4::Features004) = _write_shared_f4_arrow(f4.basecoin, f4.quotecoin, _join(f4))
+
 function write(f4::Features004)
     @assert _equaltimes(f4)
     df = _join(f4)
@@ -209,7 +260,9 @@ function write(f4::Features004)
     fn = file(f4)
     try
         JDF.savejdf(fn.filename, df[!, :])
+        arrowpaths = _write_shared_f4_arrow(f4.basecoin, f4.quotecoin, df)
         (verbosity >= 2) && println("$(EnvConfig.now()) saved F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
+        (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved $(length(arrowpaths)) shared F4 Arrow column files for $(f4.basecoin)")
     catch e
         Logging.@error "exception $e detected when writing $(fn.filename)"
     end
@@ -220,7 +273,21 @@ read!(f4::Features004)::Features004 = read!(f4, nothing, nothing)
 function read!(f4::Features004, startdt, enddt)::Features004
     fn = file(f4)
     # try
-        if fn.existing
+        df = _read_shared_f4_arrow(f4.basecoin, f4.quotecoin)
+        if size(df, 1) > 0
+            startdt = isnothing(startdt) ? df[begin, :opentime] : startdt
+            enddt = isnothing(enddt) ? df[end, :opentime] : enddt
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared F4 Arrow data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows")
+            if (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
+                f4.latestloadeddt = df[end, :opentime]
+                startix = Ohlcv.rowix(df[!, :opentime], startdt)
+                startix = df[startix, :opentime] < startdt ? min(lastindex(df[!, :opentime]), startix+1) : startix
+                endix = Ohlcv.rowix(df[!, :opentime], enddt)
+                endix = df[endix, :opentime] > enddt ? max(firstindex(df[!, :opentime]), endix-1) : endix
+                df = df[startix:endix, :]
+                f4 = _split!(f4, df)
+            end
+        elseif fn.existing
             (verbosity >= 3) && println("$(EnvConfig.now()) start loading F4 data of $(f4.basecoin) from $(fn.filename)")
             df = DataFrame(JDF.loadjdf(fn.filename))
             startdt = isnothing(startdt) ? df[begin, :opentime] : startdt
@@ -237,7 +304,7 @@ function read!(f4::Features004, startdt, enddt)::Features004
                 f4 = _split!(f4, df)
             end
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow copy for $(f4.basecoin)")
         end
     # catch e
     #     Logging.@warn "exception $e detected"

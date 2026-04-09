@@ -1,19 +1,19 @@
 using EnvConfig, Trade, Classify, CryptoXch, Bybit
-using DataFrames, JDF
+using DataFrames
 
 function loadtransactions(xc::CryptoXch.XchCache)
     tdf = Bybit.alltransactions(xc.bc)
     odf = Bybit.allorders(xc.bc)
     println("orders of size=$(size(odf)) describe: $(describe(odf, :all))")
     println("transactions of size=$(size(tdf)) describe: $(describe(tdf, :all))")
-    JDF.savejdf(EnvConfig.logpath("BybitTransactions.jdf"), tdf)
-    JDF.savejdf(EnvConfig.logpath("BybitOrders.jdf"), odf)
+    EnvConfig.savedf(tdf, "BybitTransactions")
+    EnvConfig.savedf(odf, "BybitOrders")
     return odf, tdf
 end
 
 function analyzeloaded()
-    tdf = DataFrame(JDF.loadjdf(EnvConfig.logpath("BybitTransactions.jdf")))
-    odf = DataFrame(JDF.loadjdf(EnvConfig.logpath("BybitOrders.jdf")))
+    tdf = EnvConfig.readdf("BybitTransactions")
+    odf = EnvConfig.readdf("BybitOrders")
     println("orders: $odf")
     println("transactions: $tdf")
     return odf, tdf

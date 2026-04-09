@@ -251,4 +251,62 @@ end
     @test featuresdf[!, :dummy] == cached_features[!, :dummy]
 end
 
+@testset "BoundsEstimator reads Arrow subfolder caches" begin
+    oldformat = EnvConfig.dfformat()
+    EnvConfig.init(test)
+    EnvConfig.setdfformat!(:arrow)
+
+    cfg = BoundsEstimator.BoundsEstimatorConfig(
+        configname="ut-bounds-arrow-subfolders",
+        featconfig=BoundsEstimator.boundsf6config01(2),
+        targetconfig=Targets.Bounds01(2),
+        regressormodel=Classify.boundsregressor001,
+        tradingstrategy=BoundsEstimator.tradingstrategy02(),
+        startdt=DateTime("2025-01-01T00:00:00"),
+        enddt=DateTime("2025-01-01T00:10:00"),
+        coins=["SINE"],
+    )
+
+    try
+        cached_results = DataFrame(
+            centertarget=Float32[0.0, 0.01],
+            widthtarget=Float32[0.1, 0.12],
+            pivot=Float32[100.0, 101.0],
+            high=Float32[102.0, 103.0],
+            low=Float32[98.0, 99.0],
+            close=Float32[100.0, 100.5],
+            set=["train", "eval"],
+            coin=["SINE", "SINE"],
+            rangeid=Int16[1, 1],
+            opentime=[DateTime("2025-01-01T00:00:00"), DateTime("2025-01-01T00:01:00")],
+        )
+        cached_features = DataFrame(dummy=Float32[1.0, 2.0])
+        cached_predictions = DataFrame(centerpred=Float32[0.0, 0.02], widthpred=Float32[0.1, 0.11])
+
+        EnvConfig.savedf(cached_results, joinpath("results", "all"); format=:arrow)
+        EnvConfig.savedf(cached_features, joinpath("features", "all"); format=:arrow)
+        EnvConfig.savedf(cached_predictions, joinpath("predictions", "maxpredictions"); format=:arrow)
+
+        @eval BoundsEstimator begin
+            function getfeaturestargets(cfg::BoundsEstimatorConfig, coinix, rangeid, samplesets)
+                error("unexpected Arrow cache rebuild for $(cfg.configname)")
+            end
+        end
+
+        resultsdf, featuresdf = BoundsEstimator.getfeaturestargetsdf(cfg)
+        @test size(resultsdf, 1) == 2
+        @test size(featuresdf, 1) == 2
+        @test resultsdf[!, :centertarget] == cached_results[!, :centertarget]
+        @test featuresdf[!, :dummy] == cached_features[!, :dummy]
+
+        predictionsdf = EnvConfig.readdf(BoundsEstimator.predictionsfilename())
+        @test !isnothing(predictionsdf)
+        @test size(predictionsdf, 1) == 2
+        @test predictionsdf[!, :centerpred] == cached_predictions[!, :centerpred]
+        @test predictionsdf[!, :widthpred] == cached_predictions[!, :widthpred]
+    finally
+        EnvConfig.setdfformat!(oldformat)
+    end
+end
+
 end # module

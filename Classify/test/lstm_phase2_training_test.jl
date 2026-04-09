@@ -29,6 +29,8 @@ using Classify, DataFrames, Test, Random
     
     @test size(contract.features) == (7, 12)
 
+    uniqueprefix(tag::AbstractString) = tag * "_" * basename(tempname())
+
     @testset "generic contract and hidden feature extraction" begin
         generic_contract = Classify.lstm_feature_contract(
             select(df, :sampleix, :rangeid, :set, :target, :longbuy, :shortbuy, :allclose);
@@ -69,7 +71,7 @@ using Classify, DataFrames, Test, Random
     end
     
     @testset "LSTM training convergence" begin
-        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=20, batchsize=4)
+        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=20, batchsize=4, fileprefix=uniqueprefix("lstm_convergence"))
         @test haskey(result, :model)
         @test haskey(result, :losses)
         @test haskey(result, :eval_losses)
@@ -83,9 +85,23 @@ using Classify, DataFrames, Test, Random
             @test result.losses[end] <= result.losses[1] * 1.5
         end
     end
+
+    @testset "LSTM training resumes from checkpoint" begin
+        fileprefix = basename(tempname())
+        first = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=2, batchsize=4, fileprefix=fileprefix, resume=false)
+        @test length(first.losses) == 2
+        @test isfile(first.checkpointfile)
+
+        resumed = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=4, batchsize=4, fileprefix=fileprefix)
+        @test resumed.checkpointfile == first.checkpointfile
+        @test length(resumed.losses) == 4
+        @test length(resumed.eval_losses) == 4
+        @test resumed.losses[1:2] == first.losses
+        @test resumed.eval_losses[1:2] == first.eval_losses
+    end
     
     @testset "LSTM prediction" begin
-        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=10, batchsize=4)
+        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=10, batchsize=4, fileprefix=uniqueprefix("lstm_prediction"))
         model = result.model
         
         windows = Classify.lstm_tensor_windows(contract; seqlen=3)
@@ -104,7 +120,7 @@ using Classify, DataFrames, Test, Random
     end
 
     @testset "LSTM streamed contract prediction" begin
-        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=5, batchsize=2)
+        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=5, batchsize=2, fileprefix=uniqueprefix("lstm_streamed_prediction"))
         model = result.model
 
         windows = Classify.lstm_tensor_windows(contract; seqlen=3)
@@ -120,7 +136,7 @@ using Classify, DataFrames, Test, Random
     end
     
     @testset "LSTM prediction classes" begin
-        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=10, batchsize=4)
+        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=16, maxepoch=10, batchsize=4, fileprefix=uniqueprefix("lstm_prediction_classes"))
         model = result.model
         
         windows = Classify.lstm_tensor_windows(contract; seqlen=3)
@@ -136,7 +152,7 @@ using Classify, DataFrames, Test, Random
     end
     
     @testset "LSTM output structure" begin
-        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=32, maxepoch=5, batchsize=4)
+        result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=32, maxepoch=5, batchsize=4, fileprefix=uniqueprefix("lstm_output_structure"))
         @test result.labels == ["longbuy", "longclose", "shortbuy", "shortclose"]
         @test length(result.losses) <= 20
         @test all(result.losses .> 0)

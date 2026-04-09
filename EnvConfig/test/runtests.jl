@@ -1,6 +1,6 @@
 module EnvConfigTest
 using EnvConfig
-using Test
+using Test, DataFrames, CategoricalArrays
 
 # greet2()
 # x = Authentication(production)
@@ -50,6 +50,11 @@ end
 
 struct ConfigTest <: AbstractConfiguration end
 
+@enum ExampleArrowState begin
+    alpha_state
+    beta_state
+end
+
 function testconfig()
     ct = ConfigTest()
     dd = Dict(
@@ -67,12 +72,72 @@ function testconfig()
     # println("df2=$df2")
 end
 
+function testtableio()
+    df = DataFrame(ix=Int32[1, 2, 3], rangeid=Int64[1, 256, 21571], offset=Int64[-2, 0, 3], value=Float32[1.5f0, 2.5f0, 3.5f0], label=["a", "b", "c"])
+    oldformat = EnvConfig.dfformat()
+    mktempdir() do tmpdir
+        try
+            EnvConfig.setdfformat!(:jdf)
+            jdfpath = EnvConfig.savedf(df, "sample_default"; folderpath=tmpdir)
+            arrowpath = EnvConfig.savedf(df, "sample_arrow"; folderpath=tmpdir, format=:arrow)
+
+            @test isdir(jdfpath)
+            @test isfile(arrowpath)
+            @test EnvConfig.tableexists("sample_default"; folderpath=tmpdir, format=:jdf)
+            @test EnvConfig.tableexists("sample_arrow"; folderpath=tmpdir, format=:arrow)
+            @test EnvConfig.tableexists("sample_default"; folderpath=tmpdir, format=:auto)
+            @test endswith(EnvConfig.tablepath("sample_arrow"; folderpath=tmpdir, format=:arrow), ".arrow")
+            @test endswith(EnvConfig.tablepath("sample_default"; folderpath=tmpdir, format=:jdf), ".jdf")
+
+            jdfdf = EnvConfig.readdf("sample_default"; folderpath=tmpdir)
+            arrowdf = EnvConfig.readdf("sample_arrow"; folderpath=tmpdir, format=:arrow)
+            arrowmutable = EnvConfig.readdf("sample_arrow"; folderpath=tmpdir, format=:arrow, copycols=true)
+            fallbackdf = EnvConfig.readdf("sample_default"; folderpath=tmpdir, format=:arrow)
+
+            @test size(jdfdf) == size(df)
+            @test size(arrowdf) == size(df)
+            @test size(fallbackdf) == size(df)
+            @test jdfdf[!, :ix] == df[!, :ix]
+            @test arrowdf[!, :ix] == df[!, :ix]
+            @test arrowdf[!, :rangeid] == df[!, :rangeid]
+            @test arrowdf[!, :offset] == df[!, :offset]
+            @test eltype(arrowdf[!, :ix]) == UInt8
+            @test eltype(arrowdf[!, :rangeid]) == UInt16
+            @test eltype(arrowdf[!, :offset]) == Int8
+            @test arrowdf[!, :value] == df[!, :value]
+            @test fallbackdf[!, :label] == df[!, :label]
+            @test_throws ReadOnlyMemoryError arrowdf[1, :value] = 9.0f0
+            arrowmutable[1, :value] = 9.0f0
+            @test arrowmutable[1, :value] == 9.0f0
+
+            EnvConfig.setdfformat!(:arrow)
+            switchedpath = EnvConfig.savedf(df, "sample_switched"; folderpath=tmpdir)
+            switcheddf = EnvConfig.readdf("sample_switched"; folderpath=tmpdir)
+            @test isfile(switchedpath)
+            @test size(switcheddf) == size(df)
+            @test switcheddf[!, :ix] == df[!, :ix]
+
+            enumdf = DataFrame(state=ExampleArrowState[alpha_state, beta_state], maybe=Union{Missing, ExampleArrowState}[alpha_state, missing])
+            enumpath = EnvConfig.savedf(enumdf, "enum_sample"; folderpath=tmpdir, format=:arrow)
+            enumloaded = EnvConfig.readdf("enum_sample"; folderpath=tmpdir, format=:arrow)
+            @test isfile(enumpath)
+            @test enumloaded[!, :state] == Int8[Int(alpha_state), Int(beta_state)]
+            @test enumloaded[1, :maybe] == Int8(Int(alpha_state))
+            @test ismissing(enumloaded[2, :maybe])
+            @test eltype(enumloaded[!, :state]) == Int8
+        finally
+            EnvConfig.setdfformat!(oldformat)
+        end
+    end
+end
+
 @testset "Config tests" begin
 
 EnvConfig.verbosity = 3
 testsavebackup()
 testauthentication()
 testconfig()
+testtableio()
 
 @test EnvConfig.datetimeformat == "yymmdd HH:MM"
 # @test EnvConfig.datafile("btc_OHLCV", "_df.csv") == "/home/tor/crypto/Features/btc_OHLCV_df.csv"

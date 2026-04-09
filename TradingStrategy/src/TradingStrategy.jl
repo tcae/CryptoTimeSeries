@@ -28,6 +28,66 @@ abstract type AbstractSingleSymbolTrading <: EnvConfig.AbstractConfiguration end
 "Defines the multi symbol trading interface that shall be provided by all trading strategy implementations."
 abstract type AbstractMultiSymbolTrading <: EnvConfig.AbstractConfiguration end
 
+"Return the normalized config-scoped subfolder used for persisted trade artifacts."
+function tradesfolder(stem::AbstractString="gains")::String
+    normalized = replace(normpath(splitext(String(stem))[1]), '\\' => '/')
+    return startswith(normalized, "trades/") || (normalized == "trades") ? normalized : joinpath("trades", normalized)
+end
+
+"Return the aggregate storage key used for one persisted trade artifact."
+tradesaggregate(stem::AbstractString="gains") = joinpath("trades", splitext(basename(String(stem)))[1] * "_all")
+
+"Return the per-coin storage key used for one persisted trade artifact."
+tradefilename(coin::AbstractString; stem::AbstractString="gains") = joinpath(tradesfolder(stem), uppercase(strip(String(coin))))
+
+"Persist a trades dataframe into the config-scoped `trades/` folder and also emit per-coin copies."
+function savetrades(tradedf::AbstractDataFrame; stem::AbstractString="gains", include_aggregate::Bool=true)
+    if size(tradedf, 1) == 0
+        return String[]
+    end
+    @assert :coin in propertynames(tradedf) "tradedf must contain a :coin column; names=$(names(tradedf))"
+
+    paths = String[]
+    coins = unique(String.(tradedf[!, :coin]))
+    for coin in coins
+        coindf = DataFrame(tradedf[String.(tradedf[!, :coin]) .== coin, :])
+        if size(coindf, 1) > 0
+            push!(paths, EnvConfig.savedf(coindf, tradefilename(coin; stem=stem)))
+        end
+    end
+    if include_aggregate
+        push!(paths, EnvConfig.savedf(DataFrame(tradedf), tradesaggregate(stem)))
+    end
+    return paths
+end
+
+"Load persisted trade artifacts from the config-scoped `trades/` folder with aggregate-first fallback behavior."
+function loadtrades(; stem::AbstractString="gains")
+    aggregate = EnvConfig.readdf(tradesaggregate(stem))
+    if !isnothing(aggregate) && (size(aggregate, 1) > 0)
+        return DataFrame(aggregate)
+    end
+
+    folderpath = normpath(joinpath(EnvConfig.logfolder(), tradesfolder(stem)))
+    isdir(folderpath) || return DataFrame()
+
+    parts = DataFrame[]
+    for entry in readdir(folderpath; join=false, sort=true)
+        name = splitext(entry)[1]
+        piece = EnvConfig.readdf(name; folderpath=folderpath)
+        if !isnothing(piece) && (size(piece, 1) > 0)
+            push!(parts, DataFrame(piece))
+        end
+    end
+    return isempty(parts) ? DataFrame() : reduce(vcat, parts; cols=:union)
+end
+
+"Load the persisted trades for one specific coin from the config-scoped `trades/` folder."
+function loadtrades(coin::AbstractString; stem::AbstractString="gains")
+    tradedf = EnvConfig.readdf(tradefilename(coin; stem=stem))
+    return isnothing(tradedf) ? DataFrame() : DataFrame(tradedf)
+end
+
 "Maps label strings to the trade label symbols used in Targets."
 const _LSTM_LABEL_MAP = Dict(
     "longbuy" => longbuy,

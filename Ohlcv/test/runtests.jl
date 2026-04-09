@@ -179,8 +179,12 @@ dfmin = DataFrame(
 Ohlcv.setdataframe!(ohlcv1t, dfmin)
 Ohlcv.write(ohlcv1t)
 @test Ohlcv.file(ohlcv1t).existing == true
+@test isfile(EnvConfig.coinfile(base, ohlcv1t.quotecoin, "ohlcv"; extension=".arrow"))
+rm(Ohlcv.file(ohlcv1t).filename; force=true, recursive=true)
+@test Ohlcv.file(ohlcv1t).existing == false
 ohlcv1 = Ohlcv.defaultohlcv(base)
 ohlcv1 = Ohlcv.read!(ohlcv1t)
+@test nrow(Ohlcv.dataframe(ohlcv1)) == 9
 Ohlcv.delete(ohlcv1t)
 @test Ohlcv.file(ohlcv1t).existing == false
 EnvConfig.init(mode)

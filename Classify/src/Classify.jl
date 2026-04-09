@@ -4,7 +4,7 @@ Train and evaluate the trading signal classifiers
 module Classify
 
 using CSV, DataFrames, Logging, Dates, Random
-using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils
+using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils, Tables
 using CategoricalArrays
 using CategoricalDistributions
 using Distributions
@@ -273,31 +273,28 @@ function evaluate!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.O
     end
 end
 
-"Returns the full log file path including filename that is used to log the trade simulation results"
+"Returns the storage key used to persist classifier trade simulation results."
 function evalfilename()
-    return EnvConfig.logpath("ClassifierTradesim.jdf")
+    return "ClassifierTradesim"
 end
 
-"Writes the DataFrame of simulation results to file"
+"Writes the DataFrame of simulation results to file."
 function writesimulation(df)
-    if (size(df, 1) > 0)
-        fn = evalfilename()
-        (verbosity >= 3) && println("$(EnvConfig.now()): saving classifier simulation trades in =$fn")
-        JDF.savejdf(fn, parent(df))
+    if size(df, 1) > 0
+        filepath = EnvConfig.savedf(df, evalfilename())
+        (verbosity >= 3) && println("$(EnvConfig.now()): saved classifier simulation trades in $filepath")
     end
 end
 
-"Reads and returns the DataFrame of simulation results from file"
+"Reads and returns the DataFrame of simulation results from file."
 function readsimulation()
-    df = DataFrame()
-    fn = evalfilename()
-    if isdir(fn)
-        df = DataFrame(JDF.loadjdf(fn))
-    end
-    if !isnothing(df) && (size(df, 1) > 0 )
-        (verbosity >= 2) && println("$(EnvConfig.now()) loaded classifier simulation trades from $fn")
+    df = EnvConfig.readdf(evalfilename(); copycols=true)
+    df = isnothing(df) ? DataFrame() : df
+    filepath = EnvConfig.tablepath(evalfilename(); format=:auto)
+    if size(df, 1) > 0
+        (verbosity >= 2) && println("$(EnvConfig.now()) loaded classifier simulation trades from $filepath")
     else
-        (verbosity >= 2) && !isnothing(df) && println("$(EnvConfig.now()) Loading $fn failed")
+        (verbosity >= 2) && println("$(EnvConfig.now()) Loading $filepath failed")
     end
     return df
 end
@@ -787,22 +784,27 @@ function lstm_bounds_trend_features(df::AbstractDataFrame;
 end
 
 """
-Materialize selected dataframe feature columns into a `Float32` matrix of shape
+Materialize selected table feature columns into a `Float32` matrix of shape
 `(nfeatures, nsamples)` without creating a large intermediate wide matrix.
 """
-function _dataframe_feature_matrix(df::AbstractDataFrame, featurecols::AbstractVector; rows=axes(df, 1))
+function _table_feature_matrix(columns, featurecols::AbstractVector; rows)
     nfeatures = length(featurecols)
     nsamples = length(rows)
     feats = Matrix{Float32}(undef, nfeatures, nsamples)
 
     for (fidx, col) in enumerate(featurecols)
-        coldata = df[!, col]
+        colname = col isa Symbol ? col : Symbol(col)
+        coldata = Tables.getcolumn(columns, colname)
         for (j, srcix) in enumerate(rows)
             feats[fidx, j] = Float32(coldata[srcix])
         end
     end
 
     return feats
+end
+
+function _dataframe_feature_matrix(df::AbstractDataFrame, featurecols::AbstractVector; rows=axes(df, 1))
+    return _table_feature_matrix(Tables.columns(df), featurecols; rows=rows)
 end
 
 """
@@ -1169,13 +1171,16 @@ function registersummaryprediction(filename, evalperf=missing, testperf=missing)
     EnvConfig.setlogpath(sf)
 end
 
-"loads and returns the predictions for every ohlcv time of a classifier froma jdf file into a DataFrame"
+"Loads and returns the predictions for every OHLCV time of a classifier into a DataFrame."
 function loadpredictions(filename)
     filename = predictionsfilename(filename)
     df = DataFrame()
     try
-        df = DataFrame(JDF.loadjdf(EnvConfig.logpath(filename)))
-        println("loaded $filename predictions dataframe of size=$(size(df))")
+        loaded = EnvConfig.readdf(filename; copycols=true)
+        if !isnothing(loaded)
+            df = loaded
+            println("loaded $filename predictions dataframe of size=$(size(df))")
+        end
     catch e
         Logging.@warn "exception $e detected"
     end
@@ -1207,12 +1212,12 @@ function loadpredictions(filename)
     return df
 end
 
-"saves the predictions for every ohlcv time of a classifier given in df"
+"Saves the predictions for every OHLCV time of a classifier given in `df`."
 function savepredictions(df, fileprefix)
     filename = predictionsfilename(fileprefix)
     println("saving $filename predictions dataframe of size=$(size(df))")
     try
-        JDF.savejdf(EnvConfig.logpath(filename), df)
+        EnvConfig.savedf(df, filename)
     catch e
         Logging.@warn "exception $e detected"
     end
@@ -1699,15 +1704,17 @@ function penultimatefeatures(nn::NN, features::AbstractMatrix; stoplayer::Int=le
 end
 
 """
-Return the penultimate activations for dataframe-backed feature columns while
+Return the penultimate activations for table-backed feature columns while
 materializing only one batch at a time.
 """
-function penultimatefeatures(nn::NN, df::AbstractDataFrame, featurecols::AbstractVector;
+function penultimatefeatures(nn::NN, table, featurecols::AbstractVector;
     stoplayer::Int=length(nn.model.layers) - 1, batchsize::Int=4096)
     @assert !isempty(featurecols) "featurecols must not be empty"
     @assert batchsize > 0 "batchsize=$(batchsize) must be > 0"
 
-    nobs = nrow(df)
+    columns = Tables.columns(table)
+    firstcol = featurecols[1] isa Symbol ? featurecols[1] : Symbol(featurecols[1])
+    nobs = length(Tables.getcolumn(columns, firstcol))
     if nobs == 0
         return Matrix{Float32}(undef, 0, 0)
     end
@@ -1715,7 +1722,7 @@ function penultimatefeatures(nn::NN, df::AbstractDataFrame, featurecols::Abstrac
     hidden = Matrix{Float32}(undef, 0, 0)
     for start in 1:batchsize:nobs
         stop = min(start + batchsize - 1, nobs)
-        x_batch = _dataframe_feature_matrix(df, featurecols; rows=start:stop)
+        x_batch = _table_feature_matrix(columns, featurecols; rows=start:stop)
         hidden_batch = penultimatefeatures(nn, x_batch; stoplayer=stoplayer)
         if size(hidden, 1) == 0
             hidden = Matrix{Float32}(undef, size(hidden_batch, 1), nobs)
@@ -1822,16 +1829,19 @@ end
 
 function lossesfilename(fileprefix::String)
     prefix = splitext(fileprefix)[1]
-    return "losses_" * prefix * ".jdf"
+    return "losses_" * prefix
 end
 
 function loadlosses!(nn)
     filename = lossesfilename(nn.fileprefix)
     df = DataFrame()
     try
-        df = DataFrame(JDF.loadjdf(EnvConfig.logpath(filename)))
-        nn.losses = df[!, "losses"]
-        println("loaded $filename losses dataframe of size=$(size(df))")
+        loaded = EnvConfig.readdf(filename)
+        if !isnothing(loaded)
+            df = loaded
+            nn.losses = Vector(df[!, "losses"])
+            println("loaded $filename losses dataframe of size=$(size(df))")
+        end
     catch e
         Logging.@warn "exception $e detected"
     end
@@ -1843,7 +1853,7 @@ function savelosses(nn::NN)
     df = DataFrame(reshape(nn.losses, (length(nn.losses), 1)), ["losses"])
     println("saving $filename losses dataframe of size=$(size(df))")
     try
-        JDF.savejdf(EnvConfig.logpath(filename), df)
+        EnvConfig.savedf(df, filename)
     catch e
         Logging.@warn "exception $e detected"
     end
@@ -2137,8 +2147,7 @@ function confusionmatrix_deprecated(predictions::AbstractDataFrame)
 end
 
 function predictionsfilename(fileprefix::String)
-    prefix = splitext(fileprefix)[1]
-    return prefix * ".jdf"
+    return splitext(fileprefix)[1]
 end
 
 labelvec(labelindexvec, labels=Targets.uniquelabels()) = [labels[i] for i in labelindexvec]
