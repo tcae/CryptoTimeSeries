@@ -431,19 +431,22 @@ function convert_shared_data(; bases::Vector{String}=String[], artifacts::Vector
     rows = NamedTuple[]
 
     if _artifact_requested(artifacts, "ohlcv")
-        for ohlcv in Ohlcv.OhlcvFiles()
-            if isempty(selectedbases) || (uppercase(ohlcv.base) in selectedbases)
+        for source in _shared_jdf_sources("OHLCV")
+            parsed = _parse_shared_basequote(source)
+            if isempty(selectedbases) || (parsed.base in selectedbases)
                 try
+                    ohlcv = Ohlcv.defaultohlcv(parsed.base)
+                    Ohlcv.read!(ohlcv)
                     push!(rows, convert_ohlcv_cache(ohlcv))
                 catch e
                     push!(rows, (
                         scope="shared",
-                        coin=uppercase(ohlcv.base) * uppercase(ohlcv.quotecoin),
+                        coin=parsed.base * parsed.quotecoin,
                         artifact="ohlcv",
                         status="error",
-                        rows=Int32(size(ohlcv.df, 1)),
-                        cols=Int32(size(ohlcv.df, 2)),
-                        source=String(Ohlcv.file(ohlcv).filename),
+                        rows=Int32(0),
+                        cols=Int32(0),
+                        source=String(source),
                         output="",
                         note=sprint(showerror, e),
                         converted_at=_shared_timestamp(),
@@ -454,19 +457,22 @@ function convert_shared_data(; bases::Vector{String}=String[], artifacts::Vector
     end
 
     if _artifact_requested(artifacts, "f4", "features004")
-        for f4 in Features.Features004Files()
-            if isempty(selectedbases) || (uppercase(f4.basecoin) in selectedbases)
+        for source in _shared_jdf_sources("Features004")
+            parsed = _parse_shared_basequote(source)
+            if isempty(selectedbases) || (parsed.base in selectedbases)
                 try
+                    f4 = Features.Features004(parsed.base, parsed.quotecoin)
+                    Features.read!(f4)
                     push!(rows, convert_f4_cache(f4))
                 catch e
                     push!(rows, (
                         scope="shared",
-                        coin=uppercase(f4.basecoin) * uppercase(f4.quotecoin),
+                        coin=parsed.base * parsed.quotecoin,
                         artifact="f4",
                         status="error",
-                        rows=Int32(isempty(f4.rw) ? 0 : length(Features.opentime(f4))),
-                        cols=Int32(isempty(f4.rw) ? 0 : length(first(values(f4.rw)))),
-                        source=String(Features.file(f4).filename),
+                        rows=Int32(0),
+                        cols=Int32(0),
+                        source=String(source),
                         output="",
                         note=sprint(showerror, e),
                         converted_at=_shared_timestamp(),

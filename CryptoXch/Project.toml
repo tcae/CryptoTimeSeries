@@ -4,6 +4,7 @@ authors = ["tcae <tcae@posteo.nl>"]
 version = "1.6.1"
 
 [deps]
+Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
 Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataAPI = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"

@@ -8,6 +8,10 @@
 # include("../Assets/test/runtests.jl")
 # include("../Trade/test/trade_test.jl")
 using Pkg
-Pkg.test(["EnvConfig", "Ohlcv", "Features", "Targets", "Classify", "CryptoXch", "Assets"]; coverage=false)  # coverage=true generates cov files to analyze code coverage of tests
+# Pkg.test(["EnvConfig", "Ohlcv", "Features", "Targets", "Classify", "CryptoXch", "Assets"]; coverage=false)  # coverage=true generates cov files to analyze code coverage of tests
+Pkg.test(["EnvConfig", "Ohlcv", "Features", "Targets", "Classify", "Assets"]; coverage=false)  # coverage=true generates cov files to analyze code coverage of tests
 
 include("bounds_estimator_test.jl")
+include("trend_detector_cache_test.jl")
+include("script_help_test.jl")
+include("tradeadvice_lstm_test.jl")

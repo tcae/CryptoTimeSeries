@@ -48,12 +48,15 @@ using Classify, DataFrames, Test, Random
         hidden = Classify.penultimatefeatures(nn, featuremat)
         featuredf = DataFrame([Symbol("f" * string(ix)) => vec(featuremat[ix, :]) for ix in 1:size(featuremat, 1)])
         hidden_batched = Classify.penultimatefeatures(nn, featuredf, Symbol.(names(featuredf)); batchsize=2)
+        hidden_rows = Classify.penultimatefeatures(nn, featuredf, Symbol.(names(featuredf)); batchsize=2, rows=[1, 3, 5])
         lay1 = 3 * 7
         lay2 = round(Int, lay1 * 2 / 3)
         lay3 = round(Int, (lay2 + 3) / 2)
         @test size(hidden) == (lay3, 5)
         @test size(hidden_batched) == size(hidden)
         @test hidden_batched ≈ hidden
+        @test size(hidden_rows) == (lay3, 3)
+        @test hidden_rows ≈ hidden[:, [1, 3, 5]]
         @test all(isfinite, hidden)
     end
     
@@ -68,6 +71,11 @@ using Classify, DataFrames, Test, Random
         X_test = randn(Float32, nfeatures, seqlen, 2)
         ŷ = model(X_test)
         @test size(ŷ) == (4, seqlen, 2)
+    end
+
+    @testset "nnconverged accepts loss vectors" begin
+        @test Classify.nnconverged(Float32[1.0, 0.9, 0.8, 0.7, 0.6, 0.55, 0.50, 0.50, 0.51, 0.52, 0.53])
+        @test !Classify.nnconverged(Float32[1.0, 0.9, 0.8, 0.7, 0.6])
     end
     
     @testset "LSTM training convergence" begin
@@ -133,6 +141,45 @@ using Classify, DataFrames, Test, Random
         @test streamed.sets == windows.sets
         @test streamed.rangeids == windows.rangeids
         @test streamed.endrix == windows.endrix
+    end
+
+    @testset "LSTM multi-contract streaming" begin
+        contract_a = Classify.lstm_feature_contract(
+            contract.features[:, 1:6];
+            feature_names=contract.feature_names,
+            targets=contract.targets[1:6],
+            sets=contract.sets[1:6],
+            rangeids=contract.rangeids[1:6],
+            rix=contract.rix[1:6],
+        )
+        contract_b = Classify.lstm_feature_contract(
+            contract.features[:, 7:12];
+            feature_names=contract.feature_names,
+            targets=contract.targets[7:12],
+            sets=contract.sets[7:12],
+            rangeids=contract.rangeids[7:12],
+            rix=contract.rix[7:12],
+        )
+        contracts = [contract_a, contract_b]
+
+        combined_windows = Classify.lstm_tensor_windows(contract; seqlen=3)
+        split_windows = Classify.lstm_tensor_windows(contracts; seqlen=3)
+
+        @test size(split_windows.X) == size(combined_windows.X)
+        @test all(isapprox.(split_windows.X, combined_windows.X; atol=1e-5))
+        @test split_windows.targets == combined_windows.targets
+        @test split_windows.sets == combined_windows.sets
+        @test split_windows.rangeids == combined_windows.rangeids
+        @test split_windows.endrix == combined_windows.endrix
+
+        result = Classify.train_lstm_trade_signals!(contracts, 3; hidden_dim=16, maxepoch=5, batchsize=2, fileprefix=uniqueprefix("lstm_multi_contract"))
+        pred = Classify.predict_lstm_trade_signals(result.model, contracts; seqlen=3, batchsize=2)
+
+        @test size(pred.probs, 2) == length(split_windows.targets)
+        @test pred.targets == split_windows.targets
+        @test pred.sets == split_windows.sets
+        @test pred.rangeids == split_windows.rangeids
+        @test pred.endrix == split_windows.endrix
     end
     
     @testset "LSTM prediction classes" begin

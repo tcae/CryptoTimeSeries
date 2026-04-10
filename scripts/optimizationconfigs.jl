@@ -2,17 +2,19 @@ testcoins() = ["SINE", "DOUBLESINE"]
 traincoins() = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
 # traincoins() = ["ETH", "BTC", "ADA", "SOL", "XRP"]
 
+settypes() = ["train", "test", "eval"]
+
 partitionconfig01() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
 partitionconfig02() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=8*60, minpartitionsize=12*60, maxpartitionsize=2*24*60)
 
-resultsfilename(coin=nothing) = isnothing(coin) ? "results.jdf" : "results_$coin.jdf" # includes hlcp, sets, ranges, targets
-featuresfilename(coin=nothing) = isnothing(coin) ? "features.jdf" : "features_$coin.jdf"
-predictionsfilename() = "maxpredictions.jdf"
-confusionfilename() = "confusion.jdf"
-xconfusionfilename() = "xconfusion.jdf"
-distancesfilename() = joinpath("trades", "distances.jdf")
-gainsfilename() = joinpath("trades", "gains_all.jdf")
-targetissuesfilename() = "targetissues.jdf"
+resultsfilename(coin=nothing) = isnothing(coin) ? joinpath("results", "all") : joinpath("results", String(coin)) # includes hlcp, sets, ranges, targets
+featuresfilename(coin=nothing) = isnothing(coin) ? joinpath("features", "all") : joinpath("features", String(coin))
+predictionsfilename() = joinpath("predictions", "maxpredictions")
+confusionfilename() = joinpath("predictions", "confusion")
+xconfusionfilename() = joinpath("predictions", "xconfusion")
+distancesfilename() = joinpath("trades", "distances")
+gainsfilename() = joinpath("trades", "gains_all")
+targetissuesfilename() = joinpath("results", "targetissues")
 
 tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm01!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
 tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm02!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
@@ -36,7 +38,8 @@ targetconfig12() = trend04targetconfig(10, 24*60, 0.05, 0.03) # Trend04 with lon
 boundstargetsconfig01(window) = Targets.Bounds01(window)
 
 
-settypes() = ["train", "test", "eval"]
+
+#region FeaturesConfig
 
 " start 3* 5min with short segments and also add a 5min std element for high volatile situations then become larger "
 function trendf6config01()
@@ -159,6 +162,9 @@ function boundsf6config01(window)
     return featcfg
 end
 
+#endregion FeaturesConfig
+
+#region TrendConfig
 
 """
 mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
@@ -313,31 +319,36 @@ mk029 = mk009 without oversampling but implementation for hold equally strict th
 """
 mk029config() = (configname="029", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
 
+#endregion TrendConfig
 
-
+#region BoundsConfig
 "Bounds estimator for short term limits"
-boundsmk001config() = (configname="001", featconfig = boundsf6config01(15), targetconfig = boundstargetsconfig01(15), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
+boundsmk001config() = (configname="001", featconfig = boundsf6config01(5), targetconfig = boundstargetsconfig01(5), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
 
 "Bounds estimator for mid term limits"
 boundsmk002config() = (configname="002", featconfig = boundsf6config01(4*60), targetconfig = boundstargetsconfig01(4*60), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
 
+#endregion BoundsConfig
+
+#region AdviceConfig
+
 "Trade advice LSTM baseline config for phase smoothing over TrendDetector outputs."
-tradeadvicemk025config() = (
+tradeadvicemk001config() = (
     configname="001",
-    trendconfigref="025",
-    seqlen=3,
+    trendconfigref="029",
+    seqlen=15,
     hidden_dim=32,
     maxepoch=200,
     batchsize=64,
     openthresholds=Float32[0.8f0, 0.7f0, 0.6f0],
-    closethresholds=Float32[0.6f0, 0.55f0, 0.5f0],
-    entrytimeout=2,
-    exittimeout=2,
-    exitstrategy=:opposite_signal_market,
+    closethresholds=Float32[0.6f0, 0.5f0],
+    entrytimeout=2, # currently not used
+    exittimeout=2, # currently not used
+    exitstrategy=:opposite_signal_market, # currently not used
 )
 
 "Alternative eval-sweep with a slightly longer sequence and tighter thresholds for comparison on the eval split."
-tradeadvicemk026config() = (
+tradeadvicemk002config() = (
     configname="002",
     trendconfigref="025E",
     seqlen=5,
@@ -346,9 +357,10 @@ tradeadvicemk026config() = (
     batchsize=64,
     openthresholds=Float32[0.85f0, 0.75f0, 0.65f0],
     closethresholds=Float32[0.65f0, 0.6f0, 0.55f0],
-    entrytimeout=2,
-    exittimeout=3,
-    exitstrategy=:opposite_signal_market,
+    entrytimeout=2, # currently not used
+    exittimeout=3,  # currently not used
+    exitstrategy=:opposite_signal_market,  # currently not used
 )
 
+#endregion AdviceConfig
 

@@ -935,6 +935,51 @@ function _lstm_window_index(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
 end
 
 """
+Build compact metadata for LSTM windows across multiple contracts without
+concatenating their feature matrices in memory.
+"""
+function _lstm_window_index(contracts::AbstractVector{<:LstmBoundsTrendFeatures}; seqlen::Int=3)
+    @assert seqlen > 0 "seqlen=$(seqlen) must be > 0"
+    isempty(contracts) && return (nfeatures=0, seqlen=seqlen, order=nothing, endpos=Int[], targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[], contractix=Int[], local_indexes=Any[])
+
+    nfeatures = size(first(contracts).features, 1)
+    local_indexes = Vector{Any}(undef, length(contracts))
+    totalwindows = 0
+
+    for (cix, contract) in pairs(contracts)
+        @assert size(contract.features, 1) == nfeatures "all contracts must share the same feature count; contract $(cix) has $(size(contract.features, 1)) features but expected $(nfeatures)"
+        localindex = _lstm_window_index(contract; seqlen=seqlen)
+        local_indexes[cix] = localindex
+        totalwindows += length(localindex.endpos)
+    end
+
+    endpos = Vector{Int}(undef, totalwindows)
+    yvec = Vector{String}(undef, totalwindows)
+    svec = Vector{String}(undef, totalwindows)
+    ridvec = Vector{Int32}(undef, totalwindows)
+    endrix = Vector{Int32}(undef, totalwindows)
+    contractix = Vector{Int}(undef, totalwindows)
+
+    wi = 1
+    for (cix, localindex) in pairs(local_indexes)
+        nlocal = length(localindex.endpos)
+        if nlocal > 0
+            rng = wi:(wi + nlocal - 1)
+            endpos[rng] .= localindex.endpos
+            yvec[rng] .= localindex.targets
+            svec[rng] .= localindex.sets
+            ridvec[rng] .= localindex.rangeids
+            endrix[rng] .= localindex.endrix
+            contractix[rng] .= cix
+            wi += nlocal
+        end
+    end
+
+    @assert wi == totalwindows + 1 "multi-contract window indexing mismatch: wi=$(wi) totalwindows=$(totalwindows)"
+    return (nfeatures=nfeatures, seqlen=seqlen, order=nothing, endpos=endpos, targets=yvec, sets=svec, rangeids=ridvec, endrix=endrix, contractix=contractix, local_indexes=local_indexes)
+end
+
+"""
 Materialize only the requested LSTM windows into a dense tensor.
 """
 function _lstm_window_tensor(contract::LstmBoundsTrendFeatures, windowindex, windowix::AbstractVector{<:Integer})
@@ -949,6 +994,25 @@ function _lstm_window_tensor(contract::LstmBoundsTrendFeatures, windowindex, win
         for seqix in 1:windowindex.seqlen
             srcix = order[wstart + seqix - 1]
             @views X[:, seqix, bi] .= feats[:, srcix]
+        end
+    end
+
+    return X
+end
+
+function _lstm_window_tensor(contracts::AbstractVector{<:LstmBoundsTrendFeatures}, windowindex, windowix::AbstractVector{<:Integer})
+    nwindows = length(windowix)
+    X = Array{Float32, 3}(undef, windowindex.nfeatures, windowindex.seqlen, nwindows)
+
+    for (bi, wi) in enumerate(windowix)
+        cix = windowindex.contractix[wi]
+        contract = contracts[cix]
+        localindex = windowindex.local_indexes[cix]
+        wend = windowindex.endpos[wi]
+        wstart = wend - windowindex.seqlen + 1
+        for seqix in 1:windowindex.seqlen
+            srcix = localindex.order[wstart + seqix - 1]
+            @views X[:, seqix, bi] .= contract.features[:, srcix]
         end
     end
 
@@ -970,6 +1034,17 @@ function lstm_tensor_windows(contract::LstmBoundsTrendFeatures; seqlen::Int=3)
     end
 
     X = _lstm_window_tensor(contract, windowindex, 1:length(windowindex.endpos))
+    return (X=X, targets=windowindex.targets, sets=windowindex.sets, rangeids=windowindex.rangeids, endrix=windowindex.endrix)
+end
+
+function lstm_tensor_windows(contracts::AbstractVector{<:LstmBoundsTrendFeatures}; seqlen::Int=3)
+    windowindex = _lstm_window_index(contracts; seqlen=seqlen)
+    if isempty(windowindex.endpos)
+        xempty = Array{Float32, 3}(undef, windowindex.nfeatures, seqlen, 0)
+        return (X=xempty, targets=String[], sets=String[], rangeids=Int32[], endrix=Int32[])
+    end
+
+    X = _lstm_window_tensor(contracts, windowindex, 1:length(windowindex.endpos))
     return (X=X, targets=windowindex.targets, sets=windowindex.sets, rangeids=windowindex.rangeids, endrix=windowindex.endrix)
 end
 
@@ -1613,8 +1688,9 @@ function boundsregressor001(featurecount, labels, mnemonic)::NN
     return nn
 end
 
-"converged when losses did not improve in last 4 epochs"
-nnconverged(nn) = (length(nn.losses) > 10) && (nn.losses[end-4] <= nn.losses[end-3] <= nn.losses[end-2] <= nn.losses[end-1] <= nn.losses[end])
+"Return whether a loss history has converged by showing no improvement in the last 5 recorded epochs after at least 11 epochs."
+nnconverged(losses::AbstractVector) = (length(losses) > 10) && (losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end])
+nnconverged(nn) = nnconverged(nn.losses)
 
 # using Flux
 # using NNlib: softplus
@@ -1706,15 +1782,21 @@ end
 """
 Return the penultimate activations for table-backed feature columns while
 materializing only one batch at a time.
+
+When `rows` is provided, only those source rows are evaluated. This allows
+callers to iterate coin-by-coin without concatenating the full hidden matrix in
+memory.
 """
 function penultimatefeatures(nn::NN, table, featurecols::AbstractVector;
-    stoplayer::Int=length(nn.model.layers) - 1, batchsize::Int=4096)
+    stoplayer::Int=length(nn.model.layers) - 1, batchsize::Int=4096, rows=nothing)
     @assert !isempty(featurecols) "featurecols must not be empty"
     @assert batchsize > 0 "batchsize=$(batchsize) must be > 0"
 
     columns = Tables.columns(table)
     firstcol = featurecols[1] isa Symbol ? featurecols[1] : Symbol(featurecols[1])
-    nobs = length(Tables.getcolumn(columns, firstcol))
+    nobs_total = length(Tables.getcolumn(columns, firstcol))
+    selectedrows = isnothing(rows) ? collect(1:nobs_total) : collect(rows)
+    nobs = length(selectedrows)
     if nobs == 0
         return Matrix{Float32}(undef, 0, 0)
     end
@@ -1722,7 +1804,8 @@ function penultimatefeatures(nn::NN, table, featurecols::AbstractVector;
     hidden = Matrix{Float32}(undef, 0, 0)
     for start in 1:batchsize:nobs
         stop = min(start + batchsize - 1, nobs)
-        x_batch = _table_feature_matrix(columns, featurecols; rows=start:stop)
+        batchrows = @view selectedrows[start:stop]
+        x_batch = _table_feature_matrix(columns, featurecols; rows=batchrows)
         hidden_batch = penultimatefeatures(nn, x_batch; stoplayer=stoplayer)
         if size(hidden, 1) == 0
             hidden = Matrix{Float32}(undef, size(hidden_batch, 1), nobs)

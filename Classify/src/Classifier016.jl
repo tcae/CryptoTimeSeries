@@ -251,7 +251,7 @@ end
 Compute the mean LSTM loss over a set of windows while materializing only one
 batch at a time.
 """
-function _mean_lstm_trade_signal_loss(model, lossfunc, contract::LstmBoundsTrendFeatures, windowindex,
+function _mean_lstm_trade_signal_loss(model, lossfunc, contract, windowindex,
     sampleix::AbstractVector{<:Integer}, trade_labels::Vector{String}, batchsize::Int)::Float32
     isempty(sampleix) && return NaN32
 
@@ -276,12 +276,12 @@ function _mean_lstm_trade_signal_loss(model, lossfunc, contract::LstmBoundsTrend
 end
 
 """
-    train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int;
+    train_lstm_trade_signals!(contract, seqlen::Int;
                               hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64,
                               labels=nothing, fileprefix::AbstractString="LstmTradeSignalModel",
                               resume::Bool=true)
 
-Train an LSTM trade signal classifier on contract data.
+Train an LSTM trade signal classifier on one contract or a vector of per-coin contracts.
 
 The training loop keeps memory bounded by materializing only the current batch of
 sliding windows instead of building duplicated full-dataset tensors. When
@@ -289,7 +289,7 @@ sliding windows instead of building duplicated full-dataset tensors. When
 stopped run can continue from its last completed epoch.
 
 # Arguments
-- `contract::LstmBoundsTrendFeatures`: Contract with features, targets, sets
+- `contract`: Either one `LstmBoundsTrendFeatures` or a vector of them
 - `seqlen::Int`: Sliding window sequence length
 - `hidden_dim::Int`: LSTM hidden dimension (default: 32)
 - `maxepoch::Int`: Maximum training epochs (default: 1000)
@@ -310,7 +310,7 @@ result = Classify.train_lstm_trade_signals!(contract, 3; hidden_dim=32)
 # result.checkpointfile points to the saved BSON checkpoint
 ```
 """
-function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::Int;
+function train_lstm_trade_signals!(contract, seqlen::Int;
     hidden_dim::Int=32, maxepoch::Int=1000, batchsize::Int=64,
     labels::Union{Nothing,Vector{String}}=nothing, fileprefix::AbstractString="LstmTradeSignalModel",
     resume::Bool=true)
@@ -417,9 +417,8 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
 
         checkpointfile = save_lstm_checkpoint(model, optim, losses, eval_losses, trade_labels, seqlen, hidden_dim, epoch; fileprefix=fileprefix, nfeatures=nfeatures)
 
-        if length(losses) > 5 &&
-           losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end]
-            (verbosity >= 2) && println("Converged at epoch $epoch (5 consecutive non-decreasing loss epochs)")
+        if nnconverged(losses)
+            (verbosity >= 2) && println("Converged at epoch $epoch according to nnconverged(losses); recent train losses=$(losses[end-4:end])")
             break
         end
     end
@@ -431,16 +430,16 @@ function train_lstm_trade_signals!(contract::LstmBoundsTrendFeatures, seqlen::In
 end
 
 """
-    predict_lstm_trade_signals(model, contract::LstmBoundsTrendFeatures; seqlen::Int,
+    predict_lstm_trade_signals(model, contract; seqlen::Int,
                                batchsize::Int=1024)
 
-Predict trade-signal probabilities for all windows in `contract` while only
-materializing one batch at a time.
+Predict trade-signal probabilities for all windows in one contract or a vector
+of per-coin contracts while only materializing one batch at a time.
 
 Returns `(probs, targets, sets, rangeids, endrix)` with metadata aligned to the
 columns of `probs`.
 """
-function predict_lstm_trade_signals(model, contract::LstmBoundsTrendFeatures; seqlen::Int, batchsize::Int=1024)
+function predict_lstm_trade_signals(model, contract; seqlen::Int, batchsize::Int=1024)
     windowindex = _lstm_window_index(contract; seqlen=seqlen)
     nwindows = length(windowindex.endpos)
     if nwindows == 0

@@ -474,19 +474,29 @@ function _compact_integer_values(values)
     return [ismissing(value) ? missing : storagetype(value) for value in values]
 end
 
-"Convert non-native Arrow columns to compact enum codes or categorical strings while preserving missings."
+"Convert values to a categorical representation that Arrow stores as dictionary-encoded while preserving missings."
+function _arrow_dictencoded_categorical(values)
+    normalized = _arrow_stringify.(values)
+    return CategoricalArray(normalized)
+end
+
+"Convert non-native Arrow columns to dictionary-encoded categorical or enum-backed values while preserving missings."
 function _arrow_safe_table(table)
     df = DataFrame(table)
     for name in names(df)
         column = df[!, name]
+        colsym = Symbol(name)
         T = Base.nonmissingtype(eltype(column))
         if T <: Enum
-            df[!, name] = _enum_codes(column)
+            df[!, name] = _arrow_dictencoded_categorical(column)
+        elseif (column isa CategoricalArray) || (T <: CategoricalValue)
+            df[!, name] = column
+        elseif (colsym == :coin) && (T <: AbstractString)
+            df[!, name] = _arrow_dictencoded_categorical(column)
         elseif (T <: Integer) && !(T <: Bool)
             df[!, name] = _compact_integer_values(column)
         elseif !_arrow_native_type(T)
-            normalized = _arrow_stringify.(column)
-            df[!, name] = CategoricalArray(normalized)
+            df[!, name] = _arrow_dictencoded_categorical(column)
         end
     end
     return df

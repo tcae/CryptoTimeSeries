@@ -35,6 +35,22 @@ end
     @test upper ≈ Float32[110.0, 212.0, 50.25]
 end
 
+@testset "BoundsEstimator skips empty coin results" begin
+    mktempdir() do tmpdir
+        @test !BoundsEstimator._persist_coin_featuretarget_cache("SINE", nothing, nothing; folderpath=tmpdir)
+
+        emptyresults = DataFrame(centertarget=Float32[], widthtarget=Float32[])
+        emptyfeatures = DataFrame(dummy=Float32[])
+        @test !BoundsEstimator._persist_coin_featuretarget_cache("SINE", emptyresults, emptyfeatures; folderpath=tmpdir)
+
+        savedresults = DataFrame(centertarget=Float32[0.0], widthtarget=Float32[0.1])
+        savedfeatures = DataFrame(dummy=Float32[1.0])
+        @test BoundsEstimator._persist_coin_featuretarget_cache("SINE", savedresults, savedfeatures; folderpath=tmpdir)
+        @test EnvConfig.tableexists(BoundsEstimator.resultsfilename("SINE"); folderpath=tmpdir, format=:auto)
+        @test EnvConfig.tableexists(BoundsEstimator.featuresfilename("SINE"); folderpath=tmpdir, format=:auto)
+    end
+end
+
 @testset "BoundsEstimator prediction cache format validation" begin
     currentdf = DataFrame(centerpred=Float32[0.0], widthpred=Float32[0.1])
     legacydf = DataFrame(
@@ -233,8 +249,10 @@ end
     )
     cached_features = DataFrame(dummy=Float32[1.0, 2.0])
 
-    EnvConfig.savedf(cached_results, BoundsEstimator.resultsfilename())
-    EnvConfig.savedf(cached_features, BoundsEstimator.featuresfilename())
+    EnvConfig.deletefolder(BoundsEstimator.resultsfilename())
+    EnvConfig.deletefolder(BoundsEstimator.featuresfilename())
+    EnvConfig.savedf(cached_results, BoundsEstimator.resultsfilename("SINE"))
+    EnvConfig.savedf(cached_features, BoundsEstimator.featuresfilename("SINE"))
 
     @eval BoundsEstimator begin
         function getfeaturestargets(cfg::BoundsEstimatorConfig, coinix, rangeid, samplesets)
@@ -283,9 +301,11 @@ end
         cached_features = DataFrame(dummy=Float32[1.0, 2.0])
         cached_predictions = DataFrame(centerpred=Float32[0.0, 0.02], widthpred=Float32[0.1, 0.11])
 
-        EnvConfig.savedf(cached_results, joinpath("results", "all"); format=:arrow)
-        EnvConfig.savedf(cached_features, joinpath("features", "all"); format=:arrow)
-        EnvConfig.savedf(cached_predictions, joinpath("predictions", "maxpredictions"); format=:arrow)
+        EnvConfig.deletefolder(BoundsEstimator.resultsfilename())
+        EnvConfig.deletefolder(BoundsEstimator.featuresfilename())
+        EnvConfig.savedf(cached_results, BoundsEstimator.resultsfilename("SINE"); format=:arrow)
+        EnvConfig.savedf(cached_features, BoundsEstimator.featuresfilename("SINE"); format=:arrow)
+        EnvConfig.savedf(cached_predictions, BoundsEstimator.predictionsfilename(); format=:arrow)
 
         @eval BoundsEstimator begin
             function getfeaturestargets(cfg::BoundsEstimatorConfig, coinix, rangeid, samplesets)
@@ -304,6 +324,58 @@ end
         @test size(predictionsdf, 1) == 2
         @test predictionsdf[!, :centerpred] == cached_predictions[!, :centerpred]
         @test predictionsdf[!, :widthpred] == cached_predictions[!, :widthpred]
+    finally
+        EnvConfig.setdfformat!(oldformat)
+    end
+end
+
+@testset "BoundsEstimator reads coin-specific Arrow caches without merged cache" begin
+    oldformat = EnvConfig.dfformat()
+    EnvConfig.init(test)
+    EnvConfig.setdfformat!(:arrow)
+
+    cfg = BoundsEstimator.BoundsEstimatorConfig(
+        configname="ut-bounds-coin-arrow-caches",
+        featconfig=BoundsEstimator.boundsf6config01(2),
+        targetconfig=Targets.Bounds01(2),
+        regressormodel=Classify.boundsregressor001,
+        tradingstrategy=BoundsEstimator.tradingstrategy02(),
+        startdt=DateTime("2025-01-01T00:00:00"),
+        enddt=DateTime("2025-01-01T00:10:00"),
+        coins=["SINE"],
+    )
+
+    try
+        cached_results = DataFrame(
+            centertarget=Float32[0.0, 0.01],
+            widthtarget=Float32[0.1, 0.12],
+            pivot=Float32[100.0, 101.0],
+            high=Float32[102.0, 103.0],
+            low=Float32[98.0, 99.0],
+            close=Float32[100.0, 100.5],
+            set=["train", "eval"],
+            coin=["SINE", "SINE"],
+            rangeid=Int16[1, 1],
+            opentime=[DateTime("2025-01-01T00:00:00"), DateTime("2025-01-01T00:01:00")],
+        )
+        cached_features = DataFrame(dummy=Float32[1.0, 2.0])
+
+        EnvConfig.deletefolder(BoundsEstimator.resultsfilename())
+        EnvConfig.deletefolder(BoundsEstimator.featuresfilename())
+        EnvConfig.savedf(cached_results, BoundsEstimator.resultsfilename("SINE"); format=:arrow)
+        EnvConfig.savedf(cached_features, BoundsEstimator.featuresfilename("SINE"); format=:arrow)
+
+        @eval BoundsEstimator begin
+            function getfeaturestargets(cfg::BoundsEstimatorConfig, coinix, rangeid, samplesets)
+                error("unexpected coin-specific bounds cache rebuild for $(cfg.configname)")
+            end
+        end
+
+        resultsdf, featuresdf = BoundsEstimator.getfeaturestargetsdf(cfg)
+        @test size(resultsdf, 1) == 2
+        @test size(featuresdf, 1) == 2
+        @test resultsdf[!, :centertarget] == cached_results[!, :centertarget]
+        @test featuresdf[!, :dummy] == cached_features[!, :dummy]
     finally
         EnvConfig.setdfformat!(oldformat)
     end

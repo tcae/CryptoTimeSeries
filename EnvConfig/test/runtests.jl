@@ -1,6 +1,6 @@
 module EnvConfigTest
 using EnvConfig
-using Test, DataFrames, CategoricalArrays
+using Test, DataFrames, CategoricalArrays, Arrow
 
 # greet2()
 # x = Authentication(production)
@@ -73,7 +73,7 @@ function testconfig()
 end
 
 function testtableio()
-    df = DataFrame(ix=Int32[1, 2, 3], rangeid=Int64[1, 256, 21571], offset=Int64[-2, 0, 3], value=Float32[1.5f0, 2.5f0, 3.5f0], label=["a", "b", "c"])
+    df = DataFrame(ix=Int32[1, 2, 3], rangeid=Int64[1, 256, 21571], offset=Int64[-2, 0, 3], value=Float32[1.5f0, 2.5f0, 3.5f0], label=["a", "b", "c"], set=CategoricalVector(["train", "test", "eval"]), coin=["SINE", "DOUBLESINE", "SINE"])
     oldformat = EnvConfig.dfformat()
     mktempdir() do tmpdir
         try
@@ -106,6 +106,12 @@ function testtableio()
             @test eltype(arrowdf[!, :offset]) == Int8
             @test arrowdf[!, :value] == df[!, :value]
             @test fallbackdf[!, :label] == df[!, :label]
+            @test arrowdf[!, :set] isa Arrow.DictEncoded
+            @test string.(arrowdf[!, :set]) == string.(df[!, :set])
+            @test arrowdf[!, :coin] isa Arrow.DictEncoded
+            @test string.(arrowdf[!, :coin]) == df[!, :coin]
+            @test string.(arrowmutable[!, :set]) == string.(df[!, :set])
+            @test string.(arrowmutable[!, :coin]) == df[!, :coin]
             @test_throws ReadOnlyMemoryError arrowdf[1, :value] = 9.0f0
             arrowmutable[1, :value] = 9.0f0
             @test arrowmutable[1, :value] == 9.0f0
@@ -120,11 +126,13 @@ function testtableio()
             enumdf = DataFrame(state=ExampleArrowState[alpha_state, beta_state], maybe=Union{Missing, ExampleArrowState}[alpha_state, missing])
             enumpath = EnvConfig.savedf(enumdf, "enum_sample"; folderpath=tmpdir, format=:arrow)
             enumloaded = EnvConfig.readdf("enum_sample"; folderpath=tmpdir, format=:arrow)
+            enumcopied = EnvConfig.readdf("enum_sample"; folderpath=tmpdir, format=:arrow, copycols=true)
             @test isfile(enumpath)
-            @test enumloaded[!, :state] == Int8[Int(alpha_state), Int(beta_state)]
-            @test enumloaded[1, :maybe] == Int8(Int(alpha_state))
+            @test enumloaded[!, :state] isa Arrow.DictEncoded
+            @test string.(enumloaded[!, :state]) == ["alpha_state", "beta_state"]
+            @test string(enumloaded[1, :maybe]) == "alpha_state"
             @test ismissing(enumloaded[2, :maybe])
-            @test eltype(enumloaded[!, :state]) == Int8
+            @test string.(enumcopied[!, :state]) == ["alpha_state", "beta_state"]
         finally
             EnvConfig.setdfformat!(oldformat)
         end
