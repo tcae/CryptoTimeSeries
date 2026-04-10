@@ -46,7 +46,7 @@ using Classify, DataFrames, Test, Random
         nn = Classify.model002(7, ["up", "down", "flat"], "phase_test")
         featuremat = rand(Float32, 7, 5)
         hidden = Classify.penultimatefeatures(nn, featuremat)
-        featuredf = DataFrame([Symbol("f" * string(ix)) => vec(featuremat[ix, :]) for ix in 1:size(featuremat, 1)])
+        featuredf = DataFrame([Symbol("f" * string(ix)) => vec(featuremat[ix, :]) for ix in axes(featuremat, 1)])
         hidden_batched = Classify.penultimatefeatures(nn, featuredf, Symbol.(names(featuredf)); batchsize=2)
         hidden_rows = Classify.penultimatefeatures(nn, featuredf, Symbol.(names(featuredf)); batchsize=2, rows=[1, 3, 5])
         lay1 = 3 * 7

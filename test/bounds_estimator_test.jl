@@ -143,9 +143,9 @@ end
         :mae_width,
         :high_hit_within_window_pct,
         :mean_samples_to_first_high_hit,
-        :mean_high_hit_gain_vs_close_pct,
+        :mean_high_hit_distance_vs_close_pct,
         :mean_samples_to_first_high_exceed_after_window,
-        :mean_high_loss_vs_close_pct_after_window,
+        :mean_high_hit_distance_vs_close_pct_after_window,
         :rows,
     ])
 
@@ -156,9 +156,9 @@ end
         :mae_width,
         :low_hit_within_window_pct,
         :mean_samples_to_first_low_hit,
-        :mean_low_hit_gain_vs_close_pct,
+        :mean_low_hit_distance_vs_close_pct,
         :mean_samples_to_first_low_exceed_after_window,
-        :mean_low_loss_vs_close_pct_after_window,
+        :mean_low_hit_distance_vs_close_pct_after_window,
         :rows,
     ])
 
@@ -203,18 +203,17 @@ end
     # first low-hit offsets (train): row3 -> 2
     @test train_low[1, :mean_samples_to_first_low_hit] ≈ 2.0 atol=1e-6
 
-    # high-hit gains (train): rows 1 and 3 both 5%.
-    @test train_high[1, :mean_high_hit_gain_vs_close_pct] ≈ 5f0 atol=1e-6
-    # low-hit gains (train): row 3 only, 5%.
-    @test train_low[1, :mean_low_hit_gain_vs_close_pct] ≈ 5f0 atol=1e-6
+    # Signed distance semantics: high hits are positive and low hits are negative.
+    @test train_high[1, :mean_high_hit_distance_vs_close_pct] ≈ 5f0 atol=1e-6
+    @test train_low[1, :mean_low_hit_distance_vs_close_pct] ≈ -5f0 atol=1e-6
 
-    # high late exceed: row2 first exceeds at row5 (offset 3), close change 2%.
+    # Late exceeds keep the same signed distance-vs-close semantics as in-window hits.
     @test train_high[1, :mean_samples_to_first_high_exceed_after_window] ≈ 3.0 atol=1e-6
-    @test train_high[1, :mean_high_loss_vs_close_pct_after_window] ≈ 2f0 atol=1e-6
+    @test train_high[1, :mean_high_hit_distance_vs_close_pct_after_window] ≈ 5f0 atol=1e-6
 
     # low late exceed: row1 first exceeds at row5 (offset 4), row2 at row5 (offset 3), mean 3.5.
     @test train_low[1, :mean_samples_to_first_low_exceed_after_window] ≈ 3.5 atol=1e-6
-    @test train_low[1, :mean_low_loss_vs_close_pct_after_window] ≈ 2f0 atol=1e-6
+    @test train_low[1, :mean_low_hit_distance_vs_close_pct_after_window] ≈ -5f0 atol=1e-6
 end
 
 @testset "BoundsEstimator accepts cached results without format marker" begin

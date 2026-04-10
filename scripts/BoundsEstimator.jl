@@ -516,7 +516,7 @@ Convenience wrapper to build an LSTM contract from current bounds predictions.
 
 Note: this requires that `getboundspredictionsdf(cfg)` already includes the trend
 probability columns listed in `trendprobcols`. In the standard pipeline, trend
-outputs are prepared and merged in `TradeAdviceLstm`.
+outputs are prepared and merged in `TrendLstm`.
 """
 function get_lstm_contract(cfg::BoundsEstimatorConfig; trendprobcols::Vector{Symbol})
     pdf = getboundspredictionsdf(cfg)
@@ -576,25 +576,35 @@ function getboundsqualitydf(cfg::BoundsEstimatorConfig)
     sum_err_center = zeros(Float64, nsets)
     sum_err_width = zeros(Float64, nsets)
 
+    signed_high_distance_vs_close_pct(bound::Float32, close::Float32)::Float32 = begin
+        close == 0f0 && return 0f0
+        return 100f0 * abs(bound - close) / abs(close)
+    end
+
+    signed_low_distance_vs_close_pct(bound::Float32, close::Float32)::Float32 = begin
+        close == 0f0 && return 0f0
+        return -100f0 * abs(bound - close) / abs(close)
+    end
+
     high_hit_count = zeros(Int, nsets)
     sum_samples_to_first_high_hit = zeros(Float64, nsets)
     count_samples_to_first_high_hit = zeros(Int, nsets)
-    sum_high_hit_gain_vs_close_pct = zeros(Float64, nsets)
-    count_high_hit_gain_vs_close_pct = zeros(Int, nsets)
+    sum_high_hit_distance_vs_close_pct = zeros(Float64, nsets)
+    count_high_hit_distance_vs_close_pct = zeros(Int, nsets)
     sum_samples_to_first_high_exceed_after_window = zeros(Float64, nsets)
     count_samples_to_first_high_exceed_after_window = zeros(Int, nsets)
-    sum_high_loss_vs_close_pct_after_window = zeros(Float64, nsets)
-    count_high_loss_vs_close_pct_after_window = zeros(Int, nsets)
+    sum_high_hit_distance_vs_close_pct_after_window = zeros(Float64, nsets)
+    count_high_hit_distance_vs_close_pct_after_window = zeros(Int, nsets)
 
     low_hit_count = zeros(Int, nsets)
     sum_samples_to_first_low_hit = zeros(Float64, nsets)
     count_samples_to_first_low_hit = zeros(Int, nsets)
-    sum_low_hit_gain_vs_close_pct = zeros(Float64, nsets)
-    count_low_hit_gain_vs_close_pct = zeros(Int, nsets)
+    sum_low_hit_distance_vs_close_pct = zeros(Float64, nsets)
+    count_low_hit_distance_vs_close_pct = zeros(Int, nsets)
     sum_samples_to_first_low_exceed_after_window = zeros(Float64, nsets)
     count_samples_to_first_low_exceed_after_window = zeros(Int, nsets)
-    sum_low_loss_vs_close_pct_after_window = zeros(Float64, nsets)
-    count_low_loss_vs_close_pct_after_window = zeros(Int, nsets)
+    sum_low_hit_distance_vs_close_pct_after_window = zeros(Float64, nsets)
+    count_low_hit_distance_vs_close_pct_after_window = zeros(Int, nsets)
 
     @inbounds for i in eachindex(setix)
         s = setix[i]
@@ -669,16 +679,15 @@ function getboundsqualitydf(cfg::BoundsEstimatorConfig)
                 high_hit_count[s] += 1
                 sum_samples_to_first_high_hit[s] += high_hit_localix - localix
                 count_samples_to_first_high_hit[s] += 1
-                sum_high_hit_gain_vs_close_pct[s] += 100f0 * (up_i - close_i) / close_i
-                count_high_hit_gain_vs_close_pct[s] += 1
+                sum_high_hit_distance_vs_close_pct[s] += signed_high_distance_vs_close_pct(up_i, close_i)
+                count_high_hit_distance_vs_close_pct[s] += 1
             elseif lastfuture < glen
                 late_high_hit_localix = first_high_hit(max_tree, up_i, lastfuture + 1, glen, 1, 1, glen)
                 if late_high_hit_localix > 0
-                    j = gidx[late_high_hit_localix]
                     sum_samples_to_first_high_exceed_after_window[s] += late_high_hit_localix - localix
                     count_samples_to_first_high_exceed_after_window[s] += 1
-                    sum_high_loss_vs_close_pct_after_window[s] += 100f0 * abs(closecol[j] - close_i) / close_i
-                    count_high_loss_vs_close_pct_after_window[s] += 1
+                    sum_high_hit_distance_vs_close_pct_after_window[s] += signed_high_distance_vs_close_pct(up_i, close_i)
+                    count_high_hit_distance_vs_close_pct_after_window[s] += 1
                 end
             end
 
@@ -686,16 +695,15 @@ function getboundsqualitydf(cfg::BoundsEstimatorConfig)
                 low_hit_count[s] += 1
                 sum_samples_to_first_low_hit[s] += low_hit_localix - localix
                 count_samples_to_first_low_hit[s] += 1
-                sum_low_hit_gain_vs_close_pct[s] += 100f0 * (close_i - low_i) / close_i
-                count_low_hit_gain_vs_close_pct[s] += 1
+                sum_low_hit_distance_vs_close_pct[s] += signed_low_distance_vs_close_pct(low_i, close_i)
+                count_low_hit_distance_vs_close_pct[s] += 1
             elseif lastfuture < glen
                 late_low_hit_localix = first_low_hit(min_tree, low_i, lastfuture + 1, glen, 1, 1, glen)
                 if late_low_hit_localix > 0
-                    j = gidx[late_low_hit_localix]
                     sum_samples_to_first_low_exceed_after_window[s] += late_low_hit_localix - localix
                     count_samples_to_first_low_exceed_after_window[s] += 1
-                    sum_low_loss_vs_close_pct_after_window[s] += 100f0 * abs(closecol[j] - close_i) / close_i
-                    count_low_loss_vs_close_pct_after_window[s] += 1
+                    sum_low_hit_distance_vs_close_pct_after_window[s] += signed_low_distance_vs_close_pct(low_i, close_i)
+                    count_low_hit_distance_vs_close_pct_after_window[s] += 1
                 end
             end
         end
@@ -709,9 +717,9 @@ function getboundsqualitydf(cfg::BoundsEstimatorConfig)
         mae_width=sum_err_width ./ rows,
         high_hit_within_window_pct=Float32.(100 .* high_hit_count ./ rows),
         mean_samples_to_first_high_hit=[mean_or_missing(sum_samples_to_first_high_hit[ix], count_samples_to_first_high_hit[ix]) for ix in eachindex(setnames)],
-        mean_high_hit_gain_vs_close_pct=[mean_or_missing(sum_high_hit_gain_vs_close_pct[ix], count_high_hit_gain_vs_close_pct[ix]) for ix in eachindex(setnames)],
+        mean_high_hit_distance_vs_close_pct=[mean_or_missing(sum_high_hit_distance_vs_close_pct[ix], count_high_hit_distance_vs_close_pct[ix]) for ix in eachindex(setnames)],
         mean_samples_to_first_high_exceed_after_window=[mean_or_missing(sum_samples_to_first_high_exceed_after_window[ix], count_samples_to_first_high_exceed_after_window[ix]) for ix in eachindex(setnames)],
-        mean_high_loss_vs_close_pct_after_window=[mean_or_missing(sum_high_loss_vs_close_pct_after_window[ix], count_high_loss_vs_close_pct_after_window[ix]) for ix in eachindex(setnames)],
+        mean_high_hit_distance_vs_close_pct_after_window=[mean_or_missing(sum_high_hit_distance_vs_close_pct_after_window[ix], count_high_hit_distance_vs_close_pct_after_window[ix]) for ix in eachindex(setnames)],
         rows=rows,
     )
     lowdf = DataFrame(
@@ -720,9 +728,9 @@ function getboundsqualitydf(cfg::BoundsEstimatorConfig)
         mae_width=sum_err_width ./ rows,
         low_hit_within_window_pct=Float32.(100 .* low_hit_count ./ rows),
         mean_samples_to_first_low_hit=[mean_or_missing(sum_samples_to_first_low_hit[ix], count_samples_to_first_low_hit[ix]) for ix in eachindex(setnames)],
-        mean_low_hit_gain_vs_close_pct=[mean_or_missing(sum_low_hit_gain_vs_close_pct[ix], count_low_hit_gain_vs_close_pct[ix]) for ix in eachindex(setnames)],
+        mean_low_hit_distance_vs_close_pct=[mean_or_missing(sum_low_hit_distance_vs_close_pct[ix], count_low_hit_distance_vs_close_pct[ix]) for ix in eachindex(setnames)],
         mean_samples_to_first_low_exceed_after_window=[mean_or_missing(sum_samples_to_first_low_exceed_after_window[ix], count_samples_to_first_low_exceed_after_window[ix]) for ix in eachindex(setnames)],
-        mean_low_loss_vs_close_pct_after_window=[mean_or_missing(sum_low_loss_vs_close_pct_after_window[ix], count_low_loss_vs_close_pct_after_window[ix]) for ix in eachindex(setnames)],
+        mean_low_hit_distance_vs_close_pct_after_window=[mean_or_missing(sum_low_hit_distance_vs_close_pct_after_window[ix], count_low_hit_distance_vs_close_pct_after_window[ix]) for ix in eachindex(setnames)],
         rows=rows,
     )
     return (high=highdf, low=lowdf)
@@ -769,6 +777,25 @@ end
 """
 Return whether the CLI arguments request the help output.
 """
+function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing,AbstractString}=nothing)
+    prefix = key * "="
+    for arg in args
+        if startswith(arg, prefix)
+            return split(arg, "="; limit=2)[2]
+        end
+    end
+    return default
+end
+
+function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime)
+    configref = _argvalue(args, "config", "001")
+    basecfg = boundsestimatorconfig(configref)
+    configname = _argvalue(args, "configname", string(basecfg.configname))
+    folder = _argvalue(args, "folder", "Bounds-$configname-$(EnvConfig.configmode)")
+    mergedcfg = merge(basecfg, (configname=configname, folder=folder))
+    return BoundsEstimatorConfig(; mergedcfg..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+end
+
 function _wants_help(args::Vector{String})::Bool
     for arg in args
         normalized = lowercase(strip(arg))
@@ -788,9 +815,9 @@ Return CLI help text for `BoundsEstimator.jl`.
 function boundsestimatorhelp()::String
     return """
 Usage:
-  julia --project=. scripts/BoundsEstimator.jl [help] [test|train] [inspect] [special] [retrain]
+  julia --project=. scripts/BoundsEstimator.jl [help] [test|train] [inspect] [special] [retrain] [key=value ...]
 
-Supported parameters:
+Flag parameters:
   help, --help, -h
       Show this message and exit.
       Default: false
@@ -815,16 +842,23 @@ Supported parameters:
       Retrain non-converged regressors instead of reusing them.
       Default: false
 
-Current fixed defaults:
-  config preset: `boundsmk001config()`
-  configname: `001`
-  folder: `Bounds-<configname>-$(EnvConfig.configmode)`
+Key=value parameters:
+  config=<configname>
+      Bounds preset from `BOUNDS_ESTIMATOR_CONFIGS` in `optimizationconfigs.jl`.
+      Default: `001`
+
+  configname=<name>
+      Optional output name override.
+      Default: same as `config`
+
+  folder=<name>
+      Output subfolder.
+      Default: `Bounds-<configname>-$(EnvConfig.configmode)`
+
+Fixed date defaults:
   train startdt: `2017-11-17T20:56:00`
   test startdt: `2025-01-17T20:56:00`
   enddt: `2025-08-10T15:00:00`
-
-Note:
-  This script currently supports flag-style parameters only; there are no additional `key=value` options yet.
 """
 end
 
@@ -886,7 +920,7 @@ function main(args::Vector{String}=ARGS)
         Classify.verbosity = 1
     end
 
-    global cfg = BoundsEstimatorConfig(;boundsmk001config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+    global cfg = buildcfg(args, allowedcoins, startdt, enddt)
 
     if specialonly
         # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])

@@ -361,8 +361,8 @@ end
 "Return the full path for a stored table in the requested format. With `format=:auto`, return the first existing candidate path or the preferred default candidate when none exists yet."
 function tablepath(filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, preferred::Symbol=dfformat())
     if format == :auto
-        candidates = _table_candidates(filename; preferred=preferred)
-        for candidate in candidates
+        candidates::Vector{String} = _table_candidates(filename; preferred=preferred)
+        for candidate::String in candidates
             candidate_format = endswith(lowercase(candidate), ".arrow") ? :arrow : :jdf
             filepath = normpath(joinpath(folderpath, candidate))
             if _table_storage_exists(filepath, candidate_format)

@@ -88,36 +88,22 @@ _parsedatetime(raw::AbstractString) = DateTime(strip(raw))
 Resolve a trend config reference like `"025"` or `"mk025"` to the corresponding
 configuration NamedTuple from `optimizationconfigs.jl`.
 """
-function _resolve_trendconfig(ref::AbstractString)
-    raw = lowercase(replace(strip(ref), r"config$" => ""))
-    symbol = startswith(raw, "mk") ? Symbol(raw * "config") : Symbol("mk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown trend config ref=$(ref); expected $(symbol) in optimizationconfigs.jl"
-    return getfield(@__MODULE__, symbol)()
-end
+_resolve_trendconfig(ref::AbstractString) = trenddetectorconfig(ref)
 
 """
     _resolve_boundsconfig(ref)
 
 Resolve a bounds config reference like `"001"` or `"boundsmk001"`.
 """
-function _resolve_boundsconfig(ref::AbstractString)
-    raw = lowercase(replace(strip(ref), r"config$" => ""))
-    symbol = startswith(raw, "boundsmk") ? Symbol(raw * "config") : startswith(raw, "mk") ? Symbol("bounds" * raw * "config") : Symbol("boundsmk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown bounds config ref=$(ref); expected $(symbol) in optimizationconfigs.jl"
-    return getfield(@__MODULE__, symbol)()
-end
+_resolve_boundsconfig(ref::AbstractString) = boundsestimatorconfig(ref)
 
 """
-    _resolve_tradeadviceconfig(ref)
+    _resolve_trendlstmconfig(ref)
 
-Resolve a trade-advice config reference like `"025"`.
+Resolve a TrendLstm config reference like `"001"`.
 """
-function _resolve_tradeadviceconfig(ref::AbstractString)
-    raw = lowercase(replace(strip(ref), r"config$" => ""))
-    symbol = startswith(raw, "tradeadvicemk") ? Symbol(raw * "config") : startswith(raw, "mk") ? Symbol("tradeadvice" * raw * "config") : Symbol("tradeadvicemk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown tradeadvice config ref=$(ref); expected $(symbol) in optimizationconfigs.jl"
-    return getfield(@__MODULE__, symbol)()
-end
+_resolve_trendlstmconfig(ref::AbstractString) = trendlstmconfig(ref)
+_resolve_tradeadviceconfig(ref::AbstractString) = _resolve_trendlstmconfig(ref)
 
 """
     parse_args(args) -> NamedTuple
@@ -426,7 +412,7 @@ function compute_bounds_overlay(slice::NamedTuple, boundscfg::NamedTuple)::Union
     widthpred = vec(clamp.(Float32.(yraw[2, :]), 0f0, Inf32))
     calcdf = Ohlcv.dataframe(slice.ohlcv)
     featuretimes = Features.opentime(featcfg)
-    pivotmap = Dict(calcdf[ix, :opentime] => Float32(calcdf[ix, :pivot]) for ix in 1:size(calcdf, 1))
+    pivotmap = Dict(calcdf[ix, :opentime] => Float32(calcdf[ix, :pivot]) for ix in axes(calcdf, 1))
     predpivot = Float32[get(pivotmap, ts, 0f0) for ts in featuretimes]
     predlow, predhigh = _denormalize_bounds(centerpred, widthpred, predpivot)
 
@@ -466,13 +452,17 @@ end
 """
     load_lstm_overlay(slice, tradecfg) -> Union{Nothing,DataFrame}
 
-Load cached LSTM predictions when available. The script checks both the dedicated
-trade-advice subfolder and the root log folder because earlier runs saved to both.
+Load cached TrendLstm predictions when available. The script checks both the new
+`TrendLstm-*` subfolder and the legacy `TradeAdviceLstm-*` location.
 """
 function load_lstm_overlay(slice::NamedTuple, tradecfg::NamedTuple)::Union{Nothing, DataFrame}
     EnvConfig.setlogpath()
     root = EnvConfig.logfolder()
-    candidates = [joinpath(root, "TradeAdviceLstm-$(tradecfg.configname)-$(slice.mode)"), root]
+    candidates = [
+        joinpath(root, "TrendLstm-$(tradecfg.configname)-$(slice.mode)"),
+        joinpath(root, "TradeAdviceLstm-$(tradecfg.configname)-$(slice.mode)"),
+        root,
+    ]
     for folderpath in candidates
         df = EnvConfig.readdf("lstm_predictions.jdf"; folderpath=folderpath)
         if !isnothing(df) && size(df, 1) > 0 && (:opentime in propertynames(df))

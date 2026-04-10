@@ -770,6 +770,34 @@ function introspection(cfg::TrendDetectorConfig)
     end
 end
 
+function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing,AbstractString}=nothing)
+    prefix = key * "="
+    for arg in args
+        if startswith(arg, prefix)
+            return split(arg, "="; limit=2)[2]
+        end
+    end
+    return default
+end
+
+function _parse_bool(raw::AbstractString)::Bool
+    value = lowercase(strip(raw))
+    value in ("1", "true", "yes", "on") && return true
+    value in ("0", "false", "no", "off") && return false
+    error("oversampling=$(raw) must be one of true/false, yes/no, on/off, 1/0")
+end
+
+function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime)
+    configref = _argvalue(args, "config", "029")
+    basecfg = trenddetectorconfig(configref)
+    configname = _argvalue(args, "configname", string(basecfg.configname))
+    folder = _argvalue(args, "folder", "Trend-$configname-$(EnvConfig.configmode)")
+    oversampling_default = (:oversampling in keys(basecfg)) ? string(getfield(basecfg, :oversampling)) : "true"
+    oversampling = _parse_bool(_argvalue(args, "oversampling", oversampling_default))
+    mergedcfg = merge(basecfg, (configname=configname, folder=folder, oversampling=oversampling))
+    return TrendDetectorConfig(; mergedcfg..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+end
+
 """
 Return whether the CLI arguments request the help output.
 """
@@ -792,9 +820,9 @@ Return CLI help text for `TrendDetector.jl`.
 function trenddetectorhelp()::String
     return """
 Usage:
-  julia --project=. scripts/TrendDetector.jl [help] [test|train] [inspect] [special] [retrain]
+  julia --project=. scripts/TrendDetector.jl [help] [test|train] [inspect] [special] [retrain] [key=value ...]
 
-Supported parameters:
+Flag parameters:
   help, --help, -h
       Show this message and exit.
       Default: false
@@ -819,17 +847,27 @@ Supported parameters:
       Retrain non-converged classifiers instead of reusing them.
       Default: false
 
-Current fixed defaults:
-  config preset: `mk029config()`
-  configname: `029`
-  oversampling: `false`
-  folder: `Trend-<configname>-$(EnvConfig.configmode)`
+Key=value parameters:
+  config=<configname>
+      Trend preset from `TREND_DETECTOR_CONFIGS` in `optimizationconfigs.jl`.
+      Default: `029`
+
+  configname=<name>
+      Optional output name override.
+      Default: same as `config`
+
+  folder=<name>
+      Output subfolder.
+      Default: `Trend-<configname>-$(EnvConfig.configmode)`
+
+  oversampling=<Bool>
+      Override the preset's oversampling flag.
+      Default: preset value (for `029`: `false`)
+
+Fixed date defaults:
   train startdt: `2017-11-17T20:56:00`
   test startdt: `2025-01-17T20:56:00`
   enddt: `2025-08-10T15:00:00`
-
-Note:
-  This script currently supports flag-style parameters only; there are no additional `key=value` options yet.
 """
 end
 
@@ -888,7 +926,7 @@ function main(args::Vector{String}=ARGS)
         Classify.verbosity = 1
     end
 
-    global cfg = TrendDetectorConfig(;mk029config()..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+    global cfg = buildcfg(args, allowedcoins, startdt, enddt)
 
     if specialonly
         # renamepredictionfiles([mk1config().folder, mk2config().folder, mk3config().folder, mk4config().folder, mk5config().folder])

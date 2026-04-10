@@ -342,9 +342,6 @@ tradeadvicemk001config() = (
     batchsize=64,
     openthresholds=Float32[0.8f0, 0.7f0, 0.6f0],
     closethresholds=Float32[0.6f0, 0.5f0],
-    entrytimeout=2, # currently not used
-    exittimeout=2, # currently not used
-    exitstrategy=:opposite_signal_market, # currently not used
 )
 
 "Alternative eval-sweep with a slightly longer sequence and tighter thresholds for comparison on the eval split."
@@ -357,10 +354,50 @@ tradeadvicemk002config() = (
     batchsize=64,
     openthresholds=Float32[0.85f0, 0.75f0, 0.65f0],
     closethresholds=Float32[0.65f0, 0.6f0, 0.55f0],
-    entrytimeout=2, # currently not used
-    exittimeout=3,  # currently not used
-    exitstrategy=:opposite_signal_market,  # currently not used
 )
 
 #endregion AdviceConfig
+
+"""
+    _config_from_dict(configs, ref; label, prefixes)
+
+Resolve a config reference by its `configname` from one of the shared preset dicts.
+Returns a `deepcopy` so each caller gets an isolated mutable configuration payload.
+"""
+function _config_from_dict(configs::AbstractDict{String, <:NamedTuple}, ref::AbstractString; label::AbstractString, prefixes::Tuple)
+    raw = strip(replace(String(ref), r"config$"i => ""))
+    lowerraw = lowercase(raw)
+    for prefix in prefixes
+        lowerprefix = lowercase(prefix)
+        if startswith(lowerraw, lowerprefix)
+            raw = strip(raw[(length(prefix) + 1):end])
+            lowerraw = lowercase(raw)
+            break
+        end
+    end
+
+    matches = [key for key in keys(configs) if lowercase(key) == lowerraw]
+    @assert length(matches) == 1 "unknown $(label) config ref=$(ref); available confignames=$(join(sort!(collect(keys(configs)); by=lowercase), ", "))"
+    return deepcopy(configs[only(matches)])
+end
+
+const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    mk001config(), mk002config(), mk003config(), mk004config(), mk005config(), mk006config(), mk007config(),
+    mk009config(), mk011config(), mk012config(), mk013config(), mk014config(), mk015config(), mk016config(),
+    mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
+    mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
+    mk027config(), mk028config(), mk029config(),
+])
+
+const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    boundsmk001config(), boundsmk002config(),
+])
+
+const TREND_LSTM_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    tradeadvicemk001config(), tradeadvicemk002config(),
+])
+
+trenddetectorconfig(ref::AbstractString) = _config_from_dict(TREND_DETECTOR_CONFIGS, ref; label="trend", prefixes=("trenddetector", "trend", "mk"))
+boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
+trendlstmconfig(ref::AbstractString) = _config_from_dict(TREND_LSTM_CONFIGS, ref; label="TrendLstm", prefixes=("trendlstm", "tradeadvicelstm", "tradeadvice", "tradeadvicemk", "mk"))
 

@@ -25,7 +25,8 @@ include("optimizationconfigs.jl")
 
 const COCKPIT_TREND_REF = "025"
 const COCKPIT_BOUNDS_REF = "001"
-const COCKPIT_TRADEADVICE_REF = "025"
+const COCKPIT_TRENDLSTM_REF = "001"
+const COCKPIT_TRADEADVICE_REF = COCKPIT_TRENDLSTM_REF  # legacy alias for existing callback wiring
 const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target", "lstm pred"]
 const DIAGNOSTIC_LABEL_CODE = Dict{Any, Int}(
     missing => 0,
@@ -86,26 +87,10 @@ end
 
 _cached_artifact(key::AbstractString, loader::Function) = _cached_artifact(loader, key)
 
-function _resolve_trendconfig(ref::AbstractString)
-    raw = lowercase(replace(strip(ref), r"config$" => ""))
-    symbol = startswith(raw, "mk") ? Symbol(raw * "config") : Symbol("mk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown trend config ref=$ref; expected function $(symbol)"
-    return getfield(@__MODULE__, symbol)()
-end
-
-function _resolve_boundsconfig(ref::AbstractString)
-    raw = lowercase(replace(strip(ref), r"config$" => ""))
-    symbol = startswith(raw, "boundsmk") ? Symbol(raw * "config") : startswith(raw, "mk") ? Symbol("bounds" * raw * "config") : Symbol("boundsmk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown bounds config ref=$ref; expected function $(symbol)"
-    return getfield(@__MODULE__, symbol)()
-end
-
-function _resolve_tradeadviceconfig(ref::AbstractString)
-    raw = lowercase(replace(strip(ref), r"config$" => ""))
-    symbol = startswith(raw, "tradeadvicemk") ? Symbol(raw * "config") : startswith(raw, "mk") ? Symbol("tradeadvice" * raw * "config") : Symbol("tradeadvicemk" * raw * "config")
-    @assert isdefined(@__MODULE__, symbol) "unknown trade advice config ref=$ref; expected function $(symbol)"
-    return getfield(@__MODULE__, symbol)()
-end
+_resolve_trendconfig(ref::AbstractString) = trenddetectorconfig(ref)
+_resolve_boundsconfig(ref::AbstractString) = boundsestimatorconfig(ref)
+_resolve_trendlstmconfig(ref::AbstractString) = trendlstmconfig(ref)
+_resolve_tradeadviceconfig(ref::AbstractString) = _resolve_trendlstmconfig(ref)
 
 function _config_subfolder(prefix::AbstractString, cfg, mode::EnvConfig.Mode)
     folder = _cfgget(cfg, :folder, nothing)
@@ -130,18 +115,7 @@ end
 
 _with_log_subfolder(folder::AbstractString, f::Function) = _with_log_subfolder(f, folder)
 
-function _config_ref(kind::Symbol, sym::Symbol)::String
-    raw = replace(String(sym), r"config$" => "")
-    if kind == :trend
-        return startswith(raw, "mk") ? raw[3:end] : raw
-    elseif kind == :bounds
-        return startswith(raw, "boundsmk") ? raw[(length("boundsmk") + 1):end] : raw
-    elseif kind == :tradeadvice
-        return startswith(raw, "tradeadvicemk") ? raw[(length("tradeadvicemk") + 1):end] : raw
-    else
-        return raw
-    end
-end
+_config_ref(kind::Symbol, ref::AbstractString)::String = String(ref)
 
 function _root_logfolder()
     previous = EnvConfig.logsubfolder()
@@ -165,9 +139,20 @@ function _load_cockpit_f4(ohlcv::Ohlcv.OhlcvData)
     return isnothing(f4) ? Features.Features004(ohlcv.base, ohlcv.quotecoin) : f4
 end
 
-function _has_cached_output(kind::Symbol, sym::Symbol)
+function _available_configrefs(kind::Symbol)
+    if kind == :trend
+        return sort!(collect(keys(TREND_DETECTOR_CONFIGS)); by=lowercase)
+    elseif kind == :bounds
+        return sort!(collect(keys(BOUNDS_ESTIMATOR_CONFIGS)); by=lowercase)
+    elseif kind in (:tradeadvice, :trendlstm)
+        return sort!(collect(keys(TREND_LSTM_CONFIGS)); by=lowercase)
+    end
+    error("unsupported config kind=$(kind)")
+end
+
+function _has_cached_output(kind::Symbol, configref::AbstractString)
     try
-        cfg = getfield(@__MODULE__, sym)()
+        cfg = kind == :trend ? _resolve_trendconfig(configref) : kind == :bounds ? _resolve_boundsconfig(configref) : _resolve_trendlstmconfig(configref)
         if kind == :trend
             return any(_cockpit_model_modes()) do mode
                 folder = _config_subfolder("Trend", cfg, mode)
@@ -184,23 +169,24 @@ function _has_cached_output(kind::Symbol, sym::Symbol)
                     isfile(Classify.nnfilename(model.fileprefix)) || _config_tableexists(folder, "maxpredictions")
                 end
             end
-        elseif kind == :tradeadvice
+        else
             root = _root_logfolder()
-            return any(mode -> EnvConfig.tableexists("lstm_predictions"; folderpath=joinpath(root, _config_subfolder("TradeAdviceLstm", cfg, mode)), format=:auto), _cockpit_model_modes()) ||
-                   EnvConfig.tableexists("lstm_predictions"; folderpath=root, format=:auto)
+            return any(_cockpit_model_modes()) do mode
+                EnvConfig.tableexists("lstm_predictions"; folderpath=joinpath(root, _config_subfolder("TrendLstm", cfg, mode)), format=:auto) ||
+                EnvConfig.tableexists("lstm_predictions"; folderpath=joinpath(root, _config_subfolder("TradeAdviceLstm", cfg, mode)), format=:auto)
+            end || EnvConfig.tableexists("lstm_predictions"; folderpath=root, format=:auto)
         end
     catch err
-        @debug "skipping config without usable cache" kind sym exception=(err, catch_backtrace())
+        @debug "skipping config without usable cache" kind configref exception=(err, catch_backtrace())
     end
     return false
 end
 
 function _config_options(kind::Symbol)
-    pattern = kind == :trend ? r"^mk.*config$" : kind == :bounds ? r"^boundsmk.*config$" : r"^tradeadvicemk.*config$"
-    symbols = sort([s for s in names(@__MODULE__; all=true) if occursin(pattern, String(s))]; by=String)
-    cached = [s for s in symbols if _has_cached_output(kind, s)]
-    selected = isempty(cached) ? symbols : cached
-    return [(label = "$(_config_ref(kind, s)) ($(String(s)))", value = _config_ref(kind, s)) for s in selected]
+    refs = _available_configrefs(kind)
+    cached = [ref for ref in refs if _has_cached_output(kind, ref)]
+    selected = isempty(cached) ? refs : cached
+    return [(label = _config_ref(kind, ref), value = _config_ref(kind, ref)) for ref in selected]
 end
 
 function _dropdownrow(label::AbstractString, id::AbstractString, options, value)
@@ -364,7 +350,7 @@ app.layout = html_div() do
         ),
         _dropdownrow("trend config", "trend_config_select", _config_options(:trend), COCKPIT_TREND_REF),
         _dropdownrow("bounds config", "bounds_config_select", _config_options(:bounds), COCKPIT_BOUNDS_REF),
-        _dropdownrow("trade advice", "tradeadvice_config_select", _config_options(:tradeadvice), COCKPIT_TRADEADVICE_REF),
+        _dropdownrow("trend LSTM", "tradeadvice_config_select", _config_options(:tradeadvice), COCKPIT_TRENDLSTM_REF),
         dcc_checklist(
             id="indicator_select",
             options=[
@@ -678,6 +664,7 @@ end
 function _load_lstm_overlay_from_interface(base::AbstractString, startdt, enddt, tradecfg)
     candidates = String[]
     for mode in _cockpit_model_modes()
+        push!(candidates, _config_subfolder("TrendLstm", tradecfg, mode))
         push!(candidates, _config_subfolder("TradeAdviceLstm", tradecfg, mode))
     end
     push!(candidates, "")
@@ -805,7 +792,7 @@ function _compute_bounds_overlay(slice::NamedTuple, boundscfg)
     widthpred = vec(clamp.(Float32.(yraw[2, :]), 0f0, Inf32))
     calcdf = Ohlcv.dataframe(slice.ohlcv)
     featuretimes = Features.opentime(boundscfg.featconfig)
-    pivotmap = Dict(calcdf[ix, :opentime] => Float32(calcdf[ix, :pivot]) for ix in 1:size(calcdf, 1))
+    pivotmap = Dict(calcdf[ix, :opentime] => Float32(calcdf[ix, :pivot]) for ix in axes(calcdf, 1))
     predpivot = Float32[get(pivotmap, ts, 0f0) for ts in featuretimes]
     predlow, predhigh = _denormalize_bounds(centerpred, widthpred, predpivot)
 

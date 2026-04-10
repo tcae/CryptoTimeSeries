@@ -1583,7 +1583,7 @@ function tradepairlabels(tp::TradePairs, df::AbstractDataFrame; labelcol::Symbol
     @assert pivotcol in propertynames(df) "missing pivotcol=$(pivotcol); names(df)=$(names(df))"
     @assert all(col -> col in propertynames(df), groupcols) "missing groupcols=$(groupcols); names(df)=$(names(df))"
 
-    groups = isempty(groupcols) ? nothing : [Tuple(df[rowix, col] for col in groupcols) for rowix in 1:size(df, 1)]
+    groups = isempty(groupcols) ? nothing : [Tuple(df[rowix, col] for col in groupcols) for rowix in axes(df, 1)]
     return tradepairlabels(tp, df[!, labelcol], Float32.(df[!, pivotcol]); groups=groups)
 end
 
