@@ -728,6 +728,7 @@ function isopengainsegment(gs::GainSegment)
     return (gs.buyix > 0)
 end
 
+"Calculates gain for an open segment and closes it. An open segment must have buyix > 0, buyprice != nothing, assettype in [up, down]"
 function calcgain!(gs::GainSegment, sellix::Integer, sellprice::Float32=gs.predictionsdf[sellix, :close])
     if isopengainsegment(gs)
         @assert !isnothing(gs.buyprice)  "inconsistency: gs.buyix=$(gs.buyix), gs.buyprice=$(gs.buyprice)"
@@ -748,12 +749,15 @@ function calcgain!(gs::GainSegment, sellix::Integer, sellprice::Float32=gs.predi
         minutes = Int(div(Dates.value(ixtime - starttime), 60000)) + 1
         push!(gs.gaindf, (gs.trend, (sellix - gs.buyix + 1), minutes, gain, (gain - 2f0 * gs.makerfee), starttime, ixtime, gs.buyix, sellix))
         gs.buyix = 0  # indicates closure of gain segment
+        gs.buyprice = nothing
+        gs.limit = nothing
+        gs.assettype = flat
     end
     return gs
 end
 
 """
-Consumes the next prediction results after endix for all remaining predictions and calculates the corresponding gain segments that are stored in gaindf.  
+Consumes the prediction results of a range (1 coin, 1 settype) and calculates the corresponding gain segments that are stored in gaindf.  
 Hold as long as trend is supported above closethreshold by hold, buy, strongbuy, otherwise close
 """
 function algorithm01!(gs::GainSegment, lastix)
@@ -765,7 +769,7 @@ function algorithm01!(gs::GainSegment, lastix)
         #TODO decide how long the limit order should stay and what limit corrections are required
         label = labels[ix]
         score = scores[ix]
-        thistrend = flat
+        thistrend = gs.trend
         thisbuyix = 0
         if (gs.trend == up) && islongholdoropenlabel(label) && (score > gs.closethreshold)
             thistrend = up
@@ -796,7 +800,7 @@ function algorithm01!(gs::GainSegment, lastix)
 end
 
 """
-Consumes the next prediction results after endix for all remaining predictions and calculates the corresponding gain segments that are stored in gaindf.  
+Consumes the prediction results of a range (1 coin, 1 settype) and calculates the corresponding gain segments that are stored in gaindf.  
 Hold as long as trend is not broken by opposite buy or close above openthreshold.
 """
 function algorithm02!(gs::GainSegment, lastix)
@@ -838,39 +842,28 @@ function algorithm02!(gs::GainSegment, lastix)
     return gs
 end
 
+"check price ranges whether an open order is closed and calculates the gain"
 function processclosedorder!(gs::GainSegment, ix::Integer)
-    if !isnothing(gs.limit) && (gs.predictionsdf[gs.buyix, :low] <= gs.limit <= gs.predictionsdf[gs.buyix, :high]) 
+    if !isnothing(gs.limit) && (gs.predictionsdf[gs.ix, :low] <= gs.limit <= gs.predictionsdf[gs.ix, :high])
         # assume trade took place
         if gs.assettype in [up, down]
             # opposite trend asset was sold together with asset buy trade
-            calcgain!(gs, ix, gs.limit)
+            calcgain!(gs, ix, gs.limit) # if segment close then also resets buyix and buyprice
         end
         if gs.ordertype in [longbuy, shortbuy]
             if gs.ordertype == longbuy
-                if gs.assettype == down
-                    # short trend asset was sold together with long asset buy trade
-                    calcgain!(gs, ix, gs.limit)
-                end
+                # short trend asset was sold together with long asset buy trade
                 gs.assettype = up
             elseif gs.ordertype == shortbuy
-                if gs.assettype == up
-                    # long trend asset was sold together with short asset buy trade
-                    calcgain!(gs, ix, gs.limit)
-                end
+                # long trend asset was sold together with short asset buy trade
                 gs.assettype = down
             end
             gs.buyprice = gs.limit
             gs.buyix = ix
         else
-            if gs.ordertype in [longclose, shortclose]
-                @assert gs.assettype in [up, down]
-                calcgain!(gs, ix, gs.limit)
-            else
-                @assert gs.ordertype in [longbuy, shortbuy, longclose, shortclose] "unexpected gs.ordertype=$(gs.ordertype) although gs.limit=$(gs.limit)"
-            end
             gs.assettype = flat
             gs.buyprice = nothing
-            gs.buyix = 0
+            gs.buyix = 0 # 
         end
         gs.limit = nothing # order is closed
     end
@@ -878,77 +871,68 @@ end
 
 """
 Consumes the next prediction results after endix for all remaining predictions and calculates the corresponding gain segments that are stored in gaindf.  
-Buy will buy at current price +- buygain.  
-Hold as long as trend is not broken by opposite buy.  
-A close will reduce the initial sel limit of current price +- sellgain selllimit by 5% with each non trend supporting sample.
+Buy will buy at current price +- buygain, which is reduced with a limitreduction rate for non trend supporting samples. This limit is newly set when a buy signal for that trend is observed.
+A bought sample receives a sell limit at current price +- sellgain, which is reduced with a limitreduction rate for non trend supporting samples.  
+Hold as long as trend is not broken by opposite buy or close above openthreshold. If limit is hit then close gain segment and open new one if buy signal is present.  
+Implementation details:  
+- labels are indicating a trend change, but the gain materializes after the corresponding order is closed
+- that requires distinguishing between the assettype and the trend
+- buygain and sellgain are defining the initial limit distance to the current price, which is reduced with a limitreduction rate for non trend supporting samples utilizing the price volatility.
 """
 function algorithm03!(gs::GainSegment, lastix)
-    ta = TradeAction(false, nothing, nothing, 1f0)
-    limitreduction = 1/20 
+    limitreduction = 1//20 # reduce limit by 5% with each non trend supporting sample
     # @assert length(scores) == length(labels) == size(predictionsdf, 1) > 0 "length(scores)=$(length(scores)) == length(labels)=$(length(labels)) == size(predictionsdf, 1)=$(size(predictionsdf, 1)) > 0"
     for ix in (gs.endix+1):lastix
+        if gs.labels[ix] in [shortstrongbuy, shortbuy, shorthold] gs.trend = down
+        elseif gs.labels[ix] in [longstrongbuy, longbuy, longhold] gs.trend = up
+        else gs.trend = flat end
+        ta = TradeAction(false, nothing, nothing, 1f0)
         # first check whether the limit order is executed, if so, set trend and buyix and selllimit
-        ta = processclosedorder!(gs, ix)
-        #TODO decide how long a still open limit order should stay and what limit corrections are required
-        # limitorder can stay open (not yet filled, gs.limit != nothing) => check adjustment of limit
-        # no limitorder in place => check whether to set a limitorder
+        processclosedorder!(gs, ix)
         """
         (short/long) types of limitorder:  
         - buy due to buy signal
         - continuelimitorder due to previous buy signal but not now (and no other buy signal), i.e. adjust limit
         - sell due to sell signal
         """
-        thistrend = gs.trend # assume trend continues and correct this assumption if required
-        thisbuyix = 0
-        if (gs.trend == up) && (gs.labels[ix] in [allclose, longstrongclose, longclose]) && (gs.scores[ix] > gs.openthreshold) && (gs.assettype == up)  
-            # either modify close limit of running order or create new close order for long position
-            ta.orderlabel = gs.ordertype = longclose
-            ta.orderlimit = gs.limit = max(gs.predictionsdf[ix, :close], gs.limit * (1f0 - limitreduction))
-            thistrend = flat
-        elseif (gs.trend == down) && (gs.labels[ix] in [shortclose, shortstrongclose, allclose]) && (gs.scores[ix] > gs.openthreshold) && (gs.assettype == down)
-            # either modify close limit of running order or create new close order for long position
-            ta.orderlabel = gs.ordertype = shortclose
-            ta.orderlimit = gs.limit = min(gs.predictionsdf[ix, :close], gs.limit * (1f0 + limitreduction))
-            thistrend = flat
-        elseif (gs.labels[ix] in [longbuy, longstrongbuy]) && (gs.scores[ix] >= gs.openthreshold)
-            if !isnothing(gs.limit) && (gs.assettype = down)
+        if (gs.labels[ix] in [longbuy, longstrongbuy]) && (gs.scores[ix] >= gs.openthreshold)
+            if !isnothing(gs.limit) && (gs.assettype == down)
                 # cancel shortclose order and add amount to longbuy order
                 ta.cancelrunningorder = true
                 ta.amountfactor = 2 # amount to sell long assets + amount to buy short assets
             end
             ta.orderlimit = gs.limit = gs.predictionsdf[gs.buyix, :close] * (1f0 - gs.buygain)
             ta.orderlabel = gs.ordertype = longbuy
-            # thisbuyix = ix
-            # thistrend = up
+            gs.trend = up
         elseif (gs.labels[ix] in [shortbuy, shortstrongbuy]) && (gs.scores[ix] >= gs.openthreshold)
-            if !isnothing(gs.limit) && (gs.assettype = up)
+            if !isnothing(gs.limit) && (gs.assettype == up)
                 # cancel longclose order and add amount to shortbuy order
                 ta.cancelrunningorder = true
                 ta.amountfactor = 2 # amount to sell long assets + amount to buy short assets
             end
             ta.orderlimit = gs.limit = gs.predictionsdf[gs.buyix, :close] * (1f0 + gs.buygain)
             ta.orderlabel = gs.ordertype = shortbuy
-            # thisbuyix = ix
-            # thistrend = down
+            gs.trend = down
         else
             if gs.assettype == up
-                
-                if gs.ordertype == longclose
-                    ta.orderlimit = gs.limit = max(gs.predictionsdf[ix, :close], gs.limit * (1f0 - limitreduction))
-                elseif gs.ordertype == longclose
-                    ta.orderlimit = gs.limit = max(gs.predictionsdf[ix, :close], gs.limit * (1f0 - limitreduction))
-                elseif gs.ordertype == longclose
-                    ta.orderlimit = gs.limit = max(gs.predictionsdf[ix, :close], gs.limit * (1f0 - limitreduction))
-                else
-                    @assert gs.ordertype in [longclose, longbuy, shortclose, shortbuy]
+                if isnothing(gs.limit)
+                    # no limit order in place, set initial close limit
+                     ta.orderlimit = gs.limit = gs.predictionsdf[ix, :close] * (1f0 + gs.sellgain)
+                     ta.orderlabel = gs.ordertype = longclose
+                elseif gs.labels[ix] != longhold
+                    # limit order in place, adjust limit
+                     ta.orderlimit = gs.limit = max(gs.predictionsdf[ix, :close], gs.limit * (1f0 - gs.sellgain * limitreduction))
                 end
-                ta.orderlabel = gs.ordertype
+            elseif gs.assettype == down
+                if isnothing(gs.limit)
+                    # no limit order in place, set initial close limit
+                     ta.orderlimit = gs.limit = gs.predictionsdf[ix, :close] * (1f0 - gs.sellgain)
+                     ta.orderlabel = gs.ordertype = shortclose
+                elseif gs.labels[ix] != shorthold
+                    # limit order in place, adjust limit
+                     ta.orderlimit = gs.limit = min(gs.predictionsdf[ix, :close], gs.limit * (1f0 + gs.sellgain * limitreduction))
+                end
             end
-        end
-        if gs.trend != thistrend
-            calcgain!(gs, ix)
-            gs.buyix = thisbuyix
-            gs.trend = thistrend
         end
     end
     gs.endix = lastix
@@ -965,7 +949,7 @@ The returned dataframe has the following columns:
 - startix, endix within predictionsdf rows of gain segment
 
 Input is 
--  predictionsdf::AbstractDataFrame with the following colums
+-  predictionsdf::AbstractDataFrame of a consecutive range with the following colums
     - label as TradeLabel
     - score as Float32 prediction score
     - target as TradeLabel
@@ -980,7 +964,7 @@ Input is
     - coin as CategoricalVector
 """
 function getgains(gs::GainSegment, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector, forcegain::Bool; lastix=lastindex(scores), openthreshold=gs.openthreshold, closethreshold=gs.closethreshold)
-    @assert firstindex(scores) == firstindex(labels) == firstindex(predictionsdf, 1) "firstindex(scores)=$(firstindex(scores)) == firstindex(labels)=$(firstindex(labels)) == firstindex(predictionsdf, 1)=$(firstindex(predictionsdf, 1))"
+    @assert length(scores) == length(labels) == size(predictionsdf, 1) "length(scores)=$(length(scores)) == length(labels)=$(length(labels)) == size(predictionsdf, 1)=$(size(predictionsdf, 1))"
     gs.openthreshold = openthreshold
     gs.closethreshold = closethreshold
     gs.predictionsdf = predictionsdf

@@ -313,7 +313,10 @@ f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, l
 f4s = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-4, lastix=lastindex(ohlcv.df[!, "opentime"])-3, regrwindows=[15, 60], usecache=false)
 Features.write(f4s)
 @test Features.file(f4s).existing == true
-@test isfile(EnvConfig.coinfile(f4s.basecoin, f4s.quotecoin, "grad_15"; subfolder="f4", extension=".arrow"))
+@test isfile(EnvConfig.coinfile(f4s.basecoin, f4s.quotecoin, "f4"; extension=".arrow"))
+sharedf4 = Features._read_shared_f4_arrow(f4s.basecoin, f4s.quotecoin; columns=["grad_15", "regry_15"])
+@test :grad_15 in names(sharedf4)
+@test :regry_15 in names(sharedf4)
 rm(Features.file(f4s).filename; force=true, recursive=true)
 @test Features.file(f4s).existing == false
 f4r = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=true)

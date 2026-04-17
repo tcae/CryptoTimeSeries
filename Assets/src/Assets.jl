@@ -8,7 +8,7 @@ Day and minute OHLCV data are updated.
 """
 module Assets
 
-using Dates, DataFrames, Logging, JDF, Statistics
+using Dates, DataFrames, Logging, Statistics
 using EnvConfig, Ohlcv, CryptoXch, Features
 
 """
@@ -61,10 +61,15 @@ savecols = [:base, :manual, :automatic, :portfolio, :update, :quotevolume24h_M, 
 
 function write(ad::AssetData)
     mnm = mnemonic()
-    filename = EnvConfig.datafile(mnm)
+    folderpath = EnvConfig.datafolderpath()
+    filename = EnvConfig.tablepath(mnm; folderpath=folderpath, format=:arrow)
     if size(ad.basedf, 1) > 0
         (verbosity == 2) && println("$(EnvConfig.timestr(maximum(ad.basedf[!, :update]))) writing asset data of $(size(ad.basedf, 1)) base candidates to $filename")
-        JDF.savejdf(filename, ad.basedf[!, savecols])  # without :pivot
+        EnvConfig.savedf(ad.basedf[!, savecols], mnm; folderpath=folderpath, format=:arrow)
+        legacyfile = EnvConfig.tablepath(mnm; folderpath=folderpath, format=:jdf)
+        if isdir(legacyfile) || isfile(legacyfile)
+            rm(legacyfile; force=true, recursive=true)
+        end
     else
         @warn "missing asset data to write to $filename"
     end
@@ -72,15 +77,21 @@ end
 
 function read!(ad::AssetData)
     mnm = mnemonic()
-    filename = EnvConfig.datafile(mnm)
+    folderpath = EnvConfig.datafolderpath()
+    filename = EnvConfig.tablepath(mnm; folderpath=folderpath, format=:arrow)
+    legacyfile = EnvConfig.tablepath(mnm; folderpath=folderpath, format=:jdf)
     df = emptyassetdataframe()
     (verbosity == 3) && println("$(EnvConfig.now()) loading asset info from $filename")
-    if isdir(filename)
-        try
-            df = DataFrame(JDF.loadjdf(filename))
-        catch e
-            Logging.@warn "exception $e detected"
+    try
+        loaded = EnvConfig.readdf(mnm; folderpath=folderpath, format=:arrow, copycols=true)
+        if !isnothing(loaded)
+            df = DataFrame(loaded; copycols=true)
+            if isdir(legacyfile) || isfile(legacyfile)
+                rm(legacyfile; force=true, recursive=true)
+            end
         end
+    catch e
+        Logging.@warn "exception $e detected"
     end
     ad.basedf = df
     (verbosity == 3) && println("$(EnvConfig.now()) $df")
@@ -89,10 +100,13 @@ end
 
 function delete(ad::AssetData)
     mnm = mnemonic()
-    filename = EnvConfig.datafile(mnm)
-    (verbosity == 3) && println("$(EnvConfig.now()) deleting asset data of $filename")
-    if isdir(filename)
-        rm(filename; force=true, recursive=true)
+    folderpath = EnvConfig.datafolderpath()
+    for format in (:arrow, :jdf)
+        filename = EnvConfig.tablepath(mnm; folderpath=folderpath, format=format)
+        (verbosity == 3) && println("$(EnvConfig.now()) deleting asset data of $filename")
+        if isdir(filename) || isfile(filename)
+            rm(filename; force=true, recursive=true)
+        end
     end
 end
 

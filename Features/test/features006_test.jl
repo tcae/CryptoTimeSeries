@@ -114,6 +114,19 @@ end
     @test size(f6.fdfno, 1) - f6.maxoffset == size(f6.fdf, 1)
     @test size(f6.fdfno, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1)
 
+    staleview = @view Ohlcv.dataframe(ohlcv)[21:end, :]
+    stalef6 = Features.Features006()
+    Features.addgrad!(stalef6, window=60, offset=0)
+    stalef6.ohlcv = ohlcv
+    stalef6.fdfno = DataFrame(
+        "ry+60" => fill(1.0f0, size(staleview, 1) - 1),
+        "rg+60" => fill(2.0f0, size(staleview, 1) - 1),
+        "opentime" => staleview[1:(end-1), "opentime"],
+    )
+    staleotdf = DataFrame("rg+5" => fill(3.0f0, size(staleview, 1)))
+    Features._opentime!(staleotdf, stalef6, staleview, nothing, nothing)
+    @test size(staleotdf, 1) == size(staleview, 1)
+    @test staleotdf[!, "opentime"] == staleview[!, "opentime"]
 
 end # testset
 return

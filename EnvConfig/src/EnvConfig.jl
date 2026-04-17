@@ -517,17 +517,23 @@ function tableexists(filename::AbstractString; folderpath=logfolder(), format::S
     return _table_storage_exists(tablepath(filename; folderpath=folderpath, format=format), format)
 end
 
-"Write a table in JDF or Arrow format and return the resulting path."
-function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf)
+"Write a table in JDF or Arrow format and return the resulting path. Arrow files are written in stream format so they can be appended later."
+function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, append::Bool=false)
     @assert format in (:jdf, :arrow) "format=$(format) must be :jdf or :arrow"
+    @assert !(append && (format != :arrow)) "append=true is only supported for format=:arrow"
     filepath = tablepath(filename; folderpath=folderpath, format=format)
     mkpath(dirname(filepath))
     if format == :jdf
         JDF.savejdf(filepath, DataFrame(table))
     else
-        Arrow.write(filepath, _arrow_safe_table(table))
+        safetable = _arrow_safe_table(table)
+        if append && isfile(filepath)
+            Arrow.append(filepath, safetable)
+        else
+            Arrow.write(filepath, safetable; file=false)
+        end
     end
-    (verbosity >= 3) && println("$(EnvConfig.now()) saved $(format) table to $(filepath)")
+    (verbosity >= 3) && println("$(EnvConfig.now()) saved $(format) table to $(filepath) append=$(append)")
     return filepath
 end
 
@@ -571,6 +577,9 @@ end
 
 "Save a dataframe using the preferred or explicitly supplied storage format."
 savedf(df, filename; folderpath=logfolder(), format::Symbol=dfformat()) = writetable(df, filename; folderpath=folderpath, format=format)
+
+"Append a dataframe to an existing Arrow table, or create it if it does not exist yet."
+appenddf(df, filename; folderpath=logfolder()) = writetable(df, filename; folderpath=folderpath, format=:arrow, append=true)
 
 "Read a dataframe using the preferred or explicitly supplied storage format, with fallback to the alternate format when available. Use `copycols=true` only when the caller intends to mutate the returned dataframe."
 readdf(filename; folderpath=logfolder(), format::Symbol=dfformat(), copycols::Bool=false) = readtable(filename; folderpath=folderpath, format=:auto, preferred=format, copycols=copycols)
@@ -624,8 +633,8 @@ end
     coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=cryptoquote, subfolder=nothing)
 
 Return the folder for a shared coin-pair artifact under `coins/`, creating it on
-first use. Examples include `coins/BTCUSDT/ohlcv.arrow` and
-`coins/BTCUSDT/f4/grad_15.arrow`.
+first use. Examples include `coins/BTC-USDT/ohlcv.arrow` and
+`coins/BTC-USDT/f4.arrow`.
 """
 function coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=cryptoquote, subfolder=nothing)
     pairfolder = uppercase(basecoin) * "-" * uppercase(quotecoin)
@@ -641,8 +650,8 @@ end
     coinfile(basecoin::AbstractString, quotecoin::AbstractString, artifact::AbstractString;
              subfolder=nothing, extension=".arrow")
 
-Return the full path of a shared per-coin artifact file under `coins/` without
-changing the legacy JDF storage paths.
+Return the full path of a shared per-coin artifact file under `coins/`.
+Legacy JDF lookup/backfill is handled separately by the read helpers.
 """
 function coinfile(basecoin::AbstractString, quotecoin::AbstractString, artifact::AbstractString; subfolder=nothing, extension=".arrow")
     ext = startswith(extension, ".") ? extension : "." * extension
@@ -802,16 +811,21 @@ function configuration(cfgset::AbstractConfiguration, cfgid::Integer)
 end
 
 
-filename(cfgset::AbstractConfiguration) = EnvConfig.datafile(string(typeof(cfgset)) * "Config", "Config", ".jdf")
+filename(cfgset::AbstractConfiguration; format::Symbol=:arrow) = EnvConfig.tablepath(string(typeof(cfgset)) * "Config"; folderpath=EnvConfig.datafolderpath("Config"), format=format)
 
 "Writes the cfgset DataFrame config file into field cfg"
 function writeconfigurations(cfgset::AbstractConfiguration)
     if !hasproperty(cfgset, :cfg)
         return
     end
-    fn = filename(cfgset)
+    stem = string(typeof(cfgset)) * "Config"
+    folderpath = EnvConfig.datafolderpath("Config")
+    fn = EnvConfig.savedf(cfgset.cfg, stem; folderpath=folderpath, format=:arrow)
     (verbosity >=3) && println("saved config in cfgfilename=$fn")
-    JDF.savejdf(fn, cfgset.cfg)
+    legacyfile = filename(cfgset; format=:jdf)
+    if isdir(legacyfile) || isfile(legacyfile)
+        rm(legacyfile; force=true, recursive=true)
+    end
 end
 
 """
@@ -822,14 +836,21 @@ function readconfigurations!(cfgset::AbstractConfiguration, optparams::Dict=Dict
     if !hasproperty(cfgset, :cfg)
         return cfgset
     end
-    fn = filename(cfgset)
-    if isdir(fn)
-        cfgset.cfg = DataFrame(JDF.loadjdf(fn))
+    stem = string(typeof(cfgset)) * "Config"
+    folderpath = EnvConfig.datafolderpath("Config")
+    fn = filename(cfgset; format=:arrow)
+    loaded = EnvConfig.readdf(stem; folderpath=folderpath, format=:arrow, copycols=true)
+    if !isnothing(loaded)
+        cfgset.cfg = DataFrame(loaded; copycols=true)
         if isnothing(cfgset.cfg)
             @error "Loading $fn failed"
             cfgset.cfg = emptyconfigdf(cfgset, optparams)
         else
             (verbosity >= 2) && println("\r$(EnvConfig.now()) Loaded cfgset config from $fn")
+            legacyfile = filename(cfgset; format=:jdf)
+            if isdir(legacyfile) || isfile(legacyfile)
+                rm(legacyfile; force=true, recursive=true)
+            end
         end
     else
         (verbosity >= 2) && println("\r$(EnvConfig.now()) No configuration file $fn found")

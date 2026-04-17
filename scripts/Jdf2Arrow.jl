@@ -294,7 +294,7 @@ function _parse_shared_basequote(source::AbstractString)
     return (base=uppercase(parts[1]), quotecoin=uppercase(parts[2]))
 end
 
-"""Cross-check one shared OHLCV JDF cache from `crypto/Features/OHLCV` against its Arrow counterpart under `coins/<pair>/ohlcv.arrow`."""
+"""Cross-check one legacy shared OHLCV JDF cache from `crypto/Features/OHLCV` against its Arrow counterpart under `coins/<pair>/ohlcv.arrow`."""
 function crosscheck_ohlcv_cache(source::AbstractString)
     parsed = _parse_shared_basequote(source)
     target = normpath(joinpath(EnvConfig.coinspath(), _shared_pairfolder(parsed.base, parsed.quotecoin), "ohlcv.arrow"))
@@ -319,15 +319,14 @@ function crosscheck_ohlcv_cache(source::AbstractString)
     )
 end
 
-"""Cross-check one shared F4 JDF cache from `crypto/Features/Features004` against its Arrow column files under `coins/<pair>/f4/`."""
+"""Cross-check one legacy shared F4 JDF cache from `crypto/Features/Features004` against its single Arrow counterpart under `coins/<pair>/f4.arrow`."""
 function crosscheck_f4_cache(source::AbstractString)
     parsed = _parse_shared_basequote(source)
-    targetfolder = normpath(joinpath(EnvConfig.coinspath(), _shared_pairfolder(parsed.base, parsed.quotecoin), "f4"))
-    output_files = isdir(targetfolder) ? filter(file -> endswith(file, ".arrow"), readdir(targetfolder; join=false, sort=true)) : String[]
-    output_bytes = sum(_path_bytes(joinpath(targetfolder, file)) for file in output_files; init=Int64(0))
+    target = normpath(joinpath(EnvConfig.coinspath(), _shared_pairfolder(parsed.base, parsed.quotecoin), "f4.arrow"))
+    output_bytes = _path_bytes(target)
     source_bytes = _path_bytes(source)
     isempty_source = source_bytes == 0
-    exists = !isempty(output_files)
+    exists = isfile(target)
     status = isempty_source ? "empty-source" : (!exists ? "missing-arrow" : (output_bytes >= source_bytes ? "ok" : "size-mismatch"))
     return (
         scope="shared",
@@ -335,17 +334,17 @@ function crosscheck_f4_cache(source::AbstractString)
         artifact="f4",
         status=status,
         source=String(source),
-        output=targetfolder,
+        output=target,
         source_rows=missing,
         source_bytes=source_bytes,
-        output_files=Int32(length(output_files)),
+        output_files=Int32(exists ? 1 : 0),
         output_bytes=output_bytes,
         counterpart_exists=exists,
         size_ok=isempty_source ? missing : (output_bytes >= source_bytes),
     )
 end
 
-"""Cross-check all shared CloudStorage JDF caches against their Arrow counterparts and summarize coverage plus byte-size parity."""
+"""Cross-check all legacy shared CloudStorage JDF caches against their Arrow counterparts and summarize coverage plus byte-size parity."""
 function crosscheck_shared_data(; bases::Vector{String}=String[], artifacts::Vector{String}=DEFAULT_SHARED_ARTIFACTS, savesummary::Bool=true)
     EnvConfig.init(production)
     selectedbases = Set(uppercase.(bases))
@@ -376,9 +375,9 @@ function crosscheck_shared_data(; bases::Vector{String}=String[], artifacts::Vec
     return summarydf
 end
 
-"""Convert one shared OHLCV cache from `crypto/Features/OHLCV` to a non-destructive Arrow copy under `coins/<pair>/ohlcv.arrow`."""
+"""Convert one legacy shared OHLCV cache from `crypto/Features/OHLCV` to the local Arrow cache under `coins/<pair>/ohlcv.arrow`."""
 function convert_ohlcv_cache(ohlcv::Ohlcv.OhlcvData)
-    source = String(Ohlcv.file(ohlcv).filename)
+    source = String(Ohlcv.legacyfile(ohlcv).filename)
     rowcount = Int32(size(ohlcv.df, 1))
     colcount = Int32(length(names(ohlcv.df[!, Ohlcv.save_cols])))
     output = Ohlcv.write_arrow(ohlcv)
@@ -397,9 +396,9 @@ function convert_ohlcv_cache(ohlcv::Ohlcv.OhlcvData)
     )
 end
 
-"""Convert one shared F4 cache from `crypto/Features/Features004` to non-destructive per-column Arrow copies under `coins/<pair>/f4/`."""
+"""Convert one legacy shared F4 cache from `crypto/Features/Features004` to a single Arrow file under `coins/<pair>/f4.arrow`."""
 function convert_f4_cache(f4::Features.Features004)
-    source = String(Features.file(f4).filename)
+    source = String(Features.legacyfile(f4).filename)
     rowcount = Int32(isempty(f4.rw) ? 0 : length(Features.opentime(f4)))
     outputs = Features.write_arrow(f4)
     isempty_note = rowcount == 0 ? "empty F4 cache" : ""
@@ -409,7 +408,7 @@ function convert_f4_cache(f4::Features.Features004)
         artifact="f4",
         status=isempty(outputs) ? "skipped-empty" : "converted",
         rows=rowcount,
-        cols=Int32(length(outputs)),
+        cols=Int32(isempty(f4.rw) ? 0 : length(names(Features._join(f4)))),
         source=source,
         output=join(outputs, ","),
         note=isempty_note,
@@ -421,9 +420,9 @@ end
     convert_shared_data(; bases::Vector{String}=String[], artifacts::Vector{String}=DEFAULT_SHARED_ARTIFACTS,
                         savesummary::Bool=true)
 
-Create non-destructive Arrow copies of existing shared JDF caches from
-`crypto/Features/OHLCV` and `crypto/Features/Features004` under `coins/` while
-leaving the legacy JDF caches untouched.
+Create non-destructive Arrow copies of any remaining legacy shared JDF caches
+from `crypto/Features/OHLCV` and `crypto/Features/Features004` under `coins/`
+while leaving the original legacy sources untouched.
 """
 function convert_shared_data(; bases::Vector{String}=String[], artifacts::Vector{String}=DEFAULT_SHARED_ARTIFACTS, savesummary::Bool=true)
     EnvConfig.init(production)

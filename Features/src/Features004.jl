@@ -172,9 +172,10 @@ function _split!(f4, df)
         if cname == "opentime"
             ot = df[!, cname]
         else
-            cnamevec = split(cname, "_")
-            if length(cnamevec) != 2
+            cnamevec = split(String(cname), "_")
+            if (length(cnamevec) < 2) || isnothing(tryparse(Int, cnamevec[1]))
                 @error "unexpected f4.rw dataframe column name: $cnamevec"
+                continue
             end
             regr = parse(Int, cnamevec[1])
             if !(regr in keys(f4.rw))
@@ -189,65 +190,95 @@ function _split!(f4, df)
     return f4
 end
 
-function file(f4::Features004)
+function legacyfile(f4::Features004)
     mnm = mnemonic(f4)
     filename = EnvConfig.datafile(mnm, "Features004")
-    if isdir(filename)
-        return (filename=filename, existing=true)
-    else
-        return (filename=filename, existing=false)
-    end
+    return (filename=filename, existing=isdir(filename) || isfile(filename))
 end
 
-_f4_arrow_filename(name::AbstractString) = replace(String(name), r"[^A-Za-z0-9_.-]" => "_")
+function file(f4::Features004)
+    filename = EnvConfig.coinfile(f4.basecoin, f4.quotecoin, "f4"; extension=".arrow")
+    return (filename=filename, existing=isfile(filename) || legacyfile(f4).existing)
+end
 
-"""Write non-destructive per-column Arrow copies of shared F4 data to `coins/<pair>/f4/`."""
+_legacy_splitfolder(basecoin::AbstractString, quotecoin::AbstractString) = normpath(joinpath(EnvConfig.coinspath(), uppercase(basecoin) * "-" * uppercase(quotecoin), "f4"))
+
+function _normalize_shared_f4_arrow(df::AbstractDataFrame)::DataFrame
+    normalized = DataFrame()
+    if "opentime" in names(df)
+        normalized[:, "opentime"] = df[!, "opentime"]
+    end
+    for cname in names(df)
+        String(cname) == "opentime" && continue
+        parts = split(String(cname), "_")
+        canonical = if (length(parts) >= 2) && !isnothing(tryparse(Int, parts[1]))
+            Symbol(join(parts[1:2], "_"))
+        else
+            cname isa Symbol ? cname : Symbol(cname)
+        end
+        if canonical in names(normalized)
+            normalized[!, canonical] = coalesce.(df[!, cname], normalized[!, canonical])
+        else
+            normalized[!, canonical] = df[!, cname]
+        end
+    end
+    return normalized
+end
+
+function _merge_shared_f4_arrow(existing::AbstractDataFrame, update::AbstractDataFrame)::DataFrame
+    existingdf = _normalize_shared_f4_arrow(DataFrame(existing; copycols=true))
+    updatedf = _normalize_shared_f4_arrow(DataFrame(update; copycols=true))
+    if size(existingdf, 1) == 0
+        return sort!(existingdf, :opentime)
+    elseif size(updatedf, 1) == 0
+        return sort!(updatedf, :opentime)
+    end
+
+    merged = outerjoin(existingdf, updatedf; on=:opentime, makeunique=true)
+    merged = _normalize_shared_f4_arrow(merged)
+    sort!(merged, :opentime)
+    return merged
+end
+
+"""Write the shared per-coin F4/F5 Arrow cache to `coins/<pair>/f4.arrow`, preserving existing columns and refreshing overlapping values."""
 function _write_shared_f4_arrow(basecoin::AbstractString, quotecoin::AbstractString, df::AbstractDataFrame)
     if (size(df, 1) == 0) || !("opentime" in names(df))
         return String[]
     end
-    folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin, "f4")
-    outpaths = String[]
-    for col in names(df)
-        if String(col) == "opentime"
-            continue
-        end
-        colsym = col isa Symbol ? col : Symbol(col)
-        push!(outpaths, EnvConfig.savedf(select(df, :opentime, colsym), _f4_arrow_filename(String(col)); folderpath=folderpath, format=:arrow))
+    folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin)
+    existing = EnvConfig.readdf("f4"; folderpath=folderpath, format=:arrow, copycols=true)
+    writedf = (isnothing(existing) || (size(existing, 1) == 0)) ? _normalize_shared_f4_arrow(DataFrame(df; copycols=true)) : _merge_shared_f4_arrow(existing, df)
+    outpath = EnvConfig.savedf(writedf, "f4"; folderpath=folderpath, format=:arrow)
+    legacyfolder = _legacy_splitfolder(basecoin, quotecoin)
+    if isdir(legacyfolder)
+        rm(legacyfolder; force=true, recursive=true)
     end
-    return outpaths
+    return String[outpath]
 end
 
-"""Read shared F4 Arrow column files from `coins/<pair>/f4/` and rebuild the combined dataframe."""
+"""Read the shared per-coin F4/F5 Arrow cache from `coins/<pair>/f4.arrow` and optionally select only the requested columns."""
 function _read_shared_f4_arrow(basecoin::AbstractString, quotecoin::AbstractString; columns::Union{Nothing,AbstractVector}=nothing)
-    folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin, "f4")
-    isdir(folderpath) || return DataFrame()
-
-    stems = if isnothing(columns)
-        [splitext(file)[1] for file in readdir(folderpath; join=false, sort=true) if endswith(file, ".arrow")]
-    else
-        [_f4_arrow_filename(String(col)) for col in columns if String(col) != "opentime"]
+    folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin)
+    df = EnvConfig.readdf("f4"; folderpath=folderpath, format=:arrow, copycols=true)
+    if isnothing(df) || (size(df, 1) == 0)
+        return DataFrame()
     end
-    isempty(stems) && return DataFrame()
 
-    pieces = DataFrame[]
-    for stem in stems
-        df = EnvConfig.readdf(stem; folderpath=folderpath, format=:arrow)
-        if !isnothing(df) && (size(df, 1) > 0)
-            push!(pieces, DataFrame(df))
+    result = _normalize_shared_f4_arrow(DataFrame(df; copycols=true))
+    if !isnothing(columns)
+        requested = [String(col) == "opentime" ? "opentime" : Symbol(col) for col in columns]
+        available = [col for col in requested if col in names(result)]
+        if ("opentime" in names(result)) && !("opentime" in available)
+            pushfirst!(available, "opentime")
         end
-    end
-    isempty(pieces) && return DataFrame()
-
-    result = pieces[1]
-    for piece in pieces[2:end]
-        result = innerjoin(result, piece; on=:opentime)
+        isempty(available) && return DataFrame()
+        result = select(result, unique(available))
     end
     sort!(result, :opentime)
     return result
 end
 
-"""Write non-destructive per-column Arrow copies of `Features004` shared cache data."""
+"""Write the shared per-coin `Features004`/`Features005` Arrow cache to `coins/<pair>/f4.arrow`."""
 write_arrow(f4::Features004) = _write_shared_f4_arrow(f4.basecoin, f4.quotecoin, _join(f4))
 
 function write(f4::Features004)
@@ -259,10 +290,13 @@ function write(f4::Features004)
     end
     fn = file(f4)
     try
-        JDF.savejdf(fn.filename, df[!, :])
         arrowpaths = _write_shared_f4_arrow(f4.basecoin, f4.quotecoin, df)
+        legacyfn = legacyfile(f4)
+        if !isempty(arrowpaths) && (legacyfn.existing || isfile(legacyfn.filename) || isdir(legacyfn.filename))
+            rm(legacyfn.filename; force=true, recursive=true)
+        end
         (verbosity >= 2) && println("$(EnvConfig.now()) saved F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
-        (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved $(length(arrowpaths)) shared F4 Arrow column files for $(f4.basecoin)")
+        (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved shared F4 Arrow cache to $(first(arrowpaths))")
     catch e
         Logging.@error "exception $e detected when writing $(fn.filename)"
     end
@@ -272,12 +306,16 @@ read!(f4::Features004)::Features004 = read!(f4, nothing, nothing)
 
 function read!(f4::Features004, startdt, enddt)::Features004
     fn = file(f4)
+    legacyfn = legacyfile(f4)
     # try
         df = _read_shared_f4_arrow(f4.basecoin, f4.quotecoin)
         if size(df, 1) > 0
             startdt = isnothing(startdt) ? df[begin, :opentime] : startdt
             enddt = isnothing(enddt) ? df[end, :opentime] : enddt
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared F4 Arrow data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows")
+            if legacyfn.existing || isfile(legacyfn.filename) || isdir(legacyfn.filename)
+                rm(legacyfn.filename; force=true, recursive=true)
+            end
             if (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
                 f4.latestloadeddt = df[end, :opentime]
                 startix = Ohlcv.rowix(df[!, :opentime], startdt)
@@ -287,14 +325,18 @@ function read!(f4::Features004, startdt, enddt)::Features004
                 df = df[startix:endix, :]
                 f4 = _split!(f4, df)
             end
-        elseif fn.existing
-            (verbosity >= 3) && println("$(EnvConfig.now()) start loading F4 data of $(f4.basecoin) from $(fn.filename)")
-            df = DataFrame(JDF.loadjdf(fn.filename))
+        elseif legacyfn.existing
+            (verbosity >= 3) && println("$(EnvConfig.now()) start loading legacy F4 data of $(f4.basecoin) from $(legacyfn.filename)")
+            df = DataFrame(JDF.loadjdf(legacyfn.filename))
             startdt = isnothing(startdt) ? df[begin, :opentime] : startdt
             enddt = isnothing(enddt) ? df[end, :opentime] : enddt
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded legacy F4 data of $(f4.basecoin) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(legacyfn.filename)")
+            if size(df, 1) > 0
+                _write_shared_f4_arrow(f4.basecoin, f4.quotecoin, df)
+                rm(legacyfn.filename; force=true, recursive=true)
+            end
             if (size(df, 1) > 0) && (startdt <= df[end, :opentime]) && (enddt >= df[begin, :opentime])
-                (verbosity >= 4) && println("f4cache $(fn.filename) names: $(names(df))")
+                (verbosity >= 4) && println("f4cache $(legacyfn.filename) names: $(names(df))")
                 f4.latestloadeddt = df[end, :opentime]
                 startix = Ohlcv.rowix(df[!, :opentime], startdt)
                 startix = df[startix, :opentime] < startdt ? min(lastindex(df[!, :opentime]), startix+1) : startix
@@ -304,7 +346,7 @@ function read!(f4::Features004, startdt, enddt)::Features004
                 f4 = _split!(f4, df)
             end
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow copy for $(f4.basecoin)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no F4 data found for $(fn.filename) or $(legacyfn.filename) for $(f4.basecoin)")
         end
     # catch e
     #     Logging.@warn "exception $e detected"
@@ -313,9 +355,14 @@ function read!(f4::Features004, startdt, enddt)::Features004
 end
 
 function delete(f4::Features004)
-    fn = file(f4)
-    if fn.existing
-        rm(fn.filename; force=true, recursive=true)
+    for fn in (file(f4), legacyfile(f4))
+        if fn.existing || isfile(fn.filename) || isdir(fn.filename)
+            rm(fn.filename; force=true, recursive=true)
+        end
+    end
+    legacyfolder = _legacy_splitfolder(f4.basecoin, f4.quotecoin)
+    if isdir(legacyfolder)
+        rm(legacyfolder; force=true, recursive=true)
     end
 end
 
@@ -329,9 +376,9 @@ end
 
 function Base.iterate(f4f::Features004Files, state=1)
     if isnothing(f4f.filenames)
-        allff = readdir(EnvConfig.datafolderpath("Features004"), join=false, sort=false)
-        fileixlist = findall(f -> endswith(f, "_F4.jdf"), allff)
-        f4f.filenames = [allff[ix] for ix in fileixlist]
+        coinroot = EnvConfig.coinspath()
+        pairfolders = isdir(coinroot) ? readdir(coinroot, join=false, sort=false) : String[]
+        f4f.filenames = [pair for pair in pairfolders if isfile(joinpath(coinroot, pair, "f4.arrow"))]
         if length(f4f.filenames) > 0
             state = firstindex(f4f.filenames)
         else
@@ -341,11 +388,9 @@ function Base.iterate(f4f::Features004Files, state=1)
     if state > lastindex(f4f.filenames)
         return nothing
     end
-    # fn = split(of.filenames[state], "/")[end]
-    fnparts = split(f4f.filenames[state], "_")
-    # return (basecoin=fnparts[1], quotecoin=fnparts[2], interval=fnparts[3]), state+1
-    basecoin=fnparts[1]
-    quotecoin=fnparts[2]
+    pairparts = split(f4f.filenames[state], "-")
+    basecoin = pairparts[1]
+    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.cryptoquote
     f4 = Features.Features004(String(basecoin), String(quotecoin))
     read!(f4, nothing, nothing)
     return f4, state+1

@@ -63,7 +63,7 @@ mutable struct TrendLstmConfig
     openthresholds::Vector{Float32} # config of classifier score thresholds to be evaluated for opening trades; expected to be in [0, 1]
     closethresholds::Vector{Float32} # config of classifier score thresholds to be evaluated for closing trades; expected to be in [0, 1]
     mode::EnvConfig.Mode
-    function TrendLstmConfig(;configname="025", folder="$(TREND_LSTM_FOLDER_PREFIX)-$configname-$(EnvConfig.configmode)", trendconfig=trenddetectorconfig("025"), seqlen::Int=3, hidden_dim::Int=32, maxepoch::Int=200, batchsize::Int=64, openthresholds::Vector{Float32}=Float32[0.8f0, 0.7f0, 0.6f0], closethresholds::Vector{Float32}=Float32[0.6f0, 0.55f0, 0.5f0], mode::EnvConfig.Mode=EnvConfig.configmode)
+    function TrendLstmConfig(;configname="025", folder="$(TREND_LSTM_FOLDER_PREFIX)-$configname-$(EnvConfig.configmode)", trendconfig=trenddetectorconfig("025"), seqlen::Int=3, hidden_dim::Int=32, maxepoch::Int=200, batchsize::Int=64, openthresholds::Vector{Float32}=default_openthresholds(), closethresholds::Vector{Float32}=default_closethresholds(), mode::EnvConfig.Mode=EnvConfig.configmode)
         @assert seqlen > 0 "seqlen=$seqlen must be > 0"
         @assert hidden_dim > 0 "hidden_dim=$hidden_dim must be > 0"
         @assert maxepoch > 0 "maxepoch=$maxepoch must be > 0"
@@ -78,19 +78,19 @@ mutable struct TrendLstmConfig
     end
 end
 
-resultsfilename() = "results.jdf"
-featuresfilename() = "features.jdf"
-predictionsfilename() = "maxpredictions.jdf"
-lstmmergedfilename() = "lstm_merged_inputs.jdf"
-lstmlossesfilename() = "lstm_losses.jdf"
-lstmpredictionsfilename() = "lstm_predictions.jdf"
-lstmconfusionfilename() = "lstm_confusion.jdf"
-lstmxconfusionfilename() = "lstm_xconfusion.jdf"
-lstmsequencesfilename() = "lstm_sequences.jdf"
-lstmdistancesfilename() = joinpath("trades", "lstm_distances.jdf")
-lstmpairsfilename() = joinpath("trades", "lstm_transaction_pairs_all.jdf")
-lstmgainsfilename() = joinpath("trades", "lstm_gains_all.jdf")
-summaryfilename() = "summary.jdf"
+resultsfilename() = "results.arrow"
+featuresfilename() = "features.arrow"
+predictionsfilename() = "maxpredictions.arrow"
+lstmmergedfilename() = "lstm_merged_inputs.arrow"
+lstmlossesfilename() = "lstm_losses.arrow"
+lstmpredictionsfilename() = "lstm_predictions.arrow"
+lstmconfusionfilename() = "lstm_confusion.arrow"
+lstmxconfusionfilename() = "lstm_xconfusion.arrow"
+lstmsequencesfilename() = "lstm_sequences.arrow"
+lstmdistancesfilename() = joinpath("trades", "lstm_distances.arrow")
+lstmpairsfilename() = joinpath("trades", "lstm_transaction_pairs_all.arrow")
+lstmgainsfilename() = joinpath("trades", "lstm_gains_all.arrow")
+summaryfilename() = "summary.arrow"
 
 trendfolder(cfg::TrendLstmConfig) = "Trend-$(cfg.trendconfig.configname)-$(cfg.mode)"
 _trendcoins(cfg::TrendLstmConfig) = cfg.mode == test ? testcoins() : traincoins()
@@ -159,7 +159,7 @@ function _table_colnames(table)::Vector{String}
     return isnothing(schema) ? String[] : string.(collect(schema.names))
 end
 
-function _load_df_or_assert(folder::AbstractString, filename::AbstractString; format::Symbol=:jdf)
+function _load_df_or_assert(folder::AbstractString, filename::AbstractString; format::Symbol=:arrow)
     fp = _folderpath(folder)
     stem = format == :arrow ? _arrowartifactstem(filename) : filename
     df = EnvConfig.readdf(stem; folderpath=fp, format=format)
@@ -170,7 +170,7 @@ function _load_df_or_assert(folder::AbstractString, filename::AbstractString; fo
     return df
 end
 
-function _load_table_or_assert(folder::AbstractString, filename::AbstractString; format::Symbol=:jdf, materialize::Bool=true)
+function _load_table_or_assert(folder::AbstractString, filename::AbstractString; format::Symbol=:arrow, materialize::Bool=true)
     fp = _folderpath(folder)
     stem = format == :arrow ? _arrowartifactstem(filename) : filename
     table = EnvConfig.readtable(stem; folderpath=fp, format=:auto, preferred=format, materialize=materialize)
@@ -1020,8 +1020,8 @@ function buildcfg(args::Vector{String})
     hidden_dim = parse(Int, _argvalue(args, "hidden", _argvalue(args, "hidden_dim", string(_ntget(presetcfg, :hidden_dim, 32)))))
     maxepoch = parse(Int, _argvalue(args, "maxepoch", isnothing(presetcfg) ? (retrainrequested ? "200" : "20") : string(_ntget(presetcfg, :maxepoch, 200))))
     batchsize = parse(Int, _argvalue(args, "batchsize", string(_ntget(presetcfg, :batchsize, 64))))
-    default_opens = join(string.(Float32.(_ntget(presetcfg, :openthresholds, Float32[0.8f0, 0.7f0, 0.6f0]))), ",")
-    default_closes = join(string.(Float32.(_ntget(presetcfg, :closethresholds, Float32[0.6f0, 0.55f0, 0.5f0]))), ",")
+    default_opens = join(string.(Float32.(_ntget(presetcfg, :openthresholds, default_openthresholds()))), ",")
+    default_closes = join(string.(Float32.(_ntget(presetcfg, :closethresholds, default_closethresholds()))), ",")
     openthresholds = _parse_float32_list(_argvalue(args, "openthresholds", default_opens))
     closethresholds = _parse_float32_list(_argvalue(args, "closethresholds", default_closes))
     return TrendLstmConfig(; configname=configname, folder=folder, trendconfig=trendconfig, seqlen=seqlen, hidden_dim=hidden_dim, maxepoch=maxepoch, batchsize=batchsize, openthresholds=openthresholds, closethresholds=closethresholds, mode=EnvConfig.configmode)
@@ -1111,17 +1111,17 @@ Key=value parameters:
 
   openthresholds=v1,v2,...
       Comma-separated open thresholds in `[0, 1]`.
-      Default: `0.8,0.7,0.6`
+    Default: `0.8,0.7,0.6,0.5,0.4,0.3`
 
   closethresholds=v1,v2,...
       Comma-separated close thresholds in `[0, 1]`.
-      Default: `0.6,0.55,0.5`
+    Default: `0.1`
 
 Legacy alias:
   `tradeadvice=<configname>` is still accepted for backward compatibility.
 
 Example:
-  julia --project=. scripts/TrendLstm.jl train retrain config=001 trend=025 seqlen=30 hidden=64 openthresholds=0.8,0.7 closethresholds=0.6,0.5
+    julia --project=. scripts/TrendLstm.jl train retrain config=001 trend=025 seqlen=30 hidden=64 openthresholds=0.5,0.4,0.3 closethresholds=0.1
 """
 end
 

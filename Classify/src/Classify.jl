@@ -1692,6 +1692,50 @@ end
 nnconverged(losses::AbstractVector) = (length(losses) > 10) && (losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end])
 nnconverged(nn) = nnconverged(nn.losses)
 
+"""
+Estimate inverse-frequency class weights and per-sample weights from `targets`.
+
+The weights are normalized as `1 / (n_active_classes * p(class))`, which keeps the
+mean sample weight close to 1 while emphasizing underrepresented classes.
+"""
+function classweighting(targets::AbstractVector, labels::AbstractVector=unique(targets))
+    labelnames = string.(labels)
+    targetcats = categorical(string.(targets), levels=labelnames, ordered=true)
+    dist = Distributions.fit(UnivariateFinite, targetcats)
+    activecount = max(count(label -> pdf(dist, label) > 0, labelnames), 1)
+    classweights = Float32[
+        (let prob = Float32(pdf(dist, label))
+            prob > 0f0 ? inv(Float32(activecount) * prob) : 0f0
+        end) for label in labelnames
+    ]
+    weightmap = Dict{String, Float32}(label => weight for (label, weight) in zip(labelnames, classweights))
+    sampleweights = Float32[get(weightmap, string(target), 0f0) for target in targets]
+    return (; dist, labels=collect(labels), classweights, sampleweights)
+end
+
+"""
+Apply `nn.lossfunc` with optional per-sample weights.
+
+Currently weighted adaptation is supported for the classifier and bounds-regressor
+losses used in this workspace.
+"""
+function weightedloss(nn::NN, y_hat::AbstractMatrix, y::AbstractMatrix, sampleweights::AbstractVector{<:Real})
+    @assert size(y_hat, 2) == size(y, 2) == length(sampleweights) "size(y_hat, 2)=$(size(y_hat, 2)), size(y, 2)=$(size(y, 2)) and length(sampleweights)=$(length(sampleweights)) must match"
+    weights = Float32.(vec(sampleweights))
+    weightsum = sum(weights)
+    @assert weightsum > 0f0 "sum(sampleweights)=$(weightsum) must be > 0"
+
+    if nn.lossfunc === Flux.logitcrossentropy
+        losses = vec(-sum(y .* Flux.logsoftmax(y_hat; dims=1), dims=1))
+        return sum(weights .* losses) / weightsum
+    elseif nn.lossfunc === Flux.mse
+        losses = vec(mean((y_hat .- y) .^ 2; dims=1))
+        return sum(weights .* losses) / weightsum
+    else
+        error("sampleweights are only supported for Flux.logitcrossentropy and Flux.mse, got $(nn.lossfunc)")
+    end
+end
+
 # using Flux
 # using NNlib: softplus
 
@@ -1706,21 +1750,30 @@ end
 creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
 relativedist is a vector
 """
-function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector)
+function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector; sampleweights::Union{Nothing,AbstractVector}=nothing)
+    if !isnothing(sampleweights)
+        @assert length(sampleweights) == length(targets) "length(sampleweights)=$(length(sampleweights)) must equal length(targets)=$(length(targets))"
+    end
     # onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
     onehottargets = Flux.onehotbatch(targets, nn.labels)  # onehot class encoding of an observation as one column
-    return adaptnn!(nn, features, onehottargets)
+    return adaptnn!(nn, features, onehottargets; sampleweights=sampleweights)
 end
 
 """
 Common adaptation loop for matrix targets.
 Uses nn.valuecorrection to transform raw model outputs before loss evaluation.
 """
-function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix)
+function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; sampleweights::Union{Nothing,AbstractVector}=nothing)
     X = Float32.(features)
     Yf = Float32.(Y)
+    Wf = isnothing(sampleweights) ? nothing : Float32.(vec(sampleweights))
     @assert size(X, 2) == size(Yf, 2) "size(X,2)=$(size(X,2)) must equal size(Y,2)=$(size(Yf,2))"
-    loader = Flux.DataLoader((X, Yf), batchsize=64, shuffle=true)
+    if !isnothing(Wf)
+        @assert size(X, 2) == length(Wf) "size(X,2)=$(size(X,2)) must equal length(sampleweights)=$(length(Wf))"
+    end
+    loader = isnothing(Wf) ?
+        Flux.DataLoader((X, Yf), batchsize=64, shuffle=true) :
+        Flux.DataLoader((X, Yf, Wf), batchsize=64, shuffle=true)
 
     # Training loop, using the whole data set 1000 times:
     trainmode!(nn)
@@ -1729,12 +1782,15 @@ function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix)
     maxepoch = EnvConfig.configmode == test ? 10 : 1000
     @showprogress for epoch in 1:maxepoch
         losses = Float32[]
-        for (x, y) in loader
+        for batch in loader
+            x = batch[1]
+            y = batch[2]
+            w = length(batch) > 2 ? batch[3] : nothing
             loss, grads = Flux.withgradient(nn.model) do m
                 # Evaluate model and loss inside gradient context:
                 y_hat = nn.valuecorrection(m(x))
-                #y_hat is a Float32 matrix , y is a boolean matrix both of size (classes, batchsize). The loss function returns a single Float32 number
-                nn.lossfunc(y_hat, y)
+                #y_hat is a Float32 matrix, y is a boolean/Float32 matrix of size (classes, batchsize).
+                isnothing(w) ? nn.lossfunc(y_hat, y) : weightedloss(nn, y_hat, y, w)
             end
             minloss = ismissing(minloss) ? loss : min(minloss, loss)
             maxloss = ismissing(maxloss) ? loss : max(maxloss, loss)

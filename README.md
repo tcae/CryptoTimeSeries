@@ -73,20 +73,22 @@ In case of variants, e.g. features or classification algorithms, the same functi
 
 ## OHLCV file transfer
 
-- create tar file of ohlcv files from ~/crypto/Features:
-  - cd ~/crypto/Features
-  - tar -czvf ohlcv.tar.gz *.jdf
+Shared OHLCV cache files now live under `~/crypto/coins/<BASE>-<QUOTE>/ohlcv.arrow`.
+
+- create a tar file of OHLCV Arrow caches:
+  - cd ~/crypto/coins
+  - tar -czvf ohlcv.tar.gz */ohlcv.arrow
   - or
-  - tar -czvf ohlcv.tar.gz ~/crypto/Features/*.jdf
-- list files in tar file ohlcv.tar.gz:
-  - tar -ztvf ohlcv.tgz
-- extract files from ohlcv.tar.gz to ~/crypto/Features:
-  - tar -xzvf ohlcv.tar.gz -C ~/crypto/Features
-- split a big file into 1.5GB chunks
+  - tar -czvf ohlcv.tar.gz ~/crypto/coins/*/ohlcv.arrow
+- list files in `ohlcv.tar.gz`:
+  - tar -ztvf ohlcv.tar.gz
+- extract files from `ohlcv.tar.gz` to `~/crypto/coins`:
+  - tar -xzvf ohlcv.tar.gz -C ~/crypto/coins
+- split a big file into 700 MB chunks:
   - split -b 700m ohlcv.tar.gz ohlcv.tar.gz.parts_
   - creates:
-    - -rw-rw-r--   1 tor tor 2955474895 jun 10 17:40  ohlcv.tar.gz
-    - -rw-rw-r--   1 tor tor 1572864000 jun 10 17:43  ohlcv.tar.gz.parts_aa
-    - -rw-rw-r--   1 tor tor 1382610895 jun 10 17:43  ohlcv.tar.gz.parts_ab
+    - `ohlcv.tar.gz`
+    - `ohlcv.tar.gz.parts_aa`
+    - `ohlcv.tar.gz.parts_ab`
 - combine split files
   - cat ohlcv.tar.gz.parts_* > ohlcv.tar.gz

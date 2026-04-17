@@ -530,13 +530,13 @@ _emptymarkets()::DataFrame = DataFrame(basecoin=String[], quotevolume24h=Float32
 
 USDTMARKETFILE = "USDTmarket"
 
-function _usdtmarketfilename(fileprefix, timestamp::Union{Nothing, DateTime}, ext="jdf")
-    if isnothing(timestamp)
-        cfgfilename = fileprefix
-    else
-        cfgfilename = join([fileprefix, Dates.format(timestamp, "yy-mm-dd")], "_")
-    end
-    return EnvConfig.datafile(cfgfilename, fileprefix, ".jdf")
+function _usdtmarketstem(fileprefix, timestamp::Union{Nothing, DateTime})
+    return isnothing(timestamp) ? fileprefix : join([fileprefix, Dates.format(timestamp, "yy-mm-dd")], "_")
+end
+
+function _usdtmarketfilename(fileprefix, timestamp::Union{Nothing, DateTime}; format::Symbol=:arrow)
+    folderpath = EnvConfig.datafolderpath(fileprefix)
+    return EnvConfig.tablepath(_usdtmarketstem(fileprefix, timestamp); folderpath=folderpath, format=format)
 end
 
 """
@@ -573,27 +573,19 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
 
     if timesimulation(xc)
         usdtdf = _emptymarkets()
-        cfgfilename = _usdtmarketfilename(CryptoXch.USDTMARKETFILE, dt)
-        if isdir(cfgfilename)
+        cfgstem = _usdtmarketstem(CryptoXch.USDTMARKETFILE, dt)
+        folderpath = EnvConfig.datafolderpath(CryptoXch.USDTMARKETFILE)
+        cfgfilename = _usdtmarketfilename(CryptoXch.USDTMARKETFILE, dt; format=:arrow)
+        loaded = EnvConfig.readdf(cfgstem; folderpath=folderpath, format=:arrow, copycols=true)
+        if !isnothing(loaded)
             (verbosity >= 3) && println("Start loading USDT market data from $cfgfilename for $dt ")
-            usdtdf = DataFrame(JDF.loadjdf(cfgfilename))
-            if isnothing(usdtdf)
-                (verbosity >=1) && @warn "Loading USDT market data from $cfgfilename for $dt failed"
-            else
-                (verbosity >=2) && println("Loaded USDT market data for $(size(usdtdf, 1)) coins from $cfgfilename for $dt")
-                # for row in eachrow(usdtdf)
-                #     ohlcv = Ohlcv.defaultohlcv(row.basecoin)
-                #     Ohlcv.read!(ohlcv)
-                #     if size(ohlcv.df, 1) > 0
-                #         dtix = Ohlcv.rowix(ohlcv, dt)
-                #         Ohlcv.setix!(ohlcv, dtix)
-                #         orow = Ohlcv.current(ohlcv)
-                #         row.lastprice = orow.close
-                #         row.askprice = row.lastprice * (1 + 0.0001)
-                #         row.bidprice = row.lastprice * (1 - 0.0001)
-                #     end
-                # end
+            usdtdf = DataFrame(loaded; copycols=true)
+            (verbosity >=2) && println("Loaded USDT market data for $(size(usdtdf, 1)) coins from $cfgfilename for $dt")
+            legacyfile = _usdtmarketfilename(CryptoXch.USDTMARKETFILE, dt; format=:jdf)
+            if isdir(legacyfile) || isfile(legacyfile)
+                rm(legacyfile; force=true, recursive=true)
             end
+        else
             (verbosity >=2) && println("No USDT market data file $cfgfilename for $dt found")
         end
     else  # production
@@ -608,7 +600,12 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
         # usdtdf = usdtdf[(usdtdf.quoteCoin .== "USDT") && (usdtdf.status .== "Trading"), :] - covered above by validbase
         # usdtdf = filter(row -> validbase(xc, row.basecoin), usdtdf) - covered above by validbase
         (verbosity >= 3) && println("writing USDTmarket file of size=$(size(usdtdf)) at enddt=$dt")
-        JDF.savejdf(CryptoXch._usdtmarketfilename(CryptoXch.USDTMARKETFILE, dt), usdtdf)
+        folderpath = EnvConfig.datafolderpath(CryptoXch.USDTMARKETFILE)
+        EnvConfig.savedf(usdtdf, _usdtmarketstem(CryptoXch.USDTMARKETFILE, dt); folderpath=folderpath, format=:arrow)
+        legacyfile = _usdtmarketfilename(CryptoXch.USDTMARKETFILE, dt; format=:jdf)
+        if isdir(legacyfile) || isfile(legacyfile)
+            rm(legacyfile; force=true, recursive=true)
+        end
     end
     return usdtdf
 end
@@ -1162,27 +1159,25 @@ function _placeorder(xc::XchCache, order::Union{DataFrameRow, NamedTuple})
     return last(xc.orders)
 end
 
-function _ordersfilename(xc::XchCache)
+function _ordersfilestem(xc::XchCache)
     ORDERPREFIX = "Orders"
     fnvec = [ORDERPREFIX]
     if !isnothing(xc.mnemonic)
         push!(fnvec, xc.mnemonic)
     end
     push!(fnvec, string(EnvConfig.configmode))
-    # symbols = unique(xc.closedorders[!, :symbol])
-    # bases = [basequote(s).basecoin for s in symbols]
     bases = sort(collect(keys(xc.bases)))
     fnvec = vcat(fnvec, bases)
     push!(fnvec, Dates.format(xc.startdt, "yy-mm-dd"))
     enddt = isnothing(xc.enddt) ? (size(xc.orders, 1) > 0 ? xc.orders[end, :created] : (size(xc.closedorders, 1) > 0 ? xc.closedorders[end, :created] : xc.startdt)) : xc.enddt
     push!(fnvec, Dates.format(enddt, "yy-mm-dd"))
-    push!(fnvec, "jdf")
-    fn = join(fnvec, "_", ".")
-    return EnvConfig.logpath(fn)
+    return join(fnvec, "_")
 end
 
+_ordersfilename(xc::XchCache; format::Symbol=:arrow) = EnvConfig.tablepath(_ordersfilestem(xc); folderpath=EnvConfig.logfolder(), format=format)
+
 function writeorders(xc::XchCache)
-    fn = _ordersfilename(xc)
+    fn = _ordersfilename(xc; format=:arrow)
     (verbosity >=0) && println("saving order log in filename=$fn")
     df = nothing
     if size(xc.closedorders, 1) > 0
@@ -1196,27 +1191,34 @@ function writeorders(xc::XchCache)
         @warn "no orders to save in $fn"
         return
     end
-    JDF.savejdf(fn, df)
+    EnvConfig.savedf(df, _ordersfilestem(xc); folderpath=EnvConfig.logfolder(), format=:arrow)
+    legacyfile = _ordersfilename(xc; format=:jdf)
+    if isdir(legacyfile) || isfile(legacyfile)
+        rm(legacyfile; force=true, recursive=true)
+    end
 end
 
-function _assetsfilename(xc::XchCache, dt)
+function _assetsfilestem(xc::XchCache, dt)
     ASSETPREFIX = "Assets"
     fnvec = [ASSETPREFIX]
     if !isnothing(xc.mnemonic)
         push!(fnvec, xc.mnemonic)
     end
     push!(fnvec, string(EnvConfig.configmode))
-    # dt = isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
     push!(fnvec, Dates.format(dt, "yy-mm-dd"))
-    push!(fnvec, "jdf")
-    fn = join(fnvec, "_", ".")
-    return EnvConfig.logpath(fn)
+    return join(fnvec, "_")
 end
 
+_assetsfilename(xc::XchCache, dt; format::Symbol=:arrow) = EnvConfig.tablepath(_assetsfilestem(xc, dt); folderpath=EnvConfig.logfolder(), format=format)
+
 function writeassets(xc::XchCache, dt::DateTime)
-    fn = _assetsfilename(xc, dt)
+    fn = _assetsfilename(xc, dt; format=:arrow)
     (verbosity >=3) && println("saving asset snapshot in filename=$fn")
-    JDF.savejdf(fn, xc.assets)
+    EnvConfig.savedf(xc.assets, _assetsfilestem(xc, dt); folderpath=EnvConfig.logfolder(), format=:arrow)
+    legacyfile = _assetsfilename(xc, dt; format=:jdf)
+    if isdir(legacyfile) || isfile(legacyfile)
+        rm(legacyfile; force=true, recursive=true)
+    end
 end
 
 #endregion simulation

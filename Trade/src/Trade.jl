@@ -73,6 +73,19 @@ classifier(cache, base) = cache.bd[base].classifier
 backtest(cache) = cache.backtestperiod >= Dates.Minute(1)
 dummytime() = DateTime("2000-01-01T00:00:00")
 
+function _tradeselection_history_minutes(tc::TradeCache)::Int
+    classifier_minutes = try
+        Int(Classify.requiredminutes(tc.cl))
+    catch
+        0
+    end
+    liquidity_minutes = max(
+        Int(Ohlcv.ld.startdistance + Ohlcv.ld.checkperiod + Ohlcv.ld.accumulate),
+        Int(Ohlcv.ld.minliquidminutes + Ohlcv.ld.checkperiod + Ohlcv.ld.accumulate),
+    )
+    return max(classifier_minutes + 1, liquidity_minutes, 24 * 60)
+end
+
 
 TRADECONFIGFILE = "TradeConfig"
 
@@ -84,6 +97,10 @@ The resulting DataFrame table of tradable coins is stored.
 """
 function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, assetonly=false, updatecache=false)
     datetime = floor(datetime, Minute(1))
+    assetbaseset = Set(String.(assetbases))
+    whitelistset = Set(String.(tc.mc[:whitelistcoins]))
+    history_minutes = _tradeselection_history_minutes(tc)
+    history_startdt = datetime - Minute(history_minutes)
 
     # make memory available
     tc.cfg = DataFrame() # return stored config, if one exists from same day
@@ -92,7 +109,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 
     usdtdf = CryptoXch.getUSDTmarket(tc.xc)  # superset of coins with 24h volume price change and last price
     if assetonly
-        usdtdf = filter(row -> row.basecoin in assetbases, usdtdf)
+        usdtdf = filter(row -> row.basecoin in assetbaseset, usdtdf)
     end
     (verbosity >= 3) && println("USDT market of size=$(size(usdtdf, 1)) at $datetime")
     tc.cfg = select(usdtdf, :basecoin, :quotevolume24h => (x -> x ./ 1000000) => :quotevolume24h_M, :pricechangepercent, :lastprice)
@@ -105,12 +122,12 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) # ignore allcoins with less than liquiddailyminimumquotevolume
     tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
-    tc.cfg[:, :inportfolio] = [base in assetbases for base in tc.cfg[!, :basecoin]]
+    tc.cfg[:, :inportfolio] = [base in assetbaseset for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
     tc.cfg[:, :noinvest] .= false
     tc.cfg[:, :buyenabled] .= false
     tc.cfg[:, :sellenabled] .= false
-    tc.cfg[:, :whitelisted] = [base in tc.mc[:whitelistcoins] for base in tc.cfg[!, :basecoin]]
+    tc.cfg[:, :whitelisted] = [base in whitelistset for base in tc.cfg[!, :basecoin]]
 
     # download latest OHLCV and classifier features
     tc.cfg = tc.cfg[tc.cfg[:, :minquotevol] .|| tc.cfg[:, :inportfolio], :]
@@ -122,15 +139,16 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         CryptoXch.removebase!(tc.xc, rb)
         Classify.removebase!(tc.cl, rb)
     end
-    xcbases = CryptoXch.bases(tc.xc)
+    xcbaseset = Set(CryptoXch.bases(tc.xc))
+    (verbosity >= 3) && println("trade selection history window=$(history_minutes) minutes from $(history_startdt) to $(datetime)")
     for (ix, row) in enumerate(eachrow(tc.cfg))
         (verbosity >= 2) && updatecache &&  print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) including cache update                           ")
         (verbosity >= 2) && !updatecache && print("\r$(EnvConfig.now()) updating $(row.basecoin) ($ix of $count) without cache update                             ")
-        if row.basecoin in xcbases
+        if row.basecoin in xcbaseset
             ohlcv = CryptoXch.ohlcv(tc.xc, row.basecoin)
-            CryptoXch.cryptoupdate!(tc.xc, ohlcv, datetime - Year(20), datetime)
+            CryptoXch.cryptoupdate!(tc.xc, ohlcv, history_startdt, datetime)
         else
-            ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", datetime - Year(20), datetime)
+            ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", history_startdt, datetime)
             Classify.addbase!(tc.cl, ohlcv)
         end
         if updatecache
@@ -145,14 +163,15 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     end
     xcbases = CryptoXch.bases(tc.xc)
     classifierbases = Classify.bases(tc.cl)
+    classifierbaseset = Set(classifierbases)
     removebases = setdiff(xcbases, classifierbases)
     for rb in removebases  # remove coins that were not accepted by the classifier, e.g. if requiredminutes is insufficient
         CryptoXch.removebase!(tc.xc, rb)
     end
     xcbases = CryptoXch.bases(tc.xc)
-    @assert Set(xcbases) == Set(classifierbases) "Set(xcbases)=$(xcbases) != Set(classifierbases)=$(classifierbases)"
+    @assert Set(xcbases) == classifierbaseset "Set(xcbases)=$(xcbases) != Set(classifierbases)=$(classifierbases)"
 
-    tc.cfg[:, :classifieraccepted] = [base in classifierbases for base in tc.cfg[!, :basecoin]]
+    tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
 
     if assetonly
         tc.cfg[:, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]

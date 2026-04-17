@@ -1108,12 +1108,9 @@ end
 
 function file(f6::Features006)
     mnm = uppercase(f6.ohlcv.base) * "_" * uppercase(f6.ohlcv.quotecoin) * "_" * "_F4"  #* use saved Features004 data cache
-    filename = EnvConfig.datafile(mnm, "Features004")  # share data with Features004
-    if isdir(filename)
-        return (filename=filename, existing=true)
-    else
-        return (filename=filename, existing=false)
-    end
+    filename = EnvConfig.coinfile(f6.ohlcv.base, f6.ohlcv.quotecoin, "f4"; extension=".arrow")
+    legacyfilename = EnvConfig.datafile(mnm, "Features004")
+    return (filename=filename, existing=isfile(filename) || isdir(legacyfilename) || isfile(legacyfilename))
 end
 
 function _f4regrcol(f6::Features006, window, f6regr)
@@ -1131,6 +1128,7 @@ function read!(f6::Features006)::DataFrame
         return emptycachef006()
     end
     fn = file(f6)
+    legacyfilename = EnvConfig.datafile(uppercase(f6.ohlcv.base) * "_" * uppercase(f6.ohlcv.quotecoin) * "_" * "_F4", "Features004")
     requestedf4cols = String["opentime"]
     for f in f6all(f6)
         if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
@@ -1141,12 +1139,16 @@ function read!(f6::Features006)::DataFrame
     df = _read_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin; columns=requestedf4cols)
     if size(df, 1) > 0
         (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df))")
-    elseif fn.existing
-        (verbosity >= 3) && println("$(EnvConfig.now()) start loading f6 data of $(f6.ohlcv.base) from $(fn.filename)")
-        df = DataFrame(JDF.loadjdf(fn.filename))
-        (verbosity >= 2) && println("$(EnvConfig.now()) loaded f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df)) from $(fn.filename)")
+    elseif isdir(legacyfilename) || isfile(legacyfilename)
+        (verbosity >= 3) && println("$(EnvConfig.now()) start loading legacy f6 data of $(f6.ohlcv.base) from $(legacyfilename)")
+        df = DataFrame(JDF.loadjdf(legacyfilename))
+        (verbosity >= 2) && println("$(EnvConfig.now()) loaded legacy f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df)) from $(legacyfilename)")
+        if size(df, 1) > 0
+            _write_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin, df)
+            rm(legacyfilename; force=true, recursive=true)
+        end
     else
-        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow copy for $(f6.ohlcv.base)")
+        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow cache for $(f6.ohlcv.base)")
         df = emptycachef006()
     end
 
@@ -1154,14 +1156,23 @@ function read!(f6::Features006)::DataFrame
         fdfno = emptycachef006()
     else
         fdfno = DataFrame()
+        missingf4cols = String[]
         for f in f6all(f6)
             if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
                 f4col = _f4regrcol(f6, f.w, f.f)
                 f6col = fdfnocol(f6, f)
-                fdfno[:, f6col] = df[!, f4col]
+                if f4col in names(df)
+                    fdfno[:, f6col] = df[!, f4col]
+                else
+                    push!(missingf4cols, f4col)
+                end
             end
         end
-        if size(df, 2) > 0
+        if !isempty(missingf4cols)
+            missingf4cols = sort!(unique(missingf4cols))
+            (verbosity >= 2) && println("$(EnvConfig.now()) shared F4 cache for $(f6.ohlcv.base) is missing columns $(missingf4cols); recalculating them from OHLCV")
+        end
+        if ("opentime" in names(df)) && (size(fdfno, 2) > 0)
             fdfno[:, "opentime"] = df[!, "opentime"]
         end
     end
@@ -1262,17 +1273,29 @@ function _opentime!(fdfno, f6::Features006, odf, odfendix, odfstartix)
     if "opentime" in names(fdfno) # was already calculated
         return fdfno
     end
-    if "opentime" in names(f6.fdfno) 
-        ot = f6.fdfno[!, "opentime"]
+
+    desiredlen = size(fdfno, 1)
+    odfot = odf[!, "opentime"]
+    ot = odfot
+
+    if !isnothing(f6.fdfno) && ("opentime" in names(f6.fdfno))
+        cachedot = f6.fdfno[!, "opentime"]
         if !isnothing(odfendix)
-            ot = vcat(odf[begin:odfendix, "opentime"], ot)
+            cachedot = vcat(odf[begin:odfendix, "opentime"], cachedot)
         end
         if !isnothing(odfstartix)
-            ot = vcat(ot, odf[odfstartix:end, "opentime"])
+            cachedot = vcat(cachedot, odf[odfstartix:end, "opentime"])
         end
-    else
-        ot = odf[!, "opentime"]
+        if (desiredlen == 0) || (length(cachedot) == desiredlen)
+            ot = cachedot
+        elseif length(odfot) == desiredlen
+            (verbosity >= 2) && println("$(EnvConfig.now()) ignoring stale cached f6 opentime length $(length(cachedot)) for $(f6.ohlcv.base); recomputed features expect $(desiredlen) rows")
+            ot = odfot
+        else
+            @assert length(cachedot) == desiredlen "unexpected f6 opentime length mismatch for $(f6.ohlcv.base): length(cachedot)=$(length(cachedot)) desiredlen=$(desiredlen) length(odfot)=$(length(odfot))"
+        end
     end
+
     fdfno[:, "opentime"] = ot
     return fdfno
 end
@@ -1672,12 +1695,9 @@ mnemonic(f5::Features005) = uppercase(f5.ohlcv.base) * "_" * uppercase(f5.ohlcv.
 
 function file(f5::Features005)
     mnm = mnemonic(f5)
-    filename = EnvConfig.datafile(mnm, "Features004")  # share data with Features004
-    if isdir(filename)
-        return (filename=filename, existing=true)
-    else
-        return (filename=filename, existing=false)
-    end
+    filename = EnvConfig.coinfile(f5.ohlcv.base, f5.ohlcv.quotecoin, "f4"; extension=".arrow")
+    legacyfilename = EnvConfig.datafile(mnm, "Features004")  # share data with Features004
+    return (filename=filename, existing=isfile(filename) || isdir(legacyfilename) || isfile(legacyfilename))
 end
 
 function write(f5::Features005)
@@ -1699,10 +1719,13 @@ function write(f5::Features005)
             end
         end
         try
-            JDF.savejdf(fn.filename, df[!, :])
             arrowpaths = _write_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin, df)
+            legacyfilename = EnvConfig.datafile(mnemonic(f5), "Features004")
+            if !isempty(arrowpaths) && (isdir(legacyfilename) || isfile(legacyfilename))
+                rm(legacyfilename; force=true, recursive=true)
+            end
             (verbosity >= 2) && println("$(EnvConfig.now()) saved F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
-            (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved $(length(arrowpaths)) shared F4 Arrow column files for $(f5.ohlcv.base)")
+            (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved shared F4 Arrow cache to $(first(arrowpaths))")
             f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
         catch e
             Logging.@error "exception $e detected when writing $(fn.filename)"
@@ -1719,6 +1742,7 @@ function read!(f5::Features005)::DataFrame
         return emptycachef005()
     end
     fn = file(f5)
+    legacyfilename = EnvConfig.datafile(mnemonic(f5), "Features004")
     requestedcols = String[]
     for configrow in eachrow(f5.cfgdf)
         if configrow.save
@@ -1746,12 +1770,16 @@ function read!(f5::Features005)::DataFrame
                     df = emptycachef005()
                 end
             end
-    elseif fn.existing
-            (verbosity >= 3) && println("$(EnvConfig.now()) start loading F5 data of $(f5.ohlcv.base) from $(fn.filename)")
-            df = DataFrame(JDF.loadjdf(fn.filename))
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(fn.filename)")
+    elseif isdir(legacyfilename) || isfile(legacyfilename)
+            (verbosity >= 3) && println("$(EnvConfig.now()) start loading legacy F5 data of $(f5.ohlcv.base) from $(legacyfilename)")
+            df = DataFrame(JDF.loadjdf(legacyfilename))
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded legacy F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(legacyfilename)")
+            if size(df, 1) > 0
+                _write_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin, df)
+                rm(legacyfilename; force=true, recursive=true)
+            end
             if size(df, 1) == 0
-                (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(fn.filename)")
+                (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(legacyfilename)")
                 df = emptycachef005()
             else
                 startix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[begin, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? firstindex(df[!, :opentime]) : nothing
@@ -1772,7 +1800,7 @@ function read!(f5::Features005)::DataFrame
                 end
             end
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow copy for $(f5.ohlcv.base)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow cache for $(f5.ohlcv.base)")
             df = emptycachef005()
         end
         f5.fdf = df

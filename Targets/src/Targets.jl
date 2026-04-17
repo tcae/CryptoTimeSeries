@@ -15,6 +15,8 @@ using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
 export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy, ignore
 export TrendPhase, down, flat, up
+export HoldAnchorMode, entry_anchor, last_buy_anchor
+export HoldBehaviorMode, within_maxwindow, beyond_maxwindow, no_hold
 using Test
 
 """
@@ -41,6 +43,9 @@ tradelabelix(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabel
 tradelabelcode(tl::TradeLabel) = Int8(tl)
 
 @enum TrendPhase down=-1 flat=0 up=1 choppy=2
+
+@enum HoldAnchorMode entry_anchor=1 last_buy_anchor=2
+@enum HoldBehaviorMode within_maxwindow=1 beyond_maxwindow=2 no_hold=3
 
 #region AbstractTargets
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
@@ -647,6 +652,153 @@ function Base.show(io::IO, fdg::FixedDistanceGain)
 end
 #endregion FixedDistanceGain
 
+#region TrendRegression
+emptytrendregressiondf() = DataFrame(opentime=DateTime[], label=TradeLabel[], relgain=Float32[])
+
+"""
+Provides mutually exclusive trend labels and their relative gains.
+
+`TrendRegression` assigns ``longhold`, `shorthold`, or `allclose`
+to each sample using forward-looking price behavior within `window`.
+
+Parameters:
+- window: forward-looking regression window in minutes to check for trend continuation
+- longthreshold: minimum relative gain (not percentage) to assign a `longhold` label
+- shortthreshold: maximum relative loss (not percentage) to assign a `shorthold` label
+
+Rules:
+- `0 < maxwindow`
+- `longthreshold > shortthreshold`
+
+Approach:
+- For each sample, perform a 1D regression of price over the next `window` minutes and calculate the relative gain at the end of the regression window.
+- Assign 
+  - `longhold` if the relative gain is above `longthreshold`, 
+  - `shorthold` if the relative gain is below `shortthreshold`, and 
+  - `allclose` otherwise.
+
+"""
+mutable struct TrendRegression <: AbstractTargets
+    window::Int # in minutes
+    longthreshold::Float32
+    shortthreshold::Float32
+    f6::Union{Features.Features006, Nothing}
+    df::Union{DataFrame, Nothing}
+
+    function TrendRegression(window, longthreshold, shortthreshold; f6=nothing, ohlcv=nothing, df=nothing)
+        @assert 0 < window "condition violated: 0 < window=$(window)"
+        @assert longthreshold > shortthreshold "condition violated: longthreshold=$(longthreshold) > shortthreshold=$(shortthreshold)"
+        if !isnothing(f6) && !isnothing(ohlcv)
+            @assert f6 === ohlcv "condition violated: f6 and ohlcv keywords refer to different values: f6=$(typeof(f6)) ohlcv=$(typeof(ohlcv))"
+        end
+        trd = new(window, longthreshold, shortthreshold, isnothing(f6) ? ohlcv : f6, df)
+        return trd
+    end
+end
+
+function setbase!(trd::TrendRegression, f6::Features.Features006)
+    gradfeature = Features._grad(f6, window=trd.window, offset=0)
+    gradcolumn = Features.fdfcol(f6, gradfeature)
+    @assert gradfeature in Features.f6requested(f6) "TrendRegression requires Features.addgrad!(f6, window=$(trd.window), offset=0) before setbase!(trd, f6)"
+    @assert !isnothing(f6.fdf) && (gradcolumn in names(f6.fdf)) "TrendRegression requires a materialized $(gradcolumn) column; call Features.setbase!(f6, ohlcv) before setbase!(trd, f6)"
+    trd.f6 = f6
+    trd.df = emptytrendregressiondf()
+    supplement!(trd)
+end
+
+function removebase!(trd::TrendRegression)
+    trd.f6 = nothing
+    trd.df = nothing
+end
+
+function supplement!(trd::TrendRegression)
+    if isnothing(trd.f6) || isnothing(trd.f6.ohlcv) || isnothing(trd.f6.fdf)
+        (verbosity >= 2) && println("no features found in TrendRegression - nothing to supplement")
+        return
+    end
+
+    featuredf = trd.f6.fdf
+    if size(featuredf, 1) == 0
+        trd.df = emptytrendregressiondf()
+        return
+    end
+
+    odf = Ohlcv.dataframe(trd.f6.ohlcv)
+    targetot = featuredf[!, :opentime]
+    startix = Ohlcv.rowix(odf[!, :opentime], targetot[begin])
+    endix = startix + length(targetot) - 1
+    @assert endix <= lastindex(odf[!, :opentime]) "TrendRegression target range exceeds OHLCV rows: endix=$(endix) lastix=$(lastindex(odf[!, :opentime]))"
+    @assert all(view(odf[!, :opentime], startix:endix) .== targetot) "TrendRegression f6/opentime alignment mismatch for window=$(trd.window)"
+
+    piv = odf[!, :pivot]
+    relgains = zeros(Float32, length(targetot))
+    targetlabels = fill(allclose, length(targetot))
+
+    for relix in eachindex(targetot)
+        rawix = startix + relix - 1
+        windowendix = min(lastindex(piv), rawix + trd.window - 1)
+        windowlen = windowendix - rawix + 1
+        if windowlen > 1
+            regry, grad = Features.rollingregression(view(piv, rawix:windowendix), windowlen)
+            relgains[relix] = Float32(Features.relativegain(regry[end], grad[end], windowlen))
+        end
+        targetlabels[relix] = relgains[relix] >= trd.longthreshold ? longhold :
+                              relgains[relix] <= trd.shortthreshold ? shorthold :
+                              allclose
+    end
+
+    trd.df = DataFrame(opentime=copy(targetot), label=targetlabels, relgain=relgains)
+end
+
+uniquelabels(trd::TrendRegression) = [longhold, shorthold, allclose]
+
+function _trendregression_base(trd::TrendRegression)::String
+    if isnothing(trd.f6) || isnothing(trd.f6.ohlcv)
+        return "Base?"
+    end
+    return trd.f6.ohlcv.base
+end
+
+function _trendregression_dfstate(trd::TrendRegression)::String
+    if isnothing(trd.df)
+        return "no df"
+    end
+    if size(trd.df, 1) == 0
+        return "empty df"
+    end
+    return "from $(trd.df[begin, :opentime]) to $(trd.df[end, :opentime])"
+end
+
+describe(trd::TrendRegression) = "$(typeof(trd))_$(_trendregression_base(trd))_window=$(trd.window)_longthreshold=$(trd.longthreshold)_shortthreshold=$(trd.shortthreshold)"
+firstrowix(trd::TrendRegression)::Int = isnothing(trd.df) ? 1 : (size(trd.df, 1) > 0 ? firstindex(trd.df[!, 1]) : 1)
+lastrowix(trd::TrendRegression)::Int = isnothing(trd.df) ? 0 : (size(trd.df, 1) > 0 ? lastindex(trd.df[!, 1]) : 0)
+
+function df(trd::TrendRegression, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame
+    return isnothing(trd.df) ? emptytrendregressiondf() : view(trd.df, firstix:lastix, :)
+end
+
+df(trd::TrendRegression, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+
+labelbinarytargets(trd::TrendRegression, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labels(trd, firstix, lastix) .== label
+labelbinarytargets(trd::TrendRegression, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+
+labelrelativegain(trd::TrendRegression, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labelbinarytargets(trd, label, firstix, lastix) .* relativegain(trd, firstix, lastix)
+labelrelativegain(trd::TrendRegression, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelrelativegain(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+
+labels(trd::TrendRegression, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector = isnothing(trd.df) ? TradeLabel[] : view(trd.df, firstix:lastix, :label)
+labels(trd::TrendRegression, startdt::DateTime, enddt::DateTime) = labels(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+
+relativegain(trd::TrendRegression, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractVector = isnothing(trd.df) ? Float32[] : view(trd.df, firstix:lastix, :relgain)
+relativegain(trd::TrendRegression, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+
+function Base.show(io::IO, trd::TrendRegression)
+    println(io, "TrendRegression targets base=$(_trendregression_base(trd)) window=$(trd.window) longthreshold=$(trd.longthreshold) shortthreshold=$(trd.shortthreshold) $(_trendregression_dfstate(trd))")
+    println(io, "TrendRegression f6=$(trd.f6)")
+end
+
+
+#endregion TrendRegression
+
 #region Trend04
 
 const _trend04diag_enabled = Ref(false)
@@ -701,10 +853,22 @@ Buy labels:
 
 Hold labels:
 - `longhold` / `shorthold` only extend an existing same-direction buy trend.
-- Each hold-labeled sample must be able to re-meet the corresponding hold
-  threshold within `maxwindow`.
+- Hold behavior controls acceptance for hold-labeled samples:
+    - `:within_maxwindow`: from the selected hold anchor to the current sample,
+        the hold threshold must be met within `maxwindow`, and the current
+        segment endpoint must be the directional extreme.
+    - `:beyond_maxwindow`: same as above, but without the `maxwindow` upper
+        bound on anchor-to-current span.
+    - `:no_hold`: hold labels are disabled; non-buy samples fall back to
+        `allclose`.
 - Brief opposite excursions are tolerated for hold segments as long as they stay
   shorter than `minwindow`.
+- Hold anchor mode controls which buy reference is used for hold-threshold checks:
+    - `:entry_anchor`: use the original buy-entry anchor of the active
+        buy/hold segment.
+    - `:last_buy_anchor` (default): use the most recent buy-labeled sample that
+        precedes the hold continuation. The 3 hold behaviors above are applied
+        for this anchor mode.
 
 Fallback:
 - `allclose` is assigned whenever neither a valid buy nor a valid hold condition
@@ -713,16 +877,39 @@ Fallback:
 mutable struct Trend04 <: AbstractTargets
     minwindow::Int # in minutes
     maxwindow::Int # in minutes
+    holdanchormode::HoldAnchorMode # entry_anchor or last_buy_anchor (default)
+    holdbehaviormode::HoldBehaviorMode # within_maxwindow, beyond_maxwindow, no_hold
     thres::LabelThresholds
     ohlcv::Union{OhlcvData, Nothing}
     df::Union{DataFrame, Nothing}
-    function Trend04(minwindow, maxwindow, thres)
+
+    function Trend04(minwindow, maxwindow, thres; holdanchormode=last_buy_anchor, holdbehaviormode=within_maxwindow)
+        holdanchormode_parsed = _parse_holdanchormode(holdanchormode)
+        holdbehaviormode_parsed = _parse_holdbehaviormode(holdbehaviormode)
         @assert 0 <= minwindow < maxwindow "condition violated: 0 <= minwindow=$(minwindow) < maxwindow=$(maxwindow)"
         @assert thres.shortbuy <= thres.shorthold <= thres.longhold <= thres.longbuy "condition violated: thres.shortbuy=$(thres.shortbuy) <= thres.shorthold=$(thres.shorthold) <= thres.longhold=$(thres.longhold) <= fdg.thres.longbuy=$(thres.longbuy)"
-        trd = new(minwindow, maxwindow, thres, nothing, nothing)
+        @assert (holdanchormode_parsed == last_buy_anchor) || (holdbehaviormode_parsed == within_maxwindow) "holdbehaviormode=$(holdbehaviormode_parsed) is only supported with holdanchormode=last_buy_anchor"
+        trd = new(minwindow, maxwindow, holdanchormode_parsed, holdbehaviormode_parsed, thres, nothing, nothing)
         return trd
     end
 end
+
+@inline _parse_holdanchormode(mode::HoldAnchorMode)::HoldAnchorMode = mode
+function _parse_holdanchormode(mode::Symbol)::HoldAnchorMode
+    mode == :entry_anchor && return entry_anchor
+    mode == :last_buy_anchor && return last_buy_anchor
+    throw(ArgumentError("unsupported holdanchormode=$(mode), expected entry_anchor or last_buy_anchor"))
+end
+_parse_holdanchormode(mode::AbstractString)::HoldAnchorMode = _parse_holdanchormode(Symbol(mode))
+
+@inline _parse_holdbehaviormode(mode::HoldBehaviorMode)::HoldBehaviorMode = mode
+function _parse_holdbehaviormode(mode::Symbol)::HoldBehaviorMode
+    mode == :within_maxwindow && return within_maxwindow
+    mode == :beyond_maxwindow && return beyond_maxwindow
+    mode == :no_hold && return no_hold
+    throw(ArgumentError("unsupported holdbehaviormode=$(mode), expected within_maxwindow, beyond_maxwindow or no_hold"))
+end
+_parse_holdbehaviormode(mode::AbstractString)::HoldBehaviorMode = _parse_holdbehaviormode(Symbol(mode))
 
 function setbase!(trd::Trend04, ohlcv::Ohlcv.OhlcvData)
     trd.ohlcv = ohlcv
@@ -754,11 +941,7 @@ function _fillsegment!(labels, relix, endix, piv=nothing, trd=nothing)
     end
 
     if !isnothing(piv) && !isnothing(trd) && (labels[endix] in (longhold, shorthold))
-        side = labels[endix] == longhold ? :long : :short
-        for ix in (endix-1):-1:startix
-            if !_meets_hold_within_window(piv, ix, trd, side)
-                break
-            end
+        for ix in startix:(endix-1)
             labels[ix] = labels[endix]
             relix[ix] = relix[endix]
         end
@@ -846,48 +1029,43 @@ function _crosscheck_reproduces_locally(trd::Trend04, sampleix::Int, expectedlab
     localohlcv = Ohlcv.defaultohlcv(trd.ohlcv.base)
     Ohlcv.setdataframe!(localohlcv, localdf)
 
-    localtrd = Trend04(trd.minwindow, trd.maxwindow, trd.thres)
+    localtrd = Trend04(trd.minwindow, trd.maxwindow, trd.thres; holdanchormode=trd.holdanchormode, holdbehaviormode=trd.holdbehaviormode)
     setbase!(localtrd, localohlcv)
     localsampleix = sampleix - startix + 1
     return localtrd.df[localsampleix, :label] == expectedlabel
 end
 
-function _meets_hold_within_window(piv, startix::Int, trd::Trend04, side::Symbol)::Bool
-    futureend = min(lastindex(piv), startix + trd.maxwindow - 1)
-    futureend <= startix && return false
+@inline _effective_holdbehaviormode(trd::Trend04)::HoldBehaviorMode = trd.holdanchormode == last_buy_anchor ? trd.holdbehaviormode : within_maxwindow
 
-    oppositerun = 0
-    for endix in (startix + 1):futureend
-        rd = _reldiff(piv, startix, endix)
-        if _segment_threshold_met(piv, startix, endix, trd, side, :hold)
-            return true
-        elseif _opposite_hold_break(rd, trd, side)
-            oppositerun += 1
-            oppositerun >= trd.minwindow && return false
-        else
-            oppositerun = 0
-        end
+@inline function _hold_anchorix(labels, relix, ix::Int, trd::Trend04, buylabel::TradeLabel)::Int
+    if labels[ix] == buylabel
+        return relix[ix]
     end
-    return false
+    buyix = relix[ix]
+    if trd.holdanchormode == last_buy_anchor
+        return buyix
+    end
+    return relix[buyix]
 end
 
-"""
-    _meets_longhold_within_window(piv, startix, trd) -> Bool
+function _current_hold_threshold_met(piv, anchorix::Int, endix::Int, trd::Trend04, side::Symbol; enforce_maxwindow::Bool=true)::Bool
+    (anchorix < firstindex(piv) || anchorix > endix) && return false
+    span = endix - anchorix + 1
+    span < trd.minwindow && return false
+    enforce_maxwindow && (span > trd.maxwindow) && return false
+    rd = _reldiff(piv, anchorix, endix)
+    return _is_segment_end_extreme(piv, anchorix, endix, side) &&
+           _threshold_reached(rd, trd, side, :hold)
+end
 
-Return `true` when the sample at `startix` reaches the configured `longhold`
-threshold within `trd.maxwindow` samples. Short opposite-direction dips are tolerated
-as long as they stay shorter than `trd.minwindow`.
-"""
-_meets_longhold_within_window(piv, startix::Int, trd::Trend04)::Bool = _meets_hold_within_window(piv, startix, trd, :long)
-
-"""
-    _meets_shorthold_within_window(piv, startix, trd) -> Bool
-
-Return `true` when the sample at `startix` reaches the configured `shorthold`
-threshold within `trd.maxwindow` samples. Long opposite-direction rallies are tolerated
-as long as they stay shorter than `trd.minwindow`.
-"""
-_meets_shorthold_within_window(piv, startix::Int, trd::Trend04)::Bool = _meets_hold_within_window(piv, startix, trd, :short)
+function _hold_continuation_allowed(piv, anchorix::Int, endix::Int, trd::Trend04, side::Symbol)::Bool
+    holdmode = _effective_holdbehaviormode(trd)
+    holdmode == no_hold && return false
+    if holdmode == beyond_maxwindow
+        return _current_hold_threshold_met(piv, anchorix, endix, trd, side; enforce_maxwindow=false)
+    end
+    return _current_hold_threshold_met(piv, anchorix, endix, trd, side; enforce_maxwindow=true)
+end
 
 function _continuation_anchorix(piv, startix::Int, endix::Int, side::Symbol)::Int
     startix > endix && return endix
@@ -951,10 +1129,9 @@ function _handle_trend_reversal!(piv, labels, relix, trd::Trend04, ix::Int, endi
     holdlabel = _holdlabel(side)
     holdname = _holdname(side)
     holdrelix = (labels[ix] == buylabel) ? ix : relix[ix]
-    anchorix = (labels[ix] == buylabel) ? relix[ix] : relix[holdrelix]
+    anchorix = _hold_anchorix(labels, relix, ix, trd, buylabel)
 
-    holdcandidate = _anchor_threshold_met(piv, anchorix, endix, trd, side, :hold) &&
-                    _meets_hold_within_window(piv, endix, trd, side)
+    holdcandidate = _hold_continuation_allowed(piv, anchorix, endix, trd, side)
 
     _trend04diaginc!("cand." * holdname * ".reversal")
     if holdcandidate
@@ -1001,19 +1178,17 @@ function _handle_trend_continuation!(piv, labels, relix, trd::Trend04, ix::Int, 
     holdname = _holdname(side)
 
     if labels[ix] == holdlabel
-        anchorix = relix[relix[ix]]
-        lastbuyix = relix[ix]
+        anchorix = _hold_anchorix(labels, relix, ix, trd, buylabel)
         localstartix = _continuation_anchorix(piv, ix, endix, side)
         canpromotebuy = _segment_threshold_met(piv, anchorix, endix, trd, side, :buy) &&
                         _segment_threshold_met(piv, localstartix, endix, trd, side, :buy)
-        cancontinuehold = _anchor_threshold_met(piv, anchorix, endix, trd, side, :hold) &&
-                          _meets_hold_within_window(piv, endix, trd, side)
+        cancontinuehold = _hold_continuation_allowed(piv, anchorix, endix, trd, side)
 
         _trend04diaginc!("cand." * holdname * ".from_" * holdname)
         if canpromotebuy
             _trend04diaginc!("rej." * holdname * ".promoted_" * buyname)
             labels[endix] = buylabel
-            relix[endix] = ix
+            relix[endix] = localstartix
             _fillsegment!(labels, relix, endix)
         elseif cancontinuehold
             _trend04diaginc!("acc." * holdname * ".from_" * holdname)
@@ -1032,8 +1207,7 @@ function _handle_trend_continuation!(piv, labels, relix, trd::Trend04, ix::Int, 
         # Using a strict comparison avoids flat plateaus keeping longbuy/shortbuy alive
         # for too long on real BTC data.
         cancontinuebuy = _segment_threshold_met(piv, anchorix, endix, trd, side, :buy)
-        cancontinuehold = _anchor_threshold_met(piv, anchorix, endix, trd, side, :hold) &&
-                          _meets_hold_within_window(piv, endix, trd, side)
+        cancontinuehold = _hold_continuation_allowed(piv, anchorix, endix, trd, side)
 
         _trend04diaginc!("cand." * holdname * ".from_" * buyname)
         if cancontinuebuy
@@ -1194,7 +1368,7 @@ function timerangecut!(trd::Trend04)
     supplement!(trd)
 end
 
-describe(trd::Trend04) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_thresholds=(longbuy=$(trd.thres.longbuy)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortbuy=$(trd.thres.shortbuy))"
+describe(trd::Trend04) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_holdanchormode=$(trd.holdanchormode)_holdbehaviormode=$(trd.holdbehaviormode)_thresholds=(longbuy=$(trd.thres.longbuy)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortbuy=$(trd.thres.shortbuy))"
 firstrowix(trd::Trend04)::Int = isnothing(trd.df) ? 1 : (size(trd.df, 1) > 0 ? firstindex(trd.df[!, 1]) : 1)
 lastrowix(trd::Trend04)::Int = isnothing(trd.df) ? 0 : (size(trd.df, 1) > 0 ? lastindex(trd.df[!, 1]) : 0)
 
@@ -1225,7 +1399,7 @@ end
 relativegain(trd::Trend04, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
 
 function Base.show(io::IO, trd::Trend04)
-    println(io, "Trend04 targets base=$(isnothing(trd.ohlcv) ? "no ohlcv base" : trd.ohlcv.base) maxwindow=$(trd.maxwindow) label thresholds=$(thresholds(trd.thres)) $(isnothing(trd.df) ? "no df" : "from $(trd.df[begin, :opentime]) to $(trd.df[end, :opentime]) ")")
+    println(io, "Trend04 targets base=$(isnothing(trd.ohlcv) ? "no ohlcv base" : trd.ohlcv.base) maxwindow=$(trd.maxwindow) holdanchormode=$(trd.holdanchormode) holdbehaviormode=$(trd.holdbehaviormode) label thresholds=$(thresholds(trd.thres)) $(isnothing(trd.df) ? "no df" : "from $(trd.df[begin, :opentime]) to $(trd.df[end, :opentime]) ")")
     println(io, "Trend04 ohlcv=$(trd.ohlcv)")
 end
 
@@ -1418,26 +1592,26 @@ function crosscheck(trd::Trend04, labels::AbstractVector{<:TradeLabel}, pivots::
         elseif lbl == longhold
             invalidix = nothing
             for ix in lss:lse
-                if !_meets_longhold_within_window(pivots, ix, trd)
+                anchorix = !isnothing(relix_arr) ? _hold_anchorix(labels, relix_arr, ix, trd, longbuy) : lss - 1
+                if !_hold_continuation_allowed(pivots, anchorix, ix, trd, :long)
                     invalidix = ix
                     break
                 end
             end
             if !isnothing(invalidix) && _crosscheck_reproduces_locally(trd, invalidix, longhold)
-                futureend = min(lastindex(pivots), invalidix + trd.maxwindow - 1)
-                push!(issues, "longhold segment $(lss):$(lse) sample $(invalidix) does not re-meet longhold=$(trd.thres.longhold) within maxwindow=$(trd.maxwindow) (checked through ix=$(futureend))")
+                push!(issues, "longhold segment $(lss):$(lse) sample $(invalidix) violates holdbehaviormode=$(trd.holdbehaviormode)")
             end
         elseif lbl == shorthold
             invalidix = nothing
             for ix in lss:lse
-                if !_meets_shorthold_within_window(pivots, ix, trd)
+                anchorix = !isnothing(relix_arr) ? _hold_anchorix(labels, relix_arr, ix, trd, shortbuy) : lss - 1
+                if !_hold_continuation_allowed(pivots, anchorix, ix, trd, :short)
                     invalidix = ix
                     break
                 end
             end
             if !isnothing(invalidix) && _crosscheck_reproduces_locally(trd, invalidix, shorthold)
-                futureend = min(lastindex(pivots), invalidix + trd.maxwindow - 1)
-                push!(issues, "shorthold segment $(lss):$(lse) sample $(invalidix) does not re-meet shorthold=$(trd.thres.shorthold) within maxwindow=$(trd.maxwindow) (checked through ix=$(futureend))")
+                push!(issues, "shorthold segment $(lss):$(lse) sample $(invalidix) violates holdbehaviormode=$(trd.holdbehaviormode)")
             end
         end
     end

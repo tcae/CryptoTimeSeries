@@ -16,24 +16,33 @@ distancesfilename() = joinpath("trades", "distances")
 gainsfilename() = joinpath("trades", "gains_all")
 targetissuesfilename() = joinpath("results", "targetissues")
 
+default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
+default_closethresholds() = Float32[0.1f0]
+
 tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm01!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
 tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm02!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015, takerfee=0.002)
 
 # Trend01/Trend02 were replaced by Trend04.
-trend04targetconfig(minwindow, maxwindow, buy, hold) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)))
+trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)), holdbehaviormode=holdbehaviormode)
 
-targetconfig01() = trend04targetconfig(10, 4*60, 0.01, 0.01)
+targetconfig01() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=beyond_maxwindow)
 targetconfig02() = trend04targetconfig(10, 4*60, 0.05, 0.03)
 targetconfig03() = trend04targetconfig(10, 4*60, 0.02, 0.01)
 targetconfig04() = trend04targetconfig(10, 4*60, 0.007, 0.005)
 targetconfig05() = trend04targetconfig(0, 4*60, 0.01, 0.01)
 targetconfig06() = trend04targetconfig(2, 4*60, 0.01, 0.01)
-targetconfig07() = trend04targetconfig(10, 4*60, 0.01, 0.005)
+targetconfig07() = trend04targetconfig(10, 4*60, 0.01, 0.005, holdbehaviormode=beyond_maxwindow)
 targetconfig08() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend02 replaced by Trend04
 targetconfig09() = trend04targetconfig(10, 2*60, 0.01, 0.01)
 targetconfig10() = trend04targetconfig(10, 1*60, 0.01, 0.01)
 targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
-targetconfig12() = trend04targetconfig(10, 24*60, 0.05, 0.03) # Trend04 with long term target
+targetconfig12() = trend04targetconfig(10, 24*60, 0.05, 0.01, holdbehaviormode=beyond_maxwindow) # Trend04 with long term target
+targetconfig13() = trend04targetconfig(10, 2*60, 0.01, 0.01, holdbehaviormode=beyond_maxwindow) 
+targetconfig14() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=no_hold)
+targetconfig15() = trend04targetconfig(10, 60, 0.01, 0.01, holdbehaviormode=no_hold) 
+targetconfig16() = trend04targetconfig(10, 2*60, 0.01, 0.01, holdbehaviormode=no_hold) 
+targetconfig17() = trend04targetconfig(60, 24*60, 0.05, 0.05, holdbehaviormode=no_hold) # Trend04 with long term target
+targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
 
 boundstargetsconfig01(window) = Targets.Bounds01(window)
 
@@ -145,9 +154,57 @@ function trendf6config08()
     Features.addgrad!(featcfg, window=15, offset=0)
     Features.addgrad!(featcfg, window=60, offset=0)
     Features.addgrad!(featcfg, window=60*4, offset=0)
-    Features.addmindist!(featcfg, window=12*60, offset=0)
-    Features.addmaxdist!(featcfg, window=24*60, offset=0)
-    Features.addmindist!(featcfg, window=3*24*60, offset=0)
+    Features.addgrad!(featcfg, window=12*60, offset=0)
+    Features.addgrad!(featcfg, window=24*60, offset=0)
+    Features.addgrad!(featcfg, window=3*24*60, offset=0)
+    Features.addrelvol!(featcfg, short=15, long=3*24*60, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config09()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0)
+    Features.addgrad!(featcfg, window=15, offset=0)
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addmaxdist!(featcfg, window=60, offset=0)
+    Features.addmindist!(featcfg, window=60, offset=0)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config10()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=15, offset=0)
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addgrad!(featcfg, window=60*12, offset=0)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config11()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0)
+    Features.addgrad!(featcfg, window=15, offset=0)
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addmaxdist!(featcfg, window=60, offset=0)
+    Features.addmindist!(featcfg, window=60, offset=0)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config12()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addgrad!(featcfg, window=12*60, offset=0)
+    Features.addgrad!(featcfg, window=24*60, offset=0)
+    Features.addgrad!(featcfg, window=3*24*60, offset=0)
     Features.addrelvol!(featcfg, short=15, long=3*24*60, offset=0)
     return featcfg
 end
@@ -211,7 +268,7 @@ equal mean, q25, q75, min, max does not look like healthy feature values - longb
 """ **my favorite**  
 mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
 """
-mk009config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=true)
+mk009config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 
 """
 mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
@@ -293,11 +350,11 @@ mk024config() = (configname="024", featconfig = trendf6config01(), targetconfig 
 mk9 = mk9 with short term target, i.e. maxwindow 2h
 """
 mk025config() = (configname="025", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
-mk025bconfig() = (configname="025b", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
-mk025Cconfig() = (configname="025C", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
-mk025Dconfig() = (configname="025D", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+mk025bconfig() = (configname="025b", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk025Cconfig() = (configname="025C", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk025Dconfig() = (configname="025D", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
 # mk25D and mk25E are the same config but in teh meanwhile the missing hold was fixed
-mk025Econfig() = (configname="025E", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+mk025Econfig() = (configname="025E", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
 
 """
 mk026 = mk9 with short term target, i.e. maxwindow 1h
@@ -308,17 +365,32 @@ mk026config() = (configname="026", featconfig = trendf6config01(), targetconfig 
 mk27 = long term trend with long term window and 5% ambition
 """
 mk027config() = (configname="027", featconfig = trendf6config08(), targetconfig = targetconfig12(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk039config() = (configname="039", featconfig = trendf6config12(), targetconfig = targetconfig17(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 
 """   
-mk028 = mk009 without oversampling
+mk028 = mk009 without class balancing
 """
-mk028config() = (configname="028", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+mk028config() = (configname="028", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
 
 """   
-mk029 = mk009 without oversampling but implementation for hold equally strict than for buy (no config change)
+mk029 = mk009 without class balancing but implementation for hold equally strict than for buy (no config change)
 """
-mk029config() = (configname="029", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), oversampling=false)
+mk029config() = (configname="029", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
 
+"""   
+relies on grad without offset and 2h target, i.e. maxwindow 2h, hold threshold equal to buy threshold, no class balancing
+"""
+mk030config() = (configname="030", featconfig = trendf6config09(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk031config() = (configname="031", featconfig = trendf6config09(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk032config() = (configname="032", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk033config() = (configname="033", featconfig = trendf6config09(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk034config() = (configname="034", featconfig = trendf6config09(), targetconfig = targetconfig07(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk035config() = (configname="035", featconfig = trendf6config10(), targetconfig = targetconfig14(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk037config() = (configname="037", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk038config() = (configname="038", featconfig = trendf6config09(), targetconfig = targetconfig16(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+
+mk036config() = (configname="036", featconfig = trendf6config11(), targetconfig = targetconfig15(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk040config() = nothing # (configname="040", featconfig = trendf6config11(), targetconfig = targetconfig15(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 #endregion TrendConfig
 
 #region BoundsConfig
@@ -340,8 +412,8 @@ tradeadvicemk001config() = (
     hidden_dim=32,
     maxepoch=200,
     batchsize=64,
-    openthresholds=Float32[0.8f0, 0.7f0, 0.6f0],
-    closethresholds=Float32[0.6f0, 0.5f0],
+    openthresholds=default_openthresholds(),
+    closethresholds=default_closethresholds(),
 )
 
 "Alternative eval-sweep with a slightly longer sequence and tighter thresholds for comparison on the eval split."
@@ -352,8 +424,8 @@ tradeadvicemk002config() = (
     hidden_dim=48,
     maxepoch=200,
     batchsize=64,
-    openthresholds=Float32[0.85f0, 0.75f0, 0.65f0],
-    closethresholds=Float32[0.65f0, 0.6f0, 0.55f0],
+    openthresholds=default_openthresholds(),
+    closethresholds=default_closethresholds(),
 )
 
 #endregion AdviceConfig
@@ -386,7 +458,8 @@ const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg fo
     mk009config(), mk011config(), mk012config(), mk013config(), mk014config(), mk015config(), mk016config(),
     mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
     mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
-    mk027config(), mk028config(), mk029config(),
+    mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
+    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk039config(), mk040config(),
 ])
 
 const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [

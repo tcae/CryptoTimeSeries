@@ -425,18 +425,25 @@ function liquiditycheck(ohlcvdf::AbstractDataFrame; minquotevol=ld.minquotevol, 
     startnok = round(Int, checkperiod * startthreshold) # range start if number of samples with insufficient volume is lower
 
     notok = ones(Bool, checkperiod)
+    notokcount = checkperiod
     accqvol = 0f0
     res = []
     startix = nothing
     for ix in eachindex(quotevol)
         accqvol += ix > accumulate ? quotevol[ix] - quotevol[ix - accumulate] : quotevol[ix]
-        notok[(ix % checkperiod) + 1] = accqvol < minquotevol
-        if isnothing(startix) 
-            if (count(notok) < startnok)
+        slotix = (ix % checkperiod) + 1
+        previous = notok[slotix]
+        current = accqvol < minquotevol
+        if previous != current
+            notok[slotix] = current
+            notokcount += current ? 1 : -1
+        end
+        if isnothing(startix)
+            if notokcount < startnok
                 startix = ix
             end
         else
-            if (count(notok) > stopnok)
+            if notokcount > stopnok
                 if (ix - startix + 1) >= minliquidminutes
                     push!(res, startix:ix-1)
                 end
@@ -596,30 +603,54 @@ end
 
 mnemonic(ohlcv::OhlcvData) = uppercase(ohlcv.base) * "_" * uppercase(ohlcv.quotecoin) * "_" * ohlcv.interval * "_OHLCV"
 
-function file(ohlcv::OhlcvData)
+function legacyfile(ohlcv::OhlcvData)
     mnm = mnemonic(ohlcv)
     filename = EnvConfig.datafile(mnm, "OHLCV")
-    if isdir(filename)
-        return (filename=filename, existing=true)
-    else
-        return (filename=filename, existing=false)
-    end
+    return (filename=filename, existing=isdir(filename) || isfile(filename))
 end
 
-"""Write a non-destructive Arrow copy of shared OHLCV data to `coins/<pair>/ohlcv.arrow`."""
-function write_arrow(ohlcv::OhlcvData)
-    if !(ohlcv.df isa DataFrame) || (size(ohlcv.df, 1) == 0)
+function file(ohlcv::OhlcvData)
+    filename = EnvConfig.coinfile(ohlcv.base, ohlcv.quotecoin, "ohlcv"; extension=".arrow")
+    return (filename=filename, existing=isfile(filename) || legacyfile(ohlcv).existing)
+end
+
+"""Write the shared per-coin OHLCV cache to `coins/<pair>/ohlcv.arrow`. Arrow stream format is used so new rows can be appended."""
+function write_arrow(ohlcv::OhlcvData; append::Bool=false, df::AbstractDataFrame=ohlcv.df)
+    if !(df isa AbstractDataFrame) || (size(df, 1) == 0)
         return nothing
     end
     folderpath = EnvConfig.coinfolderpath(ohlcv.base, ohlcv.quotecoin)
-    return EnvConfig.savedf(ohlcv.df[!, save_cols], "ohlcv"; folderpath=folderpath, format=:arrow)
+    return EnvConfig.writetable(df[!, save_cols], "ohlcv"; folderpath=folderpath, format=:arrow, append=append)
 end
 
-"""Read a shared Arrow OHLCV copy from `coins/<pair>/ohlcv.arrow`, if available."""
+"""Read the shared per-coin OHLCV cache from `coins/<pair>/ohlcv.arrow`, if available."""
 function read_arrow(ohlcv::OhlcvData)
     folderpath = EnvConfig.coinfolderpath(ohlcv.base, ohlcv.quotecoin)
-    df = EnvConfig.readdf("ohlcv"; folderpath=folderpath, format=:arrow)
-    return isnothing(df) ? DataFrame() : DataFrame(df)
+    df = EnvConfig.readdf("ohlcv"; folderpath=folderpath, format=:arrow, copycols=true)
+    return isnothing(df) ? DataFrame() : DataFrame(df; copycols=true)
+end
+
+function _append_ohlcv_arrow(ohlcv::OhlcvData)
+    if isnothing(ohlcv.latestloadeddt) || (size(ohlcv.df, 1) == 0)
+        return nothing
+    end
+    appendstartix = rowix(ohlcv, ohlcv.latestloadeddt) + 1
+    if (appendstartix <= 1) || (appendstartix > size(ohlcv.df, 1)) || (ohlcv.df[appendstartix - 1, :opentime] != ohlcv.latestloadeddt)
+        return nothing
+    end
+    appenddf = DataFrame(view(ohlcv.df, appendstartix:size(ohlcv.df, 1), save_cols))
+    if size(appenddf, 1) == 0
+        return nothing
+    end
+    try
+        return write_arrow(ohlcv; append=true, df=appenddf)
+    catch e
+        if occursin("append is supported only to files in arrow stream format", sprint(showerror, e))
+            (verbosity >= 2) && println("$(EnvConfig.now()) rewriting $(ohlcv.base) OHLCV Arrow cache once because the existing file is not in stream format")
+            return nothing
+        end
+        rethrow(e)
+    end
 end
 
 function write(ohlcv::OhlcvData)
@@ -627,17 +658,23 @@ function write(ohlcv::OhlcvData)
         (verbosity >= 3) && println("$(EnvConfig.now()) Ohlcv not written due to missing supplementations of already stored data")
         return
     end
-    if !(ohlcv.df isa DataFrame)
-        (verbosity >= 2) && println("$(EnvConfig.now()) Ohlcv not written because contains not a DataFrame ($(typeof(ohlcv.df)) cannot be written)")
+    if !(ohlcv.df isa AbstractDataFrame)
+        (verbosity >= 2) && println("$(EnvConfig.now()) Ohlcv not written because contains not a table ($(typeof(ohlcv.df)) cannot be written)")
         return
     end
     fn = file(ohlcv)
     try
-        JDF.savejdf(fn.filename, ohlcv.df[!, save_cols])  # without :pivot
-        arrowpath = write_arrow(ohlcv)
+        arrowpath = (fn.existing && !isnothing(ohlcv.latestloadeddt)) ? _append_ohlcv_arrow(ohlcv) : nothing
+        if isnothing(arrowpath)
+            arrowpath = write_arrow(ohlcv)
+        end
+        legacyfn = legacyfile(ohlcv)
+        if !isnothing(arrowpath) && (legacyfn.existing || isfile(legacyfn.filename) || isdir(legacyfn.filename))
+            rm(legacyfn.filename; force=true, recursive=true)
+        end
         df = ohlcv.df
-        (verbosity >= 2) && println("$(EnvConfig.now()) saved $(fn.filename) of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
-        (verbosity >= 3) && !isnothing(arrowpath) && println("$(EnvConfig.now()) saved shared OHLCV Arrow copy to $(arrowpath)")
+        (verbosity >= 2) && println("$(EnvConfig.now()) saved $(ohlcv.base) OHLCV Arrow cache from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval to $(file(ohlcv).filename)")
+        (verbosity >= 3) && !isnothing(arrowpath) && println("$(EnvConfig.now()) saved shared OHLCV Arrow cache to $(arrowpath)")
     catch e
         Logging.@error "exception $e detected"
     end
@@ -645,6 +682,7 @@ end
 
 function read!(ohlcv::OhlcvData)::OhlcvData
     fn = file(ohlcv)
+    legacyfn = legacyfile(ohlcv)
     df = DataFrame()
     try
         shareddf = read_arrow(ohlcv)
@@ -652,13 +690,21 @@ function read!(ohlcv::OhlcvData)::OhlcvData
             df = shareddf
             (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared OHLCV Arrow data of $(ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows at $(ohlcv.interval) interval")
             ohlcv.latestloadeddt = df[end, :opentime]
-        elseif fn.existing
-            (verbosity >= 3) && println("$(EnvConfig.now()) loading OHLCV data of $(ohlcv.base) from  $(fn.filename)")
-            df = DataFrame(JDF.loadjdf(fn.filename))
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded OHLCV data of $(ohlcv.base) from $(size(df, 1) > 0 ? df[1, :opentime] : "N/A due to empty") until $(size(df, 1) > 0 ? df[end, :opentime] : "N/A due to empty") with $(size(df, 1)) rows at $(ohlcv.interval) interval from  $(fn.filename)")
+            if legacyfn.existing || isfile(legacyfn.filename) || isdir(legacyfn.filename)
+                rm(legacyfn.filename; force=true, recursive=true)
+            end
+        elseif legacyfn.existing
+            (verbosity >= 3) && println("$(EnvConfig.now()) loading legacy OHLCV data of $(ohlcv.base) from $(legacyfn.filename)")
+            df = DataFrame(JDF.loadjdf(legacyfn.filename))
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded legacy OHLCV data of $(ohlcv.base) from $(size(df, 1) > 0 ? df[1, :opentime] : "N/A due to empty") until $(size(df, 1) > 0 ? df[end, :opentime] : "N/A due to empty") with $(size(df, 1)) rows at $(ohlcv.interval) interval from $(legacyfn.filename)")
             ohlcv.latestloadeddt = size(df, 1) > 0 ? df[end, :opentime] : nothing
+            setdataframe!(ohlcv, df)
+            if !isempty(df)
+                write_arrow(ohlcv)
+                rm(legacyfn.filename; force=true, recursive=true)
+            end
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared Arrow copy for $(ohlcv.base)")
+            (verbosity >= 2) && println("$(EnvConfig.now()) no OHLCV data found for $(fn.filename) or $(legacyfn.filename)")
         end
     catch e
         Logging.@error "exception $e detected"
@@ -676,9 +722,10 @@ end
 
 function delete(ohlcv::OhlcvData)
     if EnvConfig.configmode == production
-        fn = file(ohlcv)
-        if fn.existing
-            rm(fn.filename; force=true, recursive=true)
+        for fn in (file(ohlcv), legacyfile(ohlcv))
+            if fn.existing || isfile(fn.filename) || isdir(fn.filename)
+                rm(fn.filename; force=true, recursive=true)
+            end
         end
     else
         (verbosity >= 1) && @warn "no Ohlcv.delete() if EnvConfig.configmode != production to prevent loosing accidentially real canned data"
@@ -867,9 +914,9 @@ end
 
 function Base.iterate(of::OhlcvFiles, state=1)
     if isnothing(of.filenames)
-        allff = readdir(EnvConfig.datafolderpath("OHLCV"), join=false, sort=false)
-        fileixlist = findall(f -> endswith(f, "OHLCV.jdf"), allff)
-        of.filenames = [allff[ix] for ix in fileixlist]
+        coinroot = EnvConfig.coinspath()
+        pairfolders = isdir(coinroot) ? readdir(coinroot, join=false, sort=false) : String[]
+        of.filenames = [pair for pair in pairfolders if isfile(joinpath(coinroot, pair, "ohlcv.arrow"))]
         if length(of.filenames) > 0
             state = firstindex(of.filenames)
         else
@@ -879,13 +926,11 @@ function Base.iterate(of::OhlcvFiles, state=1)
     if state > lastindex(of.filenames)
         return nothing
     end
-    # fn = split(of.filenames[state], "/")[end]
-    fnparts = split(of.filenames[state], "_")
-    # return (basecoin=fnparts[1], quotecoin=fnparts[2], interval=fnparts[3]), state+1
-    basecoin=fnparts[1]
-    # quotecoin=fnparts[2]
-    interval=fnparts[3]
-    ohlcv = defaultohlcv(basecoin, interval)
+    pairparts = split(of.filenames[state], "-")
+    basecoin = pairparts[1]
+    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.cryptoquote
+    ohlcv = defaultohlcv(basecoin, "1m")
+    setquotesymbol!(ohlcv, quotecoin)
     read!(ohlcv)
     return ohlcv, state+1
 end

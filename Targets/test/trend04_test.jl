@@ -25,13 +25,34 @@
     # threshold order violated: shortbuy > shorthold
     bad_thres2 = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.005f0)
     @test_throws AssertionError Targets.Trend04(2, 10, bad_thres2)
+    # unsupported hold anchor mode
+    @test_throws ArgumentError Targets.Trend04(2, 10, thres; holdanchormode=:invalid_mode)
+    # unsupported hold behavior mode
+    @test_throws ArgumentError Targets.Trend04(2, 10, thres; holdbehaviormode=:invalid_mode)
+    # non-default hold behavior mode currently supported only for :last_buy_anchor
+    @test_throws AssertionError Targets.Trend04(2, 10, thres; holdanchormode=:entry_anchor, holdbehaviormode=:beyond_maxwindow)
 
     # valid minimal construction
     trd = Targets.Trend04(0, 1, thres)
     @test trd.minwindow == 0
     @test trd.maxwindow == 1
+    @test trd.holdanchormode == Targets.last_buy_anchor
+    @test trd.holdbehaviormode == Targets.within_maxwindow
     @test isnothing(trd.ohlcv)
     @test isnothing(trd.df)
+
+    # Symbol and String constructor inputs are accepted for backward compatibility.
+    trd_symbol = Targets.Trend04(2, 10, thres; holdanchormode=:entry_anchor, holdbehaviormode=:within_maxwindow)
+    @test trd_symbol.holdanchormode == Targets.entry_anchor
+    @test trd_symbol.holdbehaviormode == Targets.within_maxwindow
+
+    trd_string = Targets.Trend04(2, 10, thres; holdanchormode="last_buy_anchor", holdbehaviormode="beyond_maxwindow")
+    @test trd_string.holdanchormode == Targets.last_buy_anchor
+    @test trd_string.holdbehaviormode == Targets.beyond_maxwindow
+
+    trd_enum = Targets.Trend04(2, 10, thres; holdanchormode=Targets.last_buy_anchor, holdbehaviormode=Targets.no_hold)
+    @test trd_enum.holdanchormode == Targets.last_buy_anchor
+    @test trd_enum.holdbehaviormode == Targets.no_hold
 end
 
 # ---------------------------------------------------------------------------
@@ -62,6 +83,8 @@ end
     @test occursin("Trend04", d)
     @test occursin("maxwindow=10", d)
     @test occursin("minwindow=2", d)
+    @test occursin("holdanchormode=last_buy_anchor", d)
+    @test occursin("holdbehaviormode=within_maxwindow", d)
     @test occursin("Base?", d)  # no ohlcv set yet
 
     pivots = Float32[100.0, 102.0, 105.0, 108.0, 110.0]
@@ -70,6 +93,40 @@ end
     d2 = Targets.describe(trd)
     @test occursin("TEST", d2)
     @test occursin("maxwindow=10", d2)
+end
+
+@testset "Trend04 hold anchor mode semantics" begin
+    thres = Targets.LabelThresholds(longbuy=0.04f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.04f0)
+    pivots = Float32[100.0, 104.031, 99.91, 105.402, 106.31, 108.852, 107.052, 106.409, 107.576]
+
+    # :entry_anchor uses original buy-entry anchor.
+    trd_entry = Targets.Trend04(1, 5, thres; holdanchormode=:entry_anchor)
+    Targets.setbase!(trd_entry, testohlcvfrompivots(pivots))
+    @test trd_entry.df[3, :label] == longhold
+    @test trd_entry.df[6, :label] == allclose
+
+    # :last_buy_anchor compares against the last buy sample.
+    trd_lastbuy = Targets.Trend04(1, 5, thres; holdanchormode=:last_buy_anchor)
+    Targets.setbase!(trd_lastbuy, testohlcvfrompivots(pivots))
+    @test trd_lastbuy.df[3, :label] == longhold
+    @test trd_lastbuy.df[6, :label] == longhold
+end
+
+@testset "Trend04 last_buy_anchor hold behavior modes" begin
+    thres = Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0)
+    pivots = Float32[100.0, 99.886, 98.557, 97.65, 101.708, 104.445, 107.335]
+
+    trd_within = Targets.Trend04(2, 3, thres; holdanchormode=:last_buy_anchor, holdbehaviormode=:within_maxwindow)
+    Targets.setbase!(trd_within, testohlcvfrompivots(pivots))
+
+    trd_beyond = Targets.Trend04(2, 3, thres; holdanchormode=:last_buy_anchor, holdbehaviormode=:beyond_maxwindow)
+    Targets.setbase!(trd_beyond, testohlcvfrompivots(pivots))
+
+    trd_nohold = Targets.Trend04(2, 3, thres; holdanchormode=:last_buy_anchor, holdbehaviormode=:no_hold)
+    Targets.setbase!(trd_nohold, testohlcvfrompivots(pivots))
+    @test trd_within.df[7, :label] == allclose
+    @test trd_beyond.df[7, :label] == longhold
+    @test trd_nohold.df[7, :label] == allclose
 end
 
 # ---------------------------------------------------------------------------
@@ -197,24 +254,24 @@ end
 
     recoveringlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
     Targets.setbase!(recoveringlong, testohlcvfrompivots(Float32[100.0, 106.0, 102.0, 104.5]))
-    @test recoveringlong.df[3, :label] == longhold
+    @test recoveringlong.df[3, :label] == allclose
     @test recoveringlong.df[4, :label] == allclose
 
     recoveringshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
     Targets.setbase!(recoveringshort, testohlcvfrompivots(Float32[100.0, 94.0, 98.0, 95.5]))
-    @test recoveringshort.df[3, :label] == shorthold
+    @test recoveringshort.df[3, :label] == allclose
     @test recoveringshort.df[4, :label] == allclose
 
     delayedlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
     Targets.setbase!(delayedlong, testohlcvfrompivots(Float32[100.0, 106.0, 103.0, 102.0, 104.5]))
     @test delayedlong.df[3, :label] == allclose
-    @test delayedlong.df[4, :label] == longhold
+    @test delayedlong.df[4, :label] == allclose
     @test delayedlong.df[5, :label] == allclose
 
     delayedshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
     Targets.setbase!(delayedshort, testohlcvfrompivots(Float32[100.0, 94.0, 97.0, 98.0, 95.5]))
     @test delayedshort.df[3, :label] == allclose
-    @test delayedshort.df[4, :label] == shorthold
+    @test delayedshort.df[4, :label] == allclose
     @test delayedshort.df[5, :label] == allclose
 end
 
@@ -454,9 +511,7 @@ end
 
         labels = trd.df[!, :label]
         @test count(==(longbuy), labels) > 0
-        @test count(==(longhold), labels) > 0
         @test count(==(shortbuy), labels) > 0
-        @test count(==(shorthold), labels) > 0
         @test count(==(allclose), labels) > 0
 
         issues = Targets.crosscheck(trd)
@@ -486,9 +541,7 @@ end
 
             labels = trd.df[!, :label]
             @test count(==(longbuy), labels) > 0
-            @test count(==(longhold), labels) > 0
             @test count(==(shortbuy), labels) > 0
-            @test count(==(shorthold), labels) > 0
             @test count(==(allclose), labels) > 0
 
             issues = Targets.crosscheck(trd)

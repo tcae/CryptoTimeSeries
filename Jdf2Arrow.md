@@ -2,10 +2,10 @@
 
 Below is the consolidated **Phase 1 + Phase 2 storage and migration design**.
 
-> **Status update (2026-04-08)**
-> - The Arrow pilot for `TradeAdviceLstm` achieved a much better memory footprint than the old JDF path.
-> - Remaining `TradeAdviceLstm` run-control issues are no longer on the critical path for the storage migration.
-> - Decision: continue with **Phase 2** and treat any remaining LSTM-specific polish as follow-up work.
+> **Status update (2026-04-11)**
+> - Active shared storage is now **Arrow-first** under `~/crypto/coins/<BASE>-<QUOTE>/`.
+> - `ohlcv` and `F4` use the consolidated files `ohlcv.arrow` and `f4.arrow`.
+> - Any remaining `JDF` wording below should be read as **legacy/backfill context only**, not as the current hot-path format.
 
 ---
 
@@ -23,15 +23,12 @@ Example:
 
 ```text
 coins/
-  BTCUSDT/
+  BTC-USDT/
     ohlcv.arrow
-    f4/
-      pivot.arrow
-      volume.arrow
-      rsi.arrow
-      ...
-  ETHUSDT/
-    ...
+    f4.arrow
+  ETH-USDT/
+    ohlcv.arrow
+    f4.arrow
 ```
 
 ### Rationale
@@ -109,26 +106,25 @@ Assess the **memory footprint gain** from Arrow before broader migration.
 Move reusable data to `coins/`:
 
 - ohlcv per coin
-- `F4` per coin and **per column**
+- `F4` per coin as a single shared `f4.arrow` table
 
 Example:
 
 ```text
-coins/BTCUSDT/f4/rsi.arrow
-coins/BTCUSDT/f4/atr.arrow
-coins/BTCUSDT/f4/pivot.arrow
+coins/BTC-USDT/ohlcv.arrow
+coins/BTC-USDT/f4.arrow
 ```
 
 ### Important rule
-- `F4` is split **per column**
+- `F4` is stored once per coin in a single shared `f4.arrow` table
 - `F6` is **not** split per column; it stays config-specific
 
 ---
 
 ## 2B. Features redesign
 - keep current expensive F4 generation semantics
-- store F4 outputs directly as reusable per-column Arrow artifacts
-- adapt `F6` to consume those F4 columns directly instead of recalculating/taking over `F004`
+- store F4 outputs as a reusable per-coin Arrow table
+- adapt `F6` to select the required F4 columns from that shared table instead of recalculating/taking over `F004`
 
 This avoids repeated expensive feature computation.
 
@@ -287,10 +283,10 @@ Proceed with **Phase 2**:
 
 **Checklist:**
 - create conversion command for selected folders
-- convert at least:
-  - `features.jdf`
-  - `results.jdf`
-  - `maxpredictions.jdf`
+- convert at least the main artifact families:
+  - `features` → `features.arrow`
+  - `results` → `results.arrow`
+  - `maxpredictions` → `maxpredictions.arrow`
 - write Arrow copies into config-scoped subfolders rather than cluttering the root folder
 - verify row counts and key columns after conversion
 - do not delete original JDF files
@@ -383,7 +379,7 @@ Proceed with **Phase 2**:
 ### Milestone P2.2 — move shared reusable data to `coins/`
 **Goal:** separate shared data from experiment-specific data.
 
-> **Implementation note (2026-04-08):** start this migration **non-destructively**. Keep the legacy `OHLCV` / `Features004` JDF data where it is and create new Arrow copies under `coins/` alongside it.
+> **Status update (2026-04-11):** implemented. Shared `OHLCV` and `F4` now live under `coins/` as `ohlcv.arrow` and `f4.arrow`. Legacy JDF caches are retained only for fallback/backfill.
 
 **Shared reusable targets:**
 - `ohlcv`
@@ -397,21 +393,21 @@ Proceed with **Phase 2**:
 **Checklist:**
 - create `coins/` as sibling to `logs/`
 - store `ohlcv` per coin in Arrow
-- store `F4` per coin and per column, e.g.:
-  - `coins/BTCUSDT/f4/rsi.arrow`
-  - `coins/BTCUSDT/f4/pivot.arrow`
+- store `F4` per coin as one shared Arrow table, e.g.:
+  - `coins/BTC-USDT/ohlcv.arrow`
+  - `coins/BTC-USDT/f4.arrow`
 - keep these independent of experiment/config folders
 
 **Acceptance criteria:**
 - shared data can be reused across experiments without duplication
-- `ohlcv` and `F4` can be loaded coin-by-coin
+- `ohlcv` and shared `F4` can be loaded coin-by-coin
 
 ---
 
 ### Milestone P2.3 — adapt `Features` to reuse F4 column storage
 **Goal:** avoid recomputation of expensive F4 features while keeping F6 config-specific.
 
-> **Status update (2026-04-08):** in progress and partially implemented. Shared `OHLCV` / `F4` readers now prefer the new `coins/` Arrow copies when available and fall back to the legacy JDF caches otherwise.
+> **Status update (2026-04-11):** implemented. Shared `OHLCV` / `F4` readers now load the local Arrow caches under `coins/` first; JDF is legacy fallback only.
 
 **Target files:**
 - `Features/src/Features004.jl`
@@ -419,8 +415,8 @@ Proceed with **Phase 2**:
 - any F6-related feature selection code
 
 **Checklist:**
-- persist F4 outputs directly by column
-- adapt F6 to read these reusable F4 columns instead of recalculating/taking over a monolithic F004 object
+- persist F4 outputs as one reusable per-coin `f4.arrow` table
+- adapt F6 to read the required F4 columns from that shared table instead of recalculating/taking over a monolithic F004 object
 - keep F6 outputs config-specific under `logs/<config>/features/`
 - do **not** split F6 per column
 

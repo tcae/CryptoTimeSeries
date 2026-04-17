@@ -33,8 +33,8 @@ mutable struct TrendDetectorConfig
     opmode::TrendDetectorMode
     partitionconfig::NamedTuple
     coins::Vector{String}
-    oversampling::Bool
-    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=partitionconfig02(), coins, oversampling=true)
+    classbalancing::Bool
+    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=partitionconfig02(), coins, classbalancing=true)
         EnvConfig.setlogpath(folder)
         EnvConfig.setdfformat!(:arrow)
         (verbosity >= 2) && println("verbosity: $verbosity")
@@ -42,8 +42,8 @@ mutable struct TrendDetectorConfig
         (verbosity >= 2) && println("data range: $startdt - $enddt")
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
-        (verbosity >= 2) && println("oversampling=$oversampling")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, oversampling)
+        (verbosity >= 2) && println("classbalancing=$(classbalancing)")
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
@@ -182,7 +182,7 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
     end
 
     if isnothing(resultsdf)
-        rangeid = Int16(1) # shall be unique across coins
+        rangeid = UInt16(1) # shall be unique across coins
         samplesets = cfg.partitionconfig.samplesets
         levels = unique(samplesets)
         samplesets = CategoricalArray(samplesets, levels=levels)
@@ -332,15 +332,17 @@ function getclassifier(cfg::TrendDetectorConfig)
         targets = resultsdf[!, :target]
         (verbosity >= 3) && println("$(EnvConfig.now()) size(featuresdf)=$(size(featuresdf)), size(features)=$(size(features)), size(targets)=$(size(targets)) for training mix classifier"  )
         resultsdf = featuresdf = nothing # free memory
-        if cfg.oversampling
-            (verbosity >= 2) && println("$(EnvConfig.now()) before correction: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
-            (features), targets = oversample((features), targets)  # all classes are equally trained
-            # (features), targets = undersample((features), targets)  # all classes are equally trained
-            (verbosity >= 2) && println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+        weightinfo = Classify.classweighting(targets, nn.labels)
+        (verbosity >= 2) && println("$(EnvConfig.now()) training class distribution: $(weightinfo.dist)")
+        sampleweights = nothing
+        if cfg.classbalancing
+            sampleweights = weightinfo.sampleweights
+            weightsummary = [(string(label), round(weight, digits=3)) for (label, weight) in zip(weightinfo.labels, weightinfo.classweights) if weight > 0f0]
+            (verbosity >= 2) && println("$(EnvConfig.now()) applying class-weighted loss for class balancing: $(weightsummary)")
         else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no oversampling applied - class distribution: $(Distributions.fit(UnivariateFinite, categorical(string.(targets)))))")
+            (verbosity >= 2) && println("$(EnvConfig.now()) class weighting disabled; using uniform loss")
         end
-        Classify.adaptnn!(nn, features, targets)
+        Classify.adaptnn!(nn, features, targets; sampleweights=sampleweights)
         (verbosity >= 3) && showlosses(nn)
         if isnothing(nn)
             # no adaptation took place
@@ -425,7 +427,7 @@ function isfreshcache(cachefile::AbstractString, dependencyfiles::AbstractVector
     return true
 end
 
-const GAIN_THRESHOLDS = ((0.8f0, 0.5f0), (0.7f0, 0.5f0), (0.6f0, 0.5f0), (0.8f0, 0.6f0), (0.7f0, 0.6f0), (0.6f0, 0.55f0))
+const GAIN_THRESHOLDS = Tuple((openthreshold, closethreshold) for openthreshold in default_openthresholds() for closethreshold in default_closethresholds() if closethreshold <= openthreshold)
 const TRUE_GAIN_THRESHOLD = (0.9f0, 0.9f0)
 
 function getgainsdf(cfg::TrendDetectorConfig)
@@ -733,13 +735,19 @@ function introspection(cfg::TrendDetectorConfig)
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
     Classify.verbosity = 1
-    targetissuesdf = EnvConfig.readdf(targetissuesfilename())
-    if isnothing(targetissuesdf) || size(targetissuesdf, 1) == 0
-        println("No target issues file found")
+    if EnvConfig.tableexists(targetissuesfilename())
+        targetissuespath = EnvConfig.tablepath(targetissuesfilename(); format=:auto)
+        targetissuesdf = EnvConfig.readdf(targetissuesfilename())
+        println("target issues file: $(targetissuespath)")
+        if isnothing(targetissuesdf) || size(targetissuesdf, 1) == 0
+            println("targetissues.arrow is present but empty")
+        else
+            println("size(targetissuesdf) = $(size(targetissuesdf))")
+            println("describe(targetissuesdf, :all)=$(describe(targetissuesdf, :all))")
+            println(targetissuesdf)
+        end
     else
-        println("size(targetissuesdf) = $(size(targetissuesdf))")
-        println("describe(targetissuesdf, :all)=$(describe(targetissuesdf, :all))")
-        println(targetissuesdf)
+        println("No target issues file found in $(EnvConfig.logfolder())")
     end
     resultsdf, featuresdf, cachedcoins = _concat_coin_featuretarget_caches(cfg)
     if isnothing(featuresdf) || size(featuresdf, 1) == 0
@@ -784,7 +792,7 @@ function _parse_bool(raw::AbstractString)::Bool
     value = lowercase(strip(raw))
     value in ("1", "true", "yes", "on") && return true
     value in ("0", "false", "no", "off") && return false
-    error("oversampling=$(raw) must be one of true/false, yes/no, on/off, 1/0")
+    error("classbalancing=$(raw) must be one of true/false, yes/no, on/off, 1/0")
 end
 
 function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime)
@@ -792,9 +800,9 @@ function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::D
     basecfg = trenddetectorconfig(configref)
     configname = _argvalue(args, "configname", string(basecfg.configname))
     folder = _argvalue(args, "folder", "Trend-$configname-$(EnvConfig.configmode)")
-    oversampling_default = (:oversampling in keys(basecfg)) ? string(getfield(basecfg, :oversampling)) : "true"
-    oversampling = _parse_bool(_argvalue(args, "oversampling", oversampling_default))
-    mergedcfg = merge(basecfg, (configname=configname, folder=folder, oversampling=oversampling))
+    classbalancing_default = (:classbalancing in keys(basecfg)) ? string(getfield(basecfg, :classbalancing)) : "true"
+    classbalancing = _parse_bool(_argvalue(args, "classbalancing", classbalancing_default))
+    mergedcfg = merge(basecfg, (configname=configname, folder=folder, classbalancing=classbalancing))
     return TrendDetectorConfig(; mergedcfg..., coins=allowedcoins, startdt=startdt, enddt=enddt)
 end
 
@@ -836,7 +844,7 @@ Flag parameters:
       Default: false
 
   inspect
-      Print cached features, targets, predictions, and target issues without training/evaluation.
+      Print cached features, targets, predictions, and `results/targetissues.arrow` when present, without training/evaluation.
       Default: false
 
   special
@@ -860,8 +868,8 @@ Key=value parameters:
       Output subfolder.
       Default: `Trend-<configname>-$(EnvConfig.configmode)`
 
-  oversampling=<Bool>
-      Override the preset's oversampling flag.
+  classbalancing=<Bool>
+      Apply inverse-frequency class weights during training.
       Default: preset value (for `029`: `false`)
 
 Fixed date defaults:

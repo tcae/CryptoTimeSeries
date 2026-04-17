@@ -180,14 +180,29 @@ Ohlcv.setdataframe!(ohlcv1t, dfmin)
 Ohlcv.write(ohlcv1t)
 @test Ohlcv.file(ohlcv1t).existing == true
 @test isfile(EnvConfig.coinfile(base, ohlcv1t.quotecoin, "ohlcv"; extension=".arrow"))
-rm(Ohlcv.file(ohlcv1t).filename; force=true, recursive=true)
-@test Ohlcv.file(ohlcv1t).existing == false
 ohlcv1 = Ohlcv.defaultohlcv(base)
-ohlcv1 = Ohlcv.read!(ohlcv1t)
+ohlcv1 = Ohlcv.read!(ohlcv1)
 @test nrow(Ohlcv.dataframe(ohlcv1)) == 9
-Ohlcv.delete(ohlcv1t)
-@test Ohlcv.file(ohlcv1t).existing == false
-EnvConfig.init(mode)
+
+appendbase = "appendtest"
+appendohlcv = Ohlcv.defaultohlcv(appendbase)
+Ohlcv.setdataframe!(appendohlcv, copy(dfmin))
+Ohlcv.write(appendohlcv)
+appendloaded = Ohlcv.read!(Ohlcv.defaultohlcv(appendbase))
+appenddf = vcat(copy(dfmin), DataFrame(
+    opentime=[dfmin[end, :opentime] + Dates.Minute(1)],
+    open=[1.05],
+    high=[1.15],
+    low=[0.95],
+    close=[1.1],
+    basevolume=[10.0],
+))
+Ohlcv.setdataframe!(appendloaded, appenddf)
+Ohlcv.write(appendloaded)
+appendloaded = Ohlcv.read!(Ohlcv.defaultohlcv(appendbase))
+@test nrow(Ohlcv.dataframe(appendloaded)) == nrow(appenddf)
+@test Ohlcv.dataframe(appendloaded)[end, :opentime] == appenddf[end, :opentime]
+Ohlcv.delete(appendloaded)
 
 @test Ohlcv.rowix(ohlcv1, Ohlcv.dataframe(ohlcv1).opentime[begin] - Minute(10)) == firstindex(Ohlcv.dataframe(ohlcv1).opentime)
 @test Ohlcv.rowix(ohlcv1, Ohlcv.dataframe(ohlcv1).opentime[end] + Minute(10)) == lastindex(Ohlcv.dataframe(ohlcv1).opentime)
@@ -209,6 +224,9 @@ ohlcv2 = readwrite(ohlcv1)
 @test Ohlcv.dataframe(ohlcv1)[1, :open] == Ohlcv.dataframe(ohlcv2)[1, :open]
 @test Ohlcv.dataframe(ohlcv1)[1, :opentime] == Ohlcv.dataframe(ohlcv2)[1, :opentime]
 @test Ohlcv.dataframe(ohlcv1)[9, :basevolume] == Ohlcv.dataframe(ohlcv2)[9, :basevolume]
+Ohlcv.delete(ohlcv1t)
+@test Ohlcv.file(ohlcv1t).existing == false
+EnvConfig.init(mode)
 # @test setsplit_test()
 # @test setassign_test()  #! fails but setassign currently not relevant
 # @test columnarray_test()
