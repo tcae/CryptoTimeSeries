@@ -42,7 +42,12 @@ targetconfig14() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=no
 targetconfig15() = trend04targetconfig(10, 60, 0.01, 0.01, holdbehaviormode=no_hold) 
 targetconfig16() = trend04targetconfig(10, 2*60, 0.01, 0.01, holdbehaviormode=no_hold) 
 targetconfig17() = trend04targetconfig(60, 24*60, 0.05, 0.05, holdbehaviormode=no_hold) # Trend04 with long term target
-targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
+targetconfig18() = Targets.TrendRegression(5, 0.01, -0.01) # for SINE and DOUBLESINE regression tests only
+targetconfig19() = Targets.TrendRegression(24*60, 0.01, -0.01) 
+targetconfig20() = Targets.TrendRegression(4*60, 0.005, -0.005) 
+targetconfig21() = Targets.TrendRegression(3*24*60, 0.05, -0.05) 
+targetconfig22() = Targets.TrendRegression(4*60, 0.01, -0.01) 
+targetconfig23() = Targets.TrendRegression(4*60, 0.02, -0.02) 
 
 boundstargetsconfig01(window) = Targets.Bounds01(window)
 
@@ -197,8 +202,20 @@ function trendf6config11()
     return featcfg
 end
 
-"short feature vector relying on grad without offset"
+"short feature vector relying on grad without offset - short regressions for SINE and DOUBLESINE only"
 function trendf6config12()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=5, offset=0)
+    Features.addgrad!(featcfg, window=15, offset=0)
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addgrad!(featcfg, window=12*60, offset=0)
+    Features.addrelvol!(featcfg, short=15, long=24*60, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config13()
     featcfg = Features.Features006()
     Features.addgrad!(featcfg, window=60, offset=0)
     Features.addgrad!(featcfg, window=60*4, offset=0)
@@ -206,6 +223,30 @@ function trendf6config12()
     Features.addgrad!(featcfg, window=24*60, offset=0)
     Features.addgrad!(featcfg, window=3*24*60, offset=0)
     Features.addrelvol!(featcfg, short=15, long=3*24*60, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config14()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=15, offset=0)
+    Features.addgrad!(featcfg, window=60, offset=0)
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addgrad!(featcfg, window=12*60, offset=0)
+    Features.addgrad!(featcfg, window=24*60, offset=0)
+    Features.addrelvol!(featcfg, short=5, long=24*60, offset=0)
+    return featcfg
+end
+
+"short feature vector relying on grad without offset"
+function trendf6config15()
+    featcfg = Features.Features006()
+    Features.addgrad!(featcfg, window=60*4, offset=0)
+    Features.addgrad!(featcfg, window=12*60, offset=0)
+    Features.addgrad!(featcfg, window=24*60, offset=0)
+    Features.addgrad!(featcfg, window=3*24*60, offset=0)
+    Features.addgrad!(featcfg, window=10*24*60, offset=0)
+    Features.addrelvol!(featcfg, short=60, long=10*24*60, offset=0)
     return featcfg
 end
 
@@ -390,7 +431,13 @@ mk037config() = (configname="037", featconfig = trendf6config09(), targetconfig 
 mk038config() = (configname="038", featconfig = trendf6config09(), targetconfig = targetconfig16(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 
 mk036config() = (configname="036", featconfig = trendf6config11(), targetconfig = targetconfig15(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk040config() = nothing # (configname="040", featconfig = trendf6config11(), targetconfig = targetconfig15(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk040config() = (configname="040", featconfig = trendf6config12(), targetconfig = targetconfig18(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk041config() = (configname="041", featconfig = trendf6config13(), targetconfig = targetconfig19(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk042config() = (configname="042", featconfig = trendf6config14(), targetconfig = targetconfig20(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk043config() = (configname="043", featconfig = trendf6config15(), targetconfig = targetconfig21(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk044config() = (configname="044", featconfig = trendf6config14(), targetconfig = targetconfig22(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk045config() = (configname="045", featconfig = trendf6config14(), targetconfig = targetconfig23(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+
 #endregion TrendConfig
 
 #region BoundsConfig
@@ -459,7 +506,8 @@ const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg fo
     mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
     mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
     mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
-    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk039config(), mk040config(),
+    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk039config(), mk040config(), 
+    mk041config(), mk042config(), mk043config(), mk044config(), mk045config(),
 ])
 
 const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [

@@ -128,5 +128,21 @@ end
     @test size(staleotdf, 1) == size(staleview, 1)
     @test staleotdf[!, "opentime"] == staleview[!, "opentime"]
 
+    # stale cached regression columns must not leak mismatched lengths into new supplements
+    odf = Ohlcv.dataframe(ohlcv)
+    stalegradf6 = Features.Features006()
+    Features.addgrad!(stalegradf6, window=60, offset=0)
+    stalegradf6.ohlcv = ohlcv
+    rycol = Features.fdfnocol(stalegradf6, Features._regry(stalegradf6, window=60, offset=0))
+    rgcol = Features.fdfnocol(stalegradf6, Features._grad(stalegradf6, window=60, offset=0))
+    stalegradf6.fdfno = DataFrame(
+        rycol => fill(1.0f0, size(odf, 1) - 10),
+        rgcol => fill(2.0f0, size(odf, 1) - 10),
+        "opentime" => odf[1:(end-10), "opentime"],
+    )
+    stalegraddf = Features._regrgrady!(DataFrame(), stalegradf6, Features._grad(stalegradf6, window=60, offset=0), odf, nothing, nothing)
+    @test size(stalegraddf, 1) == size(odf, 1)
+    @test all([rycol, rgcol] .∈ Ref(names(stalegraddf)))
+
 end # testset
 return

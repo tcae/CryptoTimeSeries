@@ -658,8 +658,8 @@ emptytrendregressiondf() = DataFrame(opentime=DateTime[], label=TradeLabel[], re
 """
 Provides mutually exclusive trend labels and their relative gains.
 
-`TrendRegression` assigns ``longhold`, `shorthold`, or `allclose`
-to each sample using forward-looking price behavior within `window`.
+`TrendRegression` assigns `longhold`, `shorthold`, or `allclose`
+to each sample using cached `Features006` regression data.
 
 Parameters:
 - window: forward-looking regression window in minutes to check for trend continuation
@@ -667,14 +667,18 @@ Parameters:
 - shortthreshold: maximum relative loss (not percentage) to assign a `shorthold` label
 
 Rules:
-- `0 < maxwindow`
+- `0 < window`
 - `longthreshold > shortthreshold`
 
 Approach:
-- For each sample, perform a 1D regression of price over the next `window` minutes and calculate the relative gain at the end of the regression window.
+- `TrendRegression` operates on an already prepared `Features006` instance.
+- The caller must first configure and supplement `f6`, then call `setbase!(trd, f6)` or `supplement!(trd)`.
+- `TrendRegression` does not modify `f6` and does not maintain its own OHLCV base.
+- The backing no-offset regression columns must already exist in `Features.f6all(f6)` for both `_grad(window, 0)` and `_regry(window, 0)`.
+- For the most recent samples where the forward row shift `window - 1` would exceed the available `fdfno` rows, TrendRegression reuses the most recent available cached grad/regry row.
 - Assign 
-  - `longhold` if the relative gain is above `longthreshold`, 
-  - `shorthold` if the relative gain is below `shortthreshold`, and 
+    - `longbuy` if the relative gain is above `longthreshold`, 
+    - `shortbuy` if the relative gain is below `shortthreshold`, and 
   - `allclose` otherwise.
 
 """
@@ -682,25 +686,45 @@ mutable struct TrendRegression <: AbstractTargets
     window::Int # in minutes
     longthreshold::Float32
     shortthreshold::Float32
+    graddfnooffset::Int
     f6::Union{Features.Features006, Nothing}
     df::Union{DataFrame, Nothing}
 
-    function TrendRegression(window, longthreshold, shortthreshold; f6=nothing, ohlcv=nothing, df=nothing)
+    function TrendRegression(window, longthreshold, shortthreshold; f6=nothing)
         @assert 0 < window "condition violated: 0 < window=$(window)"
         @assert longthreshold > shortthreshold "condition violated: longthreshold=$(longthreshold) > shortthreshold=$(shortthreshold)"
-        if !isnothing(f6) && !isnothing(ohlcv)
-            @assert f6 === ohlcv "condition violated: f6 and ohlcv keywords refer to different values: f6=$(typeof(f6)) ohlcv=$(typeof(ohlcv))"
+        if !isnothing(f6)
+            _trendregression_requiredfeatures(f6, window)
         end
-        trd = new(window, longthreshold, shortthreshold, isnothing(f6) ? ohlcv : f6, df)
+        trd = new(window, longthreshold, shortthreshold, window - 1, f6, nothing)
         return trd
     end
 end
 
+function _trendregression_requiredfeatures(f6::Features.Features006, window::Int)
+    requiredgrad = Features._grad(f6, window=window, offset=0)
+    requiredregry = Features._regry(f6, window=window, offset=0)
+    @assert requiredgrad in Features.f6all(f6) "TrendRegression requires $(requiredgrad) but found $(Features.f6all(f6)) in Features.f6all"
+    @assert requiredregry in Features.f6all(f6) "TrendRegression requires $(requiredregry) but found $(Features.f6all(f6)) in Features.f6all"
+    return requiredgrad, requiredregry
+end
+
+function _trendregression_cachedcolumns(trd::TrendRegression)
+    @assert !isnothing(trd.f6) "TrendRegression cached-column lookup requires f6"
+    gradfeature, regryfeature = _trendregression_requiredfeatures(trd.f6, trd.window)
+    gradcolumn = Features.fdfnocol(trd.f6, gradfeature)
+    regrycolumn = Features.fdfnocol(trd.f6, regryfeature)
+    return gradcolumn, regrycolumn
+end
+
+function setbase!(trd::TrendRegression, ohlcv::Ohlcv.OhlcvData)
+    throw(ArgumentError("TrendRegression requires setbase!(trd, f6::Features006); direct Ohlcv input is not supported"))
+end
+
 function setbase!(trd::TrendRegression, f6::Features.Features006)
-    gradfeature = Features._grad(f6, window=trd.window, offset=0)
-    gradcolumn = Features.fdfcol(f6, gradfeature)
-    @assert gradfeature in Features.f6requested(f6) "TrendRegression requires Features.addgrad!(f6, window=$(trd.window), offset=0) before setbase!(trd, f6)"
-    @assert !isnothing(f6.fdf) && (gradcolumn in names(f6.fdf)) "TrendRegression requires a materialized $(gradcolumn) column; call Features.setbase!(f6, ohlcv) before setbase!(trd, f6)"
+    @assert !isnothing(Features.ohlcv(f6)) "TrendRegression requires Features006 to have an OHLCV base before setbase!(trd, f6)"
+    @assert !isnothing(f6.fdfno) "TrendRegression requires Features006 to be supplemented before setbase!(trd, f6)"
+    _trendregression_requiredfeatures(f6, trd.window)
     trd.f6 = f6
     trd.df = emptytrendregressiondf()
     supplement!(trd)
@@ -712,51 +736,64 @@ function removebase!(trd::TrendRegression)
 end
 
 function supplement!(trd::TrendRegression)
-    if isnothing(trd.f6) || isnothing(trd.f6.ohlcv) || isnothing(trd.f6.fdf)
-        (verbosity >= 2) && println("no features found in TrendRegression - nothing to supplement")
+    if isnothing(trd.f6)
+        (verbosity >= 2) && println("no Features006 found in TrendRegression - nothing to supplement")
         return
     end
 
-    featuredf = trd.f6.fdf
-    if size(featuredf, 1) == 0
+    @assert !isnothing(trd.f6.fdfno) "TrendRegression requires Features006 to be supplemented before supplement!(trd)"
+    @assert Features.issupplementedcurrent(trd.f6) "TrendRegression requires Features.supplement!(f6) to run after the latest ohlcv change and before supplement!(trd)"
+    gradcolumn, regrycolumn = _trendregression_cachedcolumns(trd)
+    @assert all(in(names(trd.f6.fdfno)), [gradcolumn, regrycolumn, "opentime"]) "TrendRegression requires f6.fdfno columns $(gradcolumn), $(regrycolumn), and opentime"
+
+    if size(trd.f6.fdfno, 1) == 0
         trd.df = emptytrendregressiondf()
         return
     end
 
-    odf = Ohlcv.dataframe(trd.f6.ohlcv)
-    targetot = featuredf[!, :opentime]
-    startix = Ohlcv.rowix(odf[!, :opentime], targetot[begin])
-    endix = startix + length(targetot) - 1
-    @assert endix <= lastindex(odf[!, :opentime]) "TrendRegression target range exceeds OHLCV rows: endix=$(endix) lastix=$(lastindex(odf[!, :opentime]))"
-    @assert all(view(odf[!, :opentime], startix:endix) .== targetot) "TrendRegression f6/opentime alignment mismatch for window=$(trd.window)"
-
-    piv = odf[!, :pivot]
-    relgains = zeros(Float32, length(targetot))
-    targetlabels = fill(allclose, length(targetot))
-
-    for relix in eachindex(targetot)
-        rawix = startix + relix - 1
-        windowendix = min(lastindex(piv), rawix + trd.window - 1)
-        windowlen = windowendix - rawix + 1
-        if windowlen > 1
-            regry, grad = Features.rollingregression(view(piv, rawix:windowendix), windowlen)
-            relgains[relix] = Float32(Features.relativegain(regry[end], grad[end], windowlen))
+    targetlen = size(trd.f6.fdfno, 1)
+    recalcstartix = 1
+    prefixdf = emptytrendregressiondf()
+    if !isnothing(trd.df) && (size(trd.df, 1) > 0)
+        if (trd.df[begin, :opentime] == trd.f6.fdfno[begin, :opentime]) && (size(trd.df, 1) <= targetlen)
+            recalcstartix = max(firstindex(trd.df[!, :opentime]), size(trd.df, 1) - trd.window + 1)
+            prefixendix = recalcstartix - 1
+            if prefixendix >= firstindex(trd.df[!, :opentime])
+                prefixdf = copy(view(trd.df, firstindex(trd.df[!, :opentime]):prefixendix, :))
+            end
         end
-        targetlabels[relix] = relgains[relix] >= trd.longthreshold ? longhold :
-                              relgains[relix] <= trd.shortthreshold ? shorthold :
-                              allclose
     end
 
-    trd.df = DataFrame(opentime=copy(targetot), label=targetlabels, relgain=relgains)
+    recalclen = targetlen - recalcstartix + 1
+    targetot = copy(trd.f6.fdfno[recalcstartix:targetlen, :opentime])
+    relgains = zeros(Float32, recalclen)
+    targetlabels = fill(allclose, recalclen)
+
+    for currentix in recalcstartix:targetlen
+        remaining = targetlen - currentix + 1
+        if remaining > 1
+            featureix = min(currentix + trd.graddfnooffset, size(trd.f6.fdfno, 1))
+            endregry = trd.f6.fdfno[featureix, regrycolumn]
+            grad = trd.f6.fdfno[featureix, gradcolumn]
+            relgains[currentix - recalcstartix + 1] = Float32(Features.relativegain(endregry, grad, trd.window))
+        end
+        currentrelgain = relgains[currentix - recalcstartix + 1]
+        targetlabels[currentix - recalcstartix + 1] = currentrelgain >= trd.longthreshold ? longbuy :
+                                 currentrelgain <= trd.shortthreshold ? shortbuy :
+                                                  allclose
+    end
+
+    deltadf = DataFrame(opentime=targetot, label=targetlabels, relgain=relgains)
+    trd.df = size(prefixdf, 1) > 0 ? vcat(prefixdf, deltadf) : deltadf
 end
 
-uniquelabels(trd::TrendRegression) = [longhold, shorthold, allclose]
+uniquelabels(trd::TrendRegression) = [longbuy, shortbuy, allclose]
 
 function _trendregression_base(trd::TrendRegression)::String
-    if isnothing(trd.f6) || isnothing(trd.f6.ohlcv)
+    if isnothing(trd.f6) || isnothing(Features.ohlcv(trd.f6))
         return "Base?"
     end
-    return trd.f6.ohlcv.base
+    return Features.ohlcv(trd.f6).base
 end
 
 function _trendregression_dfstate(trd::TrendRegression)::String

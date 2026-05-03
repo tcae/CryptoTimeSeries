@@ -60,7 +60,16 @@ function calctargets!(trgcfg::Targets.AbstractTargets, featcfg::Features.Abstrac
     features = Features.features(featcfg)
     fot = Features.opentime(featcfg)
     (verbosity >= 4) && println("$(EnvConfig.now()) target calculation from $(fot[begin]) until $(fot[end])")
-    Targets.setbase!(trgcfg, ohlcv)
+    if trgcfg isa Targets.TrendRegression
+        if Features.issupplementedcurrent(featcfg)
+            Targets.setbase!(trgcfg, featcfg)
+        else
+            @error "features not supplemented current for target calculation, cannot calculate targets for $(Targets.describe(trgcfg)) with feature base from $(fot[begin]) until $(fot[end])"
+            throw(AssertionError("features not supplemented current for target calculation"))
+        end
+    else
+        Targets.setbase!(trgcfg, ohlcv)
+    end
     targets = Targets.labels(trgcfg, fot[begin], fot[end])
     # Targets.labeldistribution(targets)
     @assert size(features, 1) == length(targets) "size(features, 1)=$(size(features, 1)) != length(targets)=$(length(targets))"

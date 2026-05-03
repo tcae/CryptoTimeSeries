@@ -198,10 +198,97 @@ end
 
 function file(f4::Features004)
     filename = EnvConfig.coinfile(f4.basecoin, f4.quotecoin, "f4"; extension=".arrow")
-    return (filename=filename, existing=isfile(filename) || legacyfile(f4).existing)
+    return (filename=filename, existing=isfile(filename) || legacyfile(f4).existing || isdir(_legacy_splitfolder(f4.basecoin, f4.quotecoin)))
 end
 
 _legacy_splitfolder(basecoin::AbstractString, quotecoin::AbstractString) = normpath(joinpath(EnvConfig.coinspath(), uppercase(basecoin) * "-" * uppercase(quotecoin), "f4"))
+
+"""
+Read legacy split-column Arrow caches from `coins/<pair>/f4/*.arrow` and return
+one merged dataframe in the shared F4 schema.
+
+Legacy files are expected in the format `<window>_<property>.arrow`, e.g.
+`60_grad.arrow`.
+"""
+function _read_legacy_split_f4_arrow(basecoin::AbstractString, quotecoin::AbstractString)::DataFrame
+    splitfolder = _legacy_splitfolder(basecoin, quotecoin)
+    if !isdir(splitfolder)
+        return DataFrame()
+    end
+
+    colfiles = [f for f in readdir(splitfolder, join=false, sort=true) if endswith(lowercase(f), ".arrow")]
+    if isempty(colfiles)
+        return DataFrame()
+    end
+
+    ohlcv = Ohlcv.read(basecoin)
+    odf = Ohlcv.dataframe(ohlcv)
+    if size(odf, 1) == 0
+        return DataFrame()
+    end
+
+    merged = DataFrame(opentime=copy(odf[!, :opentime]))
+    for filename in colfiles
+        stem = splitext(filename)[1]
+        nameparts = split(stem, "_")
+        if (length(nameparts) != 2) || isnothing(tryparse(Int, nameparts[1]))
+            continue
+        end
+        property = nameparts[2]
+        if !(property in ["grad", "regry", "std"])
+            continue
+        end
+
+        coldf = EnvConfig.readdf(stem; folderpath=splitfolder, format=:arrow, copycols=true)
+        if isnothing(coldf) || (size(coldf, 1) == 0)
+            continue
+        end
+
+        colname = Symbol(stem)
+        if !("opentime" in names(coldf))
+            # Older cache variants may not store opentime in each column file.
+            # In that case align the tail to OHLCV; keep only full-length columns.
+            if size(coldf, 1) == size(odf, 1)
+                valuecol = colname in names(coldf) ? colname : Symbol(first(names(coldf)))
+                merged[!, colname] = coldf[!, valuecol]
+            else
+                (verbosity >= 2) && println("$(EnvConfig.now()) skipping legacy split column $(filename) for $(basecoin)-$(quotecoin) due to missing opentime and size mismatch: size(coldf, 1)=$(size(coldf, 1)) size(odf, 1)=$(size(odf, 1))")
+            end
+        else
+            valuecol = if colname in names(coldf)
+                colname
+            else
+                candidates = [n for n in names(coldf) if String(n) != "opentime"]
+                isempty(candidates) ? nothing : Symbol(first(candidates))
+            end
+            if isnothing(valuecol)
+                continue
+            end
+            cdf = DataFrame(opentime=coldf[!, "opentime"], _value=coldf[!, valuecol])
+            sort!(cdf, :opentime)
+            unique!(cdf, :opentime; keep=:last)
+            joined = leftjoin(DataFrame(opentime=odf[!, :opentime]), cdf; on=:opentime)
+            if any(ismissing, joined[!, :_value])
+                # Some legacy column files contain non-matching timestamps but full-length
+                # row-aligned values; accept them by index when lengths match OHLCV.
+                if size(coldf, 1) == size(odf, 1)
+                    merged[!, colname] = Float32.(coldf[!, valuecol])
+                else
+                    (verbosity >= 2) && println("$(EnvConfig.now()) skipping legacy split column $(filename) for $(basecoin)-$(quotecoin) due to partial opentime coverage")
+                    continue
+                end
+            else
+                merged[!, colname] = Float32.(joined[!, :_value])
+            end
+        end
+    end
+
+    if size(merged, 2) <= 1
+        return DataFrame()
+    end
+    sort!(merged, :opentime)
+    return merged
+end
 
 function _normalize_shared_f4_arrow(df::AbstractDataFrame)::DataFrame
     normalized = DataFrame()
@@ -261,14 +348,20 @@ function _read_shared_f4_arrow(basecoin::AbstractString, quotecoin::AbstractStri
     folderpath = EnvConfig.coinfolderpath(basecoin, quotecoin)
     df = EnvConfig.readdf("f4"; folderpath=folderpath, format=:arrow, copycols=true)
     if isnothing(df) || (size(df, 1) == 0)
-        return DataFrame()
+        legacydf = _read_legacy_split_f4_arrow(basecoin, quotecoin)
+        if size(legacydf, 1) == 0
+            return DataFrame()
+        end
+        _write_shared_f4_arrow(basecoin, quotecoin, legacydf)
+        df = legacydf
     end
 
     result = _normalize_shared_f4_arrow(DataFrame(df; copycols=true))
     if !isnothing(columns)
-        requested = [String(col) == "opentime" ? "opentime" : Symbol(col) for col in columns]
-        available = [col for col in requested if col in names(result)]
-        if ("opentime" in names(result)) && !("opentime" in available)
+        resultnames = String.(names(result))
+        requested = unique(String.(columns))
+        available = [col for col in requested if col in resultnames]
+        if ("opentime" in resultnames) && !("opentime" in available)
             pushfirst!(available, "opentime")
         end
         isempty(available) && return DataFrame()
@@ -276,6 +369,19 @@ function _read_shared_f4_arrow(basecoin::AbstractString, quotecoin::AbstractStri
     end
     sort!(result, :opentime)
     return result
+end
+
+"""
+Convert one legacy split-column Arrow cache at `coins/<pair>/f4/*.arrow` into
+one shared `coins/<pair>/f4.arrow` file.
+"""
+function migrate_split_f4_arrow!(basecoin::AbstractString, quotecoin::AbstractString)::Bool
+    legacydf = _read_legacy_split_f4_arrow(basecoin, quotecoin)
+    if size(legacydf, 1) == 0
+        return false
+    end
+    _write_shared_f4_arrow(basecoin, quotecoin, legacydf)
+    return true
 end
 
 """Write the shared per-coin `Features004`/`Features005` Arrow cache to `coins/<pair>/f4.arrow`."""

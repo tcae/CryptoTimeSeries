@@ -1075,6 +1075,34 @@ ohlcv(f6::Features006) = f6.ohlcv
 
 requiredminutes(f6::Features006) = f6.requiredminutes
 
+"""
+Returns `true` if `supplement!(f6)` has been run against the current `f6.ohlcv`
+state and both `fdfno` and `fdf` are aligned with the corresponding OHLCV
+time ranges that `Features006` derives from it.
+"""
+function issupplementedcurrent(f6::Features006)::Bool
+    if isnothing(f6.ohlcv) || isnothing(f6.fdfno) || isnothing(f6.fdf)
+        return false
+    end
+
+    odf = Ohlcv.dataframe(f6.ohlcv)
+    if size(odf, 1) == 0
+        return (size(f6.fdfno, 1) == 0) && (size(f6.fdf, 1) == 0)
+    end
+
+    if !("opentime" in names(f6.fdfno)) || !("opentime" in names(f6.fdf))
+        return false
+    end
+
+    xodf, currentodf = _ohlcvdataframes(f6)
+    if (size(f6.fdfno, 1) != size(xodf, 1)) || (size(f6.fdf, 1) != size(currentodf, 1))
+        return false
+    end
+
+    return (f6.fdfno[!, :opentime] == xodf[!, :opentime]) &&
+           (f6.fdf[!, :opentime] == currentodf[!, :opentime])
+end
+
 function emptycachef006()
     df = DataFrame()
     # df[:, "opentime"] = DateTime[]
@@ -1138,7 +1166,12 @@ function read!(f6::Features006)::DataFrame
     # try
     df = _read_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin; columns=requestedf4cols)
     if size(df, 1) > 0
-        (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df))")
+        if (names(df) == ["opentime"]) || (names(df) == [:opentime])
+            fullshared = _read_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin)
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows; selected columns contain only opentime (requested=$(requestedf4cols)), full shared names=$(names(fullshared))")
+        else
+            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df))")
+        end
     elseif isdir(legacyfilename) || isfile(legacyfilename)
         (verbosity >= 3) && println("$(EnvConfig.now()) start loading legacy f6 data of $(f6.ohlcv.base) from $(legacyfilename)")
         df = DataFrame(JDF.loadjdf(legacyfilename))
@@ -1216,6 +1249,12 @@ function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         rv = relativevolume(odf[!, :basevolume], short, long)
     end
+    desiredlen = size(odf, 1)
+    if length(rv) != desiredlen
+        (verbosity >= 2) && println("$(EnvConfig.now()) ignoring stale cached $rvcol length $(length(rv)) for $(f6.ohlcv.base); recomputed features expect $(desiredlen) rows")
+        rv = relativevolume(odf[!, :basevolume], short, long)
+    end
+    @assert length(rv) == desiredlen "unexpected $rvcol length mismatch for $(f6.ohlcv.base): length(rv)=$(length(rv)) desiredlen=$(desiredlen)"
     fdfno[:, rvcol] = rv
     return fdfno
 end
@@ -1241,6 +1280,12 @@ function _mindist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         md = rollingmin(odf[!, :low], window)
     end
+    desiredlen = size(odf, 1)
+    if length(md) != desiredlen
+        (verbosity >= 2) && println("$(EnvConfig.now()) ignoring stale cached $mdcol length $(length(md)) for $(f6.ohlcv.base); recomputed features expect $(desiredlen) rows")
+        md = rollingmin(odf[!, :low], window)
+    end
+    @assert length(md) == desiredlen "unexpected $mdcol length mismatch for $(f6.ohlcv.base): length(md)=$(length(md)) desiredlen=$(desiredlen)"
     fdfno[:, mdcol] = md # normalization in supplement! with offset considered
     return fdfno
 end
@@ -1265,6 +1310,12 @@ function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         md = rollingmax(odf[!, :high], window)
     end
+    desiredlen = size(odf, 1)
+    if length(md) != desiredlen
+        (verbosity >= 2) && println("$(EnvConfig.now()) ignoring stale cached $mdcol length $(length(md)) for $(f6.ohlcv.base); recomputed features expect $(desiredlen) rows")
+        md = rollingmax(odf[!, :high], window)
+    end
+    @assert length(md) == desiredlen "unexpected $mdcol length mismatch for $(f6.ohlcv.base): length(md)=$(length(md)) desiredlen=$(desiredlen)"
     fdfno[:, mdcol] = md # normalization in supplement! with offset considered
     return fdfno
 end
@@ -1324,6 +1375,12 @@ function _regrgrady!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         ry, rg = rollingregression(odf[!, :pivot], window)
     end
+    desiredlen = size(odf, 1)
+    if (length(ry) != desiredlen) || (length(rg) != desiredlen)
+        (verbosity >= 2) && println("$(EnvConfig.now()) ignoring stale cached $rycol/$rgcol lengths $(length(ry))/$(length(rg)) for $(f6.ohlcv.base); recomputed features expect $(desiredlen) rows")
+        ry, rg = rollingregression(odf[!, :pivot], window)
+    end
+    @assert (length(ry) == desiredlen) && (length(rg) == desiredlen) "unexpected regression column length mismatch for $(f6.ohlcv.base): length(ry)=$(length(ry)) length(rg)=$(length(rg)) desiredlen=$(desiredlen)"
     fdfno[:, rycol] = ry # normalization in supplement! with offset considered
     fdfno[:, rgcol] = rg
     return fdfno
@@ -1357,6 +1414,12 @@ function _regrstd!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     else
         rs = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window)
     end
+    desiredlen = size(odf, 1)
+    if length(rs) != desiredlen
+        (verbosity >= 2) && println("$(EnvConfig.now()) ignoring stale cached $rscol length $(length(rs)) for $(f6.ohlcv.base); recomputed features expect $(desiredlen) rows")
+        rs = rollingregressionstdmv([odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]], fdfno[!, rycol], fdfno[!, rgcol], window)
+    end
+    @assert length(rs) == desiredlen "unexpected $rscol length mismatch for $(f6.ohlcv.base): length(rs)=$(length(rs)) desiredlen=$(desiredlen)"
     fdfno[:, rscol] = rs
     return fdfno
 end
