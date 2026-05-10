@@ -80,8 +80,28 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 ### Increment 2.3: Data continuity
 - Keep Bybit `getklines` support active for update/download jobs.
 - Add docs and config examples for mixed mode: Bybit data + Kraken trading.
+- Example routing setup:
+	```julia
+	xc = CryptoXch.XchCache()
+	setrole!(xc, CryptoXch.data_exchange, CryptoXch.EXCHANGE_BYBIT)
+	setrole!(xc, CryptoXch.trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
+	setrole!(xc, CryptoXch.trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+	```
+- `cryptodownload`, `_gethistoryohlcv`, and `downloadupdate!` keep resolving OHLCV via the `data_exchange` role so mixed-mode continuity stays intact.
 
-### Increment 2.4: Tests
+### Increment 2.4: Base/quote coin pair abstraction
+- Introduce explicit `basecoin` and `quotecoin` fields everywhere a trading pair is specified, replacing the concatenated `symbol` string as the primary key in CryptoXch routing.
+- The exchange-specific adapter is solely responsible for mapping `(basecoin, quotecoin)` → exchange pair name (e.g. `"BTC"+"USD"` → `"PF_XBTUSD"` for KrakenFutures, `"BTCUSDT"` for KrakenSpot/Bybit).
+- This enables:
+  1. Trading with non-USDT quote currencies (USD, EUR, USDC) without callers knowing the exact exchange symbol.
+  2. Routing the same `(basecoin, quotecoin)` to different exchanges, each applying their own symbol mapping.
+- Concrete changes:
+  - Add `validsymbol(bc, basecoin, quotecoin)` overloads to KrakenSpot, KrakenFutures, Bybit adapters.
+  - Update `CryptoXch` routing helpers to accept `(basecoin, quotecoin)` and resolve to adapter-specific pair names.
+  - Update `Trade` callers (portfolio, orders, advice) to pass `basecoin`/`quotecoin` explicitly where it affects routing.
+  - Add symbol-mapping unit tests covering at least: BTC/USDT→KrakenSpot, BTC/USD→KrakenFutures, BTC/USDT→Bybit.
+
+### Increment 2.5: Tests
 - Adapter routing tests in `CryptoXch/test/`.
 - End-to-end simulation test in `Trade/test/` verifying Bybit no-trade enforcement.
 
@@ -89,6 +109,7 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 - Spot and futures orders are Kraken-routed via `CryptoXch`.
 - Any Bybit trade attempt is rejected by policy.
 - OHLCV update jobs can still use Bybit.
+- `(basecoin, quotecoin)` is the canonical pair representation; adapters own the symbol mapping.
 
 ### Deliverables
 - Updated `CryptoXch/src/CryptoXch.jl`
@@ -105,11 +126,22 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 ### Increment 3.1: Canonical audit schema
 - Define canonical event model with required fields:
 	- event metadata: timestamp (UTC), source module, environment, correlation IDs
-	- exchange metadata: exchange name, account/auth alias, market type
+	- exchange metadata: exchange name, account/auth alias, routing role used, market type
+	- instrument metadata: canonical asset type, venue-specific instrument type, symbol, basecoin, quotecoin, underlying, settlement coin, contract class
 	- order metadata: client order id, exchange order id, symbol, side, type, tif, requested qty/price
 	- execution metadata: fill qty/price, fees, fee currency, status transitions
 	- position/portfolio snapshot deltas before and after action
 	- strategy context: config ref, signal label/score, algorithm version
+- Introduce an explicit audit classification field set so logs can distinguish at least:
+	- crypto spot pair trades
+	- crypto perpetual futures on pairs
+	- shares against FIAT
+	- future asset classes without schema redesign
+- Recommended canonical values:
+	- `asset_class`: `crypto`, `equity`, later extensible to `fx`, `option`, `future`, `commodity`, ...
+	- `instrument_type`: `spot_pair`, `perpetual_future`, `share_fiat`, later extensible
+	- `venue_instrument_type`: raw exchange-specific type when available
+- The combination of `exchange name + account/auth alias + asset_class + instrument_type + symbol` must be sufficient to disambiguate what was actually traded even when symbols overlap across venues.
 - Separate event types: `ORDER_SUBMITTED`, `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
 
 ### Increment 3.2: Append-only log writer
@@ -130,6 +162,7 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 ### Exit criteria
 - Every order status transition is persisted with traceable identifiers.
 - Logs are partitioned for multiple exchanges/accounts.
+- Audit records identify both the concrete exchange/account used and the traded asset type beyond the raw symbol.
 - Replay utility can rebuild per-order lifecycle and daily PnL-relevant events.
 
 ### Deliverables
@@ -270,7 +303,7 @@ Update this section after each work session.
 
 ### Status Summary
 - Objective 1: IN PROGRESS (Increment 1.1 started)
-- Objective 2: NOT STARTED
+- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated)
 - Objective 3: NOT STARTED
 - Objective 4: NOT STARTED
 - Objective 5: NOT STARTED
@@ -286,6 +319,36 @@ Update this section after each work session.
 - Next immediate step:
 
 ### Session Log
+- Date: 2026-05-10
+- Objective/Increment: Objective 2 / Increments 2.1-2.5
+- Completed:
+	- Added explicit exchange-role routing in `CryptoXch` for `data_exchange`, `trade_exchange_spot`, and `trade_exchange_futures`.
+	- Routed market-data operations through the data role and trading operations through spot/futures trade roles.
+	- Added Bybit data-only guardrails that block order placement when Bybit is configured only as the market-data source.
+	- Preserved Bybit OHLCV continuity for `cryptodownload`, `_gethistoryohlcv`, and `downloadupdate!` in mixed-mode routing.
+	- Added pair-aware `(basecoin, quotecoin)` symbol resolution and validation across `CryptoXch`, `KrakenSpot`, `KrakenFutures`, and `Bybit`.
+	- Added deterministic routing and symbol-mapping tests covering BTC/USDT on KrakenSpot and Bybit, plus BTC/USD on KrakenFutures.
+	- Added Trade-level guardrail regression coverage and revalidated the Trade package suite.
+- Files changed:
+	- `CryptoXch/src/CryptoXch.jl`
+	- `CryptoXch/test/routingtests.jl`
+	- `CryptoXch/test/simruntests.jl`
+	- `Trade/test/bybit_guardrail_test.jl`
+	- `Trade/test/runtests.jl`
+	- `KrakenSpot/src/KrakenSpot.jl`
+	- `KrakenFutures/src/KrakenFutures.jl`
+	- `Bybit/src/Bybit.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `cd CryptoXch && julia --project=. -e 'include("test/routingtests.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'include("test/bybit_guardrail_test.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.test()'` → passed
+- Open issues/blockers:
+	- Objective 3 audit logging design not started yet.
+	- Pair-aware public APIs in `Trade` still primarily default to `EnvConfig.cryptoquote`; later work may widen caller-side quote selection further.
+- Next immediate step:
+	- Start Objective 3 by defining the canonical audit event schema and storage layout, including exchange/account and asset-type classification fields.
+
 - Date: 2026-05-10
 - Objective/Increment: Objective 1 / Increment 1.1
 - Completed:
@@ -330,5 +393,27 @@ Update this section after each work session.
 - Next immediate step:
 	- Continue Objective 1 / Increment 1.2 by binding strategy runtime config to TrendDetector references and expanding deterministic loop-step tests.
 
+- Date: 2026-05-10
+- Objective/Increment: Objective 1 / Increment 1.2 runtime config bridge
+- Completed:
+	- Added Trade runtime strategy bridge functions:
+		- `apply_tradingstrategy!` to copy `TradingStrategy.GainSegment` parameters into `TradeCache` runtime settings.
+		- `apply_trenddetector_strategy!` to accept TrendDetector-style references (`configname`, `tradingstrategy`).
+		- `_validatestrategyconfig!` assertions for threshold/gain/range bounds and max window validation.
+	- Added dictionary-based bridge methods for deterministic tests without exchange/network initialization.
+	- Wired `strategy_maxwindow` into `_strategystate!` so live strategy state uses configured window size.
+	- Added focused tests covering parameter copy, source tagging, cache reset behavior, and invalid-range rejection.
+- Files changed:
+	- `Trade/src/Trade.jl`
+	- `Trade/test/strategy_runtime_config_test.jl`
+	- `Trade/test/runtests.jl`
+- Tests run and result:
+	- `Trade` isolated `algorithm03_adapter_test.jl` PASSED (5/5).
+	- `Trade` isolated `strategy_runtime_config_test.jl` PASSED (11/11).
+- Open issues/blockers:
+	- Full `Trade` package suite still includes network-coupled paths (Bybit HTTP) outside this increment scope.
+- Next immediate step:
+	- Continue Objective 1 with `tradestep!` extraction and deterministic loop-step tests.
+
 ## First Execution Slice (Recommended Next Coding Step)
-Start with Objective 1, Increment 1.1 by introducing a minimal `tradestep!` extraction and an `algorithm03` strategy adapter behind a feature flag, with one focused integration test over cached data.
+Continue Objective 1 by extracting a deterministic `tradestep!` function and adding non-network integration tests for backtest/live step control.

@@ -23,6 +23,16 @@ using EnvConfig, Ohlcv, CryptoXch, Classify, Features, Targets, TradingStrategy
 """
 @enum TradeMode buysell sellonly quickexit notrade
 
+"""
+Loop lifecycle states stored in `TradeCache.mc[:loop_state]`.
+- `loop_idle`: loop has not been started yet
+- `loop_running`: loop is executing ticks
+- `loop_paused`: loop is suspended between ticks
+- `loop_stopping`: stop has been requested; loop will exit after current tick
+- `loop_stopped`: loop has finished (either normally or after stop request)
+"""
+@enum LoopState loop_idle loop_running loop_paused loop_stopping loop_stopped
+
 
 """
 verbosity =
@@ -66,6 +76,9 @@ mutable struct TradeCache
         cache.mc[:strategy_buygain] = 0.001f0
         cache.mc[:strategy_sellgain] = 0.01f0
         cache.mc[:strategy_limitreduction] = 0f0
+        cache.mc[:strategy_maxwindow] = 4 * 60
+        cache.mc[:strategy_source] = "default"
+        cache.mc[:loop_state] = loop_idle
         (verbosity >= 2) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), reloadtimes = $(cache.mc[:reloadtimes]), exitcoins = $(cache.mc[:exitcoins]), whitelistcoins = $(cache.mc[:whitelistcoins]), longopencoins = $(cache.mc[:longopencoins]), shortopencoins = $(cache.mc[:shortopencoins])")
         return cache
     end
@@ -669,6 +682,102 @@ end
 
 _strategyengine(cache::TradeCache) = Symbol(get(cache.mc, :strategy_engine, :classifier))
 
+# ── Loop control ────────────────────────────────────────────────────────────
+
+"Returns the current loop lifecycle state."
+loopstate(cache::TradeCache) = LoopState(Int(cache.mc[:loop_state]))
+_setloopstate!(cache::TradeCache, s::LoopState) = (cache.mc[:loop_state] = s; nothing)
+
+"""
+Request the loop to pause after the current tick.
+Only effective when the loop state is `loop_running`.
+"""
+function pause!(cache::TradeCache)
+    (loopstate(cache) == loop_running) && _setloopstate!(cache, loop_paused)
+    return cache
+end
+
+"""
+Resume a paused loop.
+Only effective when the loop state is `loop_paused`.
+"""
+function resume!(cache::TradeCache)
+    (loopstate(cache) == loop_paused) && _setloopstate!(cache, loop_running)
+    return cache
+end
+
+"""
+Request the loop to stop gracefully after the current tick completes.
+Effective when loop state is `loop_running` or `loop_paused`.
+"""
+function stop!(cache::TradeCache)
+    st = loopstate(cache)
+    (st in (loop_running, loop_paused)) && _setloopstate!(cache, loop_stopping)
+    return cache
+end
+
+# ── Strategy config ─────────────────────────────────────────────────────────
+
+function _validatestrategyconfig!(mc::AbstractDict)
+    openthreshold = Float32(mc[:strategy_openthreshold])
+    closethreshold = Float32(mc[:strategy_closethreshold])
+    buygain = Float32(mc[:strategy_buygain])
+    sellgain = Float32(mc[:strategy_sellgain])
+    limitreduction = Float32(mc[:strategy_limitreduction])
+    maxwindow = Int(mc[:strategy_maxwindow])
+
+    @assert 0f0 <= openthreshold <= 1f0 "strategy_openthreshold must be in [0, 1], got $(openthreshold)"
+    @assert 0f0 <= closethreshold <= 1f0 "strategy_closethreshold must be in [0, 1], got $(closethreshold)"
+    @assert 0f0 <= buygain <= 1f0 "strategy_buygain must be in [0, 1], got $(buygain)"
+    @assert 0f0 <= sellgain <= 1f0 "strategy_sellgain must be in [0, 1], got $(sellgain)"
+    @assert 0f0 <= limitreduction <= 1f0 "strategy_limitreduction must be in [0, 1], got $(limitreduction)"
+    @assert maxwindow > 0 "strategy_maxwindow must be > 0, got $(maxwindow)"
+    return mc
+end
+
+"Validate strategy runtime parameters stored in `TradeCache.mc`."
+function _validatestrategyconfig!(cache::TradeCache)
+    _validatestrategyconfig!(cache.mc)
+    return cache
+end
+
+"Apply strategy runtime settings from a `TradingStrategy.GainSegment` and reset derived per-base state."
+function apply_tradingstrategy!(mc::AbstractDict, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:algorithm03, source::AbstractString="manual")
+    mc[:strategy_engine] = strategy_engine
+    mc[:strategy_openthreshold] = Float32(gs.openthreshold)
+    mc[:strategy_closethreshold] = Float32(gs.closethreshold)
+    mc[:strategy_buygain] = Float32(gs.buygain)
+    mc[:strategy_sellgain] = Float32(gs.sellgain)
+    mc[:strategy_limitreduction] = Float32(gs.limitreduction)
+    mc[:strategy_maxwindow] = Int(gs.maxwindow)
+    mc[:strategy_source] = String(source)
+
+    strategy_state = get!(mc, :strategy_state, Dict{String, Any}())
+    strategy_history = get!(mc, :strategy_history, Dict{String, Any}())
+    empty!(strategy_state)
+    empty!(strategy_history)
+    return _validatestrategyconfig!(mc)
+end
+
+function apply_tradingstrategy!(cache::TradeCache, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:algorithm03, source::AbstractString="manual")
+    apply_tradingstrategy!(cache.mc, gs; strategy_engine=strategy_engine, source=source)
+    return cache
+end
+
+"Apply strategy runtime settings from a TrendDetector-style configuration reference."
+function apply_trenddetector_strategy!(mc::AbstractDict, tdref)
+    @assert hasproperty(tdref, :tradingstrategy) "tdref must expose field :tradingstrategy, got type=$(typeof(tdref))"
+    gs = getproperty(tdref, :tradingstrategy)
+    @assert gs isa TradingStrategy.GainSegment "tdref.tradingstrategy must be TradingStrategy.GainSegment, got type=$(typeof(gs))"
+    source = hasproperty(tdref, :configname) ? "trenddetector:$(getproperty(tdref, :configname))" : "trenddetector"
+    return apply_tradingstrategy!(mc, gs; strategy_engine=:algorithm03, source=source)
+end
+
+function apply_trenddetector_strategy!(cache::TradeCache, tdref)
+    apply_trenddetector_strategy!(cache.mc, tdref)
+    return cache
+end
+
 function _strategyhistory!(cache::TradeCache, base::AbstractString)
     return get!(cache.mc[:strategy_history], String(base)) do
         (
@@ -681,9 +790,10 @@ end
 
 function _strategystate!(cache::TradeCache, base::AbstractString)
     return get!(cache.mc[:strategy_state], String(base)) do
+        _validatestrategyconfig!(cache)
         gs = TradingStrategy.GainSegment(
             ;
-            maxwindow=4 * 60,
+            maxwindow=Int(cache.mc[:strategy_maxwindow]),
             openthreshold=Float32(cache.mc[:strategy_openthreshold]),
             closethreshold=Float32(cache.mc[:strategy_closethreshold]),
             algorithm=TradingStrategy.algorithm03!,
@@ -746,22 +856,65 @@ function _algorithm03_advice!(cache::TradeCache, base::AbstractString, ta::Class
 end
 
 """
-**`tradeloop`** has to
-+ get initial TradinStrategy config (if not present at entry) and refresh daily according to `reloadtimes`
-+ get new exchange data (preferably non blocking)
-+ evaluate new exchange data and derive trade signals
-+ place new orders (preferably non blocking)
-+ follow up on open orders (preferably non blocking)
+Execute one trading tick: cancel pending orders, collect classifier/strategy advice for all
+configured bases, execute trades, and handle daily trade-selection reload.
+Called by the loop runners once per iterate step.
 """
-function tradeloop(cache::TradeCache)
-    # TODO add hooks to enable coupling to the cockpit visualization
-    # @info "$(EnvConfig.now()): trading bases=$(CryptoXch.bases(cache.xc)) period=$(isnothing(cache.xc.startdt) ? "start canned" : cache.xc.startdt) enddt=$(isnothing(cache.xc.enddt) ? "start canned" : cache.xc.enddt)"
-    # @info "$(EnvConfig.now()): trading with open orders $(CryptoXch.getopenorders(cache.xc))"
-    # @info "$(EnvConfig.now()): trading with assets $(CryptoXch.balances(cache.xc))"
-    # for base in keys(cache.xc.bases)
-    #     syminfo = CryptoXch.minimumqty(cache.xc, CryptoXch.symboltoken(base))
-    #     @info "$syminfo"
-    # end
+function _tradestep!(cache::TradeCache)
+    (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
+    oo = CryptoXch.getopenorders(cache.xc)
+    for ooe in eachrow(oo)  # cancel all open orders; amending maker orders causes rejections
+        if CryptoXch.openstatus(ooe.status)
+            CryptoXch.cancelorder(cache.xc, CryptoXch.basequote(ooe.symbol).basecoin, ooe.orderid)
+        end
+    end
+    assets = CryptoXch.portfolio!(cache.xc)
+    tradeadvices = []
+    for basecfg in eachrow(cache.cfg)
+        Classify.supplement!(cache.cl)
+        #TODO handle multiple classifiers per base
+        tradeadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt, investment=nothing)
+        if !isnothing(tradeadvice)
+            if _strategyengine(cache) == :algorithm03
+                tradeadvice = _algorithm03_advice!(cache, basecfg.basecoin, tradeadvice)
+            end
+            push!(tradeadvices, tradeadvice)
+        else
+            (verbosity > 3) && println("no trade advice for $(basecfg.basecoin)")
+        end
+    end
+    if cache.mc[:usenewtrade]
+    else # legacy trade!()
+        sellbases = []
+        buybases = []
+        sort!(tradeadvices, lt=tradeadvicelessthan)  # close first, then buy high-gain first
+        for ta in tradeadvices
+            basecfg = first(filter(row -> row.basecoin == ta.base, cache.cfg))
+            res = trade!(cache, basecfg, ta, assets)
+            if !isnothing(res) && (res.trade in [longbuy, longstrongbuy, shortclose, shortstrongclose])
+                push!(buybases, basecfg.basecoin)
+            elseif !isnothing(res) && (res.trade in [longstrongclose, longclose, shortstrongbuy, shortbuy])
+                push!(sellbases, basecfg.basecoin)
+            elseif !isnothing(res)
+                @warn "case not handled: $res"
+            end
+        end
+        (verbosity >= 2) && print("\r$(tradetime(cache)): $(USDTmsg(assets)), bought: $(buybases), sold: $(sellbases)                                          ")
+    end
+    if Time(cache.xc.currentdt) in cache.mc[:reloadtimes]
+        assets = CryptoXch.portfolio!(cache.xc)
+        (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
+        tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
+        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
+        (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
+    end
+    #TODO low prio: for closed orders check fees
+    #TODO low prio: aggregate orders and transactions in bookkeeping
+    return nothing
+end
+
+"Load or derive the initial trade configuration if `cache.cfg` is empty."
+function _ensure_tradeloop_initialized!(cache::TradeCache)
     if size(cache.cfg, 1) == 0
         assets = CryptoXch.balances(cache.xc)
         (verbosity >= 2) && print("\r$(tradetime(cache)): start loading trading strategy")
@@ -769,68 +922,38 @@ function tradeloop(cache::TradeCache)
             (verbosity >= 2) && print("\r$(tradetime(cache)): start reassessing trading strategy")
             tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
         end
-        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :] # limit coins to those that are tradable
+        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
+end
+
+"Log end-of-loop summary statistics."
+function _tradefinish!(cache::TradeCache)
+    (verbosity >= 2) && println("$(tradetime(cache)): finished trading core loop")
+    (verbosity >= 3) && @info (size(cache.xc.closedorders, 1) > 0) ? "$(EnvConfig.now()): closed orders log $(cache.xc.closedorders)" : "$(EnvConfig.now()): no closed orders"
+    (verbosity >= 3) && @info (size(cache.xc.orders, 1) > 0) ? "$(EnvConfig.now()): open orders log $(cache.xc.orders)" : "$(EnvConfig.now()): no open orders"
+    (verbosity >= 2) && @info "$(EnvConfig.now()): closed orders $(size(cache.xc.closedorders, 1)), open orders $(size(cache.xc.orders, 1))"
+    assets = CryptoXch.portfolio!(cache.xc)
+    (verbosity >= 3) && @info "assets = $assets"
+    (verbosity >= 2) && @info "total USDT = $(sum(assets.usdtvalue))"
+end
+
+"""
+Shared iteration engine used by both backtest and live runners.
+Advances through `cache.xc` one tick at a time, calling `_tradestep!` each step.
+Respects `pause!`/`resume!`/`stop!` loop control requests.
+"""
+function _run_tradeloop!(cache::TradeCache)
+    _setloopstate!(cache, loop_running)
     try
         for c in cache.xc
-            (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
-            oo = CryptoXch.getopenorders(cache.xc)
-            for ooe in eachrow(oo)  # all orders to be cancelled because amending maker orders will lead to rejections and "Order does not exist" returns
-                if CryptoXch.openstatus(ooe.status)
-                    CryptoXch.cancelorder(cache.xc, CryptoXch.basequote(ooe.symbol).basecoin, ooe.orderid)
-                end
+            st = loopstate(cache)
+            while st == loop_paused
+                sleep(1)
+                st = loopstate(cache)
             end
-            assets = CryptoXch.portfolio!(cache.xc)
-            tradeadvices = []
-            for basecfg in eachrow(cache.cfg)
-                Classify.supplement!(cache.cl)
-                #TODO handle multiple classifier with different longbuy/longclose signals for one base
-                #TODO  - provide multiple advices from differen classifiers
-                #TODO  - limits per classifier + config and base => classifier provides relative amount for that base
-                #TODO  - classifier provides: class name, cfgid, relative invest amount, price, trade label
-                #TODO  - Trade adds: investment ID, average actual longbuy price, startdt buying, enddt buying, actual amount bought
-                #TODO  - ask for advice per investment with specific classifier + config bought at specific price
-                tradeadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt, investment=nothing)
-                if !isnothing(tradeadvice)
-                    if _strategyengine(cache) == :algorithm03
-                        tradeadvice = _algorithm03_advice!(cache, basecfg.basecoin, tradeadvice)
-                    end
-                    push!(tradeadvices, tradeadvice)  #TODO old trade advice to be added
-                else 
-                    (verbosity > 3) && println("no trade advice for $(basecfg.basecoin)")
-                end
-                # print("\r$(tradetime(cache)): $(USDTmsg(assets))")
-            end
-            if cache.mc[:usenewtrade]
-            else # old trade!()
-                sellbases = []
-                buybases = []
-                    # sort to fill execute sell advices to create free quote to buy then sort according to hourlygain to buy high hourly gain first
-                sort!(tradeadvices, lt=tradeadvicelessthan)
-                for ta in tradeadvices
-                    # (verbosity > 3) && println("trade advice for $(ta.base): $(ta.tradelabel)")
-                    basecfg = first(filter(row -> row.basecoin == ta.base, cache.cfg))
-                    res = trade!(cache, basecfg, ta, assets)
-                    if !isnothing(res) && (res.trade in [longbuy, longstrongbuy, shortclose, shortstrongclose])
-                        push!(buybases, basecfg.basecoin)
-                    elseif !isnothing(res) && (res.trade in [longstrongclose, longclose, shortstrongbuy, shortbuy])
-                        push!(sellbases, basecfg.basecoin)
-                    elseif !isnothing(res)
-                        @warn "case not handled: $res"
-                    end
-                end
-                (verbosity >= 2) && print("\r$(tradetime(cache)): $(USDTmsg(assets)), bought: $(buybases), sold: $(sellbases)                                                                    ")
-            end
-            if Time(cache.xc.currentdt) in cache.mc[:reloadtimes]  # e.g. [Time("04:00:00"))]
-                assets = CryptoXch.portfolio!(cache.xc)
-                (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
-                tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
-                cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]  # limit coins to those that are tradable
-                (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
-            end
-            #TODO low prio: for closed orders check fees
-            #TODO low prio: aggregate orders and transactions in bookkeeping
+            (st == loop_stopping) && break
+            _tradestep!(cache)
         end
     catch ex
         if isa(ex, InterruptException)
@@ -842,21 +965,75 @@ function tradeloop(cache::TradeCache)
                 frame = StackTraces.lookup(ptr)
                 for fr in frame
                     if occursin("CryptoTimeSeries", string(fr.file))
-                        (verbosity >= 1) && println("fr.func=$(fr.func) fr.linfo=$(fr.linfo) fr.file=$(fr.file) fr.line=$(fr.line) fr.from_c=$(fr.from_c) fr.inlined=$(fr.inlined) fr.pointer=$(fr.pointer)")
+                        (verbosity >= 1) && println("fr.func=$(fr.func) fr.file=$(fr.file) fr.line=$(fr.line)")
                     end
                 end
             end
         end
+    finally
+        _setloopstate!(cache, loop_stopped)
     end
-    (verbosity >= 2) && println("$(tradetime(cache)): finished trading core loop")
-    (verbosity >= 3) && @info (size(cache.xc.closedorders, 1) > 0) ? "$(EnvConfig.now()): verbosity=$verbosity closed orders log $(cache.xc.closedorders)" : "$(EnvConfig.now()): no closed orders"
-    (verbosity >= 3) && @info (size(cache.xc.orders, 1) > 0) ? "$(EnvConfig.now()): open orders log $(cache.xc.orders)" : "$(EnvConfig.now()): no open orders"
-    (verbosity >= 2) && @info "$(EnvConfig.now()): closed orders $(size(cache.xc.closedorders, 1)), open orders $(size(cache.xc.orders, 1))"
-    assets = CryptoXch.portfolio!(cache.xc)
-    (verbosity >= 3) && @info "assets = $assets"
-    totalusdt = sum(assets.usdtvalue)
-    (verbosity >= 2) && @info "total USDT = $totalusdt"
-    #TODO save investlog
+    _tradefinish!(cache)
+    return cache
+end
+
+"""
+Run a full backtest replay over the cached OHLCV window defined by `cache.xc.startdt`…`cache.xc.enddt`.
+When `skip_init=false` (default) the trade configuration is loaded or rebuilt if `cache.cfg` is empty.
+Pass `skip_init=true` when the caller has already populated `cache.cfg`.
+"""
+function run_backtest!(cache::TradeCache; skip_init::Bool=false)
+    skip_init || _ensure_tradeloop_initialized!(cache)
+    _run_tradeloop!(cache)
+    return cache
+end
+
+"""
+Run the live trading loop, advancing one minute per tick and sleeping until the next wall-clock minute.
+When `skip_init=false` (default) the trade configuration is loaded or rebuilt if `cache.cfg` is empty.
+Pass `skip_init=true` when the caller has already populated `cache.cfg`.
+"""
+function run_live!(cache::TradeCache; skip_init::Bool=false)
+    skip_init || _ensure_tradeloop_initialized!(cache)
+    _run_tradeloop!(cache)
+    return cache
+end
+
+"""
+Start the trading loop (blocking). Selects backtest or live mode from `cache.xc.enddt` presence.
+Use `stop!` to request early termination from another task.
+"""
+function start!(cache::TradeCache)
+    if loopstate(cache) != loop_idle
+        @warn "start! called but loop is not idle (state=$(loopstate(cache)))"
+    end
+    _ensure_tradeloop_initialized!(cache)
+    _run_tradeloop!(cache)
+    return cache
+end
+
+"""
+Execute exactly one trading tick without the iteration engine.
+Useful for step-by-step debugging or custom replay harnesses.
+The caller is responsible for advancing `cache.xc.currentdt` before calling `step!`.
+"""
+function step!(cache::TradeCache)
+    _tradestep!(cache)
+    return cache
+end
+
+"""
+**`tradeloop`** — compatibility wrapper calling `start!`.
+Prefer using `run_backtest!`, `run_live!`, or `start!` directly for new code.
+
++ get initial TradeStrategy config (if not present at entry) and refresh daily according to `reloadtimes`
++ get new exchange data (preferably non-blocking)
++ evaluate new exchange data and derive trade signals
++ place new orders (preferably non-blocking)
++ follow up on open orders (preferably non-blocking)
+"""
+function tradeloop(cache::TradeCache)
+    start!(cache)
 end
 
 function tradelooptest(cache::TradeCache)
@@ -867,3 +1044,4 @@ end
 
 
 end  # module
+

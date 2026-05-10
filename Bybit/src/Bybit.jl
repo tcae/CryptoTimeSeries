@@ -509,8 +509,27 @@ function symbolinfo(bc::BybitCache, symbol::AbstractString)::Union{Nothing, Data
     return isnothing(symix) ? nothing : bc.syminfodf[symix, :]
 end
 
+"""
+Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
+"""
+function symboltoken(bc::BybitCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String
+    base = uppercase(basecoin)
+    qtoken = uppercase(quotecoin)
+    if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
+        matchix = findfirst(row -> (uppercase(String(row.basecoin)) == base) && (uppercase(String(row.quotecoin)) == qtoken), eachrow(bc.syminfodf))
+        if !isnothing(matchix)
+            return uppercase(String(bc.syminfodf[matchix, :symbol]))
+        end
+    end
+    return uppercase(base * qtoken)
+end
+
 validsymbol(bc::BybitCache, sym::Union{Nothing, DataFrameRow}) = !isnothing(sym) && (sym.quotecoin == EnvConfig.cryptoquote) && (sym.innovation == 0) && (sym.status == "Trading") # no Bybit innovation coins
 validsymbol(bc::BybitCache, symbol::AbstractString) = validsymbol(bc, symbolinfo(bc, symbol))
+function validsymbol(bc::BybitCache, basecoin::AbstractString, quotecoin::AbstractString)
+    sym = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
+    return !isnothing(sym) && (uppercase(String(sym.quotecoin)) == uppercase(quotecoin)) && (Int(sym.innovation) == 0) && (String(sym.status) == "Trading")
+end
 
 
 "Returns a Ohlcv row compatible row data (and skips intentionally turnover)"

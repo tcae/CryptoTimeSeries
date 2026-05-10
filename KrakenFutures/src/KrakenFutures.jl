@@ -12,6 +12,7 @@ verbosity =
 verbosity = 1
 
 const KRAKEN_FUTURES_APIREST = "https://futures.kraken.com/derivatives/api/v3"
+const KRAKEN_CHARTS_APIREST = "https://futures.kraken.com/api/charts/v1"
 const KRAKEN_FUTURES_WS_PUBLIC = "wss://futures.kraken.com/ws/v1"
 const KRAKEN_FUTURES_WS_PRIVATE = "wss://futures.kraken.com/ws/v1"
 
@@ -366,6 +367,21 @@ Normalize any Kraken symbol representation.
 _normalizepairsymbol(pair::AbstractString)::String = _ws2symbol(pair)
 
 """
+Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
+"""
+function symboltoken(bc::KrakenFuturesCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String
+	base = _normalizeasset(basecoin)
+	qtoken = uppercase(quotecoin)
+	if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
+		matchix = findfirst(row -> (uppercase(String(row.basecoin)) == base) && (uppercase(String(row.quotecoin)) == qtoken), eachrow(bc.syminfodf))
+		if !isnothing(matchix)
+			return uppercase(String(bc.syminfodf[matchix, :symbol]))
+		end
+	end
+	return uppercase(base * qtoken)
+end
+
+"""
 Resolve internal symbol to exchange symbol.
 """
 function _symbol2pairname(bc::KrakenFuturesCache, symbol::AbstractString)::String
@@ -577,6 +593,8 @@ function symbolinfo(bc::KrakenFuturesCache, symbol::AbstractString)::Union{Nothi
 	return isnothing(ix) ? nothing : bc.syminfodf[ix, :]
 end
 
+symbolinfo(bc::KrakenFuturesCache, basecoin::AbstractString, quotecoin::AbstractString) = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
+
 """
 Validate one symbol row.
 """
@@ -592,6 +610,10 @@ end
 Validate symbol by name.
 """
 validsymbol(bc::KrakenFuturesCache, symbol::AbstractString)::Bool = validsymbol(bc, symbolinfo(bc, symbol))
+function validsymbol(bc::KrakenFuturesCache, basecoin::AbstractString, quotecoin::AbstractString)::Bool
+	sym = symbolinfo(bc, basecoin, quotecoin)
+	return !isnothing(sym) && (uppercase(String(sym.quotecoin)) == uppercase(quotecoin)) && (lowercase(String(sym.status)) in ["online", "post_only", "limit_only", "reduce_only", "trading"])
+end
 
 """
 Return exchange server time.
@@ -710,37 +732,24 @@ function getklines(bc::KrakenFuturesCache, symbol; startDateTime=nothing, endDat
 	@assert interval in keys(_interval2minutes) "unknown interval=$(interval)"
 	pairname = _symbol2pairname(bc, String(symbol))
 
+	# Kraken Futures charts API: https://futures.kraken.com/api/charts/v1/trade/{symbol}/{interval}
+	# Returns last 2000 candles; date filtering is done locally after fetching.
 	klines = Any[]
 	try
-		params = Dict("symbol" => pairname, "resolution" => _interval2minutes[interval])
-		!isnothing(startDateTime) && (params["from"] = _int(Dates.datetime2unix(startDateTime)))
-		!isnothing(endDateTime) && (params["to"] = _int(Dates.datetime2unix(endDateTime)))
-		response = HttpPublicRequest(bc, "GET", "/history", params, "futures history")
+		endpoint = "/trade/$(pairname)/$(interval)"
+		response = HttpPublicRequest(bc, "GET", endpoint, nothing, "futures candles"; baseurl=KRAKEN_CHARTS_APIREST)
 		candles = _tryget(response, ["candles"], Any[])
 		if candles isa AbstractVector
 			klines = candles
 		end
 	catch err
-		(verbosity >= 1) && @warn "futures history request failed, trying spot OHLC fallback: $(err)"
-	end
-
-	if isempty(klines)
-		params = Dict("pair" => pairname, "interval" => _interval2minutes[interval])
-		!isnothing(startDateTime) && (params["since"] = _int(Dates.datetime2unix(startDateTime)))
-		response = HttpPublicRequest(bc, "GET", "/0/public/OHLC", params, "spot ohlc fallback"; baseurl=KRAKEN_SPOT_APIREST)
-		result = _tryget(response, ["result"], Dict{String, Any}())
-		if result isa AbstractDict
-			for (key, value) in result
-				key == "last" && continue
-				if value isa AbstractVector
-					klines = value
-					break
-				end
-			end
-		end
+		(verbosity >= 1) && @warn "futures candles request failed: $(err)"
 	end
 
 	df = _convertklines(klines)
+	if !isnothing(startDateTime)
+		df = df[df.opentime .>= startDateTime, :]
+	end
 	if !isnothing(endDateTime)
 		df = df[df.opentime .<= endDateTime, :]
 	end

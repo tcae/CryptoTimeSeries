@@ -293,6 +293,21 @@ function _normalizepairsymbol(pair::AbstractString)::String
 end
 
 """
+Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
+"""
+function symboltoken(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String
+	base = _normalizeasset(basecoin)
+	qtoken = uppercase(quotecoin)
+	if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
+		matchix = findfirst(row -> (uppercase(String(row.basecoin)) == base) && (uppercase(String(row.quotecoin)) == qtoken), eachrow(bc.syminfodf))
+		if !isnothing(matchix)
+			return uppercase(String(bc.syminfodf[matchix, :symbol]))
+		end
+	end
+	return uppercase(base * qtoken)
+end
+
+"""
 Resolve an internal symbol (`BTCUSDT`) to Kraken pair name used by REST calls.
 """
 function _symbol2pairname(bc::KrakenSpotCache, symbol::AbstractString)::String
@@ -437,6 +452,12 @@ function symbolinfo(bc::KrakenSpotCache, symbol::AbstractString)::Union{Nothing,
 	end
 	ix = findfirst(==(sym), bc.syminfodf[!, :symbol])
 	return isnothing(ix) ? nothing : bc.syminfodf[ix, :]
+end
+
+symbolinfo(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString) = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
+function validsymbol(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString)::Bool
+	sym = symbolinfo(bc, basecoin, quotecoin)
+	return !isnothing(sym) && (uppercase(String(sym.quotecoin)) == uppercase(quotecoin)) && (lowercase(String(sym.status)) in ["online", "post_only", "limit_only", "reduce_only", "trading"])
 end
 
 """

@@ -21,6 +21,47 @@ verbosity = 1
 @enum Sidefactor buy=1 sell=-1 invaid = 0
 @enum SimMode nosimulation bybitsim cryptoxchsim
 
+"""
+Exchange operation roles used for routing.
+- `data_exchange`: source of OHLCV/market data (e.g. Bybit)
+- `trade_exchange_spot`: target for spot order placement (e.g. KrakenSpot)
+- `trade_exchange_futures`: target for futures order placement (e.g. KrakenFutures)
+"""
+@enum ExchangeRole data_exchange trade_exchange_spot trade_exchange_futures
+
+"""
+Holds the exchange name and authentication alias for one exchange role.
+"""
+struct ExchangeRouteEntry
+    exchange::String
+    authname::Union{Nothing, String}
+end
+
+"""
+Maps each `ExchangeRole` to an `ExchangeRouteEntry`.
+Roles that are not explicitly configured fall back to the `XchCache.exchange` / `XchCache.authname`.
+"""
+struct ExchangeRouting
+    routes::Dict{ExchangeRole, ExchangeRouteEntry}
+    ExchangeRouting() = new(Dict{ExchangeRole, ExchangeRouteEntry}())
+end
+
+"Set a role mapping in an `ExchangeRouting`."
+function setrole!(routing::ExchangeRouting, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
+    routing.routes[role] = ExchangeRouteEntry(_normalizeexchange(String(exchange)), isnothing(authname) ? nothing : String(authname))
+    return routing
+end
+
+"Return the exchange name for a role, falling back to `default_exchange` if not configured."
+function _routeexchange(routing::ExchangeRouting, role::ExchangeRole, default_exchange::AbstractString)::String
+    haskey(routing.routes, role) ? routing.routes[role].exchange : String(default_exchange)
+end
+
+"Return the authname for a role, falling back to `default_authname` if not configured."
+function _routeauthname(routing::ExchangeRouting, role::ExchangeRole, default_authname::Union{Nothing, AbstractString})
+    haskey(routing.routes, role) ? routing.routes[role].authname : default_authname
+end
+
 const EXCHANGE_BYBIT::String = "Bybit"
 const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
 const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
@@ -69,6 +110,8 @@ function _authfromname(authname::Union{Nothing, AbstractString})
 end
 
 function _exchangecache(exchange::AbstractString, simmode::SimMode, authname::Union{Nothing, AbstractString}=nothing)
+    # In cryptoxchsim mode all exchange-specific calls are bypassed, so no real exchange cache is needed.
+    (simmode == cryptoxchsim) && return nothing
     ex = _normalizeexchange(exchange)
     auth = _authfromname(authname)
     publickey = isnothing(auth) ? "" : String(auth.key)
@@ -97,6 +140,8 @@ mutable struct XchCache
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mnemonic  # String or nothing
     mc::Dict # MC = module constants
+    routing::ExchangeRouting   # per-role exchange/auth overrides; empty = all ops go to `exchange`/`bc`
+    routecaches::Dict{String, Any}  # keyed by exchange name; lazily populated adapter caches for routing
     function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, exchange::String=EXCHANGE_BYBIT, authname::Union{Nothing, AbstractString}=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
@@ -113,7 +158,7 @@ mutable struct XchCache
         exchange = _normalizeexchange(exchange)
         authname = isnothing(authname) ? nothing : String(authname)
         simmode = EnvConfig.configmode == production ? simmode = nosimulation : simmode = cryptoxchsim
-        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode, authname), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict())
+        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode, authname), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
         xc.mc[:simmode] = simmode
         return xc
     end
@@ -123,17 +168,74 @@ exchange(xc::XchCache)::String = xc.exchange
 authname(xc::XchCache) = xc.authname
 _exchangeModule(xc::XchCache) = _exchangeModule(xc.exchange)
 
+"""
+Return the adapter cache for the given `role`, using the routing config when available.
+Falls back to `xc.bc` (the primary adapter) when no role override is configured.
+In `cryptoxchsim` mode always returns `nothing`.
+"""
+function _routedbc(xc::XchCache, role::ExchangeRole)
+    (xc.mc[:simmode] == cryptoxchsim) && return nothing
+    if isempty(xc.routing.routes) || !haskey(xc.routing.routes, role)
+        return xc.bc  # no routing configured for this role — use primary adapter
+    end
+    entry = xc.routing.routes[role]
+    # lazily build and cache the adapter for this exchange
+    if !haskey(xc.routecaches, entry.exchange)
+        xc.routecaches[entry.exchange] = _exchangecache(entry.exchange, xc.mc[:simmode], entry.authname)
+    end
+    return xc.routecaches[entry.exchange]
+end
+
+"Return the exchange module for the given `role`, with routing fallback."
+function _routedModule(xc::XchCache, role::ExchangeRole)
+    if isempty(xc.routing.routes) || !haskey(xc.routing.routes, role)
+        return _exchangeModule(xc.exchange)
+    end
+    return _exchangeModule(xc.routing.routes[role].exchange)
+end
+
+"""
+Configure exchange role routing on an `XchCache`.
+
+Example — Bybit for data, KrakenSpot for spot trading, KrakenFutures for futures:
+```julia
+setrole!(xc, data_exchange, CryptoXch.EXCHANGE_BYBIT)
+setrole!(xc, trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
+setrole!(xc, trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+```
+"""
+function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
+    setrole!(xc.routing, role, exchange, authname)
+    # Evict stale cached adapter so it is rebuilt with the new auth on next use.
+    delete!(xc.routecaches, _normalizeexchange(String(exchange)))
+    return xc
+end
+
 _exchangeservertime(xc::XchCache) = _exchangeModule(xc).servertime(xc.bc)
-_exchangesymbolinfo(xc::XchCache, symbol) = _exchangeModule(xc).symbolinfo(xc.bc, symbol)
-_exchangevalidsymbol(xc::XchCache, sym) = _exchangeModule(xc).validsymbol(xc.bc, sym)
-_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _exchangeModule(xc).getklines(xc.bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
-_exchangeget24h(xc::XchCache) = _exchangeModule(xc).get24h(xc.bc)
-_exchangebalances(xc::XchCache) = _exchangeModule(xc).balances(xc.bc)
-_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _exchangeModule(xc).openorders(xc.bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
-_exchangeorder(xc::XchCache, orderid) = _exchangeModule(xc).order(xc.bc, orderid)
-_exchangecancelorder(xc::XchCache, symbol, orderid) = _exchangeModule(xc).cancelorder(xc.bc, symbol, orderid)
-_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0) = _exchangeModule(xc).createorder(xc.bc, symbol, orderside, basequantity, price, maker, marginleverage=marginleverage)
-_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = _exchangeModule(xc).amendorder(xc.bc, symbol, orderid; basequantity=basequantity, limitprice=limitprice)
+_exchangesymbolinfo(xc::XchCache, symbol) = _routedModule(xc, data_exchange).symbolinfo(_routedbc(xc, data_exchange), symbol)
+_exchangevalidsymbol(xc::XchCache, sym) = _routedModule(xc, data_exchange).validsymbol(_routedbc(xc, data_exchange), sym)
+_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _routedModule(xc, data_exchange).getklines(_routedbc(xc, data_exchange), symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
+_exchangeget24h(xc::XchCache) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange))
+_exchangebalances(xc::XchCache) = _routedModule(xc, trade_exchange_spot).balances(_routedbc(xc, trade_exchange_spot))
+_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _routedModule(xc, trade_exchange_spot).openorders(_routedbc(xc, trade_exchange_spot); symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
+_exchangeorder(xc::XchCache, orderid) = _routedModule(xc, trade_exchange_spot).order(_routedbc(xc, trade_exchange_spot), orderid)
+_exchangecancelorder(xc::XchCache, symbol, orderid) = _routedModule(xc, trade_exchange_spot).cancelorder(_routedbc(xc, trade_exchange_spot), symbol, orderid)
+
+"""
+Guard: raise an error if the `trade_exchange_spot` role is explicitly configured to a data-only exchange (Bybit)
+while a different exchange is set as the data source.  This prevents accidental live Bybit order placement
+once Kraken routing is active.
+"""
+function _asserttradeallowed(xc::XchCache)
+    spot_exchange = _routeexchange(xc.routing, trade_exchange_spot, xc.exchange)
+    data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
+    if spot_exchange == EXCHANGE_BYBIT && data_ex != EXCHANGE_BYBIT && !isempty(xc.routing.routes)
+        error("Order placement blocked: trade_exchange_spot is routed to $(EXCHANGE_BYBIT) which is configured as data-only (data_exchange=$(data_ex)). Use setrole! to configure a Kraken trade exchange.")
+    end
+end
+
+_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).createorder(_routedbc(xc, trade_exchange_spot), symbol, orderside, basequantity, price, maker, marginleverage=marginleverage))
+_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).amendorder(_routedbc(xc, trade_exchange_spot), symbol, orderid; basequantity=basequantity, limitprice=limitprice))
 
 setstartdt(xc::XchCache, dt::DateTime) = (xc.startdt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
 setenddt(xc::XchCache, dt::DateTime) = (xc.enddt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
@@ -184,6 +286,18 @@ assetbases(xc::XchCache) = uppercase.(CryptoXch.balances(xc)[!, :coin])
 
 symboltoken(basecoin, quotecoin=EnvConfig.cryptoquote) = isnothing(basecoin) ? nothing : uppercase(basecoin * quotecoin)
 
+"""
+Resolve the exchange-specific symbol token for a pair on the routed exchange.
+Falls back to a concatenated symbol if the adapter cannot map the pair yet.
+"""
+function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote; role::ExchangeRole=trade_exchange_spot)
+    bc = _routedbc(xc, role)
+    if isnothing(bc)
+        return symboltoken(basecoin, quotecoin)
+    end
+    return symboltoken(bc, basecoin, quotecoin)
+end
+
 ceilbase(base, qty) = base == "usdt" ? ceil(qty, digits=3) : ceil(qty, digits=5)
 floorbase(base, qty) = base == "usdt" ? floor(qty, digits=3) : floor(qty, digits=5)
 roundbase(base, qty) = base == "usdt" ? round(qty, digits=3) : round(qty, digits=5)
@@ -204,6 +318,20 @@ function basequote(symbol)
         end
     end
     return isnothing(range) ? nothing : (basecoin = symbol[begin:range[1]-1], quotecoin = symbol[range])
+end
+
+"""
+Return minimum quantities for a `(basecoin, quotecoin)` pair.
+"""
+function minimumqty(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
+    return minimumqty(xc, symboltoken(xc, basecoin, quotecoin; role=trade_exchange_spot))
+end
+
+"""
+Return precision information for a `(basecoin, quotecoin)` pair.
+"""
+function precision(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
+    return precision(xc, symboltoken(xc, basecoin, quotecoin; role=trade_exchange_spot))
 end
 
 #endregion support
@@ -238,7 +366,7 @@ function Base.iterate(xc::XchCache, currentdt=nothing)
 end
 
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
-tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(_exchangeservertime(xc), Minute(1)) : xc.currentdt
+tradetime(xc::XchCache) = isnothing(xc.currentdt) ? (isnothing(xc.bc) ? xc.startdt : floor(_exchangeservertime(xc), Minute(1))) : xc.currentdt
 # tradetime(xc::XchCache) = (xc.mc[:simmode] != cryptoxchsim) ? _exchangeservertime(xc) : Dates.now(UTC)
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
@@ -485,6 +613,11 @@ function validsymbol(xc::XchCache, symbol)
         !(sym.basecoin in baseignore) &&
         !_isleveraged(sym.basecoin)
     return r || (basequote(symbol).basecoin in TestOhlcv.testbasecoin())
+end
+
+function validsymbol(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
+    bc = _routedbc(xc, data_exchange)
+    return !isnothing(bc) && validsymbol(bc, basecoin, quotecoin)
 end
 
 "Returns a tuple of (minimum base quantity, minimum quote quantity)"
@@ -738,7 +871,7 @@ end
 "Returns orderid in case of a successful cancellation"
 function cancelorder(xc::XchCache, base, orderid)
     if (xc.mc[:simmode] != cryptoxchsim)
-        return _exchangecancelorder(xc, symboltoken(base), orderid)
+        return _exchangecancelorder(xc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), orderid)
     else  # simulation
         return _cancelordersimulation(xc, orderid)
     end
@@ -753,7 +886,8 @@ Returns `nothing` in case order execution fails.
 function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0)
     base = uppercase(base)
     if (xc.mc[:simmode] != cryptoxchsim)
-        oocreate = _exchangecreateorder(xc, symboltoken(base), "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
+        _asserttradeallowed(xc)
+        oocreate = _exchangecreateorder(xc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
@@ -771,7 +905,8 @@ Returns `nothing` in case order execution fails.
 function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0)
     base = uppercase(base)
     if (xc.mc[:simmode] != cryptoxchsim)
-        oocreate = _exchangecreateorder(xc, symboltoken(base), "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
+        _asserttradeallowed(xc)
+        oocreate = _exchangecreateorder(xc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
         oid = isnothing(oocreate) ? nothing : oocreate.orderid
         (verbosity >= 3) && @info "$(tradetime(cache)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid

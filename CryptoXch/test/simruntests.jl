@@ -477,3 +477,5 @@ end
 
 
 end  # module
+
+include("routingtests.jl")
