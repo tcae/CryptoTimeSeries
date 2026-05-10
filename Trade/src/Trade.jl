@@ -8,7 +8,7 @@ It generates the OHLCV data, executes the trades in a loop and selects the basec
 module Trade
 
 using Dates, DataFrames, Profile, Logging, CSV, Statistics
-using EnvConfig, Ohlcv, CryptoXch, Classify, Features, Targets, TradingStrategy
+using EnvConfig, Ohlcv, CryptoXch, Classify, Features, Targets, TradeAudit, TradingStrategy
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
 
@@ -42,6 +42,98 @@ verbosity =
 - 3: print debug info
 """
 verbosity = 2
+
+function _portfoliototal(assets::AbstractDataFrame)::Float64
+    return size(assets, 1) == 0 ? 0.0 : Float64(sum(assets[!, :usdtvalue]))
+end
+
+function _portfolioquotevalue(assets::AbstractDataFrame)::Union{Missing, Float64}
+    if size(assets, 1) == 0 || !any(name -> name == "coin", names(assets))
+        return missing
+    end
+    quoteix = findfirst(==(EnvConfig.cryptoquote), assets[!, :coin])
+    if isnothing(quoteix)
+        return missing
+    end
+    return Float64((assets[quoteix, :free] + assets[quoteix, :locked]) - assets[quoteix, :borrowed])
+end
+
+function _writeportfoliosnapshot!(cache, assets::AbstractDataFrame; source_module::AbstractString="Trade")
+    rowcount = size(assets, 1)
+    simmode = String(Symbol(cache.xc.mc[:simmode]))
+    event_time = Dates.now(Dates.UTC)
+    portfolio_total = _portfoliototal(assets)
+    cash_after = _portfolioquotevalue(assets)
+    exchange_name = CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_spot, CryptoXch.exchange(cache.xc))
+    account_alias = something(CryptoXch._routeauthname(cache.xc.routing, CryptoXch.trade_exchange_spot, CryptoXch.authname(cache.xc)), "")
+    try
+        if rowcount == 0
+            event = TradeAudit.AuditEventRow(
+                event_type=TradeAudit.PORTFOLIO_SNAPSHOT,
+                event_time_utc=event_time,
+                created_at_utc=event_time,
+                source_module=String(source_module),
+                environment=string(Symbol(EnvConfig.configmode)),
+                run_mode=CryptoXch.auditrunmode(cache.xc),
+                run_id=CryptoXch.auditrunid(cache.xc),
+                exchange=exchange_name,
+                account_alias=account_alias,
+                routing_role=TradeAudit.routing_trade_exchange_spot,
+                market_type=TradeAudit.market_unknown,
+                asset_class=TradeAudit.crypto,
+                instrument_type=TradeAudit.instrument_unknown,
+                symbol="PORTFOLIO",
+                cash_after=cash_after,
+                portfolio_value_after=portfolio_total,
+                notes="rows=0; simmode=$(simmode)"
+            )
+            TradeAudit.writeeventwithhash(event)
+            return nothing
+        end
+
+        hascoin = "coin" in names(assets)
+        hasfree = "free" in names(assets)
+        haslocked = "locked" in names(assets)
+        hasborrowed = "borrowed" in names(assets)
+        hasusdtvalue = "usdtvalue" in names(assets)
+        for row in eachrow(assets)
+            coin = hascoin ? String(row[:coin]) : "UNKNOWN"
+            freeqty = hasfree ? Float64(row[:free]) : 0.0
+            lockedqty = haslocked ? Float64(row[:locked]) : 0.0
+            borrowedqty = hasborrowed ? Float64(row[:borrowed]) : 0.0
+            positionqty = freeqty + lockedqty - borrowedqty
+            positionvalue = hasusdtvalue ? Float64(row[:usdtvalue]) : missing
+            event = TradeAudit.AuditEventRow(
+                event_type=TradeAudit.PORTFOLIO_SNAPSHOT,
+                event_time_utc=event_time,
+                created_at_utc=event_time,
+                source_module=String(source_module),
+                environment=string(Symbol(EnvConfig.configmode)),
+                run_mode=CryptoXch.auditrunmode(cache.xc),
+                run_id=CryptoXch.auditrunid(cache.xc),
+                exchange=exchange_name,
+                account_alias=account_alias,
+                routing_role=TradeAudit.routing_trade_exchange_spot,
+                market_type=TradeAudit.market_unknown,
+                asset_class=TradeAudit.crypto,
+                instrument_type=TradeAudit.spot_pair,
+                symbol=coin,
+                baseasset=coin,
+                quoteasset=EnvConfig.cryptoquote,
+                settlement_asset=EnvConfig.cryptoquote,
+                position_qty_after=positionqty,
+                cash_after=(coin == EnvConfig.cryptoquote ? positionqty : cash_after),
+                portfolio_value_after=portfolio_total,
+                fill_notional=positionvalue,
+                notes="asset=$(coin); rows=$(rowcount); simmode=$(simmode)"
+            )
+            TradeAudit.writeeventwithhash(event)
+        end
+    catch audit_error
+        (verbosity >= 1) && @warn "failed to persist portfolio snapshot" exception=(audit_error, catch_backtrace())
+    end
+    return nothing
+end
 
 """
 *TradeCache* contains the recipe and state parameters for the **tradeloop** as parameter. Recipe parameters to create a *TradeCache* are
@@ -433,6 +525,32 @@ end
 
 _traderank(tl) = _isclosetrade(tl) ? 1 : _isopentrade(tl) ? 2 : 3
 
+function _tradetolabeltext(label)
+    return String(Symbol(label))
+end
+
+function _withtradeauditcontext(f::Function, cache::TradeCache, ta::Classify.TradeAdvice)
+    signal_score = try
+        Float64(ta.probability)
+    catch
+        missing
+    end
+    strategy_engine = String(Symbol(_strategyengine(cache)))
+    strategy_ref = string(get(cache.mc, :strategy_source, "default"))
+    CryptoXch.setauditcontext!(
+        cache.xc;
+        strategy_engine=strategy_engine,
+        strategy_config_ref=strategy_ref,
+        signal_label=_tradetolabeltext(ta.tradelabel),
+        signal_score=signal_score,
+    )
+    try
+        return f()
+    finally
+        CryptoXch.clearauditcontext!(cache.xc)
+    end
+end
+
 """
 Provides the amount that should be used for the tradeadvice including all considerations in a dataframe.
 
@@ -567,7 +685,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         sufficientsellbalance = (basequantity <= freebase) && (basequantity > 0.0)
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         if sufficientsellbalance && exceedsminimumbasequantity
-            oid = (cache.mc[:trademode] == notrade) ? "SellSpotSim" : CryptoXch.createsellorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=0)
+            oid = (cache.mc[:trademode] == notrade) ? "SellSpotSim" : _withtradeauditcontext(cache, ta) do
+                CryptoXch.createsellorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=0)
+            end
             if !isnothing(oid)
                 result = (trade=longclose, oid=oid)
                 (verbosity > 2) && println("$(tradetime(cache)) created $base longclose order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets))")
@@ -592,7 +712,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         if basefraction > cache.mc[:maxassetfraction] # base dominates assets
             (verbosity > 3) && println("$(tradetime(cache)) skip $base longbuy: base dominates assets due to basefraction=$(basefraction) > maxassetfraction=$(cache.mc[:maxassetfraction])")
         elseif sufficientbuybalance && exceedsminimumbasequantity
-            oid = (cache.mc[:trademode] == notrade) ? "BuySpotSim" : CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=0)
+            oid = (cache.mc[:trademode] == notrade) ? "BuySpotSim" : _withtradeauditcontext(cache, ta) do
+                CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=0)
+            end
             if !isnothing(oid)
                 result = (trade=longbuy, oid=oid)
                 (verbosity > 2) && println("$(tradetime(cache)) created $base longbuy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * totalusdt <= $freeusdt)")
@@ -611,7 +733,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         if basefraction > cache.mc[:maxassetfraction] # base dominates assets
             (verbosity > 2) && println("$(tradetime(cache)) skip $base shortbuy: base dominates assets due to basefraction=$(basefraction) > maxassetfraction=$(cache.mc[:maxassetfraction])")
         elseif sufficientbuybalance
-            oid = (cache.mc[:trademode] == notrade) ? "SellMarginSim" : CryptoXch.createsellorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=2)
+            oid = (cache.mc[:trademode] == notrade) ? "SellMarginSim" : _withtradeauditcontext(cache, ta) do
+                CryptoXch.createsellorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=2)
+            end
             if !isnothing(oid)
                 result = (trade=shortbuy, oid=oid)
                 (verbosity > 2) && println("$(tradetime(cache)) created $base shortbuy order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * totalusdt <= $freeusdt)")
@@ -629,7 +753,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
         basequantity = max(0f0, min(max(sellbuyqtyratio * qtyacceleration * quotequantity/price, minimumbasequantity), borrowedbase))
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         if exceedsminimumbasequantity
-            oid = (cache.mc[:trademode] == notrade) ? "BuyMarginSim" : CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=2)
+            oid = (cache.mc[:trademode] == notrade) ? "BuyMarginSim" : _withtradeauditcontext(cache, ta) do
+                CryptoXch.createbuyorder(cache.xc, base; limitprice=nothing, basequantity=basequantity, maker=true, marginleverage=2)
+            end
             if !isnothing(oid)
                 result = (trade=shortclose, oid=oid)
                 (verbosity > 2) && println("$(tradetime(cache)) created $base shortclose order with oid $oid, limitprice=$price and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets))")
@@ -869,6 +995,7 @@ function _tradestep!(cache::TradeCache)
         end
     end
     assets = CryptoXch.portfolio!(cache.xc)
+    _writeportfoliosnapshot!(cache, assets)
     tradeadvices = []
     for basecfg in eachrow(cache.cfg)
         Classify.supplement!(cache.cl)

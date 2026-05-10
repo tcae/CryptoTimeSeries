@@ -127,7 +127,7 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 - Define canonical event model with required fields:
 	- event metadata: timestamp (UTC), source module, environment, correlation IDs
 	- exchange metadata: exchange name, account/auth alias, routing role used, market type
-	- instrument metadata: canonical asset type, venue-specific instrument type, symbol, basecoin, quotecoin, underlying, settlement coin, contract class
+	- instrument metadata: canonical asset type, venue-specific instrument type, symbol, baseasset, quoteasset, underlying, settlement asset, contract class
 	- order metadata: client order id, exchange order id, symbol, side, type, tif, requested qty/price
 	- execution metadata: fill qty/price, fees, fee currency, status transitions
 	- position/portfolio snapshot deltas before and after action
@@ -143,11 +143,55 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 	- `venue_instrument_type`: raw exchange-specific type when available
 - The combination of `exchange name + account/auth alias + asset_class + instrument_type + symbol` must be sufficient to disambiguate what was actually traded even when symbols overlap across venues.
 - Separate event types: `ORDER_SUBMITTED`, `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
+- Concrete implementation proposal:
+	- Preferred module/package name: `TradeAudit` as a dedicated workspace package if reused across `Trade`, dashboard export, and future IB integration; fallback is a focused `Trade/src/audit.jl` module if package extraction would slow delivery.
+	- Define small canonical enums for:
+		- `AuditEventType`
+		- `AuditAssetClass`
+		- `AuditInstrumentType`
+		- `AuditMarketType`
+		- `AuditRoutingRole`
+	- Use one canonical flat event row schema for storage and replay rather than multiple incompatible tables. Nested Julia structs may exist in memory, but persisted records should flatten to a single column set.
+	- Minimum persisted columns for each event row:
+		- event identity: `event_id`, `event_type`, `event_time_utc`, `created_at_utc`, `source_module`, `environment`, `run_id`, `loop_id`, `correlation_id`, `parent_event_id`
+		- venue identity: `exchange`, `account_alias`, `routing_role`, `market_type`
+		- instrument identity: `asset_class`, `instrument_type`, `venue_instrument_type`, `symbol`, `baseasset`, `quoteasset`, `underlying`, `settlement_asset`, `contract_class`
+		- order identity: `client_order_id`, `exchange_order_id`, `exchange_trade_id`, `side`, `order_type`, `time_in_force`, `status`, `status_reason`
+		- requested economics: `requested_base_qty`, `requested_quote_qty`, `requested_limit_price`, `requested_stop_price`, `requested_notional`, `leverage`
+		- execution economics: `fill_base_qty`, `fill_quote_qty`, `fill_price`, `fill_notional`, `fee_amount`, `fee_currency`, `slippage_bps`
+		- state deltas: `position_qty_before`, `position_qty_after`, `cash_before`, `cash_after`, `portfolio_value_before`, `portfolio_value_after`
+		- strategy context: `strategy_engine`, `strategy_config_ref`, `signal_label`, `signal_score`, `algorithm_version`, `notes`
+	- Event-specific fields that do not apply to a row remain `missing` rather than forcing different schemas.
+	- For the first implementation, treat the canonical row schema as the source of truth for replay, export, and dashboard queries.
 
 ### Increment 3.2: Append-only log writer
 - Add write-once append log sink (Arrow/CSV/JSONL based on EnvConfig format policy).
-- Add partitioning by `exchange/account/date` under `$HOME/crypto/logs`.
+- Add partitioning by `exchange/account/date` under `$HOME/crypto/audit`.
 - Add tamper-evidence option via per-file hash chain (stored in companion manifest).
+- Concrete storage layout proposal:
+	- Root folder: `$HOME/crypto/audit/`
+	- Partition dimensions in path:
+		- `environment=<mode>/`
+		- `exchange=<exchange>/`
+		- `account=<auth_alias>/`
+		- `asset_class=<asset_class>/`
+		- `instrument_type=<instrument_type>/`
+		- `date=YYYY-MM-DD/`
+	- Example paths:
+		- `$HOME/crypto/audit/environment=production/exchange=KrakenSpot/account=krakenspot-tcae1/asset_class=crypto/instrument_type=spot_pair/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/audit/environment=production/exchange=KrakenFutures/account=krakenfutures-tcae2/asset_class=crypto/instrument_type=perpetual_future/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/audit/environment=production/exchange=InteractiveBrokers/account=paper/asset_class=equity/instrument_type=share_fiat/date=2026-05-10/events.jsonl`
+	- Canonical write path should be append-only `events.jsonl` because JSONL is simple for crash-safe append semantics and diff-friendly diagnostics.
+	- Optional read-optimized companions may be produced per partition after rotation:
+		- `events.arrow` for analytics/dashboard scans
+		- `manifest.json` for row counts, min/max timestamps, and previous-file hash
+	- File rotation policy:
+		- rotate at UTC day boundary or when file size exceeds a configured threshold
+		- never mutate a closed file except to write its final manifest
+	- Tamper-evidence proposal:
+		- each row carries `event_id` and deterministic serialized payload hash
+		- each closed file manifest stores `file_hash`, `previous_file_hash`, `first_event_time_utc`, `last_event_time_utc`, and `row_count`
+	- Replay readers should consume JSONL as the authoritative source and prefer Arrow only as an acceleration layer.
 
 ### Increment 3.3: Logging integration points
 - Instrument `Trade` and `CryptoXch` around all order lifecycle calls and polling updates.
@@ -304,7 +348,7 @@ Update this section after each work session.
 ### Status Summary
 - Objective 1: IN PROGRESS (Increment 1.1 started)
 - Objective 2: COMPLETED (Increments 2.1-2.5 done and validated)
-- Objective 3: NOT STARTED
+- Objective 3: IN PROGRESS (3.1 schema + integration slice + audit chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
 - Objective 4: NOT STARTED
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED
@@ -319,6 +363,133 @@ Update this section after each work session.
 - Next immediate step:
 
 ### Session Log
+- Date: 2026-05-10
+- Objective/Increment: Objective 3 / OCO bracket helper + local symbol-info cache for simulation
+- Completed:
+	- Implemented `createocoorder` in `CryptoXch` as a high-level bracket helper that creates three linked orders (entry, take-profit, stop-loss) in a single call.
+	- Shared `leg_group_id` (UUID) is generated for all three legs; each leg carries its `leg_label` (`entry`, `take_profit`, `stop_loss`) and the TP/SL legs carry `parent_order_id = entry_order_id` to wire the causal audit chain.
+	- Signal metadata (`signal_label`, `signal_score`, `strategy_engine`, `strategy_config_ref`) is forwarded to all three legs through the `xc.mc[:audit_event_context]` mechanism using an internal `_setlegctx!` helper; context is cleaned up in `try/finally` to ensure no leakage.
+	- Implemented a local symbol-info cache (`xc.mc[:syminfo_cache]` as `Dict{String, NamedTuple}`) to fix the `symbolinfo(::Nothing, ::String)` crash that occurred in simulation mode when `_routedbc` returns `nothing` (no live exchange connection).
+	- Added `_syminfocache(xc)`, `setsymbolinfocache!(xc, symbol, info)` for test injection, and updated `_exchangesymbolinfo` to populate the cache from live exchange responses and fall back to it in sim mode.
+	- When a live exchange connection is available, the cache is populated transparently; when in `cryptoxchsim` mode the cache must be pre-seeded (via `setsymbolinfocache!`) or previously populated in a live session.
+	- Added `CryptoXch/test/multileg_order_test.jl` with 28 assertions covering long bracket (buy entry → sell TP + sell SL) and short bracket (sell entry → buy TP + buy SL): leg_group_id consistency, leg_label values, parent_order_id chaining, signal context forwarding, correlation_id chain semantics.
+	- Root order `correlation_id` defaults to its own order id (self-referencing root); child legs point to the root id. Test was updated to assert this expected semantic rather than the incorrect inverse.
+- Files changed:
+	- `CryptoXch/src/CryptoXch.jl` (symbol-info cache helpers + `createocoorder`)
+	- `CryptoXch/test/multileg_order_test.jl` (new file)
+	- `CryptoXch/test/runtests.jl` (added multileg include)
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `cd CryptoXch && julia --project=. -e 'include("test/audit_integration_test.jl"); include("test/multileg_order_test.jl")'` → 18/18 + 28/28 passed
+- Open issues/blockers:
+	- `_exchangevalidsymbol` still calls `validsymbol(nothing, sym)` in sim mode; not exercised by current tests and not triggered by `createocoorder`. Pre-existing gap.
+	- Performance metrics (Sharpe/Sortino) and drawdown/recovery tracking are not yet implemented.
+- Next immediate step:
+	- Consider adding a `STRATEGY_ENGINE` audit event type for periodic performance metric snapshots (Sharpe, Sortino, drawdown) as the next Objective 3 sub-task.
+
+- Date: 2026-05-10
+- Objective/Increment: Objective 3 / causal order-chain linkage + fee/commission logging
+- Completed:
+	- Added audit chain state in `CryptoXch` to persist `correlation_id` and `parent_event_id` for order lifecycle events.
+	- Added parent linkage helper for amended/replaced orders so child-order events can point to prior chain events.
+	- Extended `changeorder` and `cancelorder` audit behavior to emit lifecycle transitions with causal context.
+	- Added fee and commission capture in order audit rows (`fee_amount`, `fee_currency`) with fallback fee estimation for fill events when exchanges do not expose explicit fee fields.
+	- Extended focused `CryptoXch` audit tests to validate filled-event fee capture and parent/correlation linkage fields.
+- Files changed:
+	- `CryptoXch/src/CryptoXch.jl`
+	- `CryptoXch/test/audit_integration_test.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `cd CryptoXch && julia --project=. -e 'include("test/audit_integration_test.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'include("test/audit_snapshot_test.jl")'` → passed
+- Open issues/blockers:
+	- Exchange adapters still differ in whether they expose native execution-level fee fields; current logic uses canonical extraction plus deterministic fallback for fills.
+	- Dedicated execution-trade-id enrichment remains pending where adapters expose per-fill trade IDs.
+- Next immediate step:
+	- Add adapter-level normalization for explicit fee/trade-id fields in `openorders`/`order` payloads to reduce reliance on fallback fee estimation.
+
+- Date: 2026-05-10
+- Objective/Increment: Objective 3 / getorder-getopenorders lifecycle reconciliation + per-asset snapshots
+- Completed:
+	- Added transition-aware audit reconciliation in `CryptoXch` so `getorder`/`getopenorders` persist status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
+	- Added lightweight in-memory order audit state cache keyed by order id to emit events only on status/fill deltas.
+	- Extended `getorder` with `auditevent` control to avoid duplicate events for internal lookup usage during order creation.
+	- Upgraded `Trade` portfolio snapshots from one aggregate row to per-asset snapshot rows with asset symbol, position quantity, and portfolio totals for replay-grade holdings history.
+	- Extended focused tests to validate transition event persistence and per-asset snapshot output.
+- Files changed:
+	- `CryptoXch/src/CryptoXch.jl`
+	- `CryptoXch/test/audit_integration_test.jl`
+	- `Trade/src/Trade.jl`
+	- `Trade/test/audit_snapshot_test.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `cd CryptoXch && julia --project=. -e 'include("test/audit_integration_test.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'include("test/audit_snapshot_test.jl")'` → passed
+- Open issues/blockers:
+	- Event reconciliation currently uses order snapshots from polling APIs and does not yet persist exchange-native trade ids when not present on order payloads.
+	- Position snapshots are represented as per-asset portfolio rows; dedicated leveraged-position snapshots remain a future enhancement.
+- Next immediate step:
+	- Add cancel/amend lifecycle correlation (`parent_event_id`/`correlation_id`) and trade-id enrichment where adapters expose execution-level identifiers.
+
+- Date: 2026-05-10
+- Objective/Increment: Objective 3 / Integration slice across CryptoXch and Trade
+- Completed:
+	- Added `TradeAudit` as a dependency of `CryptoXch` and `Trade`.
+	- Integrated `CryptoXch` order audit emission for submitted and rejected order events at the public create-order boundary.
+	- Added explicit `run_mode` and `run_id` stamping on emitted order and portfolio audit rows.
+	- Added per-run-mode partitioning (`run_mode=<live|simulation>`) in the audit folder layout to prevent simulation/live mixing.
+	- Added an environment override for the audit root to support deterministic package-local tests without writing into the shared `\$HOME/crypto/audit` tree.
+	- Integrated `Trade` portfolio snapshot emission once per trading tick.
+	- Added focused tests for CryptoXch order audit persistence and Trade portfolio snapshot persistence.
+- Files changed:
+	- `TradeAudit/src/TradeAudit.jl`
+	- `TradeAudit/test/runtests.jl`
+	- `CryptoXch/Project.toml`
+	- `CryptoXch/Manifest.toml`
+	- `CryptoXch/src/CryptoXch.jl`
+	- `CryptoXch/test/runtests.jl`
+	- `CryptoXch/test/audit_integration_test.jl`
+	- `Trade/Project.toml`
+	- `Trade/Manifest.toml`
+	- `Trade/src/Trade.jl`
+	- `Trade/test/runtests.jl`
+	- `Trade/test/audit_snapshot_test.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `cd CryptoXch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_snapshot_test.jl")'` → passed
+- Open issues/blockers:
+	- Order status polling, fills, and cancel/amend lifecycle events are not emitted yet.
+	- Portfolio snapshots are currently aggregate rows; per-asset or per-position snapshots remain for a later Objective 3 increment.
+	- Hash-chain manifest generation and Arrow companion output remain for later Objective 3 increments.
+- Next immediate step:
+	- Extend Objective 3 lifecycle coverage to `getorder` / `getopenorders` reconciliation so fills, cancels, and status transitions are appended as audit events.
+
+- Date: 2026-05-10
+- Objective/Increment: Objective 3 / Initial Increment 3.1 slice
+- Completed:
+	- Added new `TradeAudit` workspace package as the first Objective 3 implementation surface.
+	- Implemented canonical audit enums for event type, asset class, instrument type, market type, and routing role.
+	- Implemented flat `AuditEventRow` schema aligned with the Objective 3 canonical event proposal.
+	- Implemented partitioned audit path helpers rooted at `\$HOME/crypto/audit`.
+	- Implemented append-only JSONL event writing for canonical audit rows.
+	- Added isolated unit tests covering schema defaults, payload serialization, partition layout, and append-only file writes.
+- Files changed:
+	- `TradeAudit/Project.toml`
+	- `TradeAudit/Manifest.toml`
+	- `TradeAudit/setup.jl`
+	- `TradeAudit/src/TradeAudit.jl`
+	- `TradeAudit/test/runtests.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `cd TradeAudit && julia --project=. -e 'using Pkg; Pkg.develop(path="../EnvConfig"); Pkg.resolve(); Pkg.test()'` → passed
+- Open issues/blockers:
+	- `TradeAudit` is not integrated into `Trade` or `CryptoXch` yet.
+	- No lifecycle events are emitted yet; only schema and writer infrastructure exist.
+	- Hash-chain manifest generation and Arrow companion output remain for later Objective 3 increments.
+- Next immediate step:
+	- Wire `TradeAudit` into the first order lifecycle boundary, starting with order submission and rejection events in `CryptoXch`.
+
 - Date: 2026-05-10
 - Objective/Increment: Objective 2 / Increments 2.1-2.5
 - Completed:

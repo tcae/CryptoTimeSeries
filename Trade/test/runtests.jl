@@ -7,4 +7,5 @@ using Test
     include("loop_control_test.jl")
     include("backtest_integration_test.jl")
     include("bybit_guardrail_test.jl")
+    include("audit_snapshot_test.jl")
 end

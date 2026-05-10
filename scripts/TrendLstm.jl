@@ -37,6 +37,39 @@ function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Not
     return default
 end
 
+function _normalize_runid_token(value)::String
+    token = replace(lowercase(strip(String(value))), r"[^a-z0-9._-]+" => "_")
+    return isempty(token) ? "na" : token
+end
+
+function _set_deterministic_run_id!(args::Vector{String}, context::Vector{Pair{String, String}}=Pair{String, String}[])
+    explicit = _argvalue(args, "runid", nothing)
+    if !isnothing(explicit)
+        runid = _normalize_runid_token(explicit)
+        ENV["CTS_RUN_ID"] = runid
+        println("$(EnvConfig.now()) CTS_RUN_ID=$(runid) (explicit)")
+        return runid
+    end
+
+    argtokens = String[]
+    for arg in args
+        startswith(arg, "runid=") && continue
+        if occursin("=", arg)
+            parts = split(arg, "="; limit=2)
+            push!(argtokens, "$( _normalize_runid_token(parts[1]) )=$( _normalize_runid_token(parts[2]) )")
+        else
+            push!(argtokens, _normalize_runid_token(arg))
+        end
+    end
+    sort!(argtokens)
+    ctxtokens = ["$( _normalize_runid_token(kv.first) )=$( _normalize_runid_token(kv.second) )" for kv in context]
+    sort!(ctxtokens)
+    runid = join(vcat(["trendlstm"], ctxtokens, argtokens), "__")
+    ENV["CTS_RUN_ID"] = runid
+    println("$(EnvConfig.now()) CTS_RUN_ID=$(runid)")
+    return runid
+end
+
 _ntget(nt::Union{Nothing,NamedTuple}, key::Symbol, default) = isnothing(nt) ? default : (key in keys(nt) ? getfield(nt, key) : default)
 
 function _parse_float32_list(raw::AbstractString)
@@ -1166,6 +1199,13 @@ function main(args::Vector{String}=ARGS)
     end
 
     cfg = buildcfg(args)
+    _set_deterministic_run_id!(args, [
+        "mode" => string(Symbol(EnvConfig.configmode)),
+        "configname" => cfg.configname,
+        "folder" => cfg.folder,
+        "trainmode" => string(trainmode),
+        "retrain" => string(retrain),
+    ])
 
     if inspectonly
         println("Using log folder $(EnvConfig.logfolder())")

@@ -64,6 +64,45 @@ function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Not
     return default
 end
 
+function _normalize_runid_token(value)::String
+    token = replace(lowercase(strip(String(value))), r"[^a-z0-9._-]+" => "_")
+    return isempty(token) ? "na" : token
+end
+
+function _set_deterministic_run_id!(args::Vector{String}, cfg::NamedTuple)
+    explicit = _argvalue(args, "runid", nothing)
+    if !isnothing(explicit)
+        runid = _normalize_runid_token(explicit)
+        ENV["CTS_RUN_ID"] = runid
+        println("$(EnvConfig.now()) CTS_RUN_ID=$(runid) (explicit)")
+        return runid
+    end
+
+    argtokens = String[]
+    for arg in args
+        startswith(arg, "runid=") && continue
+        if occursin("=", arg)
+            parts = split(arg, "="; limit=2)
+            push!(argtokens, "$( _normalize_runid_token(parts[1]) )=$( _normalize_runid_token(parts[2]) )")
+        else
+            push!(argtokens, _normalize_runid_token(arg))
+        end
+    end
+    sort!(argtokens)
+    context = [
+        "source=$( _normalize_runid_token(cfg.source) )",
+        "base=$( _normalize_runid_token(cfg.base) )",
+        "trend=$( _normalize_runid_token(cfg.trendref) )",
+        "bounds=$( _normalize_runid_token(cfg.boundsref) )",
+        "tradeadvice=$( _normalize_runid_token(cfg.tradeadviceref) )",
+        "periodhours=$( Int(round(Dates.value(cfg.period) / Dates.value(Hour(1)))) )",
+    ]
+    runid = join(vcat(["simulationcheck"], context, argtokens), "__")
+    ENV["CTS_RUN_ID"] = runid
+    println("$(EnvConfig.now()) CTS_RUN_ID=$(runid)")
+    return runid
+end
+
 """
     _parsesource(raw) -> Symbol
 
@@ -123,7 +162,7 @@ function parse_args(args::Vector{String})::NamedTuple
     enddt_raw = _argvalue(args, "enddt", nothing)
     trendref = _argvalue(args, "trend", "025")
     boundsref = _argvalue(args, "bounds", "001")
-    tradeadviceref = _argvalue(args, "tradeadvice", "025")
+    tradeadviceref = _argvalue(args, "tradeadvice", "001")
     outfile = _argvalue(args, "outfile", nothing)
     inspectonly = "inspect" in args
     return (
@@ -321,7 +360,9 @@ end
 Convert dense Trend04 labels into sparse trade-pair lifecycle labels for the same slice.
 """
 function compute_tradepair_targets(trenddf::AbstractDataFrame, tradecfg::NamedTuple, trendcfg::NamedTuple)
-    tp = Targets.TradePairs(trendcfg.targetconfig; entryfraction=tradecfg.entryfraction, exitfraction=tradecfg.exitfraction)
+    entryfraction = hasproperty(tradecfg, :entryfraction) ? Float32(getproperty(tradecfg, :entryfraction)) : 0.1f0
+    exitfraction = hasproperty(tradecfg, :exitfraction) ? Float32(getproperty(tradecfg, :exitfraction)) : 0.1f0
+    tp = Targets.TradePairs(trendcfg.targetconfig; entryfraction=entryfraction, exitfraction=exitfraction)
     return Targets.tradepairlabels(tp, trenddf[!, :trend_target], Float32.(trenddf[!, :pivot]))
 end
 
@@ -729,6 +770,7 @@ Entry point for the simulation diagnostic script.
 function main(args::Vector{String}=ARGS)
     cfg = parse_args(args)
     println("$(EnvConfig.now()) simulationcheck.jl ARGS=$(args)")
+    _set_deterministic_run_id!(args, cfg)
 
     trendcfg = _resolve_trendconfig(cfg.trendref)
     boundscfg = _resolve_boundsconfig(cfg.boundsref)
