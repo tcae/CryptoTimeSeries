@@ -8,7 +8,7 @@ It generates the OHLCV data, executes the trades in a loop and selects the basec
 module Trade
 
 using Dates, DataFrames, Profile, Logging, CSV, Statistics
-using EnvConfig, Ohlcv, CryptoXch, Classify, Features, Targets
+using EnvConfig, Ohlcv, CryptoXch, Classify, Features, Targets, TradingStrategy
 
 @enum OrderType buylongmarket buylonglimit selllongmarket selllonglimit
 
@@ -58,6 +58,14 @@ mutable struct TradeCache
         cache.mc[:reloadtimes] = [Time("04:00:00")]
         cache.mc[:trademode] = trademode  # see TradeMode definition above
         cache.mc[:usenewtrade] = false # implementation switch between old and new trade! method
+        cache.mc[:strategy_engine] = :classifier  # :classifier (legacy) or :algorithm03
+        cache.mc[:strategy_state] = Dict{String, Any}()  # per-base TradingStrategy.GainSegment
+        cache.mc[:strategy_history] = Dict{String, Any}()  # per-base rolling price+signal history
+        cache.mc[:strategy_openthreshold] = 0.6f0
+        cache.mc[:strategy_closethreshold] = 0.5f0
+        cache.mc[:strategy_buygain] = 0.001f0
+        cache.mc[:strategy_sellgain] = 0.01f0
+        cache.mc[:strategy_limitreduction] = 0f0
         (verbosity >= 2) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), reloadtimes = $(cache.mc[:reloadtimes]), exitcoins = $(cache.mc[:exitcoins]), whitelistcoins = $(cache.mc[:whitelistcoins]), longopencoins = $(cache.mc[:longopencoins]), shortopencoins = $(cache.mc[:shortopencoins])")
         return cache
     end
@@ -659,6 +667,84 @@ function tradeadvicelessthan(ta1, ta2)
     return false
 end
 
+_strategyengine(cache::TradeCache) = Symbol(get(cache.mc, :strategy_engine, :classifier))
+
+function _strategyhistory!(cache::TradeCache, base::AbstractString)
+    return get!(cache.mc[:strategy_history], String(base)) do
+        (
+            predictionsdf=DataFrame(opentime=DateTime[], high=Float32[], low=Float32[], close=Float32[]),
+            scores=Float32[],
+            labels=Targets.TradeLabel[],
+        )
+    end
+end
+
+function _strategystate!(cache::TradeCache, base::AbstractString)
+    return get!(cache.mc[:strategy_state], String(base)) do
+        gs = TradingStrategy.GainSegment(
+            ;
+            maxwindow=4 * 60,
+            openthreshold=Float32(cache.mc[:strategy_openthreshold]),
+            closethreshold=Float32(cache.mc[:strategy_closethreshold]),
+            algorithm=TradingStrategy.algorithm03!,
+            limitreduction=Float32(cache.mc[:strategy_limitreduction]),
+        )
+        gs.buygain = Float32(cache.mc[:strategy_buygain])
+        gs.sellgain = Float32(cache.mc[:strategy_sellgain])
+        gs
+    end
+end
+
+function _upsert_algorithm03_sample!(history, ohlcv::Ohlcv.OhlcvData, label::Targets.TradeLabel, score)
+    rowix = ohlcv.ix
+    odf = Ohlcv.dataframe(ohlcv)
+    @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
+    opentime = odf[rowix, :opentime]
+    high = Float32(odf[rowix, :high])
+    low = Float32(odf[rowix, :low])
+    close = Float32(odf[rowix, :close])
+    sc = Float32(score)
+
+    if size(history.predictionsdf, 1) > 0 && (history.predictionsdf[end, :opentime] == opentime)
+        history.predictionsdf[end, :high] = high
+        history.predictionsdf[end, :low] = low
+        history.predictionsdf[end, :close] = close
+        history.scores[end] = sc
+        history.labels[end] = label
+    else
+        push!(history.predictionsdf, (opentime=opentime, high=high, low=low, close=close))
+        push!(history.scores, sc)
+        push!(history.labels, label)
+    end
+    return history
+end
+
+function _algorithm03_action2label(gs::TradingStrategy.GainSegment, fallback::Targets.TradeLabel=allclose)::Targets.TradeLabel
+    if gs.buyta.orderlabel in [longbuy, longstrongbuy]
+        return longbuy
+    elseif gs.buyta.orderlabel in [shortbuy, shortstrongbuy]
+        return shortbuy
+    elseif gs.sellta.orderlabel in [longclose, longstrongclose]
+        return longclose
+    elseif gs.sellta.orderlabel in [shortclose, shortstrongclose]
+        return shortclose
+    end
+    return fallback
+end
+
+function _algorithm03_advice!(cache::TradeCache, base::AbstractString, ta::Classify.TradeAdvice)
+    ohlcv = CryptoXch.ohlcv(cache.xc, base)
+    history = _strategyhistory!(cache, base)
+    _upsert_algorithm03_sample!(history, ohlcv, ta.tradelabel, ta.probability)
+    gs = _strategystate!(cache, base)
+    lastix = length(history.scores)
+    if lastix > 0
+        TradingStrategy.getgains(gs, history.predictionsdf, history.scores, history.labels, false; lastix=lastix, openthreshold=gs.openthreshold, closethreshold=gs.closethreshold)
+        ta.tradelabel = _algorithm03_action2label(gs, ta.tradelabel)
+    end
+    return ta
+end
+
 """
 **`tradeloop`** has to
 + get initial TradinStrategy config (if not present at entry) and refresh daily according to `reloadtimes`
@@ -707,6 +793,9 @@ function tradeloop(cache::TradeCache)
                 #TODO  - ask for advice per investment with specific classifier + config bought at specific price
                 tradeadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt, investment=nothing)
                 if !isnothing(tradeadvice)
+                    if _strategyengine(cache) == :algorithm03
+                        tradeadvice = _algorithm03_advice!(cache, basecfg.basecoin, tradeadvice)
+                    end
                     push!(tradeadvices, tradeadvice)  #TODO old trade advice to be added
                 else 
                     (verbosity > 3) && println("no trade advice for $(basecfg.basecoin)")

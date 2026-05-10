@@ -1,9 +1,10 @@
 name = "Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
-authors = ["tcae <tcae@posteo.nl>"]
 version = "1.7.2"
+authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]
+Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
@@ -11,7 +12,19 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
+
+[compat]
+Arrow = "2.8.1"
+CSV = "0.10.16"
+CategoricalArrays = "0.10.9"
+DataFrames = "1.8.2"
+Dates = "1.11.0"
+JDF = "0.5.4"
+Logging = "1.11.0"
+ProgressMeter = "1.11.0"
+Statistics = "1.11.1"

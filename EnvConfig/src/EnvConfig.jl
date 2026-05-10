@@ -71,8 +71,8 @@ function checkfolders(doverbose, dodebug)
     setx ONEDRIVE_ROOT "%UserProfile%\\OneDrive"
 
     macOS (Terminal):
-    echo 'export ONEDRIVE_ROOT="$HOME/OneDrive"' >> ~/.zprofile
-    launchctl setenv ONEDRIVE_ROOT "$HOME/OneDrive"
+    echo 'export ONEDRIVE_ROOT="\$HOME/OneDrive"' >> ~/.zprofile
+    launchctl setenv ONEDRIVE_ROOT "\$HOME/OneDrive"
 
     Restart your terminal / VS Code / Julia afterward.
     """)

@@ -6,11 +6,11 @@ Pkg.activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.upgrade_manifest()
-Pkg.add([ "Dates", "Logging", "DataFrames", "CategoricalArrays", "JDF", "CSV", "Statistics", "ProgressMeter"])
+Pkg.add([ "Dates", "Logging", "DataFrames", "CategoricalArrays", "JDF", "Arrow", "CSV", "Statistics", "ProgressMeter"])
 
 # resolve()
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")
 
-# Pkg.resolve()
-# Pkg.update()
+Pkg.resolve()
+Pkg.instantiate()
 Pkg.gc()

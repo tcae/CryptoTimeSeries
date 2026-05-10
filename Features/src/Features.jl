@@ -8,7 +8,7 @@ module Features
 import RollingFunctions: rollmedian, runmedian, rolling
 using RollingFunctions
 # using LinearRegression
-using DataFrames, Statistics, Indicators, JDF
+using DataFrames, Statistics, Indicators, JDF, Arrow
 using Combinatorics, Dates
 using Logging
 using EnvConfig, Ohlcv

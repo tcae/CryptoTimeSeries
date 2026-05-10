@@ -9,7 +9,7 @@ In future to add new OHLCV data from Binance.
 """
 module Ohlcv
 
-using Dates, DataFrames, CategoricalArrays, JDF, CSV, Logging, Statistics, Base
+using Dates, DataFrames, CategoricalArrays, JDF, CSV, Logging, Statistics, Base, Arrow
 using EnvConfig
 
 export write, read!, OhlcvData

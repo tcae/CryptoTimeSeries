@@ -218,10 +218,60 @@ The absolute amount is not determined by trading strategy but a factor of an unk
   
 """
 mutable struct TradeAction
-    cancelrunningorder::Bool
-    orderlabel::Union{TradeLabel, Nothing} # used: longbuy, longclose, shortclose, shortbuy
-    orderlimit::Union{Float32, Nothing} # order limit or nothing if no limit order placed
-    amountfactor::Float32
+    orderlabel::Union{TradeLabel, Nothing} # used: longbuy, longclose, shortclose, shortbuy or ignore as default
+    orderlimit::Float32 # order limit or 0f0 if no limit order placed
+    buyprice::Float32 # price at which the position was opened; used for gain calculation and limit adjustments; 0f0 if no position open
+    buyix::Integer # index of the bar at which the position was opened; used for gain calculation and limit adjustments; 0 if no position open
+    function TradeAction(orderlabel::Union{TradeLabel, Nothing}=ignore, orderlimit=0f0, buyprice=0f0, buyix=0)
+        ta = new(orderlabel, orderlimit, buyprice, buyix)
+        isopen(ta)
+        return ta
+    end
+end
+
+"Backward-compatible constructor used by LSTM trade mapping."
+function TradeAction(cancelrunningorder::Bool, orderlabel::Union{TradeLabel, Nothing}, orderlimit::Union{Float32, Nothing}, amountfactor::Float32)
+    _ = cancelrunningorder
+    _ = amountfactor
+    limit = isnothing(orderlimit) ? 0f0 : orderlimit
+    return TradeAction(orderlabel, limit, 0f0, 0)
+end
+
+"Compatibility shim for legacy code paths that still read removed TradeAction fields."
+function Base.getproperty(ta::TradeAction, name::Symbol)
+    if name === :cancelrunningorder
+        return false
+    elseif name === :amountfactor
+        return 1f0
+    end
+    return getfield(ta, name)
+end
+
+"Compatibility shim for legacy code paths that still write removed TradeAction fields."
+function Base.setproperty!(ta::TradeAction, name::Symbol, value)
+    if (name === :cancelrunningorder) || (name === :amountfactor)
+        return value
+    elseif (name === :orderlimit) && isnothing(value)
+        setfield!(ta, :orderlimit, 0f0)
+        return 0f0
+    end
+    setfield!(ta, name, value)
+    return value
+end
+
+function isopen(ta::TradeAction)
+    if ta.orderlimit > 0f0
+        @assert (ta.orderlabel != ignore) && (ta.orderlimit > 0f0) && (ta.buyprice > 0f0) "(ta.orderlabel != ignore) && (ta.orderlimit > 0f0) && (ta.buyprice > 0f0); got orderlabel=$(ta.orderlabel), orderlimit=$(ta.orderlimit), buyprice=$(ta.buyprice)"
+    end
+    return ta.orderlimit > 0f0
+end
+
+function removeorder!(ta::TradeAction)
+    ta.orderlabel = ignore
+    ta.orderlimit = 0f0
+    ta.buyprice = 0f0
+    ta.buyix = 0
+    return ta
 end
 
 """
@@ -690,23 +740,20 @@ mutable struct GainSegment
     # scorethreshold::Dict # score threshold dict
     maxwindow::Integer # maxwindow of sample window considered for the prediction
     endix::Integer # is the index of the last analyzed row of scores/labels/predictionsdf
-    gaindf::DataFrame
+    gaindf::DataFrame # dataframe to save the identified gain segments with their start/end index, start/end time, gain, gain - fee, sample count, minutes, trend
     makerfee::Float32
     takerfee::Float32
     scores::Union{AbstractVector, Nothing}
     labels::Union{AbstractVector, Nothing}
     predictionsdf::Union{AbstractDataFrame, Nothing}
-    buyix::Integer # buy index of last open gain segment that is not yet saved in gainsdf
     lastix::Integer # last inspected row index of last open gain segment that is not yet saved in gainsdf
-    trend::TrendPhase # trend of last 
-    limit::Union{Float32, Nothing} # order limit or nothing if no limit order placed
     buygain::Float32 # relative gain compared to current price for limit order
     sellgain::Float32 # relative gain compared to current price for limit order
-    buyprice::Union{Float32, Nothing} # buy price of open gain segment
-    ordertype::TradeLabel # used: longbuy, longclose, allclose (default), shortclose, shortbuy
-    assettype::TrendPhase # indicates whether current assets are not present (flat), short (down), long (up)
-    function GainSegment(;maxwindow::Integer, openthreshold, closethreshold, algorithm=algorithm02!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0)
-        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, 0, flat, nothing, 0.01f0, 0.005f0, nothing, allclose, flat)
+    limitreduction::Float32 # factor to reduce limit price in case of unfilled order for every trend sample with a label that does not support the trend (e.g. allclose label for an open long gain segment)
+    buyta::TradeAction # buy of either long or short
+    sellta::TradeAction # sell of either long or short
+    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=algorithm02!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, limitreduction::AbstractFloat=0f0)
+        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, 0.001f0, 0.01f0, limitreduction, TradeAction(), TradeAction())
     end
 end
 
@@ -714,44 +761,30 @@ function reset!(gs::GainSegment)
     gs.predictionsdf = nothing
     gs.scores = nothing
     gs.labels = nothing
-    gs.endix = gs.lastix = gs.buyix = 0
-    gs.trend = flat
-    gs.limit = nothing
-    gs.buyprice = nothing
-    gs.ordertype = allclose
-    gs.assettype = flat
+    gs.endix = gs.lastix = 0
     gs.gaindf = emptygaindf()
+    removeorder!(gs.sellta)
+    removeorder!(gs.buyta)
     return gs
 end
 
-function isopengainsegment(gs::GainSegment)
-    return (gs.buyix > 0)
-end
+isopensegment(gs::GainSegment) = isopen(gs.sellta)
+assettrend(ta::TradeAction) = ta.orderlimit > ta.buyprice ? up : (ta.orderlimit < ta.buyprice ? down : flat)
 
-"Calculates gain for an open segment and closes it. An open segment must have buyix > 0, buyprice != nothing, assettype in [up, down]"
+"Calculates gain for an open segment and closes it. An open segment must have buyix > 0, buyprice != nothing"
 function calcgain!(gs::GainSegment, sellix::Integer, sellprice::Float32=gs.predictionsdf[sellix, :close])
-    if isopengainsegment(gs)
-        @assert !isnothing(gs.buyprice)  "inconsistency: gs.buyix=$(gs.buyix), gs.buyprice=$(gs.buyprice)"
-        starttime = gs.predictionsdf[gs.buyix, :opentime]
+    if isopen(gs.sellta)
+        starttime = gs.predictionsdf[gs.sellta.buyix, :opentime]
         ixtime = gs.predictionsdf[sellix, :opentime]
-        @assert (gs.assettype == up) || (gs.assettype == down) "if gs.trend=$(gs.assettype) == flat then buyix=$(gs.buyix) == 0"
-        if gs.assettype == up
-            # long sell
-            startprice = gs.buyprice # * (1 + gs.makerfee)
-            ixprice = sellprice # * (1 - gs.makerfee)
-            gain = (ixprice - startprice) / startprice
-        else
-            # short sell
-            startprice = gs.buyprice # * (1 - gs.makerfee)
-            ixprice = sellprice # * (1 + gs.makerfee)
-            gain = -(ixprice - startprice) / startprice  # down trend -> negative price diff -> gain shall be positive for a short trade
+        trend = assettrend(gs.sellta)
+        if trend == up  # long sell
+            gain = (sellprice - gs.sellta.buyprice) / gs.sellta.buyprice
+        else  # short sell
+            gain = -(sellprice - gs.sellta.buyprice) / gs.sellta.buyprice  # down trend -> negative price diff -> gain shall be positive for a short trade
         end
-        minutes = Int(div(Dates.value(ixtime - starttime), 60000)) + 1
-        push!(gs.gaindf, (gs.trend, (sellix - gs.buyix + 1), minutes, gain, (gain - 2f0 * gs.makerfee), starttime, ixtime, gs.buyix, sellix))
-        gs.buyix = 0  # indicates closure of gain segment
-        gs.buyprice = nothing
-        gs.limit = nothing
-        gs.assettype = flat
+        minutes = Int(div(Dates.value(ixtime - starttime), 60000)) + 1 # from milliseconds to minutes, add 1 to count the current minute as well
+        push!(gs.gaindf, (trend, (sellix - gs.sellta.buyix + 1), minutes, gain, (gain - 2f0 * gs.makerfee), starttime, ixtime, gs.sellta.buyix, sellix))
+        removeorder!(gs.sellta)
     end
     return gs
 end
@@ -764,35 +797,35 @@ function algorithm01!(gs::GainSegment, lastix)
     labels = gs.labels
     scores = gs.scores
     closecol = gs.predictionsdf[!, :close]
+    lasttrend = flat
     @inbounds for ix in (gs.endix + 1):lastix
         #TODO first check whether the limit order is executed, if so, set trend and buyix and selllimit
         #TODO decide how long the limit order should stay and what limit corrections are required
         label = labels[ix]
         score = scores[ix]
-        thistrend = gs.trend
+        thistrend = lasttrend
         thisbuyix = 0
-        if (gs.trend == up) && islongholdoropenlabel(label) && (score > gs.closethreshold)
+        if (lasttrend == up) && islongholdoropenlabel(label) && (score > gs.closethreshold)
             thistrend = up
         elseif islongopenlabel(label) && (score >= gs.openthreshold)
             thisbuyix = ix
             thistrend = up
-        elseif (gs.trend == down) && isshortholdoropenlabel(label) && (score > gs.closethreshold)
+        elseif (lasttrend == down) && isshortholdoropenlabel(label) && (score > gs.closethreshold)
             thistrend = down
         elseif isshortopenlabel(label) && (score >= gs.openthreshold)
             thisbuyix = ix
             thistrend = down
         end
-        if gs.trend != thistrend
+        if lasttrend != thistrend
             calcgain!(gs, ix)
-            gs.buyix = thisbuyix
-            gs.trend = thistrend
-            if isopengainsegment(gs)
-                gs.buyprice = closecol[gs.buyix]
-                gs.assettype = thistrend
+            if thistrend == up
+                gs.sellta = TradeAction(longclose, closecol[ix] * (1f0 + gs.sellgain), closecol[ix], thisbuyix)
+            elseif thistrend == down
+                gs.sellta = TradeAction(shortclose, closecol[ix] * (1f0 - gs.sellgain), closecol[ix], thisbuyix)
             else
-                gs.buyprice = nothing
-                gs.assettype = flat
+                removeorder!(gs.sellta)
             end
+            lasttrend = thistrend
         end
     end
     gs.endix = lastix
@@ -807,16 +840,17 @@ function algorithm02!(gs::GainSegment, lastix)
     labels = gs.labels
     scores = gs.scores
     closecol = gs.predictionsdf[!, :close]
+    lasttrend = flat
     @inbounds for ix in (gs.endix + 1):lastix
         #TODO first check whether the limit order is executed, if so, set trend and buyix and selllimit
         #TODO decide how long the limit order should stay and what limit corrections are required
         label = labels[ix]
         score = scores[ix]
-        thistrend = gs.trend
+        thistrend = lasttrend
         thisbuyix = 0
-        if (gs.trend == up) && islongcloselabel(label) && (score > gs.openthreshold)
+        if (lasttrend == up) && islongcloselabel(label) && (score > gs.openthreshold)
             thistrend = flat
-        elseif (gs.trend == down) && isshortcloselabel(label) && (score > gs.openthreshold)
+        elseif (lasttrend == down) && isshortcloselabel(label) && (score > gs.openthreshold)
             thistrend = flat
         elseif islongopenlabel(label) && (score >= gs.openthreshold)
             thisbuyix = ix
@@ -825,17 +859,16 @@ function algorithm02!(gs::GainSegment, lastix)
             thisbuyix = ix
             thistrend = down
         end
-        if gs.trend != thistrend
+        if lasttrend != thistrend
             calcgain!(gs, ix)
-            gs.buyix = thisbuyix
-            gs.trend = thistrend
-            if isopengainsegment(gs)
-                gs.buyprice = closecol[gs.buyix]
-                gs.assettype = thistrend
+            if thistrend == up
+                gs.sellta = TradeAction(longclose, closecol[ix] * (1f0 + gs.sellgain), closecol[ix], thisbuyix)
+            elseif thistrend == down
+                gs.sellta = TradeAction(shortclose, closecol[ix] * (1f0 - gs.sellgain), closecol[ix], thisbuyix)
             else
-                gs.buyprice = nothing
-                gs.assettype = flat
+                removeorder!(gs.sellta)
             end
+            lasttrend = thistrend
         end
     end
     gs.endix = lastix
@@ -843,97 +876,112 @@ function algorithm02!(gs::GainSegment, lastix)
 end
 
 "check price ranges whether an open order is closed and calculates the gain"
-function processclosedorder!(gs::GainSegment, ix::Integer)
-    if !isnothing(gs.limit) && (gs.predictionsdf[gs.ix, :low] <= gs.limit <= gs.predictionsdf[gs.ix, :high])
-        # assume trade took place
-        if gs.assettype in [up, down]
-            # opposite trend asset was sold together with asset buy trade
-            calcgain!(gs, ix, gs.limit) # if segment close then also resets buyix and buyprice
-        end
-        if gs.ordertype in [longbuy, shortbuy]
-            if gs.ordertype == longbuy
-                # short trend asset was sold together with long asset buy trade
-                gs.assettype = up
-            elseif gs.ordertype == shortbuy
-                # long trend asset was sold together with short asset buy trade
-                gs.assettype = down
+function processclosedorder!(gs::GainSegment, ix::Integer, ta::TradeAction)
+    if isopen(ta) 
+        if (ta.orderlabel in [longbuy, longstrongbuy]) 
+            if (gs.predictionsdf[ix, :low] <= ta.buyprice)
+                # assume trade took place
+                ta.orderlabel = longclose
+                ta.buyix = ix
             end
-            gs.buyprice = gs.limit
-            gs.buyix = ix
-        else
-            gs.assettype = flat
-            gs.buyprice = nothing
-            gs.buyix = 0 # 
+        elseif (ta.orderlabel in [shortbuy, shortstrongbuy]) 
+            if (gs.predictionsdf[ix, :high] >= ta.buyprice)
+                # assume trade took place
+                ta.orderlabel = shortclose
+                ta.buyix = ix
+            end
+        elseif (ta.orderlabel in [longclose, longstrongclose]) 
+            if (ta.orderlimit <= gs.predictionsdf[ix, :high])                
+                # assume trade took place
+                calcgain!(gs, ix, ta.orderlimit) # if segment close then also resets buyix and buyprice
+                removeorder!(ta)
+            end
+        elseif (ta.orderlabel in [shortclose, shortstrongclose]) 
+            if (gs.predictionsdf[ix, :low] <= ta.orderlimit)
+                # assume trade took place
+                calcgain!(gs, ix, ta.orderlimit) # if segment close then also resets buyix and buyprice
+                removeorder!(ta)
+            end
         end
-        gs.limit = nothing # order is closed
+    end
+end
+
+islongclose(label::TradeLabel) = label in [allclose, longclose, longstrongclose]
+isshortclose(label::TradeLabel) = label in [allclose, shortclose, shortstrongclose]
+
+islongclose(ta::TradeAction) = islongclose(ta.orderlabel)
+isshortclose(ta::TradeAction) = isshortclose(ta.orderlabel)
+
+"""
+Receives a sell and buy TradeAction and the current label + score and checks whether the current label supports the trend of the active TradeAction. 
+If not, it reduces the limit price of sell trade action with a factor of limitreduction for every non trend supporting sample. 
+If the current label signals an opposite trend then a reversal is signalled and an opposite buy action is proposed.
+If the current label supports the current trend with a buy then the limit is adjusted as gain of the current close.
+
+configuration parameters are:
+- openthreshold: minimum score to consider a buy signal as valid
+- buygain: initial gain for buy limit price compared to current close price
+- sellgain: initial gain for sell limit price compared to current close price
+- limitreduction: factor to reduce limit price in case of unfilled order for every trend sample with a label that does not support the trend (e.g. allclose label for a long sell action)
+"""
+function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label::TradeLabel, score, high, low, close, openthreshold, buygain, sellgain, limitreduction)
+    if (label in [longbuy, longstrongbuy]) && (score >= openthreshold)
+        if isopen(sellta) 
+            if isshortclose(sellta.orderlabel)
+                sellta.orderlimit = close * (1f0 - buygain) # adapt to buy limit of opposite order due to trend reversal
+            elseif islongclose(sellta.orderlabel)
+                sellta.orderlimit = close * (1f0 + sellgain)
+            end
+        else  # no sell order but if buy order present then it did not reach buy limit and need to be reestablihed with new buy limit
+            buyta.buyprice = close * (1f0 - buygain)
+            buyta.orderlabel = longbuy
+            buyta.orderlimit = close * (1f0 + sellgain)
+        end
+    elseif (label in [shortbuy, shortstrongbuy]) && (score >= openthreshold)
+        if isopen(sellta) 
+            if islongclose(sellta.orderlabel)
+                sellta.orderlimit = close * (1f0 + buygain) # adapt to buy limit of opposite order due to trend reversal
+            elseif isshortclose(sellta.orderlabel)
+                sellta.orderlimit = close * (1f0 - sellgain)
+            end
+        else  # no sell order but if buy order present then it did not reach buy limit and need to be reestablihed with new buy limit
+            buyta.buyprice = close * (1f0 + buygain)
+            buyta.orderlabel = shortbuy
+            buyta.orderlimit = close * (1f0 - sellgain)
+        end
+    elseif isopen(sellta)
+        if (sellta.orderlimit > sellta.buyprice) && (sellta.orderlabel != longhold) # long order
+            # limit order in place, incrementally reduce limit due to missing label support until it reaches the current close price
+            sellta.orderlimit = max(close, sellta.orderlimit * (1f0 - sellgain * limitreduction))
+        elseif (sellta.orderlimit < sellta.buyprice) && (sellta.orderlabel != shorthold) # short order
+            # limit order in place, incrementally reduce limit due to missing label support until it reaches the current close price
+            sellta.orderlimit = min(close, sellta.orderlimit * (1f0 + sellgain * limitreduction))
+        end
     end
 end
 
 """
 Consumes the next prediction results after endix for all remaining predictions and calculates the corresponding gain segments that are stored in gaindf.  
+limitreduction is reducing the expected gain for each non trend supporting sample, which is used to adjust the limit price for buy and sell orders.
 Buy will buy at current price +- buygain, which is reduced with a limitreduction rate for non trend supporting samples. This limit is newly set when a buy signal for that trend is observed.
 A bought sample receives a sell limit at current price +- sellgain, which is reduced with a limitreduction rate for non trend supporting samples.  
 Hold as long as trend is not broken by opposite buy or close above openthreshold. If limit is hit then close gain segment and open new one if buy signal is present.  
 Implementation details:  
 - labels are indicating a trend change, but the gain materializes after the corresponding order is closed
-- that requires distinguishing between the assettype and the trend
 - buygain and sellgain are defining the initial limit distance to the current price, which is reduced with a limitreduction rate for non trend supporting samples utilizing the price volatility.
 """
 function algorithm03!(gs::GainSegment, lastix)
-    limitreduction = 1//20 # reduce limit by 5% with each non trend supporting sample
     # @assert length(scores) == length(labels) == size(predictionsdf, 1) > 0 "length(scores)=$(length(scores)) == length(labels)=$(length(labels)) == size(predictionsdf, 1)=$(size(predictionsdf, 1)) > 0"
     for ix in (gs.endix+1):lastix
-        if gs.labels[ix] in [shortstrongbuy, shortbuy, shorthold] gs.trend = down
-        elseif gs.labels[ix] in [longstrongbuy, longbuy, longhold] gs.trend = up
-        else gs.trend = flat end
-        ta = TradeAction(false, nothing, nothing, 1f0)
         # first check whether the limit order is executed, if so, set trend and buyix and selllimit
-        processclosedorder!(gs, ix)
-        """
-        (short/long) types of limitorder:  
-        - buy due to buy signal
-        - continuelimitorder due to previous buy signal but not now (and no other buy signal), i.e. adjust limit
-        - sell due to sell signal
-        """
-        if (gs.labels[ix] in [longbuy, longstrongbuy]) && (gs.scores[ix] >= gs.openthreshold)
-            if !isnothing(gs.limit) && (gs.assettype == down)
-                # cancel shortclose order and add amount to longbuy order
-                ta.cancelrunningorder = true
-                ta.amountfactor = 2 # amount to sell long assets + amount to buy short assets
-            end
-            ta.orderlimit = gs.limit = gs.predictionsdf[gs.buyix, :close] * (1f0 - gs.buygain)
-            ta.orderlabel = gs.ordertype = longbuy
-            gs.trend = up
-        elseif (gs.labels[ix] in [shortbuy, shortstrongbuy]) && (gs.scores[ix] >= gs.openthreshold)
-            if !isnothing(gs.limit) && (gs.assettype == up)
-                # cancel longclose order and add amount to shortbuy order
-                ta.cancelrunningorder = true
-                ta.amountfactor = 2 # amount to sell long assets + amount to buy short assets
-            end
-            ta.orderlimit = gs.limit = gs.predictionsdf[gs.buyix, :close] * (1f0 + gs.buygain)
-            ta.orderlabel = gs.ordertype = shortbuy
-            gs.trend = down
-        else
-            if gs.assettype == up
-                if isnothing(gs.limit)
-                    # no limit order in place, set initial close limit
-                     ta.orderlimit = gs.limit = gs.predictionsdf[ix, :close] * (1f0 + gs.sellgain)
-                     ta.orderlabel = gs.ordertype = longclose
-                elseif gs.labels[ix] != longhold
-                    # limit order in place, adjust limit
-                     ta.orderlimit = gs.limit = max(gs.predictionsdf[ix, :close], gs.limit * (1f0 - gs.sellgain * limitreduction))
-                end
-            elseif gs.assettype == down
-                if isnothing(gs.limit)
-                    # no limit order in place, set initial close limit
-                     ta.orderlimit = gs.limit = gs.predictionsdf[ix, :close] * (1f0 - gs.sellgain)
-                     ta.orderlabel = gs.ordertype = shortclose
-                elseif gs.labels[ix] != shorthold
-                    # limit order in place, adjust limit
-                     ta.orderlimit = gs.limit = min(gs.predictionsdf[ix, :close], gs.limit * (1f0 + gs.sellgain * limitreduction))
-                end
-            end
+        processclosedorder!(gs, ix, gs.sellta)
+        processclosedorder!(gs, ix, gs.buyta)
+        if gs.buyta.orderlabel in [longclose, shortclose] # buy trade was executed
+            @assert gs.sellta.orderlabel == ignore "inconsistency: if buyta.orderlabel=$(gs.buyta.orderlabel) is a close order then sellta.orderlabel=$(gs.sellta.orderlabel) must be ignore"
+            gs.sellta = gs.buyta
+            gs.buyta = TradeAction()
         end
+        reachgainuntilreversal!(gs.sellta, gs.buyta, gs.labels[ix], gs.scores[ix], gs.predictionsdf[ix, :high], gs.predictionsdf[ix, :low], gs.predictionsdf[ix, :close], gs.openthreshold, gs.buygain, gs.sellgain, gs.limitreduction)
     end
     gs.endix = lastix
 end
