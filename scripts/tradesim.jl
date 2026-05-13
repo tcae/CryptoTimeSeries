@@ -13,7 +13,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using Dates, Statistics, Printf, Logging
-using EnvConfig, TradingStrategy, Trade, Classify, CryptoXch, Ohlcv, Features, Targets
+using EnvConfig, TradingStrategy, Trade, Classify, CryptoXch, Bybit, Ohlcv, Features, Targets
 
 include(joinpath(@__DIR__, "optimizationconfigs.jl"))
 
@@ -21,9 +21,9 @@ include(joinpath(@__DIR__, "optimizationconfigs.jl"))
 # CONFIG — adjust these values before running
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Exchange used for OHLCV data retrieval (simulation always uses cryptoxchsim,
-# so no live credentials are required; only data download APIs are called).
-const EXCHANGE = CryptoXch.EXCHANGE_BYBIT
+# Exchange used for the simulation exchange backend. BybitSim keeps the exchange
+# explicit while still allowing the common trading code path to run.
+const EXCHANGE = CryptoXch.EXCHANGE_BYBITSIM
 
 # Backtest time range (UTC).
 const BACKTEST_STARTDT = DateTime("2025-01-01T00:00:00")
@@ -46,12 +46,12 @@ const MAX_ASSET_FRACTION = 0.1f0
 
 # TrendDetector config 046: GainSegment strategy parameters.
 # These come from mk046config() → tradingstrategy03().
-const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=algorithm03!, openthreshold=0.6, makerfee=0.0015)
+const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 const CONFIG046_NAME = "046"
-const MODEL046_FOLDER = "Trend-046-production"
+const MODEL046_FOLDER = "Trend-046-training"
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = "tradesim-" * CONFIG046_NAME * "-" * Dates.format(now(), Dates.DateFormat("yymmdd-HHMMSS"))
+const LOG_SUBFOLDER = "tradesim-" * CONFIG046_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 
 # Normalize whitelist entries to base coins for the configured quote coin.
 function normalize_whitelist(entries, quote_coin::AbstractString)
@@ -132,6 +132,7 @@ function loadtrend046classifier(model_folder::AbstractString)::Trend046RuntimeCl
 end
 
 function seed_quote_balance!(xc::CryptoXch.XchCache, quote_coin::AbstractString, amount::Real)
+    # Seed CryptoXch simulation state
     quote_ix = findfirst(==(quote_coin), xc.assets[!, :coin])
     if isnothing(quote_ix)
         push!(xc.assets, (
@@ -146,6 +147,19 @@ function seed_quote_balance!(xc::CryptoXch.XchCache, quote_coin::AbstractString,
         ))
     else
         xc.assets[quote_ix, :free] = Float32(amount)
+    end
+    
+    # Seed underlying exchange cache simulation state if needed
+    if CryptoXch.exchange(xc) == CryptoXch.EXCHANGE_BYBITSIM
+        bc = xc.bc
+        if !isnothing(bc.assets)  # Simulation state initialized
+            Bybit.seedportfolio!(bc, quote_coin, amount)
+        end
+    elseif CryptoXch.exchange(xc) == CryptoXch.EXCHANGE_TESTXCH
+        tc = xc.bc
+        if !isnothing(tc.assets)  # Simulation state initialized
+            CryptoXch.TestXch.seedportfolio!(tc, quote_coin, amount)
+        end
     end
     return nothing
 end
@@ -317,8 +331,8 @@ CryptoXch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 2
 
-println("$(now()): starting tradesim with config=$CONFIG046_NAME")
-println("$(now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
+println("$(EnvConfig.now()): starting tradesim with config=$CONFIG046_NAME")
+println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BUILD TRADE CACHE
@@ -335,7 +349,7 @@ seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
 # Apply config 046 strategy parameters.
 Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
-    strategy_engine=:algorithm03,
+    strategy_engine=:getgainsalgo,
     source="trenddetector:$CONFIG046_NAME")
 
 # Override whitelist and risk parameters.
@@ -343,11 +357,11 @@ whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
 cache.mc[:whitelistcoins]   = whitelist
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
 
-println("$(now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(now()): strategy config=$CONFIG046_NAME, engine=algorithm03")
-println("$(now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
-println("$(now()): whitelist ($(length(whitelist)) bases): $whitelist")
-println("$(now()): running backtest…")
+println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
+println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
+println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
+println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
+println("$(EnvConfig.now()): running backtest...")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN BACKTEST

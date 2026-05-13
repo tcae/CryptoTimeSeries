@@ -104,6 +104,16 @@ function _normalize_set_column!(df::AbstractDataFrame)
     return df
 end
 
+"""Resolve the canonical timestamp column name from common OHLCV variants."""
+function _resolve_opentime_col(df::AbstractDataFrame)::Union{Symbol, Nothing}
+    for col in (:opentime, :open_time, :timestamp, :time, :datetime)
+        if col in propertynames(df)
+            return col
+        end
+    end
+    return nothing
+end
+
 function _load_featuretarget_pair(coin::AbstractString)
     resultsdf = EnvConfig.readdf(resultsfilename(coin))
     featuresdf = EnvConfig.readdf(featuresfilename(coin))
@@ -206,7 +216,15 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
             (verbosity >= 2) && print("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets                                                          \r")
             (verbosity >= 3) && println()
             ohlcv = Ohlcv.read(coin)
-            ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
+            odf = Ohlcv.dataframe(ohlcv)
+            otcol = _resolve_opentime_col(odf)
+            if size(odf, 1) == 0
+                (verbosity >= 1) && @warn "skipping coin due to empty OHLCV data" coin
+                push!(skippedcoins, coin)
+                continue
+            end
+            @assert !isnothing(otcol) "non-empty OHLCV data must contain :opentime-compatible timestamp column for coin=$(coin); available columns=$(propertynames(odf))"
+            ot = odf[!, otcol]
             cfg.startdt = isnothing(cfg.startdt) ? ot[begin] : cfg.startdt
             startix = Ohlcv.rowix(ot, cfg.startdt)
             cfg.enddt = isnothing(cfg.enddt) ? ot[end] : cfg.enddt
@@ -225,7 +243,11 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
                     rngfeatures = Features.features(cfg.featconfig)
                     rngresults = DataFrame(target=calctargets!(cfg.targetconfig, cfg.featconfig))
                     @assert size(rngresults, 1) == size(rngfeatures, 1) == size(Ohlcv.dataframe(rngohlcv), 1) "unexpected mismatch of targets length $(size(rngresults, 1)), features size $(size(rngfeatures, 1)) and ohlcv size $(size(Ohlcv.dataframe(rngohlcv), 1)) for $(ohlcv.base) range $rng"
-                    rngresults = hcat(rngresults, Ohlcv.dataframe(rngohlcv)[!, [:opentime, :high, :low, :close, :pivot]])
+                    rngpricedf = select(Ohlcv.dataframe(rngohlcv), [otcol, :high, :low, :close, :pivot])
+                    if otcol != :opentime
+                        rename!(rngpricedf, otcol => :opentime)
+                    end
+                    rngresults = hcat(rngresults, rngpricedf)
                     issues = Targets.crosscheck(cfg.targetconfig, rngresults[!, :target], rngresults[!, :pivot])
                     if !isnothing(issues) && (length(issues) > 0)
                         if size(targetissuesdf, 1) > 0

@@ -48,7 +48,7 @@ const MAX_ASSET_FRACTION = 0.1f0
 # TrendDetector config 046: GainSegment strategy parameters.
 # These come from mk046config() → tradingstrategy03().
 # Override individual fields here if needed.
-const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=algorithm03!, openthreshold=0.6, makerfee=0.0015)
+const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 const CONFIG046_NAME = "046"
 const MODEL046_FOLDER = "Trend-046-production"
 
@@ -176,7 +176,7 @@ cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 
 # Apply config 046 strategy parameters.
 Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
-    strategy_engine=:algorithm03,
+    strategy_engine=:getgainsalgo,
     source="trenddetector:$CONFIG046_NAME")
 
 # Override whitelist and risk parameters.
@@ -185,7 +185,7 @@ cache.mc[:whitelistcoins]    = whitelist
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=algorithm03")
+println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")

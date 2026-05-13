@@ -34,7 +34,7 @@ function sampleevent()::TradeAudit.AuditEventRow
         requested_quote_qty=50000.0,
         requested_limit_price=100000.0,
         requested_notional=50000.0,
-        strategy_engine="algorithm03",
+        strategy_engine="getgainsalgo",
         strategy_config_ref="cfg-001",
         signal_label="longbuy",
         signal_score=0.75,

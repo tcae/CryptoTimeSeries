@@ -63,27 +63,37 @@ function _routeauthname(routing::ExchangeRouting, role::ExchangeRole, default_au
 end
 
 const EXCHANGE_BYBIT::String = "Bybit"
+const EXCHANGE_BYBITSIM::String = "BybitSim"
 const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
 const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
+const EXCHANGE_TESTXCH::String = "TestXch"
 
 function _normalizeexchange(exchange::AbstractString)::String
     ex = lowercase(strip(exchange))
     if ex == lowercase(EXCHANGE_BYBIT)
         return EXCHANGE_BYBIT
+    elseif ex == lowercase(EXCHANGE_BYBITSIM)
+        return EXCHANGE_BYBITSIM
     elseif ex == lowercase(EXCHANGE_KRAKENFUTURES)
         return EXCHANGE_KRAKENFUTURES
     elseif ex == lowercase(EXCHANGE_KRAKENSPOT)
         return EXCHANGE_KRAKENSPOT
+    elseif ex == lowercase(EXCHANGE_TESTXCH)
+        return EXCHANGE_TESTXCH
     end
-    throw(ArgumentError("unsupported exchange=$(exchange), supported=[$(EXCHANGE_BYBIT), $(EXCHANGE_KRAKENFUTURES), $(EXCHANGE_KRAKENSPOT)]"))
+    throw(ArgumentError("unsupported exchange=$(exchange), supported=[$(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_KRAKENFUTURES), $(EXCHANGE_KRAKENSPOT), $(EXCHANGE_TESTXCH)]"))
 end
 
 function _exchangeModule(exchange::AbstractString)
     ex = _normalizeexchange(exchange)
     if ex == EXCHANGE_BYBIT
         return Bybit
+    elseif ex == EXCHANGE_BYBITSIM
+        return Bybit
     elseif ex == EXCHANGE_KRAKENFUTURES
         return KrakenFutures
+    elseif ex == EXCHANGE_TESTXCH
+        return TestXch
     end
     return KrakenSpot
 end
@@ -110,14 +120,19 @@ function _authfromname(authname::Union{Nothing, AbstractString})
 end
 
 function _exchangecache(exchange::AbstractString, simmode::SimMode, authname::Union{Nothing, AbstractString}=nothing)
-    # In cryptoxchsim mode all exchange-specific calls are bypassed, so no real exchange cache is needed.
-    (simmode == cryptoxchsim) && return nothing
     ex = _normalizeexchange(exchange)
+    if ex == EXCHANGE_TESTXCH
+        return TestXch.TestXchCache(startdt=Dates.now(UTC), enddt=nothing)
+    end
     auth = _authfromname(authname)
     publickey = isnothing(auth) ? "" : String(auth.key)
     secretkey = isnothing(auth) ? "" : String(auth.secret)
     if ex == EXCHANGE_BYBIT
         return Bybit.BybitCache(simmode == bybitsim, publickey, secretkey)
+    elseif ex == EXCHANGE_BYBITSIM
+        bc = Bybit.BybitCache(false, publickey, secretkey)
+        Bybit._init_simulation!(bc)
+        return bc
     elseif ex == EXCHANGE_KRAKENFUTURES
         (simmode == bybitsim) && @warn "simmode=$(simmode) is Bybit-specific and ignored for exchange=$(ex)"
         return KrakenFutures.KrakenFuturesCache(publickey=publickey, secretkey=secretkey)
@@ -125,6 +140,187 @@ function _exchangecache(exchange::AbstractString, simmode::SimMode, authname::Un
     (simmode == bybitsim) && @warn "simmode=$(simmode) is Bybit-specific and ignored for exchange=$(ex)"
     return KrakenSpot.KrakenSpotCache(publickey=publickey, secretkey=secretkey)
 end
+
+module TestXch
+using Dates, DataFrames, InlineStrings
+using ..EnvConfig, ..Ohlcv, ..TestOhlcv
+
+"Simulation cache for explicit synthetic-market runs." 
+mutable struct TestXchCache
+    syminfodf::Union{Nothing, DataFrame}
+    assets::DataFrame
+    orders::DataFrame
+    closedorders::DataFrame
+    startdt::Dates.DateTime
+    currentdt::Union{Nothing, Dates.DateTime}
+    enddt::Union{Nothing, Dates.DateTime}
+    mnemonic::Union{Nothing, AbstractString}
+end
+
+function TestXchCache(; startdt::Dates.DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, syminfodf::Union{Nothing, DataFrame}=nothing)::TestXchCache
+    assets = DataFrame(coin=String31[], free=Float32[], locked=Float32[], borrowed=Float32[], accruedinterest=Float32[])
+    orders = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=Dates.DateTime[], updated=Dates.DateTime[], rejectreason=String[], lastcheck=Dates.DateTime[], marginleverage=Int32[])
+    closedorders = similar(orders)
+    return TestXchCache(syminfodf, assets, orders, closedorders, startdt, nothing, enddt, isnothing(mnemonic) ? nothing : String(mnemonic))
+end
+
+const SYNTHETIC_BASES = Set(["SINE", "DOUBLESINE"])
+
+_emptybalances() = DataFrame(coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
+
+function emptyorders()
+    return DataFrame(
+        orderid=String[],
+        symbol=String[],
+        side=String[],
+        baseqty=Float32[],
+        ordertype=String[],
+        isLeverage=Bool[],
+        timeinforce=String[],
+        limitprice=Float32[],
+        avgprice=Float32[],
+        executedqty=Float32[],
+        status=String[],
+        created=Dates.DateTime[],
+        updated=Dates.DateTime[],
+        rejectreason=String[],
+        lastcheck=Dates.DateTime[]
+    )
+end
+
+function seedportfolio!(bc::TestXchCache, coin::AbstractString, free::Real; locked::Real=0, borrowed::Real=0)
+    coin = uppercase(String(coin))
+    ix = findfirst(==(coin), bc.assets[!, :coin])
+    if isnothing(ix)
+        push!(bc.assets, (coin=coin, free=Float32(free), locked=Float32(locked), borrowed=Float32(borrowed), accruedinterest=0f0))
+    else
+        bc.assets[ix, :free] = Float32(free)
+        bc.assets[ix, :locked] = Float32(locked)
+        bc.assets[ix, :borrowed] = Float32(borrowed)
+    end
+    return bc
+end
+
+function _basefromsymbol(symbol::AbstractString)
+    q = uppercase(EnvConfig.cryptoquote)
+    s = uppercase(String(symbol))
+    endswith(s, q) ? s[begin:end-lastindex(q)] : s
+end
+
+function _symbolrow(bc::TestXchCache, symbol::AbstractString)
+    s = uppercase(String(symbol))
+    if !isnothing(bc.syminfodf)
+        ix = findfirst(==(s), bc.syminfodf[!, :symbol])
+        if !isnothing(ix)
+            return bc.syminfodf[ix, :]
+        end
+    end
+    base = _basefromsymbol(s)
+    if base in SYNTHETIC_BASES && !isnothing(bc.syminfodf)
+        xrpix = findfirst(==(uppercase("XRP" * EnvConfig.cryptoquote)), bc.syminfodf[!, :symbol])
+        if !isnothing(xrpix)
+            row = bc.syminfodf[xrpix, :]
+            return (row..., symbol=s, basecoin=base, quotecoin=uppercase(EnvConfig.cryptoquote), status="Trading", innovation=0)
+        end
+    end
+    return nothing
+end
+
+symbolinfo(bc::TestXchCache, symbol::AbstractString) = _symbolrow(bc, symbol)
+symboltoken(bc::TestXchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String = uppercase(String(basecoin) * String(quotecoin))
+validsymbol(bc::TestXchCache, sym::Union{Nothing, DataFrameRow}) = !isnothing(sym) && (String(sym.status) == "Trading")
+validsymbol(bc::TestXchCache, symbol::AbstractString) = validsymbol(bc, symbolinfo(bc, symbol))
+validsymbol(bc::TestXchCache, basecoin::AbstractString, quotecoin::AbstractString) = validsymbol(bc, symboltoken(bc, basecoin, quotecoin))
+
+function getklines(bc::TestXchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
+    base = _basefromsymbol(symbol)
+    if !(base in SYNTHETIC_BASES) && !(base in TestOhlcv.testbasecoin())
+        return DataFrame(opentime=DateTime[], open=Float32[], high=Float32[], low=Float32[], close=Float32[], basevolume=Float32[])
+    end
+    startDateTime = isnothing(startDateTime) ? bc.startdt : startDateTime
+    endDateTime = isnothing(endDateTime) ? (isnothing(bc.currentdt) ? Dates.now(UTC) : bc.currentdt) : endDateTime
+    return Ohlcv.dataframe(TestOhlcv.testohlcv(base, startDateTime, endDateTime, interval, EnvConfig.cryptoquote))
+end
+
+function get24h(bc::TestXchCache, symbol=nothing)
+    bases = isnothing(symbol) ? union(TestOhlcv.testbasecoin(), collect(SYNTHETIC_BASES)) : [_basefromsymbol(symbol)]
+    df = DataFrame(basecoin=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[], symbol=String[])
+    for base in bases
+        ohlcv = TestOhlcv.testohlcv(base, bc.startdt, isnothing(bc.currentdt) ? bc.startdt + Dates.Day(1) : bc.currentdt, "1m", EnvConfig.cryptoquote)
+        odf = Ohlcv.dataframe(ohlcv)
+        isempty(odf) && continue
+        lastprice = Float32(odf[end, :close])
+        firstopen = Float32(odf[begin, :open])
+        vol24h = Float32(sum(odf[!, :basevolume] .* odf[!, :pivot]))
+        push!(df, (basecoin=uppercase(base), quotevolume24h=vol24h, pricechangepercent=firstopen == 0f0 ? 0f0 : Float32((lastprice - firstopen) / firstopen), lastprice=lastprice, askprice=lastprice * 1.00001f0, bidprice=lastprice * 0.99999f0, symbol=uppercase(String(base) * EnvConfig.cryptoquote)))
+    end
+    return isnothing(symbol) ? df : (size(df, 1) == 0 ? nothing : df[1, :])
+end
+
+servertime(bc::TestXchCache) = isnothing(bc.currentdt) ? bc.startdt : bc.currentdt
+account(::TestXchCache) = nothing
+
+function balances(bc::TestXchCache)
+    return _emptybalances(bc.assets)
+end
+
+_emptybalances(df::DataFrame) = select(df, :coin, :locked, :free, :borrowed, :accruedinterest)
+
+function openorders(bc::TestXchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
+    df = copy(bc.orders)
+    if !isnothing(symbol)
+        df = df[df[!, :symbol] .== uppercase(String(symbol)), :]
+    end
+    if !isnothing(orderid)
+        df = df[df[!, :orderid] .== String(orderid), :]
+    end
+    return df
+end
+
+allorders(bc::TestXchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = vcat(bc.closedorders, openorders(bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId))
+alltransactions(bc::TestXchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = allorders(bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
+order(bc::TestXchCache, orderid) = begin oo = openorders(bc, orderid=orderid); size(oo, 1) > 0 ? oo[1, :] : (size(bc.closedorders, 1) > 0 ? (orderid in bc.closedorders[!, :orderid] ? bc.closedorders[findfirst(==(String(orderid)), bc.closedorders[!, :orderid]), :] : nothing) : nothing) end
+
+function _applyfill!(bc::TestXchCache, symbol::AbstractString, side::AbstractString, basequantity::Real, price::Real)
+    base = _basefromsymbol(symbol)
+    quote_coin = uppercase(EnvConfig.cryptoquote)
+    bix = findfirst(==(base), bc.assets[!, :coin])
+    qix = findfirst(==(quote_coin), bc.assets[!, :coin])
+    if isnothing(bix)
+        push!(bc.assets, (coin=base, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
+        bix = lastindex(bc.assets[!, :coin])
+    end
+    if isnothing(qix)
+        push!(bc.assets, (coin=quote_coin, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
+        qix = lastindex(bc.assets[!, :coin])
+    end
+    if lowercase(String(side)) == "buy"
+        bc.assets[qix, :free] -= Float32(basequantity * price)
+        bc.assets[bix, :free] += Float32(basequantity)
+    else
+        bc.assets[bix, :free] -= Float32(basequantity)
+        bc.assets[qix, :free] += Float32(basequantity * price)
+    end
+end
+
+function createorder(bc::TestXchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
+    sym = uppercase(symbol)
+    syminfo = symbolinfo(bc, sym)
+    if isnothing(syminfo)
+        return nothing
+    end
+    limitprice = isnothing(price) ? Float32(get24h(bc, sym).lastprice) : Float32(price)
+    orderid = string(orderside, sym, Dates.format(servertime(bc), "yymmddTHH:MM:SS"))
+    row = (orderid=orderid, symbol=sym, side=uppercasefirst(lowercase(orderside)), baseqty=Float32(basequantity), ordertype="Limit", isLeverage=(marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=Float32(basequantity), status="Filled", created=servertime(bc), updated=servertime(bc), rejectreason="NO ERROR", lastcheck=servertime(bc), marginleverage=Int32(marginleverage))
+    push!(bc.closedorders, row)
+    _applyfill!(bc, sym, orderside, basequantity, limitprice)
+    return orderid
+end
+
+amendorder(bc::TestXchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = orderid
+cancelorder(::TestXchCache, symbol, orderid) = nothing
+
+end # module TestXch
 
 mutable struct XchCache
     orders  # ::DataFrame
@@ -694,7 +890,8 @@ _isleveraged(token) = !isnothing(token) && (length(token) > 2) && (token[end] in
 
 #region support
 
-validbase(xc::XchCache, base::AbstractString) = validsymbol(xc, symboltoken(base))
+validbase(xc::XchCache, base::AbstractString) =
+    (uppercase(base) != uppercase(EnvConfig.cryptoquote)) && validsymbol(xc, symboltoken(base))
 
 removebase!(xc::XchCache, base) = delete!(xc.bases, base)
 removeallbases(xc::XchCache) = xc.bases = Dict()
@@ -720,7 +917,7 @@ function addbases!(xc::XchCache, bases, startdt, enddt)
     end
 end
 
-assetbases(xc::XchCache) = uppercase.(CryptoXch.balances(xc)[!, :coin])
+assetbases(xc::XchCache) = filter(!=(uppercase(EnvConfig.cryptoquote)), uppercase.(CryptoXch.balances(xc)[!, :coin]))
 
 symboltoken(basecoin, quotecoin=EnvConfig.cryptoquote) = isnothing(basecoin) ? nothing : uppercase(basecoin * quotecoin)
 
@@ -1047,10 +1244,21 @@ end
 
 function validsymbol(xc::XchCache, symbol)
     sym = _exchangesymbolinfo(xc, symbol)
-    r = _exchangevalidsymbol(xc, sym) &&
+    bq = basequote(symbol)
+    if isnothing(sym)
+        if !isnothing(bq) && (bq.basecoin in TestOhlcv.testbasecoin())
+            return true
+        end
+        if (xc.mc[:simmode] == cryptoxchsim) && !isnothing(bq)
+            return !(bq.basecoin in baseignore) && !_isleveraged(bq.basecoin)
+        end
+        return false
+    end
+    r = !isnothing(sym) &&
+        _exchangevalidsymbol(xc, sym) &&
         !(sym.basecoin in baseignore) &&
         !_isleveraged(sym.basecoin)
-    return r || (basequote(symbol).basecoin in TestOhlcv.testbasecoin())
+    return r || (!isnothing(bq) && (bq.basecoin in TestOhlcv.testbasecoin()))
 end
 
 function validsymbol(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
@@ -1062,7 +1270,7 @@ end
 function minimumqty(xc::XchCache, sym::AbstractString)
     syminfo = _exchangesymbolinfo(xc, sym)
     if isnothing(syminfo)
-        if validsymbol(xc, sym)
+        if (xc.mc[:simmode] != cryptoxchsim) && validsymbol(xc, sym)
             (verbosity >= 1) && @error "cannot find symbol $sym in $(exchange(xc)) exchange info"
         end
         return nothing
@@ -1130,19 +1338,12 @@ getUSDTmarket: 512×6 DataFrame
    In case of timesimulation(xc) == true a canned USDTmarket file will be used - if one is present.
 """
 function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
-    if EnvConfig.configmode == test
-        usdtdf = _emptymarkets()
-        for basecoin in TestOhlcv.testbasecoin()
-            ohlcv = TestOhlcv.testohlcv(basecoin, dt - Day(1) + Minute(1), dt)
-            odf = Ohlcv.dataframe(ohlcv)
-            vol24h = sum(odf[!, :basevolume] .* odf[!, :pivot])
-            push!(usdtdf, (basecoin=basecoin, quotevolume24h=vol24h, pricechangepercent=((odf[end, :close] - odf[begin, :open]) / odf[begin, :open]), lastprice=odf[end, :close], askprice=odf[end, :close]*1.00001, bidprice=odf[end, :close]*0.99999))
-            # println("base=$basecoin, rows=$(size(odf, 1)), start=$(odf[begin, :opentime]), stop=$(odf[end, :opentime])")
-        end
-        return usdtdf
-    end
+    # In cryptoxchsim backtests `xc.currentdt` is often still `nothing` during
+    # initial strategy loading, so `timesimulation(xc)` can be false even though
+    # we are in a simulation run. Use canned USDT snapshots for that case too.
+    use_canned_market = timesimulation(xc) || ((xc.mc[:simmode] == cryptoxchsim) && !isnothing(xc.enddt))
 
-    if timesimulation(xc)
+    if use_canned_market
         usdtdf = _emptymarkets()
         cfgstem = _usdtmarketstem(CryptoXch.USDTMARKETFILE, dt)
         folderpath = EnvConfig.datafolderpath(CryptoXch.USDTMARKETFILE)
@@ -1189,10 +1390,22 @@ end
 function balances(xc::XchCache; ignoresmallvolume=true)
     bdf = nothing
     if (xc.mc[:simmode] != cryptoxchsim)
-        bdf = _exchangebalances(xc)
-        select = [!(coin in baseignore) || (coin == EnvConfig.cryptoquote) for coin in bdf[!, :coin]]
-        bdf = bdf[select, :]
-    else  # simulation
+        # Check if exchange cache has simulation state (for BybitSim)
+        if xc.exchange == EXCHANGE_BYBITSIM && !isnothing(xc.bc) && !isnothing(xc.bc.assets)
+            # Delegate to Bybit simulation balances
+            bdf = Bybit.balances(xc.bc)
+        elseif xc.exchange == EXCHANGE_TESTXCH && !isnothing(xc.bc) && !isnothing(xc.bc.assets)
+            # Delegate to TestXch simulation balances
+            bdf = TestXch.balances(xc.bc)
+        else
+            # Production mode: call real exchange API
+            bdf = _exchangebalances(xc)
+        end
+        if !isnothing(bdf)
+            select = [!(coin in baseignore) || (coin == EnvConfig.cryptoquote) for coin in bdf[!, :coin]]
+            bdf = bdf[select, :]
+        end
+    else  # simulation (cryptoxchsim mode)
         if isnothing(xc)
             (verbosity >= 1) && @error "cannot simulate balances() with uninitialized CryptoXch cache"
             return DataFrame()
@@ -1279,8 +1492,20 @@ Returns an AbstractDataFrame of open **spot** orders with columns:
 """
 function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
     if (xc.mc[:simmode] != cryptoxchsim)
-        oo = _exchangeopenorders(xc, symbol=symboltoken(base))
-        openordersdf = size(oo) == (0,0) ? _emptyorders(exchange(xc)) : oo
+        # Check if exchange cache has simulation state (for BybitSim/TestXch)
+        if xc.exchange == EXCHANGE_BYBITSIM && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+            # Delegate to Bybit simulation openorders
+            oo = Bybit.openorders(xc.bc; symbol=symboltoken(base))
+            openordersdf = size(oo, 1) == 0 ? _emptyorders(exchange(xc)) : oo
+        elseif xc.exchange == EXCHANGE_TESTXCH && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+            # Delegate to TestXch simulation openorders
+            oo = TestXch.openorders(xc.bc; symbol=symboltoken(base))
+            openordersdf = size(oo, 1) == 0 ? _emptyorders(exchange(xc)) : oo
+        else
+            # Production mode: call real exchange API
+            oo = _exchangeopenorders(xc, symbol=symboltoken(base))
+            openordersdf = size(oo) == (0,0) ? _emptyorders(exchange(xc)) : oo
+        end
         for row in eachrow(openordersdf)
             _auditreconcileorderstate!(xc, NamedTuple(row); source="getopenorders")
         end
@@ -1328,15 +1553,25 @@ function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_labe
         setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     if (xc.mc[:simmode] != cryptoxchsim)
-        oo = getorder(xc, orderid; auditevent=false)
-        cancelled = _exchangecancelorder(xc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), orderid)
-        if !isnothing(cancelled)
-            current = getorder(xc, orderid; auditevent=false)
-            if isnothing(current) && !isnothing(oo)
-                current = (; oo..., status="Cancelled", updated=Dates.now(Dates.UTC), rejectreason="cancelled_by_user")
-            end
-            if !isnothing(current)
-                _auditreconcileorderstate!(xc, current; source="cancelorder")
+        # Check if exchange cache has simulation state
+        if xc.exchange == EXCHANGE_BYBITSIM && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+            # Delegate to Bybit simulation cancelorder
+            cancelled = Bybit.cancelorder(xc.bc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), orderid)
+        elseif xc.exchange == EXCHANGE_TESTXCH && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+            # Delegate to TestXch simulation cancelorder
+            cancelled = TestXch.cancelorder(xc.bc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), orderid)
+        else
+            # Production mode: call real exchange API
+            oo = getorder(xc, orderid; auditevent=false)
+            cancelled = _exchangecancelorder(xc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), orderid)
+            if !isnothing(cancelled)
+                current = getorder(xc, orderid; auditevent=false)
+                if isnothing(current) && !isnothing(oo)
+                    current = (; oo..., status="Cancelled", updated=Dates.now(Dates.UTC), rejectreason="cancelled_by_user")
+                end
+                if !isnothing(current)
+                    _auditreconcileorderstate!(xc, current; source="cancelorder")
+                end
             end
         end
         if !isnothing(leg_group_id) || !isnothing(leg_label)
@@ -1363,15 +1598,29 @@ Returns `nothing` in case order execution fails.
 """
 function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
+    if (xc.mc[:simmode] != cryptoxchsim)
+        _asserttradeallowed(xc)
+    end
     symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
         setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     try
         if (xc.mc[:simmode] != cryptoxchsim)
-            _asserttradeallowed(xc)
-            oocreate = _exchangecreateorder(xc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
-            oid = isnothing(oocreate) ? nothing : oocreate.orderid
+            # Check if exchange cache has simulation state
+            if xc.exchange == EXCHANGE_BYBITSIM && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+                # Delegate to Bybit simulation createorder
+                oid = Bybit.createorder(xc.bc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
+                oocreate = isnothing(oid) ? nothing : NamedTuple(getorder(xc, oid; auditevent=false))
+            elseif xc.exchange == EXCHANGE_TESTXCH && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+                # Delegate to TestXch simulation createorder
+                oid = TestXch.createorder(xc.bc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
+                oocreate = isnothing(oid) ? nothing : NamedTuple(getorder(xc, oid; auditevent=false))
+            else
+                # Production mode: call real exchange API
+                oocreate = _exchangecreateorder(xc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
+                oid = isnothing(oocreate) ? nothing : oocreate.orderid
+            end
             if !isnothing(parent_order_id) && !isnothing(oid)
                 _auditsetorderparent!(xc, String(oid), String(parent_order_id))
             end
@@ -1404,15 +1653,29 @@ Returns `nothing` in case order execution fails.
 """
 function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
+    if (xc.mc[:simmode] != cryptoxchsim)
+        _asserttradeallowed(xc)
+    end
     symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
         setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     try
         if (xc.mc[:simmode] != cryptoxchsim)
-            _asserttradeallowed(xc)
-            oocreate = _exchangecreateorder(xc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
-            oid = isnothing(oocreate) ? nothing : oocreate.orderid
+            # Check if exchange cache has simulation state
+            if xc.exchange == EXCHANGE_BYBITSIM && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+                # Delegate to Bybit simulation createorder
+                oid = Bybit.createorder(xc.bc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
+                oocreate = isnothing(oid) ? nothing : NamedTuple(getorder(xc, oid; auditevent=false))
+            elseif xc.exchange == EXCHANGE_TESTXCH && !isnothing(xc.bc) && !isnothing(xc.bc.orders)
+                # Delegate to TestXch simulation createorder
+                oid = TestXch.createorder(xc.bc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
+                oocreate = isnothing(oid) ? nothing : NamedTuple(getorder(xc, oid; auditevent=false))
+            else
+                # Production mode: call real exchange API
+                oocreate = _exchangecreateorder(xc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
+                oid = isnothing(oocreate) ? nothing : oocreate.orderid
+            end
             if !isnothing(parent_order_id) && !isnothing(oid)
                 _auditsetorderparent!(xc, String(oid), String(parent_order_id))
             end

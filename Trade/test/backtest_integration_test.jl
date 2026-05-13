@@ -65,15 +65,16 @@ using EnvConfig, Trade, Classify, CryptoXch, Ohlcv, TradingStrategy
             maxwindow=120,
             openthreshold=0.6f0,
             closethreshold=0.5f0,
-            algorithm=TradingStrategy.algorithm03!,
+            algorithm=TradingStrategy.gain_limit_reversal!,
             limitreduction=0f0,
         )
         gs.buygain = 0.001f0
         gs.sellgain = 0.01f0
 
-        Trade.apply_tradingstrategy!(tc, gs; strategy_engine=:algorithm03, source="test")
+        Trade.apply_tradingstrategy!(tc, gs; strategy_engine=:getgainsalgo, source="test")
 
-        @test tc.mc[:strategy_engine] == :algorithm03
+        @test tc.mc[:strategy_engine] == :getgainsalgo
+        @test tc.mc[:strategy_algorithm] == TradingStrategy.gain_limit_reversal!
         @test tc.mc[:strategy_maxwindow] == 120
         @test tc.mc[:strategy_openthreshold] == 0.6f0
         @test tc.mc[:strategy_source] == "test"

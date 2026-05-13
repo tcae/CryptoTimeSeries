@@ -19,9 +19,9 @@ targetissuesfilename() = joinpath("results", "targetissues")
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
 default_closethresholds() = Float32[0.1f0]
 
-tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm01!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
-tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm02!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy03() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.algorithm03!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_open_close!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
+tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy03() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)), holdbehaviormode=holdbehaviormode)
 

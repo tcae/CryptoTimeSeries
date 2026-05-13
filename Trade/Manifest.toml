@@ -210,7 +210,7 @@ uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
 [[deps.Bybit]]
-deps = ["DataFrames", "Dates", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Printf", "SHA", "Test"]
+deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Printf", "SHA", "Test"]
 path = "../Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
 version = "4.2.2"

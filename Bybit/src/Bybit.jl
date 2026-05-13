@@ -1,6 +1,6 @@
 module Bybit
 
-using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, Format
+using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, InlineStrings, Format, Downloads
 using EnvConfig
 
 # base URL of the ByBit API
@@ -34,11 +34,17 @@ const interval2bybitinterval = Dict(
     "1w" => "W"
 )
 
-struct BybitCache
+"Bybit exchange cache supporting both production API and simulation mode (BybitSim).
+When used in BybitSim mode, assets/orders/closedorders track simulated bookkeeping."
+mutable struct BybitCache
     syminfodf::Union{Nothing, DataFrame}
     apirest::String
     publickey
     secretkey
+    # Simulation state (populated only in BybitSim mode, nil in production)
+    assets::Union{Nothing, DataFrame}
+    orders::Union{Nothing, DataFrame}
+    closedorders::Union{Nothing, DataFrame}
 end
 
 BYBIT_APIREST = "https://api.bybit.com"
@@ -59,11 +65,36 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
         pk = String(publickey)
         sk = String(secretkey)
     end
-    bc = BybitCache(nothing, apirest, pk, sk)
+    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.cryptoquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    return BybitCache(xchinfo, apirest, pk, sk)
+    return BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing)
+end
+
+"Initialize simulation state (assets, orders, closedorders) for BybitSim mode"
+function _init_simulation!(bc::BybitCache)
+    if isnothing(bc.assets)
+        bc.assets = DataFrame(coin=String31[], free=Float32[], locked=Float32[], borrowed=Float32[], accruedinterest=Float32[])
+        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[])
+        bc.closedorders = similar(bc.orders)
+    end
+    return bc
+end
+
+"Seed simulation portfolio with an initial balance"
+function seedportfolio!(bc::BybitCache, coin::AbstractString, free::Real; locked::Real=0, borrowed::Real=0)
+    isnothing(bc.assets) && _init_simulation!(bc)
+    coin = uppercase(String(coin))
+    ix = findfirst(==(coin), bc.assets[!, :coin])
+    if isnothing(ix)
+        push!(bc.assets, (coin=coin, free=Float32(free), locked=Float32(locked), borrowed=Float32(borrowed), accruedinterest=0f0))
+    else
+        bc.assets[ix, :free] = Float32(free)
+        bc.assets[ix, :locked] = Float32(locked)
+        bc.assets[ix, :borrowed] = Float32(borrowed)
+    end
+    return bc
 end
 
 function apiKS()
@@ -238,7 +269,33 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
     return returnbody
 end
 
-HttpPublicRequest(bc::BybitCache, method, endPoint, params::Union{Dict, Nothing}, info) = HttpPrivateRequest(bc, method, endPoint, params, info)
+function HttpPublicRequest(bc::BybitCache, method, endPoint, params::Union{Dict, Nothing}, info)
+    methodpost = method == "POST"
+    payload = isnothing(params) ? "" : (methodpost ? _dict2paramspost(params) : _dict2paramsget(params))
+    url = bc.apirest * endPoint
+    if !methodpost && !isempty(payload)
+        url *= "?" * payload
+    end
+
+    body = Dict()
+    try
+        io = IOBuffer()
+        if methodpost
+            Downloads.request(url; method=method, headers=["Content-Type" => "application/json"], input=IOBuffer(payload), output=io)
+        else
+            Downloads.request(url; method=method, output=io)
+        end
+        body = JSON3.read(String(take!(io)), Dict)
+        body = _dictstring2values!(body)
+        if body["retCode"] != 0
+            @warn "HttpPublicRequest $method, url=$url, payload=$payload, response=$body"
+        end
+        return body
+    catch err
+        @error "HttpPublicRequest $method failed, url=$url, payload=$payload, response=$body, exception=$err"
+        rethrow()
+    end
+end
 
 function HttpPrivateRequest(method, endPoint, params, info, public_key=EnvConfig.authorization.key, secret_key=EnvConfig.authorization.secret)
     @assert !isnothing(BYBIT_APIREST) "Bybit.init() not yet done resulting in missing URL"
@@ -597,6 +654,19 @@ Returns a DataFrame of open **spot** orders with columns:
 - rejectreason ::String
 """
 function openorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
+    # Check if in simulation mode
+    if !isnothing(bc.orders)
+        df = copy(bc.orders)
+        if !isnothing(symbol)
+            df = df[df[!, :symbol] .== uppercase(String(symbol)), :]
+        end
+        if !isnothing(orderid)
+            df = df[df[!, :orderid] .== String(orderid), :]
+        end
+        return df
+    end
+    
+    # Production mode: call Bybit API
     params = Dict("category" => "spot")
     isnothing(symbol) ? nothing : params["symbol"] = symbol
     isnothing(orderid) ? nothing : params["orderId"] = orderid
@@ -703,6 +773,19 @@ end
 
 """Cancels an open spot order and returns the cancelled orderid"""
 function cancelorder(bc::BybitCache, symbol, orderid)
+    # Check if in simulation mode
+    if !isnothing(bc.orders)
+        ix = findfirst(==(String(orderid)), bc.orders[!, :orderid])
+        if !isnothing(ix)
+            row = bc.orders[ix, :]
+            push!(bc.closedorders, row)
+            deleteat!(bc.orders, ix)
+            return String(orderid)
+        end
+        return nothing
+    end
+    
+    # Production mode: call Bybit API
     params = Dict("category" => "spot", "symbol" => symbol, "orderId" => orderid)
     httpresponse = HttpPrivateRequest(bc, "POST", "/v5/order/cancel", params, "cancelorder")
     # if !("orderId" in keys(httpresponse["result"])) || (httpresponse["result"]["orderId"] != orderid)
@@ -711,8 +794,46 @@ function cancelorder(bc::BybitCache, symbol, orderid)
     return !("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]
 end
 
-"Places an order: spot order by default or margin order if 2 <= marginleverage <= 10"
+"Helper function to apply order fill to simulation balances"
+function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, price::Real)
+    base = _basefromsymbol(symbol)
+    quote_coin = uppercase(EnvConfig.cryptoquote)
+    bix = findfirst(==(base), bc.assets[!, :coin])
+    qix = findfirst(==(quote_coin), bc.assets[!, :coin])
+    if isnothing(bix)
+        push!(bc.assets, (coin=base, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
+        bix = lastindex(bc.assets[!, :coin])
+    end
+    if isnothing(qix)
+        push!(bc.assets, (coin=quote_coin, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
+        qix = lastindex(bc.assets[!, :coin])
+    end
+    if lowercase(String(side)) == "buy"
+        bc.assets[qix, :free] -= Float32(basequantity * price)
+        bc.assets[bix, :free] += Float32(basequantity)
+    else
+        bc.assets[bix, :free] -= Float32(basequantity)
+        bc.assets[qix, :free] += Float32(basequantity * price)
+    end
+end
+
 function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
+    # Check if in simulation mode
+    if !isnothing(bc.orders)
+        syminfo = symbolinfo(bc, symbol)
+        if isnothing(syminfo)
+            return nothing
+        end
+        limitprice = isnothing(price) ? Float32(get24h(bc, symbol).lastprice) : Float32(price)
+        dt = Dates.now(Dates.UTC)
+        orderid = string(orderside, symbol, Dates.format(dt, "yymmddTHH:MM:SS"))
+        row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=Float32(basequantity), ordertype="Limit", isLeverage=(marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=Float32(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(marginleverage))
+        push!(bc.closedorders, row)
+        _applyfill!(bc, symbol, orderside, basequantity, limitprice)
+        return orderid
+    end
+    
+    # Production mode: original API implementation
     @assert basequantity > 0.0 "createorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(price) || price > 0.0 "createorder $symbol price of $price cannot be <=0 for order type Limit"
     @assert orderside in ["Buy", "Sell"] "createorder $symbol orderside=$orderside no in [Buy, Sell]"
@@ -941,6 +1062,12 @@ Returns DataFrame with 5 columns of wallet positions of Unified Trade Account
 ````
      """
 function balances(bc::BybitCache)
+    # Check if in simulation mode (BybitSim with simulation state initialized)
+    if !isnothing(bc.assets)
+        return _emptybalances(bc.assets)
+    end
+    
+    # Production mode: call Bybit API
     response = HttpPrivateRequest(bc, "GET", "/v5/account/wallet-balance", Dict("accountType" => "UNIFIED"), "wallet balance")
     # println(response["result"]["list"][1]["coin"][1])
     if length(response["result"]["list"]) > 1
@@ -997,6 +1124,23 @@ function balances(bc::BybitCache)
         @warn "unexpected missing Bybit balance info: $response"
     end
     return df
+end
+
+"Helper function to format balances DataFrame for both production and simulation"
+function _emptybalances(df::DataFrame)
+    return select(df, :coin, :locked, :free, :borrowed, :accruedinterest)
+end
+
+"Helper function to extract base coin from symbol (e.g., 'BTCUSDT' -> 'BTC')"
+function _basefromsymbol(symbol::AbstractString)
+    # Try to extract base from symbol using quote coin
+    quote_up = uppercase(EnvConfig.cryptoquote)
+    sym = uppercase(String(symbol))
+    if endswith(sym, quote_up)
+        return sym[1:(end-length(quote_up))]
+    end
+    # Fallback for non-standard symbols
+    return sym[1:end-4]  # Assume 4-char quote (USDT)
 end
 
 

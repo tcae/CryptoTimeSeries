@@ -3,6 +3,51 @@
 ## Goal
 Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, audit-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 
+## 2026-05-13 Proposal: Separate Simulation Data from Paper Bookkeeping
+
+### Proposal summary
+Use a dedicated simulation exchange `BybitSim` for realistic Bybit-backed market data, symbol metadata, and virtual portfolio bookkeeping. Introduce a dedicated `TestXch` for synthetic OHLCV patterns such as `SINE` and `DOUBLESINE` via `TestOhlcv`. Both simulation exchanges should receive their virtual portfolio when instantiated from the corresponding script, so the simulation bookkeeping lives in the exchange instance rather than in `CryptoXch`.
+
+### Why this matters
+- Real simulation needs realistic symbol metadata for `minimumqty`, `validsymbol`, and downstream sizing logic.
+- Bybit account/bookkeeping access is not dependable enough for paper trade state, even when market data is usable.
+- Synthetic test patterns should be explicit and not inferred from `EnvConfig.test`.
+- Exchange choice must become explicit in scripts so the same codebase can target Bybit, Kraken Spot, Kraken Futures, and future venues like IBKR.
+
+### Impact review
+- `CryptoXch`: split market-data provider concerns from trade/bookkeeping concerns; keep symbol metadata resolution working in simulation without requiring a real exchange account.
+- `CryptoXch`: keep the shared exchange abstraction and routing logic, but move simulation bookkeeping into the simulation exchange implementations instead of `CryptoXch`.
+- `Trade`: trade selection and order handling should use the configured exchange identity explicitly, but the virtual portfolio should come from the instantiated simulation exchange.
+- Scripts: `tradereal.jl`, `tradesim.jl`, and future entrypoints must pass the exchange explicitly instead of assuming Bybit.
+- `TestOhlcv`: remains the provider for explicit synthetic bases only; it should not be implied by `EnvConfig.test`.
+- Tests: add coverage for Bybit-seeded simulation, `TestXch` synthetic pattern loading, and quote-asset filtering across exchanges.
+
+### Metadata handling
+- `BybitSim` should provide realistic Bybit symbol metadata for simulation sizing and order constraints.
+- `TestXch` should reuse copied metadata from Bybit for common symbols and map `XRP` metadata to the synthetic `SINE` and `DOUBLESINE` patterns so sizing and validation behave like a real venue.
+- Symbol metadata reuse should stay in the exchange layer so common code can be shared between simulation and real trading.
+
+### Risks and mitigations
+- Risk: breaking existing scripts that silently assume Bybit.
+	- Mitigation: keep compatibility defaults for one transition period, but emit a clear warning when exchange is omitted.
+- Risk: `minimumqty` and symbol validation may still query live metadata in the wrong mode.
+	- Mitigation: route symbol metadata through the configured data exchange and add simulation-safe fallbacks.
+- Risk: paper bookkeeping accidentally touching venue account state.
+	- Mitigation: keep simulation ledger state in `Trade` / `CryptoXch` cache objects only, and block account-dependent paths in `TestXch`.
+
+### Staged plan
+1. Split exchange identity from simulation identity in `CryptoXch` so data exchange and trade exchange can be configured independently.
+2. Rename the simulation Bybit path to `BybitSim` and add a dedicated `TestXch` adapter for synthetic OHLCV only.
+3. Move virtual portfolio/bookkeeping state into the simulation exchange instances and instantiate it from the scripts.
+4. Make `minimumqty` and symbol validation simulation-safe while still using real symbol metadata when available.
+5. Update `tradereal.jl`, `tradesim.jl`, and helper scripts to declare their exchange explicitly.
+6. Add tests covering `BybitSim` market-data/metadata behavior, `TestXch` synthetic data, and non-Bybit live exchanges.
+
+### Exit criteria
+- Simulation can run with realistic symbol metadata and a virtual portfolio owned by the simulation exchange instance.
+- Synthetic test runs can be targeted explicitly via `TestXch`.
+- Scripts no longer silently assume Bybit for all cases, and the simulation exchanges are explicit and script-instantiated.
+
 This plan is intentionally incremental and ordered exactly by the requested priorities. Work on objective `N+1` starts only after objective `N` reaches its exit criteria.
 
 ## Current Code Baseline (Relevant Touchpoints)

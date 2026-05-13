@@ -252,7 +252,7 @@ end
     readmanifest(manifestpath::String)::Dict{String, Any}
 
 Read manifest file tracking event hashes for a given audit folder.
-Returns empty dict if manifest does not exist.
+Returns empty dict if manifest does not exist or is corrupted.
 """
 function readmanifest(manifestpath::String)::Dict{String, Any}
     if !isfile(manifestpath)
@@ -261,38 +261,46 @@ function readmanifest(manifestpath::String)::Dict{String, Any}
             "event_hashes" => [],
         )
     end
-    obj = JSON3.read(read(manifestpath, String))
-    # Convert JSON3 object to Dict with String keys
-    result = Dict{String, Any}()
-    for (k, v) in pairs(obj)
-        key = String(k)
-        if v isa JSON3.Object
-            # Convert nested JSON3 objects to Dict with String keys
-            nested_dict = Dict{String, Any}()
-            for (nk, nv) in pairs(v)
-                nested_dict[String(nk)] = nv
-            end
-            result[key] = nested_dict
-        elseif v isa JSON3.Array
-            # Convert array of JSON3 objects to array of Dicts with String keys
-            converted_array = []
-            for item in v
-                if item isa JSON3.Object
-                    item_dict = Dict{String, Any}()
-                    for (ik, iv) in pairs(item)
-                        item_dict[String(ik)] = iv
-                    end
-                    push!(converted_array, item_dict)
-                else
-                    push!(converted_array, item)
+    try
+        obj = JSON3.read(read(manifestpath, String))
+        # Convert JSON3 object to Dict with String keys
+        result = Dict{String, Any}()
+        for (k, v) in pairs(obj)
+            key = String(k)
+            if v isa JSON3.Object
+                # Convert nested JSON3 objects to Dict with String keys
+                nested_dict = Dict{String, Any}()
+                for (nk, nv) in pairs(v)
+                    nested_dict[String(nk)] = nv
                 end
+                result[key] = nested_dict
+            elseif v isa JSON3.Array
+                # Convert array of JSON3 objects to array of Dicts with String keys
+                converted_array = []
+                for item in v
+                    if item isa JSON3.Object
+                        item_dict = Dict{String, Any}()
+                        for (ik, iv) in pairs(item)
+                            item_dict[String(ik)] = iv
+                        end
+                        push!(converted_array, item_dict)
+                    else
+                        push!(converted_array, item)
+                    end
+                end
+                result[key] = converted_array
+            else
+                result[key] = v
             end
-            result[key] = converted_array
-        else
-            result[key] = v
         end
+        return result
+    catch
+        # Manifest is corrupted or empty; return fresh structure and let the caller overwrite it
+        return Dict(
+            "date" => Dates.format(Dates.today(), dateformat"yyyy-mm-dd"),
+            "event_hashes" => [],
+        )
     end
-    return result
 end
 
 """

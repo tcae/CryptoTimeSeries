@@ -18,7 +18,7 @@ EnvConfig.init(EnvConfig.test)
         @test Trade.loopstate(tc) == Trade.loop_idle
 
         # running → pause! → paused
-        tc.mc[:loop_state] = Trade.loop_running
+        Trade._setloopstate!(tc, Trade.loop_running)
         Trade.pause!(tc)
         @test Trade.loopstate(tc) == Trade.loop_paused
     end
@@ -30,23 +30,23 @@ EnvConfig.init(EnvConfig.test)
         @test Trade.loopstate(tc) == Trade.loop_running
 
         # stopped → resume! → still stopped
-        tc.mc[:loop_state] = Trade.loop_stopped
+        Trade._setloopstate!(tc, Trade.loop_stopped)
         Trade.resume!(tc)
         @test Trade.loopstate(tc) == Trade.loop_stopped
     end
 
     @testset "stop! from running and paused sets loop_stopping" begin
-        tc.mc[:loop_state] = Trade.loop_running
+        Trade._setloopstate!(tc, Trade.loop_running)
         Trade.stop!(tc)
         @test Trade.loopstate(tc) == Trade.loop_stopping
 
-        tc.mc[:loop_state] = Trade.loop_paused
+        Trade._setloopstate!(tc, Trade.loop_paused)
         Trade.stop!(tc)
         @test Trade.loopstate(tc) == Trade.loop_stopping
     end
 
     @testset "stop! from idle has no effect" begin
-        tc.mc[:loop_state] = Trade.loop_idle
+        Trade._setloopstate!(tc, Trade.loop_idle)
         Trade.stop!(tc)
         @test Trade.loopstate(tc) == Trade.loop_idle
     end

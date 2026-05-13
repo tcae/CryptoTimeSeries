@@ -148,8 +148,11 @@ mutable struct TradeCache
     cl::Classify.AbstractClassifier
     mc::Dict # MC = module constants
     dbgdf
+    looplock::ReentrantLock
+    loopcond::Threads.Condition
     function TradeCache(; xc=CryptoXch.XchCache(), cl=Classify.Classifier011(), trademode=notrade)
-        cache = new(xc, DataFrame(), cl, Dict(), DataFrame())
+        looplock = ReentrantLock()
+        cache = new(xc, DataFrame(), cl, Dict(), DataFrame(), looplock, Threads.Condition(looplock))
         cache.mc[:exitcoins] = [] # exit specific coins
         cache.mc[:longopencoins] = []  # force open long
         cache.mc[:shortopencoins] = [] # force open short
@@ -160,7 +163,8 @@ mutable struct TradeCache
         cache.mc[:reloadtimes] = [Time("04:00:00")]
         cache.mc[:trademode] = trademode  # see TradeMode definition above
         cache.mc[:usenewtrade] = false # implementation switch between old and new trade! method
-        cache.mc[:strategy_engine] = :classifier  # :classifier (legacy) or :algorithm03
+        cache.mc[:strategy_engine] = :classifier  # :classifier (legacy) or :getgainsalgo
+        cache.mc[:strategy_algorithm] = TradingStrategy.gain_reversal!  # configured gain algorithm
         cache.mc[:strategy_state] = Dict{String, Any}()  # per-base TradingStrategy.GainSegment
         cache.mc[:strategy_history] = Dict{String, Any}()  # per-base rolling price+signal history
         cache.mc[:strategy_openthreshold] = 0.6f0
@@ -199,8 +203,73 @@ function _tradeselection_history_minutes(tc::TradeCache)::Int
     return max(classifier_minutes + 1, liquidity_minutes, 24 * 60)
 end
 
+"""
+Build a minimal 24h USDT market snapshot for requested bases by downloading their
+OHLCV slices directly. This is a fallback path used when `getUSDTmarket` returns
+no rows (for example when canned market snapshots are unavailable).
+"""
+function _fallback_usdtmarket(tc::TradeCache, datetime::DateTime, bases::AbstractVector)::DataFrame
+    usdtdf = DataFrame(
+        basecoin=String[],
+        quotevolume24h=Float32[],
+        pricechangepercent=Float32[],
+        lastprice=Float32[],
+        askprice=Float32[],
+        bidprice=Float32[],
+    )
+    startdt = datetime - Day(1) + Minute(1)
+    for rawbase in unique(bases)
+        base = rawbase === nothing ? "" : String(rawbase)
+        isempty(base) && continue
+        base == EnvConfig.cryptoquote && continue
+        ohlcv = CryptoXch.cryptodownload(tc.xc, base, "1m", startdt, datetime)
+        odf = Ohlcv.dataframe(ohlcv)
+        if size(odf, 1) == 0
+            (verbosity >= 2) && @warn "fallback usdtmarket: missing OHLCV" base datetime startdt
+            continue
+        end
+        firstopen = Float32(odf[begin, :open])
+        lastclose = Float32(odf[end, :close])
+        lastpivot = hasproperty(odf, :pivot) ? Float32(odf[end, :pivot]) : lastclose
+        vol24h = Float32(sum(odf[!, :basevolume] .* odf[!, :pivot]))
+        change = firstopen == 0f0 ? 0f0 : Float32((lastclose - firstopen) / firstopen)
+        push!(usdtdf, (
+            basecoin=base,
+            quotevolume24h=vol24h,
+            pricechangepercent=change,
+            lastprice=lastclose,
+            askprice=lastpivot * 1.00001f0,
+            bidprice=lastpivot * 0.99999f0,
+        ))
+    end
+    return usdtdf
+end
+
 
 TRADECONFIGFILE = "TradeConfig"
+
+"Normalize a base/pair token to a base coin symbol for the configured quote coin."
+function _normalize_basecoin_token(token, quotecoin::AbstractString)::Union{Nothing, String}
+    q = uppercase(String(quotecoin))
+    t = uppercase(strip(String(token)))
+    isempty(t) && return nothing
+    t == q && return nothing
+    if occursin('/', t)
+        parts = split(t, '/'; limit=2)
+        length(parts) == 2 || return nothing
+        base, quotetoken = parts
+        quotetoken == q || return nothing
+        base == q && return nothing
+        return base
+    end
+    if endswith(t, q)
+        base = t[1:(end - length(q))]
+        isempty(base) && return nothing
+        base == q && return nothing
+        return base
+    end
+    return t
+end
 
 """
 Loads all USDT coins, checks continuous minimum volume criteria, removes risk coins.
@@ -210,8 +279,11 @@ The resulting DataFrame table of tradable coins is stored.
 """
 function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, assetonly=false, updatecache=false)
     datetime = floor(datetime, Minute(1))
-    assetbaseset = Set(String.(assetbases))
-    whitelistset = Set(String.(tc.mc[:whitelistcoins]))
+    quotecoin = uppercase(EnvConfig.cryptoquote)
+    assetbase_tokens = [_normalize_basecoin_token(x, quotecoin) for x in assetbases]
+    whitelist_tokens = [_normalize_basecoin_token(x, quotecoin) for x in tc.mc[:whitelistcoins]]
+    assetbaseset = Set(filter(!isnothing, assetbase_tokens))
+    whitelistset = Set(filter(!isnothing, whitelist_tokens))
     history_minutes = _tradeselection_history_minutes(tc)
     history_startdt = datetime - Minute(history_minutes)
 
@@ -220,13 +292,27 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     # CryptoXch.removeallbases(tc.xc)  #* reuse what is in cache
     # Classify.removebase!(tc.cl, nothing)  #* reuse what is in cache
 
-    usdtdf = CryptoXch.getUSDTmarket(tc.xc)  # superset of coins with 24h volume price change and last price
+    usdtdf = CryptoXch.getUSDTmarket(tc.xc; dt=datetime)  # superset of coins with 24h volume price change and last price
+    if size(usdtdf, 1) == 0
+        fallbackbases = filter(!=(quotecoin), collect(union(assetbaseset, whitelistset)))
+        (verbosity >= 1) && @warn "empty USDT market snapshot; using OHLCV fallback reconstruction" datetime fallbackbases
+        usdtdf = _fallback_usdtmarket(tc, datetime, fallbackbases)
+    end
     if assetonly
         usdtdf = filter(row -> row.basecoin in assetbaseset, usdtdf)
     end
     (verbosity >= 3) && println("USDT market of size=$(size(usdtdf, 1)) at $datetime")
     tc.cfg = select(usdtdf, :basecoin, :quotevolume24h => (x -> x ./ 1000000) => :quotevolume24h_M, :pricechangepercent, :lastprice)
     if size(tc.cfg, 1) == 0
+        tc.cfg[:, :datetime] = DateTime[]
+        tc.cfg[:, :minquotevol] = Bool[]
+        tc.cfg[:, :continuousminvol] = Bool[]
+        tc.cfg[:, :inportfolio] = Bool[]
+        tc.cfg[:, :classifieraccepted] = Bool[]
+        tc.cfg[:, :noinvest] = Bool[]
+        tc.cfg[:, :buyenabled] = Bool[]
+        tc.cfg[:, :sellenabled] = Bool[]
+        tc.cfg[:, :whitelisted] = Bool[]
         (verbosity >= 1) && @warn "no basecoins selected - empty result tc.cfg=$(tc.cfg)"
         return tc
     end
@@ -473,6 +559,7 @@ function policyenforcement(cache::TradeCache, tavec::Vector{Classify.TradeAdvice
     pop!(df)  # remove dummy row
     if cache.mc[:trademode] == quickexit
         for base in assets[!, :coin]
+            uppercase(String(base)) == uppercase(EnvConfig.cryptoquote) && continue
             _traderow!(df, cache, basecoin=base, tradelabel=allclose, enforced="quickexit")
         end
     else # no quick exit
@@ -664,6 +751,10 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::Classify.TradeAdvi
     price = currentprice(ohlcv)
     @assert base == ohlcv.base == ta.base
     minimumbasequantity = CryptoXch.minimumbasequantity(cache.xc, base, price)
+    if isnothing(minimumbasequantity)
+        (verbosity > 2) && println("$(tradetime(cache)) skip $base due to missing minimum base quantity at price=$price")
+        return nothing
+    end
     # (verbosity > 2) && println("$(tradetime(cache)) entry $base , $(ta.tradelabel)")
     # CryptoXch.portfolio subtracts the borrowed amount from usdtvalue of each base
     if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:exitcoins])
@@ -811,15 +902,52 @@ _strategyengine(cache::TradeCache) = Symbol(get(cache.mc, :strategy_engine, :cla
 # ── Loop control ────────────────────────────────────────────────────────────
 
 "Returns the current loop lifecycle state."
-loopstate(cache::TradeCache) = LoopState(Int(cache.mc[:loop_state]))
-_setloopstate!(cache::TradeCache, s::LoopState) = (cache.mc[:loop_state] = s; nothing)
+_loopstate_nolock(cache::TradeCache) = LoopState(Int(cache.mc[:loop_state]))
+_setloopstate_nolock!(cache::TradeCache, s::LoopState) = (cache.mc[:loop_state] = s; nothing)
+
+function loopstate(cache::TradeCache)
+    lock(cache.looplock)
+    try
+        return _loopstate_nolock(cache)
+    finally
+        unlock(cache.looplock)
+    end
+end
+
+function _setloopstate!(cache::TradeCache, s::LoopState)
+    lock(cache.looplock)
+    try
+        _setloopstate_nolock!(cache, s)
+        notify(cache.loopcond; all=true)
+    finally
+        unlock(cache.looplock)
+    end
+    return nothing
+end
+
+function _waitforactive_loopstate!(cache::TradeCache)
+    lock(cache.looplock)
+    try
+        while _loopstate_nolock(cache) == loop_paused
+            wait(cache.loopcond)
+        end
+        return _loopstate_nolock(cache)
+    finally
+        unlock(cache.looplock)
+    end
+end
 
 """
 Request the loop to pause after the current tick.
 Only effective when the loop state is `loop_running`.
 """
 function pause!(cache::TradeCache)
-    (loopstate(cache) == loop_running) && _setloopstate!(cache, loop_paused)
+    lock(cache.looplock)
+    try
+        (_loopstate_nolock(cache) == loop_running) && _setloopstate_nolock!(cache, loop_paused)
+    finally
+        unlock(cache.looplock)
+    end
     return cache
 end
 
@@ -828,7 +956,15 @@ Resume a paused loop.
 Only effective when the loop state is `loop_paused`.
 """
 function resume!(cache::TradeCache)
-    (loopstate(cache) == loop_paused) && _setloopstate!(cache, loop_running)
+    lock(cache.looplock)
+    try
+        if _loopstate_nolock(cache) == loop_paused
+            _setloopstate_nolock!(cache, loop_running)
+            notify(cache.loopcond; all=true)
+        end
+    finally
+        unlock(cache.looplock)
+    end
     return cache
 end
 
@@ -837,8 +973,16 @@ Request the loop to stop gracefully after the current tick completes.
 Effective when loop state is `loop_running` or `loop_paused`.
 """
 function stop!(cache::TradeCache)
-    st = loopstate(cache)
-    (st in (loop_running, loop_paused)) && _setloopstate!(cache, loop_stopping)
+    lock(cache.looplock)
+    try
+        st = _loopstate_nolock(cache)
+        if st in (loop_running, loop_paused)
+            _setloopstate_nolock!(cache, loop_stopping)
+            notify(cache.loopcond; all=true)
+        end
+    finally
+        unlock(cache.looplock)
+    end
     return cache
 end
 
@@ -868,8 +1012,9 @@ function _validatestrategyconfig!(cache::TradeCache)
 end
 
 "Apply strategy runtime settings from a `TradingStrategy.GainSegment` and reset derived per-base state."
-function apply_tradingstrategy!(mc::AbstractDict, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:algorithm03, source::AbstractString="manual")
+function apply_tradingstrategy!(mc::AbstractDict, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:getgainsalgo, source::AbstractString="manual")
     mc[:strategy_engine] = strategy_engine
+    mc[:strategy_algorithm] = gs.algorithm
     mc[:strategy_openthreshold] = Float32(gs.openthreshold)
     mc[:strategy_closethreshold] = Float32(gs.closethreshold)
     mc[:strategy_buygain] = Float32(gs.buygain)
@@ -885,7 +1030,7 @@ function apply_tradingstrategy!(mc::AbstractDict, gs::TradingStrategy.GainSegmen
     return _validatestrategyconfig!(mc)
 end
 
-function apply_tradingstrategy!(cache::TradeCache, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:algorithm03, source::AbstractString="manual")
+function apply_tradingstrategy!(cache::TradeCache, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:getgainsalgo, source::AbstractString="manual")
     apply_tradingstrategy!(cache.mc, gs; strategy_engine=strategy_engine, source=source)
     return cache
 end
@@ -896,7 +1041,7 @@ function apply_trenddetector_strategy!(mc::AbstractDict, tdref)
     gs = getproperty(tdref, :tradingstrategy)
     @assert gs isa TradingStrategy.GainSegment "tdref.tradingstrategy must be TradingStrategy.GainSegment, got type=$(typeof(gs))"
     source = hasproperty(tdref, :configname) ? "trenddetector:$(getproperty(tdref, :configname))" : "trenddetector"
-    return apply_tradingstrategy!(mc, gs; strategy_engine=:algorithm03, source=source)
+    return apply_tradingstrategy!(mc, gs; strategy_engine=:getgainsalgo, source=source)
 end
 
 function apply_trenddetector_strategy!(cache::TradeCache, tdref)
@@ -922,7 +1067,7 @@ function _strategystate!(cache::TradeCache, base::AbstractString)
             maxwindow=Int(cache.mc[:strategy_maxwindow]),
             openthreshold=Float32(cache.mc[:strategy_openthreshold]),
             closethreshold=Float32(cache.mc[:strategy_closethreshold]),
-            algorithm=TradingStrategy.algorithm03!,
+            algorithm=get(cache.mc, :strategy_algorithm, TradingStrategy.gain_reversal!),
             limitreduction=Float32(cache.mc[:strategy_limitreduction]),
         )
         gs.buygain = Float32(cache.mc[:strategy_buygain])
@@ -931,7 +1076,8 @@ function _strategystate!(cache::TradeCache, base::AbstractString)
     end
 end
 
-function _upsert_algorithm03_sample!(history, ohlcv::Ohlcv.OhlcvData, label::Targets.TradeLabel, score)
+"update if the record already exists, otherwise insert it."
+function _upsert_getgainsalgo_sample!(history, ohlcv::Ohlcv.OhlcvData, label::Targets.TradeLabel, score)
     rowix = ohlcv.ix
     odf = Ohlcv.dataframe(ohlcv)
     @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
@@ -955,7 +1101,7 @@ function _upsert_algorithm03_sample!(history, ohlcv::Ohlcv.OhlcvData, label::Tar
     return history
 end
 
-function _algorithm03_action2label(gs::TradingStrategy.GainSegment, fallback::Targets.TradeLabel=allclose)::Targets.TradeLabel
+function _getgainsalgo_action2label(gs::TradingStrategy.GainSegment, fallback::Targets.TradeLabel=allclose)::Targets.TradeLabel
     if gs.buyta.orderlabel in [longbuy, longstrongbuy]
         return longbuy
     elseif gs.buyta.orderlabel in [shortbuy, shortstrongbuy]
@@ -968,15 +1114,15 @@ function _algorithm03_action2label(gs::TradingStrategy.GainSegment, fallback::Ta
     return fallback
 end
 
-function _algorithm03_advice!(cache::TradeCache, base::AbstractString, ta::Classify.TradeAdvice)
+function _getgainsalgo_advice!(cache::TradeCache, base::AbstractString, ta::Classify.TradeAdvice)
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
     history = _strategyhistory!(cache, base)
-    _upsert_algorithm03_sample!(history, ohlcv, ta.tradelabel, ta.probability)
+    _upsert_getgainsalgo_sample!(history, ohlcv, ta.tradelabel, ta.probability)
     gs = _strategystate!(cache, base)
     lastix = length(history.scores)
     if lastix > 0
         TradingStrategy.getgains(gs, history.predictionsdf, history.scores, history.labels, false; lastix=lastix, openthreshold=gs.openthreshold, closethreshold=gs.closethreshold)
-        ta.tradelabel = _algorithm03_action2label(gs, ta.tradelabel)
+        ta.tradelabel = _getgainsalgo_action2label(gs, ta.tradelabel)
     end
     return ta
 end
@@ -1002,8 +1148,8 @@ function _tradestep!(cache::TradeCache)
         #TODO handle multiple classifiers per base
         tradeadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt, investment=nothing)
         if !isnothing(tradeadvice)
-            if _strategyengine(cache) == :algorithm03
-                tradeadvice = _algorithm03_advice!(cache, basecfg.basecoin, tradeadvice)
+            if _strategyengine(cache) == :getgainsalgo
+                tradeadvice = _getgainsalgo_advice!(cache, basecfg.basecoin, tradeadvice)
             end
             push!(tradeadvices, tradeadvice)
         else
@@ -1074,11 +1220,7 @@ function _run_tradeloop!(cache::TradeCache)
     _setloopstate!(cache, loop_running)
     try
         for c in cache.xc
-            st = loopstate(cache)
-            while st == loop_paused
-                sleep(1)
-                st = loopstate(cache)
-            end
+            st = _waitforactive_loopstate!(cache)
             (st == loop_stopping) && break
             _tradestep!(cache)
         end
@@ -1137,6 +1279,37 @@ function start!(cache::TradeCache)
     _ensure_tradeloop_initialized!(cache)
     _run_tradeloop!(cache)
     return cache
+end
+
+"""
+Asynchronously start the trading loop in a background task.
+Returns immediately with a `Task` handle. The loop executes in the background, and the caller
+can control it from another task/thread using `pause!()`, `resume!()`, and `stop!()`.
+
+When `skip_init=false` (default) the trade configuration is loaded or rebuilt if `cache.cfg` is empty.
+Pass `skip_init=true` when the caller has already populated `cache.cfg`.
+
+Returns:
+    `Task`: a background task running `_run_tradeloop!(cache)`. 
+    Caller can `wait(task)` for completion or check task status.
+
+Example:
+```julia
+cache = Trade.setup_backtest(...)
+task = Trade.async_start!(cache)
+# ... from another task:
+Trade.pause!(cache)   # pause the loop
+Trade.resume!(cache)  # resume it
+Trade.stop!(cache)    # request exit
+result = wait(task)   # block until loop finishes
+```
+"""
+function async_start!(cache::TradeCache; skip_init::Bool=false)
+    if loopstate(cache) != loop_idle
+        @warn "async_start! called but loop is not idle (state=$(loopstate(cache)))"
+    end
+    skip_init || _ensure_tradeloop_initialized!(cache)
+    return @async _run_tradeloop!(cache)
 end
 
 """

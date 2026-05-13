@@ -14,6 +14,8 @@ EnvConfig.init(test)
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.data_exchange, xc.exchange) == CryptoXch.EXCHANGE_BYBIT
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.trade_exchange_spot, xc.exchange) == CryptoXch.EXCHANGE_KRAKENSPOT
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.trade_exchange_futures, xc.exchange) == CryptoXch.EXCHANGE_KRAKENFUTURES
+    @test CryptoXch._normalizeexchange("bybitsim") == CryptoXch.EXCHANGE_BYBITSIM
+    @test CryptoXch._normalizeexchange("testxch") == CryptoXch.EXCHANGE_TESTXCH
 
     @test string(CryptoXch._routedModule(xc, CryptoXch.data_exchange)) == "Bybit"
     @test string(CryptoXch._routedModule(xc, CryptoXch.trade_exchange_spot)) == "KrakenSpot"
@@ -47,7 +49,7 @@ EnvConfig.init(test)
         quotecoin=["USDT"],
         status=["Trading"],
         innovation=[0],
-    ), "", "", "")
+    ), "", "", "", nothing, nothing, nothing)
 
     @test CryptoXch.KrakenSpot.symboltoken(spotbc, "BTC", "USDT") == "BTCUSDT"
     @test CryptoXch.KrakenFutures.symboltoken(futuresbc, "BTC", "USD") == "BTCUSD"
@@ -56,6 +58,17 @@ EnvConfig.init(test)
     @test CryptoXch.KrakenSpot.validsymbol(spotbc, "BTC", "USDT")
     @test CryptoXch.KrakenFutures.validsymbol(futuresbc, "BTC", "USD")
     @test CryptoXch.Bybit.validsymbol(bybitbc, "BTC", "USDT")
+
+    testxch = CryptoXch.TestXch.TestXchCache(syminfodf=DataFrame(
+        symbol=["XRPUSDT"],
+        basecoin=["XRP"],
+        quotecoin=["USDT"],
+        status=["Trading"],
+        innovation=[0],
+    ))
+    @test CryptoXch.TestXch.symboltoken(testxch, "SINE", "USDT") == "SINEUSDT"
+    @test !isnothing(CryptoXch.TestXch.symbolinfo(testxch, "XRPUSDT"))
+    @test !isnothing(CryptoXch.TestXch.symbolinfo(testxch, "SINEUSDT"))
 end
 
 end

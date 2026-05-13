@@ -711,7 +711,7 @@ function simulate_market_trade_pairs(predictionsdf::AbstractDataFrame, scores::A
         maxwindow=max(1, nrows),
         openthreshold=Float32(openthreshold),
         closethreshold=Float32(closethreshold),
-        algorithm=algorithm02!,
+        algorithm=gain_reversal!,
         makerfee=Float32(makerfee),
         takerfee=Float32(takerfee),
     )
@@ -752,7 +752,7 @@ mutable struct GainSegment
     limitreduction::Float32 # factor to reduce limit price in case of unfilled order for every trend sample with a label that does not support the trend (e.g. allclose label for an open long gain segment)
     buyta::TradeAction # buy of either long or short
     sellta::TradeAction # sell of either long or short
-    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=algorithm02!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, limitreduction::AbstractFloat=0f0)
+    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, limitreduction::AbstractFloat=0f0)
         return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, 0.001f0, 0.01f0, limitreduction, TradeAction(), TradeAction())
     end
 end
@@ -793,7 +793,7 @@ end
 Consumes the prediction results of a range (1 coin, 1 settype) and calculates the corresponding gain segments that are stored in gaindf.  
 Hold as long as trend is supported above closethreshold by hold, buy, strongbuy, otherwise close
 """
-function algorithm01!(gs::GainSegment, lastix)
+function gain_open_close!(gs::GainSegment, lastix)
     labels = gs.labels
     scores = gs.scores
     closecol = gs.predictionsdf[!, :close]
@@ -836,7 +836,7 @@ end
 Consumes the prediction results of a range (1 coin, 1 settype) and calculates the corresponding gain segments that are stored in gaindf.  
 Hold as long as trend is not broken by opposite buy or close above openthreshold.
 """
-function algorithm02!(gs::GainSegment, lastix)
+function gain_reversal!(gs::GainSegment, lastix)
     labels = gs.labels
     scores = gs.scores
     closecol = gs.predictionsdf[!, :close]
@@ -970,7 +970,7 @@ Implementation details:
 - labels are indicating a trend change, but the gain materializes after the corresponding order is closed
 - buygain and sellgain are defining the initial limit distance to the current price, which is reduced with a limitreduction rate for non trend supporting samples utilizing the price volatility.
 """
-function algorithm03!(gs::GainSegment, lastix)
+function gain_limit_reversal!(gs::GainSegment, lastix)
     # @assert length(scores) == length(labels) == size(predictionsdf, 1) > 0 "length(scores)=$(length(scores)) == length(labels)=$(length(labels)) == size(predictionsdf, 1)=$(size(predictionsdf, 1)) > 0"
     for ix in (gs.endix+1):lastix
         # first check whether the limit order is executed, if so, set trend and buyix and selllimit

@@ -21,7 +21,7 @@ using TradingStrategy
         maxwindow=123,
         openthreshold=0.65f0,
         closethreshold=0.45f0,
-        algorithm=TradingStrategy.algorithm03!,
+        algorithm=TradingStrategy.gain_limit_reversal!,
         limitreduction=0.2f0,
     )
     gs.buygain = 0.003f0
@@ -33,7 +33,8 @@ using TradingStrategy
     tdref = (configname="046", tradingstrategy=gs)
     Trade.apply_trenddetector_strategy!(mc, tdref)
 
-    @test mc[:strategy_engine] == :algorithm03
+    @test mc[:strategy_engine] == :getgainsalgo
+    @test mc[:strategy_algorithm] == TradingStrategy.gain_limit_reversal!
     @test mc[:strategy_source] == "trenddetector:046"
     @test mc[:strategy_openthreshold] == Float32(0.65)
     @test mc[:strategy_closethreshold] == Float32(0.45)
@@ -49,7 +50,7 @@ using TradingStrategy
         maxwindow=1,
         openthreshold=1.2f0,
         closethreshold=0.2f0,
-        algorithm=TradingStrategy.algorithm03!,
+        algorithm=TradingStrategy.gain_limit_reversal!,
         limitreduction=0f0,
     )
     @test_throws AssertionError Trade.apply_tradingstrategy!(mc, gs_invalid)
