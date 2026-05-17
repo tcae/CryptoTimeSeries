@@ -13,6 +13,12 @@ HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+Ohlcv = {path = "../Ohlcv"}
+TestOhlcv = {path = "../TestOhlcv"}

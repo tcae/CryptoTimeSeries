@@ -25,6 +25,7 @@ verbosity = 1
 
 export lstm_bounds_trend_features, lstm_feature_contract, lstm_tensor_windows
 export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals, penultimatefeatures
+export RuntimeNNClassifier
 
 #region abstractclassifier
 """
@@ -2649,6 +2650,7 @@ include("Classifier013.jl")
 include("Classifier014.jl")
 include("Classifier015.jl")
 include("Classifier016.jl")
+include("RuntimeNNClassifier.jl")
 
 """
 idea:

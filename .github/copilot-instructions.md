@@ -32,9 +32,15 @@ applyTo: '*.jl'
 - write performance-critical code in a way that is easy to optimize later
 - follow the conventions for error handling using `try`, `catch`, and `throw`
 - use the Test module with `@test` and `@testset` macros for writing unit tests
+- in the layered architecture use results of lower level tests as the basis for higher level tests, e.g.
+  - test the Ohlcv package first and use the results of these tests to test the Features package, 
+  - then use the results of the Features package tests to test the Classify package, 
+  - then use the results of the Classify package tests to test the TradingStrategy package,
+  - then use the results of the TradingStrategy package tests to test the Trade package
 - for @assert always provide an explanation text that includes the real value of the tested parameters
 - Folder structure of generated / used data (not source code):
   - the root folder of data is $HOME/crypto
   - Reusable data that is shared by various experiments is stored per coin in the "coins" subfolder and each coin has a "base-quote" subfolder
   - Experiment specific data is stored in the "logs" folder within "crypto"
-  - test and debug data shall be stored in the "debug" folder within "crypto" including any unit test data of Copilot
+  - test and debug data shall be stored in the "debug" folder within "crypto" including any unit test data of Github Copilot
+- Minimize fallbacks. Preference is instead to have a clear error that will be fixed than implicit fallbacks.

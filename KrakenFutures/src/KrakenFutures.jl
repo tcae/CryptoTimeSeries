@@ -904,8 +904,20 @@ function _extractorderid(response::Dict)
 	return nothing
 end
 
+"Return a post-only limit price one tick inside the spread for maker orders with omitted price."
+function _makerlimitprice(syminfo::DataFrameRow, snapshot, orderside::AbstractString)
+	ticksize = Float32(syminfo.ticksize)
+	side = lowercase(String(orderside))
+	price = side == "buy" ? Float32(snapshot.askprice) - ticksize : Float32(snapshot.bidprice) + ticksize
+	return price > 0f0 ? price : nothing
+end
+
 """
 Create one order and return a standardized named tuple.
+
+If `price` is omitted and `maker=true`, the adapter will choose a limit price
+as close as possible to the current spread while remaining post-only so the
+order can qualify for maker fees.
 """
 function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
@@ -914,15 +926,20 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	!_hascredentials(bc) && return nothing
 
 	pairname = _symbol2pairname(bc, symbol)
-	ordertype = isnothing(price) ? "mkt" : "lmt"
+	effectiveprice = price
+	if isnothing(effectiveprice) && maker
+		snapshot = get24h(bc, symbol)
+		effectiveprice = isnothing(snapshot) ? nothing : _makerlimitprice(symbolinfo(bc, symbol), snapshot, orderside)
+	end
+	ordertype = isnothing(effectiveprice) ? "mkt" : "lmt"
 	params = Dict{String, Any}(
 		"symbol" => pairname,
 		"side" => lowercase(orderside),
 		"size" => string(basequantity),
 		"orderType" => ordertype,
 	)
-	!isnothing(price) && (params["limitPrice"] = string(price))
-	(maker && !isnothing(price)) && (params["postOnly"] = "true")
+	!isnothing(effectiveprice) && (params["limitPrice"] = string(effectiveprice))
+	(maker && !isnothing(effectiveprice)) && (params["postOnly"] = "true")
 	marginleverage > 0 && (params["leverage"] = string(marginleverage))
 
 	orderid = nothing
@@ -940,9 +957,9 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 		symbol=_normalizepairsymbol(symbol),
 		side=lowercase(orderside) == "buy" ? "Buy" : "Sell",
 		baseqty=Float32(basequantity),
-		ordertype=isnothing(price) ? "Market" : "Limit",
-		timeinforce=(maker && !isnothing(price)) ? "PostOnly" : "GTC",
-		limitprice=isnothing(price) ? 0f0 : Float32(price),
+		ordertype=isnothing(effectiveprice) ? "Market" : "Limit",
+		timeinforce=(maker && !isnothing(effectiveprice)) ? "PostOnly" : "GTC",
+		limitprice=isnothing(effectiveprice) ? 0f0 : Float32(effectiveprice),
 		avgprice=0f0,
 		executedqty=0f0,
 		status="New",
@@ -963,7 +980,21 @@ function amendorder(bc::KrakenFuturesCache, symbol::String, orderid::String; bas
 	isnothing(current) && return nothing
 
 	qty = isnothing(basequantity) ? current.baseqty : Float32(basequantity)
-	prc = isnothing(limitprice) ? current.limitprice : Float32(limitprice)
+	prc = current.limitprice
+	pricechanged = false
+	if current.timeinforce == "PostOnly"
+		snapshot = get24h(bc, symbol)
+		if !isnothing(snapshot)
+			prc = _makerlimitprice(symbolinfo(bc, symbol), snapshot, current.side)
+			pricechanged = !isapprox(Float64(prc), Float64(current.limitprice); atol=0.0, rtol=0.0)
+		end
+	elseif !isnothing(limitprice)
+		prc = Float32(limitprice)
+		pricechanged = !isapprox(Float64(prc), Float64(current.limitprice); atol=0.0, rtol=0.0)
+	end
+	if qty == current.baseqty && !pricechanged
+		return current
+	end
 
 	try
 		params = Dict{String, Any}("order_id" => orderid)

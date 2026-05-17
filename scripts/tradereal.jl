@@ -54,6 +54,7 @@ const MODEL046_FOLDER = "Trend-046-production"
 
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradereal-" * CONFIG046_NAME * "-" * Dates.format(now(), Dates.DateFormat("yymmdd-HHMMSS"))
+const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
 
 # Normalize whitelist entries to base coins for the configured quote coin.
 function normalize_whitelist(entries, quote_coin::AbstractString)
@@ -183,6 +184,7 @@ Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
 whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
 cache.mc[:whitelistcoins]    = whitelist
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
+cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
@@ -197,6 +199,9 @@ println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
 try
     Trade.run_live!(cache)
 finally
+    EnvConfig.setlogpath(ORDERS_SUBFOLDER)
+    CryptoXch.writeorders(cache.xc)
+    @info "$(EnvConfig.now()): saved production orders to $(EnvConfig.logfolder())"
     @info "$(EnvConfig.now()): tradereal finished"
     global_logger(defaultlogger)
 end

@@ -47,6 +47,9 @@ using DataFrames, Dates, KrakenSpot, Test
     @test tickrow.lastprice == 101.2f0
     @test tickrow.quotevolume24h ≈ 1214.4f0 atol = 1f-3
 
+    @test KrakenSpot._makerlimitprice(info, tickrow, "Buy") == 101.4f0
+    @test KrakenSpot._makerlimitprice(info, tickrow, "Sell") == 101.1f0
+
     klines = Any[
         Any[1700000000, "100", "110", "90", "105", "104", "1.2", "12"],
         Any[1700000060, "105", "120", "100", "118", "117", "2.3", "20"],

@@ -2,6 +2,8 @@ module Bybit
 
 using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, InlineStrings, Format, Downloads
 using EnvConfig
+using Ohlcv
+using TestOhlcv
 
 # base URL of the ByBit API
 # BYBIT_API_REST = "https://api.bybit.com"
@@ -18,6 +20,8 @@ verbosity =
 verbosity = 1
 
 const _recvwindow = "5000000"  # "5000" extended by factor 1000 due to nanoseconds in julia
+const _sim_order_counter = IdDict{Any, Int64}()
+const _bybitsim_test_basecoins = ("SINE", "DOUBLESINE")
 const _klineinterval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
 const interval2bybitinterval = Dict(
     "1m" => "1",
@@ -74,12 +78,44 @@ end
 
 "Initialize simulation state (assets, orders, closedorders) for BybitSim mode"
 function _init_simulation!(bc::BybitCache)
+    _ensure_sim_symboluniverse!(bc)
     if isnothing(bc.assets)
         bc.assets = DataFrame(coin=String31[], free=Float32[], locked=Float32[], borrowed=Float32[], accruedinterest=Float32[])
         bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[])
         bc.closedorders = similar(bc.orders)
     end
+    haskey(_sim_order_counter, bc) || (_sim_order_counter[bc] = 0)
     return bc
+end
+
+function _ensure_sim_symboluniverse!(bc::BybitCache)
+    isnothing(bc.syminfodf) && return bc
+    for base in _bybitsim_test_basecoins
+        symbol = uppercase(string(base, EnvConfig.cryptoquote))
+        ix = findfirst(==(symbol), bc.syminfodf[!, :symbol])
+        if isnothing(ix)
+            push!(bc.syminfodf, (
+                symbol=symbol,
+                status="Trading",
+                basecoin=String(base),
+                quotecoin=String(EnvConfig.cryptoquote),
+                ticksize=1f-6,
+                baseprecision=1f-5,
+                quoteprecision=1f-6,
+                minbaseqty=1f-5,
+                minquoteqty=1f0,
+                innovation=0,
+            ))
+        end
+    end
+    return bc
+end
+
+"Return the next per-cache simulation order sequence number."
+function _nextsimorderseq!(bc::BybitCache)::Int64
+    seq = get(_sim_order_counter, bc, 0) + 1
+    _sim_order_counter[bc] = seq
+    return seq
 end
 
 "Seed simulation portfolio with an initial balance"
@@ -465,6 +501,10 @@ end
 """
 Returns a DataFrame with trading information of the last 24h one row per symbol. If symbol is provided the returned DataFrame is limited to that symbol.
 
+In BybitSim mode this snapshot is used to support maker orders created with
+`price=nothing`: the backend chooses the closest post-only limit price it can
+derive from the simulated ticker snapshot.
+
 - symbol
 - quotevolume24h
 - pricechangepercent
@@ -473,7 +513,47 @@ Returns a DataFrame with trading information of the last 24h one row per symbol.
 - bidprice
 
 """
+function _sim_lastprice(symbol::AbstractString)::Float32
+    # Deterministic synthetic price per symbol for stable simulation behavior.
+    seed = sum(codeunits(uppercase(String(symbol))))
+    return Float32(1.0 + (seed % 5000) / 100.0)
+end
+
+function _sim_get24h(bc::BybitCache, symbol=nothing)
+    isempty = DataFrame(symbol=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[])
+    if isnothing(bc.syminfodf) || (size(bc.syminfodf, 1) == 0)
+        return isnothing(symbol) ? isempty : nothing
+    end
+
+    quotecoin = uppercase(String(EnvConfig.cryptoquote))
+    rowok(row) = (uppercase(String(row.quotecoin)) == quotecoin) && (String(row.status) == "Trading") && (Int(row.innovation) == 0)
+
+    if !isnothing(symbol) && (symbol != "")
+        sym = uppercase(String(symbol))
+        ix = findfirst(row -> (uppercase(String(row.symbol)) == sym) && rowok(row), eachrow(bc.syminfodf))
+        if isnothing(ix)
+            return nothing
+        end
+        sp = _sim_lastprice(sym)
+        return (symbol=sym, quotevolume24h=50_000_000f0, pricechangepercent=0f0, lastprice=sp, askprice=sp * 1.0001f0, bidprice=sp * 0.9999f0)
+    end
+
+    df = DataFrame(symbol=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[])
+    for row in eachrow(bc.syminfodf)
+        rowok(row) || continue
+        sym = uppercase(String(row.symbol))
+        sp = _sim_lastprice(sym)
+        push!(df, (symbol=sym, quotevolume24h=50_000_000f0, pricechangepercent=0f0, lastprice=sp, askprice=sp * 1.0001f0, bidprice=sp * 0.9999f0))
+    end
+    return df
+end
+
 function get24h(bc::BybitCache, symbol=nothing)
+    # BybitSim/offline mode: synthesize stable market snapshot from symbol universe.
+    if !isnothing(bc.orders)
+        return _sim_get24h(bc, symbol)
+    end
+
     if isnothing(symbol) || (symbol == "")
         response = HttpPublicRequest(bc, "GET", "/v5/market/tickers", Dict("category" => "spot"), "ticker/24h")
     else
@@ -601,6 +681,52 @@ function _convertklines(klines)
     return df
 end
 
+function _intervalperiod(interval::AbstractString)
+    m = match(r"^(\d+)([mhdw])$"i, strip(String(interval)))
+    isnothing(m) && throw(ArgumentError("unsupported interval=$(interval), expected like 1m,5m,1h,1d,1w"))
+    n = parse(Int, m.captures[1])
+    unit = lowercase(m.captures[2])
+    if unit == "m"
+        return Minute(n)
+    elseif unit == "h"
+        return Hour(n)
+    elseif unit == "d"
+        return Day(n)
+    end
+    return Week(n)
+end
+
+function _sim_klines(symbol::AbstractString; startDateTime=nothing, endDateTime=nothing, interval::AbstractString="1m")
+    p = _intervalperiod(interval)
+    enddt = isnothing(endDateTime) ? floor(Dates.now(Dates.UTC), p) : floor(endDateTime, p)
+    startdt = isnothing(startDateTime) ? floor(enddt - (999 * p), p) : floor(startDateTime, p)
+    if enddt < startdt
+        return DataFrame(opentime=DateTime[], open=Float32[], high=Float32[], low=Float32[], close=Float32[], basevolume=Float32[])
+    end
+
+    base = _basefromsymbol(symbol)
+    if base in _bybitsim_test_basecoins
+        tdf = TestOhlcv.testdataframe(base, startdt, enddt, interval, EnvConfig.cryptoquote)
+        if size(tdf, 1) == 0
+            error("BybitSim missing test OHLCV for base=$(base), interval=$(interval), range=$(startdt) to $(enddt).")
+        end
+        return select(tdf, :opentime, :open, :high, :low, :close, :basevolume)
+    end
+
+    # Prefer persisted OHLCV cache for normal symbols to keep BybitSim prices realistic
+    # (e.g., BTC around market magnitude instead of synthetic fallback waves).
+    cached = Ohlcv.defaultohlcv(base, interval)
+    Ohlcv.read!(cached)
+    if size(cached.df, 1) > 0
+        Ohlcv.timerangecut!(cached, startdt, enddt)
+        if size(cached.df, 1) > 0
+            return select(cached.df, :opentime, :open, :high, :low, :close, :basevolume)
+        end
+    end
+
+    error("BybitSim missing cached OHLCV for base=$(base), interval=$(interval), range=$(startdt) to $(enddt). Synthetic fallback is disabled for non-test symbols.")
+end
+
 """
 Returns ohlcv/klines data as DataFrame with oldest first rows (which is compatible to Ohlcv but in **contrast to the Bybit default!**)
 ```
@@ -611,6 +737,10 @@ Returns ohlcv/klines data as DataFrame with oldest first rows (which is compatib
     1 │ 2024-01-14T12:59:00  42758.0  42758.0  42735.1  42744.0  2.71146
 """
 function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
+    if !isnothing(bc.orders)
+        return _sim_klines(symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
+    end
+
     @assert interval in keys(interval2bybitinterval) "$interval is unknown Bybit interval"
     @assert !isnothing(symbol) && (symbol != "") "missing symbol for Bybit klines"
     params = Dict("category" => "spot", "symbol" => symbol, "interval" => interval2bybitinterval[interval], "limit" => 1000)
@@ -795,7 +925,7 @@ function cancelorder(bc::BybitCache, symbol, orderid)
 end
 
 "Helper function to apply order fill to simulation balances"
-function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, price::Real)
+function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, price::Real, marginleverage::Signed=0)
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.cryptoquote)
     bix = findfirst(==(base), bc.assets[!, :coin])
@@ -808,15 +938,44 @@ function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractStrin
         push!(bc.assets, (coin=quote_coin, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
         qix = lastindex(bc.assets[!, :coin])
     end
+    
+    is_short_margin = marginleverage > 0  # All current margin trades are shorts; distinguishes from potential future is_long_margin
+    is_long_margin = false  # Reserved for future long margin trades
+    
     if lowercase(String(side)) == "buy"
         bc.assets[qix, :free] -= Float32(basequantity * price)
-        bc.assets[bix, :free] += Float32(basequantity)
+        if is_short_margin
+            # Short margin close: reduce borrowed amount (covering short), don't add to free
+            bc.assets[bix, :borrowed] -= Float32(basequantity)
+        elseif is_long_margin
+            # Long margin open/maintain: add to free base (or track via borrowed in margin account)
+            bc.assets[bix, :free] += Float32(basequantity)
+        else
+            # Spot buy: add to free base
+            bc.assets[bix, :free] += Float32(basequantity)
+        end
     else
-        bc.assets[bix, :free] -= Float32(basequantity)
         bc.assets[qix, :free] += Float32(basequantity * price)
+        if is_short_margin
+            # Short margin open: increase borrowed base (short position), don't decrease free
+            bc.assets[bix, :borrowed] += Float32(basequantity)
+        elseif is_long_margin
+            # Long margin close/reduce: decrease free base (or track via borrowed)
+            bc.assets[bix, :free] -= Float32(basequantity)
+        else
+            # Spot sell: decrease free base
+            bc.assets[bix, :free] -= Float32(basequantity)
+        end
     end
 end
 
+"""
+Create one spot order and return an order row compatible named tuple.
+
+If `price` is omitted and `maker=true`, the simulation and live adapters will
+choose a limit price as close as possible to the current spread while staying
+post-only so the order can qualify for maker fees.
+"""
 function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
     # Check if in simulation mode
     if !isnothing(bc.orders)
@@ -826,11 +985,11 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         end
         limitprice = isnothing(price) ? Float32(get24h(bc, symbol).lastprice) : Float32(price)
         dt = Dates.now(Dates.UTC)
-        orderid = string(orderside, symbol, Dates.format(dt, "yymmddTHH:MM:SS"))
+        orderid = string("SIM-", uppercasefirst(lowercase(orderside)), "-", uppercase(symbol), "-", _nextsimorderseq!(bc))
         row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=Float32(basequantity), ordertype="Limit", isLeverage=(marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=Float32(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(marginleverage))
         push!(bc.closedorders, row)
-        _applyfill!(bc, symbol, orderside, basequantity, limitprice)
-        return orderid
+        _applyfill!(bc, symbol, orderside, basequantity, limitprice, marginleverage)
+        return row
     end
     
     # Production mode: original API implementation
@@ -944,7 +1103,13 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     return orderid  # == nothing
 end
 
-"Only provide *basequantity* or *limitprice* if they have changed values."
+"""
+Amend one open order.
+
+Only provide `basequantity` or `limitprice` if they have changed values. For a
+post-only order, omitting `limitprice` keeps the order adaptive by
+re-snapshotting the current spread instead of freezing the previous limit.
+"""
 function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
     @assert isnothing(basequantity) ? true : basequantity > 0.0 "amendorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
@@ -975,21 +1140,19 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         now = Bybit.get24h(bc, symbol)
         limitchanged = quantitychanged = false
         pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
-        if !isnothing(limitprice)
-            if maker
-                # use changedprice instead of changing limitprice because original value of limitprice is also checked in successive loop rounds
-                changedprice =  orderatentry.side == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
-                attempts = 10
-            else # take input limitprice
-                changedprice = limitprice
-            end
-            changedprice = Float32(round(changedprice, digits=pricedigits))
-            if changedprice != orderatentry.limitprice
-                limitchanged = true
-                params["price"] = Format.format(changedprice, precision=pricedigits)
-            end
+        if maker
+            # Keep post-only orders adaptive by refreshing against the current spread.
+            changedprice = orderatentry.side == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
+            attempts = 10
+        elseif !isnothing(limitprice)
+            changedprice = limitprice
         else
             changedprice = orderatentry.limitprice
+        end
+        changedprice = Float32(round(changedprice, digits=pricedigits))
+        if changedprice != orderatentry.limitprice
+            limitchanged = true
+            params["price"] = Format.format(changedprice, precision=pricedigits)
         end
         if !isnothing(basequantity)
             basequantity = basequantity * changedprice < syminfo.minquoteqty ? syminfo.minquoteqty / changedprice : basequantity

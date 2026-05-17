@@ -31,6 +31,27 @@ EnvConfig.init(production)  # test production
     klines = Bybit.getklines(bc, "BTCUSDT")
     @test isa(klines, AbstractDataFrame)
 
+    # BybitSim: TestOhlcv symbols must provide klines and support simulated trading.
+    bc_sim = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_sim)
+    Bybit.seedportfolio!(bc_sim, EnvConfig.cryptoquote, 1_000f0)
+
+    sdt = DateTime("2025-01-05T00:00:00")
+    edt = DateTime("2025-01-05T01:00:00")
+    sine_klines = Bybit.getklines(bc_sim, "SINEUSDT"; startDateTime=sdt, endDateTime=edt, interval="1m")
+    dsine_klines = Bybit.getklines(bc_sim, "DOUBLESINEUSDT"; startDateTime=sdt, endDateTime=edt, interval="1m")
+    @test size(sine_klines, 1) > 0
+    @test size(dsine_klines, 1) > 0
+
+    o_sine = Bybit.createorder(bc_sim, "SINEUSDT", "Buy", 2.0f0, nothing, false)
+    @test !isnothing(o_sine)
+    @test o_sine.symbol == "SINEUSDT"
+    @test o_sine.status == "Filled"
+
+    sim_balances = Bybit.balances(bc_sim)
+    @test any(sim_balances.coin .== "SINE")
+    @test sim_balances[sim_balances.coin .== "SINE", :free][1] > 0f0
+
 
     # oocreate = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9, false)
     # oid = isnothing(oocreate) ? nothing : oocreate.orderid

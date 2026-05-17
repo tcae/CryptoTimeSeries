@@ -733,6 +733,21 @@ function emptygaindf()::DataFrame
     )
 end
 
+"""
+        GainSegment
+
+State container for gain-based strategy execution over one symbol.
+
+Core order-state semantics:
+- `buyta` tracks an opening intent (`longbuy`/`shortbuy`) while the open order is pending.
+- `sellta` tracks a closing intent (`longclose`/`shortclose`) once a position is open.
+- During `gain_limit_reversal!`, a filled `buyta` is handed over to `sellta` in the
+    same minute. This enables open/close transitions within a single candle.
+
+Tracing:
+- `trace` is optional and populated only when `enabletrace!` is called.
+- Trace rows are diagnostics only; they do not affect strategy behavior.
+"""
 mutable struct GainSegment
     algorithm  # algorithm function to be applied
     openthreshold::Float32 # score threshold
@@ -752,9 +767,92 @@ mutable struct GainSegment
     limitreduction::Float32 # factor to reduce limit price in case of unfilled order for every trend sample with a label that does not support the trend (e.g. allclose label for an open long gain segment)
     buyta::TradeAction # buy of either long or short
     sellta::TradeAction # sell of either long or short
+    trace::Union{Nothing, DataFrame}
+    tracecontext::Union{Nothing, String}
     function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, limitreduction::AbstractFloat=0f0)
-        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, 0.001f0, 0.01f0, limitreduction, TradeAction(), TradeAction())
+        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, 0.001f0, 0.01f0, limitreduction, TradeAction(), TradeAction(), nothing, nothing)
     end
+end
+
+"""
+    enabletrace!(gs::GainSegment; context=nothing)
+
+Enable non-semantic diagnostics tracing for `gs`.
+
+When enabled, `gain_limit_reversal!` records per-step rows (including before/after
+order labels and candle prices) into `gs.trace`.
+"""
+function enabletrace!(gs::GainSegment; context::Union{Nothing, AbstractString}=nothing)
+    gs.trace = DataFrame(
+        context=String[],
+        ix=Int[],
+        opentime=DateTime[],
+        event=String[],
+        branch=String[],
+        label=TradeLabel[],
+        score=Float32[],
+        sell_before=TradeLabel[],
+        buy_before=TradeLabel[],
+        sell_after=TradeLabel[],
+        buy_after=TradeLabel[],
+        sell_isopen=Bool[],
+        buy_isopen=Bool[],
+        sell_orderlimit=Float32[],
+        buy_orderlimit=Float32[],
+        sell_buyprice=Float32[],
+        buy_buyprice=Float32[],
+        high=Float32[],
+        low=Float32[],
+        close=Float32[],
+    )
+    gs.tracecontext = isnothing(context) ? nothing : String(context)
+    return gs
+end
+
+"""
+    disabletrace!(gs::GainSegment)
+
+Disable diagnostics tracing and clear trace context.
+"""
+function disabletrace!(gs::GainSegment)
+    gs.trace = nothing
+    gs.tracecontext = nothing
+    return gs
+end
+
+"""
+    trace(gs::GainSegment) -> DataFrame
+
+Return a copy of the currently collected trace rows, or an empty dataframe when
+tracing is disabled.
+"""
+trace(gs::GainSegment) = isnothing(gs.trace) ? DataFrame() : DataFrame(gs.trace)
+
+function _tracegainstep!(gs::GainSegment; ix::Integer, event::AbstractString, branch::AbstractString="", label::TradeLabel=ignore, score::Real=0f0, sell_before::TradeLabel=ignore, buy_before::TradeLabel=ignore)
+    isnothing(gs.trace) && return nothing
+    push!(gs.trace, (
+        context=isnothing(gs.tracecontext) ? "" : gs.tracecontext,
+        ix=Int(ix),
+        opentime=gs.predictionsdf[ix, :opentime],
+        event=String(event),
+        branch=String(branch),
+        label=label,
+        score=Float32(score),
+        sell_before=sell_before,
+        buy_before=buy_before,
+        sell_after=gs.sellta.orderlabel,
+        buy_after=gs.buyta.orderlabel,
+        sell_isopen=isopen(gs.sellta),
+        buy_isopen=isopen(gs.buyta),
+        sell_orderlimit=Float32(gs.sellta.orderlimit),
+        buy_orderlimit=Float32(gs.buyta.orderlimit),
+        sell_buyprice=Float32(gs.sellta.buyprice),
+        buy_buyprice=Float32(gs.buyta.buyprice),
+        high=Float32(gs.predictionsdf[ix, :high]),
+        low=Float32(gs.predictionsdf[ix, :low]),
+        close=Float32(gs.predictionsdf[ix, :close]),
+    ))
+    return nothing
 end
 
 function reset!(gs::GainSegment)
@@ -765,6 +863,9 @@ function reset!(gs::GainSegment)
     gs.gaindf = emptygaindf()
     removeorder!(gs.sellta)
     removeorder!(gs.buyta)
+    if !isnothing(gs.trace)
+        empty!(gs.trace)
+    end
     return gs
 end
 
@@ -875,7 +976,19 @@ function gain_reversal!(gs::GainSegment, lastix)
     return gs
 end
 
-"check price ranges whether an open order is closed and calculates the gain"
+"""
+Check whether an open order is filled in the current OHLCV candle and update
+`TradeAction` / gain bookkeeping accordingly.
+
+Important lifecycle semantics for `gain_limit_reversal!`:
+- `buyta` represents an opening limit order while it is pending (`longbuy`/`shortbuy`).
+- If that opening order is filled in this candle, `processclosedorder!` changes
+    `buyta.orderlabel` to the corresponding close label (`longclose`/`shortclose`).
+- The caller then hands this filled opening order over into `sellta`, so subsequent
+    logic operates on an open position that now needs closing.
+
+This handoff can occur in the same minute as signal processing.
+"""
 function processclosedorder!(gs::GainSegment, ix::Integer, ta::TradeAction)
     if isopen(ta) 
         if (ta.orderlabel in [longbuy, longstrongbuy]) 
@@ -913,19 +1026,25 @@ islongclose(ta::TradeAction) = islongclose(ta.orderlabel)
 isshortclose(ta::TradeAction) = isshortclose(ta.orderlabel)
 
 """
-Receives a sell and buy TradeAction and the current label + score and checks whether the current label supports the trend of the active TradeAction. 
-If not, it reduces the limit price of sell trade action with a factor of limitreduction for every non trend supporting sample. 
-If the current label signals an opposite trend then a reversal is signalled and an opposite buy action is proposed.
-If the current label supports the current trend with a buy then the limit is adjusted as gain of the current close.
+        reachgainuntilreversal!(sellta, buyta, label, score, high, low, close, openthreshold, buygain, sellgain, limitreduction)
 
-configuration parameters are:
-- openthreshold: minimum score to consider a buy signal as valid
-- buygain: initial gain for buy limit price compared to current close price
-- sellgain: initial gain for sell limit price compared to current close price
-- limitreduction: factor to reduce limit price in case of unfilled order for every trend sample with a label that does not support the trend (e.g. allclose label for a long sell action)
+Advance opening/closing limit actions for one candle, given the latest model label.
+
+Behavior summary:
+- If the label supports an open direction above `openthreshold`, update the active
+    close limit (`sellta`) or (re)establish an opening intent (`buyta`) if no close
+    action is currently open.
+- If no supporting label is present but a close action is open, reduce its limit
+    toward current price according to `limitreduction`.
+
+Returns a branch marker string used for diagnostics (`long_signal`,
+`short_signal`, `reduce_limit`, `none`). Return value is trace-only and does not
+change strategy semantics.
 """
 function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label::TradeLabel, score, high, low, close, openthreshold, buygain, sellgain, limitreduction)
+    branch = "none"
     if (label in [longbuy, longstrongbuy]) && (score >= openthreshold)
+        branch = "long_signal"
         if isopen(sellta) 
             if isshortclose(sellta.orderlabel)
                 sellta.orderlimit = close * (1f0 - buygain) # adapt to buy limit of opposite order due to trend reversal
@@ -938,6 +1057,7 @@ function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label:
             buyta.orderlimit = close * (1f0 + sellgain)
         end
     elseif (label in [shortbuy, shortstrongbuy]) && (score >= openthreshold)
+        branch = "short_signal"
         if isopen(sellta) 
             if islongclose(sellta.orderlabel)
                 sellta.orderlimit = close * (1f0 + buygain) # adapt to buy limit of opposite order due to trend reversal
@@ -950,6 +1070,7 @@ function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label:
             buyta.orderlimit = close * (1f0 - sellgain)
         end
     elseif isopen(sellta)
+        branch = "reduce_limit"
         if (sellta.orderlimit > sellta.buyprice) && (sellta.orderlabel != longhold) # long order
             # limit order in place, incrementally reduce limit due to missing label support until it reaches the current close price
             sellta.orderlimit = max(close, sellta.orderlimit * (1f0 - sellgain * limitreduction))
@@ -958,21 +1079,28 @@ function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label:
             sellta.orderlimit = min(close, sellta.orderlimit * (1f0 + sellgain * limitreduction))
         end
     end
+    return branch
 end
 
 """
-Consumes the next prediction results after endix for all remaining predictions and calculates the corresponding gain segments that are stored in gaindf.  
-limitreduction is reducing the expected gain for each non trend supporting sample, which is used to adjust the limit price for buy and sell orders.
-Buy will buy at current price +- buygain, which is reduced with a limitreduction rate for non trend supporting samples. This limit is newly set when a buy signal for that trend is observed.
-A bought sample receives a sell limit at current price +- sellgain, which is reduced with a limitreduction rate for non trend supporting samples.  
-Hold as long as trend is not broken by opposite buy or close above openthreshold. If limit is hit then close gain segment and open new one if buy signal is present.  
-Implementation details:  
-- labels are indicating a trend change, but the gain materializes after the corresponding order is closed
-- buygain and sellgain are defining the initial limit distance to the current price, which is reduced with a limitreduction rate for non trend supporting samples utilizing the price volatility.
+    gain_limit_reversal!(gs::GainSegment, lastix)
+
+Process prediction samples `(gs.endix+1):lastix` using a limit-based reversal strategy.
+
+Lifecycle within each candle:
+1. `processclosedorder!` checks fill conditions for `sellta` and `buyta`.
+2. If `buyta` was filled (its label becomes `longclose`/`shortclose`), it is
+   handed over to `sellta` and `buyta` is reset.
+3. `reachgainuntilreversal!` adjusts active limits or prepares a new opening intent.
+
+This ordering allows open-to-close transitions in the same minute and is the
+intended behavior for stateful execution.
 """
 function gain_limit_reversal!(gs::GainSegment, lastix)
     # @assert length(scores) == length(labels) == size(predictionsdf, 1) > 0 "length(scores)=$(length(scores)) == length(labels)=$(length(labels)) == size(predictionsdf, 1)=$(size(predictionsdf, 1)) > 0"
     for ix in (gs.endix+1):lastix
+        sell_before = gs.sellta.orderlabel
+        buy_before = gs.buyta.orderlabel
         # first check whether the limit order is executed, if so, set trend and buyix and selllimit
         processclosedorder!(gs, ix, gs.sellta)
         processclosedorder!(gs, ix, gs.buyta)
@@ -981,35 +1109,28 @@ function gain_limit_reversal!(gs::GainSegment, lastix)
             gs.sellta = gs.buyta
             gs.buyta = TradeAction()
         end
-        reachgainuntilreversal!(gs.sellta, gs.buyta, gs.labels[ix], gs.scores[ix], gs.predictionsdf[ix, :high], gs.predictionsdf[ix, :low], gs.predictionsdf[ix, :close], gs.openthreshold, gs.buygain, gs.sellgain, gs.limitreduction)
+        _tracegainstep!(gs; ix=ix, event="post_processclosed", label=gs.labels[ix], score=gs.scores[ix], sell_before=sell_before, buy_before=buy_before)
+        branch = reachgainuntilreversal!(gs.sellta, gs.buyta, gs.labels[ix], gs.scores[ix], gs.predictionsdf[ix, :high], gs.predictionsdf[ix, :low], gs.predictionsdf[ix, :close], gs.openthreshold, gs.buygain, gs.sellgain, gs.limitreduction)
+        _tracegainstep!(gs; ix=ix, event="post_reach", branch=branch, label=gs.labels[ix], score=gs.scores[ix], sell_before=sell_before, buy_before=buy_before)
     end
     gs.endix = lastix
 end
 
 """
-Returns a dataframe with gains of buy/sell pair actions until lastix. If `forcegain` == true then add a row that forces to calculate the last open gain segment.
-The returned dataframe has the following columns:
-- trend (up, flat, down)  
-- samplecount of gain segment  
-- minutes of gain segment  
-- gain of gain segment
-- startdt and enddt :: DateTime of gain segment
-- startix, endix within predictionsdf rows of gain segment
+        getgains(gs::GainSegment, predictionsdf, scores, labels, forcegain; lastix=..., openthreshold=..., closethreshold=...)
 
-Input is 
--  predictionsdf::AbstractDataFrame of a consecutive range with the following colums
-    - label as TradeLabel
-    - score as Float32 prediction score
-    - target as TradeLabel
-    - mingain as expected % below pivot price to set a trade limit
-    - maxgain as expected % above pivot price to set a trade limit
-    - downminutes as expected down trend time in minutes
-    - upminutes as expected up trend time in minutes
-    - lastextrememinutes as minutes since last extreme
-    - rangeid as indicator which samples belong to a sequence
-    - opentime, high, low, close, pivot (samples of the same range are expected to be in opentime sorting order)
-    - set as CategoricalVector with levels train, test, eval
-    - coin as CategoricalVector
+Run the configured gain algorithm on one consecutive predictions range and return
+`gs.gaindf`.
+
+Notes:
+- `labels`/`scores` are interpreted as classifier outputs; order lifecycle is managed
+    through `buyta`/`sellta` state inside `gs`.
+- `forcegain=true` closes any still-open segment at `lastix` for reporting.
+- Diagnostic trace collection (if enabled) is observational only.
+
+Returned dataframe columns:
+- `trend`, `samplecount`, `minutes`, `gain`, `gainfee`, `startdt`, `enddt`,
+    `startix`, `endix`.
 """
 function getgains(gs::GainSegment, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector, forcegain::Bool; lastix=lastindex(scores), openthreshold=gs.openthreshold, closethreshold=gs.closethreshold)
     @assert length(scores) == length(labels) == size(predictionsdf, 1) "length(scores)=$(length(scores)) == length(labels)=$(length(labels)) == size(predictionsdf, 1)=$(size(predictionsdf, 1))"

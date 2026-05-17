@@ -7,9 +7,27 @@ using EnvConfig, Trade, Classify, CryptoXch, Ohlcv, TradingStrategy
     startdt = DateTime("2025-01-05T00:00:00")
     enddt = DateTime("2025-01-05T23:59:00")
 
-    # Create a backtest-mode cache with cryptoxchsim (no Bybit HTTP)
+    # Create a backtest-mode cache with bybitsim-style deterministic simulation.
     xc = CryptoXch.XchCache(startdt=startdt, enddt=enddt)
     tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
+
+    @testset "Simulation order pricing" begin
+        @test Trade._orderlimitprice(tc, 70000.0) == 70000.0
+        tc.xc.mc[:simmode] = CryptoXch.nosimulation
+        @test isnothing(Trade._orderlimitprice(tc, 70000.0))
+        tc.xc.mc[:simmode] = CryptoXch.bybitsim
+    end
+
+    @testset "Adaptive maker order registry" begin
+        @test !CryptoXch.isadaptiveorder(tc.xc, "oid-1")
+        CryptoXch.registeradaptiveorder!(tc.xc, "oid-1")
+        @test CryptoXch.isadaptiveorder(tc.xc, "oid-1")
+        CryptoXch.pruneadaptiveorders!(tc.xc, ["oid-1", "oid-2"])
+        @test CryptoXch.isadaptiveorder(tc.xc, "oid-1")
+        CryptoXch.pruneadaptiveorders!(tc.xc, ["oid-2"])
+        @test !CryptoXch.isadaptiveorder(tc.xc, "oid-1")
+        CryptoXch.unregisteradaptiveorder!(tc.xc, "oid-2")
+    end
 
     # Simple trade config: BTC only
     tc.cfg = DataFrame(
@@ -33,7 +51,7 @@ using EnvConfig, Trade, Classify, CryptoXch, Ohlcv, TradingStrategy
 
     @testset "Single step execution (step! function)" begin
         # step! calls _tradestep! which calls portfolio!()
-        # In cryptoxchsim mode with empty OHLCV data, this would fail
+        # In simulation mode with empty OHLCV data, this would fail
         # So we just verify the function exists
         @test hasmethod(Trade.step!, (Trade.TradeCache,))
     end
@@ -99,7 +117,7 @@ using EnvConfig, Trade, Classify, CryptoXch, Ohlcv, TradingStrategy
             Trade.write(tc, timestamp; folderpath=tmpdir)
             @test isfile(joinpath(tmpdir, "TradeConfig.arrow"))
 
-            # Create a fresh cache with simmode=cryptoxchsim (no Bybit call)
+            # Create a fresh cache in simulation mode.
             tc2 = Trade.TradeCache(xc=CryptoXch.XchCache(startdt=timestamp, enddt=timestamp), cl=Classify.Classifier011())
             Trade.readconfig!(tc2, timestamp; folderpath=tmpdir)
             @test tc2.cfg[!, :basecoin] == ["BTC", "ETH"]

@@ -696,8 +696,20 @@ function cancelorder(bc::KrakenSpotCache, symbol, orderid)
 	return count > 0 ? String(orderid) : nothing
 end
 
+"Return a post-only limit price one tick inside the spread for maker orders with omitted price."
+function _makerlimitprice(syminfo::DataFrameRow, snapshot, orderside::AbstractString)
+	ticksize = Float32(syminfo.ticksize)
+	side = lowercase(String(orderside))
+	price = side == "buy" ? Float32(snapshot.askprice) - ticksize : Float32(snapshot.bidprice) + ticksize
+	return price > 0f0 ? price : nothing
+end
+
 """
 Create one spot order and return an order row compatible named tuple.
+
+If `price` is omitted and `maker=true`, the adapter will choose a limit price
+as close as possible to the current spread while remaining post-only so the
+order can qualify for maker fees.
 """
 function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
@@ -708,17 +720,22 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 	end
 
 	pairname = _symbol2pairname(bc, symbol)
-	ordertype = isnothing(price) ? "market" : "limit"
+	effectiveprice = price
+	if isnothing(effectiveprice) && maker
+		snapshot = get24h(bc, symbol)
+		effectiveprice = isnothing(snapshot) ? nothing : _makerlimitprice(symbolinfo(bc, symbol), snapshot, orderside)
+	end
+	ordertype = isnothing(effectiveprice) ? "market" : "limit"
 	params = Dict{String, Any}(
 		"pair" => pairname,
 		"type" => lowercase(orderside),
 		"ordertype" => ordertype,
 		"volume" => string(basequantity),
 	)
-	if !isnothing(price)
-		params["price"] = string(price)
+	if !isnothing(effectiveprice)
+		params["price"] = string(effectiveprice)
 	end
-	if maker && !isnothing(price)
+	if maker && !isnothing(effectiveprice)
 		params["oflags"] = "post"
 	end
 	if marginleverage > 0
@@ -740,8 +757,8 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 		side=lowercase(orderside) == "buy" ? "Buy" : "Sell",
 		baseqty=Float32(basequantity),
 		ordertype=titlecase(ordertype),
-		timeinforce=(maker && !isnothing(price)) ? "PostOnly" : "GTC",
-		limitprice=isnothing(price) ? 0f0 : Float32(price),
+			timeinforce=(maker && !isnothing(effectiveprice)) ? "PostOnly" : "GTC",
+			limitprice=isnothing(effectiveprice) ? 0f0 : Float32(effectiveprice),
 		avgprice=0f0,
 		executedqty=0f0,
 		status="New",
@@ -764,8 +781,24 @@ function amendorder(bc::KrakenSpotCache, symbol::String, orderid::String; basequ
 	end
 
 	qty = isnothing(basequantity) ? current.baseqty : Float32(basequantity)
-	price = isnothing(limitprice) ? current.limitprice : Float32(limitprice)
+	syminfo = symbolinfo(bc, symbol)
+	isnothing(syminfo) && return nothing
 	maker = current.timeinforce == "PostOnly"
+	price = current.limitprice
+	pricechanged = false
+	if maker
+		snapshot = get24h(bc, symbol)
+		if !isnothing(snapshot)
+			price = _makerlimitprice(syminfo, snapshot, current.side)
+			pricechanged = !isapprox(Float64(price), Float64(current.limitprice); atol=0.0, rtol=0.0)
+		end
+	elseif !isnothing(limitprice)
+		price = Float32(limitprice)
+		pricechanged = !isapprox(Float64(price), Float64(current.limitprice); atol=0.0, rtol=0.0)
+	end
+	if qty == current.baseqty && !pricechanged
+		return current
+	end
 
 	cancelled = cancelorder(bc, symbol, orderid)
 	if isnothing(cancelled)

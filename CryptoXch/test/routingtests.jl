@@ -15,12 +15,12 @@ EnvConfig.init(test)
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.trade_exchange_spot, xc.exchange) == CryptoXch.EXCHANGE_KRAKENSPOT
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.trade_exchange_futures, xc.exchange) == CryptoXch.EXCHANGE_KRAKENFUTURES
     @test CryptoXch._normalizeexchange("bybitsim") == CryptoXch.EXCHANGE_BYBITSIM
-    @test CryptoXch._normalizeexchange("testxch") == CryptoXch.EXCHANGE_TESTXCH
+    @test_throws ArgumentError CryptoXch._normalizeexchange("testxch")
 
     @test string(CryptoXch._routedModule(xc, CryptoXch.data_exchange)) == "Bybit"
     @test string(CryptoXch._routedModule(xc, CryptoXch.trade_exchange_spot)) == "KrakenSpot"
     @test string(CryptoXch._routedModule(xc, CryptoXch.trade_exchange_futures)) == "KrakenFutures"
-    @test CryptoXch._routedbc(xc, CryptoXch.data_exchange) === nothing
+    @test CryptoXch._routedbc(xc, CryptoXch.data_exchange) isa CryptoXch.Bybit.BybitCache
 
     xc_live = CryptoXch.XchCache()
     xc_live.mc[:simmode] = CryptoXch.nosimulation
@@ -59,16 +59,18 @@ EnvConfig.init(test)
     @test CryptoXch.KrakenFutures.validsymbol(futuresbc, "BTC", "USD")
     @test CryptoXch.Bybit.validsymbol(bybitbc, "BTC", "USDT")
 
-    testxch = CryptoXch.TestXch.TestXchCache(syminfodf=DataFrame(
-        symbol=["XRPUSDT"],
-        basecoin=["XRP"],
-        quotecoin=["USDT"],
-        status=["Trading"],
-        innovation=[0],
-    ))
-    @test CryptoXch.TestXch.symboltoken(testxch, "SINE", "USDT") == "SINEUSDT"
-    @test !isnothing(CryptoXch.TestXch.symbolinfo(testxch, "XRPUSDT"))
-    @test !isnothing(CryptoXch.TestXch.symbolinfo(testxch, "SINEUSDT"))
+    bybitsim_cache = CryptoXch._exchangecache(CryptoXch.EXCHANGE_BYBITSIM, CryptoXch.bybitsim)
+    @test bybitsim_cache isa CryptoXch.Bybit.BybitCache
+    @test !isnothing(bybitsim_cache.assets)
+    @test !isnothing(bybitsim_cache.orders)
+    @test !isnothing(bybitsim_cache.closedorders)
+    @test !isnothing(CryptoXch.Bybit.symbolinfo(bybitsim_cache, "SINEUSDT"))
+    @test CryptoXch.Bybit.validsymbol(bybitsim_cache, "SINEUSDT")
+    @test !isnothing(CryptoXch.Bybit.symbolinfo(bybitsim_cache, "DOUBLESINEUSDT"))
+    @test CryptoXch.Bybit.validsymbol(bybitsim_cache, "DOUBLESINEUSDT")
+
+    @test_throws ArgumentError CryptoXch._exchangecache(CryptoXch.EXCHANGE_KRAKENSPOT, CryptoXch.bybitsim)
+    @test_throws ArgumentError CryptoXch._exchangecache(CryptoXch.EXCHANGE_KRAKENFUTURES, CryptoXch.bybitsim)
 end
 
 end

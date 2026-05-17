@@ -20,19 +20,19 @@ cd(rootpath)
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 mypackages = ["Trade", "Classify", "CryptoXch", "Bybit", "EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv"]
 rootpath = "."
+
+# Develop all packages first without resolving individually
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)
-    println("preparing $folderpath")
+    println("developing $folderpath")
     Pkg.develop(path=folderpath)
-    Pkg.activate(folderpath)
-    Pkg.update()
-    Pkg.resolve()
-    Pkg.instantiate()
-    # Pkg.precompile() # precompile should be part of instantiate
-    Pkg.gc()
-    Pkg.activate(rootpath)
 end
 
-# Pkg.update()
-Pkg.gc()
+# Resolve and instantiate once at the main level
+println("resolving main environment...")
+Pkg.resolve()
+println("instantiating main environment...")
 Pkg.instantiate()
+println("garbage collecting...")
+Pkg.gc()
+println("✓ instantiation complete")

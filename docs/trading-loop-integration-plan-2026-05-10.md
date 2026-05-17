@@ -3,6 +3,40 @@
 ## Goal
 Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, audit-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 
+## Trade vs TradingStrategy Regression Harness
+
+The current objective is to keep `Trade.jl` simple and test the behavior that matters directly: compare a bulk strategy evaluation against the minute-by-minute execution path on the same OHLCV window, then separate strategy parity from exchange-rule differences.
+
+### Topic 1: Shared event normalization
+- Define a small normalized trade-event shape for both bulk and minute-by-minute runs.
+- Keep only the fields needed to compare trade pairs and diagnose mismatches.
+
+### Topic 2: Bulk strategy helper
+- Add a pure helper that runs the strategy over a fixed OHLCV window and emits normalized open/close events.
+- Keep it isolated from exchange state so the result is deterministic.
+
+### Topic 3: Minute-by-minute execution capture
+- Instrument the `Trade.jl` execution path just enough to capture executed trade pairs in the same normalized shape.
+- Keep exchange rules and allocation effects visible as data, not as hidden side effects.
+
+### Topic 4: Comparison test
+- Add a focused unit/integration test that runs both helpers on the same time range.
+- Assert pair equality where the execution model should match bulk strategy behavior.
+
+### Topic 5: Exchange-rule assertions
+- Add separate assertions for minimum quantity, allocation limits, and other venue-specific constraints.
+- Treat those as expected differences rather than test failures in the parity comparison.
+
+### Topic 6: Diagnostic output
+- When the test fails, print missing and extra trade pairs with enough context to explain whether the difference came from strategy logic or execution constraints.
+- Keep the diagnostics in test helpers, not in the production `Trade.jl` path.
+
+### Exit criteria
+- The regression test can detect unintended `Trade.jl` behavior changes without depending on TrendDetector-specific partition matching.
+- Production code stays free of comparison-only trace plumbing.
+
+This harness is intended to replace the TrendDetector-comparison scaffolding that was temporarily added during troubleshooting.
+
 ## 2026-05-13 Proposal: Separate Simulation Data from Paper Bookkeeping
 
 ### Proposal summary

@@ -1,5 +1,5 @@
 """
-tradesim.jl — Backtest simulation script using TrendDetector config 046,
+tradesim.jl — Backtest simulation script using GainSegment config 046,
 followed by a performance report.
 
 Configuration is defined in the CONFIG block below. Adjust the parameters
@@ -13,6 +13,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using Dates, Statistics, Printf, Logging
+using DataFrames
 using EnvConfig, TradingStrategy, Trade, Classify, CryptoXch, Bybit, Ohlcv, Features, Targets
 
 include(joinpath(@__DIR__, "optimizationconfigs.jl"))
@@ -35,23 +36,44 @@ const TRADE_MODE = Trade.buysell
 # Whitelist of base coins to consider for trading during the simulation.
 const QUOTE_COIN = "USDT"
 const WHITELIST_INPUT = [
-    "BTC", "ETH", "HBAR", "PEPE", "XRP"
+    "BTC"
+    # "BTC", "ETH", "HBAR", "PEPE", "XRP"
 ]
 
-# Initial quote-asset balance used in simulation mode (cryptoxchsim).
-const INITIAL_QUOTE_BALANCE = 100.0
+function whitelist_from_env(default::Vector{String})::Vector{String}
+    raw = get(ENV, "TRADESIM_WHITELIST", "")
+    isempty(strip(raw)) && return default
+    vals = [strip(tok) for tok in split(raw, ',') if !isempty(strip(tok))]
+    return isempty(vals) ? default : vals
+end
+
+# Initial quote-asset balance used in simulation mode (bybitsim).
+const INITIAL_QUOTE_BALANCE = 100000.0
 
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
-# TrendDetector config 046: GainSegment strategy parameters.
-# These come from mk046config() → tradingstrategy03().
+# Buy signal score threshold used by GainSegment strategy.
+const BUY_OPEN_THRESHOLD = 0.4f0
+
+# GainSegment strategy parameters used by the backtest.
 const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
+CONFIG046_STRATEGY.openthreshold = BUY_OPEN_THRESHOLD
 const CONFIG046_NAME = "046"
 const MODEL046_FOLDER = "Trend-046-training"
 
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradesim-" * CONFIG046_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
+const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
+
+function backtest_bounds_from_env(default_start::DateTime, default_end::DateTime)
+    sraw = strip(get(ENV, "TRADESIM_STARTDT", ""))
+    eraw = strip(get(ENV, "TRADESIM_ENDDT", ""))
+    sdt = isempty(sraw) ? default_start : DateTime(sraw)
+    edt = isempty(eraw) ? default_end : DateTime(eraw)
+    @assert sdt <= edt "TRADESIM_STARTDT must be <= TRADESIM_ENDDT; got start=$(sdt), end=$(edt)"
+    return sdt, edt
+end
 
 # Normalize whitelist entries to base coins for the configured quote coin.
 function normalize_whitelist(entries, quote_coin::AbstractString)
@@ -75,6 +97,43 @@ function normalize_whitelist(entries, quote_coin::AbstractString)
     return unique(bases)
 end
 
+"Seed the simulation quote-currency balance in the exchange backend cache."
+function seed_quote_balance!(xc::CryptoXch.XchCache, quote_coin::AbstractString, amount::Real)
+    isnothing(xc.bc) && error("cannot seed quote balance: exchange cache is not initialized")
+    routed = CryptoXch._routedbc(xc, CryptoXch.trade_exchange_spot)
+    if isnothing(routed)
+        error("cannot seed quote balance: routed trade backend is not initialized")
+    end
+    if routed !== xc.bc
+        error("cannot seed quote balance: routed trade backend differs from primary cache (routed=$(typeof(routed)), primary=$(typeof(xc.bc))). Fix routing/backend wiring before running tradesim.")
+    end
+
+    if applicable(Bybit.seedportfolio!, xc.bc, quote_coin, amount)
+        Bybit.seedportfolio!(xc.bc, quote_coin, amount)
+        return nothing
+    end
+    error("cannot seed quote balance for backend cache type=$(typeof(xc.bc))")
+end
+
+"Ensure the simulation starts with at least `minimum_free` quote balance."
+function ensure_quote_budget!(xc::CryptoXch.XchCache, quote_coin::AbstractString, minimum_free::Real)
+    q = uppercase(String(quote_coin))
+    balancesdf = CryptoXch.balances(xc, ignoresmallvolume=false)
+    qix = size(balancesdf, 1) > 0 ? findfirst(==(q), uppercase.(String.(balancesdf[!, :coin]))) : nothing
+    current_free = isnothing(qix) ? 0.0 : Float64(balancesdf[qix, :free])
+    if current_free + 1e-6 < Float64(minimum_free)
+        seed_quote_balance!(xc, q, minimum_free)
+        balancesdf = CryptoXch.balances(xc, ignoresmallvolume=false)
+        qix = size(balancesdf, 1) > 0 ? findfirst(==(q), uppercase.(String.(balancesdf[!, :coin]))) : nothing
+        reseeded_free = isnothing(qix) ? 0.0 : Float64(balancesdf[qix, :free])
+        @assert reseeded_free + 1e-6 >= Float64(minimum_free) "totalusdt seed $(q) budget is insufficient after reseed; expected >= $(minimum_free), got $(reseeded_free)"
+        println("$(EnvConfig.now()): reseeded $(q) free balance from $(round(current_free, digits=2)) to $(round(reseeded_free, digits=2))")
+    else
+        println("$(EnvConfig.now()): confirmed $(q) free seed budget $(round(current_free, digits=2))")
+    end
+end
+
+"Runtime classifier wrapper for Trend 046 inference inside tradesim."
 mutable struct Trend046RuntimeClassifier <: Classify.AbstractClassifier
     bc::Dict{AbstractString, NamedTuple}
     nn::Classify.NN
@@ -84,20 +143,35 @@ mutable struct Trend046RuntimeClassifier <: Classify.AbstractClassifier
     end
 end
 
+"Register one base in the runtime classifier and initialize its feature config."
 function Classify.addbase!(cl::Trend046RuntimeClassifier, ohlcv::Ohlcv.OhlcvData)
     f6 = trendf6config09()
     Features.setbase!(f6, ohlcv, usecache=true)
     cl.bc[ohlcv.base] = (ohlcv=ohlcv, f6=f6)
 end
 
+"Update runtime feature states; drop bases that cannot be supplemented yet."
 function Classify.supplement!(cl::Trend046RuntimeClassifier)
-    for basecfg in values(cl.bc)
-        Features.supplement!(basecfg.f6)
+    failed_bases = String[]
+    for (base, basecfg) in cl.bc
+        try
+            Features.supplement!(basecfg.f6)
+        catch err
+            # Some symbols may have too little history for configured rolling windows.
+            # Keep the backtest running and let Trade prune non-classifier bases afterward.
+            push!(failed_bases, String(base))
+            @warn "dropping base from runtime classifier due to supplement failure" base exception=(err, catch_backtrace())
+        end
     end
+    for base in failed_bases
+        delete!(cl.bc, base)
+    end
+    return nothing
 end
 
 Classify.requiredminutes(::Trend046RuntimeClassifier)::Integer = max(Features.requiredminutes(trendf6config09()), 2)
 
+"Return one trade advice at dt, or nothing when data/features are insufficient."
 function Classify.advice(cl::Trend046RuntimeClassifier, base::AbstractString, dt::DateTime; investment::Union{Nothing, Classify.TradeAdvice}=nothing)::Union{Nothing, Classify.TradeAdvice}
     haskey(cl.bc, base) || return nothing
     basecfg = cl.bc[base]
@@ -112,6 +186,7 @@ function Classify.advice(cl::Trend046RuntimeClassifier, base::AbstractString, dt
     return Classify.TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
 end
 
+"Load Trend 046 classifier artifacts and return a runtime classifier instance."
 function loadtrend046classifier(model_folder::AbstractString)::Trend046RuntimeClassifier
     cfg046 = mk046config()
     nnstub = cfg046.classifiermodel(Features.featurecount(cfg046.featconfig), Targets.uniquelabels(cfg046.targetconfig), "mix")
@@ -129,39 +204,6 @@ function loadtrend046classifier(model_folder::AbstractString)::Trend046RuntimeCl
         end
     end
     error("TrendDetector 046 classifier file not found for fileprefix=$(nnstub.fileprefix), checked folders=[$(model_folder), Trend-046-training]")
-end
-
-function seed_quote_balance!(xc::CryptoXch.XchCache, quote_coin::AbstractString, amount::Real)
-    # Seed CryptoXch simulation state
-    quote_ix = findfirst(==(quote_coin), xc.assets[!, :coin])
-    if isnothing(quote_ix)
-        push!(xc.assets, (
-            coin=quote_coin,
-            free=Float32(amount),
-            locked=0f0,
-            marginfree=0f0,
-            marginlocked=0f0,
-            assetborrowed=0f0,
-            orderborrowed=0f0,
-            accruedinterest=0f0,
-        ))
-    else
-        xc.assets[quote_ix, :free] = Float32(amount)
-    end
-    
-    # Seed underlying exchange cache simulation state if needed
-    if CryptoXch.exchange(xc) == CryptoXch.EXCHANGE_BYBITSIM
-        bc = xc.bc
-        if !isnothing(bc.assets)  # Simulation state initialized
-            Bybit.seedportfolio!(bc, quote_coin, amount)
-        end
-    elseif CryptoXch.exchange(xc) == CryptoXch.EXCHANGE_TESTXCH
-        tc = xc.bc
-        if !isnothing(tc.assets)  # Simulation state initialized
-            CryptoXch.TestXch.seedportfolio!(tc, quote_coin, amount)
-        end
-    end
-    return nothing
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,38 +315,103 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
         println("  (No portfolio time-series in cache.dbgdf; skipping return metrics.)")
     end
 
-    # ── Win rate from closed orders ────────────────────────────────────────
-    # Pair buys and sells by base coin, compute simple win/loss count.
-    if :symbol in propertynames(co) && :side in propertynames(co)
-        buy_prices  = Dict{String, Vector{Float64}}()
-        sell_prices = Dict{String, Vector{Float64}}()
-        for row in eachrow(co)
+    # ── Win rate and gain metrics from closed orders ───────────────────────
+    # Pair buys and sells by symbol in chronological order and calculate
+    # realized gain metrics per matched round-trip.
+    if (:symbol in propertynames(co)) && (:side in propertynames(co)) &&
+       (:avgprice in propertynames(co)) && (:executedqty in propertynames(co))
+
+        function symbol_base(sym::AbstractString)
+            token = uppercase(strip(String(sym)))
+            if occursin('/', token)
+                return split(token, '/'; limit=2)[1]
+            end
+            quote_up = uppercase(QUOTE_COIN)
+            if endswith(token, quote_up) && (length(token) > length(quote_up))
+                return token[1:end-length(quote_up)]
+            end
+            return token
+        end
+
+        ordered = (:created in propertynames(co)) ? sort(co, :created) : co
+        buy_fills  = Dict{String, Vector{Tuple{Float64, Float64}}}()
+        sell_fills = Dict{String, Vector{Tuple{Float64, Float64}}}()
+        for row in eachrow(ordered)
+            if ismissing(row.symbol) || ismissing(row.side) || ismissing(row.avgprice) || ismissing(row.executedqty)
+                continue
+            end
             sym = string(row.symbol)
-            if !ismissing(row.avgprice)
-                if uppercasefirst(string(row.side)) == "Buy"
-                    push!(get!(buy_prices,  sym, Float64[]), Float64(row.avgprice))
-                elseif uppercasefirst(string(row.side)) == "Sell"
-                    push!(get!(sell_prices, sym, Float64[]), Float64(row.avgprice))
-                end
+            px = Float64(row.avgprice)
+            qty = Float64(row.executedqty)
+            (px <= 0.0 || qty <= 0.0) && continue
+
+            side = uppercasefirst(string(row.side))
+            if side == "Buy"
+                push!(get!(buy_fills, sym, Tuple{Float64, Float64}[]), (px, qty))
+            elseif side == "Sell"
+                push!(get!(sell_fills, sym, Tuple{Float64, Float64}[]), (px, qty))
             end
         end
-        wins = losses = 0
-        for sym in keys(sell_prices)
-            bvec = get(buy_prices,  sym, Float64[])
-            svec = sell_prices[sym]
+
+        per_coin_gains_pct = Dict{String, Vector{Float64}}()
+        per_coin_gains_usdt = Dict{String, Vector{Float64}}()
+        wins = 0
+        losses = 0
+
+        for sym in keys(sell_fills)
+            bvec = get(buy_fills, sym, Tuple{Float64, Float64}[])
+            svec = sell_fills[sym]
             pairs = min(length(bvec), length(svec))
+            pairs == 0 && continue
+
+            coin = symbol_base(sym)
+            gains_pct = get!(per_coin_gains_pct, coin, Float64[])
+            gains_usdt = get!(per_coin_gains_usdt, coin, Float64[])
+
             for i in 1:pairs
-                if svec[i] > bvec[i]
+                buy_px, buy_qty = bvec[i]
+                sell_px, sell_qty = svec[i]
+                qty = min(buy_qty, sell_qty)
+                qty <= 0.0 && continue
+                gain_usdt = (sell_px - buy_px) * qty
+                gain_pct = ((sell_px / buy_px) - 1.0) * 100.0
+                push!(gains_usdt, gain_usdt)
+                push!(gains_pct, gain_pct)
+                if gain_usdt > 0
                     wins += 1
                 else
                     losses += 1
                 end
             end
         end
+
         total_pairs = wins + losses
         if total_pairs > 0
             @printf("  Matched round-trips     : %d  (wins: %d, losses: %d, win rate: %.1f %%)\n",
                 total_pairs, wins, losses, 100.0 * wins / total_pairs)
+
+            println("  Gain metrics by coin     :")
+            @printf("    %-8s %7s %12s %16s\n", "coin", "count", "avg gain %", "total gain USDT")
+
+            all_gain_pcts = Float64[]
+            all_gain_usdt = Float64[]
+            for coin in sort(collect(keys(per_coin_gains_usdt)))
+                g_usdt = per_coin_gains_usdt[coin]
+                g_pct = per_coin_gains_pct[coin]
+                count_coin = length(g_usdt)
+                count_coin == 0 && continue
+                avg_gain_pct = mean(g_pct)
+                total_gain_usdt = sum(g_usdt)
+                @printf("    %-8s %7d %12.3f %16.4f\n", coin, count_coin, avg_gain_pct, total_gain_usdt)
+                append!(all_gain_pcts, g_pct)
+                append!(all_gain_usdt, g_usdt)
+            end
+
+            total_count = length(all_gain_usdt)
+            if total_count > 0
+                @printf("  Gain metrics total       : count=%d, avg gain=%.3f %%, total gain=%.4f USDT\n",
+                    total_count, mean(all_gain_pcts), sum(all_gain_usdt))
+            end
         end
     end
 
@@ -316,7 +423,7 @@ end
 # SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
-EnvConfig.init(test)  # test mode → cryptoxchsim, no live credentials needed
+EnvConfig.init(test)  # test mode -> bybitsim simulation, no live credentials needed
 EnvConfig.cryptoquote = QUOTE_COIN
 classifier = try
     loadtrend046classifier(MODEL046_FOLDER)
@@ -325,52 +432,68 @@ catch err
     println(stderr, "$(EnvConfig.now()): tradesim aborted")
     exit(1)
 end
-EnvConfig.setlogpath(LOG_SUBFOLDER)
+EnvConfig.setdebugpath(LOG_SUBFOLDER)
 
 CryptoXch.verbosity = 1
 Classify.verbosity  = 2
-Trade.verbosity     = 2
+Trade.verbosity     = 3
 
 println("$(EnvConfig.now()): starting tradesim with config=$CONFIG046_NAME")
 println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
+
+effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
+
+whitelist = normalize_whitelist(whitelist_from_env(WHITELIST_INPUT), QUOTE_COIN)
+run_startdt, run_enddt = effective_startdt, effective_enddt
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BUILD TRADE CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
 xc = CryptoXch.XchCache(;
-    startdt  = BACKTEST_STARTDT,
-    enddt    = BACKTEST_ENDDT,
+    startdt  = run_startdt,
+    enddt    = run_enddt,
     exchange = EXCHANGE,
 )
 
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
+ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
 # Apply config 046 strategy parameters.
 Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
     strategy_engine=:getgainsalgo,
-    source="trenddetector:$CONFIG046_NAME")
+    source="tradesim:$CONFIG046_NAME")
 
 # Override whitelist and risk parameters.
-whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
 cache.mc[:whitelistcoins]   = whitelist
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
+cache.mc[:usenewtrade]      = false
+cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
+println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
+println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
-println("$(EnvConfig.now()): running backtest...")
+println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
+
+preloaded = Trade.read!(cache, run_startdt)
+isnothing(preloaded) && error("failed to preload trade cache at start datetime=$run_startdt")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-Trade.run_backtest!(cache)
+Trade.run_backtest!(cache; skip_init=true)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PERFORMANCE REPORT
 # ─────────────────────────────────────────────────────────────────────────────
 
-backtest_report(cache, BACKTEST_STARTDT, BACKTEST_ENDDT)
+backtest_report(cache, run_startdt, run_enddt)
+
+# Persist order log separately from other simulation artifacts.
+EnvConfig.setdebugpath(ORDERS_SUBFOLDER)
+CryptoXch.writeorders(cache.xc)
+println("$(EnvConfig.now()): saved simulation orders to $(EnvConfig.logfolder())")

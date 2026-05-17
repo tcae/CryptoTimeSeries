@@ -10,7 +10,7 @@ Provides
 module EnvConfig
 using Logging, Dates, Pkg, JSON3, DataFrames, JDF, Arrow
 using CategoricalArrays
-export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, coinfolderpath, coinfile
+export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, coinfolderpath, coinfile, setdebugpath
 
 """
 verbosity =
@@ -279,21 +279,32 @@ now() = Dates.format(Dates.now(), EnvConfig.datetimeformat)
 runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`git log -n 1 --pretty=format:"%H"`, String)
 
 logfilesfolder = "logs"
+debugfilesfolder = "debug"
 coinsfolder = "coins"
 # defaultlogfilespath = normpath(joinpath(cryptopath, logfilesfolder))
 defaultlogfilespath = normpath(joinpath(homedir(), "crypto", logfilesfolder))
+defaultdebugfilespath = normpath(joinpath(homedir(), "crypto", debugfilesfolder))
 defaultcoinspath = normpath(joinpath(dirname(defaultlogfilespath), coinsfolder))
 logfilespath = defaultlogfilespath
 
-"extends the log path with folder or resets to default if folder=`nothing`"
-function setlogpath(folder=nothing)
+function _setbasepath!(basepath::AbstractString, folder)
     global logfilespath
     if isnothing(folder) || (folder == "")
-        logfilespath = defaultlogfilespath
+        logfilespath = normpath(basepath)
     else
-        logfilespath = normpath(joinpath(defaultlogfilespath, folder))
+        logfilespath = normpath(joinpath(basepath, folder))
     end
     return mkpath(logfilespath)
+end
+
+"extends the log path with folder or resets to default if folder=`nothing`"
+function setlogpath(folder=nothing)
+    return _setbasepath!(defaultlogfilespath, folder)
+end
+
+"extends the debug path with folder or resets to default debug root if folder=`nothing`"
+function setdebugpath(folder=nothing)
+    return _setbasepath!(defaultdebugfilespath, folder)
 end
 
 "Returns the full path including filename of the given filename connected with the current log file path"

@@ -42,8 +42,8 @@ using EnvConfig, CryptoXch, Trade, TradeAudit
         @test all(line -> occursin("\"portfolio_value_after\":16500.0", line), events)
         @test all(line -> occursin("\"run_mode\":\"simulation\"", line), events)
         @test all(line -> occursin("\"run_id\":\"", line), events)
-        @test any(line -> occursin("\"notes\":\"asset=USDT; rows=2; simmode=cryptoxchsim\"", line), events)
-        @test any(line -> occursin("\"notes\":\"asset=BTC; rows=2; simmode=cryptoxchsim\"", line), events)
+        @test any(line -> occursin("\"notes\":\"asset=USDT; rows=2; simmode=bybitsim\"", line), events)
+        @test any(line -> occursin("\"notes\":\"asset=BTC; rows=2; simmode=bybitsim\"", line), events)
     finally
         if isnothing(oldauditroot)
             delete!(ENV, "CTS_AUDIT_ROOT")

@@ -5,12 +5,16 @@ using Test
 
 using Ohlcv, EnvConfig, CryptoXch, TestOhlcv
 
+const RUN_PRODUCTION_TESTS = lowercase(get(ENV, "CTS_RUN_PRODUCTION_TESTS", "false")) in ("1", "true", "yes")
 
 
 # EnvConfig.init(test)  # test CryptoXch Testnet production
-EnvConfig.init(production)  # test CryptoXch real production
+if RUN_PRODUCTION_TESTS
+    EnvConfig.init(production)  # test CryptoXch real production
+end
 println("CryptoXchTest runtests")
 
+if RUN_PRODUCTION_TESTS
 @testset "CryptoXch production tests" begin
     CryptoXch.verbosity =0
 
@@ -163,6 +167,9 @@ println("CryptoXchTest runtests")
 
     # println("test IP with CLI: wget -qO- http://ipecho.net/plain | xargs echo")
 
+end
+else
+    @info "Skipping production integration tests. Set CTS_RUN_PRODUCTION_TESTS=true to enable live exchange checks."
 end
 
 

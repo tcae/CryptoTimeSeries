@@ -1,5 +1,5 @@
 # Increment 1.4 tests — loop control state machine and backtest replay smoke test.
-# All tests bypass live exchange calls by using cryptoxchsim mode (EnvConfig.test).
+# All tests bypass live exchange calls by using bybitsim simulation mode (EnvConfig.test).
 using Test, Dates, DataFrames
 using EnvConfig, Trade, CryptoXch
 

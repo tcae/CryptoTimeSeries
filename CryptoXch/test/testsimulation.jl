@@ -104,6 +104,21 @@ using Ohlcv, EnvConfig, CryptoXch, Bybit
     oodf = CryptoXch.getopenorders(xc)
     println("getopenorders(nothing) - expect no open order: $oodf")
 
+    # Regression: pure short exposure (free=0, borrowed>0) must carry negative value.
+    short_balances = DataFrame(
+        coin=String[EnvConfig.cryptoquote, "BTC"],
+        free=Float32[104_000f0, 0f0],
+        locked=Float32[0f0, 0f0],
+        borrowed=Float32[0f0, 2_000f0],
+        accruedinterest=Float32[0f0, 0f0],
+    )
+    short_prices = DataFrame(basecoin=String[EnvConfig.cryptoquote, "BTC"], lastprice=Float32[1f0, 2f0])
+    short_portfolio = CryptoXch.portfolio!(xc, short_balances, short_prices; ignoresmallvolume=false)
+    btc_ix = findfirst(==("BTC"), short_portfolio.coin)
+    @test !isnothing(btc_ix)
+    @test short_portfolio[btc_ix, :usdtvalue] == -4_000f0
+    @test isapprox(sum(short_portfolio.usdtvalue), 100_000f0; atol=1f-3)
+
 
 end
 

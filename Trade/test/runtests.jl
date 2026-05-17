@@ -4,6 +4,7 @@ using Test
     include("storage_format_test.jl")
     include("getgainsalgo_adapter_test.jl")
     include("strategy_runtime_config_test.jl")
+    include("trade_vs_tradingstrategy_regression_test.jl")
     include("loop_control_test.jl")
     include("async_control_test.jl")
     include("backtest_integration_test.jl")
