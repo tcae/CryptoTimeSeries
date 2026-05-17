@@ -233,7 +233,7 @@ function _wait_for_live_usdtmarket!(tc::TradeCache, datetime::DateTime)
     down_start = Dates.now(Dates.UTC)
     attempts = 0
     while true
-        usdtdf = CryptoXch.getUSDTmarket(tc.xc; dt=datetime)
+        usdtdf = CryptoXch.screeningUSDTmarket(tc.xc; dt=datetime)
         if size(usdtdf, 1) > 0
             if attempts > 0
                 downtime = Dates.now(Dates.UTC) - down_start
@@ -253,6 +253,7 @@ end
 
 
 TRADECONFIGFILE = "TradeConfig"
+TRADECONFIGFOLDER = "tradeconfig"
 
 "Normalize a base/pair token to a base coin symbol for the configured quote coin."
 function _normalize_basecoin_token(token, quotecoin::AbstractString)::Union{Nothing, String}
@@ -298,7 +299,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     # CryptoXch.removeallbases(tc.xc)  #* reuse what is in cache
     # Classify.removebase!(tc.cl, nothing)  #* reuse what is in cache
 
-    usdtdf = CryptoXch.getUSDTmarket(tc.xc; dt=datetime)  # superset of coins with 24h volume price change and last price
+    usdtdf = CryptoXch.screeningUSDTmarket(tc.xc; dt=datetime)  # superset of coins with 24h volume price change and last price
     if size(usdtdf, 1) == 0
         if isnothing(tc.xc.enddt) && (tc.xc.mc[:simmode] == CryptoXch.nosimulation)
             usdtdf = _wait_for_live_usdtmarket!(tc, datetime)
@@ -400,7 +401,15 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 end
 
 _cfgstem(timestamp::Union{Nothing, DateTime}) = isnothing(timestamp) ? TRADECONFIGFILE : join([TRADECONFIGFILE, Dates.format(timestamp, "yy-mm-dd")], "_")
-_cfgfolder(folderpath=nothing) = isnothing(folderpath) ? EnvConfig.datafolderpath(TRADECONFIGFILE) : normpath(folderpath)
+
+"Return default trade config folder under ~/crypto/tradeconfig (sibling of ~/crypto/coins)."
+function _defaultcfgfolder()
+    folder = normpath(joinpath(dirname(EnvConfig.coinspath()), TRADECONFIGFOLDER))
+    isdir(folder) || mkpath(folder)
+    return folder
+end
+
+_cfgfolder(folderpath=nothing) = isnothing(folderpath) ? _defaultcfgfolder() : normpath(folderpath)
 
 function _cfgfilename(timestamp::Union{Nothing, DateTime}; folderpath=nothing, format::Symbol=:auto)
     return EnvConfig.tablepath(_cfgstem(timestamp); folderpath=_cfgfolder(folderpath), format=format)

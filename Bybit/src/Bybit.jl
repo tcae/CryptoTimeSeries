@@ -45,6 +45,7 @@ mutable struct BybitCache
     apirest::String
     publickey
     secretkey
+    simtime::Union{Nothing, DateTime}
     # Simulation state (populated only in BybitSim mode, nil in production)
     assets::Union{Nothing, DataFrame}
     orders::Union{Nothing, DataFrame}
@@ -69,11 +70,11 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
         pk = String(publickey)
         sk = String(secretkey)
     end
-    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing)
+    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.cryptoquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    return BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing)
+    return BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
 end
 
 "Initialize simulation state (assets, orders, closedorders) for BybitSim mode"
@@ -513,10 +514,35 @@ derive from the simulated ticker snapshot.
 - bidprice
 
 """
-function _sim_lastprice(symbol::AbstractString)::Float32
-    # Deterministic synthetic price per symbol for stable simulation behavior.
-    seed = sum(codeunits(uppercase(String(symbol))))
-    return Float32(1.0 + (seed % 5000) / 100.0)
+function _simreferencedt(bc::BybitCache, atdt::Union{Nothing, DateTime}=nothing)::DateTime
+    dt = isnothing(atdt) ? bc.simtime : atdt
+    dt = isnothing(dt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(dt, Minute(1))
+    return dt - Minute(1)
+end
+
+"""
+Return simulated last price for one symbol using the closest known 1-minute close
+at (or before) the previous minute of the simulation timestamp.
+"""
+function _sim_lastprice(bc::BybitCache, symbol::AbstractString; atdt::Union{Nothing, DateTime}=nothing)::Float32
+    sym = uppercase(String(symbol))
+    base = _basefromsymbol(sym)
+    refdt = _simreferencedt(bc, atdt)
+
+    if base in _bybitsim_test_basecoins
+        testdf = TestOhlcv.testdataframe(base, refdt - Minute(32), refdt, "1m", EnvConfig.cryptoquote)
+        size(testdf, 1) > 0 || error("BybitSim missing test OHLCV for base=$(base) at refdt=$(refdt).")
+        ix = Ohlcv.rowix(testdf[!, :opentime], refdt, Minute(1))
+        ix > 0 || error("BybitSim test OHLCV row lookup failed for base=$(base) at refdt=$(refdt).")
+        return Float32(testdf[ix, :close])
+    end
+
+    cached = Ohlcv.defaultohlcv(base, "1m")
+    Ohlcv.read!(cached)
+    size(cached.df, 1) > 0 || error("BybitSim missing cached OHLCV for base=$(base), symbol=$(sym).")
+    ix = Ohlcv.rowix(cached, refdt)
+    ix > 0 || error("BybitSim OHLCV row lookup failed for base=$(base), symbol=$(sym), refdt=$(refdt).")
+    return Float32(cached.df[ix, :close])
 end
 
 function _sim_get24h(bc::BybitCache, symbol=nothing)
@@ -534,15 +560,36 @@ function _sim_get24h(bc::BybitCache, symbol=nothing)
         if isnothing(ix)
             return nothing
         end
-        sp = _sim_lastprice(sym)
+        sp = _sim_lastprice(bc, sym)
         return (symbol=sym, quotevolume24h=50_000_000f0, pricechangepercent=0f0, lastprice=sp, askprice=sp * 1.0001f0, bidprice=sp * 0.9999f0)
     end
 
     df = DataFrame(symbol=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[])
+    pricecache = Dict{String, Float32}()
+    missingbases = Set{String}()
     for row in eachrow(bc.syminfodf)
         rowok(row) || continue
         sym = uppercase(String(row.symbol))
-        sp = _sim_lastprice(sym)
+        base = _basefromsymbol(sym)
+        if base in missingbases
+            continue
+        end
+        sp = if haskey(pricecache, base)
+            pricecache[base]
+        else
+            try
+                px = _sim_lastprice(bc, sym)
+                pricecache[base] = px
+                px
+            catch err
+                if err isa ErrorException
+                    push!(missingbases, base)
+                    (verbosity >= 2) && @warn "BybitSim skipping symbol without cached OHLCV at sim reference time" symbol=sym message=err.msg
+                    continue
+                end
+                rethrow(err)
+            end
+        end
         push!(df, (symbol=sym, quotevolume24h=50_000_000f0, pricechangepercent=0f0, lastprice=sp, askprice=sp * 1.0001f0, bidprice=sp * 0.9999f0))
     end
     return df

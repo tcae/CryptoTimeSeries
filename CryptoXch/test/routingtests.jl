@@ -49,7 +49,7 @@ EnvConfig.init(test)
         quotecoin=["USDT"],
         status=["Trading"],
         innovation=[0],
-    ), "", "", "", nothing, nothing, nothing)
+    ), "", "", "", nothing, nothing, nothing, nothing)
 
     @test CryptoXch.KrakenSpot.symboltoken(spotbc, "BTC", "USDT") == "BTCUSDT"
     @test CryptoXch.KrakenFutures.symboltoken(futuresbc, "BTC", "USD") == "BTCUSD"

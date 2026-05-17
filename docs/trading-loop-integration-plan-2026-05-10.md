@@ -297,7 +297,7 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 ## Objective 4 (Fourth): Asynchronous orchestration for trading loop and exchange interactions
 
 ### Design intent
-Prevent blocking between data updates, signal evaluation, order management, and portfolio refresh.
+Prevent blocking between data updates, signal evaluation, order management, and portfolio refresh. Also implement dynamic adjustment of adaptive orders.
 
 ### Increment 4.1: Task topology
 - Introduce asynchronous workers (Julia `Task` + `Channel`) for:
@@ -329,6 +329,36 @@ Prevent blocking between data updates, signal evaluation, order management, and 
 ### Deliverables
 - Async orchestration layer integrated into `Trade`
 - New tests for concurrency behavior
+
+### Decision Record: Adaptive Repricing Cadence (2026-05-17)
+
+Decision scope:
+- Choose when adaptive maker orders (`limitprice=nothing`, `maker=true`) should be repriced while still open.
+
+Options:
+- Option A: Tick-driven repricing in `Trade._tradestep!` (current implementation).
+- Option B: Dedicated websocket/event-driven repricing worker in Objective 4 async topology.
+
+Selection criteria:
+- Repricing latency: how quickly order price follows spread changes.
+- API pressure: amend/cancel rate versus exchange limits.
+- Queue churn: probability of losing queue priority due to unnecessary reprices.
+- Complexity and resilience: operational complexity and failure-surface area.
+- Testability: deterministic backtest and unit-test reproducibility.
+
+Current decision:
+- Default to Option A (tick-driven) as baseline behavior.
+- Escalate to Option B only if measured latency/quality targets are not met under realistic load.
+
+Escalation triggers:
+- Median reprice lag exceeds configured target for sustained periods.
+- Fill quality degradation is attributable to stale maker limits.
+- Tick cadence must be increased solely to improve repricing responsiveness.
+
+Guardrails (both options):
+- Reprice only when target price changed by at least one tick.
+- Keep adaptive intent sticky across order-id replacement.
+- Preserve deterministic behavior in simulation/backtest paths.
 
 ---
 
@@ -426,9 +456,9 @@ Update this section after each work session.
 
 ### Status Summary
 - Objective 1: IN PROGRESS (Increment 1.1 started)
-- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated)
+- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, and explicit screening vs valuation USDT market intents)
 - Objective 3: IN PROGRESS (3.1 schema + integration slice + audit chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
-- Objective 4: NOT STARTED
+- Objective 4: IN PROGRESS (adaptive-maker steady-loop repricing slice implemented in Trade/CryptoXch)
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED
 
@@ -442,6 +472,111 @@ Update this section after each work session.
 - Next immediate step:
 
 ### Session Log
+- Date: 2026-05-18
+- Objective/Increment: Objective 2 maintenance / BybitSim screening with timestamp-aware cached OHLCV symbols
+- Completed:
+	- Added selective symbol filtering in BybitSim `_sim_get24h(symbol=nothing)` to iterate `syminfodf` but skip symbols lacking cached OHLCV at simulation reference time; aborts per-symbol failure instead of aborting entire snapshot.
+	- Updated `CryptoXch.screeningUSDTmarket` and `CryptoXch.valuationUSDTmarket` to call `setcurrenttime!(xc, dt)` before fetching pricing to align ticker snapshot with trade-selection timestamp.
+	- Result: trade-selection screening in simulation uses only viable cached-data-backed symbols and remains deterministic at the requested simulation time.
+	- Added focused CryptoXch test coverage for selective symbol filtering and timestamp-aware pricing queries.
+- Files changed:
+	- `Bybit/src/Bybit.jl`
+	- `CryptoXch/src/CryptoXch.jl`
+	- `CryptoXch/test/runtests.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `Bybit/test/runtests.jl` passed (17/17)
+	- `CryptoXch/test/runtests.jl` passed (26/26)
+	- Trade backtest integration: BybitSim selective symbol filtering confirmed with reduced universe filtered by OHLCV availability
+- Open issues/blockers:
+	- Selective symbol filtering works for broad screening; valuationUSDTmarket with specific requested bases still queries only requested symbols (correct path, no issue).
+	- Timestamp-aware pricing now works in screening path; further refinements depend on next simulation scenario.
+- Next immediate step:
+	- Verify multi-asset screening and valuationUSDTmarket consistency across live and simulation trade runs.
+
+- Date: 2026-05-18
+- Objective/Increment: Objective 2 maintenance / explicit screening vs valuation USDT market intents
+- Completed:
+	- Added explicit `CryptoXch.screeningUSDTmarket` (broad universe) and `CryptoXch.valuationUSDTmarket` (coin-scoped) APIs.
+	- Kept `CryptoXch.getUSDTmarket` backward-compatible and routed internal ticker fetch through a shared helper.
+	- Updated `CryptoXch.portfolio!` default valuation path to use `valuationUSDTmarket` with balance-derived requested base coins.
+	- Updated Trade selection/live wait paths to call `screeningUSDTmarket` explicitly.
+	- Added focused CryptoXch tests for intent separation and unrelated-symbol safety (`AAPLXUSDT` present in symbol universe but excluded from valuation when not held).
+- Files changed:
+	- `CryptoXch/src/CryptoXch.jl`
+	- `Trade/src/Trade.jl`
+	- `CryptoXch/test/usdtmarket_intent_test.jl`
+	- `CryptoXch/test/runtests.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- Root-project include: `Trade/test/backtest_integration_test.jl` passed (21/21)
+	- Root-project repro: BybitSim with injected `AAPLXUSDT` symbol and BTC-only holdings passed; `portfolio!` valuation succeeded without unrelated-symbol cache failure.
+- Open issues/blockers:
+	- Remaining broad market users outside Trade selection are still allowed to call `getUSDTmarket`; intent-specific APIs should be preferred for new code.
+- Next immediate step:
+	- Add adapter-level contract tests asserting `valuationUSDTmarket` only queries requested symbols for each supported exchange adapter.
+
+- Date: 2026-05-17
+- Objective/Increment: Objective 4 / adaptive maker steady-loop repricing slice
+- Completed:
+	- Added adaptive maker order intent registry in `CryptoXch` (`registeradaptiveorder!`, `unregisteradaptiveorder!`, `isadaptiveorder`, `pruneadaptiveorders!`).
+	- Wired registry lifecycle to order create/cancel/amend/getopenorders so adaptive intent survives order-id replacements and is cleaned when orders close.
+	- Updated `Trade._tradestep!` to amend adaptive maker orders with `limitprice=nothing` instead of cancelling all open orders.
+	- Added no-op short-circuit in KrakenSpot/KrakenFutures `amendorder` when neither effective price nor quantity changed.
+	- Added focused Trade test coverage for adaptive order registry behavior.
+- Files changed:
+	- `CryptoXch/src/CryptoXch.jl`
+	- `Trade/src/Trade.jl`
+	- `KrakenSpot/src/KrakenSpot.jl`
+	- `KrakenFutures/src/KrakenFutures.jl`
+	- `Trade/test/backtest_integration_test.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- Root-project includes: `Trade/test/backtest_integration_test.jl` passed (21/21)
+	- Root-project includes: `KrakenSpot/test/KrakenSpot_test.jl` passed (23/23)
+	- Root-project includes: `KrakenFutures/test/KrakenFutures_test.jl` passed (23/23)
+- Open issues/blockers:
+	- Repricing currently runs at trade-loop tick cadence; there is no dedicated websocket-driven reprice worker yet.
+- Next immediate step:
+	- Decide whether to keep tick-driven repricing only or add a dedicated async repricing worker as part of Objective 4.
+
+- Date: 2026-05-17
+- Objective/Increment: Objective 2 / BybitSim timestamp-aware maker snapshot pricing
+- Completed:
+	- Added `simtime` field to `Bybit.BybitCache`.
+	- Updated BybitSim `_sim_lastprice` to derive from OHLCV at `floor(simtime, 1m) - 1m` (previous-minute close semantics), including test-base and cached-base paths.
+	- Updated `CryptoXch.setcurrenttime!` to propagate `currentdt` into adapters exposing `simtime`.
+	- Updated routing test fixture for `BybitCache` constructor shape change.
+	- Verified omitted-limit maker order fill price now matches previous-minute close at simulation timestamp.
+- Files changed:
+	- `Bybit/src/Bybit.jl`
+	- `CryptoXch/src/CryptoXch.jl`
+	- `CryptoXch/test/routingtests.jl`
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- `Bybit/test/runtests.jl` passed (17/17)
+	- `CryptoXch/test/routingtests.jl` passed (26/26)
+	- Manual timestamped BTC repro: `get24h_last == previous-minute close` confirmed
+- Open issues/blockers:
+	- Price correctness still depends on quality of persisted OHLCV cache data.
+- Next immediate step:
+	- Add cache sanity checks for critical symbols (BTC/ETH) before simulation runs.
+
+- Date: 2026-05-17
+- Objective/Increment: Objective 2 / KrakenSpot + KrakenFutures `get24h` adaptation review
+- Completed:
+	- Reviewed KrakenSpot/KrakenFutures `get24h`, `createorder`, and `amendorder` paths for synthetic-price behavior.
+	- Confirmed both adapters use live REST ticker snapshots (with documented futures spot-fallback), not synthetic symbol-seeded pricing.
+	- Confirmed no equivalent adaptation to BybitSim timestamp pricing is currently required for Kraken adapters.
+- Files changed:
+	- `docs/trading-loop-integration-plan-2026-05-10.md`
+- Tests run and result:
+	- Review-only step; no code change required.
+- Open issues/blockers:
+	- If simulated Kraken adapters are introduced later, they will need explicit timestamp-aware ticker semantics similar to BybitSim.
+- Next immediate step:
+	- Document this live-only assumption near Kraken adapter `get24h` implementations when touching those modules again.
+
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / OCO bracket helper + local symbol-info cache for simulation
 - Completed:
@@ -666,4 +801,4 @@ Update this section after each work session.
 	- Continue Objective 1 with `tradestep!` extraction and deterministic loop-step tests.
 
 ## First Execution Slice (Recommended Next Coding Step)
-Continue Objective 1 by extracting a deterministic `tradestep!` function and adding non-network integration tests for backtest/live step control.
+Continue Objective 4 by deciding between (a) tick-driven adaptive maker repricing only and (b) a dedicated websocket-driven repricing worker, then add deterministic tests for the chosen cadence policy.

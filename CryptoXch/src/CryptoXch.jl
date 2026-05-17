@@ -310,6 +310,7 @@ end
 _exchangevalidsymbol(xc::XchCache, sym) = _routedModule(xc, data_exchange).validsymbol(_routedbc(xc, data_exchange), sym)
 _exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _routedModule(xc, data_exchange).getklines(_routedbc(xc, data_exchange), symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
 _exchangeget24h(xc::XchCache) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange))
+_exchangeget24h(xc::XchCache, symbol) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange), symbol)
 _exchangebalances(xc::XchCache) = _routedModule(xc, trade_exchange_spot).balances(_routedbc(xc, trade_exchange_spot))
 _exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _routedModule(xc, trade_exchange_spot).openorders(_routedbc(xc, trade_exchange_spot); symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
 _exchangeorder(xc::XchCache, orderid) = _routedModule(xc, trade_exchange_spot).order(_routedbc(xc, trade_exchange_spot), orderid)
@@ -961,7 +962,18 @@ end
 
 "Set xc.currentdt and all cached base ohlcv.ix to the provided datetime. If isnothing(datetime) the only xc.currentdt is set to nothing"
 function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
+    function _setsimtime!(bc, dt)
+        if !isnothing(bc) && hasproperty(bc, :simtime)
+            setproperty!(bc, :simtime, dt)
+        end
+        return nothing
+    end
+
     xc.currentdt = datetime
+    _setsimtime!(xc.bc, datetime)
+    for bc in values(xc.routecaches)
+        _setsimtime!(bc, datetime)
+    end
     if !isnothing(datetime)
         for base in keys(xc.bases)
             setcurrenttime!(xc, base, datetime)
@@ -1208,6 +1220,46 @@ end
 
 _emptymarkets()::DataFrame = DataFrame(basecoin=String[], quotevolume24h=Float32[], pricechangepercent=Float32[], lastprice=Float32[], askprice=Float32[], bidprice=Float32[])
 
+function _usdtmarkettickers(xc::XchCache; requestedbases=nothing)
+    if isnothing(requestedbases)
+        return _exchangeget24h(xc)
+    end
+
+    rows = DataFrame(askprice=Float32[], bidprice=Float32[], lastprice=Float32[], quotevolume24h=Float32[], pricechangepercent=Float32[], symbol=String[])
+    quotetoken = uppercase(String(EnvConfig.cryptoquote))
+    wanted = unique([uppercase(String(base)) for base in requestedbases if !isnothing(base) && (uppercase(String(base)) != quotetoken)])
+    for base in wanted
+        symbol = symboltoken(xc, base, quotetoken; role=data_exchange)
+        row = _tickerrow(_exchangeget24h(xc, symbol))
+        isnothing(row) && continue
+        push!(rows, row)
+    end
+    return rows
+end
+
+function _tickerrow(data)
+    if isnothing(data)
+        return nothing
+    end
+    row = if data isa DataFrames.DataFrameRow
+        data
+    elseif data isa AbstractDataFrame
+        size(data, 1) > 0 ? data[1, :] : nothing
+    else
+        data
+    end
+    isnothing(row) && return nothing
+
+    return (
+        symbol=String(row.symbol),
+        askprice=Float32(row.askprice),
+        bidprice=Float32(row.bidprice),
+        lastprice=Float32(row.lastprice),
+        quotevolume24h=Float32(row.quotevolume24h),
+        pricechangepercent=Float32(row.pricechangepercent),
+    )
+end
+
 """
 Returns a dataframe with 24h values of all USDT quotecoin bases that are not in baseignore list with the following columns:
 
@@ -1224,8 +1276,8 @@ getUSDTmarket: 512×6 DataFrame
 ─────┼───────────────────────────────────────────────────────────────────────────────────────────
    1 │    0.65           0.6499         0.6499           6.51727e6             -0.0536  OP
 """
-function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
-    usdtdf = _exchangeget24h(xc)
+function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc), requestedbases=nothing)
+    usdtdf = _usdtmarkettickers(xc; requestedbases=requestedbases)
     if isnothing(usdtdf) || (size(usdtdf, 1) == 0)
         return _emptymarkets()
     end
@@ -1236,6 +1288,27 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
     nbq = [!isnothing(bqe) && validbase(xc, bqe.basecoin) && (bqe.quotecoin == EnvConfig.cryptoquote) for bqe in bq]  # create binary vector as DataFrame filter
     usdtdf = usdtdf[nbq, Not(:symbol)]
     return usdtdf
+end
+
+"""
+Returns the broad USDT market snapshot used for selection/screening logic.
+"""
+function screeningUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc))
+    if get(xc.mc, :simmode, nosimulation) == bybitsim
+        setcurrenttime!(xc, dt)
+    end
+    return getUSDTmarket(xc; dt=dt)
+end
+
+"""
+Returns a coin-scoped USDT market snapshot used for portfolio valuation.
+Only the requested base coins are queried from the exchange adapter.
+"""
+function valuationUSDTmarket(xc::XchCache, requestedbases; dt::DateTime=tradetime(xc))
+    if get(xc.mc, :simmode, nosimulation) == bybitsim
+        setcurrenttime!(xc, dt)
+    end
+    return getUSDTmarket(xc; dt=dt, requestedbases=requestedbases)
 end
 
 #endregion public
@@ -1268,10 +1341,12 @@ end
 """
 Appends a balances DataFrame with the USDT value of the coin asset using usdtdf[:lastprice] and returns it as DataFrame[:coin, :locked, :free, :usdtprice, :usdtvalue].
 """
-function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=false), usdtdf=getUSDTmarket(xc); ignoresmallvolume=true)
+function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=false), usdtdf=nothing; ignoresmallvolume=true)
     if isnothing(xc.currentdt)
         if isnothing(usdtdf)
-            usdtdf = getUSDTmarket(xc)
+            quotetoken = uppercase(String(EnvConfig.cryptoquote))
+            requestedbases = [uppercase(String(c)) for c in balancesdf[!, :coin] if uppercase(String(c)) != quotetoken]
+            usdtdf = valuationUSDTmarket(xc, requestedbases)
         end
         portfoliodf = leftjoin(balancesdf, usdtdf[!, [:basecoin, :lastprice]], on = :coin => :basecoin)
         portfoliodf.lastprice = coalesce.(portfoliodf.lastprice, 1.0f0)
