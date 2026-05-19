@@ -1494,6 +1494,14 @@ function supplement!(f6::Features006)
         return emptycachef006()
     end
     xodf, odf = _ohlcvdataframes(f6)
+    # Fast path: if fdfno and fdf already cover the full OHLCV range, skip expensive rebuild.
+    # This is the common case in backtest mode where OHLCV data is pre-loaded and static.
+    if !isnothing(f6.fdfno) && (size(f6.fdfno, 1) > 0) && !isnothing(f6.fdf) && (size(f6.fdf, 1) > 0)
+        odfendix, odfstartix = _supplementboundaries(f6, f6.fdfno, odf)
+        if isnothing(odfendix) && isnothing(odfstartix)
+            return f6.fdf
+        end
+    end
     _supplementfdfno!(f6, xodf) # use the extended xodf to calculate features without offset
     startix = Ohlcv.rowix(f6.fdfno[!, :opentime], odf[begin, :opentime])
     endix = lastindex(f6.fdfno[!, :opentime])

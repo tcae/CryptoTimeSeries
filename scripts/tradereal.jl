@@ -45,6 +45,10 @@ const WHITELIST_INPUT = [
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
+# Optional cap for overall budget considered by trade sizing.
+# If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
+const MAX_BUDGET_QUOTE = nothing
+
 # TrendDetector config 046: GainSegment strategy parameters.
 # These come from mk046config() → tradingstrategy03().
 # Override individual fields here if needed.
@@ -76,6 +80,20 @@ function normalize_whitelist(entries, quote_coin::AbstractString)
         end
     end
     return unique(bases)
+end
+
+function max_budget_from_env(default_budget::Union{Nothing, Real})::Union{Nothing, Float64}
+    raw = strip(get(ENV, "TRADEREAL_MAX_BUDGET_QUOTE", ""))
+    if isempty(raw)
+        # backward compatibility for previous env name
+        raw = strip(get(ENV, "TRADEREAL_MAX_BUDGET_USDT", ""))
+    end
+    if isempty(raw)
+        return isnothing(default_budget) ? nothing : Float64(default_budget)
+    end
+    budget = parse(Float64, raw)
+    @assert budget > 0.0 "TRADEREAL_MAX_BUDGET_QUOTE must be > 0; got $(budget)"
+    return budget
 end
 
 mutable struct Trend046RuntimeClassifier <: Classify.AbstractClassifier
@@ -174,6 +192,7 @@ xc = CryptoXch.XchCache(; enddt=nothing, exchange=EXCHANGE, authname=AUTH_ALIAS)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
+run_max_budget_quote = max_budget_from_env(MAX_BUDGET_QUOTE)
 
 # Apply config 046 strategy parameters.
 Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
@@ -184,11 +203,13 @@ Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
 whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
 cache.mc[:whitelistcoins]    = whitelist
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
+cache.mc[:maxbudgetquote]    = run_max_budget_quote
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
+println("$(EnvConfig.now()): max budget cap quote=$(isnothing(run_max_budget_quote) ? "none" : run_max_budget_quote)")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
 

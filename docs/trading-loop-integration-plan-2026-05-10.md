@@ -1,5 +1,33 @@
 # Trading Loop Integration Plan (Created 2026-05-10)
 
+## 2026-05-18 Interface Revision Plan (Trade, TradingStrategy, Classify)
+
+### Scope constraints
+- Keep `AbstractClassifier` as the only decision support abstraction for now (no `AbstractRegressor` addition in this slice).
+- Move score threshold ownership (`openthreshold`, `closethreshold`) to `TradingStrategy` and avoid redefining these values in `Trade` runtime knobs.
+- Replace fragile simulated market snapshots from persisted trade config files with an on-the-fly simulated marketview derived from OHLCV at simulation time.
+- Keep two explicit config layers configured by scripts:
+	- strategy layer: targets, features, classifier, trading strategy
+	- trade runtime layer: allocation, refresh cadence, and execution controls while referencing the strategy layer
+- Preserve same-minute close-and-open-opposite trend behavior as a first-class use case.
+
+### Progress ledger
+- [x] Persist plan and checklist in repository doc
+- [x] Add explicit two-layer config structs and script-facing apply functions in `Trade`
+- [x] Add on-the-fly simulated marketview provider for `tradeselection!`
+- [x] Route `tradeselection!` through live-vs-simulated marketview resolver
+- [x] Ensure strategy thresholds are sourced from `TradingStrategy` config application path
+- [x] Add/adjust tests for simulated marketview and same-minute reversal expectations
+- [x] Validate with workspace tests and record follow-up deltas
+- [x] Introduce `StrategyAdvice` bridge with optional strategy-provided limit price
+- [x] Route trade-step advice handling through `StrategyAdvice` collection path
+- [x] Support same-minute close-then-open reversal expansion in advice handling
+- [x] Re-enable periodic trade-selection refresh in trade step with deterministic minute-level cadence tests
+
+### Notes
+- First target workflow: TrendDetector config `046` with `gain_limit_reversal!`.
+- This section is the active interruption-safe tracker for the current interface refactor.
+
 ## Goal
 Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, audit-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 

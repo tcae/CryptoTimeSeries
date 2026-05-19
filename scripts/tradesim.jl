@@ -35,10 +35,8 @@ const TRADE_MODE = Trade.buysell
 
 # Whitelist of base coins to consider for trading during the simulation.
 const QUOTE_COIN = "USDT"
-const WHITELIST_INPUT = [
-    "BTC"
-    # "BTC", "ETH", "HBAR", "PEPE", "XRP"
-]
+const WHITELIST_INPUT = String[]
+# const WHITELIST_INPUT = ["BTC", "ETH", "HBAR", "PEPE", "XRP"]
 
 function whitelist_from_env(default::Vector{String})::Vector{String}
     raw = get(ENV, "TRADESIM_WHITELIST", "")
@@ -52,6 +50,10 @@ const INITIAL_QUOTE_BALANCE = 100000.0
 
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
+
+# Optional cap for overall budget considered by trade sizing.
+# If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
+const MAX_BUDGET_QUOTE = nothing
 
 # Buy signal score threshold used by GainSegment strategy.
 const BUY_OPEN_THRESHOLD = 0.4f0
@@ -73,6 +75,20 @@ function backtest_bounds_from_env(default_start::DateTime, default_end::DateTime
     edt = isempty(eraw) ? default_end : DateTime(eraw)
     @assert sdt <= edt "TRADESIM_STARTDT must be <= TRADESIM_ENDDT; got start=$(sdt), end=$(edt)"
     return sdt, edt
+end
+
+function max_budget_from_env(default_budget::Union{Nothing, Real})::Union{Nothing, Float64}
+    raw = strip(get(ENV, "TRADESIM_MAX_BUDGET_QUOTE", ""))
+    if isempty(raw)
+        # backward compatibility for previous env name
+        raw = strip(get(ENV, "TRADESIM_MAX_BUDGET_USDT", ""))
+    end
+    if isempty(raw)
+        return isnothing(default_budget) ? nothing : Float64(default_budget)
+    end
+    budget = parse(Float64, raw)
+    @assert budget > 0.0 "TRADESIM_MAX_BUDGET_QUOTE must be > 0; got $(budget)"
+    return budget
 end
 
 # Normalize whitelist entries to base coins for the configured quote coin.
@@ -419,6 +435,19 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
     println()
 end
 
+"Write the textual backtest report to `filepath` and return the report text."
+function write_backtest_report_file(cache::Trade.TradeCache, startdt::DateTime, enddt::DateTime, filepath::AbstractString)::String
+    report_text = sprint() do io
+        redirect_stdout(io) do
+            backtest_report(cache, startdt, enddt)
+        end
+    end
+    open(filepath, "w") do io
+        write(io, report_text)
+    end
+    return report_text
+end
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SETUP
 # ─────────────────────────────────────────────────────────────────────────────
@@ -433,6 +462,8 @@ catch err
     exit(1)
 end
 EnvConfig.setdebugpath(LOG_SUBFOLDER)
+run_debug_folder = EnvConfig.logfolder()
+report_file = joinpath(run_debug_folder, "backtest-report.txt")
 
 CryptoXch.verbosity = 1
 Classify.verbosity  = 2
@@ -442,8 +473,10 @@ println("$(EnvConfig.now()): starting tradesim with config=$CONFIG046_NAME")
 println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
+run_max_budget_quote = max_budget_from_env(MAX_BUDGET_QUOTE)
 
 whitelist = normalize_whitelist(whitelist_from_env(WHITELIST_INPUT), QUOTE_COIN)
+has_whitelist_override = !isempty(whitelist)
 run_startdt, run_enddt = effective_startdt, effective_enddt
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -466,8 +499,11 @@ Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
     source="tradesim:$CONFIG046_NAME")
 
 # Override whitelist and risk parameters.
-cache.mc[:whitelistcoins]   = whitelist
+if has_whitelist_override
+    cache.mc[:whitelistcoins] = whitelist
+end
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
+cache.mc[:maxbudgetquote] = run_max_budget_quote
 cache.mc[:usenewtrade]      = false
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
@@ -475,7 +511,12 @@ println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
 println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
-println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
+println("$(EnvConfig.now()): max budget cap quote=$(isnothing(run_max_budget_quote) ? "none" : run_max_budget_quote)")
+if has_whitelist_override
+    println("$(EnvConfig.now()): whitelist override ($(length(whitelist)) bases): $whitelist")
+else
+    println("$(EnvConfig.now()): whitelist override disabled; using TradeCache default universe ($(length(cache.mc[:whitelistcoins])) bases)")
+end
 println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
 
 preloaded = Trade.read!(cache, run_startdt)
@@ -485,15 +526,30 @@ isnothing(preloaded) && error("failed to preload trade cache at start datetime=$
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-Trade.run_backtest!(cache; skip_init=true)
+report_written = false
+try
+    Trade.run_backtest!(cache; skip_init=true)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PERFORMANCE REPORT
-# ─────────────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # PERFORMANCE REPORT
+    # ─────────────────────────────────────────────────────────────────────────
 
-backtest_report(cache, run_startdt, run_enddt)
+    backtest_report(cache, run_startdt, run_enddt)
+    write_backtest_report_file(cache, run_startdt, run_enddt, report_file)
+    report_written = true
+    println("$(EnvConfig.now()): saved backtest report to $report_file")
+finally
+    if !report_written
+        try
+            write_backtest_report_file(cache, run_startdt, run_enddt, report_file)
+            println("$(EnvConfig.now()): saved partial backtest report to $report_file")
+        catch err
+            println(stderr, "$(EnvConfig.now()): failed to persist backtest report: $(sprint(showerror, err))")
+        end
+    end
 
-# Persist order log separately from other simulation artifacts.
-EnvConfig.setdebugpath(ORDERS_SUBFOLDER)
-CryptoXch.writeorders(cache.xc)
-println("$(EnvConfig.now()): saved simulation orders to $(EnvConfig.logfolder())")
+    # Persist order log separately from other simulation artifacts.
+    EnvConfig.setdebugpath(ORDERS_SUBFOLDER)
+    CryptoXch.writeorders(cache.xc)
+    println("$(EnvConfig.now()): saved simulation orders to $(EnvConfig.logfolder())")
+end

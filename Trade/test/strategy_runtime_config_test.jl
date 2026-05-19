@@ -1,4 +1,5 @@
 using Test
+using Dates
 using Trade
 using TradingStrategy
 
@@ -54,4 +55,24 @@ using TradingStrategy
         limitreduction=0f0,
     )
     @test_throws AssertionError Trade.apply_tradingstrategy!(mc, gs_invalid)
+end
+
+@testset "trade runtime config bridge" begin
+    tc = Trade.TradeCache()
+    cfg = Trade.TradeRuntimeConfig(
+        maxassetfraction=0.2f0,
+        maxbudgetquote=10_000.0,
+        reloadtimes=[Time("02:00:00"), Time("14:00:00")],
+        whitelistcoins=["btc", "eth"],
+        strategy_engine=:getgainsalgo,
+    )
+
+    Trade.apply_runtime_config!(tc, cfg)
+
+    @test tc.mc[:maxassetfraction] == 0.2f0
+    @test tc.mc[:maxbudgetquote] == 10_000.0
+    @test tc.mc[:maxbudgetusdt] == 10_000.0
+    @test tc.mc[:reloadtimes] == [Time("02:00:00"), Time("14:00:00")]
+    @test tc.mc[:whitelistcoins] == ["BTC", "ETH"]
+    @test tc.mc[:strategy_engine] == :getgainsalgo
 end
