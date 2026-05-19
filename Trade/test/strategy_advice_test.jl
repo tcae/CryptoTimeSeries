@@ -68,7 +68,7 @@ using Targets
                 usdtvalue=Float32[-10f0, 108f0],
             )
 
-            @test Trade.USDTmsg(assets) == "USDT: total=98, free=100%"
+            @test Trade.USDTmsg(assets) == "USDT: total=98, quotefree=100%"
         finally
             EnvConfig.cryptoquote = oldquote
         end

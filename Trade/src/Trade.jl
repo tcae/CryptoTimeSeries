@@ -1114,8 +1114,8 @@ function USDTmsg(assets)
     totalusdt = sum(assets.usdtvalue)
     totalborrowedusdt = sum(assets[!, :borrowed] .* assets[!, :usdtprice])
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]) - totalborrowedusdt
-    freepct = totalusdt > 0f0 ? round(Int, freeusdt / totalusdt * 100) : 0
-    return string("USDT: total=$(round(Int, totalusdt)), free=$(freepct)%")
+    freepct = totalusdt > 0f0 ? min(100, round(Int, freeusdt / totalusdt * 100)) : 0
+    return string("$(EnvConfig.cryptoquote): total=$(round(Int, totalusdt)), quotefree=$(freepct)%")
 end
 function tradeadvicelessthan(ta1, ta2)
     closeset = [shortclose, shortstrongclose, allclose, longstrongclose, longclose]
@@ -1509,7 +1509,7 @@ function _tradefinish!(cache::TradeCache)
     (verbosity >= 2) && @info "$(EnvConfig.now()): closed orders $(size(cache.xc.closedorders, 1)), open orders $(size(cache.xc.orders, 1))"
     assets = CryptoXch.portfolio!(cache.xc)
     (verbosity >= 3) && @info "assets = $assets"
-    (verbosity >= 2) && @info "total USDT = $(sum(assets.usdtvalue))"
+    (verbosity >= 2) && @info "total $(EnvConfig.cryptoquote) = $(sum(assets.usdtvalue))"
 end
 
 """

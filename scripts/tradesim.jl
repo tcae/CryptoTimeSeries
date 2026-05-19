@@ -53,7 +53,7 @@ const MAX_ASSET_FRACTION = 0.1f0
 
 # Optional cap for overall budget considered by trade sizing.
 # If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
-const MAX_BUDGET_QUOTE = nothing
+const MAX_BUDGET_QUOTE = 10000  # nothing
 
 # Buy signal score threshold used by GainSegment strategy.
 const BUY_OPEN_THRESHOLD = 0.4f0
@@ -437,14 +437,12 @@ end
 
 "Write the textual backtest report to `filepath` and return the report text."
 function write_backtest_report_file(cache::Trade.TradeCache, startdt::DateTime, enddt::DateTime, filepath::AbstractString)::String
-    report_text = sprint() do io
+    open(filepath, "w") do io
         redirect_stdout(io) do
             backtest_report(cache, startdt, enddt)
         end
     end
-    open(filepath, "w") do io
-        write(io, report_text)
-    end
+    report_text = read(filepath, String)
     return report_text
 end
 
