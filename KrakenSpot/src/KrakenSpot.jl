@@ -1,6 +1,9 @@
 module KrakenSpot
 
-using Base64, DataFrames, Dates, EnvConfig, HTTP, JSON3, Logging, SHA, WebSockets
+using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA, WebSockets
+
+const _private_call_counter_lock = ReentrantLock()
+const _private_call_counter = Dict{String, Int}()
 
 """
 verbosity =
@@ -28,6 +31,48 @@ const _interval2minutes = Dict(
 )
 
 const _known_quotes = ["USDT", "USD", "USDC", "EUR", "BTC", "ETH"]
+
+const _nonce_lock = ReentrantLock()
+const _last_nonce = Ref{Int}(0)
+const _openpositions_state_lock = ReentrantLock()
+const _openpositions_nonce_failures = Ref{Int}(0)
+const _openpositions_disabled_until = Ref{Union{Nothing, DateTime}}(nothing)
+const _openpositions_cache = Ref{Union{Nothing, Dict{String, Float32}}}(nothing)
+const _openpositions_cache_time = Ref{Union{Nothing, DateTime}}(nothing)
+const _openorders_cache_lock = ReentrantLock()
+const _openorders_cache = Ref{Union{Nothing, DataFrame}}(nothing)
+const _openorders_cache_time = Ref{Union{Nothing, DateTime}}(nothing)
+const _private_rl_lock = ReentrantLock()
+const _private_rl_cooldown_until = Ref{Union{Nothing, DateTime}}(nothing)
+
+# Balance caching to avoid Kraken API rate limits (15 req/sec for tier 2)
+# Cache TTL: 5 seconds. At 1 balance call/minute, this is well under the rate limit.
+const _balance_cache_lock = ReentrantLock()
+const _balance_cache = Ref{Union{Nothing, DataFrame}}(nothing)
+const _balance_cache_time = Ref{Union{Nothing, DateTime}}(nothing)
+const BALANCE_CACHE_TTL = Dates.Second(5)
+const OPENPOSITIONS_CACHE_TTL = Dates.Minute(5)
+const OPENORDERS_CACHE_TTL = Dates.Second(30)
+const BALANCE_CACHE_MAX_STALE = Dates.Hour(2)
+const OPENORDERS_CACHE_MAX_STALE = Dates.Hour(2)
+const PRIVATE_READ_COOLDOWN = Dates.Second(45)
+
+"""
+Log and reset a private endpoint call-rate summary for the current aggregation window.
+Used by shutdown handlers to emit one final diagnostics snapshot.
+"""
+function log_private_call_summary!()
+	lock(_private_call_counter_lock) do
+		counts = collect(values(_private_call_counter))
+		total_calls = sum(counts)
+		endpoint_count = length(counts)
+		max_calls = endpoint_count == 0 ? 0 : maximum(counts)
+		avg_calls = endpoint_count == 0 ? 0.0 : (total_calls / endpoint_count)
+		@info "[KrakenSpot private call rate summary]" total_calls_per_min=total_calls max_calls_per_endpoint_per_min=max_calls avg_calls_per_endpoint_per_min=round(avg_calls; digits=2) endpoints_tracked=endpoint_count
+		empty!(_private_call_counter)
+	end
+	return nothing
+end
 
 """
 Cached KrakenSpot state used by higher-level trading modules.
@@ -151,6 +196,80 @@ function _checkresponse(response::Dict, info::AbstractString)
 	end
 end
 
+function _httpmemorycompaterror(err)::Bool
+	msg = sprint(showerror, err)
+	return (err isa MethodError) && occursin("SubArray{UInt8,1,Memory{UInt8}", msg) && occursin("SubArray{UInt8,1,Vector{UInt8}", msg)
+end
+
+function _isinvalidnonceerror(err)::Bool
+	return occursin("invalid nonce", lowercase(sprint(showerror, err)))
+end
+
+function _isratelimiterror(err)::Bool
+	return occursin("rate limit exceeded", lowercase(sprint(showerror, err)))
+end
+
+function _istransientnetworkerror(err)::Bool
+	msg = lowercase(sprint(showerror, err))
+	return occursin("econnreset", msg) || occursin("connection reset", msg) || occursin("timed out", msg) || occursin("timeout", msg) || occursin("recv failure", msg)
+end
+
+function _isreadonlyprivateendpoint(endPoint::AbstractString)::Bool
+	return endPoint in [
+		"/0/private/OpenOrders",
+		"/0/private/BalanceEx",
+		"/0/private/Balance",
+		"/0/private/OpenPositions",
+		"/0/private/TradeBalance",
+		"/0/private/QueryOrders",
+	]
+end
+
+function _downloadsrequest(method::AbstractString, url::AbstractString; headers=Pair{String, String}[], body::AbstractString="")::Dict
+	attempts = 3
+	method_upper = uppercase(String(method))
+	while attempts > 0
+		responseio = IOBuffer()
+		try
+			if method_upper == "GET"
+				Downloads.request(String(url); method="GET", headers=headers, timeout=90.0, output=responseio)
+			else
+				Downloads.request(String(url); method=method_upper, headers=headers, timeout=90.0, input=IOBuffer(String(body)), output=responseio)
+			end
+			seekstart(responseio)
+			return JSON3.read(String(take!(responseio)), Dict)
+		catch err
+			attempts -= 1
+			msg = lowercase(sprint(showerror, err))
+			istimeout = occursin("timed out", msg) || occursin("timeout", msg) || occursin("recv failure", msg)
+			if istimeout && (attempts > 0)
+				wait_s = 0.5 * (4 - attempts)
+				(verbosity >= 2) && @warn "Downloads.request timeout; retrying fallback request" method=method_upper url attempts_left=attempts sleep_seconds=wait_s
+				sleep(wait_s)
+				continue
+			end
+			rethrow(err)
+		end
+	end
+	error("unreachable")
+end
+
+"Return a strictly increasing Kraken nonce (nanoseconds since epoch)."
+function _nextnonce()::String
+	lock(_nonce_lock)
+	try
+		# Use unix-nanoseconds scale to stay above prior ms/us-based nonces used by other clients.
+		candidate = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
+		if candidate <= _last_nonce[]
+			candidate = _last_nonce[] + 1
+		end
+		_last_nonce[] = candidate
+		return string(candidate)
+	finally
+		unlock(_nonce_lock)
+	end
+end
+
 """
 Convert a value to `Float32`, returning `default` when parsing fails.
 """
@@ -191,6 +310,62 @@ function _int(value, default::Int=0)::Int
 		end
 	end
 	return default
+end
+
+"Return `true` when instrument status allows trading requests."
+function _istradablestatus(status)::Bool
+	st = lowercase(String(status))
+	return st in ["online", "post_only", "limit_only", "reduce_only", "trading"]
+end
+
+"Return decimal digits implied by a precision step size (e.g. 0.01 => 2)."
+function _precisiondigits(step::Real, defaultdigits::Int=8)::Int
+	step <= 0 && return defaultdigits
+	d = round(Int, log10(1 / Float64(step)))
+	return max(d, 0)
+end
+
+"Return true when an exception text indicates a post-only rejection."
+function _ispostonlyrejection(err)::Bool
+	msg = lowercase(sprint(showerror, err))
+	return occursin("post", msg) && occursin("only", msg)
+end
+
+"Normalize limit order price/qty to exchange precision and min constraints."
+function _normalizelimitorderparams(syminfo::DataFrameRow, basequantity::Real, limitprice::Real)
+	pricedigits = _precisiondigits(Float64(syminfo.ticksize), 5)
+	qtydigits = _precisiondigits(Float64(syminfo.baseprecision), 8)
+
+	normprice = Float32(round(Float64(limitprice), digits=pricedigits))
+	normprice > 0f0 || throw(ArgumentError("normalized limitprice must be > 0, got $(normprice)"))
+
+	normqty = Float64(basequantity)
+	minquote = Float64(syminfo.minquoteqty)
+	minbase = Float64(syminfo.minbaseqty)
+	if (minquote > 0.0) && ((normqty * Float64(normprice)) < minquote)
+		normqty = minquote / Float64(normprice)
+	end
+	normqty = max(normqty, minbase)
+	normqty = floor(normqty, digits=qtydigits)
+	if normqty < minbase
+		normqty = minbase
+	end
+	if (minquote > 0.0) && ((normqty * Float64(normprice)) < minquote)
+		normqty = ceil(minquote / Float64(normprice), digits=qtydigits)
+		normqty = max(normqty, minbase)
+	end
+	return (basequantity=Float32(normqty), limitprice=normprice, qtydigits=qtydigits, pricedigits=pricedigits)
+end
+
+"Validate requested spot margin leverage range before submitting Kraken orders."
+function _validatemarginleverage(marginleverage::Signed)
+	if marginleverage == 0
+		return nothing
+	end
+	if !(2 <= marginleverage <= 5)
+		throw(ArgumentError("Kraken spot margin leverage must be 0 or in 2:5, got $(marginleverage)"))
+	end
+	return nothing
 end
 
 """
@@ -347,8 +522,17 @@ function HttpPublicRequest(bc::KrakenSpotCache, method::AbstractString, endPoint
 	if !isempty(query)
 		url = string(url, "?", query)
 	end
-	response = HTTP.request(method, url; retries=5, retry=true, readtimeout=60)
-	body = JSON3.read(String(response.body), Dict)
+	body = try
+		response = HTTP.request(method, url; retries=5, retry=true, readtimeout=60)
+		JSON3.read(String(response.body), Dict)
+	catch err
+		if _httpmemorycompaterror(err)
+			(verbosity >= 3) && @warn "HTTP.request compatibility fallback to Downloads.request" method url info
+			_downloadsrequest(method, url)
+		else
+			rethrow(err)
+		end
+	end
 	_checkresponse(body, info)
 	return body
 end
@@ -361,22 +545,105 @@ function HttpPrivateRequest(bc::KrakenSpotCache, method::AbstractString, endPoin
 		throw(ArgumentError("Kraken credentials are required for $(info)"))
 	end
 	method != "POST" && throw(ArgumentError("Kraken private endpoints require POST, got $(method)"))
+	if _isreadonlyprivateendpoint(endPoint)
+		lock(_private_rl_lock) do
+			now = Dates.now(Dates.UTC)
+			if !isnothing(_private_rl_cooldown_until[]) && (now < _private_rl_cooldown_until[])
+				throw(ErrorException("Kraken private read cooldown active until $(_private_rl_cooldown_until[])"))
+			end
+		end
+	end
 
-	reqparams = isnothing(params) ? Dict{String, Any}() : copy(params)
-	nonce = string(_int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1000)))
-	reqparams["nonce"] = nonce
-	postdata = _dict2paramspost(reqparams)
-	signature = _krakensignature(endPoint, nonce, postdata, bc.secretkey)
+	# Diagnostics: count private endpoint calls for end-of-run summary only.
+	lock(_private_call_counter_lock) do
+		_private_call_counter[endPoint] = get(_private_call_counter, endPoint, 0) + 1
+	end
 
-	headers = Dict(
-		"API-Key" => bc.publickey,
-		"API-Sign" => signature,
-		"Content-Type" => "application/x-www-form-urlencoded",
-	)
-	response = HTTP.request("POST", bc.apirest * endPoint, headers, postdata; retries=3, retry_non_idempotent=true, readtimeout=60)
-	body = JSON3.read(String(response.body), Dict)
-	_checkresponse(body, info)
-	return body
+	baseparams = isnothing(params) ? Dict{String, Any}() : Dict{String, Any}(string(k) => v for (k, v) in params)
+	attempts = 8
+	last_error = nothing
+	while attempts > 0
+		reqparams = copy(baseparams)
+		nonce = _nextnonce()
+		reqparams["nonce"] = nonce
+		postdata = _dict2paramspost(reqparams)
+		signature = _krakensignature(endPoint, nonce, postdata, bc.secretkey)
+
+		headers = Dict(
+			"API-Key" => bc.publickey,
+			"API-Sign" => signature,
+			"Content-Type" => "application/x-www-form-urlencoded",
+		)
+		body = try
+			response = HTTP.request("POST", bc.apirest * endPoint, headers, postdata; retries=0, retry_non_idempotent=false, readtimeout=60)
+			JSON3.read(String(response.body), Dict)
+		catch err
+			if _httpmemorycompaterror(err)
+				(verbosity >= 3) && @warn "HTTP.request compatibility fallback to Downloads.request" method="POST" endpoint=endPoint info
+				hvec = Pair{String, String}[String(k) => String(v) for (k, v) in headers]
+				_downloadsrequest("POST", bc.apirest * endPoint; headers=hvec, body=postdata)
+			elseif _istransientnetworkerror(err) && (attempts > 1)
+				attempts -= 1
+				retry_ix = 8 - attempts
+				wait_s = min(5.0, 0.25 * retry_ix)
+				last_error = err
+				(verbosity >= 1) && @warn "Kraken private transport error; retrying request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s exception=sprint(showerror, err)
+				sleep(wait_s)
+				continue
+			else
+				rethrow(err)
+			end
+		end
+
+		try
+			_checkresponse(body, info)
+			return body
+		catch err
+			last_error = err
+			attempts -= 1
+			if _isratelimiterror(err) && (attempts > 0)
+				lock(_private_rl_lock) do
+					now = Dates.now(Dates.UTC)
+					until = now + PRIVATE_READ_COOLDOWN
+					if isnothing(_private_rl_cooldown_until[]) || (until > _private_rl_cooldown_until[])
+						_private_rl_cooldown_until[] = until
+					end
+				end
+				if _isreadonlyprivateendpoint(endPoint)
+					# Read-only paths should fall back to cache while cooldown is active.
+					rethrow(err)
+				end
+				retry_ix = 8 - attempts
+				wait_s = min(30.0, 2.0 ^ retry_ix)
+				(verbosity >= 1) && @warn "Kraken private rate limit hit; retrying request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s
+				sleep(wait_s)
+				continue
+			end
+			if _isinvalidnonceerror(err) && (attempts > 0)
+				retry_ix = 8 - attempts
+				wait_s = min(0.5, 0.05 * retry_ix)
+				nonce_floor = let
+					jump_ns = retry_ix >= 3 ? 2_000_000_000_000_000_000 : 5_000_000_000
+					lock(_nonce_lock)
+					try
+						now_ns = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
+						base = max(now_ns, _last_nonce[])
+						limit = typemax(Int) - 1_000_000
+						candidate = base >= (limit - jump_ns) ? limit : (base + jump_ns)
+						_last_nonce[] = candidate
+						_last_nonce[]
+					finally
+						unlock(_nonce_lock)
+					end
+				end
+				(verbosity >= 2) && @warn "Kraken invalid nonce; retrying private request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s nonce_floor=nonce_floor
+				sleep(wait_s)
+				continue
+			end
+			rethrow(err)
+		end
+	end
+	throw(last_error)
 end
 
 """
@@ -413,6 +680,7 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 		ticksize = Float32(10.0^-pairdecimals)
 		baseprecision = Float32(10.0^-lotdecimals)
 		minbaseqty = _float32(get(info, "ordermin", "0"), 0f0)
+		minquoteqty = _float32(get(info, "costmin", "0"), 0f0)
 		status = String(get(info, "status", "online"))
 
 		push!(df, (
@@ -424,7 +692,7 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 			baseprecision=baseprecision,
 			quoteprecision=ticksize,
 			minbaseqty=minbaseqty,
-			minquoteqty=0f0,
+			minquoteqty=minquoteqty,
 			krakenpairname=String(pairname),
 			wsname=wsname,
 		))
@@ -457,7 +725,7 @@ end
 symbolinfo(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString) = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
 function validsymbol(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString)::Bool
 	sym = symbolinfo(bc, basecoin, quotecoin)
-	return !isnothing(sym) && (uppercase(String(sym.quotecoin)) == uppercase(quotecoin)) && (lowercase(String(sym.status)) in ["online", "post_only", "limit_only", "reduce_only", "trading"])
+	return !isnothing(sym) && (uppercase(String(sym.quotecoin)) == uppercase(quotecoin)) && _istradablestatus(sym.status)
 end
 
 """
@@ -467,8 +735,7 @@ function validsymbol(bc::KrakenSpotCache, sym::Union{Nothing, DataFrameRow})::Bo
 	if isnothing(sym)
 		return false
 	end
-	statuses = ["online", "post_only", "limit_only", "reduce_only", "trading"]
-	return uppercase(sym.quotecoin) == uppercase(EnvConfig.cryptoquote) && (lowercase(sym.status) in statuses)
+	return uppercase(sym.quotecoin) == uppercase(EnvConfig.cryptoquote) && _istradablestatus(sym.status)
 end
 
 """
@@ -638,9 +905,42 @@ function openorders(bc::KrakenSpotCache; symbol=nothing, orderid=nothing, orderL
 	if !_hascredentials(bc)
 		return emptyorders()
 	end
+
+	# Read-through cache to reduce pressure on private OpenOrders endpoint.
+	if isnothing(orderid) && isnothing(symbol)
+		lock(_openorders_cache_lock) do
+			now = Dates.now(Dates.UTC)
+			if !isnothing(_openorders_cache[]) && !isnothing(_openorders_cache_time[])
+				if (now - _openorders_cache_time[]) < OPENORDERS_CACHE_TTL
+					return copy(_openorders_cache[])
+				end
+			end
+		end
+	end
+
 	params = Dict{String, Any}()
 	!isnothing(orderid) && (params["txid"] = String(orderid))
-	response = HttpPrivateRequest(bc, "POST", "/0/private/OpenOrders", params, "open orders")
+	response = nothing
+	try
+		response = HttpPrivateRequest(bc, "POST", "/0/private/OpenOrders", params, "open orders")
+	catch err
+		if isnothing(orderid) && isnothing(symbol)
+			fallback = lock(_openorders_cache_lock) do
+				now = Dates.now(Dates.UTC)
+				if !isnothing(_openorders_cache[]) && !isnothing(_openorders_cache_time[])
+					if (now - _openorders_cache_time[]) < OPENORDERS_CACHE_MAX_STALE
+						(verbosity >= 1) && @warn "OpenOrders request failed; returning stale cached open orders" age=(now - _openorders_cache_time[]) exception=sprint(showerror, err)
+						return copy(_openorders_cache[])
+					end
+				end
+				return nothing
+			end
+			if !isnothing(fallback)
+				return fallback
+			end
+		end
+		rethrow(err)
+	end
 	result = get(response, "result", Dict{String, Any}())
 	open = haskey(result, "open") ? Dict(result["open"]) : Dict{String, Any}()
 
@@ -653,6 +953,13 @@ function openorders(bc::KrakenSpotCache; symbol=nothing, orderid=nothing, orderL
 			continue
 		end
 		push!(out, row)
+	end
+
+	if isnothing(orderid) && isnothing(symbol)
+		lock(_openorders_cache_lock) do
+			_openorders_cache[] = copy(out)
+			_openorders_cache_time[] = Dates.now(Dates.UTC)
+		end
 	end
 	return out
 end
@@ -718,33 +1025,73 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 	if !_hascredentials(bc)
 		return nothing
 	end
+	_validatemarginleverage(marginleverage)
+
+	syminfo = symbolinfo(bc, symbol)
+	if isnothing(syminfo)
+		(verbosity >= 1) && @warn "no instrument info for $(symbol)"
+		return nothing
+	end
+	if !_istradablestatus(syminfo.status)
+		(verbosity >= 1) && @warn "symbol $(symbol) is not tradable due to status=$(syminfo.status)"
+		return nothing
+	end
 
 	pairname = _symbol2pairname(bc, symbol)
-	effectiveprice = price
-	if isnothing(effectiveprice) && maker
-		snapshot = get24h(bc, symbol)
-		effectiveprice = isnothing(snapshot) ? nothing : _makerlimitprice(symbolinfo(bc, symbol), snapshot, orderside)
-	end
-	ordertype = isnothing(effectiveprice) ? "market" : "limit"
-	params = Dict{String, Any}(
-		"pair" => pairname,
-		"type" => lowercase(orderside),
-		"ordertype" => ordertype,
-		"volume" => string(basequantity),
-	)
-	if !isnothing(effectiveprice)
-		params["price"] = string(effectiveprice)
-	end
-	if maker && !isnothing(effectiveprice)
-		params["oflags"] = "post"
-	end
-	if marginleverage > 0
-		params["leverage"] = string(marginleverage)
+	adaptivepost = maker && isnothing(price)
+	attempts = adaptivepost ? 5 : 1
+	ordertype = (maker || !isnothing(price)) ? "limit" : "market"
+	chosenqty = Float32(basequantity)
+	effectiveprice = isnothing(price) ? nothing : Float32(price)
+	txids = Any[]
+	while attempts > 0
+		if ordertype == "limit"
+			if adaptivepost
+				snapshot = get24h(bc, symbol)
+				effectiveprice = isnothing(snapshot) ? nothing : _makerlimitprice(syminfo, snapshot, orderside)
+			end
+			if isnothing(effectiveprice)
+				(verbosity >= 1) && @warn "failed to resolve limit price for $(symbol)"
+				return nothing
+			end
+			norm = _normalizelimitorderparams(syminfo, chosenqty, effectiveprice)
+			chosenqty = norm.basequantity
+			effectiveprice = norm.limitprice
+		end
+
+		params = Dict{String, Any}(
+			"pair" => pairname,
+			"type" => lowercase(orderside),
+			"ordertype" => ordertype,
+			"volume" => string(chosenqty),
+		)
+		if ordertype == "limit"
+			params["price"] = string(effectiveprice)
+		end
+		if maker && (ordertype == "limit")
+			params["oflags"] = "post"
+		end
+		if marginleverage > 0
+			params["leverage"] = string(marginleverage)
+		end
+
+		try
+			response = HttpPrivateRequest(bc, "POST", "/0/private/AddOrder", params, "create order")
+			result = get(response, "result", Dict{String, Any}())
+			txids = get(result, "txid", Any[])
+			if (txids isa AbstractVector) && !isempty(txids)
+				break
+			end
+			return nothing
+		catch err
+			attempts -= 1
+			if !adaptivepost || !_ispostonlyrejection(err) || (attempts <= 0)
+				rethrow(err)
+			end
+			(verbosity >= 2) && @info "retrying post-only order for $(symbol) after rejection" attempts_left=attempts
+		end
 	end
 
-	response = HttpPrivateRequest(bc, "POST", "/0/private/AddOrder", params, "create order")
-	result = get(response, "result", Dict{String, Any}())
-	txids = get(result, "txid", Any[])
 	if !(txids isa AbstractVector) || isempty(txids)
 		return nothing
 	end
@@ -755,7 +1102,7 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 		orderid=orderid,
 		symbol=_normalizepairsymbol(symbol),
 		side=lowercase(orderside) == "buy" ? "Buy" : "Sell",
-		baseqty=Float32(basequantity),
+		baseqty=chosenqty,
 		ordertype=titlecase(ordertype),
 			timeinforce=(maker && !isnothing(effectiveprice)) ? "PostOnly" : "GTC",
 			limitprice=isnothing(effectiveprice) ? 0f0 : Float32(effectiveprice),
@@ -815,17 +1162,140 @@ end
 """
 Return balances in a normalized DataFrame with coin, locked, free, borrowed and accrued interest.
 """
+function _borrowedfromopenpositions(bc::KrakenSpotCache)::Dict{String, Float32}
+	if !_hascredentials(bc)
+		return Dict{String, Float32}()
+	end
+
+	# Cache borrowed estimation from OpenPositions because this is a private endpoint
+	# and borrowed exposure changes relatively slowly compared to loop cadence.
+	lock(_openpositions_state_lock)
+	try
+		now = Dates.now(Dates.UTC)
+		if !isnothing(_openpositions_cache[]) && !isnothing(_openpositions_cache_time[])
+			if (now - _openpositions_cache_time[]) < OPENPOSITIONS_CACHE_TTL
+				return copy(_openpositions_cache[])
+			end
+		end
+	finally
+		unlock(_openpositions_state_lock)
+	end
+
+	lock(_openpositions_state_lock)
+	try
+		if !isnothing(_openpositions_disabled_until[]) && (Dates.now(Dates.UTC) < _openpositions_disabled_until[])
+			return Dict{String, Float32}()
+		end
+	finally
+		unlock(_openpositions_state_lock)
+	end
+
+	try
+		response = HttpPrivateRequest(bc, "POST", "/0/private/OpenPositions", Dict("docalcs" => true), "open positions")
+		result = get(response, "result", Dict{String, Any}())
+		borrowed = _borrowedfromopenpositionsresult(bc, result)
+		lock(_openpositions_state_lock)
+		try
+			_openpositions_nonce_failures[] = 0
+			_openpositions_disabled_until[] = nothing
+			_openpositions_cache[] = copy(borrowed)
+			_openpositions_cache_time[] = Dates.now(Dates.UTC)
+		finally
+			unlock(_openpositions_state_lock)
+		end
+		return borrowed
+	catch err
+		if _isinvalidnonceerror(err)
+			lock(_openpositions_state_lock)
+			try
+				_openpositions_nonce_failures[] += 1
+				if _openpositions_nonce_failures[] >= 2
+					_openpositions_disabled_until[] = Dates.now(Dates.UTC) + Minute(15)
+					(verbosity >= 1) && @warn "disabling OpenPositions borrowed estimation after repeated invalid nonce" disabled_until=_openpositions_disabled_until[]
+				else
+					(verbosity >= 1) && @warn "invalid nonce for OpenPositions borrowed estimation; will retry on next cycle"
+				end
+			finally
+				unlock(_openpositions_state_lock)
+			end
+			return Dict{String, Float32}()
+		end
+		rethrow(err)
+	end
+end
+
+function _borrowedfromopenpositionsresult(bc::KrakenSpotCache, result)::Dict{String, Float32}
+	borrowed = Dict{String, Float32}()
+	for (_, rawpos) in result
+		pos = rawpos isa AbstractDict ? Dict(rawpos) : Dict{String, Any}()
+		positiontype = lowercase(String(get(pos, "type", "")))
+		positiontype == "sell" || continue
+
+		vol = abs(_float32(get(pos, "vol", "0"), 0f0))
+		vol > 0f0 || continue
+
+		pairkey = String(get(pos, "pair", ""))
+		isempty(pairkey) && continue
+		symbol = _resultkey2symbol(bc, pairkey)
+		syminfo = symbolinfo(bc, symbol)
+		isnothing(syminfo) && continue
+		basecoin = String(syminfo.basecoin)
+		borrowed[basecoin] = get(borrowed, basecoin, 0f0) + vol
+	end
+	return borrowed
+end
+
+function _mergeborrowedbalances!(df::DataFrame, borrowed::Dict{String, Float32})::DataFrame
+	for (coin, borrowedqty) in borrowed
+		ix = findfirst(==(coin), String.(df[!, :coin]))
+		if isnothing(ix)
+			push!(df, (coin=coin, locked=0f0, free=0f0, borrowed=borrowedqty, accruedinterest=0f0))
+		else
+			df[ix, :borrowed] = Float32(df[ix, :borrowed]) + borrowedqty
+		end
+	end
+	return df
+end
+
 function balances(bc::KrakenSpotCache)
 	df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
 	if !_hascredentials(bc)
 		return df
 	end
 
+	# Check balance cache (5s TTL to avoid Kraken API rate limits)
+	lock(_balance_cache_lock) do
+		now = Dates.now(UTC)
+		if !isnothing(_balance_cache[]) && !isnothing(_balance_cache_time[])
+			if (now - _balance_cache_time[]) < BALANCE_CACHE_TTL
+				(verbosity >= 3) && println("balances: returning cached result (age=$(now - _balance_cache_time[]))")
+				return copy(_balance_cache[])
+			end
+		end
+	end
+
 	response = nothing
 	try
 		response = HttpPrivateRequest(bc, "POST", "/0/private/BalanceEx", nothing, "balanceex")
-	catch
-		response = HttpPrivateRequest(bc, "POST", "/0/private/Balance", nothing, "balance")
+	catch err_balanceex
+		try
+			response = HttpPrivateRequest(bc, "POST", "/0/private/Balance", nothing, "balance")
+		catch err_balance
+			fallback = lock(_balance_cache_lock) do
+				now = Dates.now(Dates.UTC)
+				if !isnothing(_balance_cache[]) && !isnothing(_balance_cache_time[])
+					if (now - _balance_cache_time[]) < BALANCE_CACHE_MAX_STALE
+						(verbosity >= 1) && @warn "balance request failed; returning stale cached balances" age=(now - _balance_cache_time[]) balanceex_exception=sprint(showerror, err_balanceex) balance_exception=sprint(showerror, err_balance)
+						return copy(_balance_cache[])
+					end
+				end
+				return nothing
+			end
+			if !isnothing(fallback)
+				return fallback
+			end
+			rethrow(err_balance)
+		end
 	end
 	result = get(response, "result", Dict{String, Any}())
 
@@ -840,6 +1310,21 @@ function balances(bc::KrakenSpotCache)
 			free = _float32(value, 0f0)
 			push!(df, (coin=coin, locked=0f0, free=free, borrowed=0f0, accruedinterest=0f0))
 		end
+	end
+
+	# Mitigation: derive borrowed base quantities from open margin short positions.
+	# This is best-effort and complements Balance/BalanceEx data when borrowed is not exposed there.
+	try
+		borrowed = _borrowedfromopenpositions(bc)
+		_mergeborrowedbalances!(df, borrowed)
+	catch err
+		(verbosity >= 1) && @warn "OpenPositions borrowed estimation failed" exception=(err, catch_backtrace())
+	end
+
+	# Cache the result for 5 seconds
+	lock(_balance_cache_lock) do
+		_balance_cache[] = copy(df)
+		_balance_cache_time[] = Dates.now(UTC)
 	end
 	return df
 end

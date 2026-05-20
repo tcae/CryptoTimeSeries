@@ -12,6 +12,10 @@ using DataFrames, Dates, KrakenSpot, Test
     @test KrakenSpot._ws2symbol("BTC/USDT") == "BTCUSDT"
     @test KrakenSpot._symbol2ws("BTCUSDT") == "BTC/USDT"
 
+    n1 = parse(Int, KrakenSpot._nextnonce())
+    n2 = parse(Int, KrakenSpot._nextnonce())
+    @test n2 > n1
+
     syminfo = KrakenSpot._emptyexchangeinfo()
     push!(syminfo, (
         symbol="BTCUSDT",
@@ -22,15 +26,49 @@ using DataFrames, Dates, KrakenSpot, Test
         baseprecision=1f-6,
         quoteprecision=0.1f0,
         minbaseqty=0.0001f0,
-        minquoteqty=0f0,
+        minquoteqty=5f0,
         krakenpairname="XBTUSDT",
         wsname="BTC/USDT",
     ))
 
     cache = KrakenSpot.KrakenSpotCache(syminfo, KrakenSpot.KRAKEN_APIREST, "", "")
 
+    positions = Dict(
+        "tx1" => Dict("type" => "sell", "pair" => "XBTUSDT", "vol" => "0.25"),
+        "tx2" => Dict("type" => "buy", "pair" => "XBTUSDT", "vol" => "99"),
+        "tx3" => Dict("type" => "sell", "pair" => "UNKNOWNPAIR", "vol" => "1.0"),
+    )
+    borrowed = KrakenSpot._borrowedfromopenpositionsresult(cache, positions)
+    @test haskey(borrowed, "BTC")
+    @test borrowed["BTC"] ≈ 0.25f0
+    @test !haskey(borrowed, "UNKNOWN")
+
+    balancedf = DataFrame(
+        coin=AbstractString["BTC", "USDT"],
+        locked=Float32[0f0, 0f0],
+        free=Float32[1f0, 100f0],
+        borrowed=Float32[0.1f0, 0f0],
+        accruedinterest=Float32[0f0, 0f0],
+    )
+    KrakenSpot._mergeborrowedbalances!(balancedf, Dict("BTC" => 0.25f0, "ETH" => 0.5f0))
+    btcix = findfirst(==("BTC"), balancedf[!, :coin])
+    ethix = findfirst(==("ETH"), balancedf[!, :coin])
+    @test !isnothing(btcix)
+    @test !isnothing(ethix)
+    @test balancedf[btcix, :borrowed] ≈ 0.35f0
+    @test balancedf[ethix, :borrowed] ≈ 0.5f0
+    @test balancedf[ethix, :free] == 0f0
+
     info = KrakenSpot.symbolinfo(cache, "BTCUSDT")
     @test !isnothing(info)
+    @test KrakenSpot._istradablestatus("online")
+    @test !KrakenSpot._istradablestatus("cancel_only")
+
+    norm = KrakenSpot._normalizelimitorderparams(info, 0.00001f0, 101.234f0)
+    @test norm.limitprice == 101.2f0
+    @test norm.basequantity >= info.minbaseqty
+    @test norm.basequantity * norm.limitprice >= info.minquoteqty
+
     @test KrakenSpot.validsymbol(cache, info)
     @test KrakenSpot.validsymbol(cache, "BTCUSDT")
     @test !KrakenSpot.validsymbol(cache, "ETHUSD")

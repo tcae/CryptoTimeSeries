@@ -24,23 +24,16 @@ include(joinpath(@__DIR__, "optimizationconfigs.jl"))
 # or EXCHANGE_KRAKENFUTURES.
 const EXCHANGE = CryptoXch.EXCHANGE_KRAKENSPOT
 
-# Optional auth alias (name of the credentials entry in EnvConfig).
-# Set to nothing to use the default credentials for the exchange.
-const AUTH_ALIAS = nothing
-
-# Trade mode: Trade.buysell, Trade.sellonly, Trade.quickexit, or Trade.notrade.
+# Trade mode: Trade.buysell, Trade.closeonly, Trade.quickexit, or Trade.notrade.
 const TRADE_MODE = Trade.buysell
 
 # Whitelist of base coins to consider for trading.
 # Only coins in this list and meeting liquidity requirements will be traded.
 # Entries can be either base symbols (e.g. "BTC") or pair symbols (e.g. "BTC/USDT").
-const QUOTE_COIN = "USDT"
-const WHITELIST_INPUT = [
-    "ADA", "AI16Z", "APEX", "AAVE", "BNB", "BTC", "CAKE", "DOGE",
-    "ELX", "ENA", "ETH", "HBAR", "HFT", "JUP", "LINK", "LTC",
-    "MNT", "ONDO", "PEPE", "POPCAT", "S", "SOL", "SUI", "TON",
-    "TRX", "VIRTUAL", "W", "WAL", "WIF", "WLD", "X", "XLM", "XRP",
-]
+const QUOTE_COIN = "USD"
+const WHITELIST_INPUT = ["BTC", "ETH", "ZEC", "XRP", "SOL", "HYPE", "SUI", "VVV", "NEAR", 
+                         "DOGE", "ONDO", "TAO", "XLM", "LINK", "BCH", "ADA", "LTC", "XDC", 
+                         "TRX", "ALGO", "TON", "INJ", "MON"]
 
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
@@ -57,7 +50,7 @@ const CONFIG046_NAME = "046"
 const MODEL046_FOLDER = "Trend-046-production"
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = "tradereal-" * CONFIG046_NAME * "-" * Dates.format(now(), Dates.DateFormat("yymmdd-HHMMSS"))
+const LOG_SUBFOLDER = "tradereal-" * CONFIG046_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
 
 # Normalize whitelist entries to base coins for the configured quote coin.
@@ -96,60 +89,16 @@ function max_budget_from_env(default_budget::Union{Nothing, Real})::Union{Nothin
     return budget
 end
 
-mutable struct Trend046RuntimeClassifier <: Classify.AbstractClassifier
-    bc::Dict{AbstractString, NamedTuple}
-    nn::Classify.NN
-    cfgid::Int
-    function Trend046RuntimeClassifier(nn::Classify.NN)
-        new(Dict{AbstractString, NamedTuple}(), nn, 1)
-    end
-end
-
-function Classify.addbase!(cl::Trend046RuntimeClassifier, ohlcv::Ohlcv.OhlcvData)
-    f6 = trendf6config09()
-    Features.setbase!(f6, ohlcv, usecache=true)
-    cl.bc[ohlcv.base] = (ohlcv=ohlcv, f6=f6)
-end
-
-function Classify.supplement!(cl::Trend046RuntimeClassifier)
-    for basecfg in values(cl.bc)
-        Features.supplement!(basecfg.f6)
-    end
-end
-
-Classify.requiredminutes(::Trend046RuntimeClassifier)::Integer = max(Features.requiredminutes(trendf6config09()), 2)
-
-function Classify.advice(cl::Trend046RuntimeClassifier, base::AbstractString, dt::DateTime; investment::Union{Nothing, Classify.TradeAdvice}=nothing)::Union{Nothing, Classify.TradeAdvice}
-    haskey(cl.bc, base) || return nothing
-    basecfg = cl.bc[base]
-    fdf = Features.features(basecfg.f6, dt, dt)
-    (isnothing(fdf) || size(fdf, 1) == 0) && return nothing
-    x = permutedims(Matrix(fdf), (2, 1))
-    scores, labels = Classify.maxpredict(cl.nn, x)
-    isempty(labels) && return nothing
-    label = labels[1] isa Targets.TradeLabel ? labels[1] : Targets.tradelabel(string(labels[1]))
-    oix = Ohlcv.rowix(basecfg.ohlcv, dt)
-    price = Ohlcv.dataframe(basecfg.ohlcv)[oix, :pivot]
-    return Classify.TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
-end
-
-function loadtrend046classifier(model_folder::AbstractString)::Trend046RuntimeClassifier
+function loadtrend046classifier(model_folder::AbstractString)::Classify.RuntimeNNClassifier
     cfg046 = mk046config()
     nnstub = cfg046.classifiermodel(Features.featurecount(cfg046.featconfig), Targets.uniquelabels(cfg046.targetconfig), "mix")
-    for folder in unique([String(model_folder), "Trend-046-training"])
-        EnvConfig.setlogpath(folder)
-        nnpath = Classify.nnfilename(nnstub.fileprefix)
-        if isfile(nnpath)
-            try
-                nn = Classify.loadnn(nnstub.fileprefix)
-                return Trend046RuntimeClassifier(nn)
-            catch err
-                shorterr = sprint(showerror, err)
-                error("TrendDetector 046 classifier exists but could not be loaded: nnpath=$nnpath. Cause=$shorterr. Likely classifier artifact compatibility mismatch (Flux/Optimisers/BSON versions).")
-            end
-        end
-    end
-    error("TrendDetector 046 classifier file not found for fileprefix=$(nnstub.fileprefix), checked folders=[$(model_folder), Trend-046-training]")
+    required_minutes = max(Features.requiredminutes(cfg046.featconfig), 2)
+    return Classify.loadclassifier(
+        nnstub.fileprefix,
+        trendf6config09,
+        required_minutes;
+        search_folders=[String(model_folder), "Trend-046-training"],
+    )
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,7 +137,7 @@ Trade.verbosity     = 2
 # BUILD TRADE CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
-xc = CryptoXch.XchCache(; enddt=nothing, exchange=EXCHANGE, authname=AUTH_ALIAS)
+xc = CryptoXch.XchCache(; enddt=nothing, exchange=EXCHANGE)
 CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
@@ -214,12 +163,81 @@ println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist"
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STARTUP CHECKS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Validate exchange credentials by fetching the live balance.
+# Fails fast with a clear error if API keys are missing or rejected.
+let
+    init_balances = CryptoXch.balances(xc, ignoresmallvolume=false)
+    @info "Startup credential check OK: $(EXCHANGE) returned $(size(init_balances, 1)) balance entries"
+end
+
+# Log any pre-existing open orders — they will be cancelled at the first trade step.
+let
+    preexisting_oo = try
+        attempts = 6
+        last_err = nothing
+        preexisting_oo_local = nothing
+        while attempts > 0
+            try
+                preexisting_oo_local = CryptoXch.getopenorders(xc)
+                last_err = nothing
+                break
+            catch err
+                last_err = err
+                attempts -= 1
+                if occursin("invalid nonce", lowercase(sprint(showerror, err))) && (attempts > 0)
+                    retry_ix = 6 - attempts
+                    wait_s = min(1.0, 0.1 * retry_ix)
+                    @warn "startup open-orders check hit invalid nonce; retrying" attempts_left=attempts sleep_seconds=wait_s
+                    sleep(wait_s)
+                    continue
+                end
+                rethrow(err)
+            end
+        end
+        isnothing(last_err) ? preexisting_oo_local : throw(last_err)
+    catch err
+        if occursin("invalid nonce", lowercase(sprint(showerror, err)))
+            @error "startup auth validation failed: persistent Kraken invalid nonce" exchange=EXCHANGE remediation="Use an API key dedicated to this bot, ensure no other process/client uses the same key, or rotate to a fresh key and restart."
+            error("startup auth validation failed: open orders request still returned invalid nonce after retries; trading aborted")
+        end
+        @warn "startup open-orders check skipped after retries" error=sprint(showerror, err)
+        nothing
+    end
+    if !isnothing(preexisting_oo) && (size(preexisting_oo, 1) > 0)
+        @warn "$(size(preexisting_oo, 1)) pre-existing open order(s) found — will be cancelled at first trade step"
+        for row in eachrow(preexisting_oo)
+            @info "  pre-existing order: $(row.symbol) $(row.side) qty=$(row.baseqty) @ $(row.limitprice) status=$(row.status) id=$(row.orderid)"
+        end
+    elseif !isnothing(preexisting_oo)
+        @info "No pre-existing open orders found at startup"
+    end
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
 # RUN
 # ─────────────────────────────────────────────────────────────────────────────
 
 try
     Trade.run_live!(cache)
 finally
+    try
+        for ex in unique([
+            CryptoXch.exchange(cache.xc),
+            CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_spot, CryptoXch.exchange(cache.xc)),
+            CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_futures, CryptoXch.exchange(cache.xc)),
+        ])
+            if ex == CryptoXch.EXCHANGE_KRAKENSPOT
+                CryptoXch.KrakenSpot.log_private_call_summary!()
+            elseif ex == CryptoXch.EXCHANGE_KRAKENFUTURES
+                CryptoXch.KrakenFutures.log_private_call_summary!()
+            end
+        end
+    catch err
+        @warn "failed to write private call summary" error=sprint(showerror, err)
+    end
     EnvConfig.setlogpath(ORDERS_SUBFOLDER)
     CryptoXch.writeorders(cache.xc)
     @info "$(EnvConfig.now()): saved production orders to $(EnvConfig.logfolder())"

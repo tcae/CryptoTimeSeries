@@ -41,7 +41,6 @@ function _synthsyminfo(base::String, close::Float32)
         quoteprecision = Float32(0.01),
         minbaseqty     = Float32(0.00001),
         minquoteqty    = Float32(1.0),
-        innovation     = 0,
     )
 end
 

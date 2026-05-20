@@ -30,7 +30,7 @@ const EXCHANGE = CryptoXch.EXCHANGE_BYBITSIM
 const BACKTEST_STARTDT = DateTime("2025-01-01T00:00:00")
 const BACKTEST_ENDDT   = DateTime("2025-08-01T00:00:00")
 
-# Trade mode during backtest: Trade.buysell, Trade.sellonly, Trade.notrade.
+# Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
 const TRADE_MODE = Trade.buysell
 
 # Whitelist of base coins to consider for trading during the simulation.
@@ -149,77 +149,17 @@ function ensure_quote_budget!(xc::CryptoXch.XchCache, quote_coin::AbstractString
     end
 end
 
-"Runtime classifier wrapper for Trend 046 inference inside tradesim."
-mutable struct Trend046RuntimeClassifier <: Classify.AbstractClassifier
-    bc::Dict{AbstractString, NamedTuple}
-    nn::Classify.NN
-    cfgid::Int
-    function Trend046RuntimeClassifier(nn::Classify.NN)
-        new(Dict{AbstractString, NamedTuple}(), nn, 1)
-    end
-end
-
-"Register one base in the runtime classifier and initialize its feature config."
-function Classify.addbase!(cl::Trend046RuntimeClassifier, ohlcv::Ohlcv.OhlcvData)
-    f6 = trendf6config09()
-    Features.setbase!(f6, ohlcv, usecache=true)
-    cl.bc[ohlcv.base] = (ohlcv=ohlcv, f6=f6)
-end
-
-"Update runtime feature states; drop bases that cannot be supplemented yet."
-function Classify.supplement!(cl::Trend046RuntimeClassifier)
-    failed_bases = String[]
-    for (base, basecfg) in cl.bc
-        try
-            Features.supplement!(basecfg.f6)
-        catch err
-            # Some symbols may have too little history for configured rolling windows.
-            # Keep the backtest running and let Trade prune non-classifier bases afterward.
-            push!(failed_bases, String(base))
-            @warn "dropping base from runtime classifier due to supplement failure" base exception=(err, catch_backtrace())
-        end
-    end
-    for base in failed_bases
-        delete!(cl.bc, base)
-    end
-    return nothing
-end
-
-Classify.requiredminutes(::Trend046RuntimeClassifier)::Integer = max(Features.requiredminutes(trendf6config09()), 2)
-
-"Return one trade advice at dt, or nothing when data/features are insufficient."
-function Classify.advice(cl::Trend046RuntimeClassifier, base::AbstractString, dt::DateTime; investment::Union{Nothing, Classify.TradeAdvice}=nothing)::Union{Nothing, Classify.TradeAdvice}
-    haskey(cl.bc, base) || return nothing
-    basecfg = cl.bc[base]
-    fdf = Features.features(basecfg.f6, dt, dt)
-    (isnothing(fdf) || size(fdf, 1) == 0) && return nothing
-    x = permutedims(Matrix(fdf), (2, 1))
-    scores, labels = Classify.maxpredict(cl.nn, x)
-    isempty(labels) && return nothing
-    label = labels[1] isa Targets.TradeLabel ? labels[1] : Targets.tradelabel(string(labels[1]))
-    oix = Ohlcv.rowix(basecfg.ohlcv, dt)
-    price = Ohlcv.dataframe(basecfg.ohlcv)[oix, :pivot]
-    return Classify.TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
-end
-
 "Load Trend 046 classifier artifacts and return a runtime classifier instance."
-function loadtrend046classifier(model_folder::AbstractString)::Trend046RuntimeClassifier
+function loadtrend046classifier(model_folder::AbstractString)::Classify.RuntimeNNClassifier
     cfg046 = mk046config()
     nnstub = cfg046.classifiermodel(Features.featurecount(cfg046.featconfig), Targets.uniquelabels(cfg046.targetconfig), "mix")
-    for folder in unique([String(model_folder), "Trend-046-training"])
-        EnvConfig.setlogpath(folder)
-        nnpath = Classify.nnfilename(nnstub.fileprefix)
-        if isfile(nnpath)
-            try
-                nn = Classify.loadnn(nnstub.fileprefix)
-                return Trend046RuntimeClassifier(nn)
-            catch err
-                shorterr = sprint(showerror, err)
-                error("TrendDetector 046 classifier exists but could not be loaded: nnpath=$nnpath. Cause=$shorterr. Likely classifier artifact compatibility mismatch (Flux/Optimisers/BSON versions).")
-            end
-        end
-    end
-    error("TrendDetector 046 classifier file not found for fileprefix=$(nnstub.fileprefix), checked folders=[$(model_folder), Trend-046-training]")
+    required_minutes = max(Features.requiredminutes(cfg046.featconfig), 2)
+    return Classify.loadclassifier(
+        nnstub.fileprefix,
+        trendf6config09,
+        required_minutes;
+        search_folders=[String(model_folder), "Trend-046-training"],
+    )
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -517,14 +457,11 @@ else
 end
 println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
 
-preloaded = Trade.read!(cache, run_startdt)
-isnothing(preloaded) && error("failed to preload trade cache at start datetime=$run_startdt")
-
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-report_written = false
+local report_written = false
 try
     Trade.run_backtest!(cache; skip_init=true)
 
@@ -544,6 +481,22 @@ finally
         catch err
             println(stderr, "$(EnvConfig.now()): failed to persist backtest report: $(sprint(showerror, err))")
         end
+    end
+
+    try
+        for ex in unique([
+            CryptoXch.exchange(cache.xc),
+            CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_spot, CryptoXch.exchange(cache.xc)),
+            CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_futures, CryptoXch.exchange(cache.xc)),
+        ])
+            if ex == CryptoXch.EXCHANGE_KRAKENSPOT
+                CryptoXch.KrakenSpot.log_private_call_summary!()
+            elseif ex == CryptoXch.EXCHANGE_KRAKENFUTURES
+                CryptoXch.KrakenFutures.log_private_call_summary!()
+            end
+        end
+    catch err
+        println(stderr, "$(EnvConfig.now()): failed to write private call summary: $(sprint(showerror, err))")
     end
 
     # Persist order log separately from other simulation artifacts.

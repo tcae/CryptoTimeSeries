@@ -713,6 +713,22 @@ function correctunworkablevolume(vv::Vector{T})::Vector{T} where {T <: AbstractF
 end
 
 function relativevolume(volumes, shortwindow, largewindow)
+    datalen = length(volumes)
+    # Check if data is long enough for the requested windows
+    if datalen < largewindow
+        if datalen < shortwindow
+            # Not enough data for short window either; return first value repeated
+            (verbosity >= 2) && @warn "relativevolume: insufficient data length $datalen < shortwindow=$shortwindow; returning vector of first value $(volumes[1])"
+            return fill(volumes[1], datalen)
+        end
+        # Use available data length as the long window (at least shortwindow+1 to get a ratio > 1)
+        effective_long = max(shortwindow + 1, datalen - 1)
+        (verbosity >= 2) && @warn "relativevolume: insufficient data length $datalen for largewindow=$largewindow; using effective_long=$effective_long instead"
+        large = runmedian(volumes, effective_long)
+        large = correctunworkablevolume(large)
+        short = runmedian(volumes, shortwindow)
+        return short ./ large
+    end
     # large = rollmedian(volumes, largewindow)
     # largelen = size(large, 1)
     # short = rollmedian(volumes, shortwindow)
@@ -933,8 +949,23 @@ function regressionaccelerationhistory(regressions)
     return acchistory
 end
 
-rollingmax(valuevector, window) = RollingFunctions.runmax(valuevector, window)
-rollingmin(valuevector, window) = RollingFunctions.runmin(valuevector, window)
+function rollingmax(valuevector, window)
+    datalen = length(valuevector)
+    if datalen < window
+        (verbosity >= 2) && @warn "rollingmax: insufficient data length $datalen for window=$window; using effective_window=$datalen"
+        return RollingFunctions.runmax(valuevector, datalen)
+    end
+    return RollingFunctions.runmax(valuevector, window)
+end
+
+function rollingmin(valuevector, window)
+    datalen = length(valuevector)
+    if datalen < window
+        (verbosity >= 2) && @warn "rollingmin: insufficient data length $datalen for window=$window; using effective_window=$datalen"
+        return RollingFunctions.runmin(valuevector, datalen)
+    end
+    return RollingFunctions.runmin(valuevector, window)
+end
 
 #endregion FeatureUtilities
 
@@ -1042,6 +1073,7 @@ end
 function addrelvol!(f6::Features006; short::Integer=5, long::Integer=60, offset::Integer=0)
     @assert 1 < short < long <= 10*24*60 "1 < short < long <= 10*24*60 failed: short=$short long=$long"
     @assert 0 <= offset "0 <= offset failed: offset=$offset"
+    _check!(f6, long, offset)
     rv = _rv(f6, short=short, long=long, offset=offset)
     push!(f6.requested, rv)
     return rv

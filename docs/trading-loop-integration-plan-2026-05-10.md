@@ -830,3 +830,25 @@ Update this section after each work session.
 
 ## First Execution Slice (Recommended Next Coding Step)
 Continue Objective 4 by deciding between (a) tick-driven adaptive maker repricing only and (b) a dedicated websocket-driven repricing worker, then add deterministic tests for the chosen cadence policy.
+
+---
+
+## Objective 4 (New): WebSocket-based Market Data for Kliness/Trades
+
+### Design intent
+Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLCV) and trade data acquisition from HTTP polling to WebSocket streaming where supported by the exchange. This will allow for more efficient, real-time updates and lower the risk of hitting REST rate limits.
+
+### Increments
+- 4.1: Audit current exchange adapters for WebSocket support and identify gaps (Bybit, KrakenSpot, KrakenFutures).
+- 4.2: Implement or enable WebSocket clients for klines and trades in each adapter.
+- 4.3: Refactor polling logic in CryptoXch and Trade to consume and cache data from WebSocket streams instead of periodic HTTP fetches.
+- 4.4: Add fallback to HTTP polling if WebSocket is unavailable or unreliable for a given symbol/exchange.
+- 4.5: Add diagnostics and tests to verify data freshness, latency, and rate-limit impact.
+
+### Exit criteria
+- All supported exchanges use WebSocket for klines/trades where available.
+- REST API usage for klines/trades is minimized, reducing rate-limit risk.
+- Data freshness and latency are improved or at least equivalent to HTTP polling.
+- Fallback to HTTP polling is robust and well-documented.
+
+---

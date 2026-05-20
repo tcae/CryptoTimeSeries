@@ -38,6 +38,13 @@ const interval2bybitinterval = Dict(
     "1w" => "W"
 )
 
+# Balance caching to avoid Bybit API rate limits
+# Cache TTL: 5 seconds. At 1 balance call/minute, this is well under rate limits.
+const _balance_cache_lock = ReentrantLock()
+const _balance_cache = Ref{Union{Nothing, DataFrame}}(nothing)
+const _balance_cache_time = Ref{Union{Nothing, DateTime}}(nothing)
+const BALANCE_CACHE_TTL = Dates.Second(5)
+
 "Bybit exchange cache supporting both production API and simulation mode (BybitSim).
 When used in BybitSim mode, assets/orders/closedorders track simulated bookkeeping."
 mutable struct BybitCache
@@ -1277,42 +1284,19 @@ function balances(bc::BybitCache)
         return _emptybalances(bc.assets)
     end
     
+    # Production mode: check balance cache (5s TTL to avoid Bybit API rate limits)
+    lock(_balance_cache_lock) do
+        now = Dates.now(UTC)
+        if !isnothing(_balance_cache[]) && !isnothing(_balance_cache_time[])
+            if (now - _balance_cache_time[]) < BALANCE_CACHE_TTL
+                (verbosity >= 3) && println("balances: returning cached result (age=$(now - _balance_cache_time[]))")
+                return copy(_balance_cache[])
+            end
+        end
+    end
+    
     # Production mode: call Bybit API
     response = HttpPrivateRequest(bc, "GET", "/v5/account/wallet-balance", Dict("accountType" => "UNIFIED"), "wallet balance")
-    # println(response["result"]["list"][1]["coin"][1])
-    if length(response["result"]["list"]) > 1
-        @warn "unexpected more than 1 account type Bybit balance info: $response"
-    end
-
-    # example of BTC margin sell balance result:
-    # ("locked" => 0.0f0, "accruedInterest" => 0.0f0, "usdValue" => "-9.08460318", 
-    # "spotHedgingQty" => "0", "cumRealisedPnl" => "-0.0044106", "availableToBorrow" => "", 
-    # "availableToWithdraw" => 0.0f0, "bonus" => "0", "unrealisedPnl" => "0", "coin" => "BTC", 
-    # "borrowAmount" => 9.235487f-5, "walletBalance" => "-0.00009235", "collateralSwitch" => true, 
-    # "marginCollateral" => true, "equity" => "-0.00009235", "totalPositionMM" => 0.0f0, 
-    # "totalOrderIM" => "0", "totalPositionIM" => 0.0f0)
-
-    # println(response)
-    # Dict:
-    #    ─────┼───────────────────────────────────────────
-    #       1 │ locked               0
-    #       2 │ accruedInterest      0
-    #       3 │ usdValue             2087.78289118
-    #       4 │ spotHedgingQty       0
-    #       5 │ cumRealisedPnl       -0.00000011
-    #       6 │ availableToBorrow
-    #       7 │ availableToWithdraw  0.00011588
-    #       8 │ bonus                0
-    #       9 │ unrealisedPnl        0
-    #      10 │ coin                 BTC
-    #      11 │ borrowAmount         0.000000000000000000
-    #      12 │ walletBalance        0.00011588
-    #      13 │ collateralSwitch     true
-    #      14 │ marginCollateral     true
-    #      15 │ equity               0.00011588
-    #      16 │ totalPositionMM      0
-    #      17 │ totalOrderIM         0
-    #      18 │ totalPositionIM      0
     df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
     if "list" in keys(response["result"])
         for account in response["result"]["list"]
@@ -1333,6 +1317,13 @@ function balances(bc::BybitCache)
     else
         @warn "unexpected missing Bybit balance info: $response"
     end
+
+    # Cache the result for 5 seconds
+    lock(_balance_cache_lock) do
+        _balance_cache[] = copy(df)
+        _balance_cache_time[] = Dates.now(UTC)
+    end
+
     return df
 end
 

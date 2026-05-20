@@ -40,11 +40,23 @@ end
     supplement!(cl::RuntimeNNClassifier)
 
 Advance all per-base feature configurations to match their OHLCV cursor.
+Bases that fail (e.g. insufficient history for configured windows) are warned
+and dropped so the trading loop continues with the remaining bases.
 """
 function supplement!(cl::RuntimeNNClassifier)
-    for basecfg in values(cl.bc)
-        Features.supplement!(basecfg.featcfg)
+    failed_bases = String[]
+    for (base, basecfg) in cl.bc
+        try
+            Features.supplement!(basecfg.featcfg)
+        catch err
+            push!(failed_bases, String(base))
+            @warn "dropping base from runtime classifier due to supplement failure" base exception=(err, catch_backtrace())
+        end
     end
+    for base in failed_bases
+        delete!(cl.bc, base)
+    end
+    return nothing
 end
 
 """
@@ -73,4 +85,37 @@ function advice(cl::RuntimeNNClassifier, base::AbstractString, dt::DateTime; inv
     oix = Ohlcv.rowix(basecfg.ohlcv, dt)
     price = Ohlcv.dataframe(basecfg.ohlcv)[oix, :pivot]
     return TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
+end
+
+"""
+    loadclassifier(nn_fileprefix, featconfig_factory, required_minutes; search_folders, cfgid=1)
+
+Search `search_folders` for a saved neural-network file identified by `nn_fileprefix`,
+load it, and return a `RuntimeNNClassifier` configured with `featconfig_factory` and `required_minutes`.
+
+`search_folders` is iterated in order; the first folder that contains the NN file wins.
+`EnvConfig.setlogpath` is called temporarily for each folder to resolve the file path.
+Throws an error if the file is not found or cannot be loaded.
+"""
+function loadclassifier(
+    nn_fileprefix::AbstractString,
+    featconfig_factory::Function,
+    required_minutes::Integer;
+    search_folders::AbstractVector{<:AbstractString},
+    cfgid::Integer=1,
+)::RuntimeNNClassifier
+    for folder in unique(String.(search_folders))
+        EnvConfig.setlogpath(folder)
+        nnpath = nnfilename(nn_fileprefix)
+        if isfile(nnpath)
+            try
+                nn = loadnn(nn_fileprefix)
+                return RuntimeNNClassifier(nn; featconfig_factory=featconfig_factory, required_minutes=required_minutes, cfgid=cfgid)
+            catch err
+                shorterr = sprint(showerror, err)
+                error("classifier file found but could not be loaded: nnpath=$nnpath. Cause=$shorterr. Likely artifact compatibility mismatch (Flux/Optimisers/BSON versions).")
+            end
+        end
+    end
+    error("classifier file not found for fileprefix=$nn_fileprefix, checked folders=$(collect(search_folders))")
 end

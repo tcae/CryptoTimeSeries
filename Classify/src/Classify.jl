@@ -25,7 +25,7 @@ verbosity = 1
 
 export lstm_bounds_trend_features, lstm_feature_contract, lstm_tensor_windows
 export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals, penultimatefeatures
-export RuntimeNNClassifier
+export RuntimeNNClassifier, loadclassifier
 
 #region abstractclassifier
 """

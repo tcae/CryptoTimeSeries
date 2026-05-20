@@ -246,10 +246,7 @@ end
 function updateassets!(cp, download=false)
     assets = DataFrame((coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], usdtprice=Float32[], usdtvalue=Float32[])) # CryptoXch.portfolio!(cp.tc.xc)
     cp.coin = Dict()
-    if !download 
-        Trade.read!(cp.tc)
-    end
-    if download || isnothing(cp.tc.cfg)
+    if download || (size(cp.tc.cfg, 1) == 0)
         Trade.tradeselection!(cp.tc, assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true)
     end
     cp.tc.cfg = cp.tc.cfg[cp.tc.cfg[!, :classifieraccepted], :]

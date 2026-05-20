@@ -22,7 +22,7 @@ using DataFrames, Dates, KrakenFutures, Test
         baseprecision=1f0,
         quoteprecision=0.1f0,
         minbaseqty=1f0,
-        minquoteqty=0f0,
+        minquoteqty=500f0,
         krakenpairname="PI_XBTUSDT",
         wsname="PI_XBTUSDT",
     ))
@@ -31,6 +31,14 @@ using DataFrames, Dates, KrakenFutures, Test
 
     info = KrakenFutures.symbolinfo(cache, "BTCUSDT")
     @test !isnothing(info)
+    @test KrakenFutures._istradablestatus("online")
+    @test !KrakenFutures._istradablestatus("cancel_only")
+
+    norm = KrakenFutures._normalizelimitorderparams(info, 0.1f0, 101.234f0)
+    @test norm.limitprice == 101.2f0
+    @test norm.basequantity >= info.minbaseqty
+    @test norm.basequantity * norm.limitprice >= info.minquoteqty
+
     @test KrakenFutures.validsymbol(cache, info)
     @test KrakenFutures.validsymbol(cache, "BTCUSDT")
     @test !KrakenFutures.validsymbol(cache, "ETHUSD")

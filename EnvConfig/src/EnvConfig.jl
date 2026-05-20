@@ -140,8 +140,8 @@ function checkfolders(doverbose, dodebug)
     return root
 end
 
-cryptopath = normpath(joinpath(checkfolders(verbosity > 1, verbosity > 2), "crypto")) # OneDrive folder
-# cryptopath = normpath(joinpath(homedir(), "crypto")) # local folder
+# cryptopath = normpath(joinpath(checkfolders(verbosity > 1, verbosity > 2), "crypto")) # OneDrive folder
+cryptopath = normpath(joinpath(homedir(), "crypto")) # local folder
 if !isdir(cryptopath)
     @error "missing crypto folder $cryptopath"
 end
@@ -163,36 +163,83 @@ struct Authentication
     name::String
     key::String
     secret::String
+    exchange::Union{Nothing, String}
 
-    function Authentication(name::Union{Nothing, AbstractString}=nothing)
+    function Authentication(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing)
         filename = configmode != test ? normpath(joinpath(authpath, "auth.json")) : normpath(joinpath(authpath, "authtest.json"))
         authroot = open(filename, "r") do f
             JSON3.read(read(f, String), Dict)
         end
-        entries, defaultname = _authentries(authroot)
+        entries, default_exchange = _authentries(authroot)
         @assert length(entries) > 0 "no valid auth entries found in $filename"
 
-        selectedname = isnothing(name) ? (isnothing(defaultname) ? String(entries[1]["name"]) : defaultname) : String(name)
-        selectedix = findfirst(entry -> lowercase(String(entry["name"])) == lowercase(selectedname), entries)
-        if isnothing(selectedix)
-            available = [String(entry["name"]) for entry in entries]
-            error("authentication tuple name=$selectedname not found in $filename. available=$available")
+        requested_exchange = isnothing(exchange) ? default_exchange : _normalizeauthexchange(String(exchange))
+
+        selected = nothing
+        if !isnothing(name)
+            selectedname = String(name)
+            selectedix = findfirst(entry -> lowercase(String(entry["name"])) == lowercase(selectedname), entries)
+            if isnothing(selectedix)
+                available = [String(entry["name"]) for entry in entries]
+                error("authentication tuple name=$selectedname not found in $filename. available=$available")
+            end
+            selected = entries[selectedix]
+        else
+            if isnothing(requested_exchange)
+                selected = entries[1]
+            else
+                candidates = filter(entry -> _entryexchange(entry) == requested_exchange, entries)
+                if isempty(candidates)
+                    error("no authentication tuple found for exchange=$(requested_exchange) in $filename. Ensure each auth tuple has exchange set.")
+                elseif length(candidates) > 1
+                    avail = [String(entry["name"]) for entry in candidates]
+                    error("multiple authentication tuples match exchange=$(requested_exchange) in $filename. Exactly one tuple per exchange is required. available=$avail")
+                end
+                selected = candidates[1]
+            end
         end
 
-        selected = entries[selectedix]
+        selectedname = String(selected["name"])
         @assert haskey(selected, "key") && haskey(selected, "secret") "selected auth entry $(selectedname) is missing key/secret"
-        new(String(selected["name"]), String(selected["key"]), String(selected["secret"]))
+        selectedexchange = _entryexchange(selected)
+        if !isnothing(requested_exchange)
+            if isnothing(selectedexchange)
+                error("selected auth entry $(selectedname) is missing required \"exchange\" field in $filename")
+            elseif selectedexchange != requested_exchange
+                error("selected auth entry $(selectedname) has exchange=$(selectedexchange), but exchange=$(requested_exchange) was requested")
+            end
+        end
+
+        new(String(selected["name"]), String(selected["key"]), String(selected["secret"]), selectedexchange)
     end
 end
 
 """
 Set global authorization credentials by tuple name from the auth file.
-If `name` is `nothing`, default entry is selected.
+If `name` is `nothing`, the tuple for the default exchange is selected.
+If `exchange` is provided, selection is restricted to matching auth tuples.
 """
-function setauthorization!(name::Union{Nothing, AbstractString}=nothing)
+function setauthorization!(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing)
     global authorization
-    authorization = Authentication(name)
+    authorization = Authentication(name; exchange=exchange)
     return authorization
+end
+
+const _supported_auth_exchanges = Set(["KrakenSpot", "KrakenFutures"])
+
+function _normalizeauthexchange(exchange::AbstractString)::String
+    ex = strip(String(exchange))
+    for supported in _supported_auth_exchanges
+        if lowercase(ex) == lowercase(supported)
+            return supported
+        end
+    end
+    error("unsupported auth exchange=$(exchange), supported=[KrakenSpot, KrakenFutures]")
+end
+
+function _entryexchange(entry::Dict)::Union{Nothing, String}
+    haskey(entry, "exchange") || return nothing
+    return _normalizeauthexchange(String(entry["exchange"]))
 end
 
 """
@@ -200,11 +247,14 @@ Parse auth root dictionary and return `(entries, defaultname)`.
 
 Supports both legacy and extended formats:
 - legacy: single top-level `name/key/secret`
-- extended: top-level `default` + `credentials` (vector or dict)
+- extended: top-level `default` (exchange) + `credentials` (vector or dict)
 """
 function _authentries(authroot::Dict)
     entries = Dict[]
-    defaultname = haskey(authroot, "default") ? String(authroot["default"]) : nothing
+    default_exchange = nothing
+    if haskey(authroot, "default")
+        default_exchange = _normalizeauthexchange(String(authroot["default"]))
+    end
 
     if haskey(authroot, "credentials")
         credentials = authroot["credentials"]
@@ -257,7 +307,7 @@ function _authentries(authroot::Dict)
         end
     end
 
-    return entries, defaultname
+    return entries, default_exchange
 end
 
 """

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "4ac22808797a8a751c2b0262f84c14bc311ec8cb"
+project_hash = "3a9d7f15642eef66d892ad85e28c50b6a0268738"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -1293,13 +1293,13 @@ weakdeps = ["EnzymeCore", "LinearAlgebra", "SparseArrays"]
     SparseArraysExt = "SparseArrays"
 
 [[deps.KrakenFutures]]
-deps = ["Base64", "DataFrames", "Dates", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
 path = "../KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
 version = "0.1.0"
 
 [[deps.KrakenSpot]]
-deps = ["Base64", "DataFrames", "Dates", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
 path = "../KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
 version = "0.1.0"

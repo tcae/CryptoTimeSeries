@@ -48,6 +48,17 @@ function testauthentication()
     @test length(EnvConfig.Authentication().key) > 0
 end
 
+function testauthexchangehelpers()
+    @test EnvConfig._normalizeauthexchange("KrakenSpot") == "KrakenSpot"
+    @test EnvConfig._normalizeauthexchange("krakenfutures") == "KrakenFutures"
+    @test_throws Exception EnvConfig._normalizeauthexchange("Bybit")
+
+    entry_spot = Dict("name" => "spot-main", "exchange" => "KrakenSpot", "key" => "k", "secret" => "s")
+    entry_none = Dict("name" => "legacy", "key" => "k", "secret" => "s")
+    @test EnvConfig._entryexchange(entry_spot) == "KrakenSpot"
+    @test isnothing(EnvConfig._entryexchange(entry_none))
+end
+
 struct ConfigTest <: AbstractConfiguration end
 
 @enum ExampleArrowState begin
@@ -144,6 +155,7 @@ end
 EnvConfig.verbosity = 3
 testsavebackup()
 testauthentication()
+testauthexchangehelpers()
 testconfig()
 testtableio()
 

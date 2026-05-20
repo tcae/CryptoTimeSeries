@@ -39,7 +39,7 @@ end
 
 """
 Maps each `ExchangeRole` to an `ExchangeRouteEntry`.
-Roles that are not explicitly configured fall back to the `XchCache.exchange` / `XchCache.authname`.
+Roles that are not explicitly configured fall back to the `XchCache.exchange`.
 """
 struct ExchangeRouting
     routes::Dict{ExchangeRole, ExchangeRouteEntry}
@@ -48,6 +48,9 @@ end
 
 "Set a role mapping in an `ExchangeRouting`."
 function setrole!(routing::ExchangeRouting, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
+    if !isnothing(authname)
+        throw(ArgumentError("setrole! authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json."))
+    end
     routing.routes[role] = ExchangeRouteEntry(_normalizeexchange(String(exchange)), isnothing(authname) ? nothing : String(authname))
     return routing
 end
@@ -55,11 +58,6 @@ end
 "Return the exchange name for a role, falling back to `default_exchange` if not configured."
 function _routeexchange(routing::ExchangeRouting, role::ExchangeRole, default_exchange::AbstractString)::String
     haskey(routing.routes, role) ? routing.routes[role].exchange : String(default_exchange)
-end
-
-"Return the authname for a role, falling back to `default_authname` if not configured."
-function _routeauthname(routing::ExchangeRouting, role::ExchangeRole, default_authname::Union{Nothing, AbstractString})
-    haskey(routing.routes, role) ? routing.routes[role].authname : default_authname
 end
 
 const EXCHANGE_BYBIT::String = "Bybit"
@@ -95,23 +93,36 @@ end
 
 _exchangeemptyorders(exchange::AbstractString)::DataFrame = _exchangeModule(exchange).emptyorders()
 
-function _exchangefromauthname(authname::AbstractString)::Union{Nothing, String}
-    n = lowercase(strip(authname))
-    if occursin("krakenfutures", n) || occursin("kraken-futures", n)
-        return EXCHANGE_KRAKENFUTURES
-    elseif occursin("krakenspot", n) || occursin("kraken-spot", n)
-        return EXCHANGE_KRAKENSPOT
-    elseif occursin("bybit", n)
-        return EXCHANGE_BYBIT
+function _authfromname(exchange::AbstractString)
+    ex = _normalizeexchange(exchange)
+    # Kraken adapters require exchange-specific credentials and should always
+    # resolve auth tuples constrained by exchange.
+    if ex == EXCHANGE_KRAKENSPOT || ex == EXCHANGE_KRAKENFUTURES
+        return EnvConfig.Authentication(nothing; exchange=ex)
+    elseif ex == EXCHANGE_BYBIT
+        # Bybit keeps legacy global authorization behavior.
+        return EnvConfig.authorization
     end
     return nothing
 end
 
-function _authfromname(authname::Union{Nothing, AbstractString})
-    if isnothing(authname)
-        return EnvConfig.authorization
+"""
+Emit one final private-call diagnostics summary for active Kraken adapters.
+Safe to call during shutdown; exchanges without private-call counters are skipped.
+"""
+function log_private_call_summary!(xc)
+    exchanges = Set{String}()
+    push!(exchanges, _normalizeexchange(xc.exchange))
+    push!(exchanges, _routeexchange(xc.routing, trade_exchange_spot, xc.exchange))
+    push!(exchanges, _routeexchange(xc.routing, trade_exchange_futures, xc.exchange))
+    for ex in exchanges
+        if ex == EXCHANGE_KRAKENSPOT
+            KrakenSpot.log_private_call_summary!()
+        elseif ex == EXCHANGE_KRAKENFUTURES
+            KrakenFutures.log_private_call_summary!()
+        end
     end
-    return EnvConfig.Authentication(String(authname))
+    return nothing
 end
 
 function _assertsimmodesupported(exchange::AbstractString, simmode::SimMode)
@@ -121,10 +132,10 @@ function _assertsimmodesupported(exchange::AbstractString, simmode::SimMode)
     end
 end
 
-function _exchangecache(exchange::AbstractString, simmode::SimMode, authname::Union{Nothing, AbstractString}=nothing)
+function _exchangecache(exchange::AbstractString, simmode::SimMode)
     ex = _normalizeexchange(exchange)
     _assertsimmodesupported(ex, simmode)
-    auth = _authfromname(authname)
+    auth = _authfromname(ex)
     publickey = isnothing(auth) ? "" : String(auth.key)
     secretkey = isnothing(auth) ? "" : String(auth.secret)
     if ex == EXCHANGE_BYBIT
@@ -163,20 +174,16 @@ mutable struct XchCache
         # simmode = bybitsim # simulation mode with adapter-backed trading + deterministic offline market data
         # simmode = nosimulation # uses production mode of Bybit without any exchange simulation
         if !isnothing(authname)
-            inferred = _exchangefromauthname(String(authname))
-            if !isnothing(inferred) && (exchange != inferred)
-                (verbosity >= 2) && @info "XchCache exchange $(exchange) overridden by authname=$(authname) -> $(inferred)"
-                exchange = inferred
-            end
+            throw(ArgumentError("XchCache authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json and pass only exchange."))
         end
         exchange = _normalizeexchange(exchange)
-        authname = isnothing(authname) ? nothing : String(authname)
+        authname = nothing
         simmode = if EnvConfig.configmode == production
             nosimulation
         else
             bybitsim
         end
-        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode, authname), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
+        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
         xc.mc[:simmode] = simmode
         if hasproperty(xc.bc, :syminfodf) && !isnothing(xc.bc.syminfodf)
             for row in eachrow(xc.bc.syminfodf)
@@ -190,7 +197,6 @@ mutable struct XchCache
                     quoteprecision=Float32(row.quoteprecision),
                     minbaseqty=Float32(row.minbaseqty),
                     minquoteqty=Float32(row.minquoteqty),
-                    innovation=Int(row.innovation),
                 ))
             end
         end
@@ -225,7 +231,10 @@ function _routedbc(xc::XchCache, role::ExchangeRole)
     entry = xc.routing.routes[role]
     # lazily build and cache the adapter for this exchange
     if !haskey(xc.routecaches, entry.exchange)
-        xc.routecaches[entry.exchange] = _exchangecache(entry.exchange, xc.mc[:simmode], entry.authname)
+        if !isnothing(entry.authname)
+            throw(ArgumentError("route-level authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json."))
+        end
+        xc.routecaches[entry.exchange] = _exchangecache(entry.exchange, xc.mc[:simmode])
     end
     return xc.routecaches[entry.exchange]
 end
@@ -244,11 +253,14 @@ Configure exchange role routing on an `XchCache`.
 Example — Bybit for data, KrakenSpot for spot trading, KrakenFutures for futures:
 ```julia
 setrole!(xc, data_exchange, CryptoXch.EXCHANGE_BYBIT)
-setrole!(xc, trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
+setrole!(xc, trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae2")
 setrole!(xc, trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
 ```
 """
 function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
+    if !isnothing(authname)
+        throw(ArgumentError("setrole! authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json."))
+    end
     setrole!(xc.routing, role, exchange, authname)
     # Evict stale cached adapter so it is rebuilt with the new auth on next use.
     delete!(xc.routecaches, _normalizeexchange(String(exchange)))
@@ -266,7 +278,7 @@ _syminfocache(xc::XchCache) = get!(xc.mc, :syminfo_cache, Dict{String, NamedTupl
 Manually seed the local symbol-info cache entry for `symbol` (e.g. `"BTCUSDT"`).
 `info` must be a `NamedTuple` with at least the fields required by simulation:
 `minbaseqty`, `minquoteqty`, `ticksize`, `baseprecision`, `quoteprecision`,
-`status`, `quotecoin`, `basecoin`, `innovation`.
+`status`, `quotecoin`, `basecoin`.
 This is primarily useful for tests and offline simulation where no live exchange
 connection is available.
 """
@@ -296,7 +308,6 @@ function _exchangesymbolinfo(xc::XchCache, symbol)
                 quoteprecision = Float32(row.quoteprecision),
                 minbaseqty    = Float32(row.minbaseqty),
                 minquoteqty   = Float32(row.minquoteqty),
-                innovation    = Int(row.innovation),
             )
             _syminfocache(xc)[symbol] = nt
             return row  # keep returning the original DataFrameRow for backward compat
@@ -471,7 +482,7 @@ function _auditorderevent!(xc::XchCache, event_type::TradeAudit.AuditEventType, 
         correlation_id=correlation_id,
         parent_event_id=parent_event_id,
         exchange=_routeexchange(xc.routing, role, xc.exchange),
-        account_alias=something(_routeauthname(xc.routing, role, xc.authname), ""),
+        account_alias=_routeexchange(xc.routing, role, xc.exchange),
         routing_role=_auditroutingrole(role),
         market_type=_auditmarkettype(role),
         asset_class=TradeAudit.crypto,
@@ -794,7 +805,7 @@ ohlcv(xc::XchCache) = values(xc.bases)
 ohlcv(xc::XchCache, base::AbstractString) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
-basenottradable = ["MATIC", "FTM"]
+basenottradable = ["MATIC", "FTM", "KFEE"]  # KFEE = Kraken proprietary fee credit, never tradeable
 basestablecoin = ["USD", "USD1", "USDT", "TUSD", "BUSD", "USDC", "USDE", "EUR", "DAI"]
 quotecoins = ["USDT"]  # , "USDC"]
 baseignore = uppercase.(union(basestablecoin, basenottradable))
@@ -858,11 +869,12 @@ onlyconfiguredsymbols(symbol) =
     endswith(symbol, uppercase(EnvConfig.cryptoquote)) &&
     !(uppercase(symbol[1:end-length(EnvConfig.cryptoquote)]) in baseignore)
 
-"Returns pair of basecoin and quotecoin if quotecoin in `quotecoins` else `nothing` is returned"
+"Returns pair of basecoin and quotecoin if quotecoin in `quotecoins` or equals `EnvConfig.cryptoquote` else `nothing` is returned"
 function basequote(symbol)
     symbol = uppercase(symbol)
+    candidates = union(quotecoins, [uppercase(EnvConfig.cryptoquote)])
     range = nothing
-    for qc in quotecoins
+    for qc in candidates
         range = findfirst(qc, symbol)
         if !isnothing(range)
             break
@@ -976,7 +988,12 @@ function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
     end
     if !isnothing(datetime)
         for base in keys(xc.bases)
-            setcurrenttime!(xc, base, datetime)
+            try
+                setcurrenttime!(xc, base, datetime)
+            catch err
+                (verbosity >= 2) && @warn "setcurrenttime!($base, $datetime) failed; skipping base" exception=sprint(showerror, err)
+                removebase!(xc, base)
+            end
         end
     end
 end
@@ -1131,7 +1148,7 @@ function cryptodownload(xc::XchCache, base, interval, startdt, enddt)::OhlcvData
         cryptoupdate!(xc, ohlcv, startdt, enddt)
         ohlcv.ix = firstindex(ohlcv.df, 1)
     else
-        (verbosity >= 1) && @warn "base=$base is unknown or invalid"
+        (verbosity >= 3) && @warn "base=$base is unknown or invalid"
     end
     return ohlcv
 end
@@ -1358,11 +1375,22 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
             if portfoliodf[bix, :coin] == EnvConfig.cryptoquote
                 push!(usdtprice, 1f0)
             else
-                ohlcv = setcurrenttime!(xc, portfoliodf[bix, :coin], xc.currentdt)
+                if !validbase(xc, portfoliodf[bix, :coin])
+                    (verbosity >= 2) && @warn "portfolio!: skipping invalid/non-tradeable base $(portfoliodf[bix, :coin])"
+                    push!(usdtprice, 0f0)
+                    continue
+                end
+                ohlcv = try
+                    setcurrenttime!(xc, portfoliodf[bix, :coin], xc.currentdt)
+                catch err
+                    (verbosity >= 3) && @warn "portfolio!: skipping price fetch for $(portfoliodf[bix, :coin]) — unknown or unsupported pair" exception=sprint(showerror, err)
+                    push!(usdtprice, 0f0)
+                    continue
+                end
                 if size(ohlcv.df, 1) > 0
                     push!(usdtprice, ohlcv.df[ohlcv.ix, :close])
                 else
-                    (verbosity >= 1) && @warn "found no data at $(xc.currentdt) for asset $ohlcv"  # (verbosity >= 3) &&
+                    (verbosity >= 3) && @warn "found no data at $(xc.currentdt) for asset $ohlcv"
                     push!(usdtprice, 0f0)
                 end
             end
@@ -1375,8 +1403,10 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
     if ignoresmallvolume
         delrows = []
         for ix in eachindex(portfoliodf[!, :coin])
-            minbasequant = minimumbasequantity(xc, portfoliodf[ix, :coin], portfoliodf[ix, :usdtprice])
-            if !(portfoliodf[ix, :coin] in quotecoins) && (isnothing(minbasequant) || (portfoliodf[ix, :coin] != EnvConfig.cryptoquote) && ((abs(portfoliodf[ix, :free]) + abs(portfoliodf[ix, :locked]) + abs(portfoliodf[ix, :borrowed])) < minbasequant))
+            coin = String(portfoliodf[ix, :coin])
+            minbasequant = minimumbasequantity(xc, coin, portfoliodf[ix, :usdtprice])
+            is_quotecoin = (uppercase(coin) == uppercase(EnvConfig.cryptoquote)) || (coin in quotecoins)
+            if !is_quotecoin && (isnothing(minbasequant) || ((abs(portfoliodf[ix, :free]) + abs(portfoliodf[ix, :locked]) + abs(portfoliodf[ix, :borrowed])) < minbasequant))
                 push!(delrows, ix)
             end
         end
