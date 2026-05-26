@@ -31,6 +31,31 @@
 ## Goal
 Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, audit-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 
+## 2026-05-25 Trade Selection Ownership Integration
+
+### Design intent
+Constrain sell-side trading to positions attributable to this trading robot while keeping exchange/account scopes and long-vs-short inventory separate.
+
+### Requirements
+- Whitelist constrains opening trades only; it must not implicitly authorize sells of externally acquired positions.
+- Sell eligibility must be based on robot-owned exposure, not raw wallet presence.
+- Robot-owned exposure must be partitioned by routed trading venue so audit fills from different exchanges never mix.
+- For the current deployment model, exchange-level separation is sufficient; multiple accounts per exchange are not planned.
+- Directional exposure must be tracked separately for long and short inventory because buy-long and short-open fills have different close paths.
+- `classifieraccepted` remains required for both buy and sell because the robot needs classifier/strategy output to emit either entry or exit signals.
+
+### First implementation slice
+- Add audit-derived directional ownership helpers in `Trade` that read only the current routed spot trading audit partition.
+- Store `robotownedlongqty` and `robotownedshortqty` in `TradeCache.cfg`.
+- Set `sellenabled` from `(robotownedlongqty > 0 || robotownedshortqty > 0) && classifieraccepted`.
+- Cap long-close sizing by `min(freebase, robotownedlongqty)` and short-close sizing by `min(borrowedbase, robotownedshortqty)` so external inventory is ignored.
+- Remove the redundant `noinvest` column from trade selection output.
+
+### Follow-up slices
+- Generalize ownership reconstruction across spot and futures routing roles.
+- Add tests covering mixed external/manual inventory and directional robot-owned close sizing.
+- Revisit continuous-liquidity thresholds after the ownership-aware sell path is stable.
+
 ## Trade vs TradingStrategy Regression Harness
 
 The current objective is to keep `Trade.jl` simple and test the behavior that matters directly: compare a bulk strategy evaluation against the minute-by-minute execution path on the same OHLCV window, then separate strategy parity from exchange-rule differences.

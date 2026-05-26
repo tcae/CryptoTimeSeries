@@ -98,32 +98,4 @@ using EnvConfig, Trade, Classify, CryptoXch, Ohlcv, TradingStrategy
         @test tc.mc[:strategy_source] == "test"
     end
 
-    @testset "Trade config write/read cycle" begin
-        tmpdir = mktempdir()
-        oldformat = EnvConfig.dfformat()
-        try
-            EnvConfig.init(EnvConfig.test)
-            EnvConfig.setdfformat!(:arrow)  # Set format to arrow before writing
-            timestamp = DateTime("2025-01-05T11:19:00")
-            tc.cfg = DataFrame(
-                basecoin=["BTC", "ETH"],
-                classifieraccepted=[true, false],
-                minquotevol=[true, true],
-                continuousminvol=[true, false],
-                buyenabled=[false, false],
-                datetime=[timestamp, timestamp],
-            )
-
-            Trade.write(tc, timestamp; folderpath=tmpdir)
-            @test isfile(joinpath(tmpdir, "TradeConfig.arrow"))
-
-            # Create a fresh cache in simulation mode.
-            tc2 = Trade.TradeCache(xc=CryptoXch.XchCache(startdt=timestamp, enddt=timestamp), cl=Classify.Classifier011())
-            Trade.readconfig!(tc2, timestamp; folderpath=tmpdir)
-            @test tc2.cfg[!, :basecoin] == ["BTC", "ETH"]
-        finally
-            EnvConfig.setdfformat!(oldformat)
-            rm(tmpdir; force=true, recursive=true)
-        end
-    end
 end

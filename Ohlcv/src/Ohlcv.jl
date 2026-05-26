@@ -401,7 +401,14 @@ function accumulate(df::AbstractDataFrame, period::Period)
 end
 
 " liquidity criteria defaults"
-ld = (minquotevol=15000f0, accumulate=5, checkperiod=24*60, startthreshold=0.01, stopthreshold=0.25, minliquidminutes=24*60*10, startdistance=24*60*10)
+ld = (
+    minquotevol=5000f0, 
+    accumulate=15, 
+    checkperiod=24*60, 
+    startthreshold=0.01, 
+    stopthreshold=0.25, 
+    minliquidminutes=24*60*10, 
+    startdistance=24*60*10)
 
 function liquiditycheck(ohlcv::OhlcvData; minquotevol=ld.minquotevol, accumulate=ld.accumulate, checkperiod=ld.checkperiod, startthreshold=ld.startthreshold, stopthreshold=ld.stopthreshold, minliquidminutes=ld.minliquidminutes, startdistance=ld.startdistance)
     ohlcvdf = dataframe(ohlcv)

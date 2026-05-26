@@ -56,6 +56,7 @@ const OPENORDERS_CACHE_TTL = Dates.Second(30)
 const BALANCE_CACHE_MAX_STALE = Dates.Hour(2)
 const OPENORDERS_CACHE_MAX_STALE = Dates.Hour(2)
 const PRIVATE_READ_COOLDOWN = Dates.Second(45)
+const SERVERTIME_RETRY_SECONDS = 60
 
 """
 Log and reset a private endpoint call-rate summary for the current aggregation window.
@@ -368,6 +369,22 @@ function _validatemarginleverage(marginleverage::Signed)
 	return nothing
 end
 
+"Parse Kraken leverage levels into a sorted integer vector."
+function _leveragelevels(raw)::Vector{Int}
+	if !(raw isa AbstractVector)
+		return Int[]
+	end
+	levels = Int[]
+	for entry in raw
+		lvl = _int(entry, 0)
+		lvl > 0 && push!(levels, lvl)
+	end
+	return sort(unique(levels))
+end
+
+"Return highest permitted leverage from a Kraken leverage list payload."
+_maxleverage(raw)::Int = isempty(_leveragelevels(raw)) ? 0 : maximum(_leveragelevels(raw))
+
 """
 Build the DataFrame schema used by `exchangeinfo`.
 """
@@ -377,6 +394,8 @@ function _emptyexchangeinfo()::DataFrame
 		status=String[],
 		basecoin=String[],
 		quotecoin=String[],
+		maxleveragebuy=Int[],
+		maxleveragesell=Int[],
 		ticksize=Float32[],
 		baseprecision=Float32[],
 		quoteprecision=Float32[],
@@ -682,12 +701,16 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 		minbaseqty = _float32(get(info, "ordermin", "0"), 0f0)
 		minquoteqty = _float32(get(info, "costmin", "0"), 0f0)
 		status = String(get(info, "status", "online"))
+		maxleveragebuy = _maxleverage(get(info, "leverage_buy", Any[]))
+		maxleveragesell = _maxleverage(get(info, "leverage_sell", Any[]))
 
 		push!(df, (
 			symbol=symbolname,
 			status=status,
 			basecoin=basecoin,
 			quotecoin=quotecoin,
+			maxleveragebuy=maxleveragebuy,
+			maxleveragesell=maxleveragesell,
 			ticksize=ticksize,
 			baseprecision=baseprecision,
 			quoteprecision=ticksize,
@@ -722,6 +745,27 @@ function symbolinfo(bc::KrakenSpotCache, symbol::AbstractString)::Union{Nothing,
 	return isnothing(ix) ? nothing : bc.syminfodf[ix, :]
 end
 
+"Return side-specific Kraken spot margin leverage caps for a symbol."
+function marginlimits(bc::KrakenSpotCache, symbol::AbstractString)
+	syminfo = symbolinfo(bc, symbol)
+	if isnothing(syminfo)
+		return (maxleveragebuy=0, maxleveragesell=0)
+	end
+	return (
+		maxleveragebuy=hasproperty(syminfo, :maxleveragebuy) ? Int(syminfo.maxleveragebuy) : 0,
+		maxleveragesell=hasproperty(syminfo, :maxleveragesell) ? Int(syminfo.maxleveragesell) : 0,
+	)
+end
+
+"Return true when Kraken spot metadata permits the requested side/leverage for this symbol."
+function marginpermitted(bc::KrakenSpotCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed)::Bool
+	marginleverage <= 0 && return true
+	limits = marginlimits(bc, symbol)
+	side = lowercase(String(orderside))
+	maxlev = side == "buy" ? limits.maxleveragebuy : limits.maxleveragesell
+	return maxlev >= Int(marginleverage)
+end
+
 symbolinfo(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString) = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
 function validsymbol(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString)::Bool
 	sym = symbolinfo(bc, basecoin, quotecoin)
@@ -747,9 +791,16 @@ validsymbol(bc::KrakenSpotCache, symbol::AbstractString)::Bool = validsymbol(bc,
 Return Kraken server time in UTC.
 """
 function servertime(bc::KrakenSpotCache)::DateTime
-	response = HttpPublicRequest(bc, "GET", "/0/public/Time", nothing, "server time")
-	unixtime = _int(response["result"]["unixtime"])
-	return Dates.unix2datetime(unixtime)
+	while true
+		try
+			response = HttpPublicRequest(bc, "GET", "/0/public/Time", nothing, "server time")
+			unixtime = _int(response["result"]["unixtime"])
+			return Dates.unix2datetime(unixtime)
+		catch err
+			(verbosity >= 1) && @warn "KrakenSpot server time unavailable; retrying" retry_seconds=SERVERTIME_RETRY_SECONDS exception=sprint(showerror, err)
+			sleep(SERVERTIME_RETRY_SECONDS)
+		end
+	end
 end
 
 """
@@ -1032,12 +1083,17 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 		(verbosity >= 1) && @warn "no instrument info for $(symbol)"
 		return nothing
 	end
+	pairname = _symbol2pairname(bc, symbol)
 	if !_istradablestatus(syminfo.status)
 		(verbosity >= 1) && @warn "symbol $(symbol) is not tradable due to status=$(syminfo.status)"
 		return nothing
 	end
-
-	pairname = _symbol2pairname(bc, symbol)
+	if marginleverage > 0
+		limits = marginlimits(bc, symbol)
+		if !marginpermitted(bc, symbol, orderside, marginleverage)
+			throw(ErrorException("Kraken spot margin not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
+		end
+	end
 	adaptivepost = maker && isnothing(price)
 	attempts = adaptivepost ? 5 : 1
 	ordertype = (maker || !isnothing(price)) ? "limit" : "market"

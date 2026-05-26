@@ -860,6 +860,29 @@ function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::Abstract
     return _routedModule(xc, role).symboltoken(bc, basecoin, quotecoin)
 end
 
+"Return side-specific margin leverage caps for one symbol when supported by the routed exchange."
+function marginlimits(xc::XchCache, symbol::AbstractString; role::ExchangeRole=trade_exchange_spot)
+    bc = _routedbc(xc, role)
+    isnothing(bc) && return (maxleveragebuy=0, maxleveragesell=0)
+    mod = _routedModule(xc, role)
+    if applicable(mod.marginlimits, bc, symbol)
+        return mod.marginlimits(bc, symbol)
+    end
+    return (maxleveragebuy=0, maxleveragesell=0)
+end
+
+"Return true when routed exchange metadata permits side/leverage for one symbol."
+function marginpermitted(xc::XchCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed; role::ExchangeRole=trade_exchange_spot)::Bool
+    marginleverage <= 0 && return true
+    bc = _routedbc(xc, role)
+    isnothing(bc) && return false
+    mod = _routedModule(xc, role)
+    if applicable(mod.marginpermitted, bc, symbol, orderside, marginleverage)
+        return mod.marginpermitted(bc, symbol, orderside, marginleverage)
+    end
+    return true
+end
+
 ceilbase(base, qty) = base == "usdt" ? ceil(qty, digits=3) : ceil(qty, digits=5)
 floorbase(base, qty) = base == "usdt" ? floor(qty, digits=3) : floor(qty, digits=5)
 roundbase(base, qty) = base == "usdt" ? round(qty, digits=3) : round(qty, digits=5)
@@ -934,11 +957,28 @@ tradetime(xc::XchCache) = isnothing(xc.currentdt) ? (isnothing(xc.bc) ? xc.start
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
 
+"""
+Return exchange server time and keep retrying every 60 seconds on connectivity/API failures.
+
+Used by the live loop so transient or prolonged exchange/network outages do not terminate
+the session. Backtest paths are unaffected because they do not call this helper.
+"""
+function _servertime_retry_1m(xc::XchCache)::DateTime
+	while true
+		try
+			return _exchangeservertime(xc)
+		catch err
+			(verbosity >= 1) && @warn "exchange server time unavailable; retrying in 60 seconds" retry_seconds=60 exception=sprint(showerror, err)
+			sleep(60)
+		end
+	end
+end
+
 function _sleepuntil(xc::XchCache, dt::DateTime)
     if !isnothing(xc.enddt)  # then backtest
         return
     end
-    sleepperiod = (dt + Second(2)) - _exchangeservertime(xc)
+    sleepperiod = (dt + Second(2)) - _servertime_retry_1m(xc)
     if sleepperiod <= Dates.Second(0)
         return
     end
@@ -1462,7 +1502,12 @@ function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_labe
     end
     oo = getorder(xc, orderid; auditevent=false)
     unregisteradaptiveorder!(xc, orderid)
-    cancelled = _exchangecancelorder(xc, symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot), orderid)
+    cancelsymbol = if !isnothing(oo) && hasproperty(oo, :symbol) && !ismissing(oo.symbol)
+        String(oo.symbol)
+    else
+        symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
+    end
+    cancelled = _exchangecancelorder(xc, cancelsymbol, orderid)
     if !isnothing(cancelled)
         current = getorder(xc, orderid; auditevent=false)
         if isnothing(current) && !isnothing(oo)

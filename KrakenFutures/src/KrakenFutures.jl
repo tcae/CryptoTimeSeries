@@ -8,6 +8,7 @@ const _private_rl_cooldown_until = Ref{Union{Nothing, DateTime}}(nothing)
 const _private_call_counter_lock = ReentrantLock()
 const _private_call_counter = Dict{String, Int}()
 const PRIVATE_READ_COOLDOWN = Dates.Second(45)
+const SERVERTIME_RETRY_SECONDS = 60
 
 """
 Log and reset a private endpoint call-rate summary for the current aggregation window.
@@ -42,6 +43,11 @@ function _isreadonlyprivateendpoint_futures(endPoint::AbstractString)::Bool
 	]
 end
 
+function _omitnonceforreadonlyenabled()::Bool
+	raw = lowercase(strip(get(ENV, "KRAKEN_FUTURES_OMIT_NONCE_READS", "false")))
+	return raw in ("1", "true", "yes", "on")
+end
+
 """
 verbosity =
 - 0: suppress all output if not an error
@@ -71,6 +77,84 @@ const _interval2minutes = Dict(
 const _known_quotes = ["USDT", "USD", "USDC", "EUR", "BTC", "ETH"]
 const _nonce_lock = ReentrantLock()
 const _last_nonce = Ref{Int}(0)
+const _nonce_floor_poison_factor = 20
+const _nonce_ms_min_increment = 1
+const _nonce_ns_min_increment = 1_000_000_000  # 1 s in ns mode
+const _nonce_ns_switch_threshold = 1_000_000_000_000_000
+
+"Return current unix time in milliseconds as Int."
+_nonce_ms_base()::Int = Int(floor(time() * 1000))
+
+"Return base*2^(retry_ix-1) with overflow-safe scaling and upper cap."
+function _capped_retry_jump(base::Int, retry_ix::Int, cap::Int)::Int
+	retry_ix <= 1 && return min(base, cap)
+	jump = min(base, cap)
+	for _ in 2:retry_ix
+		if jump >= (cap ÷ 2)
+			return cap
+		end
+		jump *= 2
+	end
+	return min(jump, cap)
+end
+
+function _nonce_state_dir()::String
+	dir = normpath(joinpath(EnvConfig.cryptopath, "debug", "krakenfutures"))
+	isdir(dir) || mkpath(dir)
+	return dir
+end
+
+function _nonce_state_file(publickey::AbstractString)::String
+	keyhash = bytes2hex(SHA.sha1(Vector{UInt8}(String(publickey))))
+	return joinpath(_nonce_state_dir(), "nonce_floor_$(keyhash).json")
+end
+
+function _restore_nonce_floor!(bc)
+	!_hascredentials(bc) && return nothing
+	path = _nonce_state_file(bc.publickey)
+	isfile(path) || return nothing
+	try
+		payload = JSON3.read(read(path, String), Dict{String, Any})
+		stored = Int(get(payload, "last_nonce", 0))
+		now_ms = _nonce_ms_base()
+		now_ns = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
+		nowbase = stored >= _nonce_ns_switch_threshold ? now_ns : now_ms
+		rebased = false
+		# Keep persistent nonce state in its current scale (ms or ns).
+		if (stored > 0) && (stored > nowbase) && ((stored ÷ max(nowbase, 1)) > _nonce_floor_poison_factor)
+			(verbosity >= 1) && @warn "discarding poisoned KrakenFutures nonce floor and rebasing" stored_nonce=stored rebased_nonce=nowbase path
+			stored = nowbase
+			rebased = true
+		end
+		lock(_nonce_lock)
+		try
+			_last_nonce[] = max(_last_nonce[], stored)
+		finally
+			unlock(_nonce_lock)
+		end
+		rebased && _persist_nonce_floor!(bc, _last_nonce[])
+		(verbosity >= 3) && println("restored KrakenFutures nonce floor from $(path), last_nonce=$(_last_nonce[])")
+	catch err
+		(verbosity >= 1) && @warn "failed to restore KrakenFutures nonce floor" path exception=(err, catch_backtrace())
+	end
+	return nothing
+end
+
+function _persist_nonce_floor!(bc, nonce::Int)
+	!_hascredentials(bc) && return nothing
+	path = _nonce_state_file(bc.publickey)
+	tmppath = string(path, ".tmp")
+	try
+		open(tmppath, "w") do io
+			write(io, JSON3.write(Dict("last_nonce" => nonce, "updated_at_utc" => string(Dates.now(Dates.UTC)))))
+		end
+		mv(tmppath, path; force=true)
+	catch err
+		isfile(tmppath) && rm(tmppath; force=true)
+		(verbosity >= 1) && @warn "failed to persist KrakenFutures nonce floor" path exception=(err, catch_backtrace())
+	end
+	return nothing
+end
 
 # Balance caching to avoid Kraken API rate limits (10-25 req/sec for futures)
 # Cache TTL: 5 seconds. At 1 balance call/minute, this is well under the rate limit.
@@ -94,6 +178,8 @@ Build a new `KrakenFuturesCache` and optionally preload symbol metadata.
 """
 function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::String=KRAKEN_FUTURES_APIREST, publickey::Union{Nothing, AbstractString}=nothing, secretkey::Union{Nothing, AbstractString}=nothing)
 	keys = _resolve_credentials(publickey, secretkey)
+	bc = KrakenFuturesCache(_emptyexchangeinfo(), apirest, keys.publickey, keys.secretkey)
+	_restore_nonce_floor!(bc)
 	syminfo = _emptyexchangeinfo()
 	if autoloadexchangeinfo
 		try
@@ -244,22 +330,35 @@ function _httpmemorycompaterror(err)::Bool
 end
 
 function _isinvalidnonceerror(err)::Bool
-	return occursin("invalid nonce", lowercase(sprint(showerror, err)))
+	msg = lowercase(sprint(showerror, err))
+	return occursin("invalid nonce", msg) || occursin("noncebelowthreshold", msg) || occursin("too_small", msg) || occursin("nonce too small", msg) || occursin("nonceduplicate", msg) || occursin("duplicate", msg)
+end
+
+function _isnoncetoosmallerror(err)::Bool
+	msg = lowercase(sprint(showerror, err))
+	return occursin("noncebelowthreshold", msg) || occursin("too_small", msg) || occursin("nonce too small", msg)
+end
+
+function _isnonceduplicateerror(err)::Bool
+	msg = lowercase(sprint(showerror, err))
+	return occursin("nonceduplicate", msg) || occursin("duplicate", msg)
 end
 
 function _isratelimiterror(err)::Bool
 	return occursin("rate limit exceeded", lowercase(sprint(showerror, err)))
 end
 
-"Return a strictly increasing Kraken nonce (nanoseconds since epoch)."
-function _nextnonce()::String
+"Return a strictly increasing Kraken nonce in ms scale."
+function _nextnonce(bc::KrakenFuturesCache)::String
 	lock(_nonce_lock)
 	try
-		candidate = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
+		use_ns = _last_nonce[] >= _nonce_ns_switch_threshold
+		candidate = use_ns ? Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000)) : _nonce_ms_base()
 		if candidate <= _last_nonce[]
-			candidate = _last_nonce[] + 1
+			candidate = _last_nonce[] + (use_ns ? _nonce_ns_min_increment : _nonce_ms_min_increment)
 		end
 		_last_nonce[] = candidate
+		_persist_nonce_floor!(bc, candidate)
 		return string(candidate)
 	finally
 		unlock(_nonce_lock)
@@ -393,6 +492,45 @@ function _validatemarginleverage(marginleverage::Signed)
 	return nothing
 end
 
+"Parse one value into a positive leverage int, returning 0 when unavailable."
+function _leverageint(value)::Int
+	n = _int(value, 0)
+	if n > 0
+		return n
+	end
+	if value isa AbstractString
+		s = replace(strip(String(value)), "x" => "")
+		f = try
+			parse(Float64, s)
+		catch
+			0.0
+		end
+		return f > 0 ? Int(round(f)) : 0
+	end
+	return 0
+end
+
+"Pick the best available max leverage from alternative metadata keys."
+function _futuresmaxleverage(info::Dict, keys::Vector{String})::Int
+	for key in keys
+		if haskey(info, key)
+			raw = info[key]
+			if raw isa AbstractVector
+				vals = Int[]
+				for entry in raw
+					lev = _leverageint(entry)
+					lev > 0 && push!(vals, lev)
+				end
+				!isempty(vals) && return maximum(vals)
+			else
+				lev = _leverageint(raw)
+				lev > 0 && return lev
+			end
+		end
+	end
+	return 0
+end
+
 """
 Convert API time values to UTC `DateTime`.
 """
@@ -435,6 +573,8 @@ function _emptyexchangeinfo()::DataFrame
 		status=String[],
 		basecoin=String[],
 		quotecoin=String[],
+		maxleveragebuy=Int[],
+		maxleveragesell=Int[],
 		ticksize=Float32[],
 		baseprecision=Float32[],
 		quoteprecision=Float32[],
@@ -605,7 +745,7 @@ Supports GET (query params in URL) and POST (params in body).
 The signature endpoint is built as `/api/v3` + endPoint, matching
 the algorithm used by KrakenEx (which strips the leading `/derivatives`).
 """
-function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endPoint::AbstractString, params::Union{Dict, Nothing}, info::AbstractString; baseurl::String=bc.apirest)
+function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endPoint::AbstractString, params::Union{Dict, Nothing}, info::AbstractString; baseurl::String=bc.apirest, max_attempts::Int=20)
 	if !_hascredentials(bc)
 		throw(ArgumentError("credentials are required for $(info)"))
 	end
@@ -627,11 +767,13 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 		_private_call_counter[endPoint] = get(_private_call_counter, endPoint, 0) + 1
 	end
 	baseparams = isnothing(params) ? Dict{String, Any}() : Dict{String, Any}(string(k) => v for (k, v) in params)
-	attempts = 8
+	initial_attempts = max(1, max_attempts)
+	attempts = initial_attempts
 	last_error = nothing
 	while attempts > 0
 		reqparams = copy(baseparams)
-		nonce = _nextnonce()
+		omit_nonce = _omitnonceforreadonlyenabled() && (method == "GET") && _isreadonlyprivateendpoint_futures(endPoint)
+		nonce = omit_nonce ? "" : _nextnonce(bc)
 
 		# Encode params as URL query string (used for both signature and request body/URL)
 		paramstr = isempty(reqparams) ? "" : _dict2paramsget(reqparams)
@@ -642,14 +784,18 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 		headers = [
 			"Content-Type" => "application/x-www-form-urlencoded; charset=utf-8",
 			"APIKey" => bc.publickey,
-			"Nonce" => nonce,
-			"Authent" => _futuressignature(sigendpoint, nonce, paramstr, bc.secretkey),
 		]
+		if !omit_nonce
+			push!(headers, "Nonce" => nonce)
+		end
+		push!(headers, "Authent" => _futuressignature(sigendpoint, nonce, paramstr, bc.secretkey))
 
 		body = try
 			if method == "GET"
 				url = isempty(paramstr) ? baseurl * endPoint : baseurl * endPoint * "?" * paramstr
-				response = HTTP.request("GET", url, headers; retries=3, readtimeout=60)
+				# Keep retries at this layer disabled so nonce changes between attempts.
+				# The surrounding attempts loop already handles retries with fresh nonce values.
+				response = HTTP.request("GET", url, headers; retries=0, readtimeout=60)
 				JSON3.read(String(response.body), Dict)
 			else
 				response = HTTP.request("POST", baseurl * endPoint, headers, paramstr; retries=0, retry_non_idempotent=false, readtimeout=60)
@@ -667,7 +813,7 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 				end
 			elseif occursin("econnreset", lowercase(sprint(showerror, err))) || occursin("connection reset", lowercase(sprint(showerror, err))) || occursin("timed out", lowercase(sprint(showerror, err))) || occursin("timeout", lowercase(sprint(showerror, err))) || occursin("recv failure", lowercase(sprint(showerror, err)))
 				attempts -= 1
-				retry_ix = 8 - attempts
+				retry_ix = initial_attempts - attempts
 				wait_s = min(5.0, 0.25 * retry_ix)
 				last_error = err
 				(verbosity >= 1) && @warn "KrakenFutures private transport error; retrying request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s exception=sprint(showerror, err)
@@ -695,30 +841,52 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 				if _isreadonlyprivateendpoint_futures(endPoint)
 					rethrow(err)
 				end
-				retry_ix = 8 - attempts
+				retry_ix = initial_attempts - attempts
 				wait_s = min(30.0, 2.0 ^ retry_ix)
 				(verbosity >= 1) && @warn "Kraken futures private rate limit hit; retrying request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s
 				sleep(wait_s)
 				continue
 			end
 			if _isinvalidnonceerror(err) && (attempts > 0)
-				retry_ix = 8 - attempts
-				wait_s = min(0.5, 0.05 * retry_ix)
+				retry_ix = initial_attempts - attempts
+				isdup = _isnonceduplicateerror(err)
+				wait_s = isdup ? min(60.0, 2.0 ^ max(0, retry_ix - 1)) : min(1.0, 0.1 * retry_ix)
+				errmsg = sprint(showerror, err)
 				nonce_floor = let
-					jump_ns = retry_ix >= 3 ? 2_000_000_000_000_000_000 : 5_000_000_000
+					# Keep nonce recovery bounded while allowing one-way ms -> ns upshift.
 					lock(_nonce_lock)
 					try
+						now_ms = _nonce_ms_base()
 						now_ns = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
-						base = max(now_ns, _last_nonce[])
-						limit = typemax(Int) - 1_000_000
-						candidate = base >= (limit - jump_ns) ? limit : (base + jump_ns)
+						if _isnoncetoosmallerror(err)
+							if (_last_nonce[] < _nonce_ns_switch_threshold) && (retry_ix >= 3)
+								# One-way upshift: if server floor is ns-scale, stop trying ms permanently.
+								_last_nonce[] = max(now_ns, _last_nonce[] * 1_000_000)
+							end
+							if _last_nonce[] < now_ms
+								_last_nonce[] = now_ms
+							end
+						end
+						use_ns = _last_nonce[] >= _nonce_ns_switch_threshold
+						jump = if use_ns
+							isdup ?
+								_capped_retry_jump(60_000_000_000_000, retry_ix, 5_000_000_000_000_000) :
+								_capped_retry_jump(50_000_000_000, retry_ix, 5_000_000_000_000_000)
+						else
+							isdup ?
+								_capped_retry_jump(600_000, retry_ix, 50_000_000_000) :
+								_capped_retry_jump(50_000, retry_ix, 50_000_000_000)
+						end
+						base = max(use_ns ? now_ns : now_ms, _last_nonce[])
+						candidate = base > (typemax(Int) - jump) ? typemax(Int) - 1 : (base + jump)
 						_last_nonce[] = candidate
+						_persist_nonce_floor!(bc, candidate)
 						_last_nonce[]
 					finally
 						unlock(_nonce_lock)
 					end
 				end
-				(verbosity >= 2) && @warn "Kraken futures invalid nonce; retrying private request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s nonce_floor=nonce_floor
+				(verbosity >= 1) && @warn "Kraken futures invalid nonce; retrying private request" endpoint=endPoint attempts_left=attempts sleep_seconds=wait_s duplicate=isdup nonce_floor=nonce_floor error_message=errmsg
 				sleep(wait_s)
 				continue
 			end
@@ -770,12 +938,16 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 		baseprecision = _float32(_tryget(info, ["contractSize", "qtyIncrement", "qty_increment"], 1.0), 1.0f0)
 		minbaseqty = _float32(_tryget(info, ["minimumOrderSize", "minOrderSize", "qtyIncrement"], 0.0), 0.0f0)
 		minquoteqty = _float32(_tryget(info, ["minimumOrderValue", "minOrderValue", "notionalMinimum", "notional_min"], 0.0), 0.0f0)
+		maxleveragebuy = _futuresmaxleverage(info, ["maxLeverageBuy", "maxLeverageLong", "maxLeverage", "maxLeverageValue", "max_leverage", "leverageCap"])
+		maxleveragesell = _futuresmaxleverage(info, ["maxLeverageSell", "maxLeverageShort", "maxLeverage", "maxLeverageValue", "max_leverage", "leverageCap"])
 
 		push!(df, (
 			symbol=symbolname,
 			status=status,
 			basecoin=basecoin,
 			quotecoin=quotecoin,
+			maxleveragebuy=maxleveragebuy,
+			maxleveragesell=maxleveragesell,
 			ticksize=ticksize,
 			baseprecision=baseprecision,
 			quoteprecision=ticksize,
@@ -819,6 +991,8 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 					status=status,
 					basecoin=basecoin,
 					quotecoin=quotecoin,
+					maxleveragebuy=0,
+					maxleveragesell=0,
 					ticksize=ticksize,
 					baseprecision=baseprecision,
 					quoteprecision=ticksize,
@@ -855,6 +1029,29 @@ function symbolinfo(bc::KrakenFuturesCache, symbol::AbstractString)::Union{Nothi
 	return isnothing(ix) ? nothing : bc.syminfodf[ix, :]
 end
 
+"Return side-specific Kraken futures leverage caps for a symbol."
+function marginlimits(bc::KrakenFuturesCache, symbol::AbstractString)
+	syminfo = symbolinfo(bc, symbol)
+	if isnothing(syminfo)
+		return (maxleveragebuy=0, maxleveragesell=0)
+	end
+	return (
+		maxleveragebuy=hasproperty(syminfo, :maxleveragebuy) ? Int(syminfo.maxleveragebuy) : 0,
+		maxleveragesell=hasproperty(syminfo, :maxleveragesell) ? Int(syminfo.maxleveragesell) : 0,
+	)
+end
+
+"Return true when futures metadata permits requested side/leverage for this symbol."
+function marginpermitted(bc::KrakenFuturesCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed)::Bool
+	marginleverage <= 0 && return true
+	limits = marginlimits(bc, symbol)
+	side = lowercase(String(orderside))
+	maxlev = side == "buy" ? limits.maxleveragebuy : limits.maxleveragesell
+	# If metadata lacks leverage caps (0), keep behavior permissive and defer to exchange.
+	maxlev == 0 && return true
+	return maxlev >= Int(marginleverage)
+end
+
 symbolinfo(bc::KrakenFuturesCache, basecoin::AbstractString, quotecoin::AbstractString) = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
 
 """
@@ -880,12 +1077,15 @@ end
 Return exchange server time.
 """
 function servertime(bc::KrakenFuturesCache)::DateTime
-	try
-		response = HttpPublicRequest(bc, "GET", "/tickers", nothing, "futures server time")
-		st = _tryget(response, ["serverTime", "server_time"], nothing)
-		return isnothing(st) ? Dates.now(Dates.UTC) : _todatetime(st)
-	catch
-		return Dates.now(Dates.UTC)
+	while true
+		try
+			response = HttpPublicRequest(bc, "GET", "/tickers", nothing, "futures server time")
+			st = _tryget(response, ["serverTime", "server_time"], nothing)
+			return isnothing(st) ? Dates.now(Dates.UTC) : _todatetime(st)
+		catch err
+			(verbosity >= 1) && @warn "KrakenFutures server time unavailable; retrying" retry_seconds=SERVERTIME_RETRY_SECONDS exception=sprint(showerror, err)
+			sleep(SERVERTIME_RETRY_SECONDS)
+		end
 	end
 end
 
@@ -1025,6 +1225,55 @@ function account(bc::KrakenFuturesCache)
 		return Dict{String, Any}()
 	end
 	return HttpPrivateRequest(bc, "GET", "/accounts", nothing, "futures account")
+end
+
+"""
+Probe Kraken Futures private-read auth behavior with and without `Nonce`.
+
+Returns a named tuple with booleans and error text for both modes plus a
+human-readable verdict string.
+"""
+function startup_private_read_nonce_probe(bc::KrakenFuturesCache)
+	if !_hascredentials(bc)
+		return (
+			with_nonce_ok=false,
+			without_nonce_ok=false,
+			with_nonce_error="missing credentials",
+			without_nonce_error="missing credentials",
+			verdict="missing_credentials",
+		)
+	end
+
+	function _probe_once(omit_nonce::Bool)
+		try
+			withenv("KRAKEN_FUTURES_OMIT_NONCE_READS" => (omit_nonce ? "true" : "false")) do
+				_ = HttpPrivateRequest(bc, "GET", "/accounts", nothing, "futures account startup probe"; max_attempts=2)
+			end
+			return (ok=true, err="")
+		catch err
+			return (ok=false, err=sprint(showerror, err))
+		end
+	end
+
+	with_nonce = _probe_once(false)
+	without_nonce = _probe_once(true)
+	verdict = if with_nonce.ok && without_nonce.ok
+		"both_modes_ok"
+	elseif with_nonce.ok && !without_nonce.ok
+		"nonce_required_for_private_read"
+	elseif !with_nonce.ok && without_nonce.ok
+		"nonce_problem_detected_read_without_nonce_ok"
+	else
+		"both_modes_failed"
+	end
+
+	return (
+		with_nonce_ok=with_nonce.ok,
+		without_nonce_ok=without_nonce.ok,
+		with_nonce_error=with_nonce.err,
+		without_nonce_error=without_nonce.err,
+		verdict=verdict,
+	)
 end
 
 """
@@ -1198,6 +1447,12 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	end
 
 	pairname = _symbol2pairname(bc, symbol)
+	if marginleverage > 0
+		limits = marginlimits(bc, symbol)
+		if !marginpermitted(bc, symbol, orderside, marginleverage)
+			throw(ErrorException("Kraken futures leverage not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
+		end
+	end
 	adaptivepost = maker && isnothing(price)
 	attempts = adaptivepost ? 5 : 1
 	ordertype = (maker || !isnothing(price)) ? "lmt" : "mkt"
@@ -1237,8 +1492,7 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 		catch err
 			attempts -= 1
 			if !adaptivepost || !_ispostonlyrejection(err) || (attempts <= 0)
-				(verbosity >= 1) && @warn "futures createorder failed: $(err)"
-				return nothing
+				rethrow(err)
 			end
 			(verbosity >= 2) && @info "retrying futures post-only order for $(symbol) after rejection" attempts_left=attempts
 		end

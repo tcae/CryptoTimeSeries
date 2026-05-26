@@ -27,7 +27,7 @@ using EnvConfig, CryptoXch, Trade, TradeAudit
             environment=string(Symbol(EnvConfig.configmode)),
             run_mode=CryptoXch.auditrunmode(xc),
             exchange=CryptoXch.exchange(xc),
-            account_alias=something(CryptoXch.authname(xc), ""),
+            account_alias=CryptoXch.exchange(xc),
             asset_class=TradeAudit.crypto,
             instrument_type=TradeAudit.spot_pair,
         )

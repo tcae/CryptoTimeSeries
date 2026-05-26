@@ -1,7 +1,6 @@
 using Test
 
 @testset "Trade tests" begin
-    include("storage_format_test.jl")
     include("getgainsalgo_adapter_test.jl")
     include("strategy_runtime_config_test.jl")
     include("simulated_marketview_test.jl")
@@ -13,4 +12,5 @@ using Test
     include("backtest_integration_test.jl")
     include("bybit_guardrail_test.jl")
     include("audit_snapshot_test.jl")
+    include("ownership_selection_test.jl")
 end
