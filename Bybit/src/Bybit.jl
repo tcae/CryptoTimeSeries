@@ -1030,7 +1030,7 @@ If `price` is omitted and `maker=true`, the simulation and live adapters will
 choose a limit price as close as possible to the current spread while staying
 post-only so the order can qualify for maker fees.
 """
-function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false)
     # Check if in simulation mode
     if !isnothing(bc.orders)
         syminfo = symbolinfo(bc, symbol)
@@ -1040,7 +1040,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         limitprice = isnothing(price) ? Float32(get24h(bc, symbol).lastprice) : Float32(price)
         dt = Dates.now(Dates.UTC)
         orderid = string("SIM-", uppercasefirst(lowercase(orderside)), "-", uppercase(symbol), "-", _nextsimorderseq!(bc))
-        row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=Float32(basequantity), ordertype="Limit", isLeverage=(marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=Float32(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(marginleverage))
+        row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=Float32(basequantity), ordertype="Limit", isLeverage=(marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=Float32(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(marginleverage), reduceonly=reduceonly)
         push!(bc.closedorders, row)
         _applyfill!(bc, symbol, orderside, basequantity, limitprice, marginleverage)
         return row

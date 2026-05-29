@@ -10,6 +10,20 @@ const _private_call_counter = Dict{String, Int}()
 const PRIVATE_READ_COOLDOWN = Dates.Second(45)
 const SERVERTIME_RETRY_SECONDS = 60
 
+const ROBOT_ORDER_PREFIX = "ROBO-"
+const _order_counter_lock = ReentrantLock()
+const _order_counter = Ref{Int}(0)
+# Lazily initialized on first order placement (runtime, not precompile time) so that
+# cliOrdId values are unique across process restarts even when loaded from .ji cache.
+# Uses a process/time-derived token so IDs are independent from global RNG state.
+const _order_session_token = Ref{String}("")
+
+const _openorders_cache_lock = ReentrantLock()
+const _openorders_cache = Ref{Union{Nothing, DataFrame}}(nothing)
+const _openorders_cache_time = Ref{Union{Nothing, DateTime}}(nothing)
+const OPENORDERS_CACHE_TTL = Dates.Second(30)
+const OPENORDERS_CACHE_MAX_STALE = Dates.Hour(2)
+
 """
 Log and reset a private endpoint call-rate summary for the current aggregation window.
 Used by shutdown handlers to emit one final diagnostics snapshot.
@@ -455,6 +469,52 @@ function _ispostonlyrejection(err)::Bool
 	return occursin("post", msg) && occursin("only", msg)
 end
 
+"Return true when Kraken Futures rejects an order because cliOrdId is already used by an active order."
+function _isclordidnotunique(err)::Bool
+	msg = lowercase(sprint(showerror, err))
+	return occursin("cl_ord_id not unique", msg) || occursin("cliordid not unique", msg) || occursin("duplicate cl_ord_id", msg) || occursin("duplicate cliordid", msg)
+end
+
+function _invalidate_openorders_cache!()
+	lock(_openorders_cache_lock) do
+		_openorders_cache[] = nothing
+		_openorders_cache_time[] = nothing
+	end
+	return nothing
+end
+
+function _stale_openorders_cache_copy(maxage::Dates.Period)::Union{Nothing, DataFrame}
+	return lock(_openorders_cache_lock) do
+		now = Dates.now(Dates.UTC)
+		if !isnothing(_openorders_cache[]) && !isnothing(_openorders_cache_time[])
+			if (now - _openorders_cache_time[]) < maxage
+				return copy(_openorders_cache[])
+			end
+		end
+		return nothing
+	end
+end
+
+function _upsert_openorders_cache_row!(row)::Nothing
+	lock(_openorders_cache_lock) do
+		if isnothing(_openorders_cache[])
+			return nothing
+		end
+		df = copy(_openorders_cache[])
+		ix = findfirst(==(String(row.orderid)), String.(df[!, :orderid]))
+		if isnothing(ix)
+			push!(df, row)
+		else
+			for col in names(df)
+				df[ix, col] = getproperty(row, Symbol(col))
+			end
+		end
+		_openorders_cache[] = df
+		_openorders_cache_time[] = Dates.now(Dates.UTC)
+	end
+	return nothing
+end
+
 "Normalize limit order price/qty to exchange precision and min constraints."
 function _normalizelimitorderparams(syminfo::DataFrameRow, basequantity::Real, limitprice::Real)
 	pricedigits = _precisiondigits(Float64(syminfo.ticksize), 5)
@@ -586,11 +646,28 @@ function _emptyexchangeinfo()::DataFrame
 end
 
 """
+Generate a unique client order id with the robot prefix.
+"""
+function _next_client_order_id()::String
+	(sessiontoken, n) = lock(_order_counter_lock) do
+		if isempty(_order_session_token[])
+			seedmix = (time_ns(), Base.Libc.getpid(), objectid(_order_counter_lock))
+			tok = uppercase(string(abs(hash(seedmix)); base=16))
+			_order_session_token[] = lpad(tok[1:min(end, 12)], 12, '0')
+		end
+		_order_counter[] += 1
+		(_order_session_token[], _order_counter[])
+	end
+	return string(ROBOT_ORDER_PREFIX, sessiontoken, "-", n)
+end
+
+"""
 Build open orders schema.
 """
 function emptyorders()::DataFrame
 	return DataFrame(
 		orderid=String[],
+		orderLinkId=String[],
 		symbol=String[],
 		side=String[],
 		baseqty=Float32[],
@@ -1294,8 +1371,10 @@ function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
 	updated = _todatetime(_tryget(entry, ["updated", "updatedTime", "lastUpdateTime"], created))
 	leverage = _float32(_tryget(descr, ["leverage"], 1), 1f0)
 	tif = String(_tryget(descr, ["timeinforce", "timeInForce"], "GTC"))
+	orderLinkId = String(_tryget(entry, ["cliOrdId", "clientOrderId", "cl_ord_id"], ""))
 	return (
 		orderid=String(orderid),
+		orderLinkId=orderLinkId,
 		symbol=symbol,
 		side=side,
 		baseqty=baseqty,
@@ -1317,14 +1396,42 @@ end
 Return open orders in Bybit-compatible shape.
 """
 function openorders(bc::KrakenFuturesCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
-	_ = orderLinkId
 	out = emptyorders()
 	!_hascredentials(bc) && return out
 	symbolspec = isnothing(symbol) ? nothing : _normalizepairsymbol(String(symbol))
+	orderlinkspec = isnothing(orderLinkId) ? nothing : String(orderLinkId)
+
+	# Read-through cache to reduce pressure on private /openorders endpoint.
+	if isnothing(orderid) && isnothing(symbol)
+		cached = _stale_openorders_cache_copy(OPENORDERS_CACHE_TTL)
+		if !isnothing(cached)
+			if !isnothing(orderlinkspec)
+				return cached[cached.orderLinkId .== orderlinkspec, :]
+			end
+			return cached
+		end
+	end
 
 	params = Dict{String, Any}()
 	!isnothing(orderid) && (params["order_id"] = String(orderid))
-	response = HttpPrivateRequest(bc, "GET", "/openorders", isempty(params) ? nothing : params, "futures open orders")
+	response = nothing
+	try
+		response = HttpPrivateRequest(bc, "GET", "/openorders", isempty(params) ? nothing : params, "futures open orders")
+	catch err
+		if isnothing(orderid) && isnothing(symbol)
+			fallback = _stale_openorders_cache_copy(OPENORDERS_CACHE_MAX_STALE)
+			if !isnothing(fallback)
+				age = lock(_openorders_cache_lock) do
+					now = Dates.now(Dates.UTC)
+					isnothing(_openorders_cache_time[]) ? Dates.Millisecond(0) : (now - _openorders_cache_time[])
+				end
+				(verbosity >= 1) && @warn "futures OpenOrders request failed; returning stale cached open orders" age exception=sprint(showerror, err)
+				!isnothing(orderlinkspec) && return fallback[fallback.orderLinkId .== orderlinkspec, :]
+				return fallback
+			end
+		end
+		rethrow(err)
+	end
 	orders = _tryget(response, ["openOrders", "orders"], Any[])
 	if orders isa AbstractVector
 		for raw in orders
@@ -1332,9 +1439,21 @@ function openorders(bc::KrakenFuturesCache; symbol=nothing, orderid=nothing, ord
 			oid = String(_tryget(entry, ["order_id", "id", "orderId", "txid"], ""))
 			oid == "" && continue
 			row = _orderrow(bc, oid, entry)
-			if isnothing(symbolspec) || (row.symbol == symbolspec)
-				push!(out, row)
+			if !isnothing(symbolspec) && (row.symbol != symbolspec)
+				continue
 			end
+			if !isnothing(orderlinkspec)
+				row.orderLinkId != orderlinkspec && continue
+			else
+				!startswith(row.orderLinkId, ROBOT_ORDER_PREFIX) && continue
+			end
+			push!(out, row)
+		end
+	end
+	if isnothing(orderid) && isnothing(symbol)
+		lock(_openorders_cache_lock) do
+			_openorders_cache[] = copy(out)
+			_openorders_cache_time[] = Dates.now(Dates.UTC)
 		end
 	end
 	return out
@@ -1378,6 +1497,7 @@ function cancelorder(bc::KrakenFuturesCache, symbol, orderid)
 	try
 		response = HttpPrivateRequest(bc, "POST", "/cancelorder", Dict("order_id" => String(orderid)), "futures cancel order")
 		if haskey(response, "result")
+			_invalidate_openorders_cache!()
 			return String(orderid)
 		end
 	catch err
@@ -1429,7 +1549,7 @@ If `price` is omitted and `maker=true`, the adapter will choose a limit price
 as close as possible to the current spread while remaining post-only so the
 order can qualify for maker fees.
 """
-function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0)
+function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(price) || (price > 0.0) "createorder symbol=$(symbol) price=$(price) must be > 0"
 	@assert lowercase(orderside) in ["buy", "sell"] "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
@@ -1458,6 +1578,7 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	ordertype = (maker || !isnothing(price)) ? "lmt" : "mkt"
 	chosenqty = Float32(basequantity)
 	effectiveprice = isnothing(price) ? nothing : Float32(price)
+	clientOrderId = _next_client_order_id()
 	orderid = nothing
 	while attempts > 0
 		if ordertype == "lmt"
@@ -1479,10 +1600,12 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 			"side" => lowercase(orderside),
 			"size" => string(chosenqty),
 			"orderType" => ordertype,
+			"cliOrdId" => clientOrderId,
 		)
 		(ordertype == "lmt") && (params["limitPrice"] = string(effectiveprice))
 		(maker && (ordertype == "lmt")) && (params["postOnly"] = "true")
 		marginleverage > 0 && (params["leverage"] = string(marginleverage))
+		reduceonly && (params["reduceOnly"] = true)
 
 		try
 			response = HttpPrivateRequest(bc, "POST", "/sendorder", params, "futures create order")
@@ -1490,6 +1613,34 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 			!isnothing(orderid) && break
 			return nothing
 		catch err
+			# If Kraken already processed a previous HTTP attempt that timed out before
+			# the response arrived, the internal retry sends the same cliOrdId and
+			# Kraken rejects it as duplicate. Recover by looking up the placed order.
+			if _isclordidnotunique(err)
+				(verbosity >= 1) && @warn "cliOrdId not unique for $(symbol); recovering existing open order" cliOrdId=clientOrderId
+				existing = openorders(bc; orderLinkId=clientOrderId)
+				if size(existing, 1) > 0
+					row = existing[1, :]
+					_upsert_openorders_cache_row!(row)
+					return (
+						orderid=row.orderid,
+						orderLinkId=row.orderLinkId,
+						symbol=row.symbol,
+						side=row.side,
+						baseqty=row.baseqty,
+						ordertype=row.ordertype,
+						timeinforce=row.timeinforce,
+						limitprice=row.limitprice,
+						avgprice=row.avgprice,
+						executedqty=row.executedqty,
+						status=row.status,
+						created=row.created,
+						updated=row.updated,
+						rejectreason=row.rejectreason,
+					)
+				end
+				return nothing
+			end
 			attempts -= 1
 			if !adaptivepost || !_ispostonlyrejection(err) || (attempts <= 0)
 				rethrow(err)
@@ -1499,9 +1650,11 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	end
 
 	isnothing(orderid) && return nothing
+	_invalidate_openorders_cache!()
 	created = Dates.now(Dates.UTC)
 	return (
 		orderid=String(orderid),
+		orderLinkId=clientOrderId,
 		symbol=_normalizepairsymbol(symbol),
 		side=lowercase(orderside) == "buy" ? "Buy" : "Sell",
 		baseqty=chosenqty,
@@ -1549,6 +1702,7 @@ function amendorder(bc::KrakenFuturesCache, symbol::String, orderid::String; bas
 		!isnothing(basequantity) && (params["size"] = string(basequantity))
 		!isnothing(limitprice) && (params["limitPrice"] = string(limitprice))
 		_ = HttpPrivateRequest(bc, "POST", "/editorder", params, "futures amend order")
+		_invalidate_openorders_cache!()
 		amended = order(bc, orderid)
 		return isnothing(amended) ? nothing : amended
 	catch

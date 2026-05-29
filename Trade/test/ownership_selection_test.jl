@@ -65,7 +65,7 @@ end
             continuousminvol=Bool[true, true, true],
             classifieraccepted=Bool[true, true, false],
             whitelisted=Bool[true, false, true],
-            inportfolio=Bool[false, false, false],
+            inportfolio=Bool[false, true, false],
             buyenabled=Bool[false, false, false],
             sellenabled=Bool[false, false, false],
         )
@@ -128,7 +128,7 @@ end
         )
         Trade.trade!(tc, basecfgdf[1, :], advice, assets)
         @test nrow(tc.dbgdf) > 0
-        @test isapprox(Float32(tc.dbgdf[end, :baseqty]), 0.8f0; atol=1f-5)
+        @test isapprox(Float32(tc.dbgdf[end, :baseqty]), 0.96f0; atol=1f-5)
     finally
         if isnothing(oldauditroot)
             delete!(ENV, "CTS_AUDIT_ROOT")

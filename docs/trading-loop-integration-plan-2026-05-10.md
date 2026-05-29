@@ -56,6 +56,62 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 - Add tests covering mixed external/manual inventory and directional robot-owned close sizing.
 - Revisit continuous-liquidity thresholds after the ownership-aware sell path is stable.
 
+## 2026-05-26 Progress Update: Startup Probe and Trade-Loop Cancellation
+
+### Completed in code
+- [x] Removed startup probe auto-cancellation scheduling from `scripts/tradereal.jl` for both KrakenSpot and KrakenFutures probes.
+- [x] Kept startup capability probes placing long/short validation orders, but now leaves cancellation ownership to the regular trade loop.
+- [x] Hardened `_tradestep!` open-order cancellation in `Trade/src/Trade.jl` so one failing cancel/amend does not abort cancellation of remaining open orders.
+- [x] Improved cancel symbol resolution in `CryptoXch.cancelorder` to prefer the actual order symbol (from `getorder`) before fallback symbol construction.
+
+### Root-cause notes captured
+- A single cancellation exception during `_tradestep!` previously interrupted the loop and left subsequent open orders untouched.
+- Base extraction via `basequote(order.symbol)` can be fragile for exchange-specific symbol formats; using the order's native symbol is safer.
+
+### Validation status
+- [x] Static editor diagnostics for touched files reported no syntax errors.
+- [ ] Workspace "Run tests with coverage" task is currently blocked by package resolution (`CryptoTimeSeries` not found in project/manifest), so full automated validation is pending environment fix.
+
+### Follow-up tasks
+- [ ] Add a focused `Trade` test that injects one failing cancel and asserts the loop still attempts cancellation for remaining open orders.
+- [ ] Add a `CryptoXch` test that verifies cancel path uses order-native symbol when available.
+- [ ] Re-run full workspace tests once project/task package resolution is corrected.
+
+## 2026-05-28 Progress Update: Managed Close Orders for `tradingstrategy03`
+
+### Progress snapshot (as of 2026-05-28 00:20 local)
+- [x] Core implementation slice completed (state model, selective reconcile, amend-first flow, restart reconstruction).
+- [x] Todo execution for this slice completed end-to-end.
+- [x] Latest validation rerun passed: `Trade` test suite `125/125` via `julia --project=. test/runtests.jl`.
+- [ ] Follow-up hardening items remain open (adapter fallback edge-case tests, multi-tick scenario assertion, managed-close action counters).
+
+### Policy simplification update (2026-05-28)
+- [x] Simplified close-side policy to manage **all open positions** (in-portfolio inventory), removing robot-owned gating from close intent and close sizing.
+- [x] Trade-selection retention/candidate logic now keeps in-portfolio assets for close management independently of robot-owned reconstruction.
+- [x] Validation rerun passed after the policy change: `Trade` test suite `125/125`.
+
+### Design objective addressed
+Keep protective/target close orders active across minute ticks for strategy-driven trading (not canceled and lost each cycle), while remaining restart-safe.
+
+### Completed in code
+- [x] Replaced blanket per-minute open-order cancellation in `Trade._tradestep!` with selective cancellation of unmanaged orders.
+- [x] Added managed close-order runtime state per base in `TradeCache.mc[:managed_close_orders]`.
+- [x] Added per-tick reconstruction of managed close-order state from live open orders plus robot-owned position direction.
+- [x] Added amend-first close-order behavior in `trade!` long-close and short-close branches (`changeorder` first, cancel+recreate fallback).
+- [x] Added continuous close maintenance pass so one close order remains active for each open robot-owned position even when minute advice is hold/allclose-like.
+- [x] Added strategy close-price extraction from `TradingStrategy` lane state (`longta.closeprice` / `shortta.closeprice`) for `:getgainsalgo` flow when available.
+- [x] Cleared managed close-order state when applying a new strategy config via `apply_tradingstrategy!`.
+
+### Validation status
+- [x] Added focused tests in `Trade/test/managed_close_orders_test.jl`.
+- [x] Included new tests in `Trade/test/runtests.jl`.
+- [x] Ran `Trade` package tests successfully (`125/125` passing).
+
+### Follow-up tasks
+- [ ] Add exchange-facing integration test coverage that validates amend-vs-recreate behavior on adapter responses (including amend rejection fallback).
+- [ ] Add one simulation scenario test that runs multiple ticks with persistent open position and asserts exactly one active managed close order per base across ticks.
+- [ ] Evaluate whether to persist optional managed-close metadata for observability (restart correctness is already achieved by live reconstruction).
+
 ## Trade vs TradingStrategy Regression Harness
 
 The current objective is to keep `Trade.jl` simple and test the behavior that matters directly: compare a bulk strategy evaluation against the minute-by-minute execution path on the same OHLCV window, then separate strategy parity from exchange-rule differences.
@@ -154,6 +210,12 @@ This plan is intentionally incremental and ordered exactly by the requested prio
 
 ## Objective 1 (First): Integrate `algorithm03!` into `Trade` loop with TrendDetector config, plus backtest and controllable real loop
 
+### Objective 1 status linkage (2026-05-28)
+- Managed close-order lifecycle integration for `tradingstrategy03` is now implemented and validated.
+- See progress section: **2026-05-28 Progress Update: Managed Close Orders for `tradingstrategy03`**.
+- This closes the core gap where per-minute cancellation could leave open positions without active protective/target close orders.
+- Latest confirmation run: `Trade` tests passed `125/125` on 2026-05-28 00:20 local.
+
 ### Design intent
 Turn `algorithm03!` from an offline gain-segment algorithm into a strategy engine that can emit actionable trade intents for both cached backtest and live incremental operation.
 
@@ -190,12 +252,23 @@ Turn `algorithm03!` from an offline gain-segment algorithm into a strategy engin
 - New focused tests in `Trade/test/`
 - Migration notes section appended to this file
 
+### Objective 1 follow-up tasks (managed close orders)
+- [ ] Add adapter-level tests for amend rejection and explicit cancel+recreate fallback behavior.
+- [ ] Add multi-tick simulation test asserting exactly one active managed close order per open base over consecutive ticks.
+- [ ] Add structured metrics/log counters for managed-close reconcile actions (`reconstructed`, `amended`, `recreated`, `skipped`) to simplify live monitoring.
+
 ---
 
 ## Objective 2 (Second): KrakenSpot + KrakenFutures as active trading exchanges through `CryptoXch`; Bybit only for OHLCV updates
 
 ### Design intent
 Switch active order routing to Kraken via the abstraction layer while preserving Bybit market data ingestion for continuity.
+
+### Progress as of 2026-05-26
+- Completed: startup probe order flow in `scripts/tradereal.jl` no longer performs independent delayed cancellation; open-order cleanup ownership is now centered in the trade loop path.
+- Completed: cancellation reliability hardened in `Trade._tradestep!` by isolating per-order cancellation/amend exceptions so one failure does not stop cancellation of remaining open orders.
+- Completed: `CryptoXch.cancelorder` now prefers the order-native symbol (from `getorder`) before fallback symbol construction to reduce symbol-mapping cancellation misses.
+- Pending: add focused Objective 2 regression tests for "one cancel fails, remaining cancels continue" and rerun full workspace tests once task environment/package resolution is fixed.
 
 ### Increment 2.1: Explicit trading/data exchange roles
 - Extend `XchCache` or add routing config to distinguish:
@@ -254,6 +327,11 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 
 ### Design intent
 Create immutable, complete, and queryable records sufficient for audit and tax workflows, designed for multiple exchanges in parallel.
+
+### Progress as of 2026-05-26
+- Completed: no schema/storage redesign changes in this slice.
+- Completed: cancellation-path robustness improvements in Objective 2 reduce risk of missing downstream cancel-state reconciliation for later orders in the same loop iteration.
+- Pending: continue planned Objective 3 increments (canonical schema, append-only sink, replay tests) after Objective 2 follow-up cancellation tests are in place.
 
 ### Increment 3.1: Canonical audit schema
 - Define canonical event model with required fields:
@@ -813,7 +891,7 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 1 / Legacy compatibility + migration cleanup support
 - Completed:
-	- Added legacy compatibility shims for `TradingStrategy.TradeAction` field access (`cancelrunningorder`, `amountfactor`) and legacy `orderlimit = nothing` assignment handling.
+	- Removed temporary `TradingStrategy.TradeAction` compatibility shims and completed full workspace migration to the canonical fields (`label`, `openprice`, `openix`, `closeprice`).
 	- Simplified package setup scripts by removing `Pkg.update()` side effects in `EnvConfig/setup.jl`, `Features/setup.jl`, and `Ohlcv/setup.jl` while keeping `Pkg.instantiate()` + `Pkg.resolve()` flow.
 	- Updated remaining legacy manifest header in `Assets/Manifest.toml` from Julia `1.10.3` to `1.12.6`.
 - Files changed:
@@ -875,5 +953,84 @@ Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLC
 - REST API usage for klines/trades is minimized, reducing rate-limit risk.
 - Data freshness and latency are improved or at least equivalent to HTTP polling.
 - Fallback to HTTP polling is robust and well-documented.
+
+---
+
+## Objective 7 (New): Strategy-Execution Contract Refactor for Independent Long/Short Action Lanes
+
+### Design intent
+Align `TradingStrategy` outputs with real execution behavior where order amount is owned by `Trade`, partial fills are normal, and long/short exposures can overlap (not net out) on KrakenSpot and KrakenFutures. This objective supersedes the earlier proposal statement that implied `buyta` carried amount and that touching `buyta.limitprice` implied complete execution.
+
+### Contract corrections
+- `TradingStrategy` provides price and direction intent only; it does not provide execution amount.
+- `Trade` remains the single owner of order quantity based on allocation constraints, `minimumqty`, and current inventory/borrowed state.
+- Strategy state must not assume full fills when a price is touched; fill state must come from exchange order status/reconciliation.
+- Long and short advice streams must be independent because partially filled long and short orders/positions can coexist.
+- Close orders shall be adapted in each loop cycle to the actual open position/asset amount
+
+### Target action model
+- Replace `buyta`/`sellta` semantics with independent directional action states:
+	- `longta`
+	- `shortta`
+- `longta.label` domain:
+	- `longstrongbuy`, `longbuy`, `ignore`, `longstrongclose`
+- `shortta.label` domain:
+	- `shortstrongbuy`, `shortbuy`, `ignore`, `shortstrongclose`
+- `longta.openprice`:
+	- Used as long entry limit price only when `longta.label == longbuy`.
+- `shortta.openprice`:
+	- Used as short entry limit price only when `shortta.label == shortbuy`.
+- `longta.closeprice`:
+	- Always represents the close target price for open long exposure and is updated incrementally each sample.
+- `shortta.closeprice`:
+	- Always represents the close target price for open short exposure and is updated incrementally each sample.
+- Strong labels execution semantics:
+	- `longstrongbuy`: ignore `longta.openprice`; submit entry as aggressive maker intent.
+	- `longstrongclose`: ignore `longta.closeprice`; close long as aggressive maker intent.
+	- `shortstrongbuy`: ignore `shortta.openprice`; submit entry as aggressive maker intent.
+	- `shortstrongclose`: ignore `shortta.closeprice`; close short as aggressive maker intent.
+- Cancellation semantics:
+	- If `longta.label` is not in `{longbuy, longstrongbuy}`, cancel existing open long-entry buy orders.
+	- If `shortta.label` is not in `{shortbuy, shortstrongbuy}`, cancel existing open short-entry sell orders.
+- Consistency rule
+	- Assert that TradingStrategy shall never signal shortbuy or shortstrongbuy for the same sample together with longbuy or longstrongbuy
+
+### Required `gain_limit_reversal!` behavior changes
+- Remove the current implicit full-fill handoff behavior where `buyta` is swapped into `sellta` solely because `buyta.limitprice` was touched.
+- Keep directional state independent (`longta`, `shortta`) and update each lane from observed exchange fill/reconcile state.
+- For open exposure with missing active close guidance, synthesize close advice in-lane:
+	- Long exposure: ensure `longta.closeprice > 0` with close direction and entry reference populated.
+	- Short exposure: ensure `shortta.closeprice > 0` with close direction and entry reference populated.
+- Synthesis inputs must use exchange-observed position/asset context (including average entry price), not simulated full-fill assumptions.
+
+### Trade integration rules
+- `Trade` consumes `longta` and `shortta` independently in one tick.
+- Open-order prices follow strategy lane entry intent (`openprice` or strong-open signal).
+- Close-order prices follow strategy lane close intent (`closeprice` or strong-close signal).
+- Open/close order amounts are always computed in `Trade` from:
+	- allocation constraints,
+	- minimum quantity constraints,
+	- available free/borrowed inventory,
+	- active risk controls.
+
+### Increments
+- 7.1: Introduce new lane structs/fields in `TradingStrategy` and migrate all callers to canonical lane fields.
+- 7.2: Refactor `gain_limit_reversal!` to remove full-fill-by-touch assumption and produce lane-wise intents each sample.
+- 7.3: Add reconciliation hook inputs for partial fills and average entry price per lane.
+- 7.4: Update `Trade` adapter path to consume lane-wise intents and keep amount sizing in `Trade` only.
+- 7.5: Add deterministic tests for overlapping long/short partial-fill scenarios and cancel/keep rules per lane.
+
+### Progress update (2026-05-29)
+- [x] Completed lane field rename in `TradingStrategy.TradeAction`: `orderlabel` -> `label`, `buyprice` -> `openprice`, `buyix` -> `openix`, `orderlimit` -> `closeprice`.
+- [x] Completed workspace migration of call sites in `Trade` and relevant tests to canonical lane field names.
+- [x] Removed temporary compatibility shims and legacy field bridging from `TradingStrategy.TradeAction`.
+- [x] Updated integration-plan documentation and test descriptions to canonical field names.
+- [x] Validation rerun passed after cleanup: `Trade/test/runtests.jl` = `118/118` passing (TradeAudit-dependent tests skipped in current environment).
+
+### Exit criteria
+- Strategy emits independent long-lane and short-lane intents every sample.
+- No strategy path assumes complete execution from limit-price touch alone.
+- `Trade` remains sole owner of amount sizing and enforces exchange constraints.
+- For any open long/short exposure, corresponding close guidance is always present (explicit or synthesized) and consumed by `Trade`.
 
 ---

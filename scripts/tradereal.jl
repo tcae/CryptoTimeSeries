@@ -37,12 +37,16 @@ const WHITELIST_INPUT = ["BTC", "ETH", "ZEC", "XRP", "SOL", "HYPE", "SUI", "VVV"
                          "TRX", "ALGO", "TON", "INJ", "MON","DASH", "XMR", "PENGU", "CC", 
                          "AVAX", "ICP", "OG", "UNI"]
 
+# Coins/pairs excluded from the trading robot universe (e.g. region/account restrictions).
+# Entries can be base symbols ("XMR") or pair symbols ("XMR/USD").
+const RESTRICTED_COINS_INPUT = ["XMR"]
+
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
 # Optional cap for overall budget considered by trade sizing.
 # If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
-const MAX_BUDGET_QUOTE = nothing
+const MAX_BUDGET_QUOTE = 1000 # nothing
 
 # TrendDetector config 046: GainSegment strategy parameters.
 # These come from mk046config() → tradingstrategy03().
@@ -324,7 +328,12 @@ Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
 
 # Override whitelist and risk parameters.
 whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
+restricted = normalize_whitelist(RESTRICTED_COINS_INPUT, QUOTE_COIN)
+if !isempty(restricted)
+    whitelist = [b for b in whitelist if !(b in Set(restricted))]
+end
 cache.mc[:whitelistcoins]    = whitelist
+cache.mc[:restrictedcoins]   = restricted
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
 cache.mc[:maxbudgetquote]    = run_max_budget_quote
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
@@ -334,6 +343,7 @@ println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalg
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): max budget cap quote=$(isnothing(run_max_budget_quote) ? "none" : run_max_budget_quote)")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
+println("$(EnvConfig.now()): restricted coins ($(length(restricted)) bases): $restricted")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,7 +396,6 @@ let
         nothing
     end
     if !isnothing(preexisting_oo) && (size(preexisting_oo, 1) > 0)
-        @warn "$(size(preexisting_oo, 1)) pre-existing open order(s) found — will be cancelled at first trade step"
         for row in eachrow(preexisting_oo)
             @info "  pre-existing order: $(row.symbol) $(row.side) qty=$(row.baseqty) @ $(row.limitprice) status=$(row.status) id=$(row.orderid)"
         end

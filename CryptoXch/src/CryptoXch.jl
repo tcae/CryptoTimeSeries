@@ -795,7 +795,7 @@ function _normalizeamendedorder(xc::XchCache, amended)
     return (nothing, amended)
 end
 
-_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).createorder(_routedbc(xc, trade_exchange_spot), symbol, orderside, basequantity, price, maker, marginleverage=marginleverage))
+_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).createorder(_routedbc(xc, trade_exchange_spot), symbol, orderside, basequantity, price, maker, marginleverage=marginleverage, reduceonly=reduceonly))
 _exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).amendorder(_routedbc(xc, trade_exchange_spot), symbol, orderid; basequantity=basequantity, limitprice=limitprice))
 
 setstartdt(xc::XchCache, dt::DateTime) = (xc.startdt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
@@ -1535,7 +1535,7 @@ Order is rejected (but order created) if the resulting price crosses the spread 
 order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
+function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0, reduceonly::Bool=false, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
     _asserttradeallowed(xc)
     symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
@@ -1544,7 +1544,7 @@ function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequan
     end
     try
         # Adapter-backed path for both live and simulation exchanges.
-        created = _exchangecreateorder(xc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage)
+        created = _exchangecreateorder(xc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage, reduceonly=reduceonly)
         oid, oocreate = _normalizecreatedorder(xc, created)
         if !isnothing(parent_order_id) && !isnothing(oid)
             _auditsetorderparent!(xc, String(oid), String(parent_order_id))
@@ -1577,7 +1577,7 @@ Order is rejected (but order created) if the resulting price crosses the spread 
 order to secure maker price fees.
 Returns `nothing` in case order execution fails.
 """
-function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
+function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0, reduceonly::Bool=false, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
     _asserttradeallowed(xc)
     symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
@@ -1586,7 +1586,7 @@ function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequa
     end
     try
         # Adapter-backed path for both live and simulation exchanges.
-        created = _exchangecreateorder(xc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage)
+        created = _exchangecreateorder(xc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage, reduceonly=reduceonly)
         oid, oocreate = _normalizecreatedorder(xc, created)
         if !isnothing(parent_order_id) && !isnothing(oid)
             _auditsetorderparent!(xc, String(oid), String(parent_order_id))
