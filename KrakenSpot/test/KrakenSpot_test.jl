@@ -29,7 +29,7 @@ using DataFrames, Dates, KrakenSpot, Test
         minquoteqty=5f0,
         krakenpairname="XBTUSDT",
         wsname="BTC/USDT",
-    ))
+    ); cols=:subset)
 
     cache = KrakenSpot.KrakenSpotCache(syminfo, KrakenSpot.KRAKEN_APIREST, "", "")
 

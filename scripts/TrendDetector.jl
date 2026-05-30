@@ -998,6 +998,9 @@ function main(args::Vector{String}=ARGS)
         Classify.verbosity = 1
     end
 
+    EnvConfig.setcoinspath!("coins_bybit")
+    (verbosity >= 2) && println("coinspath: $(EnvConfig.coinspath())")
+
     global cfg = buildcfg(args, allowedcoins, startdt, enddt)
     _set_deterministic_run_id!(args, [
         "mode" => string(Symbol(EnvConfig.configmode)),

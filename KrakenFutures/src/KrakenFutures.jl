@@ -58,8 +58,19 @@ function _isreadonlyprivateendpoint_futures(endPoint::AbstractString)::Bool
 end
 
 function _omitnonceforreadonlyenabled()::Bool
-	raw = lowercase(strip(get(ENV, "KRAKEN_FUTURES_OMIT_NONCE_READS", "false")))
+	raw = lowercase(strip(get(ENV, "KRAKEN_FUTURES_OMIT_NONCE_READS", "true")))
 	return raw in ("1", "true", "yes", "on")
+end
+
+"Return true when POST requests should include nonce in request body in addition to header."
+function _includenonceinpostenabled()::Bool
+	raw = lowercase(strip(get(ENV, "KRAKEN_FUTURES_INCLUDE_NONCE_IN_POST_BODY", "")))
+	return raw in ("1", "true", "yes", "on")
+end
+
+"Legacy no-op: adaptive POST-body nonce fallback is disabled."
+function _enablenonceinpostfallback!()
+	return false
 end
 
 """
@@ -95,6 +106,13 @@ const _nonce_floor_poison_factor = 20
 const _nonce_ms_min_increment = 1
 const _nonce_ns_min_increment = 1_000_000_000  # 1 s in ns mode
 const _nonce_ns_switch_threshold = 1_000_000_000_000_000
+const _nonce_floor_max_future_ms = 86_400_000
+const _nonce_floor_max_future_ns = 86_400_000_000_000
+
+function _noncemode()::Symbol
+	raw = lowercase(strip(get(ENV, "KRAKEN_FUTURES_NONCE_MODE", "ms")))
+	return raw == "ns" ? :ns : :ms
+end
 
 "Return current unix time in milliseconds as Int."
 _nonce_ms_base()::Int = Int(floor(time() * 1000))
@@ -132,10 +150,17 @@ function _restore_nonce_floor!(bc)
 		stored = Int(get(payload, "last_nonce", 0))
 		now_ms = _nonce_ms_base()
 		now_ns = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
-		nowbase = stored >= _nonce_ns_switch_threshold ? now_ns : now_ms
+		mode = _noncemode()
+		if (mode == :ms) && (stored >= _nonce_ns_switch_threshold)
+			(verbosity >= 1) && @warn "rebasing KrakenFutures ns-scale nonce floor to ms mode" stored_nonce=stored rebased_nonce=now_ms path
+			stored = now_ms
+		end
+		use_ns = (mode == :ns) && (stored >= _nonce_ns_switch_threshold)
+		nowbase = use_ns ? now_ns : now_ms
+		max_future_skew = use_ns ? _nonce_floor_max_future_ns : _nonce_floor_max_future_ms
 		rebased = false
 		# Keep persistent nonce state in its current scale (ms or ns).
-		if (stored > 0) && (stored > nowbase) && ((stored ÷ max(nowbase, 1)) > _nonce_floor_poison_factor)
+		if (stored > 0) && (stored > nowbase) && ((((stored - nowbase) > max_future_skew)) || ((stored ÷ max(nowbase, 1)) > _nonce_floor_poison_factor))
 			(verbosity >= 1) && @warn "discarding poisoned KrakenFutures nonce floor and rebasing" stored_nonce=stored rebased_nonce=nowbase path
 			stored = nowbase
 			rebased = true
@@ -223,13 +248,19 @@ function _resolve_credentials(publickey::Union{Nothing, AbstractString}, secretk
 	cfgpublic = ""
 	cfgsecret = ""
 	try
-		if !isnothing(EnvConfig.authorization)
-			cfgpublic = String(EnvConfig.authorization.key)
-			cfgsecret = String(EnvConfig.authorization.secret)
-		end
+		auth = EnvConfig.Authentication(nothing; exchange="KrakenFutures")
+		cfgpublic = String(auth.key)
+		cfgsecret = String(auth.secret)
 	catch
-		cfgpublic = ""
-		cfgsecret = ""
+		try
+			if !isnothing(EnvConfig.authorization)
+				cfgpublic = String(EnvConfig.authorization.key)
+				cfgsecret = String(EnvConfig.authorization.secret)
+			end
+		catch
+			cfgpublic = ""
+			cfgsecret = ""
+		end
 	end
 
 	envpublic = get(ENV, "KRAKEN_FUTURES_APIKEY", get(ENV, "KRAKEN_APIKEY", ""))
@@ -266,7 +297,14 @@ function _dict2paramsget(dict::Union{Dict, Nothing})::String
 	end
 	parts = String[]
 	for key in sort!(collect(keys(dict)); by=string)
-		push!(parts, string(HTTP.escapeuri(string(key)), "=", HTTP.escapeuri(string(dict[key]))))
+		value = dict[key]
+		if value isa AbstractVector{<:AbstractString}
+			for item in value
+				push!(parts, string(HTTP.escapeuri(string(key)), "=", HTTP.escapeuri(String(item))))
+			end
+		else
+			push!(parts, string(HTTP.escapeuri(string(key)), "=", HTTP.escapeuri(string(value))))
+		end
 	end
 	return join(parts, "&")
 end
@@ -362,11 +400,11 @@ function _isratelimiterror(err)::Bool
 	return occursin("rate limit exceeded", lowercase(sprint(showerror, err)))
 end
 
-"Return a strictly increasing Kraken nonce in ms scale."
+"Return a strictly increasing Kraken nonce. Default mode is ms; set KRAKEN_FUTURES_NONCE_MODE=ns to opt in to ns mode."
 function _nextnonce(bc::KrakenFuturesCache)::String
 	lock(_nonce_lock)
 	try
-		use_ns = _last_nonce[] >= _nonce_ns_switch_threshold
+		use_ns = _noncemode() == :ns
 		candidate = use_ns ? Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000)) : _nonce_ms_base()
 		if candidate <= _last_nonce[]
 			candidate = _last_nonce[] + (use_ns ? _nonce_ns_min_increment : _nonce_ms_min_increment)
@@ -538,6 +576,7 @@ function _normalizelimitorderparams(syminfo::DataFrameRow, basequantity::Real, l
 		normqty = ceil(minquote / Float64(normprice), digits=qtydigits)
 		normqty = max(normqty, minbase)
 	end
+	normqty > 0.0 || throw(ArgumentError("normalized basequantity must be > 0, got $(normqty) (input basequantity=$(basequantity), limitprice=$(limitprice), minbase=$(minbase), minquote=$(minquote), qtydigits=$(qtydigits))"))
 	return (basequantity=Float32(normqty), limitprice=normprice, qtydigits=qtydigits, pricedigits=pricedigits)
 end
 
@@ -851,6 +890,8 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 		reqparams = copy(baseparams)
 		omit_nonce = _omitnonceforreadonlyenabled() && (method == "GET") && _isreadonlyprivateendpoint_futures(endPoint)
 		nonce = omit_nonce ? "" : _nextnonce(bc)
+		include_nonce_in_post = !omit_nonce && (method == "POST") && _includenonceinpostenabled()
+		include_nonce_in_post && (reqparams["nonce"] = nonce)
 
 		# Encode params as URL query string (used for both signature and request body/URL)
 		paramstr = isempty(reqparams) ? "" : _dict2paramsget(reqparams)
@@ -875,8 +916,9 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 				response = HTTP.request("GET", url, headers; retries=0, readtimeout=60)
 				JSON3.read(String(response.body), Dict)
 			else
-				response = HTTP.request("POST", baseurl * endPoint, headers, paramstr; retries=0, retry_non_idempotent=false, readtimeout=60)
-				JSON3.read(String(response.body), Dict)
+				# Use Downloads for private POST to keep request behavior aligned with the
+				# validated external curl/Downloads probes for Kraken Futures auth.
+				_downloadsrequest("POST", baseurl * endPoint; headers=Pair{String, String}[String(k) => String(v) for (k, v) in headers], body=paramstr)
 			end
 		catch err
 			if _httpmemorycompaterror(err)
@@ -927,6 +969,9 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 			if _isinvalidnonceerror(err) && (attempts > 0)
 				retry_ix = initial_attempts - attempts
 				isdup = _isnonceduplicateerror(err)
+				if isdup && !_isreadonlyprivateendpoint_futures(endPoint) && (retry_ix >= 3)
+					throw(ErrorException("persistent Kraken futures nonceDuplicate on endpoint=$(endPoint) after $(retry_ix) retries. Remediation: use a dedicated API key for this bot, ensure no other process/client uses the same key, or rotate to a fresh key and restart."))
+				end
 				wait_s = isdup ? min(60.0, 2.0 ^ max(0, retry_ix - 1)) : min(1.0, 0.1 * retry_ix)
 				errmsg = sprint(showerror, err)
 				nonce_floor = let
@@ -935,16 +980,10 @@ function HttpPrivateRequest(bc::KrakenFuturesCache, method::AbstractString, endP
 					try
 						now_ms = _nonce_ms_base()
 						now_ns = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
-						if _isnoncetoosmallerror(err)
-							if (_last_nonce[] < _nonce_ns_switch_threshold) && (retry_ix >= 3)
-								# One-way upshift: if server floor is ns-scale, stop trying ms permanently.
-								_last_nonce[] = max(now_ns, _last_nonce[] * 1_000_000)
-							end
-							if _last_nonce[] < now_ms
-								_last_nonce[] = now_ms
-							end
+						use_ns = _noncemode() == :ns
+						if _last_nonce[] < (use_ns ? now_ns : now_ms)
+							_last_nonce[] = use_ns ? now_ns : now_ms
 						end
-						use_ns = _last_nonce[] >= _nonce_ns_switch_threshold
 						jump = if use_ns
 							isdup ?
 								_capped_retry_jump(60_000_000_000_000, retry_ix, 5_000_000_000_000_000) :
@@ -1013,7 +1052,10 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 		status = (tradable isa Bool) ? (tradable ? "online" : "offline") : String(tradable)
 		ticksize = _float32(_tryget(info, ["tickSize", "tick_size", "priceIncrement"], 0.01), 0.01f0)
 		baseprecision = _float32(_tryget(info, ["contractSize", "qtyIncrement", "qty_increment"], 1.0), 1.0f0)
-		minbaseqty = _float32(_tryget(info, ["minimumOrderSize", "minOrderSize", "qtyIncrement"], 0.0), 0.0f0)
+		minbaseqty_raw = _float32(_tryget(info, ["minimumOrderSize", "minOrderSize", "qtyIncrement"], 0.0), 0.0f0)
+		# Futures contracts often require integer contract counts; if explicit minimum is
+		# missing/zero, fall back to qty increment (contract size) as effective minimum.
+		minbaseqty = max(minbaseqty_raw, baseprecision)
 		minquoteqty = _float32(_tryget(info, ["minimumOrderValue", "minOrderValue", "notionalMinimum", "notional_min"], 0.0), 0.0f0)
 		maxleveragebuy = _futuresmaxleverage(info, ["maxLeverageBuy", "maxLeverageLong", "maxLeverage", "maxLeverageValue", "max_leverage", "leverageCap"])
 		maxleveragesell = _futuresmaxleverage(info, ["maxLeverageSell", "maxLeverageShort", "maxLeverage", "maxLeverageValue", "max_leverage", "leverageCap"])
@@ -1060,7 +1102,8 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 				end
 				ticksize = Float32(10.0^-_int(_tryget(info, ["pair_decimals"], 5), 5))
 				baseprecision = Float32(10.0^-_int(_tryget(info, ["lot_decimals"], 8), 8))
-				minbaseqty = _float32(_tryget(info, ["ordermin"], "0"), 0f0)
+				minbaseqty_raw = _float32(_tryget(info, ["ordermin"], "0"), 0f0)
+				minbaseqty = max(minbaseqty_raw, baseprecision)
 				minquoteqty = _float32(_tryget(info, ["costmin"], "0"), 0f0)
 				status = String(_tryget(info, ["status"], "online"))
 				push!(df, (
@@ -1175,7 +1218,7 @@ function _tickerrow(bc::KrakenFuturesCache, key::AbstractString, ticker::Dict)
 	lastprice = _float32(_tryget(ticker, ["last", "lastPrice", "markPrice", "last_price"], 0), 0f0)
 	openprice = _float32(_tryget(ticker, ["open24h", "open", "openPrice"], 0), 0f0)
 	basevolume = _float32(_tryget(ticker, ["volume24h", "vol24h", "volume"], 0), 0f0)
-	quotevolume = _float32(_tryget(ticker, ["turnover24h", "quoteVolume", "volumeQuote24h"], 0), basevolume * lastprice)
+	quotevolume = _float32(_tryget(ticker, ["turnover24h", "quoteVolume", "volumeQuote", "volumeQuote24h"], 0), basevolume * lastprice)
 	pricechangepercent = openprice == 0f0 ? _float32(_tryget(ticker, ["price24hPcnt", "change"], 0), 0f0) : Float32((lastprice - openprice) / openprice)
 	symbol = _resultkey2symbol(bc, key)
 	return (askprice=ask, bidprice=bid, lastprice=lastprice, quotevolume24h=quotevolume, pricechangepercent=pricechangepercent, symbol=symbol)
@@ -1362,11 +1405,25 @@ function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
 	symbol = _resultkey2symbol(bc, rawpair)
 	side = lowercase(String(_tryget(descr, ["type", "side", "direction"], "buy"))) == "buy" ? "Buy" : "Sell"
 	ordertype = titlecase(String(_tryget(descr, ["ordertype", "orderType", "order_type"], "limit")))
-	baseqty = _float32(_tryget(entry, ["vol", "qty", "size", "orderQty"], 0), 0f0)
 	executedqty = _float32(_tryget(entry, ["vol_exec", "filled", "filledSize"], 0), 0f0)
+	# Kraken Futures open orders frequently expose `unfilledSize` instead of `size`/`qty`.
+	# Reconstruct total order qty as filled + unfilled when direct total fields are absent.
+	unfilledqty = _float32(_tryget(entry, ["unfilledSize", "remainingSize"], 0), 0f0)
+	baseqty = _float32(_tryget(entry, ["vol", "qty", "size", "orderQty"], executedqty + unfilledqty), executedqty + unfilledqty)
 	limitprice = _float32(_tryget(descr, ["price", "limitPrice"], _tryget(entry, ["price", "limitPrice"], 0)), 0f0)
 	avgprice = _float32(_tryget(entry, ["avgPrice", "fillPrice", "price"], limitprice), limitprice)
-	status = titlecase(String(_tryget(entry, ["status", "orderStatus"], "open")))
+	rawstatus = lowercase(String(_tryget(entry, ["status", "orderStatus"], "open")))
+	status = if rawstatus in ["untouched", "open", "new"]
+		"New"
+	elseif rawstatus in ["partiallyfilled", "partial", "partially_filled"]
+		"PartiallyFilled"
+	elseif rawstatus in ["cancelled", "canceled"]
+		"Cancelled"
+	elseif rawstatus in ["filled", "closed"]
+		"Filled"
+	else
+		titlecase(rawstatus)
+	end
 	created = _todatetime(_tryget(entry, ["opentm", "created", "timestamp", "createdTime"], Dates.now(Dates.UTC)))
 	updated = _todatetime(_tryget(entry, ["updated", "updatedTime", "lastUpdateTime"], created))
 	leverage = _float32(_tryget(descr, ["leverage"], 1), 1f0)
@@ -1465,10 +1522,6 @@ Query one order by id.
 function order(bc::KrakenFuturesCache, orderid)
 	if isnothing(orderid)
 		return nothing
-	end
-	oo = openorders(bc, orderid=orderid)
-	if size(oo, 1) > 0
-		return oo[1, :]
 	end
 	!_hascredentials(bc) && return nothing
 
@@ -1590,7 +1643,15 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 				(verbosity >= 1) && @warn "failed to resolve limit price for $(symbol)"
 				return nothing
 			end
-			norm = _normalizelimitorderparams(syminfo, chosenqty, effectiveprice)
+			norm = try
+				_normalizelimitorderparams(syminfo, chosenqty, effectiveprice)
+			catch err
+				if err isa ArgumentError
+					(verbosity >= 1) && @warn "skipping futures order because normalized params are invalid" symbol=symbol side=orderside requested_basequantity=chosenqty requested_limitprice=effectiveprice error=sprint(showerror, err)
+					return nothing
+				end
+				rethrow(err)
+			end
 			chosenqty = norm.basequantity
 			effectiveprice = norm.limitprice
 		end
@@ -1613,6 +1674,22 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 			!isnothing(orderid) && break
 			return nothing
 		catch err
+			if err isa ErrorException
+				detail = string(
+					"futures create order failed ",
+					"symbol=", symbol,
+					" pair=", pairname,
+					" side=", orderside,
+					" qty=", get(params, "size", "n/a"),
+					" limitPrice=", get(params, "limitPrice", "n/a"),
+					" leverage=", get(params, "leverage", "n/a"),
+					" reduceOnly=", get(params, "reduceOnly", "n/a"),
+					" orderType=", get(params, "orderType", "n/a"),
+					" postOnly=", get(params, "postOnly", "n/a"),
+					" error=", sprint(showerror, err),
+				)
+				throw(ErrorException(detail))
+			end
 			# If Kraken already processed a previous HTTP attempt that timed out before
 			# the response arrived, the internal retry sends the same cliOrdId and
 			# Kraken rejects it as duplicate. Recover by looking up the placed order.
@@ -1668,6 +1745,32 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 		updated=created,
 		rejectreason="",
 	)
+end
+
+"""
+Create one close order for an existing position side.
+
+- `positionside=:long` maps to a Sell close.
+- `positionside=:short` maps to a Buy close.
+"""
+function closeorder(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=true)
+	side = Symbol(lowercase(String(positionside)))
+	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
+	orderside = side == :long ? "Sell" : "Buy"
+	return createorder(bc, symbol, orderside, basequantity, price, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+end
+
+"""
+Amend one open order by order id.
+
+This convenience overload resolves the current symbol first and forwards to the
+symbol-aware implementation so routed callers can use the same shape as the
+other exchange adapters.
+"""
+function amendorder(bc::KrakenFuturesCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
+	current = order(bc, orderid)
+	isnothing(current) && return nothing
+	return amendorder(bc, String(current.symbol), orderid; basequantity=basequantity, limitprice=limitprice)
 end
 
 """
@@ -1768,6 +1871,47 @@ function balances(bc::KrakenFuturesCache)
 		if total > 0f0
 			push!(df, (coin="USD", locked=locked, free=available, borrowed=0f0, accruedinterest=0f0))
 		end
+	end
+
+	# Open futures positions: represent long as free base, short as borrowed base.
+	# This allows Trade budget allocation logic to include derivatives exposure.
+	try
+		posresp = HttpPrivateRequest(bc, "GET", "/openpositions", nothing, "futures open positions")
+		rawpositions = _tryget(posresp, ["openPositions", "positions", "elements", "open_positions"], Any[])
+		if rawpositions isa AbstractVector
+			for raw in rawpositions
+				entry = Dict(raw)
+				rawpair = String(_tryget(entry, ["symbol", "pair", "instrument", "market", "product_id"], ""))
+				symbol = _resultkey2symbol(bc, rawpair)
+				basecoin = ""
+				for q in sort(_known_quotes, by=length, rev=true)
+					if endswith(symbol, q) && (length(symbol) > length(q))
+						basecoin = _normalizeasset(symbol[1:end-length(q)])
+						break
+					end
+				end
+				basecoin == "" && continue
+
+				sizevalue = Float64(_float32(_tryget(entry, ["size", "qty", "positionSize", "amount", "contracts", "vol"], 0), 0f0))
+				side = lowercase(String(_tryget(entry, ["side", "direction"], "")))
+				islong = side in ["buy", "long"]
+				isshort = side in ["sell", "short"]
+				if !islong && !isshort
+					islong = sizevalue > 0.0
+					isshort = sizevalue < 0.0
+				end
+				qty = abs(Float32(sizevalue))
+				qty <= 0f0 && continue
+
+				if islong
+					push!(df, (coin=basecoin, locked=0f0, free=qty, borrowed=0f0, accruedinterest=0f0))
+				elseif isshort
+					push!(df, (coin=basecoin, locked=0f0, free=0f0, borrowed=qty, accruedinterest=0f0))
+				end
+			end
+		end
+	catch err
+		(verbosity >= 1) && @warn "futures open positions could not be included in balances" error=sprint(showerror, err)
 	end
 
 	# Cache the result for 5 seconds

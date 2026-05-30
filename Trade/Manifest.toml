@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "2dbc735ff83dd97995c7d69d0f1fc845572befea"
+project_hash = "b1d430677341a36b0b3099b563e1bd3c0d79bfe1"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -453,7 +453,7 @@ uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 version = "4.1.1"
 
 [[deps.CryptoXch]]
-deps = ["Arrow", "Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv", "TradeAudit", "UUIDs"]
+deps = ["Arrow", "Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv", "TradeLog", "UUIDs"]
 path = "../CryptoXch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 version = "1.6.1"
@@ -1969,15 +1969,15 @@ version = "0.1.6"
     TracyProfiler_jll = "0c351ed6-8a68-550e-8b79-de6f926da83c"
 
 [[deps.Trade]]
-deps = ["Assets", "Bybit", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradeAudit", "TradingStrategy"]
+deps = ["Assets", "Bybit", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradeLog", "TradingStrategy"]
 path = "."
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.19.0"
 
-[[deps.TradeAudit]]
-deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "SHA", "Test", "UUIDs"]
-path = "../TradeAudit"
-uuid = "7664142a-98d4-4d14-9d85-e6b1ac001c01"
+[[deps.TradeLog]]
+deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "Test", "UUIDs"]
+path = "../TradeLog"
+uuid = "d9e1c896-7df1-4f4f-a5d3-1c9a7c74c4aa"
 version = "0.1.0"
 
 [[deps.TradingStrategy]]

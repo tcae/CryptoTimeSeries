@@ -89,7 +89,7 @@ function _init_simulation!(bc::BybitCache)
     _ensure_sim_symboluniverse!(bc)
     if isnothing(bc.assets)
         bc.assets = DataFrame(coin=String31[], free=Float32[], locked=Float32[], borrowed=Float32[], accruedinterest=Float32[])
-        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[])
+        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
         bc.closedorders = similar(bc.orders)
     end
     haskey(_sim_order_counter, bc) || (_sim_order_counter[bc] = 0)
@@ -818,7 +818,7 @@ function account(bc::BybitCache)
     return ret["result"]
 end
 
-emptyorders()::DataFrame = EnvConfig.configmode == production ? DataFrame() : DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[])
+emptyorders()::DataFrame = EnvConfig.configmode == production ? DataFrame() : DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
 
 """
 Returns a DataFrame of open **spot** orders with columns:
@@ -1158,12 +1158,34 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
 end
 
 """
+Create one close order for an existing position side.
+
+- `positionside=:long` maps to a Sell close.
+- `positionside=:short` maps to a Buy close.
+"""
+function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=true)
+    side = Symbol(lowercase(String(positionside)))
+    @assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
+    orderside = side == :long ? "Sell" : "Buy"
+    return createorder(bc, symbol, orderside, basequantity, price, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+end
+
+"""
 Amend one open order.
 
 Only provide `basequantity` or `limitprice` if they have changed values. For a
 post-only order, omitting `limitprice` keeps the order adaptive by
 re-snapshotting the current spread instead of freezing the previous limit.
 """
+function amendorder(bc::BybitCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
+    orderatentry = order(bc, orderid)
+    if isnothing(orderatentry)
+        @warn "cannot amend order because orderid $orderid not found"
+        return nothing
+    end
+    return amendorder(bc, String(orderatentry.symbol), orderid; basequantity=basequantity, limitprice=limitprice)
+end
+
 function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
     @assert isnothing(basequantity) ? true : basequantity > 0.0 "amendorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"

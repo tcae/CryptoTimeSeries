@@ -11,7 +11,8 @@ else
 	@info "Skipping production integration tests. Set CTS_RUN_PRODUCTION_TESTS=true to enable test/productionruntests.jl"
 end
 include("routingtests.jl")
-include("audit_integration_test.jl")
+include("openstatus_test.jl")
+include("log_integration_test.jl")
 include("multileg_order_test.jl")
 include("usdtmarket_intent_test.jl")
 

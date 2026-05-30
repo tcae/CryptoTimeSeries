@@ -206,7 +206,7 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
     # Try to reconstruct a daily portfolio value series from closed orders.
     # We track cumulative PnL per filled sell order (long-close gains/losses).
     # This is an approximation; a full mark-to-market series would require
-    # the PORTFOLIO_SNAPSHOT audit rows.
+    # the PORTFOLIO_SNAPSHOT TradeLog rows.
     daily_pnl = Dict{Date, Float64}()
     for row in eachrow(co)
         day = Date(row.created)
@@ -443,7 +443,7 @@ end
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
 cache.mc[:maxbudgetquote] = run_max_budget_quote
 cache.mc[:usenewtrade]      = false
-cache.mc[:audit_portfolio_snapshot_mode] = :session_start
+cache.mc[:tradelog_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
@@ -461,9 +461,9 @@ println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-local report_written = false
+let report_written = false
 try
-    Trade.run_backtest!(cache; skip_init=true)
+    Trade.run_backtest!(cache; skip_init=false)
 
     # ─────────────────────────────────────────────────────────────────────────
     # PERFORMANCE REPORT
@@ -503,4 +503,5 @@ finally
     EnvConfig.setdebugpath(ORDERS_SUBFOLDER)
     CryptoXch.writeorders(cache.xc)
     println("$(EnvConfig.now()): saved simulation orders to $(EnvConfig.logfolder())")
+end
 end

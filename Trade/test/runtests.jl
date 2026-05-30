@@ -12,6 +12,7 @@ end
 @testset "Trade tests" begin
     include("simulated_marketview_test.jl")
     include("managed_close_orders_test.jl")
+    include("active_buy_cache_test.jl")
     include("reload_cadence_test.jl")
     include("bybit_guardrail_test.jl")
     if _hastadeauditpkg()

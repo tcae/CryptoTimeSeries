@@ -28,8 +28,57 @@
 - First target workflow: TrendDetector config `046` with `gain_limit_reversal!`.
 - This section is the active interruption-safe tracker for the current interface refactor.
 
+## 2026-05-30 Progress Update: Audit Renamed to TradeLog (Private Trader Scope)
+
+### Design decision
+- Replace "audit trail" terminology with `TradeLog` for the active trading runtime.
+- Relax tamper-evidence requirements (no organizational hash-chain guarantee required).
+- Keep structured context logging focused on practical trader diagnostics:
+	- order intent vs execution outcome
+	- fee/cost cross-checks
+	- replay against historic OHLCV windows
+
+### Runtime policy
+- Canonical log root defaults to `$HOME/crypto/tradelog`.
+- Primary enable flags are now:
+	- `CTS_TRADELOG_ENABLED`
+	- `CTS_TRADELOG_SIMULATION_ENABLED`
+- Backward-compatible fallback to old `CTS_AUDIT_*` flags remains temporarily during migration.
+
+### Migration status
+- [x] Added new workspace package `TradeLog` with append-only JSONL logging API compatible with current `Trade` and `CryptoXch` call paths.
+- [x] Switched `Trade` and `CryptoXch` imports/dependencies from `TradeAudit` to `TradeLog`.
+- [x] Disabled hash-chain persistence in the default write path (`writeeventwithhash` now behaves as plain append for compatibility).
+- [x] Follow-up: renamed remaining internal helper identifiers containing "audit" to TradeLog-oriented names where this improved readability without behavior changes; kept compatibility aliases for transition.
+
+## 2026-05-30 Progress Update: KrakenFutures Managed Close Routing and Limit Drift Investigation
+
+### Completed in code
+- [x] Added routed symbol-aware amend path in `CryptoXch` and switched managed close amend callsites to pass symbol explicitly.
+- [x] Added orderid-only `KrakenFutures.amendorder` overload so routed amend calls no longer fail with method dispatch gaps.
+- [x] Removed open-order lookup fallback from Kraken futures single-order resolution and switched to `/orders/status` for direct order-status lookup.
+- [x] Eliminated the immediate `/openorders?order_id=...` fallback path that had triggered intermittent `authenticationError` during amend handling.
+- [x] Added explicit TrendDetector coinspath routing to `coins_bybit` so training/eval reads the active Bybit OHLCV store.
+
+### Validation snapshot
+- [x] Method presence checks for routed amend and Kraken futures order/amend overloads passed in workspace runtime checks.
+- [x] Static diagnostics for touched files were clean after the amend-path fixes.
+- [x] Live tradereal runs now proceed past the earlier amend dispatch/auth lookup failures.
+
+### Current investigation status (open)
+- [x] Confirmed repeated warnings in the latest Kraken futures tradereal log: open positions without active full close coverage.
+- [x] Confirmed two bases (notably TON and ONDO in the latest run) remained materially above `maxassetquote` across multiple minutes.
+- [x] Confirmed open-buy sizing path enforces cap intent via `remaininglongcapacityquote` guard.
+- [ ] Resolve root cause of sustained above-cap exposure in live loop (likely close-order fill/maintenance behavior and/or valuation basis mismatch under runtime conditions).
+- [ ] Add targeted runtime diagnostics in `Trade` for per-base: exposure quote, required reduction quote, managed close order qty, and observed fill delta.
+
+### Next actions
+- [ ] Instrument one focused live diagnostic slice for affected bases only (TON, ONDO) to avoid broad log noise.
+- [ ] Decide policy adjustment after diagnostics: either stronger close escalation/execution policy for above-cap inventory, or revised valuation/trigger alignment for cap enforcement and strong-close promotion.
+- [ ] Add regression tests that keep a base above cap for multiple ticks and assert reduction trajectory under managed close maintenance.
+
 ## Goal
-Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, audit-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
+Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, TradeLog-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 
 ## 2026-05-25 Trade Selection Ownership Integration
 
@@ -39,13 +88,13 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 ### Requirements
 - Whitelist constrains opening trades only; it must not implicitly authorize sells of externally acquired positions.
 - Sell eligibility must be based on robot-owned exposure, not raw wallet presence.
-- Robot-owned exposure must be partitioned by routed trading venue so audit fills from different exchanges never mix.
+- Robot-owned exposure must be partitioned by routed trading venue so tradelog fills from different exchanges never mix.
 - For the current deployment model, exchange-level separation is sufficient; multiple accounts per exchange are not planned.
 - Directional exposure must be tracked separately for long and short inventory because buy-long and short-open fills have different close paths.
 - `classifieraccepted` remains required for both buy and sell because the robot needs classifier/strategy output to emit either entry or exit signals.
 
 ### First implementation slice
-- Add audit-derived directional ownership helpers in `Trade` that read only the current routed spot trading audit partition.
+- Add tradelog-derived directional ownership helpers in `Trade` that read only the current routed spot trading partition.
 - Store `robotownedlongqty` and `robotownedshortqty` in `TradeCache.cfg`.
 - Set `sellenabled` from `(robotownedlongqty > 0 || robotownedshortqty > 0) && classifieraccepted`.
 - Cap long-close sizing by `min(freebase, robotownedlongqty)` and short-close sizing by `min(borrowedbase, robotownedshortqty)` so external inventory is ignored.
@@ -323,17 +372,17 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 
 ---
 
-## Objective 3 (Third): Multi-exchange audit-grade order/trade logging
+## Objective 3 (Third): Multi-exchange TradeLog order/trade logging
 
 ### Design intent
-Create immutable, complete, and queryable records sufficient for audit and tax workflows, designed for multiple exchanges in parallel.
+Create complete and queryable TradeLog records for trader diagnostics and tax workflows, designed for multiple exchanges in parallel.
 
 ### Progress as of 2026-05-26
 - Completed: no schema/storage redesign changes in this slice.
 - Completed: cancellation-path robustness improvements in Objective 2 reduce risk of missing downstream cancel-state reconciliation for later orders in the same loop iteration.
 - Pending: continue planned Objective 3 increments (canonical schema, append-only sink, replay tests) after Objective 2 follow-up cancellation tests are in place.
 
-### Increment 3.1: Canonical audit schema
+### Increment 3.1: Canonical TradeLog schema
 - Define canonical event model with required fields:
 	- event metadata: timestamp (UTC), source module, environment, correlation IDs
 	- exchange metadata: exchange name, account/auth alias, routing role used, market type
@@ -342,7 +391,7 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 	- execution metadata: fill qty/price, fees, fee currency, status transitions
 	- position/portfolio snapshot deltas before and after action
 	- strategy context: config ref, signal label/score, algorithm version
-- Introduce an explicit audit classification field set so logs can distinguish at least:
+- Introduce an explicit TradeLog classification field set so logs can distinguish at least:
 	- crypto spot pair trades
 	- crypto perpetual futures on pairs
 	- shares against FIAT
@@ -354,13 +403,13 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 - The combination of `exchange name + account/auth alias + asset_class + instrument_type + symbol` must be sufficient to disambiguate what was actually traded even when symbols overlap across venues.
 - Separate event types: `ORDER_SUBMITTED`, `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
 - Concrete implementation proposal:
-	- Preferred module/package name: `TradeAudit` as a dedicated workspace package if reused across `Trade`, dashboard export, and future IB integration; fallback is a focused `Trade/src/audit.jl` module if package extraction would slow delivery.
+	- Preferred module/package name: `TradeLog` as a dedicated workspace package if reused across `Trade`, dashboard export, and future IB integration; fallback is a focused `Trade/src/tradelog.jl` module if package extraction would slow delivery.
 	- Define small canonical enums for:
-		- `AuditEventType`
-		- `AuditAssetClass`
-		- `AuditInstrumentType`
-		- `AuditMarketType`
-		- `AuditRoutingRole`
+		- `TradeLogEventType`
+		- `TradeLogAssetClass`
+		- `TradeLogInstrumentType`
+		- `TradeLogMarketType`
+		- `TradeLogRoutingRole`
 	- Use one canonical flat event row schema for storage and replay rather than multiple incompatible tables. Nested Julia structs may exist in memory, but persisted records should flatten to a single column set.
 	- Minimum persisted columns for each event row:
 		- event identity: `event_id`, `event_type`, `event_time_utc`, `created_at_utc`, `source_module`, `environment`, `run_id`, `loop_id`, `correlation_id`, `parent_event_id`
@@ -376,10 +425,10 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 
 ### Increment 3.2: Append-only log writer
 - Add write-once append log sink (Arrow/CSV/JSONL based on EnvConfig format policy).
-- Add partitioning by `exchange/account/date` under `$HOME/crypto/audit`.
+- Add partitioning by `exchange/account/date` under `$HOME/crypto/tradelog`.
 - Add tamper-evidence option via per-file hash chain (stored in companion manifest).
 - Concrete storage layout proposal:
-	- Root folder: `$HOME/crypto/audit/`
+	- Root folder: `$HOME/crypto/tradelog/`
 	- Partition dimensions in path:
 		- `environment=<mode>/`
 		- `exchange=<exchange>/`
@@ -388,9 +437,9 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 		- `instrument_type=<instrument_type>/`
 		- `date=YYYY-MM-DD/`
 	- Example paths:
-		- `$HOME/crypto/audit/environment=production/exchange=KrakenSpot/account=krakenspot-tcae1/asset_class=crypto/instrument_type=spot_pair/date=2026-05-10/events.jsonl`
-		- `$HOME/crypto/audit/environment=production/exchange=KrakenFutures/account=krakenfutures-tcae2/asset_class=crypto/instrument_type=perpetual_future/date=2026-05-10/events.jsonl`
-		- `$HOME/crypto/audit/environment=production/exchange=InteractiveBrokers/account=paper/asset_class=equity/instrument_type=share_fiat/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/tradelog/environment=production/exchange=KrakenSpot/account=krakenspot-tcae1/asset_class=crypto/instrument_type=spot_pair/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/tradelog/environment=production/exchange=KrakenFutures/account=krakenfutures-tcae2/asset_class=crypto/instrument_type=perpetual_future/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/tradelog/environment=production/exchange=InteractiveBrokers/account=paper/asset_class=equity/instrument_type=share_fiat/date=2026-05-10/events.jsonl`
 	- Canonical write path should be append-only `events.jsonl` because JSONL is simple for crash-safe append semantics and diff-friendly diagnostics.
 	- Optional read-optimized companions may be produced per partition after rotation:
 		- `events.arrow` for analytics/dashboard scans
@@ -411,16 +460,16 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 ### Increment 3.4: Tests and replay utility
 - Schema validation tests.
 - Replay test that reconstructs order lifecycle from logs.
-- Utility script to export tax/audit friendly reports.
+- Utility script to export tax/TradeLog-friendly reports.
 
 ### Exit criteria
 - Every order status transition is persisted with traceable identifiers.
 - Logs are partitioned for multiple exchanges/accounts.
-- Audit records identify both the concrete exchange/account used and the traded asset type beyond the raw symbol.
+- TradeLog records identify both the concrete exchange/account used and the traded asset type beyond the raw symbol.
 - Replay utility can rebuild per-order lifecycle and daily PnL-relevant events.
 
 ### Deliverables
-- New audit logging module in `Trade` or dedicated package (preferred if reused across packages)
+- New TradeLog module in `Trade` or dedicated package (preferred if reused across packages)
 - Tests plus report/export script
 
 ---
@@ -496,7 +545,7 @@ Guardrails (both options):
 ## Objective 5 (Fifth): Interactive non-blocking dashboard for history and open orders
 
 ### Design intent
-Build on existing cockpit script and feed it with live state and audit logs without blocking the trading engine.
+Build on existing cockpit script and feed it with live state and TradeLog logs without blocking the trading engine.
 
 ### Increment 5.1: Dashboard data contract
 - Define read model for:
@@ -512,7 +561,7 @@ Build on existing cockpit script and feed it with live state and audit logs with
 	- live open orders
 	- historical trades (filter by exchange/account/symbol/date)
 	- order timeline view
-	- audit export trigger
+	- TradeLog export trigger
 - Ensure polling/subscription updates are asynchronous.
 
 ### Increment 5.3: Performance and UX hardening
@@ -588,7 +637,7 @@ Update this section after each work session.
 ### Status Summary
 - Objective 1: IN PROGRESS (Increment 1.1 started)
 - Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, and explicit screening vs valuation USDT market intents)
-- Objective 3: IN PROGRESS (3.1 schema + integration slice + audit chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
+- Objective 3: IN PROGRESS (3.1 schema + integration slice + TradeLog chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
 - Objective 4: IN PROGRESS (adaptive-maker steady-loop repricing slice implemented in Trade/CryptoXch)
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED

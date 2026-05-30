@@ -8,8 +8,8 @@ EnvConfig.init(test)
 @testset "CryptoXch routing" begin
     xc = CryptoXch.XchCache()
     CryptoXch.setrole!(xc, CryptoXch.data_exchange, CryptoXch.EXCHANGE_BYBIT)
-    CryptoXch.setrole!(xc, CryptoXch.trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
-    CryptoXch.setrole!(xc, CryptoXch.trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+    CryptoXch.setrole!(xc, CryptoXch.trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT)
+    CryptoXch.setrole!(xc, CryptoXch.trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES)
 
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.data_exchange, xc.exchange) == CryptoXch.EXCHANGE_BYBIT
     @test CryptoXch._routeexchange(xc.routing, CryptoXch.trade_exchange_spot, xc.exchange) == CryptoXch.EXCHANGE_KRAKENSPOT

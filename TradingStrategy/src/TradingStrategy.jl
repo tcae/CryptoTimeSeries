@@ -180,8 +180,8 @@ mutable struct GainSegment
     trace::Union{Nothing, DataFrame}
     tracecontext::Union{Nothing, String}
     lane_reconciliation::Union{Nothing, NamedTuple}
-    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, limitreduction::AbstractFloat=0f0)
-        return new(algorithm, Float32(openthreshold), Float32(closethreshold), maxwindow, 0, emptygaindf(), Float32(makerfee), Float32(takerfee), nothing, nothing, nothing, 0, 0.001f0, 0.01f0, Float32(limitreduction), TradeAction(), TradeAction(), nothing, nothing, nothing)
+    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, buygain::AbstractFloat=0.001f0, sellgain::AbstractFloat=0.01f0, limitreduction::AbstractFloat=0f0)
+        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, buygain, sellgain, limitreduction, TradeAction(), TradeAction(), nothing, nothing, nothing)
     end
 end
 

@@ -2,7 +2,7 @@ module MultilegOrderTest
 using Test
 using Dates, DataFrames
 
-using EnvConfig, Ohlcv, CryptoXch, TradeAudit
+using EnvConfig, Ohlcv, CryptoXch, TradeLog
 
 # Unit tests for createocoorder — verifies that the three bracket legs are emitted with:
 # - a shared leg_group_id written into the notes of every leg
@@ -32,23 +32,23 @@ end
 function _synthsyminfo(base::String, close::Float32)
     symbol = uppercase(base * EnvConfig.cryptoquote)
     return (
-        symbol         = symbol,
-        status         = "Trading",
-        basecoin       = uppercase(base),
-        quotecoin      = uppercase(EnvConfig.cryptoquote),
-        ticksize       = Float32(0.01),
-        baseprecision  = Float32(0.00001),
-        quoteprecision = Float32(0.01),
-        minbaseqty     = Float32(0.00001),
-        minquoteqty    = Float32(1.0),
+        symbol=symbol,
+        status="Trading",
+        basecoin=uppercase(base),
+        quotecoin=uppercase(EnvConfig.cryptoquote),
+        ticksize=Float32(0.01),
+        baseprecision=Float32(0.00001),
+        quoteprecision=Float32(0.01),
+        minbaseqty=Float32(0.00001),
+        minquoteqty=Float32(1.0),
     )
 end
 
-@testset "createocoorder audit linkage" begin
-    oldauditroot = get(ENV, "CTS_AUDIT_ROOT", nothing)
+@testset "createocoorder tradelog linkage" begin
+    oldroot = get(ENV, "CTS_TRADELOG_ROOT", nothing)
     tmpdir = mktempdir()
     try
-        ENV["CTS_AUDIT_ROOT"] = tmpdir
+        ENV["CTS_TRADELOG_ROOT"] = tmpdir
         EnvConfig.init(test)
 
         xc = CryptoXch.XchCache()
@@ -62,14 +62,6 @@ end
         CryptoXch.setsymbolinfocache!(xc, "BTCUSDT", _synthsyminfo("BTC", btc_close))
         CryptoXch.setsymbolinfocache!(xc, "ETHUSDT", _synthsyminfo("ETH", eth_close))
 
-        # ---- long bracket: buy entry, sell take-profit/stop-loss ----
-        # entry at current close; TP above, SL below (all within MAXLIMITDELTA=10%).
-        # For simulation:
-        #   buy fills when low <= limitprice; low=close*0.999=59940
-        #   sell fills when high >= limitprice; high=close*1.001=60060
-        # entry_price = close: buy limitprice clamped to min(close,close)=60000; low(59940)<=60000 → fills OK
-        # take_profit (sell) at close*1.05=63000: high(60060)<63000 → no fill during getorder
-        # stop_loss  (sell) at close*0.95=57000: high(60060)<57000? no, 60060>57000 → FILLS → uses cache
         result = CryptoXch.createocoorder(xc, "BTC";
             entry_side=:buy,
             entry_price=btc_close,
@@ -84,40 +76,35 @@ end
 
         @test !isnothing(result.leg_group_id)
         @test !isempty(result.leg_group_id)
-        # All three order ids should be non-nothing (simulation always produces an id)
         @test !isnothing(result.entry_order_id)
         @test !isnothing(result.take_profit_order_id)
         @test !isnothing(result.stop_loss_order_id)
-        # All three ids must be distinct
         @test result.entry_order_id != result.take_profit_order_id
         @test result.entry_order_id != result.stop_loss_order_id
         @test result.take_profit_order_id != result.stop_loss_order_id
 
-        # Read all written audit events
-        submitted = TradeAudit.AuditEventRow(
-            event_type=TradeAudit.ORDER_SUBMITTED,
+        submitted = TradeLog.AuditEventRow(
+            event_type=TradeLog.ORDER_SUBMITTED,
             environment=string(Symbol(EnvConfig.configmode)),
-            run_mode=CryptoXch.auditrunmode(xc),
+            run_mode=CryptoXch.tradelogrunmode(xc),
             exchange=CryptoXch.exchange(xc),
-            account_alias=something(CryptoXch.authname(xc), ""),
-            asset_class=TradeAudit.crypto,
-            instrument_type=TradeAudit.spot_pair,
+            account_alias=CryptoXch.exchange(xc),
+            asset_class=TradeLog.crypto,
+            instrument_type=TradeLog.spot_pair,
         )
-        auditpath = TradeAudit.auditfile(submitted)
+        auditpath = TradeLog.auditfile(submitted)
         @test isfile(auditpath)
         events = readlines(auditpath)
 
-        grp      = result.leg_group_id
+        grp = result.leg_group_id
         entry_id = string(result.entry_order_id)
-        tp_id    = string(result.take_profit_order_id)
-        sl_id    = string(result.stop_loss_order_id)
+        tp_id = string(result.take_profit_order_id)
+        sl_id = string(result.stop_loss_order_id)
 
-        # --- leg_group_id present in all three ORDER_SUBMITTED events ---
         @test any(e -> occursin("leg_group_id=$(grp)", e) && occursin("leg_label=entry", e), events)
         @test any(e -> occursin("leg_group_id=$(grp)", e) && occursin("leg_label=take_profit", e), events)
         @test any(e -> occursin("leg_group_id=$(grp)", e) && occursin("leg_label=stop_loss", e), events)
 
-        # --- signal metadata forwarded to all three legs ---
         for lbl in ("entry", "take_profit", "stop_loss")
             @test any(e ->
                 occursin("leg_label=$(lbl)", e) &&
@@ -126,7 +113,6 @@ end
                 events)
         end
 
-        # --- take-profit and stop-loss carry correlation_id pointing to entry order ---
         @test any(e ->
             occursin("\"exchange_order_id\":\"$(tp_id)\"", e) &&
             occursin("\"correlation_id\":\"$(entry_id)\"", e),
@@ -136,12 +122,10 @@ end
             occursin("\"correlation_id\":\"$(entry_id)\"", e),
             events)
 
-        # --- entry leg has correlation_id = its own id (root of the chain, no parent) ---
         entry_events = filter(e -> occursin("\"exchange_order_id\":\"$(entry_id)\"", e), events)
         @test !isempty(entry_events)
         @test any(e -> occursin("\"correlation_id\":\"$(entry_id)\"", e), entry_events)
 
-        # ---- short bracket: sell entry, buy take-profit/stop-loss ----
         result2 = CryptoXch.createocoorder(xc, "ETH";
             entry_side=:sell,
             entry_price=eth_close * 1.05f0,
@@ -152,25 +136,24 @@ end
         @test !isnothing(result2.entry_order_id)
         @test !isnothing(result2.take_profit_order_id)
         @test !isnothing(result2.stop_loss_order_id)
-        @test result2.leg_group_id != result.leg_group_id  # each OCO gets its own group id
+        @test result2.leg_group_id != result.leg_group_id
 
-        # Confirm context was fully cleared after the call
-        ctx = get(xc.mc, :audit_event_context, Dict())
+        ctx = get(xc.mc, :tradelog_event_context, Dict())
         @test !haskey(ctx, :leg_group_id)
         @test !haskey(ctx, :signal_label)
 
-        # Verify the local symbol info cache is populated
         @test haskey(xc.mc, :syminfo_cache)
         @test haskey(xc.mc[:syminfo_cache], "BTCUSDT")
         @test xc.mc[:syminfo_cache]["BTCUSDT"].minbaseqty == 0.00001f0
 
     finally
-        if isnothing(oldauditroot)
-            delete!(ENV, "CTS_AUDIT_ROOT")
+        if isnothing(oldroot)
+            delete!(ENV, "CTS_TRADELOG_ROOT")
         else
-            ENV["CTS_AUDIT_ROOT"] = oldauditroot
+            ENV["CTS_TRADELOG_ROOT"] = oldroot
         end
+        rm(tmpdir; force=true, recursive=true)
     end
 end
 
-end  # module MultilegOrderTest
+end

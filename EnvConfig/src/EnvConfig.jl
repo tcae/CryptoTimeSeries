@@ -10,7 +10,7 @@ Provides
 module EnvConfig
 using Logging, Dates, Pkg, JSON3, DataFrames, JDF, Arrow
 using CategoricalArrays
-export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, coinfolderpath, coinfile, setdebugpath
+export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, setcoinspath!, coinfolderpath, coinfile, setdebugpath
 
 """
 verbosity =
@@ -335,6 +335,7 @@ coinsfolder = "coins"
 defaultlogfilespath = normpath(joinpath(homedir(), "crypto", logfilesfolder))
 defaultdebugfilespath = normpath(joinpath(homedir(), "crypto", debugfilesfolder))
 defaultcoinspath = normpath(joinpath(dirname(defaultlogfilespath), coinsfolder))
+activecoinspath = defaultcoinspath
 logfilespath = defaultlogfilespath
 
 function _setbasepath!(basepath::AbstractString, folder)
@@ -355,6 +356,16 @@ end
 "extends the debug path with folder or resets to default debug root if folder=`nothing`"
 function setdebugpath(folder=nothing)
     return _setbasepath!(defaultdebugfilespath, folder)
+end
+
+"Set the shared per-coin data root folder under ~/crypto (e.g. coins_bybit)."
+function setcoinspath!(folder::AbstractString=coinsfolder)
+    global activecoinspath
+    cleaned = strip(String(folder))
+    @assert cleaned != "" "coin folder must not be empty"
+    activecoinspath = normpath(joinpath(dirname(defaultlogfilespath), cleaned))
+    isdir(activecoinspath) || mkpath(activecoinspath)
+    return activecoinspath
 end
 
 "Returns the full path including filename of the given filename connected with the current log file path"
@@ -686,8 +697,8 @@ end
 
 """Return the local root folder for shared per-coin Arrow artifacts created during Phase 2, colocated with `logs/` under `~/crypto/coins`."""
 function coinspath()
-    isdir(defaultcoinspath) || mkpath(defaultcoinspath)
-    return defaultcoinspath
+    isdir(activecoinspath) || mkpath(activecoinspath)
+    return activecoinspath
 end
 
 """

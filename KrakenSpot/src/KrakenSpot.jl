@@ -1340,8 +1340,30 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 end
 
 """
-Amend one open order by canceling and recreating it with new values.
+Create one close order for an existing position side.
+
+- `positionside=:long` maps to a Sell close.
+- `positionside=:short` maps to a Buy close.
 """
+function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=true)
+	side = Symbol(lowercase(String(positionside)))
+	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
+	orderside = side == :long ? "Sell" : "Buy"
+	return createorder(bc, symbol, orderside, basequantity, price, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+end
+
+"""
+Amend one open order.
+
+For post-only maker orders, this path prefers native Kraken `EditOrder` and
+intentionally avoids cancel/recreate fallback to reduce close-order churn.
+"""
+function amendorder(bc::KrakenSpotCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
+	current = order(bc, orderid)
+	isnothing(current) && return nothing
+	return amendorder(bc, String(current.symbol), orderid; basequantity=basequantity, limitprice=limitprice)
+end
+
 function amendorder(bc::KrakenSpotCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
 	@assert isnothing(basequantity) || (basequantity > 0.0) "amendorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(limitprice) || (limitprice > 0.0) "amendorder symbol=$(symbol) limitprice=$(limitprice) must be > 0"
@@ -1370,6 +1392,34 @@ function amendorder(bc::KrakenSpotCache, symbol::String, orderid::String; basequ
 	if qty == current.baseqty && !pricechanged
 		return current
 	end
+
+	# Prefer native edit for both maker and non-maker orders to keep order identity.
+	try
+		params = Dict{String, Any}("txid" => String(orderid))
+		params["volume"] = string(qty)
+		if !isnothing(price)
+			params["price"] = string(price)
+		end
+		response = HttpPrivateRequest(bc, "POST", "/0/private/EditOrder", params, "edit order")
+		result = get(response, "result", Dict{String, Any}())
+		txids = get(result, "txid", Any[])
+		_invalidate_openorders_cache!()
+		amended = if (txids isa AbstractVector) && !isempty(txids)
+			order(bc, String(first(txids)))
+		else
+			order(bc, orderid)
+		end
+		if !isnothing(amended)
+			return amended
+		end
+	catch err
+		if maker
+			(verbosity >= 1) && @warn "maker amend skipped without cancel/recreate" symbol=symbol orderid=orderid error=sprint(showerror, err)
+			return current
+		end
+	end
+
+	# Non-maker fallback: cancel and recreate when native edit is unavailable.
 
 	cancelled = cancelorder(bc, symbol, orderid)
 	if isnothing(cancelled)
@@ -1481,6 +1531,23 @@ function _mergeborrowedbalances!(df::DataFrame, borrowed::Dict{String, Float32})
 	return df
 end
 
+"Return Kraken free quantity from BalanceEx-style fields, accounting for all hold fields."
+function _balancefreefromfields(value::AbstractDict{<:Any, <:Any})::Float32
+	balance = _float32(get(value, "balance", "0"), 0f0)
+	available = _float32(get(value, "available", string(balance)), balance)
+	if haskey(value, "available")
+		return max(0f0, min(balance, available))
+	end
+	hold_total = 0f0
+	for (k, v) in value
+		kstr = lowercase(String(k))
+		if (kstr == "hold") || startswith(kstr, "hold_")
+			hold_total += _float32(v, 0f0)
+		end
+	end
+	return max(0f0, balance - hold_total)
+end
+
 function balances(bc::KrakenSpotCache)
 	df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
 	if !_hascredentials(bc)
@@ -1502,33 +1569,30 @@ function balances(bc::KrakenSpotCache)
 	try
 		response = HttpPrivateRequest(bc, "POST", "/0/private/BalanceEx", nothing, "balanceex")
 	catch err_balanceex
-		try
-			response = HttpPrivateRequest(bc, "POST", "/0/private/Balance", nothing, "balance")
-		catch err_balance
-			fallback = lock(_balance_cache_lock) do
-				now = Dates.now(Dates.UTC)
-				if !isnothing(_balance_cache[]) && !isnothing(_balance_cache_time[])
-					if (now - _balance_cache_time[]) < BALANCE_CACHE_MAX_STALE
-						(verbosity >= 1) && @warn "balance request failed; returning stale cached balances" age=(now - _balance_cache_time[]) balanceex_exception=sprint(showerror, err_balanceex) balance_exception=sprint(showerror, err_balance)
-						return copy(_balance_cache[])
-					end
+		fallback = lock(_balance_cache_lock) do
+			now = Dates.now(Dates.UTC)
+			if !isnothing(_balance_cache[]) && !isnothing(_balance_cache_time[])
+				if (now - _balance_cache_time[]) < BALANCE_CACHE_MAX_STALE
+					(verbosity >= 1) && @warn "BalanceEx request failed; returning stale cached balances" age=(now - _balance_cache_time[]) balanceex_exception=sprint(showerror, err_balanceex)
+					return copy(_balance_cache[])
 				end
-				return nothing
 			end
-			if !isnothing(fallback)
-				return fallback
-			end
-			rethrow(err_balance)
+			return nothing
 		end
+		if !isnothing(fallback)
+			return fallback
+		end
+		throw(ErrorException("Kraken BalanceEx unavailable and no cached balances exist; refusing unsafe Balance fallback: $(sprint(showerror, err_balanceex))"))
 	end
 	result = get(response, "result", Dict{String, Any}())
 
 	for (asset, value) in result
 		coin = _normalizeasset(String(asset))
 		if value isa AbstractDict
-			balance = _float32(get(value, "balance", "0"), 0f0)
-			locked = _float32(get(value, "hold_trade", "0"), 0f0)
-			free = balance - locked
+			vdict = Dict(value)
+			balance = _float32(get(vdict, "balance", "0"), 0f0)
+			locked = _float32(get(vdict, "hold_trade", "0"), 0f0)
+			free = _balancefreefromfields(vdict)
 			push!(df, (coin=coin, locked=locked, free=free, borrowed=0f0, accruedinterest=0f0))
 		else
 			free = _float32(value, 0f0)

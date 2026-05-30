@@ -1,14 +1,14 @@
-module CryptoXchAuditIntegrationTest
+module CryptoXchLogIntegrationTest
 using Test
 using Dates
 
-using EnvConfig, CryptoXch, TradeAudit
+using EnvConfig, CryptoXch, TradeLog
 
-@testset "CryptoXch audit integration" begin
-    oldauditroot = get(ENV, "CTS_AUDIT_ROOT", nothing)
+@testset "CryptoXch log integration" begin
+    oldroot = get(ENV, "CTS_TRADELOG_ROOT", nothing)
     tmpdir = mktempdir()
     try
-        ENV["CTS_AUDIT_ROOT"] = tmpdir
+        ENV["CTS_TRADELOG_ROOT"] = tmpdir
         EnvConfig.init(test)
 
         xc = CryptoXch.XchCache()
@@ -20,19 +20,19 @@ using EnvConfig, CryptoXch, TradeAudit
             executedqty=0.0f0,
             avgprice=0.0f0,
         )
-        CryptoXch._auditcreatedorder!(xc, CryptoXch.trade_exchange_spot, "BTCUSDT", "Buy", 0.01f0, 65000.0f0, 0, orderinfo)
-        CryptoXch._auditordererror!(xc, CryptoXch.trade_exchange_spot, "BTCUSDT", "Buy", 0.01f0, 65000.0f0, 0, ErrorException("guardrail"))
+        CryptoXch._tradelogcreatedorder!(xc, CryptoXch.trade_exchange_spot, "BTCUSDT", "Buy", 0.01f0, 65000.0f0, 0, orderinfo)
+        CryptoXch._tradelogordererror!(xc, CryptoXch.trade_exchange_spot, "BTCUSDT", "Buy", 0.01f0, 65000.0f0, 0, ErrorException("guardrail"))
 
-        submitted = TradeAudit.AuditEventRow(
-            event_type=TradeAudit.ORDER_SUBMITTED,
+        submitted = TradeLog.AuditEventRow(
+            event_type=TradeLog.ORDER_SUBMITTED,
             environment=string(Symbol(EnvConfig.configmode)),
-            run_mode=CryptoXch.auditrunmode(xc),
+            run_mode=CryptoXch.tradelogrunmode(xc),
             exchange=CryptoXch.exchange(xc),
-            account_alias=something(CryptoXch.authname(xc), ""),
-            asset_class=TradeAudit.crypto,
-            instrument_type=TradeAudit.spot_pair,
+            account_alias=CryptoXch.exchange(xc),
+            asset_class=TradeLog.crypto,
+            instrument_type=TradeLog.spot_pair,
         )
-        auditpath = TradeAudit.auditfile(submitted)
+        auditpath = TradeLog.auditfile(submitted)
         @test isfile(auditpath)
         events = readlines(auditpath)
         @test length(events) == 2
@@ -78,14 +78,14 @@ using EnvConfig, CryptoXch, TradeAudit
         CryptoXch.getorder(xc, "order-ack-1")
         CryptoXch.getorder(xc, "order-filled-1")
         CryptoXch.getorder(xc, "order-cancel-1")
-        CryptoXch.setauditcontext!(xc; strategy_engine="classifier", strategy_config_ref="trenddetector:test", signal_label="longbuy", signal_score=0.91, leg_group_id="grp-1", leg_label="take_profit")
+        CryptoXch.settradelogcontext!(xc; strategy_engine="classifier", strategy_config_ref="trenddetector:test", signal_label="longbuy", signal_score=0.91, leg_group_id="grp-1", leg_label="take_profit")
         push!(simbc.orders, (isLeverage=false, signal_filled_order...); cols=:subset)
         CryptoXch.getorder(xc, "order-filled-signal-1")
-        CryptoXch.clearauditcontext!(xc)
+        CryptoXch.cleartradelogcontext!(xc)
 
         child_order = (; template_order..., orderid="order-child-1", symbol="BTCUSDT", status="New")
-        CryptoXch._auditsetorderparent!(xc, "order-child-1", "order-ack-1")
-        CryptoXch._auditreconcileorderstate!(xc, child_order; source="test-parent")
+        CryptoXch._tradelogsetorderparent!(xc, "order-child-1", "order-ack-1")
+        CryptoXch._tradelogreconcileorderstate!(xc, child_order; source="test-parent")
 
         events = readlines(auditpath)
         @test any(line -> occursin("\"event_type\":\"ORDER_ACK\"", line) && occursin("\"exchange_order_id\":\"order-ack-1\"", line), events)
@@ -97,10 +97,10 @@ using EnvConfig, CryptoXch, TradeAudit
         @test any(line -> occursin("\"event_type\":\"ORDER_FILLED\"", line) && occursin("\"exchange_order_id\":\"order-filled-signal-1\"", line) && occursin("\"slippage_bps\":", line) && !occursin("\"slippage_bps\":null", line), events)
         @test any(line -> occursin("\"event_type\":\"ORDER_FILLED\"", line) && occursin("\"exchange_order_id\":\"order-filled-signal-1\"", line) && occursin("leg_group_id=grp-1", line) && occursin("leg_label=take_profit", line), events)
     finally
-        if isnothing(oldauditroot)
-            delete!(ENV, "CTS_AUDIT_ROOT")
+        if isnothing(oldroot)
+            delete!(ENV, "CTS_TRADELOG_ROOT")
         else
-            ENV["CTS_AUDIT_ROOT"] = oldauditroot
+            ENV["CTS_TRADELOG_ROOT"] = oldroot
         end
         rm(tmpdir; force=true, recursive=true)
     end

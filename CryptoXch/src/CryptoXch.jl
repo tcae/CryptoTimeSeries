@@ -6,7 +6,7 @@
 module CryptoXch
 
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
-using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeAudit
+using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeLog
 import Ohlcv: intervalperiod
 
 """
@@ -77,6 +77,21 @@ function _normalizeexchange(exchange::AbstractString)::String
         return EXCHANGE_KRAKENSPOT
     end
     throw(ArgumentError("unsupported exchange=$(exchange), supported=[$(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_KRAKENFUTURES), $(EXCHANGE_KRAKENSPOT)]"))
+end
+
+"Return the EnvConfig coin-folder token for one normalized exchange name."
+function _coinsfoldertoken(exchange::AbstractString)::String
+    ex = _normalizeexchange(exchange)
+    if ex == EXCHANGE_BYBITSIM
+        return "bybit"
+    end
+    return lowercase(replace(ex, r"[^A-Za-z0-9]+" => ""))
+end
+
+"Update EnvConfig coin root to coins_<exchange> based on active data exchange routing."
+function _setexchangecoinspath!(xc)::String
+    data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
+    return EnvConfig.setcoinspath!("coins_" * _coinsfoldertoken(data_ex))
 end
 
 function _exchangeModule(exchange::AbstractString)
@@ -185,6 +200,7 @@ mutable struct XchCache
         end
         xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
         xc.mc[:simmode] = simmode
+        _setexchangecoinspath!(xc)
         if hasproperty(xc.bc, :syminfodf) && !isnothing(xc.bc.syminfodf)
             for row in eachrow(xc.bc.syminfodf)
                 setsymbolinfocache!(xc, row.symbol, (
@@ -200,21 +216,30 @@ mutable struct XchCache
                 ))
             end
         end
-        xc.mc[:audit_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
+        xc.mc[:tradelog_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
         return xc
     end
 end
 
-function auditrunmode(xc::XchCache)::String
+function tradelogrunmode(xc::XchCache)::String
     return xc.mc[:simmode] == nosimulation ? "live" : "simulation"
 end
 
-function auditrunid(xc::XchCache)::String
-    if !haskey(xc.mc, :audit_run_id)
-        xc.mc[:audit_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
+function tradelogrunid(xc::XchCache)::String
+    if !haskey(xc.mc, :tradelog_run_id)
+        # Migrate lazily from old key when available.
+        if haskey(xc.mc, :audit_run_id)
+            xc.mc[:tradelog_run_id] = String(xc.mc[:audit_run_id])
+        else
+            xc.mc[:tradelog_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
+        end
     end
-    return String(xc.mc[:audit_run_id])
+    return String(xc.mc[:tradelog_run_id])
 end
+
+# Backward-compatible aliases for legacy callers.
+auditrunmode(xc::XchCache)::String = tradelogrunmode(xc)
+auditrunid(xc::XchCache)::String = tradelogrunid(xc)
 
 exchange(xc::XchCache)::String = xc.exchange
 authname(xc::XchCache) = xc.authname
@@ -253,8 +278,8 @@ Configure exchange role routing on an `XchCache`.
 Example — Bybit for data, KrakenSpot for spot trading, KrakenFutures for futures:
 ```julia
 setrole!(xc, data_exchange, CryptoXch.EXCHANGE_BYBIT)
-setrole!(xc, trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae2")
-setrole!(xc, trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+setrole!(xc, trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT)
+setrole!(xc, trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES)
 ```
 """
 function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
@@ -264,6 +289,7 @@ function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString, au
     setrole!(xc.routing, role, exchange, authname)
     # Evict stale cached adapter so it is rebuilt with the new auth on next use.
     delete!(xc.routecaches, _normalizeexchange(String(exchange)))
+    _setexchangecoinspath!(xc)
     return xc
 end
 
@@ -340,9 +366,9 @@ function _asserttradeallowed(xc::XchCache)
     end
 end
 
-_auditstring(value) = ismissing(value) || isnothing(value) ? missing : String(value)
-_auditstring(value::Enum) = String(Symbol(value))
-_auditfloat(value) = ismissing(value) || isnothing(value) ? missing : Float64(value)
+_tradelogstring(value) = ismissing(value) || isnothing(value) ? missing : String(value)
+_tradelogstring(value::Enum) = String(Symbol(value))
+_tradelogfloat(value) = ismissing(value) || isnothing(value) ? missing : Float64(value)
 
 function _orderfield(orderinfo, field::Symbol)
     if isnothing(orderinfo) || !hasproperty(orderinfo, field)
@@ -351,44 +377,44 @@ function _orderfield(orderinfo, field::Symbol)
     return getproperty(orderinfo, field)
 end
 
-function _auditroutingrole(role::ExchangeRole)::TradeAudit.AuditRoutingRole
+function _tradelogroutingrole(role::ExchangeRole)::TradeLog.AuditRoutingRole
     if role == data_exchange
-        return TradeAudit.routing_data_exchange
+        return TradeLog.routing_data_exchange
     elseif role == trade_exchange_spot
-        return TradeAudit.routing_trade_exchange_spot
+        return TradeLog.routing_trade_exchange_spot
     else
-        return TradeAudit.routing_trade_exchange_futures
+        return TradeLog.routing_trade_exchange_futures
     end
 end
 
-function _auditmarkettype(role::ExchangeRole)::TradeAudit.AuditMarketType
+function _tradelogmarkettype(role::ExchangeRole)::TradeLog.AuditMarketType
     if role == trade_exchange_spot
-        return TradeAudit.market_spot
+        return TradeLog.market_spot
     elseif role == trade_exchange_futures
-        return TradeAudit.market_futures
+        return TradeLog.market_futures
     end
-    return TradeAudit.market_unknown
+    return TradeLog.market_unknown
 end
 
-function _auditinstrumenttype(role::ExchangeRole)::TradeAudit.AuditInstrumentType
+function _tradeloginstrumenttype(role::ExchangeRole)::TradeLog.AuditInstrumentType
     if role == trade_exchange_spot
-        return TradeAudit.spot_pair
+        return TradeLog.spot_pair
     elseif role == trade_exchange_futures
-        return TradeAudit.perpetual_future
+        return TradeLog.perpetual_future
     end
-    return TradeAudit.instrument_unknown
+    return TradeLog.instrument_unknown
 end
 
-function _auditeventcontext!(xc::XchCache)
-    if !haskey(xc.mc, :audit_event_context)
-        xc.mc[:audit_event_context] = Dict{Symbol, Any}()
+function _tradelogeventcontext!(xc::XchCache)
+    if !haskey(xc.mc, :tradelog_event_context)
+        xc.mc[:tradelog_event_context] = Dict{Symbol, Any}()
     end
-    return xc.mc[:audit_event_context]
+    return xc.mc[:tradelog_event_context]
 end
 
-"Set temporary audit context fields used for subsequent order audit events."
-function setauditcontext!(xc::XchCache; strategy_engine=missing, strategy_config_ref=missing, signal_label=missing, signal_score=missing, notes=missing, leg_group_id=missing, leg_label=missing)
-    ctx = _auditeventcontext!(xc)
+"Set temporary TradeLog context fields used for subsequent order events."
+function settradelogcontext!(xc::XchCache; strategy_engine=missing, strategy_config_ref=missing, signal_label=missing, signal_score=missing, notes=missing, leg_group_id=missing, leg_label=missing)
+    ctx = _tradelogeventcontext!(xc)
     for (k, v) in [
         (:strategy_engine, strategy_engine),
         (:strategy_config_ref, strategy_config_ref),
@@ -407,14 +433,18 @@ function setauditcontext!(xc::XchCache; strategy_engine=missing, strategy_config
     return xc
 end
 
-"Clear all temporary audit context fields."
-function clearauditcontext!(xc::XchCache)
-    haskey(xc.mc, :audit_event_context) && empty!(xc.mc[:audit_event_context])
+"Clear all temporary TradeLog context fields."
+function cleartradelogcontext!(xc::XchCache)
+    haskey(xc.mc, :tradelog_event_context) && empty!(xc.mc[:tradelog_event_context])
     return xc
 end
 
-function _auditslippagebps(limitprice, fill_price::Union{Missing, Float64}, orderside::AbstractString, event_type::TradeAudit.AuditEventType)
-    if !(event_type in (TradeAudit.ORDER_PARTIAL_FILL, TradeAudit.ORDER_FILLED))
+# Backward-compatible aliases for legacy callers.
+setauditcontext!(xc::XchCache; kwargs...) = settradelogcontext!(xc; kwargs...)
+clearauditcontext!(xc::XchCache) = cleartradelogcontext!(xc)
+
+function _tradelogslippagebps(limitprice, fill_price::Union{Missing, Float64}, orderside::AbstractString, event_type::TradeLog.AuditEventType)
+    if !(event_type in (TradeLog.ORDER_PARTIAL_FILL, TradeLog.ORDER_FILLED))
         return missing
     end
     if isnothing(limitprice) || ismissing(fill_price)
@@ -433,15 +463,15 @@ function _auditslippagebps(limitprice, fill_price::Union{Missing, Float64}, orde
     return ((fill - req) / req) * 10000.0
 end
 
-function _auditorderevent!(xc::XchCache, event_type::TradeAudit.AuditEventType, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed; orderinfo=nothing, status_reason=nothing)
+function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed; orderinfo=nothing, status_reason=nothing)
     pair = basequote(symbol)
     simmode = String(Symbol(xc.mc[:simmode]))
-    exchange_order_id = _auditstring(_orderfield(orderinfo, :orderid))
+    exchange_order_id = _tradelogstring(_orderfield(orderinfo, :orderid))
     orderid_key = ismissing(exchange_order_id) ? nothing : String(exchange_order_id)
-    chains = _auditchaincache!(xc)
+    chains = _tradelogchaincache!(xc)
     correlation_id = isnothing(orderid_key) ? missing : get(chains, orderid_key, orderid_key)
-    lastevents = _auditlasteventcache!(xc)
-    pendingparents = _auditpendingparentcache!(xc)
+    lastevents = _tradeloglasteventcache!(xc)
+    pendingparents = _tradelogpendingparentcache!(xc)
     parent_event_id = if isnothing(orderid_key)
         missing
     elseif haskey(lastevents, orderid_key)
@@ -451,12 +481,12 @@ function _auditorderevent!(xc::XchCache, event_type::TradeAudit.AuditEventType, 
     else
         missing
     end
-    fill_base_qty = _auditfloat(_orderfield(orderinfo, :executedqty))
-    fill_price = _auditfloat(_orderfield(orderinfo, :avgprice))
-    slippage_bps = _auditslippagebps(limitprice, fill_price, orderside, event_type)
-    fee_amount = _auditfeeamount(xc, event_type, orderinfo, fill_base_qty, fill_price)
-    fee_currency = _auditfeecurrency(orderinfo, isnothing(pair) ? nothing : pair.quotecoin)
-    ctx = _auditeventcontext!(xc)
+    fill_base_qty = _tradelogfloat(_orderfield(orderinfo, :executedqty))
+    fill_price = _tradelogfloat(_orderfield(orderinfo, :avgprice))
+    slippage_bps = _tradelogslippagebps(limitprice, fill_price, orderside, event_type)
+    fee_amount = _tradelogfeeamount(xc, event_type, orderinfo, fill_base_qty, fill_price)
+    fee_currency = _tradelogfeecurrency(orderinfo, isnothing(pair) ? nothing : pair.quotecoin)
+    ctx = _tradelogeventcontext!(xc)
     strategy_engine = haskey(ctx, :strategy_engine) ? String(ctx[:strategy_engine]) : missing
     strategy_config_ref = haskey(ctx, :strategy_config_ref) ? String(ctx[:strategy_config_ref]) : missing
     signal_label = haskey(ctx, :signal_label) ? String(ctx[:signal_label]) : missing
@@ -471,22 +501,22 @@ function _auditorderevent!(xc::XchCache, event_type::TradeAudit.AuditEventType, 
     !ismissing(leg_group_id) && push!(notes_parts, "leg_group_id=$(leg_group_id)")
     !ismissing(leg_label) && push!(notes_parts, "leg_label=$(leg_label)")
     notes = isempty(notes_parts) ? missing : join(notes_parts, ";")
-    event = TradeAudit.AuditEventRow(
+    event = TradeLog.AuditEventRow(
         event_type=event_type,
         event_time_utc=Dates.now(Dates.UTC),
         created_at_utc=Dates.now(Dates.UTC),
         source_module="CryptoXch",
         environment=string(Symbol(EnvConfig.configmode)),
-        run_mode=auditrunmode(xc),
-        run_id=auditrunid(xc),
+        run_mode=tradelogrunmode(xc),
+        run_id=tradelogrunid(xc),
         correlation_id=correlation_id,
         parent_event_id=parent_event_id,
         exchange=_routeexchange(xc.routing, role, xc.exchange),
         account_alias=_routeexchange(xc.routing, role, xc.exchange),
-        routing_role=_auditroutingrole(role),
-        market_type=_auditmarkettype(role),
-        asset_class=TradeAudit.crypto,
-        instrument_type=_auditinstrumenttype(role),
+        routing_role=_tradelogroutingrole(role),
+        market_type=_tradelogmarkettype(role),
+        asset_class=TradeLog.crypto,
+        instrument_type=_tradeloginstrumenttype(role),
         venue_instrument_type=(role == trade_exchange_futures ? "futures" : role == trade_exchange_spot ? "spot" : missing),
         symbol=String(symbol),
         baseasset=isnothing(pair) ? missing : pair.basecoin,
@@ -495,9 +525,9 @@ function _auditorderevent!(xc::XchCache, event_type::TradeAudit.AuditEventType, 
         exchange_order_id=exchange_order_id,
         side=String(orderside),
         order_type=isnothing(limitprice) ? "Market" : "Limit",
-        time_in_force=_auditstring(_orderfield(orderinfo, :timeinforce)),
-        status=_auditstring(_orderfield(orderinfo, :status)),
-        status_reason=ismissing(status_reason) || isnothing(status_reason) ? _auditstring(_orderfield(orderinfo, :rejectreason)) : String(status_reason),
+        time_in_force=_tradelogstring(_orderfield(orderinfo, :timeinforce)),
+        status=_tradelogstring(_orderfield(orderinfo, :status)),
+        status_reason=ismissing(status_reason) || isnothing(status_reason) ? _tradelogstring(_orderfield(orderinfo, :rejectreason)) : String(status_reason),
         requested_base_qty=Float64(basequantity),
         requested_quote_qty=isnothing(limitprice) ? missing : Float64(basequantity) * Float64(limitprice),
         requested_limit_price=isnothing(limitprice) ? missing : Float64(limitprice),
@@ -515,63 +545,63 @@ function _auditorderevent!(xc::XchCache, event_type::TradeAudit.AuditEventType, 
         notes=notes,
     )
     try
-        TradeAudit.writeeventwithhash(event)
+        TradeLog.writeeventwithhash(event)
         if !isnothing(orderid_key)
             chains[orderid_key] = get(chains, orderid_key, orderid_key)
             lastevents[orderid_key] = event.event_id
             haskey(pendingparents, orderid_key) && delete!(pendingparents, orderid_key)
         end
-    catch audit_error
-        (verbosity >= 1) && @warn "failed to persist audit event" event_type symbol exception=(audit_error, catch_backtrace())
+    catch tradelog_error
+        (verbosity >= 1) && @warn "failed to persist tradelog event" event_type symbol exception=(tradelog_error, catch_backtrace())
     end
     return nothing
 end
 
-function _auditcreatedorder!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, orderinfo)
+function _tradelogcreatedorder!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, orderinfo)
     if isnothing(orderinfo)
-        _auditorderevent!(xc, TradeAudit.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason="createorder returned nothing")
+        _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason="createorder returned nothing")
         return nothing
     end
-    _auditorderevent!(xc, TradeAudit.ORDER_SUBMITTED, role, symbol, orderside, basequantity, limitprice, marginleverage; orderinfo=orderinfo)
-    orderstatus = _auditstring(_orderfield(orderinfo, :status))
-    rejectreason = _auditstring(_orderfield(orderinfo, :rejectreason))
+    _tradelogorderevent!(xc, TradeLog.ORDER_SUBMITTED, role, symbol, orderside, basequantity, limitprice, marginleverage; orderinfo=orderinfo)
+    orderstatus = _tradelogstring(_orderfield(orderinfo, :status))
+    rejectreason = _tradelogstring(_orderfield(orderinfo, :rejectreason))
     if orderstatus == "Rejected" || (!ismissing(rejectreason) && rejectreason != "NO ERROR")
-        _auditorderevent!(xc, TradeAudit.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; orderinfo=orderinfo, status_reason=ismissing(rejectreason) ? orderstatus : rejectreason)
+        _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; orderinfo=orderinfo, status_reason=ismissing(rejectreason) ? orderstatus : rejectreason)
     end
     return nothing
 end
 
-function _auditordererror!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, err)
-    _auditorderevent!(xc, TradeAudit.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason=sprint(showerror, err))
+function _tradelogordererror!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, err)
+    _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason=sprint(showerror, err))
     return nothing
 end
 
-function _auditorderstatecache!(xc::XchCache)
-    if !haskey(xc.mc, :audit_order_state)
-        xc.mc[:audit_order_state] = Dict{String, NamedTuple{(:status, :executedqty), Tuple{String, Float64}}}()
+function _tradelogorderstatecache!(xc::XchCache)
+    if !haskey(xc.mc, :tradelog_order_state)
+        xc.mc[:tradelog_order_state] = Dict{String, NamedTuple{(:status, :executedqty), Tuple{String, Float64}}}()
     end
-    return xc.mc[:audit_order_state]
+    return xc.mc[:tradelog_order_state]
 end
 
-function _auditlasteventcache!(xc::XchCache)
-    if !haskey(xc.mc, :audit_order_last_event)
-        xc.mc[:audit_order_last_event] = Dict{String, String}()
+function _tradeloglasteventcache!(xc::XchCache)
+    if !haskey(xc.mc, :tradelog_order_last_event)
+        xc.mc[:tradelog_order_last_event] = Dict{String, String}()
     end
-    return xc.mc[:audit_order_last_event]
+    return xc.mc[:tradelog_order_last_event]
 end
 
-function _auditchaincache!(xc::XchCache)
-    if !haskey(xc.mc, :audit_order_chain)
-        xc.mc[:audit_order_chain] = Dict{String, String}()
+function _tradelogchaincache!(xc::XchCache)
+    if !haskey(xc.mc, :tradelog_order_chain)
+        xc.mc[:tradelog_order_chain] = Dict{String, String}()
     end
-    return xc.mc[:audit_order_chain]
+    return xc.mc[:tradelog_order_chain]
 end
 
-function _auditpendingparentcache!(xc::XchCache)
-    if !haskey(xc.mc, :audit_pending_parent_event)
-        xc.mc[:audit_pending_parent_event] = Dict{String, String}()
+function _tradelogpendingparentcache!(xc::XchCache)
+    if !haskey(xc.mc, :tradelog_pending_parent_event)
+        xc.mc[:tradelog_pending_parent_event] = Dict{String, String}()
     end
-    return xc.mc[:audit_pending_parent_event]
+    return xc.mc[:tradelog_pending_parent_event]
 end
 
 """
@@ -619,14 +649,14 @@ function pruneadaptiveorders!(xc::XchCache, openorderids)
     return xc
 end
 
-function _auditsetorderparent!(xc::XchCache, new_orderid::AbstractString, old_orderid::AbstractString)
+function _tradelogsetorderparent!(xc::XchCache, new_orderid::AbstractString, old_orderid::AbstractString)
     new_id = String(new_orderid)
     old_id = String(old_orderid)
-    chains = _auditchaincache!(xc)
+    chains = _tradelogchaincache!(xc)
     chains[new_id] = get(chains, old_id, old_id)
-    lastevents = _auditlasteventcache!(xc)
+    lastevents = _tradeloglasteventcache!(xc)
     if haskey(lastevents, old_id)
-        _auditpendingparentcache!(xc)[new_id] = lastevents[old_id]
+        _tradelogpendingparentcache!(xc)[new_id] = lastevents[old_id]
     end
     return nothing
 end
@@ -641,7 +671,7 @@ function _orderfieldfirst(orderinfo, fields::Vector{Symbol})
     return missing
 end
 
-function _auditordernumber(orderinfo, field::Symbol; default::Float64=0.0)
+function _tradelogordernumber(orderinfo, field::Symbol; default::Float64=0.0)
     value = _orderfield(orderinfo, field)
     if ismissing(value) || isnothing(value)
         return default
@@ -653,7 +683,7 @@ function _auditordernumber(orderinfo, field::Symbol; default::Float64=0.0)
     end
 end
 
-function _auditordernumber(orderinfo, fields::Vector{Symbol}; default::Float64=0.0)
+function _tradelogordernumber(orderinfo, fields::Vector{Symbol}; default::Float64=0.0)
     value = _orderfieldfirst(orderinfo, fields)
     if ismissing(value) || isnothing(value)
         return default
@@ -665,7 +695,7 @@ function _auditordernumber(orderinfo, fields::Vector{Symbol}; default::Float64=0
     end
 end
 
-function _auditordermaybeprice(orderinfo)
+function _tradelogordermaybeprice(orderinfo)
     value = _orderfield(orderinfo, :limitprice)
     if ismissing(value) || isnothing(value)
         return nothing
@@ -677,7 +707,7 @@ function _auditordermaybeprice(orderinfo)
     end
 end
 
-function _auditordermaybeprice(orderinfo, fields::Vector{Symbol})
+function _tradelogordermaybeprice(orderinfo, fields::Vector{Symbol})
     value = _orderfieldfirst(orderinfo, fields)
     if ismissing(value) || isnothing(value)
         return nothing
@@ -689,39 +719,39 @@ function _auditordermaybeprice(orderinfo, fields::Vector{Symbol})
     end
 end
 
-function _auditeventtypeforstatus(status::AbstractString, previous_status::Union{Nothing, String}, executedqty::Float64, previous_executedqty::Union{Nothing, Float64}, baseqty::Float64)::TradeAudit.AuditEventType
+function _tradelogeventtypeforstatus(status::AbstractString, previous_status::Union{Nothing, String}, executedqty::Float64, previous_executedqty::Union{Nothing, Float64}, baseqty::Float64)::TradeLog.AuditEventType
     st = lowercase(String(status))
     if st == "rejected"
-        return TradeAudit.ORDER_REJECTED
+        return TradeLog.ORDER_REJECTED
     elseif st in ["cancelled", "canceled", "partiallyfilledcanceled", "deactivated"]
-        return TradeAudit.ORDER_CANCELED
+        return TradeLog.ORDER_CANCELED
     elseif (st == "filled") || ((baseqty > 0.0) && (executedqty >= baseqty - 1e-9))
-        return TradeAudit.ORDER_FILLED
+        return TradeLog.ORDER_FILLED
     elseif (st == "partiallyfilled") || (!isnothing(previous_executedqty) && (executedqty > previous_executedqty + 1e-9))
-        return TradeAudit.ORDER_PARTIAL_FILL
+        return TradeLog.ORDER_PARTIAL_FILL
     elseif isnothing(previous_status)
-        return TradeAudit.ORDER_ACK
+        return TradeLog.ORDER_ACK
     end
-    return TradeAudit.ORDER_ACK
+    return TradeLog.ORDER_ACK
 end
 
-function _auditreconcileorderstate!(xc::XchCache, orderinfo; role::ExchangeRole=trade_exchange_spot, source::AbstractString="orderpoll")
-    orderid = _auditstring(_orderfield(orderinfo, :orderid))
-    symbol = _auditstring(_orderfield(orderinfo, :symbol))
+function _tradelogreconcileorderstate!(xc::XchCache, orderinfo; role::ExchangeRole=trade_exchange_spot, source::AbstractString="orderpoll")
+    orderid = _tradelogstring(_orderfield(orderinfo, :orderid))
+    symbol = _tradelogstring(_orderfield(orderinfo, :symbol))
     if ismissing(orderid) || ismissing(symbol)
         return nothing
     end
 
-    status_raw = _auditstring(_orderfield(orderinfo, :status))
+    status_raw = _tradelogstring(_orderfield(orderinfo, :status))
     status = ismissing(status_raw) ? "Unknown" : String(status_raw)
-    executedqty = _auditordernumber(orderinfo, :executedqty; default=0.0)
-    baseqty = _auditordernumber(orderinfo, :baseqty; default=executedqty)
-    side_raw = _auditstring(_orderfield(orderinfo, :side))
+    executedqty = _tradelogordernumber(orderinfo, :executedqty; default=0.0)
+    baseqty = _tradelogordernumber(orderinfo, :baseqty; default=executedqty)
+    side_raw = _tradelogstring(_orderfield(orderinfo, :side))
     side = ismissing(side_raw) ? "Unknown" : String(side_raw)
-    limitprice = _auditordermaybeprice(orderinfo)
-    marginleverage = Int(round(_auditordernumber(orderinfo, :marginleverage; default=0.0)))
+    limitprice = _tradelogordermaybeprice(orderinfo)
+    marginleverage = Int(round(_tradelogordernumber(orderinfo, :marginleverage; default=0.0)))
 
-    states = _auditorderstatecache!(xc)
+    states = _tradelogorderstatecache!(xc)
     previous = get(states, String(orderid), nothing)
     previous_status = isnothing(previous) ? nothing : previous.status
     previous_executedqty = isnothing(previous) ? nothing : previous.executedqty
@@ -730,31 +760,31 @@ function _auditreconcileorderstate!(xc::XchCache, orderinfo; role::ExchangeRole=
         return nothing
     end
 
-    event_type = _auditeventtypeforstatus(status, previous_status, executedqty, previous_executedqty, baseqty)
-    status_reason = _auditstring(_orderfield(orderinfo, :rejectreason))
-    if event_type == TradeAudit.ORDER_ACK
+    event_type = _tradelogeventtypeforstatus(status, previous_status, executedqty, previous_executedqty, baseqty)
+    status_reason = _tradelogstring(_orderfield(orderinfo, :rejectreason))
+    if event_type == TradeLog.ORDER_ACK
         status_reason = "source=$(source)"
     elseif ismissing(status_reason)
         status_reason = "source=$(source)"
     end
-    _auditorderevent!(xc, event_type, role, String(symbol), side, baseqty, limitprice, marginleverage; orderinfo=orderinfo, status_reason=status_reason)
+    _tradelogorderevent!(xc, event_type, role, String(symbol), side, baseqty, limitprice, marginleverage; orderinfo=orderinfo, status_reason=status_reason)
     states[String(orderid)] = (status=status, executedqty=executedqty)
     return nothing
 end
 
-function _auditfeeamount(xc::XchCache, event_type::TradeAudit.AuditEventType, orderinfo, fill_base_qty::Union{Missing, Float64}, fill_price::Union{Missing, Float64})
-    explicit_fee = _auditordernumber(orderinfo, [:fee_amount, :feeamount, :fee, :commission, :cumexecfee, :execfee, :fees]; default=NaN)
+function _tradelogfeeamount(xc::XchCache, event_type::TradeLog.AuditEventType, orderinfo, fill_base_qty::Union{Missing, Float64}, fill_price::Union{Missing, Float64})
+    explicit_fee = _tradelogordernumber(orderinfo, [:fee_amount, :feeamount, :fee, :commission, :cumexecfee, :execfee, :fees]; default=NaN)
     if isfinite(explicit_fee)
         return explicit_fee
     end
-    if (event_type in (TradeAudit.ORDER_PARTIAL_FILL, TradeAudit.ORDER_FILLED)) && !ismissing(fill_base_qty) && !ismissing(fill_price)
+    if (event_type in (TradeLog.ORDER_PARTIAL_FILL, TradeLog.ORDER_FILLED)) && !ismissing(fill_base_qty) && !ismissing(fill_price)
         return Float64(fill_base_qty) * Float64(fill_price) * Float64(xc.feerate)
     end
     return missing
 end
 
-function _auditfeecurrency(orderinfo, quotecoin)
-    fee_currency = _auditstring(_orderfieldfirst(orderinfo, [:fee_currency, :feecurrency, :commissionasset]))
+function _tradelogfeecurrency(orderinfo, quotecoin)
+    fee_currency = _tradelogstring(_orderfieldfirst(orderinfo, [:fee_currency, :feecurrency, :commissionasset]))
     if !ismissing(fee_currency)
         return fee_currency
     end
@@ -797,6 +827,62 @@ end
 
 _exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).createorder(_routedbc(xc, trade_exchange_spot), symbol, orderside, basequantity, price, maker, marginleverage=marginleverage, reduceonly=reduceonly))
 _exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).amendorder(_routedbc(xc, trade_exchange_spot), symbol, orderid; basequantity=basequantity, limitprice=limitprice))
+_exchangeamendorder(xc::XchCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).amendorder(_routedbc(xc, trade_exchange_spot), orderid; basequantity=basequantity, limitprice=limitprice))
+
+"""
+Create a close order for one existing position side.
+
+- `positionside=:long` closes long exposure via a Sell order.
+- `positionside=:short` closes short exposure via a Buy order.
+
+Adapters may specialize this by implementing `closeorder(bc, symbol, positionside, basequantity, limitprice, maker; marginleverage=..., reduceonly=...)`.
+If no adapter specialization exists, this function falls back to existing `createbuyorder`/`createsellorder` behavior.
+"""
+function closeorder(xc::XchCache, base::AbstractString; positionside::Symbol, limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0, reduceonly::Bool=true, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
+    side = Symbol(lowercase(String(positionside)))
+    @assert side in (:long, :short) "closeorder positionside=$(positionside) must be :long or :short"
+
+    baseup = uppercase(String(base))
+    symbol = symboltoken(xc, baseup, EnvConfig.cryptoquote; role=trade_exchange_spot)
+    mod = _routedModule(xc, trade_exchange_spot)
+    bc = _routedbc(xc, trade_exchange_spot)
+
+    if isdefined(mod, :closeorder)
+        fn = getfield(mod, :closeorder)
+        if applicable(fn, bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+            _asserttradeallowed(xc)
+            if !isnothing(leg_group_id) || !isnothing(leg_label)
+                settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
+            end
+            try
+                created = fn(bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+                oid, oocreate = _normalizecreatedorder(xc, created)
+                orderside = side == :long ? "Sell" : "Buy"
+                if !isnothing(parent_order_id) && !isnothing(oid)
+                    _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
+                end
+                _tradelogcreatedorder!(xc, trade_exchange_spot, symbol, orderside, basequantity, limitprice, marginleverage, oocreate)
+                if isnothing(limitprice) && maker && !isnothing(oid)
+                    registeradaptiveorder!(xc, oid)
+                end
+                return oid
+            catch err
+                orderside = side == :long ? "Sell" : "Buy"
+                _tradelogordererror!(xc, trade_exchange_spot, symbol, orderside, basequantity, limitprice, marginleverage, err)
+                rethrow()
+            finally
+                if !isnothing(leg_group_id) || !isnothing(leg_label)
+                    cleartradelogcontext!(xc)
+                end
+            end
+        end
+    end
+
+    if side == :long
+        return createsellorder(xc, baseup; limitprice=limitprice, basequantity=basequantity, maker=maker, marginleverage=marginleverage, reduceonly=reduceonly, parent_order_id=parent_order_id, leg_group_id=leg_group_id, leg_label=leg_label)
+    end
+    return createbuyorder(xc, baseup; limitprice=limitprice, basequantity=basequantity, maker=maker, marginleverage=marginleverage, reduceonly=reduceonly, parent_order_id=parent_order_id, leg_group_id=leg_group_id, leg_label=leg_label)
+end
 
 setstartdt(xc::XchCache, dt::DateTime) = (xc.startdt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
 setenddt(xc::XchCache, dt::DateTime) = (xc.enddt = isnothing(dt) ? nothing : floor(dt, Minute(1)))
@@ -865,7 +951,7 @@ function marginlimits(xc::XchCache, symbol::AbstractString; role::ExchangeRole=t
     bc = _routedbc(xc, role)
     isnothing(bc) && return (maxleveragebuy=0, maxleveragesell=0)
     mod = _routedModule(xc, role)
-    if applicable(mod.marginlimits, bc, symbol)
+    if isdefined(mod, :marginlimits) && applicable(getfield(mod, :marginlimits), bc, symbol)
         return mod.marginlimits(bc, symbol)
     end
     return (maxleveragebuy=0, maxleveragesell=0)
@@ -877,7 +963,7 @@ function marginpermitted(xc::XchCache, symbol::AbstractString, orderside::Abstra
     bc = _routedbc(xc, role)
     isnothing(bc) && return false
     mod = _routedModule(xc, role)
-    if applicable(mod.marginpermitted, bc, symbol, orderside, marginleverage)
+    if isdefined(mod, :marginpermitted) && applicable(getfield(mod, :marginpermitted), bc, symbol, orderside, marginleverage)
         return mod.marginpermitted(bc, symbol, orderside, marginleverage)
     end
     return true
@@ -975,7 +1061,7 @@ function _servertime_retry_1m(xc::XchCache)::DateTime
 end
 
 function _sleepuntil(xc::XchCache, dt::DateTime)
-    if !isnothing(xc.enddt)  # then backtest
+    if !isnothing(xc.enddt) || (xc.mc[:simmode] != nosimulation)
         return
     end
     sleepperiod = (dt + Second(2)) - _servertime_retry_1m(xc)
@@ -1455,7 +1541,7 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
     return portfoliodf
 end
 
-openstatus(st::AbstractString)::Bool = st in ["New", "PartiallyFilled", "Untriggered"]
+openstatus(st::AbstractString)::Bool = st in ["New", "PartiallyFilled", "Untriggered", "Open"]
 openstatus(stvec::AbstractVector{String})::Vector{Bool} = [openstatus(st) for st in stvec]
 
 """
@@ -1478,7 +1564,7 @@ function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
     oo = _exchangeopenorders(xc, symbol=symboltoken(base))
     openordersdf = size(oo) == (0, 0) ? _emptyorders(exchange(xc)) : oo
     for row in eachrow(openordersdf)
-        _auditreconcileorderstate!(xc, NamedTuple(row); source="getopenorders")
+        _tradelogreconcileorderstate!(xc, NamedTuple(row); source="getopenorders")
     end
     if size(openordersdf, 1) > 0 && "orderid" in names(openordersdf)
         pruneadaptiveorders!(xc, openordersdf[!, :orderid])
@@ -1490,7 +1576,7 @@ end
 function getorder(xc::XchCache, orderid; auditevent::Bool=true)
     order = _exchangeorder(xc, orderid)
     if auditevent && !isnothing(order)
-        _auditreconcileorderstate!(xc, order; source="getorder")
+        _tradelogreconcileorderstate!(xc, order; source="getorder")
     end
     return order
 end
@@ -1498,27 +1584,30 @@ end
 "Returns orderid in case of a successful cancellation"
 function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_label=nothing)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
-        setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
+        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
-    oo = getorder(xc, orderid; auditevent=false)
     unregisteradaptiveorder!(xc, orderid)
-    cancelsymbol = if !isnothing(oo) && hasproperty(oo, :symbol) && !ismissing(oo.symbol)
-        String(oo.symbol)
-    else
-        symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
-    end
+    cancelsymbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
     cancelled = _exchangecancelorder(xc, cancelsymbol, orderid)
     if !isnothing(cancelled)
-        current = getorder(xc, orderid; auditevent=false)
-        if isnothing(current) && !isnothing(oo)
-            current = (; oo..., status="Cancelled", updated=Dates.now(Dates.UTC), rejectreason="cancelled_by_user")
-        end
-        if !isnothing(current)
-            _auditreconcileorderstate!(xc, current; source="cancelorder")
-        end
+        # Assume exchange-side cancel success when Kraken confirms CancelOrder.
+        # If reality diverges, the next OpenOrders loop will re-discover the order.
+        current = (
+            orderid=String(orderid),
+            symbol=String(cancelsymbol),
+            side=missing,
+            baseqty=0f0,
+            executedqty=0f0,
+            limitprice=missing,
+            marginleverage=0,
+            status="Cancelled",
+            updated=Dates.now(Dates.UTC),
+            rejectreason="cancelled_by_user",
+        )
+        _tradelogreconcileorderstate!(xc, current; source="cancelorder_assumed_success")
     end
     if !isnothing(leg_group_id) || !isnothing(leg_label)
-        clearauditcontext!(xc)
+        cleartradelogcontext!(xc)
     end
     return cancelled
 end
@@ -1540,27 +1629,27 @@ function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequan
     _asserttradeallowed(xc)
     symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
-        setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
+        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     try
         # Adapter-backed path for both live and simulation exchanges.
         created = _exchangecreateorder(xc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage, reduceonly=reduceonly)
         oid, oocreate = _normalizecreatedorder(xc, created)
         if !isnothing(parent_order_id) && !isnothing(oid)
-            _auditsetorderparent!(xc, String(oid), String(parent_order_id))
+            _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
         end
-        _auditcreatedorder!(xc, trade_exchange_spot, symbol, "Buy", basequantity, limitprice, marginleverage, oocreate)
+        _tradelogcreatedorder!(xc, trade_exchange_spot, symbol, "Buy", basequantity, limitprice, marginleverage, oocreate)
         if isnothing(limitprice) && maker && !isnothing(oid)
             registeradaptiveorder!(xc, oid)
         end
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     catch err
-        _auditordererror!(xc, trade_exchange_spot, symbol, "Buy", basequantity, limitprice, marginleverage, err)
+        _tradelogordererror!(xc, trade_exchange_spot, symbol, "Buy", basequantity, limitprice, marginleverage, err)
         rethrow()
     finally
         if !isnothing(leg_group_id) || !isnothing(leg_label)
-            clearauditcontext!(xc)
+            cleartradelogcontext!(xc)
         end
     end
 end
@@ -1582,27 +1671,27 @@ function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequa
     _asserttradeallowed(xc)
     symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
-        setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
+        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     try
         # Adapter-backed path for both live and simulation exchanges.
         created = _exchangecreateorder(xc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage, reduceonly=reduceonly)
         oid, oocreate = _normalizecreatedorder(xc, created)
         if !isnothing(parent_order_id) && !isnothing(oid)
-            _auditsetorderparent!(xc, String(oid), String(parent_order_id))
+            _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
         end
-        _auditcreatedorder!(xc, trade_exchange_spot, symbol, "Sell", basequantity, limitprice, marginleverage, oocreate)
+        _tradelogcreatedorder!(xc, trade_exchange_spot, symbol, "Sell", basequantity, limitprice, marginleverage, oocreate)
         if isnothing(limitprice) && maker && !isnothing(oid)
             registeradaptiveorder!(xc, oid)
         end
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     catch err
-        _auditordererror!(xc, trade_exchange_spot, symbol, "Sell", basequantity, limitprice, marginleverage, err)
+        _tradelogordererror!(xc, trade_exchange_spot, symbol, "Sell", basequantity, limitprice, marginleverage, err)
         rethrow()
     finally
         if !isnothing(leg_group_id) || !isnothing(leg_label)
-            clearauditcontext!(xc)
+            cleartradelogcontext!(xc)
         end
     end
 end
@@ -1614,22 +1703,15 @@ If the order is post-only and `limitprice=nothing`, the routed adapter will
 re-snapshot the current spread and keep the maker intent adaptive instead of
 freezing the previous limit.
 """
-function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing, leg_group_id=nothing, leg_label=nothing)
+function changeorder(xc::XchCache, symbol::AbstractString, orderid; limitprice=nothing, basequantity=nothing, leg_group_id=nothing, leg_label=nothing)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
-        setauditcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
+        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
-    oo = getorder(xc, orderid; auditevent=false) #TODO in order to avoid this unnecessary order request the interface of exchange.amendorder need to remove symbol param
-    if isnothing(oo)
-        if !isnothing(leg_group_id) || !isnothing(leg_label)
-            clearauditcontext!(xc)
-        end
-        return nothing
-    end
-    amended = _exchangeamendorder(xc, oo.symbol, orderid; basequantity=basequantity, limitprice=limitprice)
+    amended = _exchangeamendorder(xc, String(symbol), String(orderid); basequantity=basequantity, limitprice=limitprice)
     new_orderid, ooamend = _normalizeamendedorder(xc, amended)
     if isnothing(new_orderid)
         if !isnothing(leg_group_id) || !isnothing(leg_label)
-            clearauditcontext!(xc)
+            cleartradelogcontext!(xc)
         end
         return nothing
     end
@@ -1639,14 +1721,72 @@ function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=not
             unregisteradaptiveorder!(xc, old_orderid)
             registeradaptiveorder!(xc, new_orderid)
         end
-        _auditreconcileorderstate!(xc, (; oo..., status="Cancelled", updated=Dates.now(Dates.UTC), rejectreason="amended_to=$(new_orderid)"); source="changeorder")
-        _auditsetorderparent!(xc, new_orderid, old_orderid)
+        if !isnothing(ooamend) && hasproperty(ooamend, :symbol)
+            cancelled = (
+                orderid=old_orderid,
+                symbol=String(getproperty(ooamend, :symbol)),
+                side=hasproperty(ooamend, :side) ? getproperty(ooamend, :side) : missing,
+                baseqty=hasproperty(ooamend, :baseqty) ? getproperty(ooamend, :baseqty) : 0f0,
+                executedqty=0f0,
+                limitprice=missing,
+                marginleverage=0,
+                status="Cancelled",
+                updated=Dates.now(Dates.UTC),
+                rejectreason="amended_to=$(new_orderid)",
+            )
+            _tradelogreconcileorderstate!(xc, cancelled; source="changeorder")
+        end
+        _tradelogsetorderparent!(xc, new_orderid, old_orderid)
     end
     if !isnothing(ooamend)
-        _auditreconcileorderstate!(xc, ooamend; source="changeorder")
+        _tradelogreconcileorderstate!(xc, ooamend; source="changeorder")
     end
     if !isnothing(leg_group_id) || !isnothing(leg_label)
-        clearauditcontext!(xc)
+        cleartradelogcontext!(xc)
+    end
+    return new_orderid
+end
+
+function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing, leg_group_id=nothing, leg_label=nothing)
+    if !isnothing(leg_group_id) || !isnothing(leg_label)
+        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
+    end
+    amended = _exchangeamendorder(xc, String(orderid); basequantity=basequantity, limitprice=limitprice)
+    new_orderid, ooamend = _normalizeamendedorder(xc, amended)
+    if isnothing(new_orderid)
+        if !isnothing(leg_group_id) || !isnothing(leg_label)
+            cleartradelogcontext!(xc)
+        end
+        return nothing
+    end
+    old_orderid = String(orderid)
+    if new_orderid != old_orderid
+        if isadaptiveorder(xc, old_orderid)
+            unregisteradaptiveorder!(xc, old_orderid)
+            registeradaptiveorder!(xc, new_orderid)
+        end
+        if !isnothing(ooamend) && hasproperty(ooamend, :symbol)
+            cancelled = (
+                orderid=old_orderid,
+                symbol=String(getproperty(ooamend, :symbol)),
+                side=hasproperty(ooamend, :side) ? getproperty(ooamend, :side) : missing,
+                baseqty=hasproperty(ooamend, :baseqty) ? getproperty(ooamend, :baseqty) : 0f0,
+                executedqty=0f0,
+                limitprice=missing,
+                marginleverage=0,
+                status="Cancelled",
+                updated=Dates.now(Dates.UTC),
+                rejectreason="amended_to=$(new_orderid)",
+            )
+            _tradelogreconcileorderstate!(xc, cancelled; source="changeorder")
+        end
+        _tradelogsetorderparent!(xc, new_orderid, old_orderid)
+    end
+    if !isnothing(ooamend)
+        _tradelogreconcileorderstate!(xc, ooamend; source="changeorder")
+    end
+    if !isnothing(leg_group_id) || !isnothing(leg_label)
+        cleartradelogcontext!(xc)
     end
     return new_orderid
 end
@@ -1662,7 +1802,7 @@ Places a three-leg bracket (OCO) order group:
 - **stop_loss**: limit order on the opposite side at `stop_loss_price`
 
 All three legs share the same `leg_group_id` (a new UUID) and the take-profit/stop-loss
-legs record the entry order id as their `parent_order_id` in the audit trail.
+legs record the entry order id as their `parent_order_id` in the TradeLog trail.
 
 Returns a `NamedTuple` `(; leg_group_id, entry_order_id, take_profit_order_id, stop_loss_order_id)`.
 Any leg that fails to submit will have `nothing` as its order id.
@@ -1685,7 +1825,7 @@ function createocoorder(xc::XchCache, base::AbstractString;
 
     # Helper: set full context (signal info + leg metadata) and return it to the caller so
     # we can manage the clear ourselves rather than relying on createXorder's finally block.
-    _setlegctx!(leg_label_str) = setauditcontext!(xc;
+    _setlegctx!(leg_label_str) = settradelogcontext!(xc;
         strategy_engine=something(strategy_engine, missing),
         strategy_config_ref=something(strategy_config_ref, missing),
         signal_label=something(signal_label, missing),
@@ -1695,7 +1835,7 @@ function createocoorder(xc::XchCache, base::AbstractString;
     )
 
     # We call createXorder without leg_group_id/leg_label so it does NOT touch the context
-    # (createXorder only calls setauditcontext!/clearauditcontext! when those kwargs are
+    # (createXorder only calls settradelogcontext!/cleartradelogcontext! when those kwargs are
     # non-nothing).  We manage context ourselves here.
 
     # --- entry leg ---
@@ -1717,7 +1857,7 @@ function createocoorder(xc::XchCache, base::AbstractString;
             )
         end
     finally
-        clearauditcontext!(xc)
+        cleartradelogcontext!(xc)
     end
 
     # --- take-profit leg ---
@@ -1741,7 +1881,7 @@ function createocoorder(xc::XchCache, base::AbstractString;
             )
         end
     finally
-        clearauditcontext!(xc)
+        cleartradelogcontext!(xc)
     end
 
     # --- stop-loss leg ---
@@ -1765,7 +1905,7 @@ function createocoorder(xc::XchCache, base::AbstractString;
             )
         end
     finally
-        clearauditcontext!(xc)
+        cleartradelogcontext!(xc)
     end
 
     return (; leg_group_id, entry_order_id, take_profit_order_id, stop_loss_order_id)
@@ -1806,7 +1946,10 @@ _emptyassets()::DataFrame = DataFrame(coin=String31[], free=Float32[], locked=Fl
 "Return an empty order dataframe with CryptoXch bookkeeping columns added."
 function _emptyorders(exchange::AbstractString=EXCHANGE_BYBIT)::DataFrame
     df = _exchangeemptyorders(exchange)
-    insertcols!(df, :marginleverage => Vector{Int32}(undef, 0))
+    if !hasproperty(df, :marginleverage)
+        insertcols!(df, :marginleverage => Vector{Int32}(undef, 0))
+    end
+    return df
 end
 
 function _ordersfilestem(xc::XchCache)

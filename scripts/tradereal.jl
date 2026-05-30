@@ -48,16 +48,19 @@ const MAX_ASSET_FRACTION = 0.1f0
 # If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
 const MAX_BUDGET_QUOTE = 1000 # nothing
 
+# Safety margin applied to portfolio equity before the budget cap.
+# Budget limit = min(MAX_BUDGET_QUOTE, sum(balance) * (1 - SAFETY_MARGIN)).
+const SAFETY_MARGIN = 0.1
+
 # TrendDetector config 046: GainSegment strategy parameters.
 # These come from mk046config() → tradingstrategy03().
 # Override individual fields here if needed.
-const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
+const CONFIG046_STRATEGY = tradingstrategy04()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 const CONFIG046_NAME = "046"
 const MODEL046_FOLDER = "Trend-046-production"
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = "tradereal-" * CONFIG046_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
-const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
+const LOG_SUBFOLDER_PREFIX = "tradereal-" * CONFIG046_NAME
 
 "Return the value for key from args entries in the form key=value, or default."
 function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing, AbstractString}=nothing)
@@ -82,6 +85,14 @@ function _resolve_exchange(args::Vector{String}, default_exchange::AbstractStrin
     haskey(aliases, key) && return aliases[key]
     valid = collect(values(aliases))
     error("unsupported xch=$(raw). Expected one of $(valid) or aliases bybit|krakenspot|krakenfutures")
+end
+
+"Return a filesystem-safe token for exchange-specific log folder names."
+function _exchange_logtoken(exchange::AbstractString)::String
+    token = lowercase(strip(String(exchange)))
+    token = replace(token, r"[^a-z0-9]+" => "-")
+    token = strip(token, '-')
+    return isempty(token) ? "exchange" : token
 end
 
 # Normalize whitelist entries to base coins for the configured quote coin.
@@ -288,6 +299,10 @@ ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
 EnvConfig.init(production)
 EnvConfig.cryptoquote = QUOTE_COIN
 selected_exchange = _resolve_exchange(ARGS, EXCHANGE)
+exchange_log_token = _exchange_logtoken(selected_exchange)
+EnvConfig.setcoinspath!("coins_" * exchange_log_token)
+log_subfolder = LOG_SUBFOLDER_PREFIX * "-" * exchange_log_token * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
+orders_subfolder = joinpath(log_subfolder, "orders")
 classifier = try
     loadtrend046classifier(MODEL046_FOLDER)
 catch err
@@ -295,7 +310,7 @@ catch err
     println(stderr, "$(EnvConfig.now()): tradereal aborted")
     exit(1)
 end
-EnvConfig.setlogpath(LOG_SUBFOLDER)
+EnvConfig.setlogpath(log_subfolder)
 
 messagelogfn = EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")
 println("$(EnvConfig.now()): starting tradereal with config=$CONFIG046_NAME")
@@ -336,12 +351,14 @@ cache.mc[:whitelistcoins]    = whitelist
 cache.mc[:restrictedcoins]   = restricted
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
 cache.mc[:maxbudgetquote]    = run_max_budget_quote
-cache.mc[:audit_portfolio_snapshot_mode] = :session_start
+cache.mc[:budgetsafetymargin] = SAFETY_MARGIN
+cache.mc[:tradelog_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$selected_exchange, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): max budget cap quote=$(isnothing(run_max_budget_quote) ? "none" : run_max_budget_quote)")
+println("$(EnvConfig.now()): budget safety margin=$(SAFETY_MARGIN)")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
 println("$(EnvConfig.now()): restricted coins ($(length(restricted)) bases): $restricted")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
@@ -360,6 +377,12 @@ end
 let
     init_balances = CryptoXch.balances(xc, ignoresmallvolume=false)
     @info "Startup credential check OK: $(selected_exchange) returned $(size(init_balances, 1)) balance entries"
+    init_assets = CryptoXch.portfolio!(xc, init_balances; ignoresmallvolume=false)
+    budget_limit_quote = Trade._effectivebudgetquote(cache, init_assets)
+    allocated_budget_quote = Trade._allocatedbudgetquote(init_assets)
+    maxassetquote = cache.mc[:maxassetfraction] * budget_limit_quote
+    overallocated_quote = max(0.0, allocated_budget_quote - budget_limit_quote)
+    @info "Startup budget allocation (quote)" budget_limit_quote=budget_limit_quote allocated_budget_quote=allocated_budget_quote overallocated_quote=overallocated_quote maxassetquote=maxassetquote maxassetfraction=cache.mc[:maxassetfraction] safety_margin=cache.mc[:budgetsafetymargin] max_budget_cap_quote=cache.mc[:maxbudgetquote]
 end
 
 # Log any pre-existing open orders — they will be cancelled at the first trade step.
@@ -432,7 +455,7 @@ finally
     catch err
         @warn "failed to write private call summary" error=sprint(showerror, err)
     end
-    EnvConfig.setlogpath(ORDERS_SUBFOLDER)
+    EnvConfig.setlogpath(orders_subfolder)
     CryptoXch.writeorders(cache.xc)
     @info "$(EnvConfig.now()): saved production orders to $(EnvConfig.logfolder())"
     @info "$(EnvConfig.now()): tradereal finished"

@@ -66,3 +66,23 @@ using EnvConfig, Trade, TradingStrategy, Classify, CryptoXch, Targets
     Trade.apply_tradingstrategy!(tc, gs; strategy_engine=:getgainsalgo, source="test")
     @test isempty(tc.mc[:managed_close_orders])
 end
+
+@testset "Missing close-order check includes managed state" begin
+    EnvConfig.init(EnvConfig.test)
+
+    xc = CryptoXch.XchCache()
+    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
+
+    assets = DataFrame(
+        coin=["BTC", EnvConfig.cryptoquote],
+        free=Float32[0.0f0, 2000.0f0],
+        locked=Float32[0.0f0, 0.0f0],
+        borrowed=Float32[1.0f0, 0.0f0],
+        usdtprice=Float32[100.0f0, 1.0f0],
+        usdtvalue=Float32[-100.0f0, 2000.0f0],
+    )
+
+    Trade._managedcloseset!(tc, "BTC", "oid-pending-shortclose", Targets.shortclose; limitprice=100.0f0, baseqty=1.0f0)
+    missing = Trade._positions_without_close_orders(tc, assets, DataFrame())
+    @test isempty(missing)
+end
