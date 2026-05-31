@@ -15,6 +15,8 @@ end
     include("active_buy_cache_test.jl")
     include("reload_cadence_test.jl")
     include("bybit_guardrail_test.jl")
+    include("objective4_scaffolding_test.jl")
+    include("runtime_api_integration_test.jl")
     if _hastadeauditpkg()
         include("audit_snapshot_test.jl")
         include("ownership_selection_test.jl")

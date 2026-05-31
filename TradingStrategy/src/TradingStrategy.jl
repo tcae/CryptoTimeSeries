@@ -10,7 +10,7 @@ This module intentionally keeps only the API surface required by:
 module TradingStrategy
 
 using DataFrames, Dates
-using EnvConfig, Targets
+using EnvConfig, Targets, Classify, CryptoXch, Ohlcv
 
 """Return the normalized config-scoped subfolder used for persisted trade artifacts."""
 function tradesfolder(stem::AbstractString="gains")::String
@@ -50,6 +50,7 @@ function loadtrades(; stem::AbstractString="gains")
     aggregate = EnvConfig.readdf(tradesaggregate(stem))
     if !isnothing(aggregate) && (size(aggregate, 1) > 0)
         return DataFrame(aggregate)
+        "Return the minimum history window required by this runtime implementation."
     end
 
     folderpath = normpath(joinpath(EnvConfig.logfolder(), tradesfolder(stem)))
@@ -58,15 +59,18 @@ function loadtrades(; stem::AbstractString="gains")
     parts = DataFrame[]
     for entry in readdir(folderpath; join=false, sort=true)
         name = splitext(entry)[1]
+        "Return the set of currently accepted bases tracked by this runtime implementation."
         piece = EnvConfig.readdf(name; folderpath=folderpath)
         if !isnothing(piece) && (size(piece, 1) > 0)
             push!(parts, DataFrame(piece))
+        "Drop one base from runtime state and any cached strategy data."
         end
     end
     return isempty(parts) ? DataFrame() : reduce(vcat, parts; cols=:union)
 end
 
 """Load persisted trades for one specific coin."""
+        "Drop one base from the gain-segment runtime, including classifier and cached lane state."
 function loadtrades(coin::AbstractString; stem::AbstractString="gains")
     tradedf = EnvConfig.readdf(tradefilename(coin; stem=stem))
     return isnothing(tradedf) ? DataFrame() : DataFrame(tradedf)
@@ -139,6 +143,135 @@ end
 @inline _lanehascloseguidance(ta::TradeAction) = (ta.openprice > 0f0) && (ta.closeprice > 0f0)
 @inline _price_in_bar(price::Float32, low::Real, high::Real) = (Float32(low) <= price) && (price <= Float32(high))
 
+"Return the minimum history window required by this runtime implementation."
+requiredhistoryminutes(rt::AbstractStrategyRuntime)::Int = 0
+
+"Return the minimum history window required by the gain-segment runtime classifier."
+function requiredhistoryminutes(rt::GainSegmentRuntime)::Int
+    try
+        return max(0, Int(Classify.requiredminutes(rt.classifier)))
+    catch
+        return 0
+    end
+end
+
+"Return the bases currently accepted by this runtime implementation."
+acceptedbases(rt::AbstractStrategyRuntime)::Set{String} = Set{String}()
+acceptedbases(rt::GainSegmentRuntime)::Set{String} = copy(rt.accepted)
+
+"Drop one base from runtime state and any cached strategy data."
+function dropbase!(rt::AbstractStrategyRuntime, base::AbstractString)::Nothing
+    _ = rt
+    _ = base
+    return nothing
+end
+
+"Drop one base from the gain-segment runtime, including classifier and cached lane state."
+function dropbase!(rt::GainSegmentRuntime, base::AbstractString)::Nothing
+    basekey = uppercase(String(base))
+    try
+        Classify.removebase!(rt.classifier, basekey)
+    catch
+    end
+    delete!(rt.strategy_state, basekey)
+    delete!(rt.strategy_history, basekey)
+    delete!(rt.accepted, basekey)
+    return nothing
+end
+
+"Reset runtime state to its default empty configuration."
+function reset!(rt::AbstractStrategyRuntime)::Nothing
+    _ = rt
+    return nothing
+end
+
+"Reset the gain-segment runtime, clearing accepted bases and cached classifier state."
+function reset!(rt::GainSegmentRuntime)::Nothing
+    empty!(rt.strategy_state)
+    empty!(rt.strategy_history)
+    try
+        Classify.removebase!(rt.classifier, nothing)
+    catch
+    end
+    return nothing
+end
+
+"Apply a strategy template to the runtime implementation."
+function apply_strategy!(rt::AbstractStrategyRuntime, gs::GainSegment; source::AbstractString="manual")::Nothing
+    _ = rt
+    _ = gs
+    _ = source
+    return nothing
+end
+
+"Apply a gain-segment template to the runtime and clear any derived cached state."
+function apply_strategy!(rt::GainSegmentRuntime, gs::GainSegment; source::AbstractString="manual")::Nothing
+    rt.strategy_template = deepcopy(gs)
+    rt.source = String(source)
+    empty!(rt.strategy_state)
+    empty!(rt.strategy_history)
+    return nothing
+end
+
+"Return the per-base runtime history cache, creating an empty one when needed."
+function _runtimehistory!(rt::GainSegmentRuntime, base::AbstractString)
+    basekey = uppercase(String(base))
+    return get!(rt.strategy_history, basekey) do
+        (
+            predictionsdf=DataFrame(opentime=DateTime[], high=Float32[], low=Float32[], close=Float32[]),
+            scores=Float32[],
+            labels=Targets.TradeLabel[],
+        )
+    end
+end
+
+"Return the per-base gain-segment runtime state, cloning the current template when needed."
+function _runtimestate!(rt::GainSegmentRuntime, base::AbstractString)
+    basekey = uppercase(String(base))
+    return get!(rt.strategy_state, basekey) do
+        deepcopy(rt.strategy_template)
+    end
+end
+
+"Append or update one runtime sample derived from the current OHLCV bar and classifier output."
+function _upsert_runtime_sample!(history, ohlcv::Ohlcv.OhlcvData, label::Targets.TradeLabel, score)
+    rowix = ohlcv.ix
+    odf = Ohlcv.dataframe(ohlcv)
+    @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
+    opentime = odf[rowix, :opentime]
+    high = Float32(odf[rowix, :high])
+    low = Float32(odf[rowix, :low])
+    close = Float32(odf[rowix, :close])
+    sc = Float32(score)
+
+    if size(history.predictionsdf, 1) > 0 && (history.predictionsdf[end, :opentime] == opentime)
+        history.predictionsdf[end, :high] = high
+        history.predictionsdf[end, :low] = low
+        history.predictionsdf[end, :close] = close
+        history.scores[end] = sc
+        history.labels[end] = label
+    else
+        push!(history.predictionsdf, (opentime=opentime, high=high, low=low, close=close))
+        push!(history.scores, sc)
+        push!(history.labels, label)
+    end
+    return history
+end
+
+"Apply reconciliation input to one gain segment before running gain calculations."
+function _apply_runtime_reconciliation!(gs::GainSegment, reconciliation::StrategyReconciliationInput)
+    setreconciliation!(
+        gs;
+        long_open_qty=reconciliation.has_long_open ? 1f0 : 0f0,
+        long_avg_entry=reconciliation.long_avg_entry,
+        long_open_ix=reconciliation.long_open_ix,
+        short_open_qty=reconciliation.has_short_open ? 1f0 : 0f0,
+        short_avg_entry=reconciliation.short_avg_entry,
+        short_open_ix=reconciliation.short_open_ix,
+    )
+    return gs
+end
+
 """Return an empty gain dataframe with the canonical Trade-consumed schema."""
 function emptygaindf()::DataFrame
     return DataFrame(
@@ -185,7 +318,296 @@ mutable struct GainSegment
     end
 end
 
-"""Set execution reconciliation hints for lane synchronization."""
+abstract type AbstractStrategyRuntime end
+
+Base.@kwdef mutable struct StrategySnapshot
+    base::String
+    datetime::DateTime
+    label::Targets.TradeLabel = Targets.ignore
+    long_openprice::Float32 = 0f0
+    long_closeprice::Float32 = 0f0
+    long_openix::Int = 0
+    short_openprice::Float32 = 0f0
+    short_closeprice::Float32 = 0f0
+    short_openix::Int = 0
+    probability::Float32 = 0f0
+    configid::Int = 0
+    source::Symbol = :tradingstrategy
+end
+
+Base.@kwdef struct StrategyReconciliationInput
+    has_long_open::Bool = false
+    long_avg_entry::Float32 = 0f0
+    long_open_ix::Int = 0
+    has_short_open::Bool = false
+    short_avg_entry::Float32 = 0f0
+    short_open_ix::Int = 0
+end
+
+mutable struct GainSegmentRuntime <: AbstractStrategyRuntime
+    classifier::Classify.AbstractClassifier
+    strategy_template::GainSegment
+    strategy_state::Dict{String, GainSegment}
+    strategy_history::Dict{String, NamedTuple{(:predictionsdf, :scores, :labels), Tuple{DataFrame, Vector{Float32}, Vector{Targets.TradeLabel}}}}
+    accepted::Set{String}
+    source::String
+    function GainSegmentRuntime(; classifier::Classify.AbstractClassifier=Classify.Classifier011(), strategy::GainSegment=GainSegment(), source::AbstractString="manual")
+        return new(classifier, deepcopy(strategy), Dict{String, GainSegment}(), Dict{String, NamedTuple{(:predictionsdf, :scores, :labels), Tuple{DataFrame, Vector{Float32}, Vector{Targets.TradeLabel}}}}(), Set{String}(), String(source))
+    end
+end
+
+"Return the minimum history window required by this runtime implementation."
+requiredhistoryminutes(rt::AbstractStrategyRuntime)::Int = 0
+
+"Return the minimum history window required by the gain-segment runtime classifier."
+function requiredhistoryminutes(rt::GainSegmentRuntime)::Int
+    try
+        return max(0, Int(Classify.requiredminutes(rt.classifier)))
+    catch
+        return 0
+    end
+end
+
+"Return the bases currently accepted by this runtime implementation."
+acceptedbases(rt::AbstractStrategyRuntime)::Set{String} = Set{String}()
+acceptedbases(rt::GainSegmentRuntime)::Set{String} = copy(rt.accepted)
+
+"Drop one base from runtime state and any cached strategy data."
+function dropbase!(rt::AbstractStrategyRuntime, base::AbstractString)::Nothing
+    _ = rt
+    _ = base
+    return nothing
+end
+
+"Drop one base from the gain-segment runtime, including classifier and cached lane state."
+function dropbase!(rt::GainSegmentRuntime, base::AbstractString)::Nothing
+    basekey = uppercase(String(base))
+    try
+        Classify.removebase!(rt.classifier, basekey)
+    catch
+    end
+    delete!(rt.strategy_state, basekey)
+    delete!(rt.strategy_history, basekey)
+    delete!(rt.accepted, basekey)
+    return nothing
+end
+
+"Reset runtime state to its default empty configuration."
+function reset!(rt::AbstractStrategyRuntime)::Nothing
+    _ = rt
+    return nothing
+end
+
+"Reset the gain-segment runtime, clearing accepted bases and cached classifier state."
+function reset!(rt::GainSegmentRuntime)::Nothing
+    empty!(rt.strategy_state)
+    empty!(rt.strategy_history)
+    try
+        Classify.removebase!(rt.classifier, nothing)
+    catch
+    end
+    return nothing
+end
+
+"Apply a strategy template to the runtime implementation."
+function apply_strategy!(rt::AbstractStrategyRuntime, gs::GainSegment; source::AbstractString="manual")::Nothing
+    _ = rt
+    _ = gs
+    _ = source
+    return nothing
+end
+
+"Apply a gain-segment template to the runtime and clear any derived cached state."
+function apply_strategy!(rt::GainSegmentRuntime, gs::GainSegment; source::AbstractString="manual")::Nothing
+    rt.strategy_template = deepcopy(gs)
+    rt.source = String(source)
+    empty!(rt.strategy_state)
+    empty!(rt.strategy_history)
+end
+
+"Return the per-base runtime history cache, creating an empty one when needed."
+function _runtimehistory!(rt::GainSegmentRuntime, base::AbstractString)
+    basekey = uppercase(String(base))
+    return get!(rt.strategy_history, basekey) do
+        (
+            predictionsdf=DataFrame(opentime=DateTime[], high=Float32[], low=Float32[], close=Float32[]),
+            scores=Float32[],
+            labels=Targets.TradeLabel[],
+        )
+    end
+end
+
+"Return the per-base gain-segment runtime state, cloning the current template when needed."
+function _runtimestate!(rt::GainSegmentRuntime, base::AbstractString)
+    basekey = uppercase(String(base))
+    return get!(rt.strategy_state, basekey) do
+        deepcopy(rt.strategy_template)
+    end
+end
+
+"Append or update one runtime sample derived from the current OHLCV bar and classifier output."
+function _upsert_runtime_sample!(history, ohlcv::Ohlcv.OhlcvData, label::Targets.TradeLabel, score)
+    rowix = ohlcv.ix
+    odf = Ohlcv.dataframe(ohlcv)
+    @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
+    opentime = odf[rowix, :opentime]
+    high = Float32(odf[rowix, :high])
+    low = Float32(odf[rowix, :low])
+    close = Float32(odf[rowix, :close])
+    sc = Float32(score)
+
+    if size(history.predictionsdf, 1) > 0 && (history.predictionsdf[end, :opentime] == opentime)
+        history.predictionsdf[end, :high] = high
+        history.predictionsdf[end, :low] = low
+        history.predictionsdf[end, :close] = close
+        history.scores[end] = sc
+        history.labels[end] = label
+    else
+        push!(history.predictionsdf, (opentime=opentime, high=high, low=low, close=close))
+        push!(history.scores, sc)
+        push!(history.labels, label)
+    end
+    return history
+end
+
+"Apply reconciliation input to one gain segment before running gain calculations."
+function _apply_runtime_reconciliation!(gs::GainSegment, reconciliation::StrategyReconciliationInput)
+    setreconciliation!(
+        gs;
+        long_open_qty=reconciliation.has_long_open ? 1f0 : 0f0,
+        long_avg_entry=reconciliation.long_avg_entry,
+        long_open_ix=reconciliation.long_open_ix,
+        short_open_qty=reconciliation.has_short_open ? 1f0 : 0f0,
+        short_avg_entry=reconciliation.short_avg_entry,
+        short_open_ix=reconciliation.short_open_ix,
+    )
+    return gs
+end
+
+"Prepare a runtime implementation for the requested bases. Empty fallback for runtimes that do not load data themselves."
+function preparebases!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}; history_startdt::DateTime, datetime::DateTime, updatecache::Bool=false)::Nothing
+    _ = rt
+    _ = xc
+    _ = bases
+    _ = history_startdt
+    _ = datetime
+    _ = updatecache
+    return nothing
+end
+
+"Prepare the gain-segment runtime for the requested bases using available OHLCV data and update its accepted set."
+function preparebases!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}; history_startdt::DateTime, datetime::DateTime, updatecache::Bool=false)::Nothing
+    _ = history_startdt
+    _ = datetime
+    wanted = Set{String}(uppercase.(String.(bases)))
+
+    for stale in collect(setdiff(rt.accepted, wanted))
+        dropbase!(rt, stale)
+    end
+
+    loaded = Set{String}(String.(Classify.bases(rt.classifier)))
+    any_loaded = false
+    for base in sort!(collect(wanted))
+        try
+            ohlcv = CryptoXch.ohlcv(xc, base)
+            if !(base in loaded)
+                Classify.addbase!(rt.classifier, ohlcv)
+                push!(loaded, base)
+            end
+            any_loaded = true
+        catch
+            continue
+        end
+    end
+
+    if any_loaded
+        Classify.supplement!(rt.classifier)
+        updatecache && Classify.writetargetsfeatures(rt.classifier)
+    end
+
+    accepted = Set{String}(uppercase.(String.(Classify.bases(rt.classifier))))
+    intersect!(accepted, wanted)
+    rt.accepted = accepted
+    return nothing
+end
+
+"Return one strategy snapshot for a base, or `nothing` when the runtime has no signal to emit."
+function getsnapshot!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime; reconciliation::StrategyReconciliationInput=StrategyReconciliationInput())::Union{Nothing, StrategySnapshot}
+    _ = rt
+    _ = xc
+    _ = base
+    _ = datetime
+    _ = reconciliation
+    return nothing
+end
+
+"Return one strategy snapshot for a base using gain-segment runtime state and classifier output."
+function getsnapshot!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime; reconciliation::StrategyReconciliationInput=StrategyReconciliationInput())::Union{Nothing, StrategySnapshot}
+    basekey = uppercase(String(base))
+    advice = Classify.advice(rt.classifier, basekey, datetime, investment=nothing)
+    isnothing(advice) && return nothing
+
+    if !haskey(xc.bases, basekey)
+        (verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping getsnapshot" base=basekey
+        return nothing
+    end
+    ohlcv = CryptoXch.ohlcv(xc, basekey)
+    history = _runtimehistory!(rt, basekey)
+    _upsert_runtime_sample!(history, ohlcv, advice.tradelabel, advice.probability)
+
+    gs = _runtimestate!(rt, basekey)
+    _apply_runtime_reconciliation!(gs, reconciliation)
+
+    lastix = length(history.scores)
+    if lastix > 0
+        getgains(gs, history.predictionsdf, history.scores, history.labels, false; lastix=lastix, openthreshold=gs.openthreshold, closethreshold=gs.closethreshold)
+    end
+
+    cfgid = try
+        Int(advice.configid)
+    catch
+        0
+    end
+
+    return StrategySnapshot(
+        base=basekey,
+        datetime=datetime,
+        label=advice.tradelabel,
+        long_openprice=Float32(gs.longta.openprice),
+        long_closeprice=Float32(gs.longta.closeprice),
+        long_openix=Int(gs.longta.openix),
+        short_openprice=Float32(gs.shortta.openprice),
+        short_closeprice=Float32(gs.shortta.closeprice),
+        short_openix=Int(gs.shortta.openix),
+        probability=Float32(advice.probability),
+        configid=cfgid,
+        source=:tradingstrategy,
+    )
+end
+
+"Return one strategy snapshot per requested base, or an empty vector when the runtime does not emit snapshots."
+function getsnapshots!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}, datetime::DateTime; reconciliation_by_base::AbstractDict{String, StrategyReconciliationInput}=Dict{String, StrategyReconciliationInput}())::Vector{StrategySnapshot}
+    _ = rt
+    _ = xc
+    _ = bases
+    _ = datetime
+    _ = reconciliation_by_base
+    return StrategySnapshot[]
+end
+
+"Return one strategy snapshot per requested base using gain-segment runtime state."
+function getsnapshots!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}, datetime::DateTime; reconciliation_by_base::AbstractDict{String, StrategyReconciliationInput}=Dict{String, StrategyReconciliationInput}())::Vector{StrategySnapshot}
+    snaps = StrategySnapshot[]
+    for base in bases
+        basekey = uppercase(String(base))
+        recon = get(reconciliation_by_base, basekey, StrategyReconciliationInput())
+        snap = getsnapshot!(rt, xc, basekey, datetime; reconciliation=recon)
+        isnothing(snap) || push!(snaps, snap)
+    end
+    return snaps
+end
+
+"Set execution reconciliation hints for lane synchronization."
 function setreconciliation!(gs::GainSegment;
     long_open_qty::Real=0f0,
     long_avg_entry::Real=0f0,
@@ -205,13 +627,13 @@ function setreconciliation!(gs::GainSegment;
     return gs
 end
 
-"""Clear previously configured reconciliation hints."""
+"Clear previously configured reconciliation hints."
 function clearreconciliation!(gs::GainSegment)
     gs.lane_reconciliation = nothing
     return gs
 end
 
-"""Apply reconciliation hints to lane state without altering directional intent."""
+"Apply stored reconciliation hints to lane state without changing directional intent."
 function _apply_reconciliation_to_lanes!(gs::GainSegment)
     isnothing(gs.lane_reconciliation) && return gs
     rc = gs.lane_reconciliation
@@ -245,10 +667,10 @@ function _apply_reconciliation_to_lanes!(gs::GainSegment)
     return gs
 end
 
-"""Apply reconciliation hints and return the updated gain segment."""
+"Compatibility alias that applies stored reconciliation hints to the lane state."
 synclanes!(gs::GainSegment) = _apply_reconciliation_to_lanes!(gs)
 
-"""Reset one gain segment instance to initial runtime state."""
+"Reset one gain segment instance to initial runtime state."
 function reset!(gs::GainSegment)
     gs.predictionsdf = nothing
     gs.scores = nothing

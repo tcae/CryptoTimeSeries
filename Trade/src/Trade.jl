@@ -53,6 +53,39 @@ const UNMANAGED_CANCEL_MAX_PER_STEP = 3
 const UNMANAGED_CANCEL_COOLDOWN_FALLBACK = Dates.Second(45)
 const UNMANAGED_BACKLOG_DRAIN_THRESHOLD = 20
 const ORDER_AMEND_PRICE_REL_THRESHOLD_DEFAULT = 1f-4
+const ASYNC_SHADOW_PRICE_TOLERANCE = 1f-5
+const ASYNC_SHADOW_QTY_TOLERANCE = 1f-6
+
+function _envtrue(name::AbstractString, default::Bool=false)::Bool
+    raw = lowercase(strip(get(ENV, String(name), default ? "true" : "false")))
+    return raw in ("1", "true", "yes", "on")
+end
+
+function _envboolmaybe(name::AbstractString)::Union{Nothing, Bool}
+    key = String(name)
+    haskey(ENV, key) || return nothing
+    raw = lowercase(strip(String(ENV[key])))
+    if raw in ("1", "true", "yes", "on")
+        return true
+    elseif raw in ("0", "false", "no", "off")
+        return false
+    end
+    throw(ArgumentError("invalid boolean env $key=$(repr(raw)); expected one of 1/0,true/false,yes/no,on/off"))
+end
+
+function _init_objective4_flags!(mc::AbstractDict)
+    mc[:async_engine_enabled] = _envtrue("CTS_ASYNC_ENGINE_ENABLED", get(mc, :async_engine_enabled, false))
+    mc[:async_shadow_mode] = _envtrue("CTS_ASYNC_SHADOW_MODE", get(mc, :async_shadow_mode, true))
+    mc[:ws_marketdata_enabled] = _envtrue("CTS_WS_MARKETDATA_ENABLED", get(mc, :ws_marketdata_enabled, false))
+    mc[:exchange_balance_cache_owner] = _envtrue("CTS_EXCHANGE_BALANCE_CACHE_OWNER", get(mc, :exchange_balance_cache_owner, false))
+    mc[:ohlcv_gap_backfill_on_tradable] = _envtrue("CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE", get(mc, :ohlcv_gap_backfill_on_tradable, false))
+    mc[:async_shadow_autodisabled] = get(mc, :async_shadow_autodisabled, false)
+    mc[:async_shadow_autodisable_reason] = get(mc, :async_shadow_autodisable_reason, nothing)
+    mc[:async_shadow_last_compare] = get(mc, :async_shadow_last_compare, nothing)
+    mc[:exchange_balances_snapshot] = get(mc, :exchange_balances_snapshot, DataFrame())
+    mc[:exchange_balances_snapshot_dt] = get(mc, :exchange_balances_snapshot_dt, nothing)
+    return mc
+end
 
 function _setstrategyruntimefromsegment!(mc::AbstractDict, gs::TradingStrategy.GainSegment, source::AbstractString)
     mc[:strategy_template] = deepcopy(gs)
@@ -65,6 +98,14 @@ function _setstrategyruntimefromsegment!(mc::AbstractDict, gs::TradingStrategy.G
     mc[:strategy_maxwindow] = Int(gs.maxwindow)               # compatibility mirror
     mc[:strategy_source] = String(source)
     return mc
+end
+
+"Return true when runtime strategy API should be enabled by default for this cache."
+function _default_use_strategy_runtime_api(xc::CryptoXch.XchCache)::Bool
+    _ = xc
+    env_override = _envboolmaybe("CTS_USE_STRATEGY_RUNTIME_API")
+    !isnothing(env_override) && return Bool(env_override)
+    return EnvConfig.configmode == EnvConfig.test
 end
 
 function _portfoliototal(assets::AbstractDataFrame)::Float64
@@ -254,14 +295,21 @@ mutable struct TradeCache
         cache.mc[:trademode] = trademode  # see TradeMode definition above
         cache.mc[:usenewtrade] = false # implementation switch between old and new trade! method
         cache.mc[:strategy_engine] = :classifier  # :classifier (legacy) or :getgainsalgo
+        cache.mc[:use_strategy_runtime_api] = _default_use_strategy_runtime_api(xc) # when true, collect strategy snapshots via TradingStrategy runtime API
         cache.mc[:strategy_state] = Dict{String, Any}()  # per-base TradingStrategy.GainSegment
         cache.mc[:strategy_history] = Dict{String, Any}()  # per-base rolling price+signal history
         cache.mc[:managed_close_orders] = Dict{String, Dict{Symbol, Any}}()  # per-base reconstructed/managed close orders
         cache.mc[:openorders_snapshot] = DataFrame()
         _setstrategyruntimefromsegment!(cache.mc, TradingStrategy.GainSegment(), "default")
+        cache.mc[:strategy_runtime] = try
+            TradingStrategy.GainSegmentRuntime(classifier=cl, strategy=deepcopy(cache.mc[:strategy_template]), source="default")
+        catch
+            nothing
+        end
         cache.mc[:tradelog_portfolio_snapshot_mode] = :all  # :all, :session_start, :none
         cache.mc[:tradelog_portfolio_snapshot_written] = false
         cache.mc[:loop_state] = loop_idle
+        _init_objective4_flags!(cache.mc)
         (verbosity >= 4) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), maxbudgetquote = $(cache.mc[:maxbudgetquote]), reloadtimes = $(cache.mc[:reloadtimes]), exitcoins = $(cache.mc[:exitcoins]), whitelistcoins = $(cache.mc[:whitelistcoins]), longopencoins = $(cache.mc[:longopencoins]), shortopencoins = $(cache.mc[:shortopencoins])")
         return cache
     end
@@ -383,11 +431,25 @@ function _hasopenorderside(cache::TradeCache, symbol::AbstractString; side::Abst
     return false
 end
 
+function _strategyruntime(cache::TradeCache)::Union{Nothing, TradingStrategy.AbstractStrategyRuntime}
+    rt = get(cache.mc, :strategy_runtime, nothing)
+    return rt isa TradingStrategy.AbstractStrategyRuntime ? rt : nothing
+end
+
+function _runtime_api_enabled(cache::TradeCache)::Bool
+    return Bool(get(cache.mc, :use_strategy_runtime_api, false)) && !isnothing(_strategyruntime(cache))
+end
+
 function _tradeselection_history_minutes(tc::TradeCache)::Int
-    classifier_minutes = try
-        Int(Classify.requiredminutes(tc.cl))
-    catch
-        0
+    classifier_minutes = if _runtime_api_enabled(tc)
+        rt = _strategyruntime(tc)
+        isnothing(rt) ? 0 : max(0, Int(TradingStrategy.requiredhistoryminutes(rt)))
+    else
+        try
+            Int(Classify.requiredminutes(tc.cl))
+        catch
+            0
+        end
     end
     liquidity_minutes = Int(Ohlcv.ld.checkperiod + Ohlcv.ld.accumulate + LIQUIDITY_LOOKBACK_MARGIN_MINUTES)
     return max(classifier_minutes + 1, liquidity_minutes, 24 * 60)
@@ -834,6 +896,16 @@ function _disablerestrictedbase!(cache::TradeCache, base::AbstractString, reason
     catch err
         (verbosity >= 1) && @warn "failed removing restricted base from classifier cache" base=base_upper error=sprint(showerror, err)
     end
+    if _runtime_api_enabled(cache)
+        rt = _strategyruntime(cache)
+        if !isnothing(rt)
+            try
+                TradingStrategy.dropbase!(rt, base_upper)
+            catch err
+                (verbosity >= 1) && @warn "failed removing restricted base from strategy runtime" base=base_upper error=sprint(showerror, err)
+            end
+        end
+    end
     (verbosity >= 1) && @warn "removed restricted base from trading universe" base=base_upper reason=String(reason)
     return nothing
 end
@@ -993,7 +1065,12 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     removebases = setdiff(xcbases, tc.cfg[!, :basecoin])
     for rb in removebases  # remove coins that were loaded but are no longer part of the new configuration
         CryptoXch.removebase!(tc.xc, rb)
-        Classify.removebase!(tc.cl, rb)
+        if _runtime_api_enabled(tc)
+            rt = _strategyruntime(tc)
+            !isnothing(rt) && TradingStrategy.dropbase!(rt, rb)
+        else
+            Classify.removebase!(tc.cl, rb)
+        end
     end
     xcbaseset = Set(CryptoXch.bases(tc.xc))
     candidatebaseset = Set{String}()
@@ -1019,45 +1096,77 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     # Keep classifier/feature workload limited to liquidity candidates and portfolio holdings.
     for rb in setdiff(Set(CryptoXch.bases(tc.xc)), candidatebaseset)
         CryptoXch.removebase!(tc.xc, rb)
-        Classify.removebase!(tc.cl, rb)
-    end
-
-    classifierloadedset = Set(String.(Classify.bases(tc.cl)))
-    for row in eachrow(tc.cfg)
-        base = String(row.basecoin)
-        if (base in candidatebaseset) && !(base in classifierloadedset)
-            Classify.addbase!(tc.cl, CryptoXch.ohlcv(tc.xc, base))
-            push!(classifierloadedset, base)
+        if _runtime_api_enabled(tc)
+            rt = _strategyruntime(tc)
+            !isnothing(rt) && TradingStrategy.dropbase!(rt, rb)
+        else
+            Classify.removebase!(tc.cl, rb)
         end
     end
 
-    if !isempty(classifierloadedset)
-        Classify.supplement!(tc.cl)
-        if updatecache
-            Classify.writetargetsfeatures(tc.cl)
-        end
-    end
-    xcbases = CryptoXch.bases(tc.xc)
-    classifierbases = Classify.bases(tc.cl)
-    remove_xc_bases = setdiff(xcbases, classifierbases)
-    for rb in remove_xc_bases  # remove coins not accepted by classifier (e.g. insufficient requiredminutes)
-        CryptoXch.removebase!(tc.xc, rb)
-    end
-    remove_classifier_bases = setdiff(classifierbases, xcbases)
-    for rb in remove_classifier_bases  # drop stale classifier-only bases that are no longer in the exchange cache
-        Classify.removebase!(tc.cl, rb)
-    end
-    xcbases = CryptoXch.bases(tc.xc)
-    classifierbases = Classify.bases(tc.cl)
-    classifierbaseset = Set(classifierbases)
-    @assert Set(xcbases) == classifierbaseset "Set(xcbases)=$(xcbases) != Set(classifierbases)=$(classifierbases)"
+    selectedbases = String[]
+    if _runtime_api_enabled(tc)
+        rt = _strategyruntime(tc)
+        if !isnothing(rt)
+            TradingStrategy.preparebases!(rt, tc.xc, collect(candidatebaseset); history_startdt=history_startdt, datetime=datetime, updatecache=updatecache)
+            selectedset = Set(String.(TradingStrategy.acceptedbases(rt)))
 
-    tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
+            xcbases = CryptoXch.bases(tc.xc)
+            remove_xc_bases = setdiff(xcbases, selectedset)
+            for rb in remove_xc_bases  # remove coins not accepted by strategy runtime (e.g. insufficient requiredminutes)
+                CryptoXch.removebase!(tc.xc, rb)
+            end
+
+            remove_runtime_bases = setdiff(selectedset, Set(String.(CryptoXch.bases(tc.xc))))
+            for rb in remove_runtime_bases
+                TradingStrategy.dropbase!(rt, rb)
+            end
+
+            xcbases = CryptoXch.bases(tc.xc)
+            selectedset = Set(String.(TradingStrategy.acceptedbases(rt)))
+            @assert Set(xcbases) == selectedset "Set(xcbases)=$(xcbases) != Set(selectedbases)=$(collect(selectedset))"
+            selectedbases = sort!(collect(selectedset))
+            tc.cfg[:, :classifieraccepted] = [base in selectedset for base in tc.cfg[!, :basecoin]]
+        end
+    else
+        classifierloadedset = Set(String.(Classify.bases(tc.cl)))
+        for row in eachrow(tc.cfg)
+            base = String(row.basecoin)
+            if (base in candidatebaseset) && !(base in classifierloadedset)
+                Classify.addbase!(tc.cl, CryptoXch.ohlcv(tc.xc, base))
+                push!(classifierloadedset, base)
+            end
+        end
+
+        if !isempty(classifierloadedset)
+            Classify.supplement!(tc.cl)
+            if updatecache
+                Classify.writetargetsfeatures(tc.cl)
+            end
+        end
+        xcbases = CryptoXch.bases(tc.xc)
+        classifierbases = Classify.bases(tc.cl)
+        remove_xc_bases = setdiff(xcbases, classifierbases)
+        for rb in remove_xc_bases  # remove coins not accepted by classifier (e.g. insufficient requiredminutes)
+            CryptoXch.removebase!(tc.xc, rb)
+        end
+        remove_classifier_bases = setdiff(classifierbases, xcbases)
+        for rb in remove_classifier_bases  # drop stale classifier-only bases that are no longer in the exchange cache
+            Classify.removebase!(tc.cl, rb)
+        end
+        xcbases = CryptoXch.bases(tc.xc)
+        classifierbases = Classify.bases(tc.cl)
+        classifierbaseset = Set(classifierbases)
+        @assert Set(xcbases) == classifierbaseset "Set(xcbases)=$(xcbases) != Set(classifierbases)=$(classifierbases)"
+
+        selectedbases = String.(classifierbases)
+        tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
+    end
     _sync_tradeflags!(tc; assetonly=assetonly)
     # (verbosity >= 2) && _log_cachecfg_summary!(tc, "tradeselection")
     (verbosity >= 2) && println("$(CryptoXch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
     # tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
-    (verbosity >= 2) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases($(length(classifierbases)))=$(classifierbases) ")
+    (verbosity >= 2) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) selectedbases($(length(selectedbases)))=$(selectedbases) ")
 
     if !assetonly
         (verbosity >= 2) && println("\r$(CryptoXch.ttstr(tc.xc)) trained trade config on the fly including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
@@ -1123,6 +1232,24 @@ Base.@kwdef mutable struct StrategyAdvice
 end
 
 function _strategyadvice(ta::Classify.TradeAdvice; tradelabel::Targets.TradeLabel=ta.tradelabel, limitprice::Union{Nothing, Real}=nothing, source::Symbol=:classifier, allowreversal::Bool=true)
+    lp = isnothing(limitprice) ? nothing : Float32(limitprice)
+    return StrategyAdvice(
+        classifier=ta.classifier,
+        configid=ta.configid,
+        tradelabel=tradelabel,
+        relativeamount=Float32(ta.relativeamount),
+        base=String(ta.base),
+        price=lp,
+        datetime=ta.datetime,
+        hourlygain=Float32(ta.hourlygain),
+        probability=Float32(ta.probability),
+        investmentid=ta.investmentid,
+        source=source,
+        allowreversal=allowreversal,
+    )
+end
+
+function _strategyadvice(ta::StrategyAdvice; tradelabel::Targets.TradeLabel=ta.tradelabel, limitprice::Union{Nothing, Real}=ta.price, source::Symbol=ta.source, allowreversal::Bool=ta.allowreversal)
     lp = isnothing(limitprice) ? nothing : Float32(limitprice)
     return StrategyAdvice(
         classifier=ta.classifier,
@@ -1774,6 +1901,90 @@ end
 
 _strategyengine(cache::TradeCache) = Symbol(get(cache.mc, :strategy_engine, :classifier))
 
+function _snapshot_strategy_advices(tradeadvices::Vector{StrategyAdvice})::Vector{NamedTuple{(:base, :tradelabel, :price, :relativeamount), Tuple{String, String, Union{Nothing, Float32}, Float32}}}
+    rows = NamedTuple{(:base, :tradelabel, :price, :relativeamount), Tuple{String, String, Union{Nothing, Float32}, Float32}}[]
+    for ta in tradeadvices
+        push!(rows, (
+            base=uppercase(String(ta.base)),
+            tradelabel=String(Symbol(ta.tradelabel)),
+            price=isnothing(ta.price) ? nothing : Float32(ta.price),
+            relativeamount=Float32(ta.relativeamount),
+        ))
+    end
+    sort!(rows; by=x -> (x.base, x.tradelabel, isnothing(x.price) ? -1f0 : x.price, x.relativeamount))
+    return rows
+end
+
+function _shadow_compare_strategy_advices(sync_advices::Vector{StrategyAdvice}, async_advices::Vector{StrategyAdvice})
+    sync_rows = _snapshot_strategy_advices(sync_advices)
+    async_rows = _snapshot_strategy_advices(async_advices)
+    diffs = String[]
+    critical = false
+
+    if length(sync_rows) != length(async_rows)
+        critical = true
+        push!(diffs, "count_mismatch sync=$(length(sync_rows)) async=$(length(async_rows))")
+    end
+
+    shared = min(length(sync_rows), length(async_rows))
+    for i in 1:shared
+        s = sync_rows[i]
+        a = async_rows[i]
+        if (s.base != a.base) || (s.tradelabel != a.tradelabel)
+            critical = true
+            push!(diffs, "label_mismatch ix=$(i) sync=$(s.base):$(s.tradelabel) async=$(a.base):$(a.tradelabel)")
+        end
+        if isnothing(s.price) != isnothing(a.price)
+            critical = true
+            push!(diffs, "price_mode_mismatch ix=$(i) sync=$(s.price) async=$(a.price)")
+        elseif !isnothing(s.price)
+            pricediff = abs(Float32(s.price) - Float32(a.price))
+            if pricediff > ASYNC_SHADOW_PRICE_TOLERANCE
+                critical = true
+                push!(diffs, "price_mismatch ix=$(i) sync=$(s.price) async=$(a.price) diff=$(pricediff)")
+            end
+        end
+        qtydiff = abs(Float32(s.relativeamount) - Float32(a.relativeamount))
+        if qtydiff > ASYNC_SHADOW_QTY_TOLERANCE
+            critical = true
+            push!(diffs, "qty_mismatch ix=$(i) sync=$(s.relativeamount) async=$(a.relativeamount) diff=$(qtydiff)")
+        end
+    end
+
+    return (ok=!critical, critical=critical, sync_count=length(sync_rows), async_count=length(async_rows), diffs=diffs)
+end
+
+"Scaffolding hook: async candidate currently mirrors sync path until async workers are enabled." 
+function _collect_async_candidate_advices(cache::TradeCache, sync_advices::Vector{StrategyAdvice})::Vector{StrategyAdvice}
+    cache
+    return deepcopy(sync_advices)
+end
+
+function _run_async_shadow_compare!(cache::TradeCache, sync_advices::Vector{StrategyAdvice}, async_advices::Vector{StrategyAdvice})::Bool
+    result = _shadow_compare_strategy_advices(sync_advices, async_advices)
+    cache.mc[:async_shadow_last_compare] = merge((
+        datetime=cache.xc.currentdt,
+        async_shadow_mode=Bool(get(cache.mc, :async_shadow_mode, true)),
+    ), result)
+    if result.critical
+        cache.mc[:async_shadow_autodisabled] = true
+        cache.mc[:async_shadow_autodisable_reason] = isempty(result.diffs) ? "critical divergence" : result.diffs[1]
+        cache.mc[:async_engine_enabled] = false
+        (verbosity >= 1) && @warn "async shadow divergence detected; auto-disabling async engine" reason=cache.mc[:async_shadow_autodisable_reason] details=result.diffs
+        return false
+    end
+    return true
+end
+
+function _sync_exchange_balances_snapshot!(cache::TradeCache, assets::AbstractDataFrame)
+    if !Bool(get(cache.mc, :exchange_balance_cache_owner, false))
+        return nothing
+    end
+    cache.mc[:exchange_balances_snapshot] = deepcopy(assets)
+    cache.mc[:exchange_balances_snapshot_dt] = cache.xc.currentdt
+    return nothing
+end
+
 # ── Loop control ────────────────────────────────────────────────────────────
 
 "Returns the current loop lifecycle state."
@@ -1844,6 +2055,8 @@ end
 
 function apply_tradingstrategy!(cache::TradeCache, gs::TradingStrategy.GainSegment; strategy_engine::Symbol=:getgainsalgo, source::AbstractString="manual")
     apply_tradingstrategy!(cache.mc, gs; strategy_engine=strategy_engine, source=source)
+    rt = _strategyruntime(cache)
+    !isnothing(rt) && TradingStrategy.apply_strategy!(rt, gs; source=source)
     return cache
 end
 
@@ -2390,7 +2603,7 @@ function _ensure_managed_close_orders!(cache::TradeCache, assets::AbstractDataFr
     return nothing
 end
 
-function _getgainsalgo_lane_advices(gs::TradingStrategy.GainSegment, ta::Classify.TradeAdvice)::Vector{StrategyAdvice}
+function _getgainsalgo_lane_advices(gs::TradingStrategy.GainSegment, ta::StrategyAdvice)::Vector{StrategyAdvice}
     advices = StrategyAdvice[]
     buygain_zero = abs(Float32(gs.buygain)) <= eps(Float32)
 
@@ -2421,7 +2634,11 @@ function _getgainsalgo_lane_advices(gs::TradingStrategy.GainSegment, ta::Classif
     return advices
 end
 
-function _getgainsalgo_advices!(cache::TradeCache, base::AbstractString, ta::Classify.TradeAdvice, assets::AbstractDataFrame)::Vector{StrategyAdvice}
+function _getgainsalgo_advices!(cache::TradeCache, base::AbstractString, ta::StrategyAdvice, assets::AbstractDataFrame)::Vector{StrategyAdvice}
+    if !haskey(cache.xc.bases, base)
+        (verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping getgainsalgo advices" base=base
+        return StrategyAdvice[]
+    end
     ohlcv = CryptoXch.ohlcv(cache.xc, base)
     history = _strategyhistory!(cache, base)
     _upsert_getgainsalgo_sample!(history, ohlcv, ta.tradelabel, ta.probability)
@@ -2438,7 +2655,7 @@ function _getgainsalgo_advices!(cache::TradeCache, base::AbstractString, ta::Cla
     return StrategyAdvice[_strategyadvice(ta; source=:getgainsalgo)]
 end
 
-function _getgainsalgo_advice!(cache::TradeCache, base::AbstractString, ta::Classify.TradeAdvice, assets::AbstractDataFrame)::StrategyAdvice
+function _getgainsalgo_advice!(cache::TradeCache, base::AbstractString, ta::StrategyAdvice, assets::AbstractDataFrame)::StrategyAdvice
     advices = _getgainsalgo_advices!(cache, base, ta, assets)
     return advices[1]
 end
@@ -2498,8 +2715,88 @@ function _expand_reversal_advice(cache::TradeCache, ta::StrategyAdvice, assets::
     return StrategyAdvice[ta]
 end
 
+function _strategy_reconciliation_input(cache::TradeCache, base::AbstractString, assets::AbstractDataFrame)::TradingStrategy.StrategyReconciliationInput
+    _ = cache
+    mask = _assets_base_mask(assets, base)
+    freebase = hasproperty(assets, :free) ? Float32(sum(assets[mask, :free])) : 0f0
+    borrowedbase = hasproperty(assets, :borrowed) ? Float32(sum(assets[mask, :borrowed])) : 0f0
+    pricehint = _asset_price_hint(assets, mask)
+    return TradingStrategy.StrategyReconciliationInput(
+        has_long_open=freebase > 0f0,
+        long_avg_entry=pricehint,
+        long_open_ix=0,
+        has_short_open=borrowedbase > 0f0,
+        short_avg_entry=pricehint,
+        short_open_ix=0,
+    )
+end
+
+function _snapshot_to_strategy_advices(cache::TradeCache, snap::TradingStrategy.StrategySnapshot)::Vector{StrategyAdvice}
+    advices = StrategyAdvice[]
+    base = String(snap.base)
+    dt = snap.datetime
+    cls = cache.cl
+    cfgid = Int(snap.configid)
+    prob = Float32(snap.probability)
+    shared = snap.label
+
+    function _push(lbl::Targets.TradeLabel, price::Union{Nothing, Float32})
+        push!(advices, StrategyAdvice(
+            classifier=cls,
+            configid=cfgid,
+            tradelabel=lbl,
+            relativeamount=1f0,
+            base=base,
+            price=price,
+            datetime=dt,
+            hourlygain=0f0,
+            probability=prob,
+            investmentid=nothing,
+            source=:tradingstrategy,
+            allowreversal=false,
+        ))
+    end
+
+    if shared in [longbuy, longstrongbuy]
+        lp = (shared == longstrongbuy || snap.long_openprice <= 0f0) ? nothing : Float32(snap.long_openprice)
+        _push(shared, lp)
+    elseif shared in [shortbuy, shortstrongbuy]
+        lp = (shared == shortstrongbuy || snap.short_openprice <= 0f0) ? nothing : Float32(snap.short_openprice)
+        _push(shared, lp)
+    end
+
+    if snap.long_closeprice > 0f0
+        closelabel = (shared == longstrongclose) ? longstrongclose : longclose
+        cp = (closelabel == longstrongclose) ? nothing : Float32(snap.long_closeprice)
+        _push(closelabel, cp)
+    end
+    if snap.short_closeprice > 0f0
+        closelabel = (shared == shortstrongclose) ? shortstrongclose : shortclose
+        cp = (closelabel == shortstrongclose) ? nothing : Float32(snap.short_closeprice)
+        _push(closelabel, cp)
+    end
+
+    return advices
+end
+
 function _collect_strategy_advices(cache::TradeCache, assets::AbstractDataFrame)
     tradeadvices = StrategyAdvice[]
+    if _runtime_api_enabled(cache)
+        rt = _strategyruntime(cache)
+        if !isnothing(rt)
+            bases = hasproperty(cache.cfg, :basecoin) ? String.(cache.cfg[!, :basecoin]) : String[]
+            recon = Dict{String, TradingStrategy.StrategyReconciliationInput}()
+            for base in bases
+                recon[uppercase(String(base))] = _strategy_reconciliation_input(cache, base, assets)
+            end
+            snaps = TradingStrategy.getsnapshots!(rt, cache.xc, bases, cache.xc.currentdt; reconciliation_by_base=recon)
+            for snap in snaps
+                append!(tradeadvices, _snapshot_to_strategy_advices(cache, snap))
+            end
+            return tradeadvices
+        end
+    end
+
     Classify.supplement!(cache.cl)
     for basecfg in eachrow(cache.cfg)
         rawadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt, investment=nothing)
@@ -2507,13 +2804,9 @@ function _collect_strategy_advices(cache::TradeCache, assets::AbstractDataFrame)
             (verbosity > 3) && println("no trade advice for $(basecfg.basecoin)")
             continue
         end
-        sa = if _strategyengine(cache) == :getgainsalgo
-            nothing
-        else
-            _strategyadvice(rawadvice; source=:classifier)
-        end
+        sa = _strategyadvice(rawadvice; source=:classifier)
         if _strategyengine(cache) == :getgainsalgo
-            append!(tradeadvices, _getgainsalgo_advices!(cache, basecfg.basecoin, rawadvice, assets))
+            append!(tradeadvices, _getgainsalgo_advices!(cache, basecfg.basecoin, sa, assets))
         else
             append!(tradeadvices, _expand_reversal_advice(cache, sa, assets))
         end
@@ -2727,6 +3020,7 @@ function _tradestep!(cache::TradeCache)
     _refreshactiveopenbuysymbols!(cache, oo)
     _refreshactiveopensellsymbols!(cache, oo)
     assets = CryptoXch.portfolio!(cache.xc)
+    _sync_exchange_balances_snapshot!(cache, assets)
     _reconstruct_managed_close_orders!(cache, assets, oo)
     _cancel_unmanaged_open_orders!(cache, oo)
     backlog_drain = get(cache.mc, :backlog_drain_mode, false)
@@ -2737,6 +3031,13 @@ function _tradestep!(cache::TradeCache)
     else
         tradeadvices = _collect_strategy_advices(cache, assets)
         _log_tradeadvice_summary!(cache, tradeadvices)
+        if Bool(get(cache.mc, :async_engine_enabled, false))
+            async_advices = _collect_async_candidate_advices(cache, tradeadvices)
+            _run_async_shadow_compare!(cache, tradeadvices, async_advices)
+            if !Bool(get(cache.mc, :async_shadow_mode, true))
+                (verbosity >= 1) && @warn "async engine execution cutover is not active yet; keeping synchronous execution authoritative"
+            end
+        end
         _ensure_managed_close_orders!(cache, assets, tradeadvices)
     end
     if cache.mc[:usenewtrade] || backlog_drain

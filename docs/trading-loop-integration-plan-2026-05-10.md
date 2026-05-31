@@ -80,6 +80,50 @@
 ## Goal
 Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, TradeLog-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 
+## 2026-05-31 Objective: Exchange-Concept Equity and Mixed Spot+Margin Capacity
+
+### Intent
+- Align runtime account semantics with exchange-native concepts for both reporting and sizing.
+- Track net worth development using exchange equity semantics instead of reconstructed exposure totals.
+- Size new openings from exchange-available capacity with `SAFETY_MARGIN` applied, while retaining exposure metrics for diagnostics.
+- Treat mixed spot-long plus spot-margin-short as the default/most general account case.
+
+### Design decision (ownership boundary)
+- Exchange adapters own exchange semantics extraction:
+	- Canonical account snapshot fields: `equity_quote`, `available_opening_quote`, optional `initial_margin_quote`, optional `maintenance_margin_quote`, timestamp, source metadata.
+	- KrakenSpot adapter derives mixed-case capacity (cash long lane and margin short lane) from Kraken account endpoints.
+	- KrakenFutures adapter derives collateral/equity/margin capacity from futures account endpoints.
+- `Trade` owns strategy/runtime policy:
+	- Applies `SAFETY_MARGIN` and global caps.
+	- Applies per-asset allocation constraints and directional trade policy.
+	- Consumes one normalized account-capacity snapshot regardless of venue.
+
+### Mixed-case policy (KrakenSpot)
+- Do not treat `free quote` alone as total opening capacity in mixed long+short spot margin accounts.
+- Model capacity as side-aware lanes:
+	- long lane: quote cash available for spot buys.
+	- short lane: margin availability for new shorts (after existing margin usage).
+- For new open orders, choose the lane by intended side and apply safety haircut before final caps.
+
+### Budget formulas (canonical)
+- `safe_opening_quote = max(0, available_opening_quote * (1 - SAFETY_MARGIN))`
+- `effective_budget_quote = min(safe_opening_quote, MAX_BUDGET_QUOTE)` when cap is configured.
+- Keep exposure-oriented values (`project_net_exposure_quote`, `project_gross_exposure_quote`) as secondary diagnostics only.
+
+### Implementation slices
+- [ ] Add `CryptoXch.accountcapacity(xc; role=...)` normalized API and snapshot struct/NamedTuple.
+- [ ] Implement KrakenSpot mixed-case extractor (cash long lane + margin short lane) and map to normalized snapshot.
+- [ ] Implement KrakenFutures extractor and map to normalized snapshot.
+- [ ] Add `Trade` budget mode switch with default `:exchange_capacity` for live runtimes and compatibility fallback for simulation/tests.
+- [ ] Update startup and periodic logs to show: `equity_quote`, `available_opening_quote`, `safe_opening_quote`, `effective_budget_quote`, and exposure diagnostics.
+- [ ] Add tests for mixed spot+margin scenarios and side-aware lane selection behavior.
+
+### Exit criteria
+- Net-worth reporting in live loops is sourced from exchange-equity semantics.
+- Opening budget uses exchange available capacity with `SAFETY_MARGIN` and cap policy.
+- Mixed spot+margin KrakenSpot behavior is validated by tests for both long-open and short-open paths.
+- Existing simulation/backtest flows remain available via explicit compatibility mode until migration is complete.
+
 ## 2026-05-25 Trade Selection Ownership Integration
 
 ### Design intent
@@ -479,27 +523,81 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 ### Design intent
 Prevent blocking between data updates, signal evaluation, order management, and portfolio refresh. Also implement dynamic adjustment of adaptive orders.
 
-### Increment 4.1: Task topology
-- Introduce asynchronous workers (Julia `Task` + `Channel`) for:
-	- market data updater
-	- strategy evaluator
-	- order executor
-	- order status reconciler
-	- portfolio synchronizer
-- Introduce bounded channels and backpressure strategy.
+### 2026-05-30 incremental rollout plan (low-risk)
 
-### Increment 4.2: Event-driven orchestration
-- Define typed events and command messages for inter-task communication.
-- Use idempotent handlers keyed by correlation/order IDs to avoid double execution.
+#### Target architecture contract
+- `TradingStrategy` emits action/price intent only.
+- `Trade` computes requested amounts from allocation/risk policy.
+- Exchange adapters normalize/adjust requests for venue constraints (qty step, min qty, tick size, reduce-only, tif/venue specifics).
+- Exchange adapters own balances cache and publish one synchronized snapshot per cycle to `Trade`.
+- Exchange adapters own persistent OHLCV update for actively traded bases.
+- A base is only `data_ready` for strategy execution after OHLCV gaps to persisted history are closed.
 
-### Increment 4.3: Safety and resilience
-- Add timeout/retry policy by operation type.
-- Add watchdog heartbeat and circuit breaker for exchange/API failures.
-- Add graceful shutdown to flush in-flight events and persist checkpoints.
+#### Safety constraints during migration
+- Keep current synchronous `tradereal` flow as default for KrakenSpot/KrakenFutures.
+- Gate all new behavior behind feature flags (default `off`).
+- Enable async workers in shadow mode before any order-affecting cutover.
+- Keep immediate fallback switch to synchronous execution.
 
-### Increment 4.4: Tests
-- Concurrency tests for no deadlocks and no lost events.
-- Fault-injection tests (slow API, temporary HTTP failure).
+#### Increment 4.0: Safety scaffolding
+- Add feature flags:
+	- `CTS_ASYNC_ENGINE_ENABLED`
+	- `CTS_ASYNC_SHADOW_MODE`
+	- `CTS_WS_MARKETDATA_ENABLED`
+	- `CTS_EXCHANGE_BALANCE_CACHE_OWNER`
+	- `CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE`
+- Add dual-path shadow comparator:
+	- sync decision snapshot vs async candidate snapshot
+	- compare labels, limit prices, and normalized quantities
+	- auto-disable async execution on critical divergence.
+
+#### Increment 4.1: Exchange-owned balance cache sync
+- Move balance refresh ownership to exchange adapters.
+- Publish exactly one canonical balances snapshot per cycle into `Trade`.
+- Keep `Trade` read-only relative to adapter caches.
+- Add tests for freshness policy, staleness fallback, and sync parity.
+
+#### Increment 4.2: Async worker topology in shadow mode
+- Introduce bounded-channel workers:
+	- marketdata, strategy, order-intent, order-execution, order-reconcile, balance-sync
+- Keep order submission authoritative in synchronous path while shadow mode records async parity.
+- Add heartbeat/watchdog metrics per worker.
+
+#### Increment 4.3: WebSocket ingestion with HTTP fallback
+- Prefer websocket trades/klines where supported.
+- Maintain HTTP fallback per symbol/venue when stream quality drops.
+- Add freshness SLA checks and automatic fallback switching.
+
+#### Increment 4.4: Tradable-base OHLCV persistence + gap closure
+- Introduce base state machine:
+	- `discovered -> backfill_required -> backfill_in_progress -> data_ready -> tradable`
+- On tradable candidate transition:
+	- detect persisted OHLCV range
+	- close gaps up to cycle boundary
+	- gate strategy/order path until `data_ready`.
+- Add restart-safe tests for gap closure and no-order-before-data-ready behavior.
+
+#### Increment 4.5: Controlled activation
+- Phase A: shadow mode only.
+- Phase B: canary execution on selected bases.
+- Phase C: full async primary with synchronous emergency fallback retained.
+- Acceptance metrics:
+	- no increase in reject rate due to normalization
+	- reduced REST request volume
+	- improved or unchanged reaction latency
+	- no OHLCV gaps on active tradable bases.
+
+### Objective 4 increment mapping (legacy notes merged)
+- Worker topology originally listed as old Increment 4.1 is now covered by Increment 4.2 (async worker topology in shadow mode).
+- Event-driven orchestration originally listed as old Increment 4.2 is now covered by Increment 4.2 and Increment 4.5 (controlled activation gates).
+- Safety/resilience originally listed as old Increment 4.3 is now split across Increment 4.0 (rollback and divergence guard), Increment 4.2 (watchdog/heartbeat), and Increment 4.5 (canary rollout and fallback).
+- Test scope originally listed as old Increment 4.4 is now distributed across:
+	- Increment 4.0 comparator/parity tests
+	- Increment 4.1 balance-cache sync tests
+	- Increment 4.3 websocket fallback/freshness tests
+	- Increment 4.4 OHLCV gap closure and readiness-gate tests
+	- Increment 4.5 canary acceptance metrics and regression checks
+- The authoritative Objective 4 sequence is now Increment 4.0 through Increment 4.5 above; the old duplicate numbering is retired.
 
 ### Exit criteria
 - Data refresh and order handling proceed independently.
@@ -638,9 +736,11 @@ Update this section after each work session.
 - Objective 1: IN PROGRESS (Increment 1.1 started)
 - Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, and explicit screening vs valuation USDT market intents)
 - Objective 3: IN PROGRESS (3.1 schema + integration slice + TradeLog chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
-- Objective 4: IN PROGRESS (adaptive-maker steady-loop repricing slice implemented in Trade/CryptoXch)
+- Objective 4: IN PROGRESS (adaptive-maker repricing implemented; incremental async/socket migration plan defined with shadow-mode rollout)
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED
+- Objective 7: IN PROGRESS (runtime API compatibility adapter added in TradingStrategy; Trade now has optional runtime-backed advice collection, runtime history sizing, tradeselection readiness delegation, and test-only default gating with env override)
+- Objective 8: DEFINED (resilient trade loop — exchange outage and intermittent response handling; partial fix for base_ohlcv_unavailable crash applied 2026-05-31; full recovery mode not yet implemented)
 
 ### Session Log Template
 - Date:
@@ -981,11 +1081,11 @@ Update this section after each work session.
 	- Continue Objective 1 with `tradestep!` extraction and deterministic loop-step tests.
 
 ## First Execution Slice (Recommended Next Coding Step)
-Continue Objective 4 by deciding between (a) tick-driven adaptive maker repricing only and (b) a dedicated websocket-driven repricing worker, then add deterministic tests for the chosen cadence policy.
+Start Objective 4 with Increment 4.0 safety scaffolding (feature flags + shadow comparator + rollback rule), then implement Increment 4.1 exchange-owned balance cache sync before enabling async order execution.
 
 ---
 
-## Objective 4 (New): WebSocket-based Market Data for Kliness/Trades
+## Objective 4A Workstream: WebSocket-based Market Data for Klines/Trades
 
 ### Design intent
 Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLCV) and trade data acquisition from HTTP polling to WebSocket streaming where supported by the exchange. This will allow for more efficient, real-time updates and lower the risk of hitting REST rate limits.
@@ -1010,25 +1110,34 @@ Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLC
 ### Design intent
 Align `TradingStrategy` outputs with real execution behavior where order amount is owned by `Trade`, partial fills are normal, and long/short exposures can overlap (not net out) on KrakenSpot and KrakenFutures. This objective supersedes the earlier proposal statement that implied `buyta` carried amount and that touching `buyta.limitprice` implied complete execution.
 
+### 2026-05-30 Architecture refinement
+- `Trade` shall consume strategy output from `TradingStrategy` only and shall not call `Classify` directly at runtime.
+- Required-history/readiness shall be propagated as: `Features -> Classifier -> TradingStrategy -> Trade`.
+- OHLCV update propagation only shall migrate to a subscription model with `CryptoXch` as the source of new OHLCV samples.
+- `Features`, `Targets`, and `Ohlcv` persistence/cache updaters subscribe to OHLCV updates and maintain derived state incrementally.
+- `TradingStrategy` and `Trade` integration shall use explicit call interfaces (no pub/sub contract between these layers):
+	- `TradingStrategy` pulls required classifier outputs via a clear strategy-runtime API.
+	- `Trade` pulls strategy snapshots from `TradingStrategy` via a clear execution-facing API.
+- `Trade` remains owner of execution sizing/risk/order lifecycle and receives strategy state snapshots plus exchange reconciliation context.
+
 ### Contract corrections
 - `TradingStrategy` provides price and direction intent only; it does not provide execution amount.
 - `Trade` remains the single owner of order quantity based on allocation constraints, `minimumqty`, and current inventory/borrowed state.
 - Strategy state must not assume full fills when a price is touched; fill state must come from exchange order status/reconciliation.
-- Long and short advice streams must be independent because partially filled long and short orders/positions can coexist.
+- Strategy emits exactly one shared `label` per sample; long/short lane states remain in parallel for open/close guidance and partial-fill continuity.
 - Close orders shall be adapted in each loop cycle to the actual open position/asset amount
 
 ### Target action model
-- Replace `buyta`/`sellta` semantics with independent directional action states:
-	- `longta`
-	- `shortta`
-- `longta.label` domain:
-	- `longstrongbuy`, `longbuy`, `ignore`, `longstrongclose`
-- `shortta.label` domain:
-	- `shortstrongbuy`, `shortbuy`, `ignore`, `shortstrongclose`
+- Replace `buyta`/`sellta` semantics with one shared sample label plus independent directional lane state:
+	- shared `label` per sample (single source of directional intent)
+	- `longta` lane state (`openprice`, `closeprice`, `openix`)
+	- `shortta` lane state (`openprice`, `closeprice`, `openix`)
+- Shared `label` domain:
+	- `longstrongbuy`, `longbuy`, `ignore`, `longstrongclose`, `shortstrongbuy`, `shortbuy`, `shortstrongclose`
 - `longta.openprice`:
-	- Used as long entry limit price only when `longta.label == longbuy`.
+	- Used as long entry limit price when shared `label == longbuy`.
 - `shortta.openprice`:
-	- Used as short entry limit price only when `shortta.label == shortbuy`.
+	- Used as short entry limit price when shared `label == shortbuy`.
 - `longta.closeprice`:
 	- Always represents the close target price for open long exposure and is updated incrementally each sample.
 - `shortta.closeprice`:
@@ -1039,21 +1148,21 @@ Align `TradingStrategy` outputs with real execution behavior where order amount 
 	- `shortstrongbuy`: ignore `shortta.openprice`; submit entry as aggressive maker intent.
 	- `shortstrongclose`: ignore `shortta.closeprice`; close short as aggressive maker intent.
 - Cancellation semantics:
-	- If `longta.label` is not in `{longbuy, longstrongbuy}`, cancel existing open long-entry buy orders.
-	- If `shortta.label` is not in `{shortbuy, shortstrongbuy}`, cancel existing open short-entry sell orders.
+	- If shared `label` is not in `{longbuy, longstrongbuy}`, cancel existing open long-entry buy orders.
+	- If shared `label` is not in `{shortbuy, shortstrongbuy}`, cancel existing open short-entry sell orders.
 - Consistency rule
-	- Assert that TradingStrategy shall never signal shortbuy or shortstrongbuy for the same sample together with longbuy or longstrongbuy
+	- Exactly one shared label is emitted per sample.
 
 ### Required `gain_limit_reversal!` behavior changes
 - Remove the current implicit full-fill handoff behavior where `buyta` is swapped into `sellta` solely because `buyta.limitprice` was touched.
-- Keep directional state independent (`longta`, `shortta`) and update each lane from observed exchange fill/reconcile state.
+- Keep directional lane state independent (`longta`, `shortta`) and update each lane from observed exchange fill/reconcile state while emitting one shared sample label.
 - For open exposure with missing active close guidance, synthesize close advice in-lane:
 	- Long exposure: ensure `longta.closeprice > 0` with close direction and entry reference populated.
 	- Short exposure: ensure `shortta.closeprice > 0` with close direction and entry reference populated.
 - Synthesis inputs must use exchange-observed position/asset context (including average entry price), not simulated full-fill assumptions.
 
 ### Trade integration rules
-- `Trade` consumes `longta` and `shortta` independently in one tick.
+- `Trade` consumes one shared sample label plus `longta`/`shortta` lane state in one tick.
 - Open-order prices follow strategy lane entry intent (`openprice` or strong-open signal).
 - Close-order prices follow strategy lane close intent (`closeprice` or strong-close signal).
 - Open/close order amounts are always computed in `Trade` from:
@@ -1064,10 +1173,108 @@ Align `TradingStrategy` outputs with real execution behavior where order amount 
 
 ### Increments
 - 7.1: Introduce new lane structs/fields in `TradingStrategy` and migrate all callers to canonical lane fields.
-- 7.2: Refactor `gain_limit_reversal!` to remove full-fill-by-touch assumption and produce lane-wise intents each sample.
+- 7.2: Refactor `gain_limit_reversal!` to remove full-fill-by-touch assumption and emit one shared label plus lane-state intents each sample.
 - 7.3: Add reconciliation hook inputs for partial fills and average entry price per lane.
-- 7.4: Update `Trade` adapter path to consume lane-wise intents and keep amount sizing in `Trade` only.
+- 7.4: Update `Trade` adapter path to consume TradingStrategy-only snapshots (no direct `Classify` runtime calls) and keep amount sizing in `Trade` only.
 - 7.5: Add deterministic tests for overlapping long/short partial-fill scenarios and cancel/keep rules per lane.
+- 7.6: Introduce CryptoXch-driven OHLCV subscription flow and migrate Features/Targets/Ohlcv cache updates off direct Trade-managed classifier refresh.
+- 7.7: Add explicit `TradingStrategy` runtime call interfaces for classifier-output ingestion and `Trade` snapshot consumption (no strategy/trade pub-sub coupling).
+
+### Draft Runtime API Signatures (Objective 7.7)
+
+```julia
+# TradingStrategy/src/runtime.jl (proposed)
+
+abstract type AbstractStrategyRuntime end
+
+Base.@kwdef mutable struct StrategySnapshot
+	base::String
+	datetime::DateTime
+	label::Targets.TradeLabel = Targets.ignore  # exactly one shared label per sample
+	long_openprice::Float32 = 0f0
+	long_closeprice::Float32 = 0f0
+	long_openix::Int = 0
+	short_openprice::Float32 = 0f0
+	short_closeprice::Float32 = 0f0
+	short_openix::Int = 0
+	probability::Float32 = 0f0
+	configid::Int = 0
+	source::Symbol = :tradingstrategy
+end
+
+Base.@kwdef struct StrategyReconciliationInput
+	has_long_open::Bool = false
+	long_avg_entry::Float32 = 0f0
+	long_open_ix::Int = 0
+	has_short_open::Bool = false
+	short_avg_entry::Float32 = 0f0
+	short_open_ix::Int = 0
+end
+
+"Required history for readiness checks (Features -> Classifier -> TradingStrategy)."
+requiredhistoryminutes(rt::AbstractStrategyRuntime)::Int
+
+"Synchronize runtime readiness state for candidate bases after OHLCV-derived updates are available."
+preparebases!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString};
+	history_startdt::DateTime,
+	datetime::DateTime,
+	updatecache::Bool=false,
+)::Nothing
+
+"Return accepted/ready bases after preparebases! in canonical uppercase base symbols."
+acceptedbases(rt::AbstractStrategyRuntime)::Set{String}
+
+"Drop one base from runtime readiness/signal state."
+dropbase!(rt::AbstractStrategyRuntime, base::AbstractString)::Nothing
+
+"Reset all per-base runtime state (used on strategy config changes)."
+reset!(rt::AbstractStrategyRuntime)::Nothing
+
+"Apply gain-segment configuration to runtime."
+apply_strategy!(rt::AbstractStrategyRuntime, gs::TradingStrategy.GainSegment; source::AbstractString="manual")::Nothing
+
+"Produce one strategy snapshot for one base and sample time."
+getsnapshot!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime;
+	reconciliation::StrategyReconciliationInput,
+)::Union{Nothing, StrategySnapshot}
+
+"Batch variant for one tick."
+getsnapshots!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}, datetime::DateTime;
+	reconciliation_by_base::AbstractDict{String, StrategyReconciliationInput}=Dict{String, StrategyReconciliationInput}(),
+)::Vector{StrategySnapshot}
+```
+
+Notes:
+- `LaneState` remains an internal TradingStrategy implementation detail if needed for code reuse.
+- The public runtime API contract exposes only `StrategySnapshot` flattened fields to avoid redundant public typing.
+- Baseline `Trade -> TradingStrategy` reconciliation feedback is intentionally minimal: open-presence flags (`has_long_open`, `has_short_open`), average-entry hints, and optional `open_ix` markers for continuity/diagnostics.
+
+### Trade Function Migration Map (Strategy/Classifier coupling scope)
+
+| Current function in Trade | Decision | Target/notes |
+|---|---|---|
+| `_tradeselection_history_minutes(tc::TradeCache)` | Move | Replace with `TradingStrategy.requiredhistoryminutes(cache.sr)`.
+| `_disablerestrictedbase!(cache, base, reason)` | Keep (edit) | Keep restricted-base behavior in Trade; remove direct `Classify.removebase!` call and call `TradingStrategy.dropbase!(cache.sr, base)`.
+| `tradeselection!(tc, assetbases; ...)` | Keep (edit) | Keep portfolio/universe policy in Trade; replace classifier base add/supplement/remove/readiness with `preparebases!` + `acceptedbases` on runtime.
+| `_strategyadvice(ta::Classify.TradeAdvice; ...)` | Delete | Removed once Trade no longer receives classifier advice payloads.
+| `policyenforcement(cache, tavec::Vector{Classify.TradeAdvice}, ...)` | Delete | Legacy path; replace with policy on `Vector{TradingStrategy.StrategySnapshot}` where needed.
+| `tradeamount(cache, tavec::Vector{Classify.TradeAdvice}, ...)` | Delete | Legacy path; sizing remains in Trade but inputs become snapshots/advice rows from runtime.
+| `trade!(cache, basecfg, ta::Classify.TradeAdvice, assets)` | Delete | Compatibility overload removed; Trade executes from strategy snapshots only.
+| `apply_tradingstrategy!(mc, gs; ...)` | Keep (edit) | Keep as Trade config entrypoint; delegate runtime application to `TradingStrategy.apply_strategy!(cache.sr, gs; source=...)`.
+| `apply_tradingstrategy!(cache, gs; ...)` | Keep (edit) | Keep public API for scripts/tests; same delegation as above.
+| `_strategyhistory!(cache, base)` | Move | Move into `TradingStrategy` runtime internals.
+| `_strategystate!(cache, base)` | Move | Move into `TradingStrategy` runtime internals.
+| `_upsert_getgainsalgo_sample!(history, ohlcv, label, score)` | Move | Move into `TradingStrategy` runtime internals.
+| `_set_gainsalgo_reconciliation!(gs, base, assets)` | Keep (edit) | Keep in Trade as translation from portfolio/open orders to `StrategyReconciliationInput`; pass to runtime API.
+| `_getgainsalgo_lane_advices(gs, ta)` | Delete | Replaced by `TradingStrategy.getsnapshot!` output contract.
+| `_getgainsalgo_advices!(cache, base, ta, assets)` | Delete | Replaced by `TradingStrategy.getsnapshot!`/`getsnapshots!`.
+| `_getgainsalgo_advice!(cache, base, ta, assets)` | Delete | Replaced by snapshot retrieval API.
+| `_collect_strategy_advices(cache, assets)` | Keep (rewrite) | Rewrite to call `TradingStrategy.getsnapshots!` and convert snapshots to execution actions in Trade without `Classify` calls.
+
+### Structural type changes in TradeCache
+- `TradeCache.cl::Classify.AbstractClassifier` -> replace with `TradeCache.sr::TradingStrategy.AbstractStrategyRuntime`.
+- Keep strategy config mirrors in `mc` during transition, but runtime-owned rolling state moves out of `Trade.mc[:strategy_state]` and `Trade.mc[:strategy_history]`.
+- Update script constructors (`tradereal.jl`, `tradesim.jl`) to build strategy runtime and pass it into `TradeCache`.
 
 ### Progress update (2026-05-29)
 - [x] Completed lane field rename in `TradingStrategy.TradeAction`: `orderlabel` -> `label`, `buyprice` -> `openprice`, `buyix` -> `openix`, `orderlimit` -> `closeprice`.
@@ -1076,10 +1283,107 @@ Align `TradingStrategy` outputs with real execution behavior where order amount 
 - [x] Updated integration-plan documentation and test descriptions to canonical field names.
 - [x] Validation rerun passed after cleanup: `Trade/test/runtests.jl` = `118/118` passing (TradeAudit-dependent tests skipped in current environment).
 
+### Progress update (2026-05-31)
+- [x] Added `TradingStrategy` runtime API compatibility layer (`AbstractStrategyRuntime`, `GainSegmentRuntime`, `StrategySnapshot`, `StrategyReconciliationInput`, `preparebases!`, `acceptedbases`, `dropbase!`, `getsnapshot!`, `getsnapshots!`, and reconciliation helpers) with docstrings for the new public surface.
+- [x] Moved `Trade` toward the runtime API by making strategy advice collection optionally source snapshots from `TradingStrategy` and by delegating tradeselection readiness/accepted-base bookkeeping through the runtime when enabled.
+- [x] Kept `Trade` compatibility behavior intact with a test-only default gate plus explicit `CTS_USE_STRATEGY_RUNTIME_API` override, and documented the env/config inventory in a dedicated reference note.
+- [x] Added and validated focused Trade runtime-path tests covering default gating, env override, advice conversion, and restricted-base runtime drop propagation.
+
 ### Exit criteria
 - Strategy emits independent long-lane and short-lane intents every sample.
 - No strategy path assumes complete execution from limit-price touch alone.
 - `Trade` remains sole owner of amount sizing and enforces exchange constraints.
 - For any open long/short exposure, corresponding close guidance is always present (explicit or synthesized) and consumed by `Trade`.
+
+---
+
+## Objective 8 (New): Resilient Trade Loop — Exchange Outage and Intermittent Response Handling
+
+### Motivation (2026-05-31)
+Live tradereal sessions already experience transient exchange API failures. The existing `_servertime_retry_1m` helper in `CryptoXch` handles the case where the server time endpoint is unreachable, but it does not extend to the full set of exchange interactions required per tick (open orders, portfolio, OHLCV klines). When a response fails inside `setcurrenttime!` the affected base is silently removed from `xc.bases`, which caused the `KeyError("TRX")` crash observed in the 2026-05-31 KrakenSpot tradereal run. A broader recovery strategy is needed that:
+- classifies exchange errors as transient or persistent,
+- suspends execution for the minimum time needed to re-establish connectivity,
+- re-synchronizes all state (OHLCV, open orders, positions/portfolio) from the exchange before resuming, and
+- leaves open orders and existing positions in place during the outage window rather than attempting to cancel or amend in a degraded state.
+
+### Design intent
+Give the trading loop a first-class recovery mode that activates automatically when any exchange API call fails with a connectivity-class error, polls for connectivity on a one-minute cadence, and resumes trading from a clean, fully-synchronized state once the exchange is responsive again.
+
+### Error classification taxonomy
+
+| Class | Examples | Loop action |
+|---|---|---|
+| `transient_rate_limit` | HTTP 429, cooldown-until error | Already handled via private-read cooldown path; keep as-is. |
+| `transient_connectivity` | `HTTP 503`, timeout, connection refused, DNS failure | Activate outage recovery mode. |
+| `persistent_auth` | Authentication failure, invalid API key | Log, alert, and abort loop (not recoverable without operator action). |
+| `persistent_symbol` | Symbol not found, symbol not tradable | Log and disable the affected base for the current session only. |
+| `base_ohlcv_unavailable` | `KeyError` for base in `xc.bases` after `setcurrenttime!` strips it | Skip strategy advice for that base this tick; no crash. |
+
+The `base_ohlcv_unavailable` class is the immediate fix already applied (2026-05-31). The `transient_connectivity` class is the primary target of this objective.
+
+### Recovery mode state machine
+
+```
+RUNNING
+  │
+  │ transient_connectivity error anywhere in _tradestep!
+  ▼
+OUTAGE_DETECTED
+  │  log warning with timestamp; do not cancel/amend open orders
+  ▼
+POLLING_CONNECTIVITY  (once per minute)
+  │  probe: exchange server time endpoint
+  │  if still unreachable → sleep 60s, retry
+  │  if reachable → proceed to RESYNC
+  ▼
+RESYNC
+  │  1. re-fetch open orders  (getopenorders)
+  │  2. re-fetch portfolio    (portfolio!)
+  │  3. call setcurrenttime!(xc, datetime) to refresh all base OHLCV
+  │     (skip and warn on individual base failures, do not removebase)
+  │  if resync succeeds → RUNNING
+  │  if resync itself fails → back to POLLING_CONNECTIVITY
+  ▼
+RUNNING  (resume normal tick cadence from current wall-clock minute)
+```
+
+### Policy constraints during outage
+- No order cancellations or amendments are attempted while in `OUTAGE_DETECTED` or `POLLING_CONNECTIVITY`.
+- The loop does not advance the per-minute tick counter during the outage; it resumes from the current wall-clock minute after resync.
+- Maximum outage tolerated before escalating to operator alert: configurable via `CTS_OUTAGE_MAX_MINUTES` (default `60`); after this the loop sets `loop_stopping` state and logs a final alert.
+- Individual base OHLCV re-fetch failures during resync produce a warning and skip that base for the tick; they do not block resync completion.
+- The existing `stale_openorders_snapshot` fallback path remains active for single-tick private-read cooldowns and does not interact with outage recovery mode.
+
+### OHLCV gap handling after resync
+When the loop resumes after an outage of duration `D` minutes, the cached OHLCV for active bases has a gap of up to `D` minutes. Recovery action:
+- Call `cryptoupdate!(xc, ohlcv, last_known_dt, current_dt)` for each active base to close the gap.
+- Only bases that are fully caught up (OHLCV gap closed) proceed to strategy advice in the resumed tick.
+- Bases with persistent OHLCV fetch failures are logged and disabled for the rest of the session (same `persistent_symbol` handling).
+
+### Implementation surface
+
+| Component | Change |
+|---|---|
+| `CryptoXch.jl` | Add `_isconnectivityerror(err)::Bool` classifier. Keep `_servertime_retry_1m` for server-time-only retry; add separate `_probeconnectivity(xc)::Bool` for lightweight reachability check. Add `_resynccache!(xc, bases)` to re-fetch OHLCV for a given set of bases. Fix `setcurrenttime!(xc, datetime)` to not call `removebase!` on transient failures; instead warn and leave the base in place (missing kline data is tolerable for one tick). |
+| `Trade.jl` | Add `loop_outage` to the `LoopState` enum. Add `_activate_outage_recovery!(cache)` to transition state, log, and suppress order actions. Add `_poll_until_responsive!(cache)` with 60s sleep between probes and `CTS_OUTAGE_MAX_MINUTES` escalation. Add `_resync_after_outage!(cache)` to refresh orders, portfolio, and OHLCV. Wire these into `_run_tradeloop!` catch block: connectivity errors → outage recovery path; all other non-interrupt errors → current log-and-stop behavior. |
+| `EnvConfig.jl` / env docs | Document `CTS_OUTAGE_MAX_MINUTES` in `docs/config-and-env-options-2026-05-31.md`. |
+
+### Increments
+- [ ] **8.0** Fix `setcurrenttime!(xc, datetime)` in `CryptoXch` to not call `removebase!` on transient fetch errors. *(immediate — blocks the current crash)*
+- [ ] **8.1** Add `_isconnectivityerror(err)::Bool` classifier and `_probeconnectivity(xc)::Bool` in `CryptoXch`.
+- [ ] **8.2** Add `loop_outage` state, `_activate_outage_recovery!`, `_poll_until_responsive!`, and `_resync_after_outage!` in `Trade`. Wire into `_run_tradeloop!`.
+- [ ] **8.3** Add OHLCV gap-close pass in `_resync_after_outage!` using `cryptoupdate!` for each active base, gated behind the base-readiness check before strategy advice is collected.
+- [ ] **8.4** Add `CTS_OUTAGE_MAX_MINUTES` env flag with default of 60. Log structured alert and set `loop_stopping` when threshold is exceeded.
+- [ ] **8.5** Add focused tests: mock connectivity failure mid-loop, assert no cancel/amend attempted during outage, assert OHLCV gap is closed on resync, assert loop resumes.
+
+### Exit criteria
+- A connectivity-class exchange error anywhere in `_tradestep!` transitions the loop into recovery mode without raising an exception or losing base state.
+- Open orders are preserved as-is during outage; no cancellation or amendment is attempted until resync confirms connectivity.
+- After resync, OHLCV gaps for all active bases are closed before the first strategy advice is generated.
+- The loop automatically resumes normal minute-cadence operation after a successful resync.
+- If the outage exceeds `CTS_OUTAGE_MAX_MINUTES`, the loop stops cleanly and logs a structured alert for operator intervention.
+
+### Note on immediate partial fix (2026-05-31)
+Increment 8.0 is partially addressed by the `haskey(cache.xc.bases, base)` guards added to `_getgainsalgo_advices!` (Trade) and `getsnapshot!` (TradingStrategy) in the 2026-05-31 KeyError fix. The `removebase!` call in `setcurrenttime!` itself is the root cause and should be removed/scoped in Increment 8.0 for a complete fix.
 
 ---
