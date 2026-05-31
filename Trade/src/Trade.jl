@@ -73,6 +73,10 @@ function _envboolmaybe(name::AbstractString)::Union{Nothing, Bool}
     throw(ArgumentError("invalid boolean env $key=$(repr(raw)); expected one of 1/0,true/false,yes/no,on/off"))
 end
 
+function _envstr(name::AbstractString, default::AbstractString="")::String
+    return haskey(ENV, String(name)) ? String(ENV[String(name)]) : String(default)
+end
+
 function _init_objective4_flags!(mc::AbstractDict)
     mc[:async_engine_enabled] = _envtrue("CTS_ASYNC_ENGINE_ENABLED", get(mc, :async_engine_enabled, false))
     mc[:async_shadow_mode] = _envtrue("CTS_ASYNC_SHADOW_MODE", get(mc, :async_shadow_mode, true))
@@ -89,13 +93,190 @@ function _init_objective4_flags!(mc::AbstractDict)
     mc[:async_worker_last_latency_ms] = get(mc, :async_worker_last_latency_ms, Dict{Symbol, Float64}())
     mc[:async_worker_watchdog_breaches] = get(mc, :async_worker_watchdog_breaches, Dict{Symbol, Int}())
     mc[:async_worker_topology_started] = get(mc, :async_worker_topology_started, false)
+    mc[:marketdata_ws_freshness_sla] = get(mc, :marketdata_ws_freshness_sla, Dates.Second(30))
+    mc[:marketdata_ws_last_update_dt] = get(mc, :marketdata_ws_last_update_dt, nothing)
+    mc[:marketdata_source] = get(mc, :marketdata_source, :http)
+    mc[:marketdata_ws_fallback_active] = get(mc, :marketdata_ws_fallback_active, false)
+    mc[:marketdata_ws_fallback_reason] = get(mc, :marketdata_ws_fallback_reason, nothing)
+    mc[:marketdata_ws_fallback_switches] = Int(get(mc, :marketdata_ws_fallback_switches, 0))
+    mc[:marketdata_last_policy_eval_dt] = get(mc, :marketdata_last_policy_eval_dt, nothing)
+    mc[:marketdata_ws_last_update_by_symbol] = get(mc, :marketdata_ws_last_update_by_symbol, Dict{String, DateTime}())
+    mc[:marketdata_ws_stale_symbols] = get(mc, :marketdata_ws_stale_symbols, String[])
     mc[:exchange_balances_snapshot] = get(mc, :exchange_balances_snapshot, DataFrame())
     mc[:exchange_balances_snapshot_dt] = get(mc, :exchange_balances_snapshot_dt, nothing)
+    mc[:tradable_ohlcv_state_by_base] = get(mc, :tradable_ohlcv_state_by_base, Dict{String, Symbol}())
+    mc[:tradable_ohlcv_state_dt_by_base] = get(mc, :tradable_ohlcv_state_dt_by_base, Dict{String, DateTime}())
+    mc[:strategy_last_closed_candle_dt] = get(mc, :strategy_last_closed_candle_dt, nothing)
+    mc[:strategy_closed_candle_pending_reason] = get(mc, :strategy_closed_candle_pending_reason, nothing)
+    mc[:async_canary_bases_raw] = _envstr("CTS_ASYNC_CANARY_BASES", get(mc, :async_canary_bases_raw, ""))
+    mc[:objective4_cycle_count] = Int(get(mc, :objective4_cycle_count, 0))
+    mc[:objective4_canary_cycles] = Int(get(mc, :objective4_canary_cycles, 0))
+    mc[:objective4_canary_last_bases] = get(mc, :objective4_canary_last_bases, String[])
+    mc[:objective4_order_rejects] = Int(get(mc, :objective4_order_rejects, 0))
+    mc[:objective4_permission_rejects] = Int(get(mc, :objective4_permission_rejects, 0))
+    mc[:objective4_privatecooldown_skips] = Int(get(mc, :objective4_privatecooldown_skips, 0))
+    mc[:objective4_marketdata_fallback_activations] = Int(get(mc, :objective4_marketdata_fallback_activations, 0))
+    mc[:objective4_watchdog_breaches_total] = Int(get(mc, :objective4_watchdog_breaches_total, 0))
+    mc[:objective4_last_worker_latency_ms] = get(mc, :objective4_last_worker_latency_ms, Dict{Symbol, Float64}())
     return mc
 end
 
+function _objective4_inc!(cache, key::Symbol, delta::Integer=1)
+    cache.mc[key] = Int(get(cache.mc, key, 0)) + Int(delta)
+    return Int(cache.mc[key])
+end
+
+"Return the next closed-candle datetime when progression is available; otherwise return nothing."
+function _next_closed_candle_dt!(cache)::Union{Nothing, DateTime}
+    currentdt = cache.xc.currentdt
+    if isnothing(currentdt)
+        cache.mc[:strategy_closed_candle_pending_reason] = :no_currentdt
+        return nothing
+    end
+    closeddt = floor(DateTime(currentdt), Minute(1)) - Minute(1)
+    lastdt = get(cache.mc, :strategy_last_closed_candle_dt, nothing)
+    if !isnothing(lastdt) && (closeddt <= DateTime(lastdt))
+        cache.mc[:strategy_closed_candle_pending_reason] = :no_new_closed_candle
+        return nothing
+    end
+    cache.mc[:strategy_closed_candle_pending_reason] = nothing
+    return closeddt
+end
+
+"Persist the most recent closed-candle datetime consumed by strategy/classifier updates."
+function _mark_closed_candle_consumed!(cache, closeddt::DateTime)
+    cache.mc[:strategy_last_closed_candle_dt] = DateTime(closeddt)
+    cache.mc[:strategy_closed_candle_pending_reason] = nothing
+    return cache
+end
+
+"Record one websocket marketdata update timestamp for freshness evaluation."
+function _mark_marketdata_ws_update!(cache; datetime=nothing)
+    dt = isnothing(datetime) ? cache.xc.currentdt : datetime
+    if isnothing(dt)
+        dt = floor(Dates.now(Dates.UTC), Minute(1))
+    end
+    cache.mc[:marketdata_ws_last_update_dt] = dt
+    return dt
+end
+
+"Sync Trade-local websocket heartbeat state from canonical exchange-owned heartbeat when available."
+function _sync_marketdata_ws_heartbeat_from_exchange!(cache)
+    wsdt = try
+        CryptoXch.marketdataheartbeat(cache.xc)
+    catch
+        nothing
+    end
+    if !isnothing(wsdt)
+        localdt = get(cache.mc, :marketdata_ws_last_update_dt, nothing)
+        if isnothing(localdt) || (DateTime(wsdt) > DateTime(localdt))
+            cache.mc[:marketdata_ws_last_update_dt] = DateTime(wsdt)
+        end
+    end
+    symbolmap = get(cache.mc, :marketdata_ws_last_update_by_symbol, Dict{String, DateTime}())
+    trymap = try
+        CryptoXch.marketdataheartbeats(cache.xc)
+    catch
+        Dict{String, DateTime}()
+    end
+    for (sym, dt) in trymap
+        key = uppercase(String(sym))
+        prev = get(symbolmap, key, nothing)
+        if isnothing(prev) || (DateTime(dt) > DateTime(prev))
+            symbolmap[key] = DateTime(dt)
+        end
+    end
+    cache.mc[:marketdata_ws_last_update_by_symbol] = symbolmap
+    return get(cache.mc, :marketdata_ws_last_update_dt, nothing)
+end
+
+function _marketdata_symbols_from_advices(cache, sync_advices)
+    symbols = String[]
+    for ta in sync_advices
+        base = uppercase(String(ta.base))
+        push!(symbols, CryptoXch.symboltoken(cache.xc, base, EnvConfig.cryptoquote; role=CryptoXch.data_exchange))
+    end
+    return unique(symbols)
+end
+
+"Evaluate websocket freshness SLA and auto-switch between websocket and HTTP marketdata sources."
+function _update_marketdata_freshness_policy!(cache; symbols::Union{Nothing, AbstractVector}=nothing)
+    nowdt = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
+    _sync_marketdata_ws_heartbeat_from_exchange!(cache)
+    ws_enabled = Bool(get(cache.mc, :ws_marketdata_enabled, false))
+    sla = get(cache.mc, :marketdata_ws_freshness_sla, Dates.Second(30))
+    ws_last = get(cache.mc, :marketdata_ws_last_update_dt, nothing)
+    prev_source = Symbol(get(cache.mc, :marketdata_source, :http))
+    prev_fallback_active = Bool(get(cache.mc, :marketdata_ws_fallback_active, false))
+
+    source = :http
+    fallback_active = false
+    fallback_reason = nothing
+
+    if ws_enabled
+        if isnothing(ws_last)
+            fallback_active = true
+            fallback_reason = :ws_no_updates
+        else
+            ws_age = nowdt - DateTime(ws_last)
+            if ws_age <= sla
+                source = :ws
+            else
+                fallback_active = true
+                fallback_reason = :ws_stale
+            end
+        end
+        if source == :ws && !isnothing(symbols)
+            stale = String[]
+            symbolmap = get(cache.mc, :marketdata_ws_last_update_by_symbol, Dict{String, DateTime}())
+            for sym in symbols
+                key = uppercase(String(sym))
+                sdt = get(symbolmap, key, nothing)
+                if isnothing(sdt) || ((nowdt - DateTime(sdt)) > sla)
+                    push!(stale, key)
+                end
+            end
+            cache.mc[:marketdata_ws_stale_symbols] = stale
+            if !isempty(stale)
+                source = :http
+                fallback_active = true
+                fallback_reason = :ws_symbol_stale
+            end
+        else
+            cache.mc[:marketdata_ws_stale_symbols] = String[]
+        end
+    else
+        fallback_reason = :ws_disabled
+    end
+
+    if ws_enabled && (prev_source != source) && (source == :http)
+        cache.mc[:marketdata_ws_fallback_switches] = Int(get(cache.mc, :marketdata_ws_fallback_switches, 0)) + 1
+    end
+
+    cache.mc[:marketdata_source] = source
+    cache.mc[:marketdata_ws_fallback_active] = fallback_active
+    cache.mc[:marketdata_ws_fallback_reason] = fallback_reason
+    cache.mc[:marketdata_last_policy_eval_dt] = nowdt
+    if fallback_active && !prev_fallback_active
+        cache.mc[:objective4_marketdata_fallback_activations] = Int(get(cache.mc, :objective4_marketdata_fallback_activations, 0)) + 1
+    end
+
+    ws_age_seconds = isnothing(ws_last) ? nothing : Float64(Dates.value(nowdt - DateTime(ws_last))) / 1000.0
+    return (
+        source=source,
+        ws_enabled=ws_enabled,
+        fallback_active=fallback_active,
+        fallback_reason=fallback_reason,
+        ws_last_update=ws_last,
+        ws_age_seconds=ws_age_seconds,
+        stale_symbols=copy(get(cache.mc, :marketdata_ws_stale_symbols, String[])),
+        fallback_switches=Int(get(cache.mc, :marketdata_ws_fallback_switches, 0)),
+        evaluated_at=nowdt,
+    )
+end
+
 "Return Objective 4.2 worker names in canonical processing order."
-_async_worker_names() = (:marketdata, :strategy, :order_intent, :order_execution, :order_reconcile, :balance_sync)
+_async_worker_names() = (:marketdata, :balance_sync, :order_management)
 
 "Ensure bounded worker channels and per-worker metrics dictionaries are initialized."
 function _ensure_async_worker_topology!(cache)
@@ -161,6 +342,7 @@ function _update_async_worker_watchdog!(cache)
         hb = get(heartbeats, worker, nowdt)
         if (nowdt - hb) > timeout
             breaches[worker] = get(breaches, worker, 0) + 1
+            cache.mc[:objective4_watchdog_breaches_total] = Int(get(cache.mc, :objective4_watchdog_breaches_total, 0)) + 1
         end
     end
     cache.mc[:async_worker_watchdog_breaches] = breaches
@@ -170,48 +352,41 @@ end
 "Run Objective 4.2 shadow worker pipeline while leaving synchronous execution authoritative."
 function _run_async_shadow_topology!(cache, assets::AbstractDataFrame, openorders::AbstractDataFrame, sync_advices)
     _ensure_async_worker_topology!(cache)
+    mdsymbols = _marketdata_symbols_from_advices(cache, sync_advices)
+    md_state = _update_marketdata_freshness_policy!(cache; symbols=mdsymbols)
     md_payload = (
         datetime=cache.xc.currentdt,
         assets_rows=size(assets, 1),
         openorders_rows=size(openorders, 1),
+        source=md_state.source,
+        ws_enabled=md_state.ws_enabled,
+        fallback_active=md_state.fallback_active,
+        fallback_reason=md_state.fallback_reason,
+        ws_age_seconds=md_state.ws_age_seconds,
+        stale_symbols=md_state.stale_symbols,
     )
     _run_async_worker_shadow_step!(cache, :marketdata, md_payload)
 
     async_advices = _collect_async_candidate_advices(cache, sync_advices)
-    strategy_payload = (
-        datetime=cache.xc.currentdt,
-        sync_count=length(sync_advices),
-        async_count=length(async_advices),
-    )
-    _run_async_worker_shadow_step!(cache, :strategy, strategy_payload)
-
-    order_intent_payload = (
-        datetime=cache.xc.currentdt,
-        advice_count=length(sync_advices),
-    )
-    _run_async_worker_shadow_step!(cache, :order_intent, order_intent_payload)
-
-    order_execution_payload = (
-        datetime=cache.xc.currentdt,
-        authoritative=:sync,
-        shadow_mode=Bool(get(cache.mc, :async_shadow_mode, true)),
-        candidate_count=length(async_advices),
-    )
-    _run_async_worker_shadow_step!(cache, :order_execution, order_execution_payload)
-
-    order_reconcile_payload = (
-        datetime=cache.xc.currentdt,
-        openorders_rows=size(openorders, 1),
-    )
-    _run_async_worker_shadow_step!(cache, :order_reconcile, order_reconcile_payload)
-
     balance_sync_payload = (
         datetime=cache.xc.currentdt,
         snapshot_dt=get(cache.mc, :exchange_balances_snapshot_dt, nothing),
     )
     _run_async_worker_shadow_step!(cache, :balance_sync, balance_sync_payload)
 
+    order_management_payload = (
+        datetime=cache.xc.currentdt,
+        authoritative=:sync,
+        shadow_mode=Bool(get(cache.mc, :async_shadow_mode, true)),
+        sync_count=length(sync_advices),
+        candidate_count=length(async_advices),
+        openorders_rows=size(openorders, 1),
+        stage=:execution_and_reconcile,
+    )
+    _run_async_worker_shadow_step!(cache, :order_management, order_management_payload)
+
     _update_async_worker_watchdog!(cache)
+    cache.mc[:objective4_last_worker_latency_ms] = deepcopy(get(cache.mc, :async_worker_last_latency_ms, Dict{Symbol, Float64}()))
     return async_advices
 end
 
@@ -1082,6 +1257,27 @@ function _normalize_basecoin_token(token, quotecoin::AbstractString)::Union{Noth
     return t
 end
 
+function _async_canary_baseset(cache::TradeCache)::Set{String}
+    raw = get(cache.mc, :async_canary_bases_raw, "")
+    tokens = if raw isa AbstractVector
+        String.(raw)
+    else
+        split(String(raw), r"[,\s]+"; keepempty=false)
+    end
+    normalized = [_normalize_basecoin_token(t, EnvConfig.cryptoquote) for t in tokens]
+    return Set(String.(filter(!isnothing, normalized)))
+end
+
+"Select advice subset for Objective 4.5 async canary processing."
+function _select_async_shadow_advices(cache::TradeCache, sync_advices)
+    canary = _async_canary_baseset(cache)
+    if isempty(canary)
+        return (advices=sync_advices, canary_enabled=false, canary_bases=String[])
+    end
+    selected = [ta for ta in sync_advices if uppercase(String(ta.base)) in canary]
+    return (advices=selected, canary_enabled=true, canary_bases=sort!(collect(canary)))
+end
+
 "Return a readiness state for tradable OHLCV data, optionally requesting exchange backfill up to `datetime`."
 function _prepare_tradable_ohlcv!(tc::TradeCache, ohlcv::Ohlcv.OhlcvData; datetime::DateTime)
     if !Bool(get(tc.mc, :ohlcv_gap_backfill_on_tradable, false))
@@ -1110,6 +1306,24 @@ function _prepare_tradable_ohlcv!(tc::TradeCache, ohlcv::Ohlcv.OhlcvData; dateti
         return (state=:data_ready, ready=true)
     end
     return (state=:backfill_in_progress, ready=false)
+end
+
+"Return current tracked tradable OHLCV state for `base` with restart-safe default."
+function _tradable_ohlcv_state(tc::TradeCache, base::AbstractString)::Symbol
+    statedict = get(tc.mc, :tradable_ohlcv_state_by_base, Dict{String, Symbol}())
+    return get(statedict, uppercase(String(base)), :discovered)
+end
+
+"Persist current tradable OHLCV state transition for `base` and record transition timestamp."
+function _set_tradable_ohlcv_state!(tc::TradeCache, base::AbstractString, state::Symbol; datetime::DateTime)
+    key = uppercase(String(base))
+    statedict = get(tc.mc, :tradable_ohlcv_state_by_base, Dict{String, Symbol}())
+    dtdict = get(tc.mc, :tradable_ohlcv_state_dt_by_base, Dict{String, DateTime}())
+    statedict[key] = state
+    dtdict[key] = floor(DateTime(datetime), Minute(1))
+    tc.mc[:tradable_ohlcv_state_by_base] = statedict
+    tc.mc[:tradable_ohlcv_state_dt_by_base] = dtdict
+    return state
 end
 
 """
@@ -1222,7 +1436,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) # ignore allcoins with less than liquiddailyminimumquotevolume
     tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
-    tc.cfg[:, :ohlcvstate] = fill(:discovered, size(tc.cfg, 1))
+    tc.cfg[:, :ohlcvstate] = [_tradable_ohlcv_state(tc, base) for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :ohlcvready] = falses(size(tc.cfg, 1))
     tc.cfg[:, :inportfolio] = [base in portfolioassetbaseset for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
@@ -1266,6 +1480,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         end
         row.ohlcvstate = tradable_state.state
         row.ohlcvready = tradable_state.ready
+        _set_tradable_ohlcv_state!(tc, row.basecoin, tradable_state.state; datetime=datetime)
         row.continuousminvol = row.ohlcvready # TODO re-enable continuous-liquidity check after gap readiness is stable
         if row.ohlcvready && (row.inportfolio || (row.whitelisted && row.minquotevol))
             push!(candidatebaseset, String(row.basecoin))
@@ -1306,6 +1521,13 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
             @assert Set(xcbases) == selectedset "Set(xcbases)=$(xcbases) != Set(selectedbases)=$(collect(selectedset))"
             selectedbases = sort!(collect(selectedset))
             tc.cfg[:, :classifieraccepted] = [base in selectedset for base in tc.cfg[!, :basecoin]]
+            for row in eachrow(tc.cfg)
+                if Bool(row.classifieraccepted)
+                    row.ohlcvstate = :tradable
+                    row.ohlcvready = true
+                    _set_tradable_ohlcv_state!(tc, row.basecoin, :tradable; datetime=datetime)
+                end
+            end
         end
     else
         classifierloadedset = Set(String.(Classify.bases(tc.cl)))
@@ -1340,6 +1562,13 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 
         selectedbases = String.(classifierbases)
         tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
+        for row in eachrow(tc.cfg)
+            if Bool(row.classifieraccepted)
+                row.ohlcvstate = :tradable
+                row.ohlcvready = true
+                _set_tradable_ohlcv_state!(tc, row.basecoin, :tradable; datetime=datetime)
+            end
+        end
     end
     _sync_tradeflags!(tc; assetonly=assetonly)
     # (verbosity >= 2) && _log_cachecfg_summary!(tc, "tradeselection")
@@ -2784,14 +3013,19 @@ function _ensure_managed_close_orders!(cache::TradeCache, assets::AbstractDataFr
                 trade!(cache, basecfg, ta, assets)
             catch err
                 if _ispermissionrestrictederror(err)
+                    _objective4_inc!(cache, :objective4_order_rejects)
+                    _objective4_inc!(cache, :objective4_permission_rejects)
                     _disablerestrictedbase!(cache, base, sprint(showerror, err))
                 elseif _isinsufficientfundserror(err)
+                    _objective4_inc!(cache, :objective4_order_rejects)
                     side = _close_side_from_label(closelabel)
                     !isnothing(side) && _markclosereject!(cache, base, side, sprint(showerror, err))
                     (verbosity >= 1) && @warn "skip managed close order due to insufficient funds" base=base error=sprint(showerror, err)
                 elseif _isreduceonlynopositionerror(err)
+                    _objective4_inc!(cache, :objective4_order_rejects)
                     (verbosity >= 1) && @warn "skip managed close order because reduce-only close found no open position" base=base error=sprint(showerror, err)
                 elseif _isprivatecooldownerror(err)
+                    _objective4_inc!(cache, :objective4_privatecooldown_skips)
                     (verbosity >= 1) && @warn "skip managed close order due to transient private-read cooldown" base=base error=sprint(showerror, err)
                 else
                     rethrow(err)
@@ -2980,6 +3214,11 @@ end
 
 function _collect_strategy_advices(cache::TradeCache, assets::AbstractDataFrame)
     tradeadvices = StrategyAdvice[]
+    closed_dt = _next_closed_candle_dt!(cache)
+    if isnothing(closed_dt)
+        return tradeadvices
+    end
+    evaldt = DateTime(closed_dt)
     if _runtime_api_enabled(cache)
         rt = _strategyruntime(cache)
         if !isnothing(rt)
@@ -2988,17 +3227,18 @@ function _collect_strategy_advices(cache::TradeCache, assets::AbstractDataFrame)
             for base in bases
                 recon[uppercase(String(base))] = _strategy_reconciliation_input(cache, base, assets)
             end
-            snaps = TradingStrategy.getsnapshots!(rt, cache.xc, bases, cache.xc.currentdt; reconciliation_by_base=recon)
+            snaps = TradingStrategy.getsnapshots!(rt, cache.xc, bases, evaldt; reconciliation_by_base=recon)
             for snap in snaps
                 append!(tradeadvices, _snapshot_to_strategy_advices(cache, snap))
             end
+            _mark_closed_candle_consumed!(cache, evaldt)
             return tradeadvices
         end
     end
 
     Classify.supplement!(cache.cl)
     for basecfg in eachrow(cache.cfg)
-        rawadvice = Classify.advice(cache.cl, basecfg.basecoin, cache.xc.currentdt, investment=nothing)
+        rawadvice = Classify.advice(cache.cl, basecfg.basecoin, evaldt, investment=nothing)
         if isnothing(rawadvice)
             (verbosity > 3) && println("no trade advice for $(basecfg.basecoin)")
             continue
@@ -3010,6 +3250,7 @@ function _collect_strategy_advices(cache::TradeCache, assets::AbstractDataFrame)
             append!(tradeadvices, _expand_reversal_advice(cache, sa, assets))
         end
     end
+    _mark_closed_candle_consumed!(cache, evaldt)
     return tradeadvices
 end
 
@@ -3196,6 +3437,7 @@ Called by the loop runners once per iterate step.
 """
 function _tradestep!(cache::TradeCache)
     (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
+    _objective4_inc!(cache, :objective4_cycle_count)
     stale_openorders_snapshot = false
     oo = try
         CryptoXch.getopenorders(cache.xc)
@@ -3232,8 +3474,15 @@ function _tradestep!(cache::TradeCache)
         tradeadvices = _collect_strategy_advices(cache, assets)
         _log_tradeadvice_summary!(cache, tradeadvices)
         if Bool(get(cache.mc, :async_engine_enabled, false))
-            async_advices = _run_async_shadow_topology!(cache, assets, oo, tradeadvices)
-            _run_async_shadow_compare!(cache, tradeadvices, async_advices)
+            canary = _select_async_shadow_advices(cache, tradeadvices)
+            async_advices = _run_async_shadow_topology!(cache, assets, oo, canary.advices)
+            _run_async_shadow_compare!(cache, canary.advices, async_advices)
+            if canary.canary_enabled
+                _objective4_inc!(cache, :objective4_canary_cycles)
+                cache.mc[:objective4_canary_last_bases] = canary.canary_bases
+            else
+                cache.mc[:objective4_canary_last_bases] = String[]
+            end
             if !Bool(get(cache.mc, :async_shadow_mode, true))
                 (verbosity >= 1) && @warn "async engine execution cutover is not active yet; keeping synchronous execution authoritative"
             end
@@ -3266,14 +3515,18 @@ function _tradestep!(cache::TradeCache)
                 trade!(cache, basecfg, ta, assets)
             catch err
                 if _ispermissionrestrictederror(err)
+                    _objective4_inc!(cache, :objective4_order_rejects)
+                    _objective4_inc!(cache, :objective4_permission_rejects)
                     _disablerestrictedbase!(cache, ta.base, sprint(showerror, err))
                     nothing
                 elseif _isinsufficientfundserror(err)
+                    _objective4_inc!(cache, :objective4_order_rejects)
                     side = _close_side_from_label(ta.tradelabel)
                     !isnothing(side) && _markclosereject!(cache, ta.base, side, sprint(showerror, err))
                     (verbosity >= 1) && @warn "skip trade advice due to insufficient funds" base=ta.base tradelabel=String(Symbol(ta.tradelabel)) error=sprint(showerror, err)
                     nothing
                 elseif _isprivatecooldownerror(err)
+                    _objective4_inc!(cache, :objective4_privatecooldown_skips)
                     (verbosity >= 1) && @warn "skip trade advice due to transient private-read cooldown" base=ta.base tradelabel=String(Symbol(ta.tradelabel)) error=sprint(showerror, err)
                     nothing
                 else

@@ -17,6 +17,12 @@ verbosity = 1
 const KRAKEN_APIREST = "https://api.kraken.com"
 const KRAKEN_WS_PUBLIC = "wss://ws.kraken.com/v2"
 const KRAKEN_WS_PRIVATE = "wss://ws-auth.kraken.com/v2"
+const _marketdata_ws_last_update_dt = Ref{Union{Nothing, DateTime}}(nothing)
+const _marketdata_ws_symbol_lock = ReentrantLock()
+const _marketdata_ws_last_update_by_symbol = Dict{String, DateTime}()
+const _ws_kline_state_lock = ReentrantLock()
+const _ws_last_kline_by_key = Dict{Tuple{String, String}, NamedTuple{(:opentime, :open, :high, :low, :close, :basevolume), Tuple{DateTime, Float32, Float32, Float32, Float32, Float32}}}()
+const _ws_closed_kline_by_key = Dict{Tuple{String, String}, NamedTuple{(:opentime, :open, :high, :low, :close, :basevolume), Tuple{DateTime, Float32, Float32, Float32, Float32, Float32}}}()
 
 const _interval2minutes = Dict(
 	"1m" => 1,
@@ -66,6 +72,97 @@ const BALANCE_CACHE_MAX_STALE = Dates.Hour(2)
 const OPENORDERS_CACHE_MAX_STALE = Dates.Hour(2)
 const PRIVATE_READ_COOLDOWN = Dates.Second(45)
 const SERVERTIME_RETRY_SECONDS = 60
+
+"Store one websocket marketdata heartbeat timestamp for KrakenSpot adapter state."
+function setmarketdataheartbeat!(dt::DateTime)
+	_marketdata_ws_last_update_dt[] = dt
+	return dt
+end
+
+"Store one websocket marketdata heartbeat timestamp using a cache handle for convenience."
+function setmarketdataheartbeat!(bc, dt::DateTime)
+	_ = bc
+	return setmarketdataheartbeat!(dt)
+end
+
+"Store websocket marketdata heartbeat timestamp for one normalized symbol."
+function setmarketdataheartbeat!(symbol::AbstractString, dt::DateTime)
+	key = uppercase(String(symbol))
+	lock(_marketdata_ws_symbol_lock) do
+		_marketdata_ws_last_update_by_symbol[key] = dt
+	end
+	setmarketdataheartbeat!(dt)
+	return dt
+end
+
+"Store websocket marketdata heartbeat timestamp for one symbol using a cache handle."
+function setmarketdataheartbeat!(bc, symbol::AbstractString, dt::DateTime)
+	_ = bc
+	return setmarketdataheartbeat!(symbol, dt)
+end
+
+"Return latest websocket marketdata heartbeat timestamp from KrakenSpot adapter state."
+marketdataheartbeat() = _marketdata_ws_last_update_dt[]
+
+"Return latest websocket marketdata heartbeat timestamp from a KrakenSpot cache handle."
+function marketdataheartbeat(bc)
+	_ = bc
+	return marketdataheartbeat()
+end
+
+"Return latest websocket marketdata heartbeat timestamp for one normalized symbol."
+function marketdataheartbeat(symbol::AbstractString)
+	key = uppercase(String(symbol))
+	lock(_marketdata_ws_symbol_lock) do
+		return get(_marketdata_ws_last_update_by_symbol, key, nothing)
+	end
+end
+
+"Return a copy of per-symbol websocket marketdata heartbeats."
+function marketdataheartbeats()
+	lock(_marketdata_ws_symbol_lock) do
+		return copy(_marketdata_ws_last_update_by_symbol)
+	end
+end
+
+"Return a copy of per-symbol websocket marketdata heartbeats using a cache handle."
+function marketdataheartbeats(bc)
+	_ = bc
+	return marketdataheartbeats()
+end
+
+_klinekey(symbol::AbstractString, interval::AbstractString) = (uppercase(String(symbol)), String(interval))
+
+function _recordwskline!(symbol::AbstractString, interval::AbstractString, candle)
+	key = _klinekey(symbol, interval)
+	lock(_ws_kline_state_lock) do
+		prev = get(_ws_last_kline_by_key, key, nothing)
+		if isnothing(prev)
+			_ws_last_kline_by_key[key] = candle
+			return candle
+		end
+		if candle.opentime > prev.opentime
+			_ws_closed_kline_by_key[key] = prev
+			_ws_last_kline_by_key[key] = candle
+		elseif candle.opentime == prev.opentime
+			_ws_last_kline_by_key[key] = candle
+		end
+		return candle
+	end
+end
+
+"Return latest websocket-confirmed closed kline for `symbol` and `interval` when available."
+function wsclosedkline(symbol::AbstractString, interval::String="1m")
+	key = _klinekey(symbol, interval)
+	lock(_ws_kline_state_lock) do
+		return get(_ws_closed_kline_by_key, key, nothing)
+	end
+end
+
+function wsclosedkline(bc, symbol::AbstractString, interval::String="1m")
+	_ = bc
+	return wsclosedkline(symbol, interval)
+end
 
 """
 Log and reset a private endpoint call-rate summary for the current aggregation window.
@@ -1754,8 +1851,10 @@ function ws_ticker(bc::KrakenSpotCache, symbol::String)
 						if payload isa AbstractDict
 							pdata = Dict(payload)
 							pws = String(get(pdata, "symbol", wssymbol))
+							symbol = _ws2symbol(pws)
+							setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
 							put!(channel, Dict(
-								"symbol" => _ws2symbol(pws),
+								"symbol" => symbol,
 								"askprice" => _float32(get(pdata, "ask", "0"), 0f0),
 								"bidprice" => _float32(get(pdata, "bid", "0"), 0f0),
 								"lastprice" => _float32(get(pdata, "last", "0"), 0f0),
@@ -1836,14 +1935,25 @@ function ws_kline(bc::KrakenSpotCache, symbol::String, interval::String="1m")
 						payload = _firstwsdata(get(msg, "data", Any[]))
 						if payload isa AbstractDict
 							pdata = Dict(payload)
+							symbol = _ws2symbol(String(get(pdata, "symbol", wssymbol)))
+							candle = (
+								opentime=Dates.unix2datetime(_int(get(pdata, "interval_begin", 0), 0)),
+								open=_float32(get(pdata, "open", "0"), 0f0),
+								high=_float32(get(pdata, "high", "0"), 0f0),
+								low=_float32(get(pdata, "low", "0"), 0f0),
+								close=_float32(get(pdata, "close", "0"), 0f0),
+								basevolume=_float32(get(pdata, "volume", "0"), 0f0),
+							)
+							_recordwskline!(symbol, interval, candle)
+							setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
 							put!(channel, Dict(
-								"symbol" => _ws2symbol(String(get(pdata, "symbol", wssymbol))),
-								"opentime" => Dates.unix2datetime(_int(get(pdata, "interval_begin", 0), 0)),
-								"open" => _float32(get(pdata, "open", "0"), 0f0),
-								"high" => _float32(get(pdata, "high", "0"), 0f0),
-								"low" => _float32(get(pdata, "low", "0"), 0f0),
-								"close" => _float32(get(pdata, "close", "0"), 0f0),
-								"basevolume" => _float32(get(pdata, "volume", "0"), 0f0),
+								"symbol" => symbol,
+								"opentime" => candle.opentime,
+								"open" => candle.open,
+								"high" => candle.high,
+								"low" => candle.low,
+								"close" => candle.close,
+								"basevolume" => candle.basevolume,
 								"source" => "ws",
 							))
 						end

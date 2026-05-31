@@ -2,13 +2,51 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"type": "julia",
-			"command": "testcoverage",
-			"problemMatcher": [
-				""
+			"label": "Julia: Run tests with coverage",
+			"type": "shell",
+			"command": "julia",
+			"args": [
+				"--project=.",
+				"test/runtests.jl"
 			],
+			"problemMatcher": [],
 			"group": "test",
-			"label": "Julia: Run tests with coverage"
+			"detail": "Workspace coverage entrypoint using root test/runtests.jl package matrix."
+		},
+		{
+			"label": "Julia: Run Trade tests with coverage",
+			"type": "shell",
+			"command": "julia",
+			"args": [
+				"--project=Trade",
+				"-e",
+				"using Pkg; Pkg.test(\"Trade\"; coverage=true)"
+			],
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Julia: Summarize coverage",
+			"type": "shell",
+			"command": "julia",
+			"args": [
+				"--project=.",
+				"test/coverage_summary.jl"
+			],
+			"problemMatcher": [],
+			"group": "test",
+			"detail": "Create markdown coverage summary from .cov files at test/coverage_summary.md."
+		},
+		{
+			"label": "Julia: Run tests with coverage and summarize",
+			"dependsOrder": "sequence",
+			"dependsOn": [
+				"Julia: Run tests with coverage",
+				"Julia: Summarize coverage"
+			],
+			"problemMatcher": [],
+			"group": "test",
+			"detail": "Run workspace coverage tests and then build consolidated summary report."
 		}
 	]
 }

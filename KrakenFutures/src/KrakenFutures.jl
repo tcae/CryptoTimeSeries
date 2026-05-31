@@ -86,6 +86,12 @@ const KRAKEN_FUTURES_APIREST = "https://futures.kraken.com/derivatives/api/v3"
 const KRAKEN_CHARTS_APIREST = "https://futures.kraken.com/api/charts/v1"
 const KRAKEN_FUTURES_WS_PUBLIC = "wss://futures.kraken.com/ws/v1"
 const KRAKEN_FUTURES_WS_PRIVATE = "wss://futures.kraken.com/ws/v1"
+const _marketdata_ws_last_update_dt = Ref{Union{Nothing, DateTime}}(nothing)
+const _marketdata_ws_symbol_lock = ReentrantLock()
+const _marketdata_ws_last_update_by_symbol = Dict{String, DateTime}()
+const _ws_kline_state_lock = ReentrantLock()
+const _ws_last_kline_by_key = Dict{Tuple{String, String}, NamedTuple{(:opentime, :open, :high, :low, :close, :basevolume), Tuple{DateTime, Float32, Float32, Float32, Float32, Float32}}}()
+const _ws_closed_kline_by_key = Dict{Tuple{String, String}, NamedTuple{(:opentime, :open, :high, :low, :close, :basevolume), Tuple{DateTime, Float32, Float32, Float32, Float32, Float32}}}()
 
 const KRAKEN_SPOT_APIREST = "https://api.kraken.com"
 
@@ -108,6 +114,97 @@ const _nonce_ns_min_increment = 1_000_000_000  # 1 s in ns mode
 const _nonce_ns_switch_threshold = 1_000_000_000_000_000
 const _nonce_floor_max_future_ms = 86_400_000
 const _nonce_floor_max_future_ns = 86_400_000_000_000
+
+"Store one websocket marketdata heartbeat timestamp for KrakenFutures adapter state."
+function setmarketdataheartbeat!(dt::DateTime)
+	_marketdata_ws_last_update_dt[] = dt
+	return dt
+end
+
+"Store one websocket marketdata heartbeat timestamp using a cache handle for convenience."
+function setmarketdataheartbeat!(bc, dt::DateTime)
+	_ = bc
+	return setmarketdataheartbeat!(dt)
+end
+
+"Store websocket marketdata heartbeat timestamp for one normalized symbol."
+function setmarketdataheartbeat!(symbol::AbstractString, dt::DateTime)
+	key = uppercase(String(symbol))
+	lock(_marketdata_ws_symbol_lock) do
+		_marketdata_ws_last_update_by_symbol[key] = dt
+	end
+	setmarketdataheartbeat!(dt)
+	return dt
+end
+
+"Store websocket marketdata heartbeat timestamp for one symbol using a cache handle."
+function setmarketdataheartbeat!(bc, symbol::AbstractString, dt::DateTime)
+	_ = bc
+	return setmarketdataheartbeat!(symbol, dt)
+end
+
+"Return latest websocket marketdata heartbeat timestamp from KrakenFutures adapter state."
+marketdataheartbeat() = _marketdata_ws_last_update_dt[]
+
+"Return latest websocket marketdata heartbeat timestamp from a KrakenFutures cache handle."
+function marketdataheartbeat(bc)
+	_ = bc
+	return marketdataheartbeat()
+end
+
+"Return latest websocket marketdata heartbeat timestamp for one normalized symbol."
+function marketdataheartbeat(symbol::AbstractString)
+	key = uppercase(String(symbol))
+	lock(_marketdata_ws_symbol_lock) do
+		return get(_marketdata_ws_last_update_by_symbol, key, nothing)
+	end
+end
+
+"Return a copy of per-symbol websocket marketdata heartbeats."
+function marketdataheartbeats()
+	lock(_marketdata_ws_symbol_lock) do
+		return copy(_marketdata_ws_last_update_by_symbol)
+	end
+end
+
+"Return a copy of per-symbol websocket marketdata heartbeats using a cache handle."
+function marketdataheartbeats(bc)
+	_ = bc
+	return marketdataheartbeats()
+end
+
+_klinekey(symbol::AbstractString, interval::AbstractString) = (uppercase(String(symbol)), String(interval))
+
+function _recordwskline!(symbol::AbstractString, interval::AbstractString, candle)
+	key = _klinekey(symbol, interval)
+	lock(_ws_kline_state_lock) do
+		prev = get(_ws_last_kline_by_key, key, nothing)
+		if isnothing(prev)
+			_ws_last_kline_by_key[key] = candle
+			return candle
+		end
+		if candle.opentime > prev.opentime
+			_ws_closed_kline_by_key[key] = prev
+			_ws_last_kline_by_key[key] = candle
+		elseif candle.opentime == prev.opentime
+			_ws_last_kline_by_key[key] = candle
+		end
+		return candle
+	end
+end
+
+"Return latest websocket-confirmed closed kline for `symbol` and `interval` when available."
+function wsclosedkline(symbol::AbstractString, interval::String="1m")
+	key = _klinekey(symbol, interval)
+	lock(_ws_kline_state_lock) do
+		return get(_ws_closed_kline_by_key, key, nothing)
+	end
+end
+
+function wsclosedkline(bc, symbol::AbstractString, interval::String="1m")
+	_ = bc
+	return wsclosedkline(symbol, interval)
+end
 
 function _noncemode()::Symbol
 	raw = lowercase(strip(get(ENV, "KRAKEN_FUTURES_NONCE_MODE", "ms")))
@@ -1432,55 +1529,6 @@ function accountcapacity(bc::KrakenFuturesCache)
 end
 
 """
-Probe Kraken Futures private-read auth behavior with and without `Nonce`.
-
-Returns a named tuple with booleans and error text for both modes plus a
-human-readable verdict string.
-"""
-function startup_private_read_nonce_probe(bc::KrakenFuturesCache)
-	if !_hascredentials(bc)
-		return (
-			with_nonce_ok=false,
-			without_nonce_ok=false,
-			with_nonce_error="missing credentials",
-			without_nonce_error="missing credentials",
-			verdict="missing_credentials",
-		)
-	end
-
-	function _probe_once(omit_nonce::Bool)
-		try
-			withenv("KRAKEN_FUTURES_OMIT_NONCE_READS" => (omit_nonce ? "true" : "false")) do
-				_ = HttpPrivateRequest(bc, "GET", "/accounts", nothing, "futures account startup probe"; max_attempts=2)
-			end
-			return (ok=true, err="")
-		catch err
-			return (ok=false, err=sprint(showerror, err))
-		end
-	end
-
-	with_nonce = _probe_once(false)
-	without_nonce = _probe_once(true)
-	verdict = if with_nonce.ok && without_nonce.ok
-		"both_modes_ok"
-	elseif with_nonce.ok && !without_nonce.ok
-		"nonce_required_for_private_read"
-	elseif !with_nonce.ok && without_nonce.ok
-		"nonce_problem_detected_read_without_nonce_ok"
-	else
-		"both_modes_failed"
-	end
-
-	return (
-		with_nonce_ok=with_nonce.ok,
-		without_nonce_ok=without_nonce.ok,
-		with_nonce_error=with_nonce.err,
-		without_nonce_error=without_nonce.err,
-		verdict=verdict,
-	)
-end
-
-"""
 Convert one raw order entry into standardized row shape.
 """
 function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
@@ -2053,8 +2101,10 @@ function ws_ticker(bc::KrakenFuturesCache, symbol::String)
 					if get(msg, "feed", "") == "ticker"
 						p = Dict(msg)
 						wskey = String(_tryget(p, ["product_id", "symbol"], wssymbol))
+						symbol = _resultkey2symbol(bc, wskey)
+						setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
 						put!(channel, Dict(
-							"symbol" => _resultkey2symbol(bc, wskey),
+							"symbol" => symbol,
 							"askprice" => _float32(_tryget(p, ["ask", "askPrice"], 0), 0f0),
 							"bidprice" => _float32(_tryget(p, ["bid", "bidPrice"], 0), 0f0),
 							"lastprice" => _float32(_tryget(p, ["last", "lastPrice", "markPrice"], 0), 0f0),
@@ -2126,14 +2176,25 @@ function ws_kline(bc::KrakenFuturesCache, symbol::String, interval::String="1m")
 					if get(msg, "feed", "") == "candles"
 						p = Dict(msg)
 						wskey = String(_tryget(p, ["product_id", "symbol"], wssymbol))
+						symbol = _resultkey2symbol(bc, wskey)
+						candle = (
+							opentime=_todatetime(_tryget(p, ["time", "timestamp"], Dates.now(Dates.UTC))),
+							open=_float32(_tryget(p, ["open"], 0), 0f0),
+							high=_float32(_tryget(p, ["high"], 0), 0f0),
+							low=_float32(_tryget(p, ["low"], 0), 0f0),
+							close=_float32(_tryget(p, ["close"], 0), 0f0),
+							basevolume=_float32(_tryget(p, ["volume"], 0), 0f0),
+						)
+						_recordwskline!(symbol, interval, candle)
+						setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
 						put!(channel, Dict(
-							"symbol" => _resultkey2symbol(bc, wskey),
-							"opentime" => _todatetime(_tryget(p, ["time", "timestamp"], Dates.now(Dates.UTC))),
-							"open" => _float32(_tryget(p, ["open"], 0), 0f0),
-							"high" => _float32(_tryget(p, ["high"], 0), 0f0),
-							"low" => _float32(_tryget(p, ["low"], 0), 0f0),
-							"close" => _float32(_tryget(p, ["close"], 0), 0f0),
-							"basevolume" => _float32(_tryget(p, ["volume"], 0), 0f0),
+							"symbol" => symbol,
+							"opentime" => candle.opentime,
+							"open" => candle.open,
+							"high" => candle.high,
+							"low" => candle.low,
+							"close" => candle.close,
+							"basevolume" => candle.basevolume,
 							"source" => "ws",
 						))
 					end

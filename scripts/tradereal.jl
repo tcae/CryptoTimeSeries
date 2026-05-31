@@ -369,10 +369,6 @@ println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
 
 # Validate exchange credentials by fetching the live balance.
 # Fails fast with a clear error if API keys are missing or rejected.
-if selected_exchange == CryptoXch.EXCHANGE_KRAKENFUTURES
-    probe = CryptoXch.KrakenFutures.startup_private_read_nonce_probe(xc.bc)
-    @info "KrakenFutures startup private-read auth probe" verdict=probe.verdict with_nonce_ok=probe.with_nonce_ok without_nonce_ok=probe.without_nonce_ok with_nonce_error=probe.with_nonce_error without_nonce_error=probe.without_nonce_error
-end
 
 let
     init_balances = CryptoXch.balances(xc, ignoresmallvolume=false)

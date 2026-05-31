@@ -565,13 +565,15 @@ Progress update 2026-05-31:
 
 #### Increment 4.2: Async worker topology in shadow mode
 - Introduce bounded-channel workers:
-	- marketdata, strategy, order-intent, order-execution, order-reconcile, balance-sync
+	- marketdata, balance-sync, order-management
+- Keep strategy evaluation and order-intent shaping synchronous in `Trade` for deterministic debugging.
 - Keep order submission authoritative in synchronous path while shadow mode records async parity.
 - Add heartbeat/watchdog metrics per worker.
 
 Progress update 2026-05-31:
-- [x] Added bounded-channel worker topology scaffolding in `Trade` for marketdata, strategy, order-intent, order-execution, order-reconcile, and balance-sync.
-- [x] Wired async shadow path through worker-topology pipeline while keeping synchronous execution authoritative for order placement.
+- [x] Refined worker boundary to exchange-interaction-only async domains: marketdata, balance-sync, order-management.
+- [x] Kept strategy and order-intent stages synchronous for easier step-through debugging and deterministic parity checks.
+- [x] Wired async shadow path through exchange-worker topology while keeping synchronous execution authoritative for order placement.
 - [x] Added per-worker heartbeat, latency, and watchdog-breach metrics in `TradeCache.mc`.
 - [x] Extended `Trade/test/objective4_scaffolding_test.jl` with worker-topology and watchdog assertions.
 
@@ -579,6 +581,19 @@ Progress update 2026-05-31:
 - Prefer websocket trades/klines where supported.
 - Maintain HTTP fallback per symbol/venue when stream quality drops.
 - Add freshness SLA checks and automatic fallback switching.
+- Closed-candle policy: feature generation, classification, and strategy updates run only on closed candles, where candle closure is implicit when a newer candle exists (no explicit ready marker).
+
+Progress update 2026-05-31:
+- [x] Added marketdata freshness-policy scaffolding in `Trade` with websocket freshness SLA evaluation.
+- [x] Added automatic source switching policy (`:ws` <-> `:http`) with explicit fallback reasons (`ws_disabled`, `ws_no_updates`, `ws_stale`).
+- [x] Added fallback switch counters and policy-evaluation state in `TradeCache.mc` for observability.
+- [x] Extended Objective-4 scaffolding tests to cover stale/missing websocket updates and automatic HTTP fallback/recovery behavior.
+- [x] Added exchange-heartbeat bridge (`CryptoXch.marketdataheartbeat` / `setmarketdataheartbeat!`) and wired `Trade` freshness policy to consume exchange-owned websocket update timestamps when available.
+- [x] Wired websocket ingress handlers in KrakenSpot/KrakenFutures to emit marketdata heartbeat timestamps and made `CryptoXch.marketdataheartbeat` prefer latest adapter heartbeat automatically.
+- [x] Added per-symbol websocket freshness accounting (adapter symbol heartbeats, `CryptoXch.marketdataheartbeats`, and `Trade` symbol-scoped staleness fallback reason `ws_symbol_stale`).
+- [x] Implemented implicit closed-candle mapping in websocket adapters (closed candle recognized when newer in-progress candle arrives) and wired `CryptoXch.setcurrenttime!` to upsert newest confirmed closed WS candle into OHLCV cache.
+- [x] Enforced closed-candle-only strategy/classification updates via Trade closed-minute progression gate (`_next_closed_candle_dt!`) so classifier/runtime advice runs only once per newly closed candle.
+- [x] Test policy decision: warning/log masking is not required for this workstream; market-data tests may use live exchange public-read data paths (HTTP/WS) when validating websocket/fallback behavior.
 
 #### Increment 4.4: Tradable-base OHLCV persistence + gap closure
 - Introduce base state machine:
@@ -589,6 +604,16 @@ Progress update 2026-05-31:
 	- gate strategy/order path until `data_ready`.
 - Add restart-safe tests for gap closure and no-order-before-data-ready behavior.
 
+Progress update 2026-05-31:
+- [x] Added persistent per-base tradable OHLCV state tracking in `TradeCache.mc` (`:tradable_ohlcv_state_by_base`, `:tradable_ohlcv_state_dt_by_base`) with restart-safe restoration semantics.
+- [x] Wired `tradeselection!` to restore prior OHLCV states, persist state transitions from `_prepare_tradable_ohlcv!`, and promote accepted bases to `:tradable`.
+- [x] Extended Objective-4 scaffolding tests to cover discovered/backfill-required/data-ready/tradable state transitions and restart-safe state carry-over.
+
+Progress update 2026-05-31 (4.5 test slice):
+- [x] Added env-gated live public-read market-data canary test `Trade/test/objective4_live_marketdata_publicread_test.jl` and wired it into `Trade/test/runtests.jl`.
+- [x] Default test runs remain green (test is informationally skipped unless enabled).
+- [x] Activation flags: `CTS_RUN_LIVE_MARKETDATA_TESTS=1` and optional `CTS_LIVE_MARKETDATA_EXCHANGE` (default `KrakenSpot`).
+
 #### Increment 4.5: Controlled activation
 - Phase A: shadow mode only.
 - Phase B: canary execution on selected bases.
@@ -598,6 +623,77 @@ Progress update 2026-05-31:
 	- reduced REST request volume
 	- improved or unchanged reaction latency
 	- no OHLCV gaps on active tradable bases.
+
+Phase A -> Phase B promotion gate (approved 2026-05-31):
+- Phase A remains shadow-only until evidence exists for all three aspects:
+	- Market data matches between authoritative sync path and async-shadow observed inputs/derived snapshots.
+	- Balances match between exchange snapshot and Trade-side consumed snapshot for decision cycles.
+	- All orders are observable end-to-end (creation/update/cancel/fill visibility in runtime state and logs).
+- As soon as evidence for all three aspects is collected, proceed to Phase B canary execution.
+
+Phase A evidence contract (operational proposal, 2026-05-31):
+- Observation window:
+	- Run Phase A evidence for both `KrakenSpot` and `KrakenFutures`.
+	- Evidence is exchange-scoped; each exchange must satisfy the full contract independently.
+	- Minimum 60 minutes continuous shadow run.
+	- Minimum 300 decision cycles.
+	- Promotion is allowed immediately after minima are met and all checks pass.
+	- Running both exchanges in parallel processes is supported and recommended for faster validation, provided logs/metrics are isolated per process.
+- Check A: Market data match
+	- Compare sync vs shadow per cycle on active bases for source mode (`ws`/`http`), candle opentime used for decision, and decision price.
+	- Pass when source and candle-time mismatches are zero, and price delta is within one tick for at least 99.5% of comparisons (maximum outlier two ticks).
+- Check B: Balance match
+	- Compare exchange snapshot vs Trade-consumed snapshot per cycle for `free`, `locked`, `borrowed`, and quote-equivalent total.
+	- Pass when quote-equivalent delta is at most 0.1% for at least 99.5% of cycles, no drift persists more than 3 consecutive cycles, and no snapshot is missing.
+- Check C: Order observability
+	- Every touched order id in the window must be traceable across lifecycle states: created, amended-or-unchanged, canceled-or-filled, and final runtime/audit visibility.
+	- Pass when lifecycle trace coverage is 100%, with zero orphan orders and zero phantom orders.
+- Hard blockers (fail regardless of A/B/C):
+	- Any async divergence auto-disable event.
+	- Any increase in watchdog breach totals during the evidence window.
+	- Any increase in permission rejects attributable to runtime wiring changes.
+- Promotion decision rule:
+	- Promote Phase A -> Phase B if and only if checks A/B/C pass for both `KrakenSpot` and `KrakenFutures`, no hard blocker occurs on either exchange, and evidence reports (timestamp + runtime config + metrics snapshot) are archived per exchange.
+
+Parallel execution policy (KrakenSpot + KrakenFutures):
+- Start one process per exchange with explicit exchange selection and distinct run labels.
+- Store logs and evidence artifacts in exchange-specific files/folders to avoid mixed traces.
+- Evaluate pass/fail independently per exchange first, then apply the combined promotion rule above.
+
+Parallel launch template (Phase A evidence):
+```bash
+cd /Users/torsten/github/CryptoTimeSeries
+mkdir -p "$HOME/crypto/logs/objective4-phaseA/$(date +%Y%m%d-%H%M%S)"
+RUN_ROOT="$HOME/crypto/logs/objective4-phaseA/$(date +%Y%m%d-%H%M%S)"
+
+# KrakenSpot shadow process
+CTS_ASYNC_ENGINE_ENABLED=1 \
+CTS_ASYNC_SHADOW_MODE=1 \
+CTS_WS_MARKETDATA_ENABLED=1 \
+CTS_ASYNC_CANARY_BASES=BTC \
+julia --project=scripts scripts/tradereal.jl xch=KrakenSpot \
+	> "$RUN_ROOT/krakenspot-phaseA.log" 2>&1 &
+
+# KrakenFutures shadow process
+CTS_ASYNC_ENGINE_ENABLED=1 \
+CTS_ASYNC_SHADOW_MODE=1 \
+CTS_WS_MARKETDATA_ENABLED=1 \
+CTS_ASYNC_CANARY_BASES=BTC \
+julia --project=scripts scripts/tradereal.jl xch=KrakenFutures \
+	> "$RUN_ROOT/krakenfutures-phaseA.log" 2>&1 &
+
+echo "logs: $RUN_ROOT"
+```
+
+Progress update 2026-05-31 (4.5 implementation complete):
+- [x] Added canary-base gating for async shadow candidate generation in `Trade._tradestep!` via `CTS_ASYNC_CANARY_BASES` (`BTC`, `BTCUSDT`, and `BTC/USDT` forms supported).
+- [x] Kept synchronous execution authoritative for all bases while limiting async compare scope to canary bases during controlled rollout.
+- [x] Wired Objective-4.5 acceptance counters in `TradeCache.mc`:
+	- `:objective4_cycle_count`, `:objective4_canary_cycles`, `:objective4_canary_last_bases`
+	- `:objective4_order_rejects`, `:objective4_permission_rejects`, `:objective4_privatecooldown_skips`
+	- `:objective4_marketdata_fallback_activations`, `:objective4_watchdog_breaches_total`, `:objective4_last_worker_latency_ms`
+- [x] Extended `Trade/test/objective4_scaffolding_test.jl` to verify canary selection behavior and metric updates for fallback/watchdog/latency snapshots.
+- [x] Validation runs: Objective 4 scaffolding `104/104` pass, Trade package tests `144/144` pass, live public-read canary slice `10/10` pass (with `CTS_RUN_LIVE_MARKETDATA_TESTS=1`).
 
 ### Objective 4 increment mapping (legacy notes merged)
 - Worker topology originally listed as old Increment 4.1 is now covered by Increment 4.2 (async worker topology in shadow mode).

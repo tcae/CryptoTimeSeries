@@ -245,6 +245,120 @@ exchange(xc::XchCache)::String = xc.exchange
 authname(xc::XchCache) = xc.authname
 _exchangeModule(xc::XchCache) = _exchangeModule(xc.exchange)
 
+"Store one canonical websocket marketdata heartbeat timestamp in `xc.mc`."
+function setmarketdataheartbeat!(xc::XchCache, dt::DateTime)
+    xc.mc[:marketdata_ws_last_update_dt] = dt
+    return dt
+end
+
+"Store one canonical websocket marketdata heartbeat timestamp for one symbol in `xc.mc`."
+function setmarketdataheartbeat!(xc::XchCache, symbol::AbstractString, dt::DateTime)
+    key = uppercase(String(symbol))
+    if !haskey(xc.mc, :marketdata_ws_last_update_by_symbol)
+        xc.mc[:marketdata_ws_last_update_by_symbol] = Dict{String, DateTime}()
+    end
+    xc.mc[:marketdata_ws_last_update_by_symbol][key] = dt
+    localdt = get(xc.mc, :marketdata_ws_last_update_dt, nothing)
+    if isnothing(localdt) || (dt > DateTime(localdt))
+        xc.mc[:marketdata_ws_last_update_dt] = dt
+    end
+    return dt
+end
+
+"Return canonical per-symbol websocket marketdata heartbeat map, merging latest adapter values when available."
+function marketdataheartbeats(xc::XchCache)
+    if !haskey(xc.mc, :marketdata_ws_last_update_by_symbol)
+        xc.mc[:marketdata_ws_last_update_by_symbol] = Dict{String, DateTime}()
+    end
+    localmap = xc.mc[:marketdata_ws_last_update_by_symbol]
+
+    mod = _routedModule(xc, data_exchange)
+    if isdefined(mod, :marketdataheartbeats)
+        moduledict = try
+            getproperty(mod, :marketdataheartbeats)(_routedbc(xc, data_exchange))
+        catch
+            try
+                getproperty(mod, :marketdataheartbeats)()
+            catch
+                Dict{String, DateTime}()
+            end
+        end
+        for (sym, dt) in moduledict
+            key = uppercase(String(sym))
+            moddt = DateTime(dt)
+            prev = get(localmap, key, nothing)
+            if isnothing(prev) || (moddt > DateTime(prev))
+                localmap[key] = moddt
+            end
+        end
+    end
+    return copy(localmap)
+end
+
+"Return the latest websocket marketdata heartbeat timestamp from canonical state or routed data adapter when available."
+function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString}=nothing)
+    if !isnothing(symbol)
+        key = uppercase(String(symbol))
+        localmap = marketdataheartbeats(xc)
+        localdt = get(localmap, key, nothing)
+        moduledt = nothing
+        mod = _routedModule(xc, data_exchange)
+        if isdefined(mod, :marketdataheartbeat)
+            try
+                moduledt = getproperty(mod, :marketdataheartbeat)(_routedbc(xc, data_exchange), key)
+            catch
+                try
+                    moduledt = getproperty(mod, :marketdataheartbeat)(key)
+                catch
+                    moduledt = nothing
+                end
+            end
+        end
+        if isnothing(localdt)
+            if !isnothing(moduledt)
+                setmarketdataheartbeat!(xc, key, DateTime(moduledt))
+                return DateTime(moduledt)
+            end
+            return nothing
+        end
+        if isnothing(moduledt)
+            return localdt
+        end
+        latest = DateTime(moduledt) > DateTime(localdt) ? DateTime(moduledt) : DateTime(localdt)
+        setmarketdataheartbeat!(xc, key, latest)
+        return latest
+    end
+
+    localdt = get(xc.mc, :marketdata_ws_last_update_dt, nothing)
+    moduledt = nothing
+    mod = _routedModule(xc, data_exchange)
+    if isdefined(mod, :marketdataheartbeat)
+        try
+            moduledt = getproperty(mod, :marketdataheartbeat)(_routedbc(xc, data_exchange))
+        catch
+            try
+                moduledt = getproperty(mod, :marketdataheartbeat)()
+            catch
+                moduledt = nothing
+            end
+        end
+    end
+
+    if isnothing(localdt)
+        if !isnothing(moduledt)
+            xc.mc[:marketdata_ws_last_update_dt] = DateTime(moduledt)
+            return xc.mc[:marketdata_ws_last_update_dt]
+        end
+        return nothing
+    end
+    if isnothing(moduledt)
+        return localdt
+    end
+    latest = DateTime(moduledt) > DateTime(localdt) ? DateTime(moduledt) : DateTime(localdt)
+    xc.mc[:marketdata_ws_last_update_dt] = latest
+    return latest
+end
+
 """
 Return the adapter cache for the given `role`, using the routing config when available.
 Falls back to `xc.bc` (the primary adapter) when no role override is configured.
@@ -1082,6 +1196,64 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
     sleep(sleepperiod)
 end
 
+function _fetchwsclosedkline(xc::XchCache, symbol::AbstractString, interval::AbstractString)
+    mod = _routedModule(xc, data_exchange)
+    if !isdefined(mod, :wsclosedkline)
+        return nothing
+    end
+    try
+        return getproperty(mod, :wsclosedkline)(_routedbc(xc, data_exchange), symbol, String(interval))
+    catch
+        try
+            return getproperty(mod, :wsclosedkline)(symbol, String(interval))
+        catch
+            return nothing
+        end
+    end
+end
+
+function _upsert_closed_wscandle!(ohlcv, candle)
+    isnothing(candle) && return nothing
+    df = Ohlcv.dataframe(ohlcv)
+    cdt = floor(DateTime(candle.opentime), Minute(1))
+    copen = Float32(candle.open)
+    chigh = Float32(candle.high)
+    clow = Float32(candle.low)
+    cclose = Float32(candle.close)
+    cvol = Float32(candle.basevolume)
+
+    rowix = size(df, 1) == 0 ? nothing : findfirst(==(cdt), df[!, :opentime])
+    if isnothing(rowix)
+        if :pivot in names(df)
+            push!(df, (opentime=cdt, open=copen, high=chigh, low=clow, close=cclose, basevolume=cvol, pivot=cclose); promote=true)
+        else
+            push!(df, (opentime=cdt, open=copen, high=chigh, low=clow, close=cclose, basevolume=cvol); promote=true)
+        end
+        sort!(df, :opentime)
+    else
+        df[rowix, :opentime] = cdt
+        df[rowix, :open] = copen
+        df[rowix, :high] = chigh
+        df[rowix, :low] = clow
+        df[rowix, :close] = cclose
+        df[rowix, :basevolume] = cvol
+        (:pivot in names(df)) && (df[rowix, :pivot] = cclose)
+    end
+    Ohlcv.setdataframe!(ohlcv, df)
+    return nothing
+end
+
+function _applywsclosedcandle!(xc::XchCache, ohlcv, dt::DateTime)
+    sym = symboltoken(xc, ohlcv.base, ohlcv.quotecoin; role=data_exchange)
+    candle = _fetchwsclosedkline(xc, sym, ohlcv.interval)
+    isnothing(candle) && return nothing
+    cutoff = dt - intervalperiod(ohlcv.interval)
+    if floor(DateTime(candle.opentime), Minute(1)) <= cutoff
+        _upsert_closed_wscandle!(ohlcv, candle)
+    end
+    return nothing
+end
+
 "Sleeps until `datetime` if reached if `datetime` is in the future, set the *current* time and updates ohlcv if required"
 function setcurrenttime!(xc::XchCache, base, datetime::DateTime)
     dt = floor(datetime, Minute(1))
@@ -1096,6 +1268,7 @@ function setcurrenttime!(xc::XchCache, base, datetime::DateTime)
         xc.bases[base] = ohlcv = cryptodownload(xc, base, "1m", dt, dt)
         ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
     end
+    _applywsclosedcandle!(xc, ohlcv, dt)
     Ohlcv.setix!(ohlcv, Ohlcv.rowix(ohlcv, dt))
     if (length(ot) > 0) && (ot[begin] <= dt <= ot[end]) && (ot[Ohlcv.ix(ohlcv)] != dt)
         if (verbosity >= 1) && (EnvConfig.configmode == production)

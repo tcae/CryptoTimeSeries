@@ -490,8 +490,10 @@ end
 
 @testset "Trend04 BTC real-data regression Jan-May 2025" begin
     prevmode = EnvConfig.configmode
+    prevcoinspath = EnvConfig.coinspath()
     try
         EnvConfig.init(training)
+        EnvConfig.setcoinspath!("coins_bybit")
         startdt = DateTime("2025-01-30T00:00:00")
         enddt = DateTime("2025-05-30T23:59:00")
         expectedrows = length(startdt:Minute(1):enddt)
@@ -520,6 +522,7 @@ end
         end
         @test isempty(issues)
     finally
+        EnvConfig.setcoinspath!(prevcoinspath)
         EnvConfig.init(prevmode)
     end
 end
@@ -530,8 +533,10 @@ end
         @test_skip true
     else
         prevmode = EnvConfig.configmode
+        prevcoinspath = EnvConfig.coinspath()
         try
             EnvConfig.init(training)
+            EnvConfig.setcoinspath!("coins_bybit")
             ohlcv = Ohlcv.read("BTC")
             @test size(Ohlcv.dataframe(ohlcv), 1) > 0
 
@@ -550,6 +555,7 @@ end
             end
             @test isempty(issues)
         finally
+            EnvConfig.setcoinspath!(prevcoinspath)
             EnvConfig.init(prevmode)
         end
     end
