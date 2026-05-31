@@ -1,7 +1,7 @@
 module Cls001Evaluate
 
 using Test, Dates, Logging, CSV
-using EnvConfig, Classify, CryptoXch, Assets
+using EnvConfig, Classify, CryptoXch
 
 
 EnvConfig.init(production)
@@ -31,9 +31,9 @@ else
     enddt = DateTime("2024-03-22T20:40:00")
     startdt = enddt - Day(10)  # Year(20)
 
-    ad1 = Assets.read!(Assets.AssetData())
-    println(ad1.basedf)
-    cls = Classify.evaluate!(cls, xc, ad1.basedf[!, :base], Classify.STDREGRWINDOWSET, Classify.STDGAINTHRSHLDSET, startdt, enddt)
+    bases = EnvConfig.trainingbases
+    println(bases)
+    cls = Classify.evaluate!(cls, xc, bases, Classify.STDREGRWINDOWSET, Classify.STDGAINTHRSHLDSET, startdt, enddt)
     kpifilename = EnvConfig.logpath("cls001evaluate.csv")
     EnvConfig.savebackup(kpifilename)
     CSV.write(kpifilename, cls.cfg, decimal=',', delim=';')  # decimal as , to consume with European locale

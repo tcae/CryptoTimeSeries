@@ -9,7 +9,6 @@ EnvConfig.init(production)
 Ohlcv.verbosity = 1
 Features.verbosity = 1
 Classify.verbosity = 2
-Assets.verbosity = 2
 println("$(EnvConfig.now()): started")
 # messagelog = open(EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt"), "w")
 # logger = SimpleLogger(messagelog)

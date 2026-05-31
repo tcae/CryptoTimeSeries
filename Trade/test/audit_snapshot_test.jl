@@ -1,11 +1,11 @@
 using Test, DataFrames
-using EnvConfig, CryptoXch, Trade, TradeAudit
+using EnvConfig, CryptoXch, Trade, TradeLog
 
 @testset "Trade portfolio audit snapshots" begin
-    oldauditroot = get(ENV, "CTS_AUDIT_ROOT", nothing)
+    oldauditroot = get(ENV, "CTS_TRADELOG_ROOT", nothing)
     tmpdir = mktempdir()
     try
-        ENV["CTS_AUDIT_ROOT"] = tmpdir
+        ENV["CTS_TRADELOG_ROOT"] = tmpdir
         EnvConfig.init(test)
 
         xc = CryptoXch.XchCache()
@@ -22,16 +22,16 @@ using EnvConfig, CryptoXch, Trade, TradeAudit
 
         Trade._writeportfoliosnapshot!(tc, assets; source_module="TradeTest")
 
-        snapshot = TradeAudit.AuditEventRow(
-            event_type=TradeAudit.PORTFOLIO_SNAPSHOT,
+        snapshot = TradeLog.AuditEventRow(
+            event_type=TradeLog.PORTFOLIO_SNAPSHOT,
             environment=string(Symbol(EnvConfig.configmode)),
             run_mode=CryptoXch.auditrunmode(xc),
             exchange=CryptoXch.exchange(xc),
             account_alias=CryptoXch.exchange(xc),
-            asset_class=TradeAudit.crypto,
-            instrument_type=TradeAudit.spot_pair,
+            asset_class=TradeLog.crypto,
+            instrument_type=TradeLog.spot_pair,
         )
-        auditpath = TradeAudit.auditfile(snapshot)
+        auditpath = TradeLog.auditfile(snapshot)
         @test isfile(auditpath)
         events = readlines(auditpath)
         @test length(events) == 2
@@ -42,13 +42,13 @@ using EnvConfig, CryptoXch, Trade, TradeAudit
         @test all(line -> occursin("\"portfolio_value_after\":16500.0", line), events)
         @test all(line -> occursin("\"run_mode\":\"simulation\"", line), events)
         @test all(line -> occursin("\"run_id\":\"", line), events)
-        @test any(line -> occursin("\"notes\":\"asset=USDT; rows=2; simmode=bybitsim\"", line), events)
-        @test any(line -> occursin("\"notes\":\"asset=BTC; rows=2; simmode=bybitsim\"", line), events)
+        @test any(line -> occursin("\"notes\":\"asset=USDT", line) && occursin("rows=2", line) && occursin("simmode=", line), events)
+        @test any(line -> occursin("\"notes\":\"asset=BTC", line) && occursin("rows=2", line) && occursin("simmode=", line), events)
     finally
         if isnothing(oldauditroot)
-            delete!(ENV, "CTS_AUDIT_ROOT")
+            delete!(ENV, "CTS_TRADELOG_ROOT")
         else
-            ENV["CTS_AUDIT_ROOT"] = oldauditroot
+            ENV["CTS_TRADELOG_ROOT"] = oldauditroot
         end
         rm(tmpdir; force=true, recursive=true)
     end

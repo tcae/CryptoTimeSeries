@@ -23,6 +23,21 @@ const _marketdata_ws_last_update_by_symbol = Dict{String, DateTime}()
 const _ws_kline_state_lock = ReentrantLock()
 const _ws_last_kline_by_key = Dict{Tuple{String, String}, NamedTuple{(:opentime, :open, :high, :low, :close, :basevolume), Tuple{DateTime, Float32, Float32, Float32, Float32, Float32}}}()
 const _ws_closed_kline_by_key = Dict{Tuple{String, String}, NamedTuple{(:opentime, :open, :high, :low, :close, :basevolume), Tuple{DateTime, Float32, Float32, Float32, Float32, Float32}}}()
+const _ws_orders_state_lock = ReentrantLock()
+const _ws_orders_snapshot = Ref{DataFrame}(DataFrame())
+const _ws_orders_last_update_dt = Ref{Union{Nothing, DateTime}}(nothing)
+const _ws_balances_state_lock = ReentrantLock()
+const _ws_balances_snapshot = Ref{DataFrame}(DataFrame())
+const _ws_balances_last_update_dt = Ref{Union{Nothing, DateTime}}(nothing)
+const _ws_private_stream_lock = ReentrantLock()
+const _ws_private_worker_running = Ref(false)
+const _ws_private_orders_channel = Ref{Union{Nothing, Channel{Dict}}}(nothing)
+const _ws_private_balances_channel = Ref{Union{Nothing, Channel{Dict}}}(nothing)
+const _ws_private_subscribe_ack_timeout = Dates.Second(20)
+const _ws_private_min_reconnect_interval = Dates.Second(2)
+const _ws_private_backoff_base_seconds = 2.0
+const _ws_private_backoff_cap_seconds = 60.0
+const _ws_private_backoff_jitter_seconds = 0.75
 
 const _interval2minutes = Dict(
 	"1m" => 1,
@@ -162,6 +177,203 @@ end
 function wsclosedkline(bc, symbol::AbstractString, interval::String="1m")
 	_ = bc
 	return wsclosedkline(symbol, interval)
+end
+
+"Return latest websocket order snapshot maintained by KrakenSpot adapter."
+function wsordersnapshot()
+	lock(_ws_orders_state_lock) do
+		return copy(_ws_orders_snapshot[])
+	end
+end
+
+"Return latest websocket order snapshot using a cache handle."
+function wsordersnapshot(bc)
+	_ = bc
+	return wsordersnapshot()
+end
+
+"Return latest websocket order heartbeat timestamp from KrakenSpot adapter state."
+wsordersheartbeat() = _ws_orders_last_update_dt[]
+
+"Return latest websocket order heartbeat timestamp using a cache handle."
+function wsordersheartbeat(bc)
+	_ = bc
+	return wsordersheartbeat()
+end
+
+"Return latest websocket balances snapshot maintained by KrakenSpot adapter."
+function wsbalancessnapshot()
+	lock(_ws_balances_state_lock) do
+		return copy(_ws_balances_snapshot[])
+	end
+end
+
+"Return latest websocket balances snapshot using a cache handle."
+function wsbalancessnapshot(bc)
+	_ = bc
+	return wsbalancessnapshot()
+end
+
+"Return latest websocket balances heartbeat timestamp from KrakenSpot adapter state."
+wsbalancesheartbeat() = _ws_balances_last_update_dt[]
+
+"Return latest websocket balances heartbeat timestamp using a cache handle."
+function wsbalancesheartbeat(bc)
+	_ = bc
+	return wsbalancesheartbeat()
+end
+
+function _update_ws_orders_snapshot!(df::DataFrame)
+	lock(_ws_orders_state_lock) do
+		_ws_orders_snapshot[] = copy(df)
+		_ws_orders_last_update_dt[] = Dates.now(Dates.UTC)
+	end
+	return nothing
+end
+
+function _touch_ws_orders_heartbeat!()
+	lock(_ws_orders_state_lock) do
+		_ws_orders_last_update_dt[] = Dates.now(Dates.UTC)
+	end
+	return nothing
+end
+
+function _update_ws_balances_snapshot!(df::DataFrame)
+	lock(_ws_balances_state_lock) do
+		_ws_balances_snapshot[] = copy(df)
+		_ws_balances_last_update_dt[] = Dates.now(Dates.UTC)
+	end
+	return nothing
+end
+
+function _touch_ws_balances_heartbeat!()
+	lock(_ws_balances_state_lock) do
+		_ws_balances_last_update_dt[] = Dates.now(Dates.UTC)
+	end
+	return nothing
+end
+
+_ws_tryget(dict::AbstractDict, keys::AbstractVector{<:AbstractString}, default=nothing) = begin
+	for key in keys
+		haskey(dict, key) && return dict[key]
+	end
+	return default
+end
+
+function _ws_todatetime(value)
+	if value isa DateTime
+		return value
+	elseif value isa Integer
+		return Dates.unix2datetime(value > 10^11 ? value ÷ 1000 : value)
+	elseif value isa Real
+		iv = round(Int, value)
+		return Dates.unix2datetime(iv > 10^11 ? iv ÷ 1000 : iv)
+	elseif value isa AbstractString
+		s = strip(value)
+		s = replace(s, "Z" => "")
+		if s == ""
+			return Dates.now(Dates.UTC)
+		end
+		try
+			return DateTime(s)
+		catch
+		end
+		try
+			return DateTime(s, dateformat"yyyy-mm-ddTHH:MM:SS.s")
+		catch
+		end
+		try
+			return _ws_todatetime(parse(Float64, s))
+		catch
+		end
+	end
+	return Dates.now(Dates.UTC)
+end
+
+function _ws_orderrow_from_dict(bc, entry::AbstractDict)
+	oid = String(_ws_tryget(entry, ["order_id", "orderid", "id", "txid"], ""))
+	oid == "" && return nothing
+	rawsymbol = String(_ws_tryget(entry, ["symbol", "pair", "instrument", "product_id"], ""))
+	symbol = rawsymbol == "" ? "" : _resultkey2symbol(bc, rawsymbol)
+	side = lowercase(String(_ws_tryget(entry, ["side", "type", "direction"], "buy"))) == "buy" ? "Buy" : "Sell"
+	ordertype = titlecase(String(_ws_tryget(entry, ["ordertype", "order_type", "orderType"], "Limit")))
+	baseqty = _float32(_ws_tryget(entry, ["vol", "qty", "size", "order_qty", "orderQty"], 0), 0f0)
+	executedqty = _float32(_ws_tryget(entry, ["vol_exec", "filled", "filled_qty", "cum_qty", "cumQty"], 0), 0f0)
+	limitprice = _float32(_ws_tryget(entry, ["price", "limit_price", "limitPrice"], 0), 0f0)
+	avgprice = _float32(_ws_tryget(entry, ["avgPrice", "fill_price", "fillPrice", "price"], limitprice), limitprice)
+	rawstatus = lowercase(String(_ws_tryget(entry, ["status", "orderStatus"], "open")))
+	status = if rawstatus in ["open", "new", "untouched"]
+		"New"
+	elseif rawstatus in ["partial", "partiallyfilled", "partially_filled"]
+		"PartiallyFilled"
+	elseif rawstatus in ["filled", "closed"]
+		"Filled"
+	elseif rawstatus in ["cancelled", "canceled"]
+		"Cancelled"
+	elseif rawstatus in ["rejected", "cancel_reject", "error"]
+		"Rejected"
+	else
+		titlecase(rawstatus)
+	end
+	created = _ws_todatetime(_ws_tryget(entry, ["created", "createdTime", "timestamp", "time", "opentm"], Dates.now(Dates.UTC)))
+	updated = _ws_todatetime(_ws_tryget(entry, ["updated", "updatedTime", "lastUpdateTime", "timestamp"], created))
+	orderLinkId = String(_ws_tryget(entry, ["cl_ord_id", "client_order_id", "clientOrderId", "cliOrdId"], ""))
+	rejectreason = String(_ws_tryget(entry, ["rejectreason", "reason", "error"], ""))
+	return (
+		orderid=oid,
+		orderLinkId=orderLinkId,
+		symbol=symbol,
+		side=side,
+		baseqty=baseqty,
+		ordertype=ordertype,
+		isLeverage=false,
+		timeinforce=String(_ws_tryget(entry, ["timeinforce", "timeInForce"], "GTC")),
+		limitprice=limitprice,
+		avgprice=avgprice,
+		executedqty=executedqty,
+		status=status,
+		created=created,
+		updated=updated,
+		rejectreason=rejectreason,
+		lastcheck=Dates.now(Dates.UTC),
+	)
+end
+
+function _ws_orders_df_from_payload(bc, payload)
+	if payload isa DataFrame
+		return copy(payload)
+	end
+	rows = emptyorders()
+	payload isa AbstractVector || return rows
+	for item in payload
+		entry = item isa AbstractDict ? Dict(item) : Dict{String, Any}()
+		isempty(entry) && continue
+		row = _ws_orderrow_from_dict(bc, entry)
+		isnothing(row) && continue
+		push!(rows, row)
+	end
+	return rows
+end
+
+function _ws_balances_df_from_payload(payload)
+	if payload isa DataFrame
+		return copy(payload)
+	end
+	df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
+	payload isa AbstractVector || return df
+	for item in payload
+		entry = item isa AbstractDict ? Dict(item) : Dict{String, Any}()
+		isempty(entry) && continue
+		coinraw = _ws_tryget(entry, ["asset", "coin", "currency", "ccy"], "")
+		coin = _normalizeasset(String(coinraw))
+		coin == "" && continue
+		free = _float32(_ws_tryget(entry, ["available", "free", "walletBalance"], 0), 0f0)
+		locked = _float32(_ws_tryget(entry, ["hold", "locked", "hold_trade", "initialMargin"], 0), 0f0)
+		borrowed = _float32(_ws_tryget(entry, ["borrowed", "borrow", "liability"], 0), 0f0)
+		accruedinterest = _float32(_ws_tryget(entry, ["accruedinterest", "interest"], 0), 0f0)
+		push!(df, (coin=coin, locked=locked, free=free, borrowed=borrowed, accruedinterest=accruedinterest))
+	end
+	return df
 end
 
 """
@@ -1987,12 +2199,205 @@ function _wsauthtoken(bc::KrakenSpotCache)
 end
 
 """
+Convert websocket payload to text when possible.
+"""
+function _wsraw2text(msgraw)
+	if msgraw isa String
+		return msgraw
+	elseif msgraw isa AbstractVector{UInt8}
+		return String(Vector{UInt8}(msgraw))
+	end
+	return nothing
+end
+
+function _newprivatechannel()
+	return Channel{Dict}(128)
+end
+
+function _privateorderschannel!()
+	ch = _ws_private_orders_channel[]
+	if isnothing(ch) || !isopen(ch)
+		ch = _newprivatechannel()
+		_ws_private_orders_channel[] = ch
+	end
+	return ch
+end
+
+function _privatebalanceschannel!()
+	ch = _ws_private_balances_channel[]
+	if isnothing(ch) || !isopen(ch)
+		ch = _newprivatechannel()
+		_ws_private_balances_channel[] = ch
+	end
+	return ch
+end
+
+function _privatereadcooldownremainingseconds()::Float64
+	lock(_private_rl_lock) do
+		nowdt = Dates.now(Dates.UTC)
+		until = _private_rl_cooldown_until[]
+		if isnothing(until) || (nowdt >= until)
+			return 0.0
+		end
+		return max(0.0, Dates.value(until - nowdt) / 1000)
+	end
+end
+
+function _wsreconnectbackoffseconds(failure_streak::Int)::Float64
+	streak = max(1, failure_streak)
+	expwait = _ws_private_backoff_base_seconds * (2.0 ^ (streak - 1))
+	basewait = max(Dates.value(_ws_private_min_reconnect_interval) / 1000, min(_ws_private_backoff_cap_seconds, expwait))
+	jitter = (Float64(mod(time_ns(), 1_000_000_000)) / 1_000_000_000) * _ws_private_backoff_jitter_seconds
+	return basewait + jitter
+end
+
+function _run_private_ws_worker!(bc::KrakenSpotCache, order_channel::Channel{Dict}, balance_channel::Channel{Dict})
+	lastordersnapshot = ""
+	lastbalancesnapshot = ""
+	failure_streak = 0
+	next_reconnect_at = Dates.now(Dates.UTC)
+	while isopen(order_channel) || isopen(balance_channel)
+		nowdt = Dates.now(Dates.UTC)
+		if nowdt < next_reconnect_at
+			sleep(max(0.1, Dates.value(next_reconnect_at - nowdt) / 1000))
+			continue
+		end
+		if !_hascredentials(bc)
+			sleep(1)
+			continue
+		end
+		cooldown_s = _privatereadcooldownremainingseconds()
+		if cooldown_s > 0
+			sleep(min(cooldown_s, 5.0))
+			continue
+		end
+		try
+			token = _wsauthtoken(bc)
+			if isnothing(token)
+				next_reconnect_at = Dates.now(Dates.UTC) + Dates.Millisecond(round(Int, 1000 * _wsreconnectbackoffseconds(max(1, failure_streak))))
+				continue
+			end
+			failure_streak = 0
+			next_reconnect_at = Dates.now(Dates.UTC) + _ws_private_min_reconnect_interval
+			WebSockets.open(KRAKEN_WS_PRIVATE) do ws
+				connection_started = Dates.now(Dates.UTC)
+				orders_active = false
+				balances_active = false
+				WebSockets.send(ws, JSON3.write(Dict("method" => "subscribe", "params" => Dict("channel" => "executions", "token" => token))))
+				WebSockets.send(ws, JSON3.write(Dict("method" => "subscribe", "params" => Dict("channel" => "balances", "token" => token))))
+				while isopen(ws) && (isopen(order_channel) || isopen(balance_channel))
+					msgraw = WebSockets.receive(ws)
+					msgtxt = _wsraw2text(msgraw)
+					isnothing(msgtxt) && continue
+					msg = try
+						JSON3.read(msgtxt, Dict)
+					catch
+						continue
+					end
+					ch = String(get(msg, "channel", ""))
+					if ch == "" && haskey(msg, "result") && (msg["result"] isa AbstractDict)
+						ch = String(get(msg["result"], "channel", ""))
+					end
+					if ch in ["heartbeat", "ping", "pong"]
+						_touch_ws_orders_heartbeat!()
+						_touch_ws_balances_heartbeat!()
+					end
+					if ch in ["executions", "orders", "openOrders"]
+						rawdata = get(msg, "data", Any[])
+						df = _ws_orders_df_from_payload(bc, rawdata)
+						if size(df, 1) > 0
+							_update_ws_orders_snapshot!(df)
+						else
+							_touch_ws_orders_heartbeat!()
+						end
+						orders_active = true
+						isopen(order_channel) && put!(order_channel, Dict("topic" => ch, "source" => "ws", "data" => rawdata))
+					elseif ch in ["balances", "balance"]
+						rawdata = get(msg, "data", Any[])
+						df = _ws_balances_df_from_payload(rawdata)
+						if size(df, 1) > 0
+							_update_ws_balances_snapshot!(df)
+						else
+							_touch_ws_balances_heartbeat!()
+						end
+						balances_active = true
+						isopen(balance_channel) && put!(balance_channel, Dict("topic" => ch, "source" => "ws", "data" => rawdata))
+					end
+					nowdt = Dates.now(Dates.UTC)
+					if (nowdt - connection_started) > _ws_private_subscribe_ack_timeout
+						if !orders_active || !balances_active
+							throw(ErrorException("private websocket channel activation timeout orders_active=$(orders_active) balances_active=$(balances_active)"))
+						end
+					end
+				end
+			end
+		catch err
+			(verbosity >= 1) && @warn "Kraken private websocket worker failed: $(err)"
+			failure_streak += 1
+			next_reconnect_at = Dates.now(Dates.UTC) + Dates.Millisecond(round(Int, 1000 * _wsreconnectbackoffseconds(failure_streak)))
+			cooldown_s = _privatereadcooldownremainingseconds()
+			if isopen(order_channel)
+				try
+					if cooldown_s <= 0
+						oo = openorders(bc)
+						_update_ws_orders_snapshot!(oo)
+						snapshot = string(hash(oo))
+						if snapshot != lastordersnapshot
+							put!(order_channel, Dict("topic" => "order", "source" => "rest", "data" => oo))
+							lastordersnapshot = snapshot
+						end
+					end
+				catch fallback_err
+					(verbosity >= 1) && @warn "Kraken private worker order REST fallback failed: $(fallback_err)"
+				end
+			end
+			if isopen(balance_channel)
+				try
+					if cooldown_s <= 0
+						b = balances(bc)
+						_update_ws_balances_snapshot!(b)
+						snapshot = string(hash(b))
+						if snapshot != lastbalancesnapshot
+							put!(balance_channel, Dict("topic" => "balances", "source" => "rest", "data" => b))
+							lastbalancesnapshot = snapshot
+						end
+					end
+				catch fallback_err
+					(verbosity >= 1) && @warn "Kraken private worker balance REST fallback failed: $(fallback_err)"
+				end
+			end
+			sleep(min(_wsreconnectbackoffseconds(failure_streak), 5.0))
+		end
+	end
+	return nothing
+end
+
+function _ensure_private_ws_worker!(bc::KrakenSpotCache)
+	lock(_ws_private_stream_lock) do
+		order_channel = _privateorderschannel!()
+		balance_channel = _privatebalanceschannel!()
+		if !_ws_private_worker_running[]
+			_ws_private_worker_running[] = true
+			@async begin
+				try
+					_run_private_ws_worker!(bc, order_channel, balance_channel)
+				finally
+					_ws_private_worker_running[] = false
+				end
+			end
+		end
+		return order_channel, balance_channel
+	end
+end
+
+"""
 Fallback polling for order updates when websocket order stream is unavailable.
 """
 function _pollordersfallback!(channel::Channel{Dict}, bc::KrakenSpotCache)
 	lastsnapshot = ""
 	while isopen(channel)
 		oo = openorders(bc)
+		_update_ws_orders_snapshot!(oo)
 		snapshot = string(hash(oo))
 		if snapshot != lastsnapshot
 			put!(channel, Dict("topic" => "order", "source" => "rest", "data" => oo))
@@ -2006,40 +2411,52 @@ end
 Subscribe to private order updates via websocket and fall back to polling open orders.
 """
 function ws_orders(bc::KrakenSpotCache)
+	if _hascredentials(bc)
+		order_channel, _ = _ensure_private_ws_worker!(bc)
+		return order_channel
+	end
 	channel = Channel{Dict}(32)
 	@async begin
-		wsok = false
-		if _hascredentials(bc)
-			try
-				token = _wsauthtoken(bc)
-				if !isnothing(token)
-					subscribe = Dict("method" => "subscribe", "params" => Dict("channel" => "executions", "token" => token))
-					WebSockets.open(KRAKEN_WS_PRIVATE) do ws
-						wsok = true
-						WebSockets.send(ws, JSON3.write(subscribe))
-						while isopen(ws) && isopen(channel)
-							msgraw = WebSockets.receive(ws)
-							!(msgraw isa String) && continue
-							msg = JSON3.read(msgraw, Dict)
-							ch = String(get(msg, "channel", ""))
-							if ch in ["executions", "orders", "openOrders"]
-								put!(channel, Dict("topic" => ch, "source" => "ws", "data" => get(msg, "data", Any[])))
-							end
-						end
-					end
-				end
-			catch err
-				(verbosity >= 1) && @warn "Kraken ws_orders failed: $(err)"
-			end
+		(verbosity >= 2) && @info "ws_orders fallback to REST polling"
+		try
+			_pollordersfallback!(channel, bc)
+		catch err
+			(verbosity >= 1) && @warn "order REST fallback failed: $(err)"
 		end
+		isopen(channel) && close(channel)
+	end
+	return channel
+end
 
-		if isopen(channel)
-			!wsok && (verbosity >= 2) && @info "ws_orders fallback to REST polling"
-			try
-				_pollordersfallback!(channel, bc)
-			catch err
-				(verbosity >= 1) && @warn "order REST fallback failed: $(err)"
-			end
+function _pollbalancesfallback!(channel::Channel{Dict}, bc::KrakenSpotCache)
+	lastsnapshot = ""
+	while isopen(channel)
+		b = balances(bc)
+		_update_ws_balances_snapshot!(b)
+		snapshot = string(hash(b))
+		if snapshot != lastsnapshot
+			put!(channel, Dict("topic" => "balances", "source" => "rest", "data" => b))
+			lastsnapshot = snapshot
+		end
+		sleep(2)
+	end
+end
+
+"""
+Subscribe to private balance updates via websocket and fall back to polling balances.
+"""
+function ws_balances(bc::KrakenSpotCache)
+	if _hascredentials(bc)
+		_, balance_channel = _ensure_private_ws_worker!(bc)
+		return balance_channel
+	end
+	channel = Channel{Dict}(32)
+	@async begin
+		(verbosity >= 2) && @info "ws_balances fallback to REST polling"
+		try
+			_pollbalancesfallback!(channel, bc)
+		catch err
+			(verbosity >= 1) && @warn "balance REST fallback failed: $(err)"
 		end
 		isopen(channel) && close(channel)
 	end

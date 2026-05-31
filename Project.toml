@@ -1,8 +1,8 @@
 name = "CryptoTimeSeries"
+uuid = "b701e8db-9a49-4397-91f7-1b5d24279289"
 authors = ["tcae"]
 
 [deps]
-Assets = "e4c5a7f8-51b3-4a40-8507-79544143629b"
 BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
 BetterFileWatching = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
 Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"

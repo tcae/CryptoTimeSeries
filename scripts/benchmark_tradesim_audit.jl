@@ -54,9 +54,6 @@ function run_mode(mode::BenchMode, env::Dict{String, String})::Float64
     child_env = Dict{String, String}(env)
     child_env["CTS_TRADELOG_ENABLED"] = mode.audit_enabled ? "true" : "false"
     child_env["CTS_TRADELOG_SIMULATION_ENABLED"] = mode.sim_audit_enabled ? "true" : "false"
-    # Backward-compatible flags for older modules still reading audit names.
-    child_env["CTS_AUDIT_ENABLED"] = child_env["CTS_TRADELOG_ENABLED"]
-    child_env["CTS_AUDIT_SIMULATION_ENABLED"] = child_env["CTS_TRADELOG_SIMULATION_ENABLED"]
 
     cmd = `$(Base.julia_cmd()) --project=scripts scripts/tradesim.jl`
     cmd_with_env = addenv(cmd, collect(pairs(child_env))...)

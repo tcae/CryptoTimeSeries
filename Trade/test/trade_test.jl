@@ -1,7 +1,7 @@
 module TradeTest
 
 using Test, Dates, Logging, LoggingExtras
-using EnvConfig, Trade, Classify, Assets, Ohlcv, CryptoXch, Features
+using EnvConfig, Trade, Classify, Ohlcv, CryptoXch, Features
 
 println("TradeTest trade_test")
 println("$(EnvConfig.now()): started")

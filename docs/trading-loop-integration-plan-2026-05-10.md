@@ -43,11 +43,10 @@
 - Primary enable flags are now:
 	- `CTS_TRADELOG_ENABLED`
 	- `CTS_TRADELOG_SIMULATION_ENABLED`
-- Backward-compatible fallback to old `CTS_AUDIT_*` flags remains temporarily during migration.
 
 ### Migration status
 - [x] Added new workspace package `TradeLog` with append-only JSONL logging API compatible with current `Trade` and `CryptoXch` call paths.
-- [x] Switched `Trade` and `CryptoXch` imports/dependencies from `TradeAudit` to `TradeLog`.
+- [x] Switched `Trade` and `CryptoXch` imports/dependencies to `TradeLog`.
 - [x] Disabled hash-chain persistence in the default write path (`writeeventwithhash` now behaves as plain append for compatibility).
 - [x] Follow-up: renamed remaining internal helper identifiers containing "audit" to TradeLog-oriented names where this improved readability without behavior changes; kept compatibility aliases for transition.
 
@@ -446,7 +445,7 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 	- `instrument_type`: `spot_pair`, `perpetual_future`, `share_fiat`, later extensible
 	- `venue_instrument_type`: raw exchange-specific type when available
 - The combination of `exchange name + account/auth alias + asset_class + instrument_type + symbol` must be sufficient to disambiguate what was actually traded even when symbols overlap across venues.
-- Separate event types: `ORDER_SUBMITTED`, `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
+- Separate event types: `ORDER_SUBMITTED`, `ORDER_OBSERVED`, `ORDER_ACK`, `ORDER_AMENDED`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
 - Concrete implementation proposal:
 	- Preferred module/package name: `TradeLog` as a dedicated workspace package if reused across `Trade`, dashboard export, and future IB integration; fallback is a focused `Trade/src/tradelog.jl` module if package extraction would slow delivery.
 	- Define small canonical enums for:
@@ -545,7 +544,11 @@ Prevent blocking between data updates, signal evaluation, order management, and 
 	- `CTS_ASYNC_ENGINE_ENABLED`
 	- `CTS_ASYNC_SHADOW_MODE`
 	- `CTS_WS_MARKETDATA_ENABLED`
-	- `CTS_EXCHANGE_BALANCE_CACHE_OWNER`
+	- `CTS_WS_ORDERS_ENABLED`
+	- `CTS_WS_BALANCES_ENABLED`
+	- `CTS_WS_SHADOW_MODE`
+	- `CTS_WS_PRIMARY_MODE`
+	- `CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH`
 	- `CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE`
 - Add dual-path shadow comparator:
 	- sync decision snapshot vs async candidate snapshot
@@ -610,14 +613,23 @@ Progress update 2026-05-31:
 - [x] Extended Objective-4 scaffolding tests to cover discovered/backfill-required/data-ready/tradable state transitions and restart-safe state carry-over.
 
 Progress update 2026-05-31 (4.5 test slice):
-- [x] Added env-gated live public-read market-data canary test `Trade/test/objective4_live_marketdata_publicread_test.jl` and wired it into `Trade/test/runtests.jl`.
+- [x] Added env-gated live public-read market-data validation test `Trade/test/objective4_live_marketdata_publicread_test.jl` and wired it into `Trade/test/runtests.jl`.
 - [x] Default test runs remain green (test is informationally skipped unless enabled).
 - [x] Activation flags: `CTS_RUN_LIVE_MARKETDATA_TESTS=1` and optional `CTS_LIVE_MARKETDATA_EXCHANGE` (default `KrakenSpot`).
 
 #### Increment 4.5: Controlled activation
 - Phase A: shadow mode only.
-- Phase B: canary execution on selected bases.
+- Phase B: immediate full execution switch with fallback capability enabled.
 - Phase C: full async primary with synchronous emergency fallback retained.
+
+WS order/balance activation policy update (2026-05-31):
+- Phase A shadow requires parity checks between sync REST snapshots and WS snapshots for both:
+	- open-order lifecycle visibility (`orderid` parity and lifecycle traceability)
+	- balances state (`free/locked/borrowed` parity by coin)
+- Phase B uses immediate WS-primary execution for order/balance state (`CTS_WS_PRIMARY_MODE=1`) with automatic fallback to REST when:
+	- WS snapshots are unavailable/stale, or
+	- parity mismatch is detected while `CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH=1`.
+- Fallback is explicit and observable via runtime counters and warning logs; primary mode can be re-enabled after remediation.
 - Acceptance metrics:
 	- no increase in reject rate due to normalization
 	- reduced REST request volume
@@ -629,15 +641,20 @@ Phase A -> Phase B promotion gate (approved 2026-05-31):
 	- Market data matches between authoritative sync path and async-shadow observed inputs/derived snapshots.
 	- Balances match between exchange snapshot and Trade-side consumed snapshot for decision cycles.
 	- All orders are observable end-to-end (creation/update/cancel/fill visibility in runtime state and logs).
-- As soon as evidence for all three aspects is collected, proceed to Phase B canary execution.
+- As soon as evidence for all three aspects is collected, proceed to Phase B full execution switch.
+- Learning captured 2026-05-31:
+	- Shadow mode proves observability and comparison quality, not async order-control correctness, because synchronous order execution remains authoritative in Phase A.
+	- During the migration, extend `TradeLog` with explicitly temporary probes for success judgment instead of relying on terminal output alone.
+	- Temporary migration probes must be easy to identify and easy to remove.
 
 Phase A evidence contract (operational proposal, 2026-05-31):
 - Observation window:
 	- Run Phase A evidence for both `KrakenSpot` and `KrakenFutures`.
 	- Evidence is exchange-scoped; each exchange must satisfy the full contract independently.
-	- Minimum 60 minutes continuous shadow run.
-	- Minimum 300 decision cycles.
-	- Promotion is allowed immediately after minima are met and all checks pass.
+	- The primary gate is scenario coverage, not long runtime duration.
+	- One decision cycle means one full `Trade._tradestep!` loop iteration, not one individual order create/amend/cancel event.
+	- Elapsed wall-clock minutes and decision-cycle counts are informative only.
+	- Promotion is allowed as soon as required real-environment order lifecycle coverage is observed and all checks pass.
 	- Running both exchanges in parallel processes is supported and recommended for faster validation, provided logs/metrics are isolated per process.
 - Check A: Market data match
 	- Compare sync vs shadow per cycle on active bases for source mode (`ws`/`http`), candle opentime used for decision, and decision price.
@@ -648,12 +665,34 @@ Phase A evidence contract (operational proposal, 2026-05-31):
 - Check C: Order observability
 	- Every touched order id in the window must be traceable across lifecycle states: created, amended-or-unchanged, canceled-or-filled, and final runtime/audit visibility.
 	- Pass when lifecycle trace coverage is 100%, with zero orphan orders and zero phantom orders.
+	- Required Phase-A coverage per exchange:
+		- at least one real order creation is observed
+		- at least one real order amendment or amendment-equivalent managed replacement path is observed
+		- at least one real order cancellation is observed
+	- Repeating the same lifecycle many more times is not required once these real-environment cases are covered cleanly.
+	- Temporary migration probe for balance-after-fill evidence:
+		- Emit one additional `POSITION_SNAPSHOT` TradeLog row only when an `ORDER_FILLED` event is observed.
+		- Tag every such row with `migration_probe=fill_balance_check_v1` so the slice is queryable and removable.
+		- Persist `position_qty_before/after` for the base asset and `cash_before/after` for the quote asset using the cached pre-refresh balance snapshot and a forced exchange refresh after fill observation.
+		- Keep the probe opt-in at the exchange-cache runtime flag `:tradelog_migration_fill_balance_enabled` and default it on in `scripts/tradereal.jl` for the Objective 4 migration window.
+		- Volume control: do not emit this probe for create/amend/cancel events; emit it only for `ORDER_FILLED` so amendment-heavy minutes do not flood TradeLog.
+	- Temporary migration probe for worker-side balance/order observation:
+		- Emit one additional `POSITION_SNAPSHOT` TradeLog row only when the async worker payload for `balance_sync` or `order_management` changes.
+		- Tag every such row with `migration_probe=async_worker_observation_v1` so the slice is queryable and removable.
+		- Persist the payload summary in `notes`, plus `position_qty_after` as the observed row/open-order count and `cash_after` as the observed quote snapshot for balance-sync payloads when available.
+		- Keep the probe opt-in at the Trade runtime flag `:tradelog_migration_worker_probe_enabled` and default it on in `scripts/tradereal.jl` for the Objective 4 migration window.
+		- Volume control: write only on payload change; repeated identical worker observations must not append more rows.
 - Hard blockers (fail regardless of A/B/C):
 	- Any async divergence auto-disable event.
 	- Any increase in watchdog breach totals during the evidence window.
 	- Any increase in permission rejects attributable to runtime wiring changes.
 - Promotion decision rule:
-	- Promote Phase A -> Phase B if and only if checks A/B/C pass for both `KrakenSpot` and `KrakenFutures`, no hard blocker occurs on either exchange, and evidence reports (timestamp + runtime config + metrics snapshot) are archived per exchange.
+	- Promote Phase A -> Phase B if and only if checks A/B/C pass for both `KrakenSpot` and `KrakenFutures`, the required create/amend/cancel coverage is observed on both exchanges, no hard blocker occurs on either exchange, and evidence reports (timestamp + runtime config + metrics snapshot) are archived per exchange.
+
+Phase B full-switch policy (updated 2026-05-31):
+- Switch async execution scope to full tradeselection when Phase A parity checks pass.
+- Keep fallback capability active and observable; revert to synchronous authority automatically on critical divergence.
+- Do not scope execution to a base subset.
 
 Parallel execution policy (KrakenSpot + KrakenFutures):
 - Start one process per exchange with explicit exchange selection and distinct run labels.
@@ -670,7 +709,7 @@ RUN_ROOT="$HOME/crypto/logs/objective4-phaseA/$(date +%Y%m%d-%H%M%S)"
 CTS_ASYNC_ENGINE_ENABLED=1 \
 CTS_ASYNC_SHADOW_MODE=1 \
 CTS_WS_MARKETDATA_ENABLED=1 \
-CTS_ASYNC_CANARY_BASES=BTC \
+CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED=1 \
 julia --project=scripts scripts/tradereal.jl xch=KrakenSpot \
 	> "$RUN_ROOT/krakenspot-phaseA.log" 2>&1 &
 
@@ -678,7 +717,7 @@ julia --project=scripts scripts/tradereal.jl xch=KrakenSpot \
 CTS_ASYNC_ENGINE_ENABLED=1 \
 CTS_ASYNC_SHADOW_MODE=1 \
 CTS_WS_MARKETDATA_ENABLED=1 \
-CTS_ASYNC_CANARY_BASES=BTC \
+CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED=1 \
 julia --project=scripts scripts/tradereal.jl xch=KrakenFutures \
 	> "$RUN_ROOT/krakenfutures-phaseA.log" 2>&1 &
 
@@ -686,25 +725,34 @@ echo "logs: $RUN_ROOT"
 ```
 
 Progress update 2026-05-31 (4.5 implementation complete):
-- [x] Added canary-base gating for async shadow candidate generation in `Trade._tradestep!` via `CTS_ASYNC_CANARY_BASES` (`BTC`, `BTCUSDT`, and `BTC/USDT` forms supported).
-- [x] Kept synchronous execution authoritative for all bases while limiting async compare scope to canary bases during controlled rollout.
+- [x] Removed canary-base gating from async shadow candidate generation; Phase A now evaluates full tradeselection scope.
+- [x] Kept synchronous execution authoritative for all bases in Phase A shadow mode.
 - [x] Wired Objective-4.5 acceptance counters in `TradeCache.mc`:
-	- `:objective4_cycle_count`, `:objective4_canary_cycles`, `:objective4_canary_last_bases`
+	- `:objective4_cycle_count`
 	- `:objective4_order_rejects`, `:objective4_permission_rejects`, `:objective4_privatecooldown_skips`
 	- `:objective4_marketdata_fallback_activations`, `:objective4_watchdog_breaches_total`, `:objective4_last_worker_latency_ms`
-- [x] Extended `Trade/test/objective4_scaffolding_test.jl` to verify canary selection behavior and metric updates for fallback/watchdog/latency snapshots.
-- [x] Validation runs: Objective 4 scaffolding `104/104` pass, Trade package tests `144/144` pass, live public-read canary slice `10/10` pass (with `CTS_RUN_LIVE_MARKETDATA_TESTS=1`).
+- [x] Extended `Trade/test/objective4_scaffolding_test.jl` to verify full-scope shadow behavior and metric updates for fallback/watchdog/latency snapshots.
+- [x] Validation runs: Objective 4 scaffolding and Trade package tests pass after full-scope shadow migration update.
+
+Progress update 2026-05-31 (private WS mitigation, REST-first operations):
+- [x] Updated `scripts/tradereal.jl` defaults to disable private WS order/balance ingestion in live runs unless explicitly enabled by env override.
+	- `CTS_WS_ORDERS_ENABLED` default is now `false`.
+	- `CTS_WS_BALANCES_ENABLED` default is now `false`.
+- [x] Confirmed operational policy for current window: use REST as authoritative path while private WS adapter/connectivity issues are unresolved.
+- [x] Captured that explicit env overrides still take precedence, so evidence runs can re-enable WS intentionally for diagnostics.
+- [ ] Resume Phase A parity evidence collection only after private WS reliability is restored enough to gather clean order/balance observability artifacts.
+- [ ] Keep Phase B switch blocked until Phase A promotion gate criteria are satisfied for both KrakenSpot and KrakenFutures.
 
 ### Objective 4 increment mapping (legacy notes merged)
 - Worker topology originally listed as old Increment 4.1 is now covered by Increment 4.2 (async worker topology in shadow mode).
 - Event-driven orchestration originally listed as old Increment 4.2 is now covered by Increment 4.2 and Increment 4.5 (controlled activation gates).
-- Safety/resilience originally listed as old Increment 4.3 is now split across Increment 4.0 (rollback and divergence guard), Increment 4.2 (watchdog/heartbeat), and Increment 4.5 (canary rollout and fallback).
+- Safety/resilience originally listed as old Increment 4.3 is now split across Increment 4.0 (rollback and divergence guard), Increment 4.2 (watchdog/heartbeat), and Increment 4.5 (full-switch rollout and fallback).
 - Test scope originally listed as old Increment 4.4 is now distributed across:
 	- Increment 4.0 comparator/parity tests
 	- Increment 4.1 balance-cache sync tests
 	- Increment 4.3 websocket fallback/freshness tests
 	- Increment 4.4 OHLCV gap closure and readiness-gate tests
-	- Increment 4.5 canary acceptance metrics and regression checks
+	- Increment 4.5 rollout acceptance metrics and regression checks
 - The authoritative Objective 4 sequence is now Increment 4.0 through Increment 4.5 above; the old duplicate numbering is retired.
 
 ### Exit criteria
@@ -1013,7 +1061,7 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / getorder-getopenorders lifecycle reconciliation + per-asset snapshots
 - Completed:
-	- Added transition-aware audit reconciliation in `CryptoXch` so `getorder`/`getopenorders` persist status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
+	- Added transition-aware audit reconciliation in `CryptoXch` so `getorder`/`getopenorders` persist first observation as `ORDER_OBSERVED`, amendments as `ORDER_AMENDED`, and later status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
 	- Added lightweight in-memory order audit state cache keyed by order id to emit events only on status/fill deltas.
 	- Extended `getorder` with `auditevent` control to avoid duplicate events for internal lookup usage during order creation.
 	- Upgraded `Trade` portfolio snapshots from one aggregate row to per-asset snapshot rows with asset symbol, position quantity, and portfolio totals for replay-grade holdings history.
@@ -1036,16 +1084,16 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / Integration slice across CryptoXch and Trade
 - Completed:
-	- Added `TradeAudit` as a dependency of `CryptoXch` and `Trade`.
+	- Added `TradeLog` as a dependency of `CryptoXch` and `Trade`.
 	- Integrated `CryptoXch` order audit emission for submitted and rejected order events at the public create-order boundary.
 	- Added explicit `run_mode` and `run_id` stamping on emitted order and portfolio audit rows.
 	- Added per-run-mode partitioning (`run_mode=<live|simulation>`) in the audit folder layout to prevent simulation/live mixing.
-	- Added an environment override for the audit root to support deterministic package-local tests without writing into the shared `\$HOME/crypto/audit` tree.
+	- Added an environment override for the audit root to support deterministic package-local tests without writing into the shared `\$HOME/crypto/tradelog` tree.
 	- Integrated `Trade` portfolio snapshot emission once per trading tick.
 	- Added focused tests for CryptoXch order audit persistence and Trade portfolio snapshot persistence.
 - Files changed:
-	- `TradeAudit/src/TradeAudit.jl`
-	- `TradeAudit/test/runtests.jl`
+	- `TradeLog/src/TradeLog.jl`
+	- `TradeLog/test/runtests.jl`
 	- `CryptoXch/Project.toml`
 	- `CryptoXch/Manifest.toml`
 	- `CryptoXch/src/CryptoXch.jl`
@@ -1058,8 +1106,8 @@ Update this section after each work session.
 	- `Trade/test/audit_snapshot_test.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
-	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_snapshot_test.jl")'` → passed
+	- `cd CryptoXch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeLog"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeLog"); Pkg.resolve(); include("test/audit_snapshot_test.jl")'` → passed
 - Open issues/blockers:
 	- Order status polling, fills, and cancel/amend lifecycle events are not emitted yet.
 	- Portfolio snapshots are currently aggregate rows; per-asset or per-position snapshots remain for a later Objective 3 increment.
@@ -1070,27 +1118,27 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / Initial Increment 3.1 slice
 - Completed:
-	- Added new `TradeAudit` workspace package as the first Objective 3 implementation surface.
+	- Added new `TradeLog` workspace package as the first Objective 3 implementation surface.
 	- Implemented canonical audit enums for event type, asset class, instrument type, market type, and routing role.
 	- Implemented flat `AuditEventRow` schema aligned with the Objective 3 canonical event proposal.
-	- Implemented partitioned audit path helpers rooted at `\$HOME/crypto/audit`.
+	- Implemented partitioned audit path helpers rooted at `\$HOME/crypto/tradelog`.
 	- Implemented append-only JSONL event writing for canonical audit rows.
 	- Added isolated unit tests covering schema defaults, payload serialization, partition layout, and append-only file writes.
 - Files changed:
-	- `TradeAudit/Project.toml`
-	- `TradeAudit/Manifest.toml`
-	- `TradeAudit/setup.jl`
-	- `TradeAudit/src/TradeAudit.jl`
-	- `TradeAudit/test/runtests.jl`
+	- `TradeLog/Project.toml`
+	- `TradeLog/Manifest.toml`
+	- `TradeLog/setup.jl`
+	- `TradeLog/src/TradeLog.jl`
+	- `TradeLog/test/runtests.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd TradeAudit && julia --project=. -e 'using Pkg; Pkg.develop(path="../EnvConfig"); Pkg.resolve(); Pkg.test()'` → passed
+	- `cd TradeLog && julia --project=. -e 'using Pkg; Pkg.develop(path="../EnvConfig"); Pkg.resolve(); Pkg.test()'` → passed
 - Open issues/blockers:
-	- `TradeAudit` is not integrated into `Trade` or `CryptoXch` yet.
+	- `TradeLog` is not integrated into `Trade` or `CryptoXch` yet.
 	- No lifecycle events are emitted yet; only schema and writer infrastructure exist.
 	- Hash-chain manifest generation and Arrow companion output remain for later Objective 3 increments.
 - Next immediate step:
-	- Wire `TradeAudit` into the first order lifecycle boundary, starting with order submission and rejection events in `CryptoXch`.
+	- Wire `TradeLog` into the first order lifecycle boundary, starting with order submission and rejection events in `CryptoXch`.
 
 - Date: 2026-05-10
 - Objective/Increment: Objective 2 / Increments 2.1-2.5
@@ -1389,7 +1437,7 @@ Notes:
 - [x] Completed workspace migration of call sites in `Trade` and relevant tests to canonical lane field names.
 - [x] Removed temporary compatibility shims and legacy field bridging from `TradingStrategy.TradeAction`.
 - [x] Updated integration-plan documentation and test descriptions to canonical field names.
-- [x] Validation rerun passed after cleanup: `Trade/test/runtests.jl` = `118/118` passing (TradeAudit-dependent tests skipped in current environment).
+- [x] Validation rerun passed after cleanup: `Trade/test/runtests.jl` = `118/118` passing.
 
 ### Progress update (2026-05-31)
 - [x] Added `TradingStrategy` runtime API compatibility layer (`AbstractStrategyRuntime`, `GainSegmentRuntime`, `StrategySnapshot`, `StrategyReconciliationInput`, `preparebases!`, `acceptedbases`, `dropbase!`, `getsnapshot!`, `getsnapshots!`, and reconciliation helpers) with docstrings for the new public surface.

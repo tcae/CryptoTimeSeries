@@ -13,13 +13,13 @@
 # TODO yellow within x sigma range, green break out, red plunge
 # TODO green marker = longbuy, black marker longclose, red marker emergency longclose in 4h Candlestick
 # TODO load TestOhlcv dynamically instead of using a file cache to be able to adapt testdata
-# TODO load test Assets dynamically instead of using a file cache to be able to add/remove testdata bases
+# TODO load test bases dynamically instead of using a file cache to be able to add/remove testdata bases
 # using Colors
 import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Assets, Classify, CryptoXch, Trade, TradingStrategy
+using EnvConfig, Ohlcv, Features, Targets, Classify, CryptoXch, Trade, TradingStrategy
 
 include("optimizationconfigs.jl")
 

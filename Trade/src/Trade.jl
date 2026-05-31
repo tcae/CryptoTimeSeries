@@ -81,7 +81,15 @@ function _init_objective4_flags!(mc::AbstractDict)
     mc[:async_engine_enabled] = _envtrue("CTS_ASYNC_ENGINE_ENABLED", get(mc, :async_engine_enabled, false))
     mc[:async_shadow_mode] = _envtrue("CTS_ASYNC_SHADOW_MODE", get(mc, :async_shadow_mode, true))
     mc[:ws_marketdata_enabled] = _envtrue("CTS_WS_MARKETDATA_ENABLED", get(mc, :ws_marketdata_enabled, false))
-    mc[:exchange_balance_cache_owner] = _envtrue("CTS_EXCHANGE_BALANCE_CACHE_OWNER", get(mc, :exchange_balance_cache_owner, false))
+    mc[:ws_orders_enabled] = _envtrue("CTS_WS_ORDERS_ENABLED", get(mc, :ws_orders_enabled, false))
+    mc[:ws_balances_enabled] = _envtrue("CTS_WS_BALANCES_ENABLED", get(mc, :ws_balances_enabled, false))
+    mc[:ws_shadow_mode] = _envtrue("CTS_WS_SHADOW_MODE", get(mc, :ws_shadow_mode, true))
+    mc[:ws_primary_mode] = _envtrue("CTS_WS_PRIMARY_MODE", get(mc, :ws_primary_mode, false))
+    mc[:ws_primary_autofallback_on_mismatch] = _envtrue("CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH", get(mc, :ws_primary_autofallback_on_mismatch, true))
+    mc[:ws_shadow_last_compare] = get(mc, :ws_shadow_last_compare, nothing)
+    mc[:ws_primary_fallbacks] = Int(get(mc, :ws_primary_fallbacks, 0))
+    mc[:tradelog_migration_worker_probe_enabled] = _envtrue("CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED", get(mc, :tradelog_migration_worker_probe_enabled, false))
+    mc[:tradelog_migration_worker_probe_last_signature] = get(mc, :tradelog_migration_worker_probe_last_signature, Dict{Symbol, String}())
     mc[:ohlcv_gap_backfill_on_tradable] = _envtrue("CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE", get(mc, :ohlcv_gap_backfill_on_tradable, false))
     mc[:async_shadow_autodisabled] = get(mc, :async_shadow_autodisabled, false)
     mc[:async_shadow_autodisable_reason] = get(mc, :async_shadow_autodisable_reason, nothing)
@@ -102,16 +110,11 @@ function _init_objective4_flags!(mc::AbstractDict)
     mc[:marketdata_last_policy_eval_dt] = get(mc, :marketdata_last_policy_eval_dt, nothing)
     mc[:marketdata_ws_last_update_by_symbol] = get(mc, :marketdata_ws_last_update_by_symbol, Dict{String, DateTime}())
     mc[:marketdata_ws_stale_symbols] = get(mc, :marketdata_ws_stale_symbols, String[])
-    mc[:exchange_balances_snapshot] = get(mc, :exchange_balances_snapshot, DataFrame())
-    mc[:exchange_balances_snapshot_dt] = get(mc, :exchange_balances_snapshot_dt, nothing)
     mc[:tradable_ohlcv_state_by_base] = get(mc, :tradable_ohlcv_state_by_base, Dict{String, Symbol}())
     mc[:tradable_ohlcv_state_dt_by_base] = get(mc, :tradable_ohlcv_state_dt_by_base, Dict{String, DateTime}())
     mc[:strategy_last_closed_candle_dt] = get(mc, :strategy_last_closed_candle_dt, nothing)
     mc[:strategy_closed_candle_pending_reason] = get(mc, :strategy_closed_candle_pending_reason, nothing)
-    mc[:async_canary_bases_raw] = _envstr("CTS_ASYNC_CANARY_BASES", get(mc, :async_canary_bases_raw, ""))
     mc[:objective4_cycle_count] = Int(get(mc, :objective4_cycle_count, 0))
-    mc[:objective4_canary_cycles] = Int(get(mc, :objective4_canary_cycles, 0))
-    mc[:objective4_canary_last_bases] = get(mc, :objective4_canary_last_bases, String[])
     mc[:objective4_order_rejects] = Int(get(mc, :objective4_order_rejects, 0))
     mc[:objective4_permission_rejects] = Int(get(mc, :objective4_permission_rejects, 0))
     mc[:objective4_privatecooldown_skips] = Int(get(mc, :objective4_privatecooldown_skips, 0))
@@ -119,6 +122,13 @@ function _init_objective4_flags!(mc::AbstractDict)
     mc[:objective4_watchdog_breaches_total] = Int(get(mc, :objective4_watchdog_breaches_total, 0))
     mc[:objective4_last_worker_latency_ms] = get(mc, :objective4_last_worker_latency_ms, Dict{Symbol, Float64}())
     return mc
+end
+
+function _set_ws_runtime_flags!(cache)
+    cache.xc.mc[:ws_orders_enabled] = Bool(get(cache.mc, :ws_orders_enabled, false))
+    cache.xc.mc[:ws_balances_enabled] = Bool(get(cache.mc, :ws_balances_enabled, false))
+    cache.xc.mc[:ws_primary_mode] = Bool(get(cache.mc, :ws_primary_mode, false))
+    return nothing
 end
 
 function _objective4_inc!(cache, key::Symbol, delta::Integer=1)
@@ -317,6 +327,71 @@ function _record_async_worker_heartbeat!(cache, worker::Symbol, started_at::Date
     return nothing
 end
 
+function _should_write_async_worker_probe(cache, worker::Symbol)::Bool
+    Bool(get(cache.mc, :tradelog_migration_worker_probe_enabled, false)) || return false
+    return worker in (:balance_sync, :order_management)
+end
+
+function _async_worker_probe_signature(payload)::String
+    return sprint(show, payload)
+end
+
+function _async_worker_probe_notes(worker::Symbol, payload)::String
+    parts = ["migration_probe=async_worker_observation_v1", "worker=$(worker)"]
+    for key in propertynames(payload)
+        push!(parts, "$(key)=$(getproperty(payload, key))")
+    end
+    return join(parts, ";")
+end
+
+function _maybe_write_async_worker_probe!(cache, worker::Symbol, payload)
+    _should_write_async_worker_probe(cache, worker) || return nothing
+    signatures = cache.mc[:tradelog_migration_worker_probe_last_signature]
+    signature = _async_worker_probe_signature(payload)
+    if get(signatures, worker, "") == signature
+        return nothing
+    end
+
+    event_time = Dates.now(Dates.UTC)
+    exchange_name = CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_spot, CryptoXch.exchange(cache.xc))
+    position_after = if hasproperty(payload, :snapshot_rows)
+        Float64(getproperty(payload, :snapshot_rows))
+    elseif hasproperty(payload, :openorders_rows)
+        Float64(getproperty(payload, :openorders_rows))
+    else
+        missing
+    end
+    cash_after = hasproperty(payload, :quote_total) ? Float64(getproperty(payload, :quote_total)) : missing
+    event = TradeLog.AuditEventRow(
+        event_type=TradeLog.POSITION_SNAPSHOT,
+        event_time_utc=event_time,
+        created_at_utc=event_time,
+        source_module="Trade",
+        environment=string(Symbol(EnvConfig.configmode)),
+        run_mode=CryptoXch.tradelogrunmode(cache.xc),
+        run_id=CryptoXch.tradelogrunid(cache.xc),
+        exchange=exchange_name,
+        account_alias=exchange_name,
+        routing_role=TradeLog.routing_trade_exchange_spot,
+        market_type=TradeLog.market_unknown,
+        asset_class=TradeLog.crypto,
+        instrument_type=TradeLog.instrument_unknown,
+        symbol="ASYNC_WORKER_$(uppercase(String(worker)))",
+        status="worker_payload_changed",
+        status_reason="source=objective4_async_worker_probe",
+        position_qty_after=position_after,
+        cash_after=cash_after,
+        notes=_async_worker_probe_notes(worker, payload),
+    )
+    try
+        TradeLog.writeeventwithhash(event)
+        signatures[worker] = signature
+    catch tradelog_error
+        (verbosity >= 1) && @warn "failed to persist async worker probe snapshot" worker exception=(tradelog_error, catch_backtrace())
+    end
+    return nothing
+end
+
 "Drain stale queue items and process one latest payload through the worker channel."
 function _run_async_worker_shadow_step!(cache, worker::Symbol, payload)
     channels = cache.mc[:async_worker_channels]
@@ -327,7 +402,7 @@ function _run_async_worker_shadow_step!(cache, worker::Symbol, payload)
     put!(channel, payload)
     started_at = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
     current = take!(channel)
-    _ = current
+    _maybe_write_async_worker_probe!(cache, worker, current)
     _record_async_worker_heartbeat!(cache, worker, started_at)
     return current
 end
@@ -350,10 +425,11 @@ function _update_async_worker_watchdog!(cache)
 end
 
 "Run Objective 4.2 shadow worker pipeline while leaving synchronous execution authoritative."
-function _run_async_shadow_topology!(cache, assets::AbstractDataFrame, openorders::AbstractDataFrame, sync_advices)
+function _run_async_shadow_topology!(cache, assets::AbstractDataFrame, openorders::AbstractDataFrame, sync_advices; seed_closed_dt=nothing)
     _ensure_async_worker_topology!(cache)
     mdsymbols = _marketdata_symbols_from_advices(cache, sync_advices)
     md_state = _update_marketdata_freshness_policy!(cache; symbols=mdsymbols)
+    snapshot = CryptoXch.balancessnapshot(cache.xc; force_refresh=false, ignoresmallvolume=false).snapshot
     md_payload = (
         datetime=cache.xc.currentdt,
         assets_rows=size(assets, 1),
@@ -367,10 +443,13 @@ function _run_async_shadow_topology!(cache, assets::AbstractDataFrame, openorder
     )
     _run_async_worker_shadow_step!(cache, :marketdata, md_payload)
 
-    async_advices = _collect_async_candidate_advices(cache, sync_advices)
+    async_advices = _collect_async_candidate_advices(cache, assets, sync_advices; seed_closed_dt=seed_closed_dt)
+    snapshot_state = CryptoXch.balancessnapshot(cache.xc; force_refresh=false, ignoresmallvolume=false)
     balance_sync_payload = (
         datetime=cache.xc.currentdt,
-        snapshot_dt=get(cache.mc, :exchange_balances_snapshot_dt, nothing),
+        snapshot_dt=snapshot_state.datetime,
+        snapshot_rows=size(snapshot, 1),
+        quote_total=(size(snapshot, 1) == 0 ? 0.0 : _portfolioquotevalue(snapshot)),
     )
     _run_async_worker_shadow_step!(cache, :balance_sync, balance_sync_payload)
 
@@ -1255,27 +1334,6 @@ function _normalize_basecoin_token(token, quotecoin::AbstractString)::Union{Noth
         return base
     end
     return t
-end
-
-function _async_canary_baseset(cache::TradeCache)::Set{String}
-    raw = get(cache.mc, :async_canary_bases_raw, "")
-    tokens = if raw isa AbstractVector
-        String.(raw)
-    else
-        split(String(raw), r"[,\s]+"; keepempty=false)
-    end
-    normalized = [_normalize_basecoin_token(t, EnvConfig.cryptoquote) for t in tokens]
-    return Set(String.(filter(!isnothing, normalized)))
-end
-
-"Select advice subset for Objective 4.5 async canary processing."
-function _select_async_shadow_advices(cache::TradeCache, sync_advices)
-    canary = _async_canary_baseset(cache)
-    if isempty(canary)
-        return (advices=sync_advices, canary_enabled=false, canary_bases=String[])
-    end
-    selected = [ta for ta in sync_advices if uppercase(String(ta.base)) in canary]
-    return (advices=selected, canary_enabled=true, canary_bases=sort!(collect(canary)))
 end
 
 "Return a readiness state for tradable OHLCV data, optionally requesting exchange backfill up to `datetime`."
@@ -2363,10 +2421,36 @@ function _shadow_compare_strategy_advices(sync_advices::Vector{StrategyAdvice}, 
     return (ok=!critical, critical=critical, sync_count=length(sync_rows), async_count=length(async_rows), diffs=diffs)
 end
 
-"Scaffolding hook: async candidate currently mirrors sync path until async workers are enabled." 
-function _collect_async_candidate_advices(cache::TradeCache, sync_advices::Vector{StrategyAdvice})::Vector{StrategyAdvice}
-    cache
-    return deepcopy(sync_advices)
+function _async_worker_tradecache!(cache::TradeCache; seed_closed_dt=nothing)::TradeCache
+    if !haskey(cache.mc, :async_worker_trade_cache)
+        worker = TradeCache(xc=cache.xc, cl=cache.cl, trademode=cache.mc[:trademode])
+        worker.mc[:tradelog_portfolio_snapshot_mode] = :none
+        worker.mc[:tradelog_migration_worker_probe_enabled] = false
+        worker.mc[:async_engine_enabled] = false
+        worker.mc[:async_shadow_mode] = true
+        worker.mc[:use_strategy_runtime_api] = Bool(get(cache.mc, :use_strategy_runtime_api, false))
+        apply_tradingstrategy!(worker, deepcopy(cache.mc[:strategy_template]); strategy_engine=_strategyengine(cache), source=String(get(cache.mc, :strategy_source, "async_worker")))
+        if !isnothing(seed_closed_dt)
+            worker.mc[:strategy_last_closed_candle_dt] = DateTime(seed_closed_dt)
+        end
+        cache.mc[:async_worker_trade_cache] = worker
+    end
+    worker = cache.mc[:async_worker_trade_cache]
+    worker.cfg = deepcopy(cache.cfg)
+    worker.mc[:trademode] = cache.mc[:trademode]
+    worker.mc[:usenewtrade] = get(cache.mc, :usenewtrade, false)
+    worker.mc[:use_strategy_runtime_api] = Bool(get(cache.mc, :use_strategy_runtime_api, false))
+    return worker
+end
+
+"Compute async canary advice from dedicated worker state while keeping sync state untouched."
+function _collect_async_candidate_advices(cache::TradeCache, assets::AbstractDataFrame, sync_advices::Vector{StrategyAdvice}; seed_closed_dt=nothing)::Vector{StrategyAdvice}
+    isempty(sync_advices) && return StrategyAdvice[]
+    size(cache.cfg, 1) == 0 && return deepcopy(sync_advices)
+    worker = _async_worker_tradecache!(cache; seed_closed_dt=seed_closed_dt)
+    worker_advices = _collect_strategy_advices(worker, deepcopy(assets))
+    canary_bases = Set(uppercase(String(ta.base)) for ta in sync_advices)
+    return [ta for ta in worker_advices if uppercase(String(ta.base)) in canary_bases]
 end
 
 function _run_async_shadow_compare!(cache::TradeCache, sync_advices::Vector{StrategyAdvice}, async_advices::Vector{StrategyAdvice})::Bool
@@ -2385,20 +2469,109 @@ function _run_async_shadow_compare!(cache::TradeCache, sync_advices::Vector{Stra
     return true
 end
 
+function _orders_idset(df::AbstractDataFrame)::Set{String}
+    if !any(name -> String(name) == "orderid", names(df))
+        return Set{String}()
+    end
+    return Set(String.(df[!, :orderid]))
+end
+
+function _balances_by_coin(df::AbstractDataFrame)::Dict{String, NamedTuple{(:free, :locked, :borrowed), Tuple{Float64, Float64, Float64}}}
+    out = Dict{String, NamedTuple{(:free, :locked, :borrowed), Tuple{Float64, Float64, Float64}}}()
+    required = Set(["coin", "free", "locked", "borrowed"])
+    if !all(x -> x in Set(String.(names(df))), required)
+        return out
+    end
+    for row in eachrow(df)
+        coin = uppercase(String(row.coin))
+        out[coin] = (
+            free=Float64(row.free),
+            locked=Float64(row.locked),
+            borrowed=Float64(row.borrowed),
+        )
+    end
+    return out
+end
+
+function _run_ws_shadow_compare!(cache::TradeCache, openorders::AbstractDataFrame, assets::AbstractDataFrame)::Bool
+    if !Bool(get(cache.mc, :ws_shadow_mode, true))
+        return true
+    end
+    diffs = String[]
+    orders_ok = true
+    balances_ok = true
+
+    if Bool(get(cache.mc, :ws_orders_enabled, false))
+        ws_orders = try
+            CryptoXch.wsordersnapshot(cache.xc)
+        catch
+            DataFrame()
+        end
+        sync_ids = _orders_idset(openorders)
+        ws_ids = _orders_idset(ws_orders)
+        if !isempty(sync_ids) || !isempty(ws_ids)
+            only_sync = setdiff(sync_ids, ws_ids)
+            only_ws = setdiff(ws_ids, sync_ids)
+            if !isempty(only_sync) || !isempty(only_ws)
+                orders_ok = false
+                push!(diffs, "orders id mismatch sync_only=$(length(only_sync)) ws_only=$(length(only_ws))")
+            end
+        end
+    end
+
+    if Bool(get(cache.mc, :ws_balances_enabled, false))
+        ws_balances = try
+            CryptoXch.wsbalancessnapshot(cache.xc)
+        catch
+            DataFrame()
+        end
+        sync_map = _balances_by_coin(assets)
+        ws_map = _balances_by_coin(ws_balances)
+        if !isempty(sync_map) || !isempty(ws_map)
+            tol = 1e-4
+            allcoins = union(Set(keys(sync_map)), Set(keys(ws_map)))
+            for coin in allcoins
+                sv = get(sync_map, coin, (free=0.0, locked=0.0, borrowed=0.0))
+                wv = get(ws_map, coin, (free=0.0, locked=0.0, borrowed=0.0))
+                if (abs(sv.free - wv.free) > tol) || (abs(sv.locked - wv.locked) > tol) || (abs(sv.borrowed - wv.borrowed) > tol)
+                    balances_ok = false
+                    push!(diffs, "balance mismatch coin=$(coin) sync=$(sv) ws=$(wv)")
+                    break
+                end
+            end
+        end
+    end
+
+    ok = orders_ok && balances_ok
+    cache.mc[:ws_shadow_last_compare] = (
+        datetime=cache.xc.currentdt,
+        orders_ok=orders_ok,
+        balances_ok=balances_ok,
+        ws_orders_enabled=Bool(get(cache.mc, :ws_orders_enabled, false)),
+        ws_balances_enabled=Bool(get(cache.mc, :ws_balances_enabled, false)),
+        diffs=diffs,
+    )
+
+    if !ok
+        (verbosity >= 1) && @warn "ws shadow compare mismatch" diffs=diffs
+        if Bool(get(cache.mc, :ws_primary_mode, false)) && Bool(get(cache.mc, :ws_primary_autofallback_on_mismatch, true))
+            cache.mc[:ws_primary_mode] = false
+            cache.xc.mc[:ws_primary_mode] = false
+            _objective4_inc!(cache, :ws_primary_fallbacks)
+            (verbosity >= 1) && @warn "ws primary mode auto-fallback activated due to shadow mismatch"
+        end
+        return false
+    end
+    return true
+end
+
 function _sync_exchange_balances_snapshot!(cache::TradeCache, assets::AbstractDataFrame)
-    if !Bool(get(cache.mc, :exchange_balance_cache_owner, false))
-        return nothing
-    end
     snap = try
-        CryptoXch.balancessnapshot(cache.xc; force_refresh=true, ignoresmallvolume=false)
+        CryptoXch.refreshbalancessnapshot!(cache.xc; ignoresmallvolume=false)
     catch err
-        (verbosity >= 1) && @warn "failed to refresh exchange-owned balances snapshot; falling back to local assets copy" error=sprint(showerror, err)
-        cache.mc[:exchange_balances_snapshot] = deepcopy(assets)
-        cache.mc[:exchange_balances_snapshot_dt] = cache.xc.currentdt
+        (verbosity >= 1) && @warn "failed to refresh exchange-owned balances snapshot" error=sprint(showerror, err)
         return nothing
     end
-    cache.mc[:exchange_balances_snapshot] = deepcopy(snap.snapshot)
-    cache.mc[:exchange_balances_snapshot_dt] = snap.datetime
     return nothing
 end
 
@@ -3437,6 +3610,7 @@ Called by the loop runners once per iterate step.
 """
 function _tradestep!(cache::TradeCache)
     (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
+    _set_ws_runtime_flags!(cache)
     _objective4_inc!(cache, :objective4_cycle_count)
     stale_openorders_snapshot = false
     oo = try
@@ -3462,6 +3636,7 @@ function _tradestep!(cache::TradeCache)
     _refreshactiveopensellsymbols!(cache, oo)
     assets = CryptoXch.portfolio!(cache.xc)
     _sync_exchange_balances_snapshot!(cache, assets)
+    _run_ws_shadow_compare!(cache, oo, assets)
     _reconstruct_managed_close_orders!(cache, assets, oo)
     _cancel_unmanaged_open_orders!(cache, oo)
     backlog_drain = get(cache.mc, :backlog_drain_mode, false)
@@ -3471,20 +3646,20 @@ function _tradestep!(cache::TradeCache)
     if backlog_drain
         (verbosity >= 1) && @warn "backlog drain mode active; skipping managed-close maintenance and strategy order placement" unmanaged_open_orders=get(cache.mc, :unmanaged_open_orders, 0) threshold=UNMANAGED_BACKLOG_DRAIN_THRESHOLD
     else
+        pre_sync_closed_dt = get(cache.mc, :strategy_last_closed_candle_dt, nothing)
         tradeadvices = _collect_strategy_advices(cache, assets)
         _log_tradeadvice_summary!(cache, tradeadvices)
         if Bool(get(cache.mc, :async_engine_enabled, false))
-            canary = _select_async_shadow_advices(cache, tradeadvices)
-            async_advices = _run_async_shadow_topology!(cache, assets, oo, canary.advices)
-            _run_async_shadow_compare!(cache, canary.advices, async_advices)
-            if canary.canary_enabled
-                _objective4_inc!(cache, :objective4_canary_cycles)
-                cache.mc[:objective4_canary_last_bases] = canary.canary_bases
-            else
-                cache.mc[:objective4_canary_last_bases] = String[]
-            end
+            sync_count = length(tradeadvices)
+            async_advices = _run_async_shadow_topology!(cache, assets, oo, tradeadvices; seed_closed_dt=pre_sync_closed_dt)
+            compare_ok = _run_async_shadow_compare!(cache, tradeadvices, async_advices)
             if !Bool(get(cache.mc, :async_shadow_mode, true))
-                (verbosity >= 1) && @warn "async engine execution cutover is not active yet; keeping synchronous execution authoritative"
+                if compare_ok
+                    tradeadvices = async_advices
+                    (verbosity >= 1) && @info "async engine full cutover active" sync_count=sync_count async_count=length(async_advices)
+                else
+                    (verbosity >= 1) && @warn "async full cutover requested but compare did not pass; keeping synchronous execution authoritative" compare_ok=compare_ok
+                end
             end
         end
         _ensure_managed_close_orders!(cache, assets, tradeadvices)

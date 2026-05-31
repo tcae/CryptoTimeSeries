@@ -520,7 +520,7 @@ version = "0.5.5"
 
 [[deps.Ohlcv]]
 deps = ["Arrow", "CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
-path = "../Ohlcv"
+path = "/Users/torsten/github/CryptoTimeSeries/Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
 version = "1.7.2"
 
@@ -810,7 +810,7 @@ version = "1.11.0"
 
 [[deps.TestOhlcv]]
 deps = ["DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "PlotlyJS", "SortingAlgorithms", "Test"]
-path = "../TestOhlcv"
+path = "/Users/torsten/github/CryptoTimeSeries/TestOhlcv"
 uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 version = "0.1.3"
 

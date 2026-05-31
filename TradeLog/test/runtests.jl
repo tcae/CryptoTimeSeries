@@ -132,4 +132,7 @@ end
     end
 end
 
+include("hash_chain_test.jl")
+include("arrow_export_test.jl")
+
 end

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "e77db41a5044449cc8eaa17966aca23454a7dce6"
+project_hash = "411c147aec8e38324b8e4e3b1fd7e11ef3946945"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -547,10 +547,10 @@ version = "1.22.2"
     [deps.TimeZones.weakdeps]
     RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
 
-[[deps.TradeAudit]]
+[[deps.TradeLog]]
 deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "SHA", "Test", "UUIDs"]
 path = "."
-uuid = "7664142a-98d4-4d14-9d85-e6b1ac001c01"
+uuid = "d9e1c896-7df1-4f4f-a5d3-1c9a7c74c4aa"
 version = "0.1.0"
 
 [[deps.TranscodingStreams]]

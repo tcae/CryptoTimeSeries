@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "b1d430677341a36b0b3099b563e1bd3c0d79bfe1"
+project_hash = "66946956c437b38aa76c76c2bbe2025a199d18fd"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -102,12 +102,6 @@ deps = ["JSON", "Pidfile", "SHA"]
 git-tree-sha1 = "902b85010203830d4bc02259f5450d2e16b316d8"
 uuid = "bf4720bc-e11a-5d0c-854e-bdca1663c893"
 version = "0.1.1"
-
-[[deps.Assets]]
-deps = ["CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Statistics", "Test"]
-path = "../Assets"
-uuid = "e4c5a7f8-51b3-4a40-8507-79544143629b"
-version = "0.4.1"
 
 [[deps.Atomix]]
 deps = ["UnsafeAtomics"]
@@ -334,7 +328,7 @@ weakdeps = ["SparseArrays"]
     ChainRulesCoreSparseArraysExt = "SparseArrays"
 
 [[deps.Classify]]
-deps = ["Assets", "BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
+deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "../Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
 version = "0.27.8"
@@ -1969,7 +1963,7 @@ version = "0.1.6"
     TracyProfiler_jll = "0c351ed6-8a68-550e-8b79-de6f926da83c"
 
 [[deps.Trade]]
-deps = ["Assets", "Bybit", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradeLog", "TradingStrategy"]
+deps = ["Bybit", "CSV", "Classify", "CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradeLog", "TradingStrategy"]
 path = "."
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.19.0"

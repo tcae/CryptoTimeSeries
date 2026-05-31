@@ -21,11 +21,9 @@ const WORKSPACE_PACKAGES = [
 	"KrakenSpot",
 	"KrakenFutures",
 	"CryptoXch",
-	"Assets",
 	"TradeLog",
 	"TradingStrategy",
 	"Trade",
-	"TradeAudit",
 ]
 
 const RUN_COVERAGE = _env_bool("CTS_TEST_COVERAGE", true)

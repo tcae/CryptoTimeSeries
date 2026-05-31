@@ -17,7 +17,9 @@ export readjsonlauditevents, writearrowauditexport, arrowexportfile
 "Canonical audit event types."
 @enum AuditEventType begin
     ORDER_SUBMITTED
+    ORDER_OBSERVED
     ORDER_ACK
+    ORDER_AMENDED
     ORDER_PARTIAL_FILL
     ORDER_FILLED
     ORDER_CANCELED
@@ -124,7 +126,7 @@ end
 "Return the canonical tradelog root folder under the shared crypto root."
 function auditroot(root::Union{Nothing, AbstractString}=nothing)::String
     basepath = if isnothing(root)
-        normpath(get(ENV, "CTS_TRADELOG_ROOT", get(ENV, "CTS_AUDIT_ROOT", joinpath(EnvConfig.cryptopath, "tradelog"))))
+        normpath(get(ENV, "CTS_TRADELOG_ROOT", joinpath(EnvConfig.cryptopath, "tradelog")))
     else
         normpath(String(root))
     end
@@ -164,9 +166,9 @@ end
 
 "Return whether audit persistence is enabled for the given event."
 function auditenabled(event::AuditEventRow)::Bool
-    _envbool("CTS_TRADELOG_ENABLED", _envbool("CTS_AUDIT_ENABLED", true)) || return false
+    _envbool("CTS_TRADELOG_ENABLED", true) || return false
     if lowercase(event.run_mode) == "simulation"
-        _envbool("CTS_TRADELOG_SIMULATION_ENABLED", _envbool("CTS_AUDIT_SIMULATION_ENABLED", true)) || return false
+        _envbool("CTS_TRADELOG_SIMULATION_ENABLED", true) || return false
     end
     return true
 end

@@ -54,7 +54,6 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 | CTS_ASYNC_ENGINE_ENABLED | Enables Objective-4 async engine path | Trade |
 | CTS_ASYNC_SHADOW_MODE | Enables async-vs-sync shadow compare mode | Trade |
 | CTS_WS_MARKETDATA_ENABLED | Enables websocket market-data ownership path | Trade |
-| CTS_EXCHANGE_BALANCE_CACHE_OWNER | Enables exchange balance cache owner role | Trade |
 | CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE | Enables OHLCV gap backfill in tradable checks | Trade |
 | CTS_USE_STRATEGY_RUNTIME_API | Overrides default runtime API gating (true/false) | Trade (tested in Trade tests) |
 
@@ -65,16 +64,13 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 | CTS_RUN_ID | Correlation/run ID used for tradelog/audit partitioning | CryptoXch, scripts/BoundsEstimator, scripts/TrendDetector, scripts/simulationcheck |
 | CTS_RUN_PRODUCTION_TESTS | Allows production-only CryptoXch tests when explicitly enabled | CryptoXch tests |
 
-### 2.3 TradeLog and TradeAudit persistence controls
+### 2.3 TradeLog persistence controls
 
 | Env var | Intent | Used by modules |
 |---|---|---|
 | CTS_TRADELOG_ENABLED | Global TradeLog write on/off | TradeLog, scripts/benchmark_tradesim_audit, TradeLog tests |
 | CTS_TRADELOG_SIMULATION_ENABLED | TradeLog write on/off for simulation run_mode | TradeLog, scripts/benchmark_tradesim_audit, TradeLog tests |
 | CTS_TRADELOG_ROOT | Overrides TradeLog storage root folder | TradeLog, CryptoXch tests |
-| CTS_AUDIT_ENABLED | Global TradeAudit write on/off (and fallback for TradeLog compatibility) | TradeAudit, TradeLog compatibility path, benchmark script, tests |
-| CTS_AUDIT_SIMULATION_ENABLED | TradeAudit write on/off for simulation | TradeAudit, TradeLog compatibility path, benchmark script, tests |
-| CTS_AUDIT_ROOT | Overrides TradeAudit storage root folder (fallback for TradeLog root if TradeLog root not set) | TradeAudit, TradeLog, Trade tests |
 
 ### 2.4 Exchange credentials and exchange-specific behavior
 
@@ -161,14 +157,10 @@ Legend:
 | CTS_TRADELOG_ENABLED | production-safe | Global TradeLog persistence switch |
 | CTS_TRADELOG_SIMULATION_ENABLED | production-safe | TradeLog simulation persistence switch |
 | CTS_TRADELOG_ROOT | production-safe | TradeLog root override |
-| CTS_AUDIT_ENABLED | production-safe | Global TradeAudit persistence switch |
-| CTS_AUDIT_SIMULATION_ENABLED | production-safe | TradeAudit simulation persistence switch |
-| CTS_AUDIT_ROOT | production-safe | TradeAudit root override |
 | CTS_USE_STRATEGY_RUNTIME_API | production-safe | Explicit runtime API on/off override |
 | CTS_ASYNC_ENGINE_ENABLED | test-only | Objective 4 rollout/experiment toggle |
 | CTS_ASYNC_SHADOW_MODE | test-only | Shadow-compare safety mode for rollout verification |
 | CTS_WS_MARKETDATA_ENABLED | test-only | Objective 4 websocket market-data ownership toggle |
-| CTS_EXCHANGE_BALANCE_CACHE_OWNER | test-only | Objective 4 balance-cache ownership toggle |
 | CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE | test-only | Objective 4 tradable-gap backfill toggle |
 | CTS_RUN_PRODUCTION_TESTS | test-only | Allows production test suite execution |
 | KRAKEN_ONLINE_TESTS | test-only | Enables online KrakenSpot integration tests |
@@ -212,7 +204,6 @@ Legend:
 - EnvConfig/src/EnvConfig.jl
 - Trade/src/Trade.jl
 - TradeLog/src/TradeLog.jl
-- TradeAudit/src/TradeAudit.jl
 - CryptoXch/src/CryptoXch.jl
 - Bybit/src/Bybit.jl
 - KrakenSpot/src/KrakenSpot.jl

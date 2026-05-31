@@ -4,7 +4,6 @@ version = "0.19.0"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]
-Assets = "e4c5a7f8-51b3-4a40-8507-79544143629b"
 Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Classify = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"

@@ -17,4 +17,4 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 WebSockets = "104b5d7c-a370-577a-8038-80a2059c5097"
 
 [sources]
-EnvConfig = {path = "../EnvConfig"}
+EnvConfig = {path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"}

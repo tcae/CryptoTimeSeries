@@ -103,12 +103,6 @@ git-tree-sha1 = "902b85010203830d4bc02259f5450d2e16b316d8"
 uuid = "bf4720bc-e11a-5d0c-854e-bdca1663c893"
 version = "0.1.1"
 
-[[deps.Assets]]
-deps = ["CryptoXch", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "SortingAlgorithms", "Statistics", "Test"]
-path = "../Assets"
-uuid = "e4c5a7f8-51b3-4a40-8507-79544143629b"
-version = "0.4.1"
-
 [[deps.Atomix]]
 deps = ["UnsafeAtomics"]
 git-tree-sha1 = "b8651b2eb5796a386b0398a20b519a6a6150f75c"
@@ -329,7 +323,7 @@ weakdeps = ["SparseArrays"]
     ChainRulesCoreSparseArraysExt = "SparseArrays"
 
 [[deps.Classify]]
-deps = ["Assets", "BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
+deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv", "cuDNN"]
 path = "."
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
 version = "0.27.8"

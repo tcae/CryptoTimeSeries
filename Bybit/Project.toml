@@ -20,5 +20,5 @@ TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
-Ohlcv = {path = "../Ohlcv"}
-TestOhlcv = {path = "../TestOhlcv"}
+Ohlcv = {path = "/Users/torsten/github/CryptoTimeSeries/Ohlcv"}
+TestOhlcv = {path = "/Users/torsten/github/CryptoTimeSeries/TestOhlcv"}

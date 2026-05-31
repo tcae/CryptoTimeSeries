@@ -46,7 +46,7 @@ const MAX_ASSET_FRACTION = 0.1f0
 
 # Optional cap for overall budget considered by trade sizing.
 # If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
-const MAX_BUDGET_QUOTE = 1000 # nothing
+const MAX_BUDGET_QUOTE = 500 # nothing
 
 # Safety margin applied to exchange-reported opening capacity before the budget cap.
 # Budget limit = min(MAX_BUDGET_QUOTE, available_opening_quote * (1 - SAFETY_MARGIN)).
@@ -353,6 +353,16 @@ cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
 cache.mc[:maxbudgetquote]    = run_max_budget_quote
 cache.mc[:budgetsafetymargin] = SAFETY_MARGIN
 cache.mc[:tradelog_portfolio_snapshot_mode] = :session_start
+cache.mc[:tradelog_migration_worker_probe_enabled] = _env_true("CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED", true)
+cache.xc.mc[:tradelog_migration_fill_balance_enabled] = _env_true("CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED", true)
+cache.mc[:ws_orders_enabled] = _env_true("CTS_WS_ORDERS_ENABLED", false)
+cache.mc[:ws_balances_enabled] = _env_true("CTS_WS_BALANCES_ENABLED", false)
+cache.mc[:ws_shadow_mode] = _env_true("CTS_WS_SHADOW_MODE", true)
+cache.mc[:ws_primary_mode] = _env_true("CTS_WS_PRIMARY_MODE", false)
+cache.mc[:ws_primary_autofallback_on_mismatch] = _env_true("CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH", true)
+cache.xc.mc[:ws_orders_enabled] = cache.mc[:ws_orders_enabled]
+cache.xc.mc[:ws_balances_enabled] = cache.mc[:ws_balances_enabled]
+cache.xc.mc[:ws_primary_mode] = cache.mc[:ws_primary_mode]
 
 println("$(EnvConfig.now()): exchange=$selected_exchange, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")

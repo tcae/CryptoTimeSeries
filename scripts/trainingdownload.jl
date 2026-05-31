@@ -4,10 +4,10 @@
 # println("activated $(pwd())")
 # activate(pwd())
 
-module AssetsTest
+module TrainingDownload
 using Dates, DataFrames
 
-using EnvConfig, Assets, CryptoXch, Ohlcv
+using EnvConfig, CryptoXch, Ohlcv
 
 EnvConfig.init(training)
 bases = EnvConfig.trainingbases

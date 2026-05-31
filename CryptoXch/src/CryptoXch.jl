@@ -359,6 +359,107 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
     return latest
 end
 
+function _wsenabled(xc::XchCache, key::Symbol, default::Bool=false)::Bool
+    return Bool(get(xc.mc, key, default))
+end
+
+function _ensurewschannel!(xc::XchCache, channel_key::Symbol, role::ExchangeRole, fn_name::Symbol)
+    haskey(xc.mc, channel_key) && return xc.mc[channel_key]
+    mod = _routedModule(xc, role)
+    if !isdefined(mod, fn_name)
+        xc.mc[channel_key] = nothing
+        return nothing
+    end
+    ch = try
+        getproperty(mod, fn_name)(_routedbc(xc, role))
+    catch
+        try
+            getproperty(mod, fn_name)()
+        catch err
+            (verbosity >= 1) && @warn "failed to start websocket channel" fn=String(fn_name) role=Symbol(role) error=sprint(showerror, err)
+            nothing
+        end
+    end
+    xc.mc[channel_key] = ch
+    return ch
+end
+
+function _drainwschannel!(ch; max_items::Int=256)
+    isnothing(ch) && return 0
+    drained = 0
+    while (drained < max_items) && isready(ch)
+        take!(ch)
+        drained += 1
+    end
+    return drained
+end
+
+function _refreshwsstreams!(xc::XchCache)
+    if _wsenabled(xc, :ws_orders_enabled, false)
+        ch = _ensurewschannel!(xc, :ws_orders_channel, trade_exchange_spot, :ws_orders)
+        _drainwschannel!(ch)
+    end
+    if _wsenabled(xc, :ws_balances_enabled, false)
+        ch = _ensurewschannel!(xc, :ws_balances_channel, trade_exchange_spot, :ws_balances)
+        _drainwschannel!(ch)
+    end
+    return nothing
+end
+
+function _adapterwsdfsnapshot(xc::XchCache, role::ExchangeRole, fn_name::Symbol)
+    _refreshwsstreams!(xc)
+    mod = _routedModule(xc, role)
+    if !isdefined(mod, fn_name)
+        return DataFrame()
+    end
+    return try
+        getproperty(mod, fn_name)(_routedbc(xc, role))
+    catch
+        try
+            getproperty(mod, fn_name)()
+        catch
+            DataFrame()
+        end
+    end
+end
+
+function _adapterwsheartbeat(xc::XchCache, role::ExchangeRole, fn_name::Symbol)
+    _refreshwsstreams!(xc)
+    mod = _routedModule(xc, role)
+    if !isdefined(mod, fn_name)
+        return nothing
+    end
+    return try
+        getproperty(mod, fn_name)(_routedbc(xc, role))
+    catch
+        try
+            getproperty(mod, fn_name)()
+        catch
+            nothing
+        end
+    end
+end
+
+"Return latest adapter websocket order snapshot (canonical normalized open-order rows when available)."
+function wsordersnapshot(xc::XchCache)::DataFrame
+    return _adapterwsdfsnapshot(xc, trade_exchange_spot, :wsordersnapshot)
+end
+
+"Return latest adapter websocket balances snapshot (canonical normalized balance rows when available)."
+function wsbalancessnapshot(xc::XchCache)::DataFrame
+    return _adapterwsdfsnapshot(xc, trade_exchange_spot, :wsbalancessnapshot)
+end
+
+"Return latest adapter websocket order heartbeat timestamp when available."
+function wsordersheartbeat(xc::XchCache)
+    return _adapterwsheartbeat(xc, trade_exchange_spot, :wsordersheartbeat)
+end
+
+"Return latest adapter websocket balances heartbeat timestamp when available."
+function wsbalancesheartbeat(xc::XchCache)
+    return _adapterwsheartbeat(xc, trade_exchange_spot, :wsbalancesheartbeat)
+end
+
 """
 Return the adapter cache for the given `role`, using the routing config when available.
 Falls back to `xc.bc` (the primary adapter) when no role override is configured.
@@ -675,7 +776,7 @@ function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType,
     catch tradelog_error
         (verbosity >= 1) && @warn "failed to persist tradelog event" event_type symbol exception=(tradelog_error, catch_backtrace())
     end
-    return nothing
+    return event
 end
 
 function _tradelogcreatedorder!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, orderinfo)
@@ -702,6 +803,13 @@ function _tradelogorderstatecache!(xc::XchCache)
         xc.mc[:tradelog_order_state] = Dict{String, NamedTuple{(:status, :executedqty), Tuple{String, Float64}}}()
     end
     return xc.mc[:tradelog_order_state]
+end
+
+function _tradelogordersnapshotcache!(xc::XchCache)
+    if !haskey(xc.mc, :tradelog_order_snapshot)
+        xc.mc[:tradelog_order_snapshot] = Dict{String, NamedTuple{(:symbol, :side, :baseqty, :limitprice, :marginleverage), Tuple{String, String, Float64, Union{Nothing, Float64}, Int}}}()
+    end
+    return xc.mc[:tradelog_order_snapshot]
 end
 
 function _tradeloglasteventcache!(xc::XchCache)
@@ -840,18 +948,132 @@ function _tradelogordermaybeprice(orderinfo, fields::Vector{Symbol})
     end
 end
 
-function _tradelogeventtypeforstatus(status::AbstractString, previous_status::Union{Nothing, String}, executedqty::Float64, previous_executedqty::Union{Nothing, Float64}, baseqty::Float64)::TradeLog.AuditEventType
+function _tradelogfillsnapshotenabled(xc::XchCache)::Bool
+    return Bool(get(xc.mc, :tradelog_migration_fill_balance_enabled, false))
+end
+
+function _tradelogsnapshotnetbalance(snapshot, asset::AbstractString)::Float64
+    snapshot isa AbstractDataFrame || return 0.0
+    hascoin = "coin" in names(snapshot)
+    hascoin || return 0.0
+    size(snapshot, 1) == 0 && return 0.0
+    target = uppercase(String(asset))
+    hasfree = "free" in names(snapshot)
+    haslocked = "locked" in names(snapshot)
+    hasborrowed = "borrowed" in names(snapshot)
+    hasaccrued = "accruedinterest" in names(snapshot)
+    for row in eachrow(snapshot)
+        uppercase(String(row.coin)) == target || continue
+        freeqty = hasfree ? Float64(row.free) : 0.0
+        lockedqty = haslocked ? Float64(row.locked) : 0.0
+        borrowedqty = hasborrowed ? Float64(row.borrowed) : 0.0
+        accruedqty = hasaccrued ? Float64(row.accruedinterest) : 0.0
+        return freeqty + lockedqty - borrowedqty - accruedqty
+    end
+    return 0.0
+end
+
+function _tradelogfillquoteqty(fill_base_qty::Union{Missing, Float64}, fill_price::Union{Missing, Float64})
+    if ismissing(fill_base_qty) || ismissing(fill_price)
+        return missing
+    end
+    return Float64(fill_base_qty) * Float64(fill_price)
+end
+
+function _tradelogwritefillbalancesnapshot!(xc::XchCache, trigger_event::TradeLog.AuditEventRow, role::ExchangeRole, symbol::AbstractString)
+    _tradelogfillsnapshotenabled(xc) || return nothing
+    trigger_event.event_type == TradeLog.ORDER_FILLED || return nothing
+    pair = basequote(symbol)
+    isnothing(pair) && return nothing
+
+    snapshot_before = if haskey(xc.mc, :exchange_balances_snapshot)
+        deepcopy(xc.mc[:exchange_balances_snapshot])
+    else
+        DataFrame()
+    end
+    snapshot_before_dt = get(xc.mc, :exchange_balances_snapshot_dt, nothing)
+
+    snapshot_after = try
+        balancessnapshot(xc; force_refresh=true, ignoresmallvolume=false)
+    catch err
+        (verbosity >= 1) && @warn "failed to persist fill balance migration snapshot" symbol error=sprint(showerror, err)
+        return nothing
+    end
+
+    base_before = _tradelogsnapshotnetbalance(snapshot_before, pair.basecoin)
+    base_after = _tradelogsnapshotnetbalance(snapshot_after.snapshot, pair.basecoin)
+    quote_before = _tradelogsnapshotnetbalance(snapshot_before, pair.quotecoin)
+    quote_after = _tradelogsnapshotnetbalance(snapshot_after.snapshot, pair.quotecoin)
+    snapshot_notes = [
+        "migration_probe=fill_balance_check_v1",
+        "snapshot_before_dt=$(isnothing(snapshot_before_dt) ? "missing" : snapshot_before_dt)",
+        "snapshot_after_dt=$(snapshot_after.datetime)",
+        "base_delta=$(base_after - base_before)",
+        "quote_delta=$(quote_after - quote_before)",
+    ]
+    event = TradeLog.AuditEventRow(
+        event_type=TradeLog.POSITION_SNAPSHOT,
+        event_time_utc=Dates.now(Dates.UTC),
+        created_at_utc=Dates.now(Dates.UTC),
+        source_module="CryptoXch",
+        environment=string(Symbol(EnvConfig.configmode)),
+        run_mode=tradelogrunmode(xc),
+        run_id=tradelogrunid(xc),
+        correlation_id=trigger_event.correlation_id,
+        parent_event_id=trigger_event.event_id,
+        exchange=_routeexchange(xc.routing, role, xc.exchange),
+        account_alias=_routeexchange(xc.routing, role, xc.exchange),
+        routing_role=_tradelogroutingrole(role),
+        market_type=_tradelogmarkettype(role),
+        asset_class=TradeLog.crypto,
+        instrument_type=_tradeloginstrumenttype(role),
+        venue_instrument_type=(role == trade_exchange_futures ? "futures" : role == trade_exchange_spot ? "spot" : missing),
+        symbol=String(symbol),
+        baseasset=pair.basecoin,
+        quoteasset=pair.quotecoin,
+        settlement_asset=pair.quotecoin,
+        exchange_order_id=trigger_event.exchange_order_id,
+        side=trigger_event.side,
+        order_type=trigger_event.order_type,
+        status="balance_observed_after_fill",
+        status_reason="source=fill_balance_probe",
+        fill_base_qty=trigger_event.fill_base_qty,
+        fill_quote_qty=_tradelogfillquoteqty(trigger_event.fill_base_qty, trigger_event.fill_price),
+        fill_price=trigger_event.fill_price,
+        fee_amount=trigger_event.fee_amount,
+        fee_currency=trigger_event.fee_currency,
+        position_qty_before=base_before,
+        position_qty_after=base_after,
+        cash_before=quote_before,
+        cash_after=quote_after,
+        strategy_engine=trigger_event.strategy_engine,
+        strategy_config_ref=trigger_event.strategy_config_ref,
+        signal_label=trigger_event.signal_label,
+        signal_score=trigger_event.signal_score,
+        notes=join(snapshot_notes, ";"),
+    )
+    try
+        TradeLog.writeeventwithhash(event)
+    catch err
+        (verbosity >= 1) && @warn "failed to persist fill balance migration snapshot event" symbol error=sprint(showerror, err)
+    end
+    return nothing
+end
+
+function _tradelogeventtypeforstatus(status::AbstractString, previous_status::Union{Nothing, String}, executedqty::Float64, previous_executedqty::Union{Nothing, Float64}, baseqty::Float64, source::AbstractString)::TradeLog.AuditEventType
     st = lowercase(String(status))
     if st == "rejected"
         return TradeLog.ORDER_REJECTED
     elseif st in ["cancelled", "canceled", "partiallyfilledcanceled", "deactivated"]
         return TradeLog.ORDER_CANCELED
+    elseif st == "replaced" || source == "changeorder"
+        return TradeLog.ORDER_AMENDED
     elseif (st == "filled") || ((baseqty > 0.0) && (executedqty >= baseqty - 1e-9))
         return TradeLog.ORDER_FILLED
     elseif (st == "partiallyfilled") || (!isnothing(previous_executedqty) && (executedqty > previous_executedqty + 1e-9))
         return TradeLog.ORDER_PARTIAL_FILL
     elseif isnothing(previous_status)
-        return TradeLog.ORDER_ACK
+        return TradeLog.ORDER_OBSERVED
     end
     return TradeLog.ORDER_ACK
 end
@@ -881,15 +1103,60 @@ function _tradelogreconcileorderstate!(xc::XchCache, orderinfo; role::ExchangeRo
         return nothing
     end
 
-    event_type = _tradelogeventtypeforstatus(status, previous_status, executedqty, previous_executedqty, baseqty)
+    event_type = _tradelogeventtypeforstatus(status, previous_status, executedqty, previous_executedqty, baseqty, source)
     status_reason = _tradelogstring(_orderfield(orderinfo, :rejectreason))
-    if event_type == TradeLog.ORDER_ACK
+    if event_type in (TradeLog.ORDER_ACK, TradeLog.ORDER_OBSERVED, TradeLog.ORDER_AMENDED)
         status_reason = "source=$(source)"
     elseif ismissing(status_reason)
         status_reason = "source=$(source)"
     end
-    _tradelogorderevent!(xc, event_type, role, String(symbol), side, baseqty, limitprice, marginleverage; orderinfo=orderinfo, status_reason=status_reason)
+    event = _tradelogorderevent!(xc, event_type, role, String(symbol), side, baseqty, limitprice, marginleverage; orderinfo=orderinfo, status_reason=status_reason)
+    _tradelogwritefillbalancesnapshot!(xc, event, role, String(symbol))
     states[String(orderid)] = (status=status, executedqty=executedqty)
+    _tradelogordersnapshotcache!(xc)[String(orderid)] = (symbol=String(symbol), side=side, baseqty=baseqty, limitprice=limitprice, marginleverage=marginleverage)
+    return nothing
+end
+
+"""
+Emit cancellation events for orders that were previously observed as open but are
+missing from the latest full `getopenorders` response.
+"""
+function _tradeloglogmissingopenorders!(xc::XchCache, openorderids)
+    active = Set(String.(collect(openorderids)))
+    states = _tradelogorderstatecache!(xc)
+    snapshots = _tradelogordersnapshotcache!(xc)
+    for (orderid, state) in collect(states)
+        openstatus(state.status) || continue
+        orderid in active && continue
+        # Try resolving a terminal order state first. This captures fast fills
+        # that disappear from openorders between polling cycles.
+        resolved = false
+        try
+            order = getorder(xc, orderid; auditevent=true)
+            resolved = !isnothing(order)
+        catch err
+            (verbosity >= 1) && @warn "failed to resolve missing open order via getorder" orderid error=sprint(showerror, err)
+        end
+        resolved && continue
+        if haskey(snapshots, orderid)
+            snap = snapshots[orderid]
+            missingorder = (
+                orderid=orderid,
+                symbol=snap.symbol,
+                side=snap.side,
+                baseqty=Float32(snap.baseqty),
+                executedqty=Float32(state.executedqty),
+                limitprice=isnothing(snap.limitprice) ? missing : Float32(snap.limitprice),
+                marginleverage=snap.marginleverage,
+                status="Cancelled",
+                updated=Dates.now(Dates.UTC),
+                rejectreason="source=getopenorders_missing",
+            )
+            _tradelogreconcileorderstate!(xc, missingorder; source="getopenorders_missing")
+        else
+            states[orderid] = (status="Cancelled", executedqty=state.executedqty)
+        end
+    end
     return nothing
 end
 
@@ -1754,7 +2021,19 @@ end
 
 "Capture one canonical exchange-owned balances snapshot and store it in `xc.mc`."
 function refreshbalancessnapshot!(xc::XchCache; ignoresmallvolume::Bool=false)
-    snapshot = balances(xc; ignoresmallvolume=ignoresmallvolume)
+    use_ws_primary = _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_balances_enabled, false)
+    snapshot = if use_ws_primary
+        wsb = wsbalancessnapshot(xc)
+        wsdt = wsbalancesheartbeat(xc)
+        if (size(wsb, 1) > 0) || !isnothing(wsdt)
+            wsb
+        else
+            (verbosity >= 1) && @warn "ws balance snapshot unavailable; falling back to REST balances"
+            balances(xc; ignoresmallvolume=ignoresmallvolume)
+        end
+    else
+        balances(xc; ignoresmallvolume=ignoresmallvolume)
+    end
     if isnothing(snapshot)
         snapshot = DataFrame()
     end
@@ -1860,12 +2139,27 @@ Returns an AbstractDataFrame of open **spot** orders with columns:
 - rejectreason ::String
 """
 function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
-    oo = _exchangeopenorders(xc, symbol=symboltoken(base))
+    use_ws_primary = isnothing(base) && _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_orders_enabled, false)
+    oo = if use_ws_primary
+        wsdf = wsordersnapshot(xc)
+        wsdt = wsordersheartbeat(xc)
+        if (size(wsdf, 1) > 0) || !isnothing(wsdt)
+            wsdf
+        else
+            (verbosity >= 1) && @warn "ws order snapshot unavailable; falling back to REST openorders"
+            _exchangeopenorders(xc, symbol=symboltoken(base))
+        end
+    else
+        _exchangeopenorders(xc, symbol=symboltoken(base))
+    end
     openordersdf = size(oo) == (0, 0) ? _emptyorders(exchange(xc)) : oo
     for row in eachrow(openordersdf)
         _tradelogreconcileorderstate!(xc, NamedTuple(row); source="getopenorders")
     end
-    if size(openordersdf, 1) > 0 && "orderid" in names(openordersdf)
+    if isnothing(base) && "orderid" in names(openordersdf)
+        _tradeloglogmissingopenorders!(xc, openordersdf[!, :orderid])
+    end
+    if "orderid" in names(openordersdf)
         pruneadaptiveorders!(xc, openordersdf[!, :orderid])
     end
     return openordersdf

@@ -1,6 +1,5 @@
 [deps]
 Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
-Assets = "e4c5a7f8-51b3-4a40-8507-79544143629b"
 Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"

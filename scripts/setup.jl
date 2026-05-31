@@ -21,7 +21,7 @@ Pkg.activate(rootpath)
 cd(rootpath)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
-mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "Bybit", "CryptoXch", "Assets", "Classify", "TradingStrategy", "Trade"]
+mypackages = ["EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv", "Bybit", "CryptoXch", "Classify", "TradingStrategy", "Trade"]
 # Pkg.upgrade_manifest()
 # for mypackage in mypackages
 #     try
@@ -50,14 +50,14 @@ Pkg.add([
     "Test", # "JuliaInterpreter",
     "JSON",  # EnvConfig
     "SHA", "Printf", "HTTP",  # Binance
-    "Dates",  # EnvConfig, Binance, CryptoExchange, Ohlcv, Assets
-    "DataFrames",  # CryptoExchange, Ohlcv, Assets, Features
+    "Dates",  # EnvConfig, Binance, CryptoExchange, Ohlcv
+    "DataFrames",  # CryptoExchange, Ohlcv, Features
     "DataAPI",   # CryptoExchange
-    "Indicators",  # CryptoExchange, Ohlcv, Assets, Features
-    "JDF",  # CryptoExchange, Ohlcv, Assets
+    "Indicators",  # CryptoExchange, Ohlcv, Features
+    "JDF",  # CryptoExchange, Ohlcv
     "CSV",  # CryptoExchange, Ohlcv
     # "CategoricalArrays", "JLSO",  # Ohlcv, Classify
-    "Logging", "LoggingExtras",  # CryptoExchange, Ohlcv, Assets, Features
+    "Logging", "LoggingExtras",  # CryptoExchange, Ohlcv, Features
     "PrettyPrinting",
     "RollingFunctions", "Statistics",  # Features
     # "MLJ", "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux", "cuDNN",

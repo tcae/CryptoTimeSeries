@@ -1,16 +1,20 @@
 using Test
 using Dates
 using DataFrames
-using EnvConfig, Trade, CryptoXch, Ohlcv
+using EnvConfig, Trade, CryptoXch, Ohlcv, TradeLog
 
 @testset "Objective 4 scaffolding" begin
     EnvConfig.init(test)
+    oldtradelogroot = get(ENV, "CTS_TRADELOG_ROOT", nothing)
+    tmpdir = mktempdir()
+    ENV["CTS_TRADELOG_ROOT"] = tmpdir
 
+    try
     cache = Trade.TradeCache(xc=CryptoXch.XchCache())
     @test haskey(cache.mc, :async_engine_enabled)
     @test haskey(cache.mc, :async_shadow_mode)
     @test haskey(cache.mc, :ws_marketdata_enabled)
-    @test haskey(cache.mc, :exchange_balance_cache_owner)
+    @test haskey(cache.mc, :tradelog_migration_worker_probe_enabled)
     @test haskey(cache.mc, :ohlcv_gap_backfill_on_tradable)
     @test haskey(cache.mc, :async_worker_channels)
     @test haskey(cache.mc, :async_worker_heartbeats)
@@ -21,10 +25,7 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
     @test haskey(cache.mc, :tradable_ohlcv_state_by_base)
     @test haskey(cache.mc, :tradable_ohlcv_state_dt_by_base)
     @test haskey(cache.mc, :strategy_last_closed_candle_dt)
-    @test haskey(cache.mc, :async_canary_bases_raw)
     @test haskey(cache.mc, :objective4_cycle_count)
-    @test haskey(cache.mc, :objective4_canary_cycles)
-    @test haskey(cache.mc, :objective4_canary_last_bases)
     @test haskey(cache.mc, :objective4_order_rejects)
     @test haskey(cache.mc, :objective4_permission_rejects)
     @test haskey(cache.mc, :objective4_privatecooldown_skips)
@@ -55,16 +56,8 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
         relativeamount=1f0,
         price=100f0,
     )
-    canary_pool = [sync_advices[1], eth_advice]
-    cache.mc[:async_canary_bases_raw] = "BTCUSDT, ETH/USDT"
-    canary_selected = Trade._select_async_shadow_advices(cache, canary_pool)
-    @test canary_selected.canary_enabled
-    @test sort([ta.base for ta in canary_selected.advices]) == ["BTC", "ETH"]
-    @test canary_selected.canary_bases == ["BTC", "ETH"]
-    cache.mc[:async_canary_bases_raw] = ""
-    canary_off = Trade._select_async_shadow_advices(cache, canary_pool)
-    @test !canary_off.canary_enabled
-    @test length(canary_off.advices) == length(canary_pool)
+    full_scope_pool = [sync_advices[1], eth_advice]
+    @test length(full_scope_pool) == 2
 
     cache.mc[:async_engine_enabled] = true
     divergent_advices = deepcopy(sync_advices)
@@ -83,15 +76,21 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
         usdtvalue=[1000f0, 5000f0],
     )
 
-    cache.mc[:exchange_balance_cache_owner] = false
     Trade._sync_exchange_balances_snapshot!(cache, assets)
-    @test size(cache.mc[:exchange_balances_snapshot], 1) == 0
+    @test CryptoXch.balancessnapshot(cache.xc; force_refresh=false, ignoresmallvolume=false).snapshot isa DataFrame
 
-    cache.mc[:exchange_balance_cache_owner] = true
+    cache.mc[:tradelog_migration_worker_probe_enabled] = true
     cache.xc.currentdt = DateTime("2026-05-30T12:00:00")
     Trade._sync_exchange_balances_snapshot!(cache, assets)
-    @test cache.mc[:exchange_balances_snapshot] isa DataFrame
-    @test cache.mc[:exchange_balances_snapshot_dt] == DateTime("2026-05-30T12:00:00")
+    refreshed_snapshot = CryptoXch.refreshbalancessnapshot!(cache.xc; ignoresmallvolume=false)
+    @test refreshed_snapshot.snapshot isa DataFrame
+    @test refreshed_snapshot.datetime == DateTime("2026-05-30T12:00:00")
+    cache.xc.mc[:exchange_balances_snapshot] = deepcopy(assets)
+    cache.xc.mc[:exchange_balances_snapshot_dt] = cache.xc.currentdt
+    seeded_snapshot = CryptoXch.balancessnapshot(cache.xc; force_refresh=false, ignoresmallvolume=false)
+    @test seeded_snapshot.snapshot isa DataFrame
+    @test size(seeded_snapshot.snapshot, 1) == 2
+    @test seeded_snapshot.datetime == cache.xc.currentdt
 
     refreshed = CryptoXch.balancessnapshot(cache.xc; force_refresh=true, ignoresmallvolume=false)
     @test refreshed.fresh
@@ -102,6 +101,9 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
     stale = CryptoXch.balancessnapshot(cache.xc; force_refresh=false, max_age=Second(0), ignoresmallvolume=false)
     @test !stale.fresh
     @test stale.datetime == DateTime("2026-05-30T12:00:00")
+
+    cache.xc.mc[:exchange_balances_snapshot] = deepcopy(assets)
+    cache.xc.mc[:exchange_balances_snapshot_dt] = cache.xc.currentdt
 
     cache.mc[:async_engine_enabled] = true
     topology_advices = Trade._run_async_shadow_topology!(cache, assets, DataFrame(), sync_advices)
@@ -115,6 +117,27 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
         @test haskey(cache.mc[:async_worker_watchdog_breaches], worker)
         @test haskey(cache.mc[:objective4_last_worker_latency_ms], worker)
     end
+
+    probe_event = TradeLog.AuditEventRow(
+        event_type=TradeLog.POSITION_SNAPSHOT,
+        environment=string(Symbol(EnvConfig.configmode)),
+        run_mode=CryptoXch.tradelogrunmode(cache.xc),
+        exchange=CryptoXch.exchange(cache.xc),
+        account_alias=CryptoXch.exchange(cache.xc),
+        asset_class=TradeLog.crypto,
+        instrument_type=TradeLog.instrument_unknown,
+    )
+    probe_path = TradeLog.auditfile(probe_event)
+    probe_events = isfile(probe_path) ? readlines(probe_path) : String[]
+    probe_lines = filter(line -> occursin("migration_probe=async_worker_observation_v1", line), probe_events)
+    @test length(probe_lines) == 2
+    @test any(line -> occursin("worker=balance_sync", line) && occursin("snapshot_rows=2", line), probe_lines)
+    @test any(line -> occursin("worker=order_management", line) && occursin("openorders_rows=0", line), probe_lines)
+
+    Trade._run_async_shadow_topology!(cache, assets, DataFrame(), sync_advices)
+    probe_events_repeat = isfile(probe_path) ? readlines(probe_path) : String[]
+    probe_lines_repeat = filter(line -> occursin("migration_probe=async_worker_observation_v1", line), probe_events_repeat)
+    @test length(probe_lines_repeat) == 2
 
     cache.mc[:async_worker_watchdog_timeout] = Second(0)
     cache.xc.currentdt = cache.xc.currentdt + Minute(2)
@@ -229,4 +252,12 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
     progressed_closed = Trade._next_closed_candle_dt!(cache)
     @test progressed_closed == DateTime("2026-05-30T12:11:00")
     @test isnothing(cache.mc[:strategy_closed_candle_pending_reason])
+    finally
+        if isnothing(oldtradelogroot)
+            delete!(ENV, "CTS_TRADELOG_ROOT")
+        else
+            ENV["CTS_TRADELOG_ROOT"] = oldtradelogroot
+        end
+        rm(tmpdir; force=true, recursive=true)
+    end
 end

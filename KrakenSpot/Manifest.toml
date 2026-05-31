@@ -170,7 +170,7 @@ version = "1.0.7"
 
 [[deps.EnvConfig]]
 deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
-path = "../EnvConfig"
+path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 version = "0.2.14"
 
