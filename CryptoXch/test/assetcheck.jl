@@ -11,13 +11,14 @@ EnvConfig.init(production)
 xc = CryptoXch.XchCache()
 
 function assetcheck()
-    tcdf, assets = Trade.assetsconfig!(Trade.TradeCache(xc=xc))
+    cache = Trade.TradeCache(xc=xc)
+    tcdf, assets = Trade.assetsconfig!(cache)
     println("portfolio: $assets")
     println("trading strategy: tc=$(tcdf)")
     println("buyenabled coins=$(count(tcdf[!, :buyenabled]))")
     println("coins to trade without assets: $(setdiff(tcdf[!, :basecoin], assets[!, :coin]))")
     println("assets that are not listed as tradable coins: $(setdiff(assets[!, :coin], tcdf[!, :basecoin]))")
-    println("$(CryptoXch.ttstr(xc)): $(Trade.USDTmsg(assets))")
+    println("$(CryptoXch.ttstr(xc)): $(Trade.USDTmsg(cache, assets))")
     return tcdf, assets
 end
 

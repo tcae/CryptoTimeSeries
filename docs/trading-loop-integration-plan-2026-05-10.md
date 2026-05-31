@@ -117,6 +117,7 @@ Integrate `algorithm03!` into a production-ready trading loop with exchange abst
 - [ ] Add `Trade` budget mode switch with default `:exchange_capacity` for live runtimes and compatibility fallback for simulation/tests.
 - [ ] Update startup and periodic logs to show: `equity_quote`, `available_opening_quote`, `safe_opening_quote`, `effective_budget_quote`, and exposure diagnostics.
 - [ ] Add tests for mixed spot+margin scenarios and side-aware lane selection behavior.
+- [x] Add tradable OHLCV readiness helper with exchange-requested backfill (`CryptoXch.cryptoupdate!`) and candidate gating, plus regression coverage for backfill-triggered readiness.
 
 ### Exit criteria
 - Net-worth reporting in live loops is sourced from exchange-equity semantics.
@@ -557,11 +558,22 @@ Prevent blocking between data updates, signal evaluation, order management, and 
 - Keep `Trade` read-only relative to adapter caches.
 - Add tests for freshness policy, staleness fallback, and sync parity.
 
+Progress update 2026-05-31:
+- [x] Added canonical exchange-owned balances snapshot API in `CryptoXch` (`refreshbalancessnapshot!`, `balancessnapshot`).
+- [x] Wired `Trade` Objective-4 balance-owner path to consume the canonical `CryptoXch` snapshot (with local fallback on refresh failure).
+- [x] Extended `Trade` Objective-4 scaffolding tests to verify snapshot ownership and freshness/staleness semantics.
+
 #### Increment 4.2: Async worker topology in shadow mode
 - Introduce bounded-channel workers:
 	- marketdata, strategy, order-intent, order-execution, order-reconcile, balance-sync
 - Keep order submission authoritative in synchronous path while shadow mode records async parity.
 - Add heartbeat/watchdog metrics per worker.
+
+Progress update 2026-05-31:
+- [x] Added bounded-channel worker topology scaffolding in `Trade` for marketdata, strategy, order-intent, order-execution, order-reconcile, and balance-sync.
+- [x] Wired async shadow path through worker-topology pipeline while keeping synchronous execution authoritative for order placement.
+- [x] Added per-worker heartbeat, latency, and watchdog-breach metrics in `TradeCache.mc`.
+- [x] Extended `Trade/test/objective4_scaffolding_test.jl` with worker-topology and watchdog assertions.
 
 #### Increment 4.3: WebSocket ingestion with HTTP fallback
 - Prefer websocket trades/klines where supported.

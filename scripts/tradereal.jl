@@ -48,8 +48,8 @@ const MAX_ASSET_FRACTION = 0.1f0
 # If set, sizing uses min(real portfolio quote value, MAX_BUDGET_QUOTE).
 const MAX_BUDGET_QUOTE = 1000 # nothing
 
-# Safety margin applied to portfolio equity before the budget cap.
-# Budget limit = min(MAX_BUDGET_QUOTE, sum(balance) * (1 - SAFETY_MARGIN)).
+# Safety margin applied to exchange-reported opening capacity before the budget cap.
+# Budget limit = min(MAX_BUDGET_QUOTE, available_opening_quote * (1 - SAFETY_MARGIN)).
 const SAFETY_MARGIN = 0.1
 
 # TrendDetector config 046: GainSegment strategy parameters.
@@ -378,11 +378,12 @@ let
     init_balances = CryptoXch.balances(xc, ignoresmallvolume=false)
     @info "Startup credential check OK: $(selected_exchange) returned $(size(init_balances, 1)) balance entries"
     init_assets = CryptoXch.portfolio!(xc, init_balances; ignoresmallvolume=false)
+    capacity = CryptoXch.accountcapacity(xc; force_refresh=true)
     budget_limit_quote = Trade._effectivebudgetquote(cache, init_assets)
     allocated_budget_quote = Trade._allocatedbudgetquote(init_assets)
     maxassetquote = cache.mc[:maxassetfraction] * budget_limit_quote
     overallocated_quote = max(0.0, allocated_budget_quote - budget_limit_quote)
-    @info "Startup budget allocation (quote)" budget_limit_quote=budget_limit_quote allocated_budget_quote=allocated_budget_quote overallocated_quote=overallocated_quote maxassetquote=maxassetquote maxassetfraction=cache.mc[:maxassetfraction] safety_margin=cache.mc[:budgetsafetymargin] max_budget_cap_quote=cache.mc[:maxbudgetquote]
+    @info "Startup budget allocation (quote)" equity_quote=capacity.equity_quote available_opening_quote=capacity.available_opening_quote available_long_quote=capacity.available_long_quote available_short_quote=capacity.available_short_quote source=capacity.source budget_limit_quote=budget_limit_quote allocated_budget_quote=allocated_budget_quote overallocated_quote=overallocated_quote maxassetquote=maxassetquote maxassetfraction=cache.mc[:maxassetfraction] safety_margin=cache.mc[:budgetsafetymargin] max_budget_cap_quote=cache.mc[:maxbudgetquote]
 end
 
 # Log any pre-existing open orders — they will be cancelled at the first trade step.

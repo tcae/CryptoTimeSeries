@@ -1039,6 +1039,89 @@ function account(bc::KrakenSpotCache)
 	return get(response, "result", Dict{String, Any}())
 end
 
+"Case-insensitive dictionary lookup returning the first matching key value."
+function _dictgetci(d::AbstractDict, keys::AbstractVector{<:AbstractString}, default=nothing)
+	for wanted in keys
+		wl = lowercase(String(wanted))
+		for (k, v) in d
+			if lowercase(String(k)) == wl
+				return v
+			end
+		end
+	end
+	return default
+end
+
+"Parse one account metric from a TradeBalance-like dictionary."
+function _accountfloat(d::AbstractDict, keys::AbstractVector{<:AbstractString}, default::Float64=0.0)::Float64
+	return Float64(_float32(_dictgetci(d, keys, default), Float32(default)))
+end
+
+"Return exchange-concept account capacity metrics for Kraken Spot mixed spot+margin accounts."
+function accountcapacity(bc::KrakenSpotCache)
+	if !_hascredentials(bc)
+		return (
+			equity_quote=0.0,
+			available_opening_quote=0.0,
+			available_long_quote=0.0,
+			available_short_quote=0.0,
+			initial_margin_quote=0.0,
+			maintenance_margin_quote=0.0,
+			source="KrakenSpot:no_credentials",
+		)
+	end
+
+	tradebalance_raw = account(bc)
+	tradebalance = tradebalance_raw isa AbstractDict ? Dict(tradebalance_raw) : Dict{Any, Any}()
+
+	# Kraken TradeBalance fields are exchange-native account metrics.
+	equity_quote = _accountfloat(tradebalance, ["eb", "equity", "e", "tb"], 0.0)
+	available_short_quote = _accountfloat(tradebalance, ["mf", "free_margin", "freemargin", "availablemargin"], 0.0)
+	initial_margin_quote = _accountfloat(tradebalance, ["m", "initialmargin"], 0.0)
+	maintenance_margin_quote = _accountfloat(tradebalance, ["maintenance_margin", "maintenancemargin"], 0.0)
+
+	# Long lane capacity is wallet quote available for spot buys.
+	available_long_quote = 0.0
+	quotecoin = uppercase(String(EnvConfig.cryptoquote))
+	try
+		bdf = balances(bc)
+		if (:coin in names(bdf)) && (:free in names(bdf))
+			for row in eachrow(bdf)
+				if uppercase(String(row.coin)) == quotecoin
+					available_long_quote += max(0.0, Float64(row.free))
+				end
+			end
+		end
+	catch err
+		(verbosity >= 1) && @warn "KrakenSpot accountcapacity: quote free balance lookup failed" error=sprint(showerror, err)
+	end
+
+	if available_long_quote <= 0.0
+		available_long_quote = _accountfloat(tradebalance, ["tb", "trade_balance", "cash"], 0.0)
+	end
+
+	# For mixed spot+margin accounts, opening capacity must respect both lanes.
+	available_opening_quote = if (available_long_quote > 0.0) && (available_short_quote > 0.0)
+		min(available_long_quote, available_short_quote)
+	else
+		max(available_long_quote, available_short_quote)
+	end
+
+	if equity_quote <= 0.0
+		equity_quote = max(available_long_quote, _accountfloat(tradebalance, ["tb"], 0.0))
+	end
+
+	return (
+		equity_quote=max(0.0, equity_quote),
+		available_opening_quote=max(0.0, available_opening_quote),
+		available_long_quote=max(0.0, available_long_quote),
+		available_short_quote=max(0.0, available_short_quote),
+		initial_margin_quote=max(0.0, initial_margin_quote),
+		maintenance_margin_quote=max(0.0, maintenance_margin_quote),
+		source="KrakenSpot:TradeBalance+BalanceEx",
+	)
+end
+
 """
 Convert one raw Kraken order entry into the standardized order row shape.
 """

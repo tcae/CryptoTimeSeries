@@ -349,6 +349,13 @@ _exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=noth
 _exchangeget24h(xc::XchCache) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange))
 _exchangeget24h(xc::XchCache, symbol) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange), symbol)
 _exchangebalances(xc::XchCache) = _routedModule(xc, trade_exchange_spot).balances(_routedbc(xc, trade_exchange_spot))
+function _exchangeaccountcapacity(xc::XchCache)
+    mod = _routedModule(xc, trade_exchange_spot)
+    if isdefined(mod, :accountcapacity)
+        return getproperty(mod, :accountcapacity)(_routedbc(xc, trade_exchange_spot))
+    end
+    return nothing
+end
 _exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _routedModule(xc, trade_exchange_spot).openorders(_routedbc(xc, trade_exchange_spot); symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
 _exchangeorder(xc::XchCache, orderid) = _routedModule(xc, trade_exchange_spot).order(_routedbc(xc, trade_exchange_spot), orderid)
 _exchangecancelorder(xc::XchCache, symbol, orderid) = _routedModule(xc, trade_exchange_spot).cancelorder(_routedbc(xc, trade_exchange_spot), symbol, orderid)
@@ -1458,6 +1465,97 @@ end
 
 #region account
 
+function _asfloat64(value, default::Float64=0.0)::Float64
+    if ismissing(value) || isnothing(value)
+        return default
+    elseif value isa AbstractFloat
+        return Float64(value)
+    elseif value isa Real
+        return Float64(value)
+    elseif value isa AbstractString
+        stripped = strip(String(value))
+        isempty(stripped) && return default
+        parsed = try
+            parse(Float64, stripped)
+        catch
+            default
+        end
+        return isfinite(parsed) ? parsed : default
+    end
+    return default
+end
+
+function _normalizeaccountcapacity(snapshot)
+    return (
+        equity_quote=max(0.0, _asfloat64(get(snapshot, :equity_quote, 0.0), 0.0)),
+        available_opening_quote=max(0.0, _asfloat64(get(snapshot, :available_opening_quote, 0.0), 0.0)),
+        available_long_quote=max(0.0, _asfloat64(get(snapshot, :available_long_quote, get(snapshot, :available_opening_quote, 0.0)), 0.0)),
+        available_short_quote=max(0.0, _asfloat64(get(snapshot, :available_short_quote, get(snapshot, :available_opening_quote, 0.0)), 0.0)),
+        initial_margin_quote=max(0.0, _asfloat64(get(snapshot, :initial_margin_quote, 0.0), 0.0)),
+        maintenance_margin_quote=max(0.0, _asfloat64(get(snapshot, :maintenance_margin_quote, 0.0), 0.0)),
+        source=String(get(snapshot, :source, "unknown")),
+    )
+end
+
+function _fallbackaccountcapacity(xc::XchCache)
+    balancesdf = balances(xc; ignoresmallvolume=false)
+    assets = portfolio!(xc, balancesdf; ignoresmallvolume=false)
+    quotecoin = uppercase(String(EnvConfig.cryptoquote))
+    quotefree = 0.0
+    if (:coin in names(assets)) && (:free in names(assets))
+        for row in eachrow(assets)
+            if uppercase(String(row.coin)) == quotecoin
+                quotefree += max(0.0, Float64(row.free))
+            end
+        end
+    end
+    equity = (:usdtvalue in names(assets)) ? Float64(sum(assets[!, :usdtvalue])) : quotefree
+    return (
+        equity_quote=max(0.0, equity),
+        available_opening_quote=max(0.0, quotefree),
+        available_long_quote=max(0.0, quotefree),
+        available_short_quote=max(0.0, quotefree),
+        initial_margin_quote=0.0,
+        maintenance_margin_quote=0.0,
+        source="CryptoXch:portfolio_fallback",
+    )
+end
+
+"""
+Return exchange-concept account capacity snapshot in quote currency.
+
+Fields:
+- `equity_quote`: exchange-equity style net worth in quote terms
+- `available_opening_quote`: side-agnostic conservative opening capacity
+- `available_long_quote`: opening capacity for long/spot buy side
+- `available_short_quote`: opening capacity for short/margin sell side
+"""
+function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5)
+    simmode = get(xc.mc, :simmode, nosimulation)
+    if !force_refresh && (simmode == nosimulation)
+        if haskey(xc.mc, :account_capacity_snapshot) && haskey(xc.mc, :account_capacity_snapshot_dt)
+            dt = xc.mc[:account_capacity_snapshot_dt]
+            if (dt isa DateTime) && ((Dates.now(UTC) - dt) < Dates.Second(max(1, ttl_seconds)))
+                return xc.mc[:account_capacity_snapshot]
+            end
+        end
+    end
+
+    snapshot = try
+        _exchangeaccountcapacity(xc)
+    catch err
+        (verbosity >= 1) && @warn "accountcapacity: exchange snapshot failed, using fallback" exchange=_routeexchange(xc.routing, trade_exchange_spot, xc.exchange) error=sprint(showerror, err)
+        nothing
+    end
+    if isnothing(snapshot)
+        snapshot = _fallbackaccountcapacity(xc)
+    end
+    normalized = _normalizeaccountcapacity(snapshot)
+    xc.mc[:account_capacity_snapshot] = normalized
+    xc.mc[:account_capacity_snapshot_dt] = Dates.now(UTC)
+    return normalized
+end
+
 "Returns a DataFrame[:coin, :locked, :free, :borrowed, :accruedinterest] of wallet/portfolio balances"
 function balances(xc::XchCache; ignoresmallvolume=true)
     bdf = _exchangebalances(xc)
@@ -1479,6 +1577,34 @@ function balances(xc::XchCache; ignoresmallvolume=true)
         deleteat!(bdf, delrows)
     end
     return bdf
+end
+
+"Capture one canonical exchange-owned balances snapshot and store it in `xc.mc`."
+function refreshbalancessnapshot!(xc::XchCache; ignoresmallvolume::Bool=false)
+    snapshot = balances(xc; ignoresmallvolume=ignoresmallvolume)
+    if isnothing(snapshot)
+        snapshot = DataFrame()
+    end
+    xc.mc[:exchange_balances_snapshot] = deepcopy(snapshot)
+    xc.mc[:exchange_balances_snapshot_dt] = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
+    return (snapshot=xc.mc[:exchange_balances_snapshot], datetime=xc.mc[:exchange_balances_snapshot_dt], fresh=true)
+end
+
+"Return the canonical exchange-owned balances snapshot from `xc.mc`, refreshing on demand when requested or missing."
+function balancessnapshot(xc::XchCache; force_refresh::Bool=false, max_age::Dates.Period=Minute(2), ignoresmallvolume::Bool=false)
+    has_snapshot = haskey(xc.mc, :exchange_balances_snapshot) && haskey(xc.mc, :exchange_balances_snapshot_dt)
+    if force_refresh || !has_snapshot
+        return refreshbalancessnapshot!(xc; ignoresmallvolume=ignoresmallvolume)
+    end
+
+    snapshot = xc.mc[:exchange_balances_snapshot]
+    snapdt = xc.mc[:exchange_balances_snapshot_dt]
+    nowdt = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
+    if isnothing(snapdt)
+        return refreshbalancessnapshot!(xc; ignoresmallvolume=ignoresmallvolume)
+    end
+    fresh = (nowdt - DateTime(snapdt)) <= max_age
+    return (snapshot=snapshot, datetime=snapdt, fresh=fresh)
 end
 
 """

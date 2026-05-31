@@ -82,9 +82,137 @@ function _init_objective4_flags!(mc::AbstractDict)
     mc[:async_shadow_autodisabled] = get(mc, :async_shadow_autodisabled, false)
     mc[:async_shadow_autodisable_reason] = get(mc, :async_shadow_autodisable_reason, nothing)
     mc[:async_shadow_last_compare] = get(mc, :async_shadow_last_compare, nothing)
+    mc[:async_worker_channel_capacity] = Int(get(mc, :async_worker_channel_capacity, 4))
+    mc[:async_worker_watchdog_timeout] = get(mc, :async_worker_watchdog_timeout, Dates.Second(120))
+    mc[:async_worker_channels] = get(mc, :async_worker_channels, Dict{Symbol, Channel{Any}}())
+    mc[:async_worker_heartbeats] = get(mc, :async_worker_heartbeats, Dict{Symbol, DateTime}())
+    mc[:async_worker_last_latency_ms] = get(mc, :async_worker_last_latency_ms, Dict{Symbol, Float64}())
+    mc[:async_worker_watchdog_breaches] = get(mc, :async_worker_watchdog_breaches, Dict{Symbol, Int}())
+    mc[:async_worker_topology_started] = get(mc, :async_worker_topology_started, false)
     mc[:exchange_balances_snapshot] = get(mc, :exchange_balances_snapshot, DataFrame())
     mc[:exchange_balances_snapshot_dt] = get(mc, :exchange_balances_snapshot_dt, nothing)
     return mc
+end
+
+"Return Objective 4.2 worker names in canonical processing order."
+_async_worker_names() = (:marketdata, :strategy, :order_intent, :order_execution, :order_reconcile, :balance_sync)
+
+"Ensure bounded worker channels and per-worker metrics dictionaries are initialized."
+function _ensure_async_worker_topology!(cache)
+    channels = get(cache.mc, :async_worker_channels, Dict{Symbol, Channel{Any}}())
+    heartbeats = get(cache.mc, :async_worker_heartbeats, Dict{Symbol, DateTime}())
+    latencies = get(cache.mc, :async_worker_last_latency_ms, Dict{Symbol, Float64}())
+    breaches = get(cache.mc, :async_worker_watchdog_breaches, Dict{Symbol, Int}())
+    capacity = max(1, Int(get(cache.mc, :async_worker_channel_capacity, 4)))
+    nowdt = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
+    for worker in _async_worker_names()
+        if !haskey(channels, worker)
+            channels[worker] = Channel{Any}(capacity)
+        end
+        if !haskey(heartbeats, worker)
+            heartbeats[worker] = nowdt
+        end
+        if !haskey(latencies, worker)
+            latencies[worker] = 0.0
+        end
+        if !haskey(breaches, worker)
+            breaches[worker] = 0
+        end
+    end
+    cache.mc[:async_worker_channels] = channels
+    cache.mc[:async_worker_heartbeats] = heartbeats
+    cache.mc[:async_worker_last_latency_ms] = latencies
+    cache.mc[:async_worker_watchdog_breaches] = breaches
+    cache.mc[:async_worker_topology_started] = true
+    return nothing
+end
+
+"Record one worker heartbeat and latency metric after processing one shadow payload."
+function _record_async_worker_heartbeat!(cache, worker::Symbol, started_at::DateTime)
+    nowdt = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
+    elapsed_ms = max(0.0, Float64(Dates.value(nowdt - started_at)) / 1_000.0)
+    cache.mc[:async_worker_heartbeats][worker] = nowdt
+    cache.mc[:async_worker_last_latency_ms][worker] = elapsed_ms
+    return nothing
+end
+
+"Drain stale queue items and process one latest payload through the worker channel."
+function _run_async_worker_shadow_step!(cache, worker::Symbol, payload)
+    channels = cache.mc[:async_worker_channels]
+    channel = channels[worker]
+    while isready(channel)
+        take!(channel)
+    end
+    put!(channel, payload)
+    started_at = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
+    current = take!(channel)
+    _ = current
+    _record_async_worker_heartbeat!(cache, worker, started_at)
+    return current
+end
+
+"Update watchdog breach counters when a worker heartbeat is older than timeout."
+function _update_async_worker_watchdog!(cache)
+    heartbeats = cache.mc[:async_worker_heartbeats]
+    breaches = cache.mc[:async_worker_watchdog_breaches]
+    timeout = get(cache.mc, :async_worker_watchdog_timeout, Dates.Second(120))
+    nowdt = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
+    for worker in _async_worker_names()
+        hb = get(heartbeats, worker, nowdt)
+        if (nowdt - hb) > timeout
+            breaches[worker] = get(breaches, worker, 0) + 1
+        end
+    end
+    cache.mc[:async_worker_watchdog_breaches] = breaches
+    return nothing
+end
+
+"Run Objective 4.2 shadow worker pipeline while leaving synchronous execution authoritative."
+function _run_async_shadow_topology!(cache, assets::AbstractDataFrame, openorders::AbstractDataFrame, sync_advices)
+    _ensure_async_worker_topology!(cache)
+    md_payload = (
+        datetime=cache.xc.currentdt,
+        assets_rows=size(assets, 1),
+        openorders_rows=size(openorders, 1),
+    )
+    _run_async_worker_shadow_step!(cache, :marketdata, md_payload)
+
+    async_advices = _collect_async_candidate_advices(cache, sync_advices)
+    strategy_payload = (
+        datetime=cache.xc.currentdt,
+        sync_count=length(sync_advices),
+        async_count=length(async_advices),
+    )
+    _run_async_worker_shadow_step!(cache, :strategy, strategy_payload)
+
+    order_intent_payload = (
+        datetime=cache.xc.currentdt,
+        advice_count=length(sync_advices),
+    )
+    _run_async_worker_shadow_step!(cache, :order_intent, order_intent_payload)
+
+    order_execution_payload = (
+        datetime=cache.xc.currentdt,
+        authoritative=:sync,
+        shadow_mode=Bool(get(cache.mc, :async_shadow_mode, true)),
+        candidate_count=length(async_advices),
+    )
+    _run_async_worker_shadow_step!(cache, :order_execution, order_execution_payload)
+
+    order_reconcile_payload = (
+        datetime=cache.xc.currentdt,
+        openorders_rows=size(openorders, 1),
+    )
+    _run_async_worker_shadow_step!(cache, :order_reconcile, order_reconcile_payload)
+
+    balance_sync_payload = (
+        datetime=cache.xc.currentdt,
+        snapshot_dt=get(cache.mc, :exchange_balances_snapshot_dt, nothing),
+    )
+    _run_async_worker_shadow_step!(cache, :balance_sync, balance_sync_payload)
+
+    _update_async_worker_watchdog!(cache)
+    return async_advices
 end
 
 function _setstrategyruntimefromsegment!(mc::AbstractDict, gs::TradingStrategy.GainSegment, source::AbstractString)
@@ -114,10 +242,12 @@ end
 
 "Return the effective trading budget in quote currency, capped by `mc[:maxbudgetquote]` and reduced by safety margin when configured."
 function _effectivebudgetquote(cache, assets::AbstractDataFrame)::Float64
-    totalusdt = _portfoliototal(assets)
+    _ = assets
+    capacity = CryptoXch.accountcapacity(cache.xc)
+    available_opening_quote = Float64(get(capacity, :available_opening_quote, 0.0))
     safetymargin = Float64(get(cache.mc, :budgetsafetymargin, 0.0))
     safetymargin = clamp(safetymargin, 0.0, 0.99)
-    budgetwithsafety = max(0.0, totalusdt * (1.0 - safetymargin))
+    budgetwithsafety = max(0.0, available_opening_quote * (1.0 - safetymargin))
     maxbudget = get(cache.mc, :maxbudgetquote, get(cache.mc, :maxbudgetusdt, nothing))
     if isnothing(maxbudget)
         return budgetwithsafety
@@ -165,12 +295,24 @@ function _portfolioquotevalue(assets::AbstractDataFrame)::Union{Missing, Float64
     return Float64((assets[quoteix, :free] + assets[quoteix, :locked]) - assets[quoteix, :borrowed])
 end
 
+function _update_account_equity_snapshot!(cache)::NamedTuple{(:equity_quote, :equity_delta), Tuple{Float64, Union{Nothing, Float64}}}
+    equity_quote = max(0.0, Float64(get(CryptoXch.accountcapacity(cache.xc), :equity_quote, 0.0)))
+    prev_equity = get(cache.mc, :last_account_equity_quote, nothing)
+    equity_delta = isnothing(prev_equity) ? nothing : (equity_quote - Float64(prev_equity))
+    cache.mc[:last_account_equity_quote] = equity_quote
+    cache.mc[:last_account_equity_delta] = equity_delta
+    return (equity_quote=equity_quote, equity_delta=equity_delta)
+end
+
 function _writeportfoliosnapshot!(cache, assets::AbstractDataFrame; source_module::AbstractString="Trade")
     rowcount = size(assets, 1)
     simmode = String(Symbol(cache.xc.mc[:simmode]))
     event_time = Dates.now(Dates.UTC)
     portfolio_total = _portfoliototal(assets)
     cash_after = _portfolioquotevalue(assets)
+    equity_quote = max(0.0, Float64(get(cache.mc, :last_account_equity_quote, 0.0)))
+    equity_delta = get(cache.mc, :last_account_equity_delta, nothing)
+    equity_delta_text = isnothing(equity_delta) ? "NA" : string(round(Int, equity_delta))
     exchange_name = CryptoXch._routeexchange(cache.xc.routing, CryptoXch.trade_exchange_spot, CryptoXch.exchange(cache.xc))
     account_alias = exchange_name
     try
@@ -192,7 +334,7 @@ function _writeportfoliosnapshot!(cache, assets::AbstractDataFrame; source_modul
                 symbol="PORTFOLIO",
                 cash_after=cash_after,
                 portfolio_value_after=portfolio_total,
-                notes="rows=0; simmode=$(simmode)"
+                notes="rows=0; simmode=$(simmode); equity_quote=$(round(Int, equity_quote)); equity_delta=$(equity_delta_text)"
             )
             TradeLog.writeeventwithhash(event)
             return nothing
@@ -232,7 +374,7 @@ function _writeportfoliosnapshot!(cache, assets::AbstractDataFrame; source_modul
                 cash_after=(coin == EnvConfig.cryptoquote ? positionqty : cash_after),
                 portfolio_value_after=portfolio_total,
                 fill_notional=positionvalue,
-                notes="asset=$(coin); rows=$(rowcount); simmode=$(simmode)"
+                notes="asset=$(coin); rows=$(rowcount); simmode=$(simmode); equity_quote=$(round(Int, equity_quote)); equity_delta=$(equity_delta_text)"
             )
             TradeLog.writeeventwithhash(event)
         end
@@ -940,6 +1082,36 @@ function _normalize_basecoin_token(token, quotecoin::AbstractString)::Union{Noth
     return t
 end
 
+"Return a readiness state for tradable OHLCV data, optionally requesting exchange backfill up to `datetime`."
+function _prepare_tradable_ohlcv!(tc::TradeCache, ohlcv::Ohlcv.OhlcvData; datetime::DateTime)
+    if !Bool(get(tc.mc, :ohlcv_gap_backfill_on_tradable, false))
+        return (state=:tradable, ready=true)
+    end
+    df = Ohlcv.dataframe(ohlcv)
+    if size(df, 1) == 0
+        return (state=:backfill_required, ready=false)
+    end
+
+    targetdt = floor(datetime, Minute(1))
+    lastdt = floor(DateTime(df[end, :opentime]), Minute(1))
+    needs_backfill = lastdt < targetdt
+    if needs_backfill
+        try
+            CryptoXch.cryptoupdate!(tc.xc, ohlcv, lastdt, targetdt)
+        catch err
+            (verbosity >= 1) && @warn "tradable OHLCV backfill request failed" base=ohlcv.base lastdt=lastdt targetdt=targetdt error=sprint(showerror, err)
+            return (state=:backfill_in_progress, ready=false)
+        end
+        df = Ohlcv.dataframe(ohlcv)
+    end
+
+    ready = (size(df, 1) > 0) && (floor(DateTime(df[end, :opentime]), Minute(1)) >= targetdt)
+    if ready
+        return (state=:data_ready, ready=true)
+    end
+    return (state=:backfill_in_progress, ready=false)
+end
+
 """
 Loads all USDT coins, checks liquidity volume criteria, removes risk coins.
 If isnothing(datetime) or datetime > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
@@ -1033,6 +1205,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         tc.cfg[:, :datetime] = DateTime[]
         tc.cfg[:, :minquotevol] = Bool[]
         tc.cfg[:, :continuousminvol] = Bool[]
+        tc.cfg[:, :ohlcvstate] = Symbol[]
+        tc.cfg[:, :ohlcvready] = Bool[]
         tc.cfg[:, :inportfolio] = Bool[]
         tc.cfg[:, :classifieraccepted] = Bool[]
         tc.cfg[:, :robotownedlongqty] = Float32[]
@@ -1048,6 +1222,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) # ignore allcoins with less than liquiddailyminimumquotevolume
     tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
+    tc.cfg[:, :ohlcvstate] = fill(:discovered, size(tc.cfg, 1))
+    tc.cfg[:, :ohlcvready] = falses(size(tc.cfg, 1))
     tc.cfg[:, :inportfolio] = [base in portfolioassetbaseset for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
     tc.cfg[:, :robotownedlongqty] = fill(0f0, size(tc.cfg, 1))
@@ -1084,11 +1260,14 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         else
             ohlcv = CryptoXch.cryptodownload(tc.xc, row.basecoin, "1m", history_startdt, datetime)
         end
+        tradable_state = _prepare_tradable_ohlcv!(tc, ohlcv; datetime=datetime)
         if updatecache
             Ohlcv.write(ohlcv) # write ohlcv even if data length is too short to calculate features
         end
-        row.continuousminvol = true #TODO check disabled until debugged _continuous_liquidity_now(Ohlcv.dataframe(ohlcv), datetime, minquotevol=5000f0, accumulate=60, checkperiod=24*60, threshold=0.8)
-        if row.inportfolio || (row.whitelisted && row.minquotevol)
+        row.ohlcvstate = tradable_state.state
+        row.ohlcvready = tradable_state.ready
+        row.continuousminvol = row.ohlcvready # TODO re-enable continuous-liquidity check after gap readiness is stable
+        if row.ohlcvready && (row.inportfolio || (row.whitelisted && row.minquotevol))
             push!(candidatebaseset, String(row.basecoin))
         end
     end
@@ -1443,7 +1622,9 @@ function tradeamount(cache::TradeCache, tavec::Vector{Classify.TradeAdvice}, ass
         ta.vol1hmedian .= 0f0
         ta.baseamount .= 0f0
         for tarow in tadf
-            ohlcv = CryptoXch.ohlcv(cache.xc, base)
+            base = String(getproperty(tarow, :basecoin))
+            ohlcv = _cachedohlcv(cache, base)
+            isnothing(ohlcv) && continue
             price = currentprice(ohlcv)
             tarow.baseamount = tarow.quoteamount / price
         
@@ -1543,9 +1724,11 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
     short_margin_leverage = 2
     result = nothing
     base = ta.base
-    totalusdt = sum(assets.usdtvalue)
-    if totalusdt <= 0
-        @warn "totalusdt=$totalusdt is insufficient, assets=$assets"
+    accountcap = CryptoXch.accountcapacity(cache.xc)
+    equityquote = Float64(get(accountcap, :equity_quote, 0.0))
+    if equityquote <= 0
+        totalusdt = sum(assets.usdtvalue)
+        @warn "equityquote=$equityquote is insufficient, totalusdt=$totalusdt, assets=$assets"
         return nothing
     end
     effectivebudgetquote = _effectivebudgetquote(cache, assets)
@@ -1559,7 +1742,8 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
     basequantity = missing
     freeusdtfractionmargin = 0.05
     totalborrowedusdt = sum(assets[!, :borrowed] .* assets[!, :usdtprice])
-    freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]) - totalborrowedusdt
+    freeusdt = max(0.0, Float64(get(accountcap, :available_long_quote, 0.0)))
+    freeshortquote = max(0.0, Float64(get(accountcap, :available_short_quote, freeusdt)))
     freebase = sum(assets[assets[!, :coin] .== base, :free]) *(1-eps(Float32))
     lockedbase = sum(assets[assets[!, :coin] .== base, :locked])
     borrowedbase = sum(assets[assets[!, :coin] .== base, :borrowed])
@@ -1673,9 +1857,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
             if !isnothing(oid)
                 _managedcloseset!(cache, base, oid, longclose; limitprice=requested_limitprice, baseqty=basequantity)
                 result = (trade=longclose, oid=oid)
-                (verbosity > 2) && println("$(tradetime(cache)) created $base longclose order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets))")
+                (verbosity > 2) && println("$(tradetime(cache)) created $base longclose order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets))")
             else
-                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker longclose order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets))")
+                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker longclose order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets))")
             end
         else
             (verbosity > 3) && println("$(tradetime(cache)) no longclose $base due to sufficientsellbalance=$sufficientsellbalance, exceedsminimumbasequantity=$exceedsminimumbasequantity")
@@ -1683,16 +1867,11 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
     elseif (ta.tradelabel in [longbuy, longstrongbuy]) && (cache.mc[:trademode] == buysell) && basecfg.buyenabled
         remaininglongcapacityquote = max(0f0, min(maxassetquote - longexposurequote, Float32(remainingbudgetquote)))
         targetopenquote = min(qtyacceleration * quotequantity, remaininglongcapacityquote)
-        basequantity = max(0f0, min(max(targetopenquote / price, minimumbasequantity) * price, freeusdt - freeusdtfractionmargin * effectivebudgetquote) / price) #* keep 5% * effective budget as head room
+        basequantity = max(0f0, min(max(targetopenquote / price, minimumbasequantity) * price, freeusdt - freeusdtfractionmargin * effectivebudgetquote) / price)
         sufficientbuybalance = (basequantity * price < freeusdt) && ((basequantity + borrowedbase) > 0.0)
         # basequantity += borrowedbase # buy all short as well when switching to long
         exceedsminimumbasequantity = basequantity >= minimumbasequantity
         basefraction = (longexposurequote + basequantity * price) / effectivebudgetquote
-        # basefraction = (sum(assets[assets.coin .== base, :usdtvalue]) / totalusdt)
-
-        # if base == "ADA"
-        #     println("coin=$(ta.base) tradelabel=$(ta.tradelabel) price=$price basequantity=$basequantity sufficientbuybalance=$sufficientbuybalance minimumbasequantity=$minimumbasequantity quotequantity=$quotequantity freeusdt=$freeusdt totalusdt=$totalusdt")
-        # end
     
         if remainingbudgetquote <= 0.0
             (verbosity > 2) && println("$(tradetime(cache)) skip $base longbuy: allocated budget exhausted allocated=$(allocatedbudgetquote) limit=$(effectivebudgetquote)")
@@ -1710,9 +1889,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
             if !isnothing(oid)
                 result = (trade=longbuy, oid=oid)
                 _rememberactiveopenbuy!(cache, symbol)
-                (verbosity > 2) && println("$(tradetime(cache)) created $base longbuy order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
+                (verbosity > 2) && println("$(tradetime(cache)) created $base longbuy order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
             else
-                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker longbuy order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
+                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker longbuy order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
                 # println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $price * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
                 # println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
             end
@@ -1723,7 +1902,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
         remainingshortcapacityquote = max(0f0, min(maxassetquote - shortexposurequote, Float32(remainingbudgetquote)))
         targetshortopenquote = min(qtyacceleration * quotequantity, remainingshortcapacityquote)
         basequantity = max(targetshortopenquote / price, minimumbasequantity)
-        sufficientbuybalance = ((basequantity - freebase) * price < freeusdt) && (basequantity > 0.0)
+        sufficientbuybalance = ((basequantity - freebase) * price < freeshortquote) && (basequantity > 0.0)
         basefraction = (shortexposurequote + basequantity * price) / effectivebudgetquote
         marginok = CryptoXch.marginpermitted(cache.xc, symbol, "Sell", short_margin_leverage; role=CryptoXch.trade_exchange_spot)
         if remainingbudgetquote <= 0.0
@@ -1743,16 +1922,16 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
                 try
                     CryptoXch.createsellorder(cache.xc, base; limitprice=requested_limitprice, basequantity=basequantity, maker=true, marginleverage=short_margin_leverage)
                 catch err
-                    _log_margin_order_diagnostics(cache, basecfg, ta, base, "Sell", short_margin_leverage, requested_limitprice, basequantity, freebase, borrowedbase, freeusdt, totalborrowedusdt, effectivebudgetquote, err)
+                    _log_margin_order_diagnostics(cache, basecfg, ta, base, "Sell", short_margin_leverage, requested_limitprice, basequantity, freebase, borrowedbase, freeshortquote, totalborrowedusdt, effectivebudgetquote, err)
                     rethrow(err)
                 end
             end
             if !isnothing(oid)
                 result = (trade=shortbuy, oid=oid)
                 _rememberactiveopensell!(cache, symbol)
-                (verbosity > 2) && println("$(tradetime(cache)) created $base shortbuy order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
+                (verbosity > 2) && println("$(tradetime(cache)) created $base shortbuy order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeshortquote)")
             else
-                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker shortbuy order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
+                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker shortbuy order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeshortquote)")
                 # println("sufficientbuybalance=$sufficientbuybalance=($basequantity * $price * $(1 + cache.xc.feerate + 0.001) < $freeusdt), exceedsminimumbasequantity=$exceedsminimumbasequantity=($basequantity > $minimumbasequantity=(1.01 * max($(syminfo.minbaseqty), $(syminfo.minquoteqty)/$price)))")
                 # println("freeusdt=sum($(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free])), EnvConfig.cryptoquote=$(EnvConfig.cryptoquote)")
             end
@@ -1847,9 +2026,9 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
             if !isnothing(oid)
                 _managedcloseset!(cache, base, oid, shortclose; limitprice=requested_limitprice, baseqty=basequantity)
                 result = (trade=shortclose, oid=oid)
-                (verbosity > 2) && println("$(tradetime(cache)) created $base shortclose order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets))")
+                (verbosity > 2) && println("$(tradetime(cache)) created $base shortclose order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets))")
             else
-                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker shortclose order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets))")
+                (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker shortclose order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(cache, assets))")
             end
         else
             (verbosity > 3) && println("$(tradetime(cache)) no shortclose $base due to exceedsminimumbasequantity=$exceedsminimumbasequantity")
@@ -1877,14 +2056,15 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta::StrategyAdvice, as
 end
 
 tradetime(cache::TradeCache) = CryptoXch.ttstr(cache.xc)
-
-function USDTmsg(assets)
+function USDTmsg(cache::TradeCache, assets)
     totalusdt = sum(assets.usdtvalue)
     totalborrowedusdt = sum(assets[!, :borrowed] .* assets[!, :usdtprice])
     freeusdt = sum(assets[assets[!, :coin] .== EnvConfig.cryptoquote, :free]) - totalborrowedusdt
-    freepct = totalusdt > 0f0 ? min(100, round(Int, freeusdt / totalusdt * 100)) : 0
-    return string("$(EnvConfig.cryptoquote): total=$(round(Int, totalusdt)), quotefree=$(freepct)%")
+    equityquote = max(0.0, Float64(get(CryptoXch.accountcapacity(cache.xc), :equity_quote, totalusdt)))
+    freepct = equityquote > 0f0 ? min(100, round(Int, freeusdt / equityquote * 100)) : 0
+    return string("$(EnvConfig.cryptoquote): equity=$(round(Int, equityquote)), exposure=$(round(Int, totalusdt)), quotefree=$(freepct)%")
 end
+
 function tradeadvicelessthan(ta1, ta2)
     closeset = [shortclose, shortstrongclose, allclose, longstrongclose, longclose]
     buyset = [shortstrongbuy, shortbuy, longbuy, longstrongbuy]
@@ -1980,8 +2160,16 @@ function _sync_exchange_balances_snapshot!(cache::TradeCache, assets::AbstractDa
     if !Bool(get(cache.mc, :exchange_balance_cache_owner, false))
         return nothing
     end
-    cache.mc[:exchange_balances_snapshot] = deepcopy(assets)
-    cache.mc[:exchange_balances_snapshot_dt] = cache.xc.currentdt
+    snap = try
+        CryptoXch.balancessnapshot(cache.xc; force_refresh=true, ignoresmallvolume=false)
+    catch err
+        (verbosity >= 1) && @warn "failed to refresh exchange-owned balances snapshot; falling back to local assets copy" error=sprint(showerror, err)
+        cache.mc[:exchange_balances_snapshot] = deepcopy(assets)
+        cache.mc[:exchange_balances_snapshot_dt] = cache.xc.currentdt
+        return nothing
+    end
+    cache.mc[:exchange_balances_snapshot] = deepcopy(snap.snapshot)
+    cache.mc[:exchange_balances_snapshot_dt] = snap.datetime
     return nothing
 end
 
@@ -2516,6 +2704,17 @@ function _opentrade_block_reason(ta::StrategyAdvice, assets::AbstractDataFrame):
     return nothing
 end
 
+"Return cached OHLCV for a base when it exists in the exchange cache."
+function _cachedohlcv(cache::TradeCache, base::AbstractString)
+    haskey(cache.xc.bases, base) || return nothing
+    try
+        return CryptoXch.ohlcv(cache.xc, base)
+    catch err
+        (verbosity >= 1) && @warn "skip base because cached OHLCV lookup failed" base=base error=sprint(showerror, err)
+        return nothing
+    end
+end
+
 function _recentcloserejectstate!(cache::TradeCache)
     if !haskey(cache.mc, :recent_close_rejects)
         cache.mc[:recent_close_rejects] = Dict{Tuple{String, String}, NamedTuple{(:at, :reason), Tuple{DateTime, String}}}()
@@ -2635,11 +2834,11 @@ function _getgainsalgo_lane_advices(gs::TradingStrategy.GainSegment, ta::Strateg
 end
 
 function _getgainsalgo_advices!(cache::TradeCache, base::AbstractString, ta::StrategyAdvice, assets::AbstractDataFrame)::Vector{StrategyAdvice}
-    if !haskey(cache.xc.bases, base)
+    ohlcv = _cachedohlcv(cache, base)
+    if isnothing(ohlcv)
         (verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping getgainsalgo advices" base=base
         return StrategyAdvice[]
     end
-    ohlcv = CryptoXch.ohlcv(cache.xc, base)
     history = _strategyhistory!(cache, base)
     _upsert_getgainsalgo_sample!(history, ohlcv, ta.tradelabel, ta.probability)
     gs = _strategystate!(cache, base)
@@ -3024,6 +3223,7 @@ function _tradestep!(cache::TradeCache)
     _reconstruct_managed_close_orders!(cache, assets, oo)
     _cancel_unmanaged_open_orders!(cache, oo)
     backlog_drain = get(cache.mc, :backlog_drain_mode, false)
+    equity_snapshot = _update_account_equity_snapshot!(cache)
     _maybe_writeportfoliosnapshot!(cache, assets)
     tradeadvices = StrategyAdvice[]
     if backlog_drain
@@ -3032,7 +3232,7 @@ function _tradestep!(cache::TradeCache)
         tradeadvices = _collect_strategy_advices(cache, assets)
         _log_tradeadvice_summary!(cache, tradeadvices)
         if Bool(get(cache.mc, :async_engine_enabled, false))
-            async_advices = _collect_async_candidate_advices(cache, tradeadvices)
+            async_advices = _run_async_shadow_topology!(cache, assets, oo, tradeadvices)
             _run_async_shadow_compare!(cache, tradeadvices, async_advices)
             if !Bool(get(cache.mc, :async_shadow_mode, true))
                 (verbosity >= 1) && @warn "async engine execution cutover is not active yet; keeping synchronous execution authoritative"
@@ -3092,7 +3292,8 @@ function _tradestep!(cache::TradeCache)
                 @warn "case not handled: $res"
             end
         end
-        (verbosity >= 2) && println("\r$(tradetime(cache)): $(USDTmsg(assets)), opened long: $(openedlongbases), opened short: $(openedshortbases), closed long: $(closedlongbases), closed short: $(closedshortbases)                                          ")
+        equity_delta_text = isnothing(equity_snapshot.equity_delta) ? "delta=NA" : "delta=$(round(Int, equity_snapshot.equity_delta))"
+        (verbosity >= 2) && println("\r$(tradetime(cache)): equity=$(round(Int, equity_snapshot.equity_quote)), $(equity_delta_text), $(USDTmsg(cache, assets)), opened long: $(openedlongbases), opened short: $(openedshortbases), closed long: $(closedlongbases), closed short: $(closedshortbases)                                          ")
     end
 
     # Avoid extra live API calls: only refresh post-trade portfolio in simulation mode.

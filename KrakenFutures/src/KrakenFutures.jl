@@ -1347,6 +1347,90 @@ function account(bc::KrakenFuturesCache)
 	return HttpPrivateRequest(bc, "GET", "/accounts", nothing, "futures account")
 end
 
+"Case-insensitive dictionary lookup returning the first matching key value."
+function _dictgetci(d::AbstractDict, keys::AbstractVector{<:AbstractString}, default=nothing)
+	for wanted in keys
+		wl = lowercase(String(wanted))
+		for (k, v) in d
+			if lowercase(String(k)) == wl
+				return v
+			end
+		end
+	end
+	return default
+end
+
+"Parse one account metric from a futures account dictionary."
+function _accountfloat(d::AbstractDict, keys::AbstractVector{<:AbstractString}, default::Float64=0.0)::Float64
+	return Float64(_float32(_dictgetci(d, keys, default), Float32(default)))
+end
+
+"Return exchange-concept account capacity metrics for Kraken Futures."
+function accountcapacity(bc::KrakenFuturesCache)
+	if !_hascredentials(bc)
+		return (
+			equity_quote=0.0,
+			available_opening_quote=0.0,
+			available_long_quote=0.0,
+			available_short_quote=0.0,
+			initial_margin_quote=0.0,
+			maintenance_margin_quote=0.0,
+			source="KrakenFutures:no_credentials",
+		)
+	end
+
+	acct = account(bc)
+	ad = acct isa AbstractDict ? Dict(acct) : Dict{Any, Any}()
+	accounts = _tryget(ad, ["accounts"], Dict())
+	if !(accounts isa AbstractDict)
+		return (
+			equity_quote=0.0,
+			available_opening_quote=0.0,
+			available_long_quote=0.0,
+			available_short_quote=0.0,
+			initial_margin_quote=0.0,
+			maintenance_margin_quote=0.0,
+			source="KrakenFutures:accounts_missing",
+		)
+	end
+
+	flex = haskey(accounts, "flex") ? Dict(accounts["flex"]) : Dict{Any, Any}()
+	equity_quote = _accountfloat(flex, ["marginEquity", "equity", "accountEquity"], 0.0)
+	available_quote = _accountfloat(flex, ["availableMargin", "availableFunds", "available"], 0.0)
+	initial_margin_quote = _accountfloat(flex, ["initialMargin", "initialMarginWithOrders"], 0.0)
+	maintenance_margin_quote = _accountfloat(flex, ["maintenanceMargin", "maintenanceMarginWithOrders"], 0.0)
+
+	# Fallback when flex keys are sparse: use quote cash balance from cash account.
+	if available_quote <= 0.0
+		if haskey(accounts, "cash")
+			cash = Dict(accounts["cash"])
+			balmap = _tryget(cash, ["balances"], Dict())
+			if balmap isa AbstractDict
+				quotecoin = uppercase(String(EnvConfig.cryptoquote))
+				for (coin, val) in balmap
+					if uppercase(_normalizeasset(String(coin))) == quotecoin
+						available_quote += max(0.0, Float64(_float32(val, 0f0)))
+					end
+				end
+			end
+		end
+	end
+
+	if equity_quote <= 0.0 && ((available_quote > 0.0) || (initial_margin_quote > 0.0))
+		equity_quote = available_quote + initial_margin_quote
+	end
+
+	return (
+		equity_quote=max(0.0, equity_quote),
+		available_opening_quote=max(0.0, available_quote),
+		available_long_quote=max(0.0, available_quote),
+		available_short_quote=max(0.0, available_quote),
+		initial_margin_quote=max(0.0, initial_margin_quote),
+		maintenance_margin_quote=max(0.0, maintenance_margin_quote),
+		source="KrakenFutures:flex_accounts",
+	)
+end
+
 """
 Probe Kraken Futures private-read auth behavior with and without `Nonce`.
 
