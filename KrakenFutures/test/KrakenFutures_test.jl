@@ -18,6 +18,8 @@ using DataFrames, Dates, KrakenFutures, Test
         status="online",
         basecoin="BTC",
         quotecoin="USDT",
+        maxleveragebuy=0,
+        maxleveragesell=0,
         ticksize=0.1f0,
         baseprecision=1f0,
         quoteprecision=0.1f0,

@@ -52,6 +52,13 @@ EnvConfig.init(production)  # test production
     @test any(sim_balances.coin .== "SINE")
     @test sim_balances[sim_balances.coin .== "SINE", :free][1] > 0f0
 
+    sim_capacity = Bybit.accountcapacity(bc_sim)
+    @test sim_capacity.available_opening_quote > 0.0
+    @test sim_capacity.available_long_quote == sim_capacity.available_opening_quote
+    @test sim_capacity.available_short_quote == sim_capacity.available_opening_quote
+    @test sim_capacity.equity_quote > sim_capacity.available_opening_quote
+    @test sim_capacity.source == "Bybit:sim_wallet"
+
 
     # oocreate = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9, false)
     # oid = isnothing(oocreate) ? nothing : oocreate.orderid

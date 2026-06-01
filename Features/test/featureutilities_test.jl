@@ -115,8 +115,13 @@ for (window, startix) in [(8,3), (4,3), (4,1), (4,6)]  #TODO
         (verbosity >= 3) && println("lrs=$lrs")
         lrnorm[ix-startix+1] = lrs[end]
         lrmean[ix-startix+1] = Statistics.mean(lrs)
-        length(lrs) > 1 ? lrstd[ix-startix+1] = Statistics.stdm(lrs, lrmean[ix-startix+1]) : 0
-        length(lrs) > 1 ? lrstd2[ix-startix+1] = Statistics.stdm(vcat(lrs, lrs), Statistics.mean(vcat(lrs, lrs))) : 0
+        if length(lrs) > 1
+            lrstd[ix-startix+1] = Statistics.stdm(lrs, lrmean[ix-startix+1])
+            lrstd2[ix-startix+1] = Statistics.stdm(vcat(lrs, lrs), Statistics.mean(vcat(lrs, lrs)))
+        else
+            lrstd[ix-startix+1] = zero(eltype(lrstd))
+            lrstd2[ix-startix+1] = zero(eltype(lrstd2))
+        end
     end
     (verbosity >= 2) && println("len(lrstd, lrmean, lrnorm)=$(length(lrstd)), $(length(lrmean)), $(length(lrnorm)),   lrstd=$lrstd, lrmean=$lrmean, lrnorm=$lrnorm")
     @test all(isapprox.(lrstd2, smv2, atol=eps(Float32)))

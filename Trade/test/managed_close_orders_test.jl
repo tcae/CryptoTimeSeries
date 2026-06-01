@@ -3,6 +3,24 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, CryptoXch, Targets
 
+Base.@kwdef mutable struct ClosePriceRuntime <: TradingStrategy.AbstractStrategyRuntime
+    snap::Union{Nothing, TradingStrategy.StrategySnapshot} = nothing
+end
+
+function TradingStrategy.getsnapshot!(
+    rt::ClosePriceRuntime,
+    xc::CryptoXch.XchCache,
+    base::AbstractString,
+    datetime::DateTime;
+    reconciliation::TradingStrategy.StrategyReconciliationInput=TradingStrategy.StrategyReconciliationInput(),
+)::Union{Nothing, TradingStrategy.StrategySnapshot}
+    _ = xc
+    _ = base
+    _ = datetime
+    _ = reconciliation
+    return rt.snap
+end
+
 @testset "Managed close order state" begin
     EnvConfig.init(EnvConfig.test)
 
@@ -53,17 +71,25 @@ using EnvConfig, Trade, TradingStrategy, Classify, CryptoXch, Targets
     @test managed[longkey][:orderid] == "oid-close"
     @test managed[longkey][:tradelabel] == Targets.longclose
 
+    tc.mc[:strategy_runtime] = ClosePriceRuntime(
+        snap=TradingStrategy.StrategySnapshot(
+            base="BTC",
+            datetime=DateTime("2025-01-01T00:00:00"),
+            label=Targets.ignore,
+            long_closeprice=111.0f0,
+            short_closeprice=0.0f0,
+        ),
+    )
+
+    @test Trade._strategy_sell_limitprice(tc, "BTC", Targets.longclose; assets=assets) == 111.0f0
+    @test isnothing(Trade._strategy_sell_limitprice(tc, "BTC", Targets.shortclose; assets=assets))
+
     gs = TradingStrategy.GainSegment(; algorithm=TradingStrategy.gain_limit_reversal!)
     gs.longta = TradingStrategy.TradeAction(longclose, 111.0f0, 100.0f0, 1)
-    tc.mc[:strategy_engine] = :getgainsalgo
-    tc.mc[:strategy_state]["BTC"] = gs
-
-    @test Trade._strategy_sell_limitprice(tc, "BTC", Targets.longclose) == 111.0f0
-    @test isnothing(Trade._strategy_sell_limitprice(tc, "BTC", Targets.shortclose))
 
     Trade._managedcloseset!(tc, "BTC", "oid-x", Targets.longclose; limitprice=111.0f0, baseqty=0.5f0)
     @test haskey(tc.mc[:managed_close_orders], longkey)
-    Trade.apply_tradingstrategy!(tc, gs; strategy_engine=:getgainsalgo, source="test")
+    Trade.apply_tradingstrategy!(tc, gs; source="test")
     @test isempty(tc.mc[:managed_close_orders])
 end
 

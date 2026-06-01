@@ -25,7 +25,7 @@ verbosity = 1
 
 export lstm_bounds_trend_features, lstm_feature_contract, lstm_tensor_windows
 export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals, penultimatefeatures
-export RuntimeNNClassifier, loadclassifier
+export TrendClassifier001, loadclassifier, load, save
 
 #region abstractclassifier
 """
@@ -132,6 +132,19 @@ end
 function advice(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; investment::Union{Nothing, TradeAdvice}=nothing)::Union{Nothing, TradeAdvice}
     @error "missing $(typeof(cl)) implementation"
     return nothing
+end
+
+"Load a classifier instance by type and load specification."
+function load(::Type{T}, spec; kwargs...) where {T<:AbstractClassifier}
+    _ = spec
+    _ = kwargs
+    error("missing load implementation for classifier type $(T)")
+end
+
+"Persist a classifier instance to storage."
+function save(cl::AbstractClassifier; kwargs...)
+    _ = kwargs
+    error("missing save implementation for classifier type $(typeof(cl))")
 end
 
 "Returns a Dict of setname => vector of row ranges"
@@ -2649,8 +2662,8 @@ include("Classifier011.jl")
 include("Classifier013.jl")
 include("Classifier014.jl")
 include("Classifier015.jl")
-include("Classifier016.jl")
-include("RuntimeNNClassifier.jl")
+include("TrendClassifierRuntimeCommon.jl")
+include("TrendClassifier001.jl")
 
 """
 idea:

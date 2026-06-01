@@ -743,6 +743,15 @@ Progress update 2026-05-31 (private WS mitigation, REST-first operations):
 - [ ] Resume Phase A parity evidence collection only after private WS reliability is restored enough to gather clean order/balance observability artifacts.
 - [ ] Keep Phase B switch blocked until Phase A promotion gate criteria are satisfied for both KrakenSpot and KrakenFutures.
 
+Progress update 2026-06-02 (exchange-layer WS cutover):
+- [x] Moved the private WS readiness decision into the exchange adapters so upper layers no longer inspect challenge/subscribe details.
+	- `KrakenFutures` now caches authenticated private WS readiness and falls back to REST polling when the subscribe probe fails.
+	- `KrakenSpot` now uses the same adapter-owned readiness gate before starting its private WS worker.
+- [x] Restored the upper-layer contract: `CryptoXch`, `Trade`, and `scripts/tradereal.jl` now only set WS policy defaults and consume adapter results.
+- [x] Preserved the asymmetry required by the cutover plan: Spot private WS is promoted when ready; Futures private WS remains guarded and REST-backed until authenticated subscription succeeds.
+- [x] Validated the edited adapter files and startup script with full syntax parsing and error checks after the move.
+- [ ] Keep collecting evidence on KrakenFutures authenticated private WS subscribe failures before promoting it to unconditional private-WS primary mode.
+
 ### Objective 4 increment mapping (legacy notes merged)
 - Worker topology originally listed as old Increment 4.1 is now covered by Increment 4.2 (async worker topology in shadow mode).
 - Event-driven orchestration originally listed as old Increment 4.2 is now covered by Increment 4.2 and Increment 4.5 (controlled activation gates).
@@ -890,12 +899,12 @@ Update this section after each work session.
 
 ### Status Summary
 - Objective 1: IN PROGRESS (Increment 1.1 started)
-- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, and explicit screening vs valuation USDT market intents)
+- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, explicit screening vs valuation USDT market intents, native `accountcapacity` for BybitSim, MTM equity join bug fix 2026-06-01)
 - Objective 3: IN PROGRESS (3.1 schema + integration slice + TradeLog chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
 - Objective 4: IN PROGRESS (adaptive-maker repricing implemented; incremental async/socket migration plan defined with shadow-mode rollout)
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED
-- Objective 7: IN PROGRESS (runtime API compatibility adapter added in TradingStrategy; Trade now has optional runtime-backed advice collection, runtime history sizing, tradeselection readiness delegation, and test-only default gating with env override)
+- Objective 7: IN PROGRESS (increments 7.1-7.5 and 7.7 are implemented with regression/documentation closure completed; remaining work is resolving workspace-level validation blockers outside Objective 7 core changes)
 - Objective 8: DEFINED (resilient trade loop — exchange outage and intermittent response handling; partial fix for base_ohlcv_unavailable crash applied 2026-05-31; full recovery mode not yet implemented)
 
 ### Session Log Template
@@ -1236,6 +1245,33 @@ Update this section after each work session.
 - Next immediate step:
 	- Continue Objective 1 with `tradestep!` extraction and deterministic loop-step tests.
 
+- Date: 2026-06-01
+- Objective/Increment: Objective 2 maintenance / BybitSim `accountcapacity` native implementation and MTM equity join fix
+- Completed:
+	- Added native `Bybit.accountcapacity(bc::BybitCache)` so `CryptoXch._exchangeaccountcapacity` dispatches to BybitSim instead of falling through to the portfolio-based `_fallbackaccountcapacity`.
+	- Eliminated the broken `get24h` bulk join (which joined `bdf.coin = "AAVE"` against `pricedf.symbol = "AAVEUSDT"`, always producing `missing` → price coerced to `1.0f0`).
+	- Replaced with a direct per-asset price lookup via `_sim_lastprice(bc, coin * quotecoin)` for each non-quote coin that has non-zero net exposure (`free + locked - borrowed ≠ 0`).
+	- Root cause of `equityquote=0` in tradesim: PEPE short borrowed quantity was ~20 million units; at price `1.0f0` instead of `0.00002`, the portfolio deduction exceeded USDT free balance → sum negative → `max(0, negative) = 0` → `equityquote=0` → all subsequent coin iterations skipped.
+	- Pricing failure per asset (e.g. OHLCV cache miss for a coin) now falls back to `price=0.0` for that asset only; it does not propagate a throw to the caller or affect equity from other assets.
+	- `equity_quote` in the return tuple wrapped in `max(0.0, ...)` to preserve the non-negative invariant.
+	- Removed all Trade-side capacity fallback machinery (`:_capacity_fallback_mode`, `:_capacity_fallback_allowed`, `capacity_fallback_mode` mc key, `capacity_fallback_applied_count` mc key) that was previously masking the root cause.
+	- Added two-tier divergence logging in `Trade._resolve_capacity_quote`:
+		- `@info` when capacity source and asset totals diverge by more than `CTS_CAPACITY_DIVERGENCE_INFO_THRESHOLD` (default 2%).
+		- `@warn` when divergence exceeds `CTS_CAPACITY_DIVERGENCE_WARN_THRESHOLD` (default 5%).
+	- Strengthened `Bybit/test/runtests.jl` assertion: `sim_capacity.equity_quote > sim_capacity.available_opening_quote` now verifiable only when non-quote positions are priced at real market values (not `1.0f0`).
+- Files changed:
+	- `Bybit/src/Bybit.jl`
+	- `Trade/src/Trade.jl`
+	- `Bybit/test/runtests.jl`
+- Tests run and result:
+	- `~/.juliaup/bin/julia --project=Bybit -e 'using Bybit; println("OK")'` → precompiled and passed.
+- Open issues/blockers:
+	- Live Bybit mode still uses conservative quote-wallet equity only (no MTM for live accounts); this is an intentional temporary simplification noted in the `accountcapacity` docstring.
+	- Phase A evidence collection for Objective 4 async promotion (KrakenSpot + KrakenFutures) is still gated by private WS reliability.
+- Next immediate step:
+	- Run tradesim to confirm `equityquote=0` warning no longer appears after the join fix.
+	- Verify divergence logging emits `@info` only (not `@warn`) in normal simulation runs where capacity source and asset totals agree within 5%.
+
 ## First Execution Slice (Recommended Next Coding Step)
 Start Objective 4 with Increment 4.0 safety scaffolding (feature flags + shadow comparator + rollback rule), then implement Increment 4.1 exchange-owned balance cache sync before enabling async order execution.
 
@@ -1418,10 +1454,10 @@ Notes:
 | `trade!(cache, basecfg, ta::Classify.TradeAdvice, assets)` | Delete | Compatibility overload removed; Trade executes from strategy snapshots only.
 | `apply_tradingstrategy!(mc, gs; ...)` | Keep (edit) | Keep as Trade config entrypoint; delegate runtime application to `TradingStrategy.apply_strategy!(cache.sr, gs; source=...)`.
 | `apply_tradingstrategy!(cache, gs; ...)` | Keep (edit) | Keep public API for scripts/tests; same delegation as above.
-| `_strategyhistory!(cache, base)` | Move | Move into `TradingStrategy` runtime internals.
-| `_strategystate!(cache, base)` | Move | Move into `TradingStrategy` runtime internals.
-| `_upsert_getgainsalgo_sample!(history, ohlcv, label, score)` | Move | Move into `TradingStrategy` runtime internals.
-| `_set_gainsalgo_reconciliation!(gs, base, assets)` | Keep (edit) | Keep in Trade as translation from portfolio/open orders to `StrategyReconciliationInput`; pass to runtime API.
+| `_strategyhistory!(cache, base)` | Delete | Deleted from Trade; runtime-owned rolling state stays inside `TradingStrategy` runtime implementation.
+| `_strategystate!(cache, base)` | Delete | Deleted from Trade; runtime-owned per-base strategy state stays inside runtime implementation.
+| `_upsert_getgainsalgo_sample!(history, ohlcv, label, score)` | Delete | Deleted from Trade; sample/history maintenance is runtime-internal.
+| `_set_gainsalgo_reconciliation!(gs, base, assets)` | Delete (replaced) | Replaced by `_strategy_reconciliation_input(cache, base, assets)` translation helper for snapshot API calls.
 | `_getgainsalgo_lane_advices(gs, ta)` | Delete | Replaced by `TradingStrategy.getsnapshot!` output contract.
 | `_getgainsalgo_advices!(cache, base, ta, assets)` | Delete | Replaced by `TradingStrategy.getsnapshot!`/`getsnapshots!`.
 | `_getgainsalgo_advice!(cache, base, ta, assets)` | Delete | Replaced by snapshot retrieval API.
@@ -1442,8 +1478,52 @@ Notes:
 ### Progress update (2026-05-31)
 - [x] Added `TradingStrategy` runtime API compatibility layer (`AbstractStrategyRuntime`, `GainSegmentRuntime`, `StrategySnapshot`, `StrategyReconciliationInput`, `preparebases!`, `acceptedbases`, `dropbase!`, `getsnapshot!`, `getsnapshots!`, and reconciliation helpers) with docstrings for the new public surface.
 - [x] Moved `Trade` toward the runtime API by making strategy advice collection optionally source snapshots from `TradingStrategy` and by delegating tradeselection readiness/accepted-base bookkeeping through the runtime when enabled.
-- [x] Kept `Trade` compatibility behavior intact with a test-only default gate plus explicit `CTS_USE_STRATEGY_RUNTIME_API` override, and documented the env/config inventory in a dedicated reference note.
-- [x] Added and validated focused Trade runtime-path tests covering default gating, env override, advice conversion, and restricted-base runtime drop propagation.
+- [x] Completed hard-cutover to mandatory `TradingStrategy` runtime API in `Trade` (legacy runtime gating and getgainsalgo mirror-state helpers removed).
+- [x] Added and validated focused Trade runtime-path tests covering advice conversion and restricted-base runtime drop propagation.
+
+### Merged execution checklist (from active Objective 7 session plan)
+
+#### Phase status
+- [x] Phase A (contract freeze/cutover baseline): canonical Objective 7 runtime API and migration map are documented in this section.
+- [x] Phase B (TradingStrategy runtime shell hardening): mandatory runtime methods fail fast and lifecycle determinism coverage was added.
+- [x] Phase C (Trade hard-cutover): runtime-only advice/tradeselection path in Trade completed; legacy getgainsalgo mirror helpers removed.
+- [x] Phase D (ownership boundaries): Trade remains the sole owner of sizing/risk/order lifecycle; reconciliation and managed-close boundaries are covered by focused Trade tests.
+- [x] Phase E (regression expansion): overlapping-lane partial-fill and reconciliation persistence regression coverage added in `TradingStrategy` tests; static Trade guardrails added.
+- [x] Phase F (docs/tracking): Objective 7 progress evidence and migration changelog are now captured; 7.6 is explicitly deferred.
+
+#### Completed since 2026-05-31 cutover start
+- [x] Removed deprecated Trade policy/sizing interfaces typed on `Classify.TradeAdvice`; active Trade execution input is now `StrategyAdvice` only.
+- [x] Removed duplicated numeric strategy mirror fields from `TradeCache.mc`; strategy validation now reads the canonical `strategy_template` only.
+- [x] Added explicit Trade runtime regression assertions that runtime snapshots produce neutral `StrategyAdvice` objects (`source=:tradingstrategy`, `relativeamount=1f0`) while Trade keeps sizing ownership.
+- [x] Added explicit Trade reconciliation assertions confirming the `assets -> StrategyReconciliationInput` translation remains the runtime feedback path.
+- [x] Validated managed-close/runtime boundary coverage remains in focused tests (`managed_close_orders_test.jl`) and reran full `Trade` package tests successfully (`181/181`).
+- [x] Added Objective 7 lane regressions for overlapping long/short partial-fill behavior and lane-specific keep/realize semantics in one tick (`TradingStrategy/test/objective7_lane_state_test.jl`).
+- [x] Added reconciliation persistence-boundary regression checks (`clearreconciliation!` and `reset!` stale-hint prevention) in `TradingStrategy/test/objective7_lane_state_test.jl`.
+- [x] Added deterministic snapshot-production coverage for runtime snapshots in `TradingStrategy/test/runtime_api_test.jl`.
+- [x] Added post-cutover static guardrails in `Trade` tests to prevent reintroduction of direct runtime `Classify.advice`, `Classify.TradeAdvice` interfaces, and `CTS_USE_STRATEGY_RUNTIME_API` branching (`Trade/test/objective7_static_guardrails_test.jl`).
+
+#### Remaining active tasks
+- [~] Re-run complete workspace package/root validation after external blockers are resolved:
+	- `Pkg.test("TradingStrategy")` is still blocked by known workspace dependency path issue (`Features` expected at `/Users/torsten/github/Features`).
+	- Workspace root tests currently fail in `KrakenFutures` with a pre-existing DataFrames row-schema insertion error unrelated to Objective 7 changes.
+
+### Objective 7 increment completion evidence (2026-06-01)
+
+- [x] 7.1 lane struct/field migration completed (`TradeAction` canonical fields adopted across `Trade` and tests).
+- [x] 7.2 `gain_limit_reversal!` lane-intent behavior retained without full-fill-by-touch assumption; lane-level tests cover keep/reduce behavior.
+- [x] 7.3 reconciliation hooks implemented and covered (`StrategyReconciliationInput`, `setreconciliation!`, `clearreconciliation!`, `synclanes!`, stale-hint boundary tests).
+- [x] 7.4 `Trade` consumes `TradingStrategy` snapshots only in runtime path; direct runtime `Classify` calls removed.
+- [x] 7.5 deterministic overlapping-lane partial-fill and cancel/keep regressions added in Objective 7 lane tests.
+- [~] 7.6 deferred by decision: OHLCV subscription migration is tracked separately and intentionally not included in this cutover.
+- [x] 7.7 runtime API interfaces implemented and used (`AbstractStrategyRuntime`, snapshot/reconciliation contracts, prepare/drop/reset/apply/getsnapshot/getsnapshots).
+
+### Objective 7 migration changelog (2026-06-01)
+
+- Removed legacy Trade strategy execution interfaces tied to `Classify.TradeAdvice` and transitioned execution intake to `StrategyAdvice`.
+- Removed Trade-side getgainsalgo compatibility helper family and runtime toggle branch (`CTS_USE_STRATEGY_RUNTIME_API`), making runtime API path unconditional.
+- Removed duplicated Trade strategy mirror state/threshold storage and consolidated runtime validation onto canonical `strategy_template`.
+- Introduced explicit runtime contract failure semantics for mandatory `AbstractStrategyRuntime` methods.
+- Added Objective 7 regression coverage for runtime-only advice conversion, reconciliation boundaries, overlapping-lane partial-fill behavior, and static guardrails against legacy-path reintroduction.
 
 ### Exit criteria
 - Strategy emits independent long-lane and short-lane intents every sample.

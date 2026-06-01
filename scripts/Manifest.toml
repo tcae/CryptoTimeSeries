@@ -1287,13 +1287,13 @@ weakdeps = ["EnzymeCore", "LinearAlgebra", "SparseArrays"]
     SparseArraysExt = "SparseArrays"
 
 [[deps.KrakenFutures]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
 path = "../KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
 version = "0.1.0"
 
 [[deps.KrakenSpot]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "WebSockets"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
 path = "../KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
 version = "0.1.0"
@@ -2601,7 +2601,7 @@ uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.19.0"
 
 [[deps.TradeLog]]
-deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "Test", "UUIDs"]
+deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "SHA", "Test", "UUIDs"]
 path = "../TradeLog"
 uuid = "d9e1c896-7df1-4f4f-a5d3-1c9a7c74c4aa"
 version = "0.1.0"

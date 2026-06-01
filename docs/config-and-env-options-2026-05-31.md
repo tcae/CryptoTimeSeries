@@ -38,12 +38,18 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 | Option | Typical values | Intent | Used by modules |
 |---|---|---|---|
 | mc[:trademode] | Trade.buysell, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
-| mc[:strategy_engine] | :classifier, :getgainsalgo | Selects legacy classifier path vs Gains algorithm path | Trade |
-| mc[:use_strategy_runtime_api] | Bool | Enables TradingStrategy runtime snapshot API path | Trade, TradingStrategy |
+| mc[:strategy_engine] | :getgainsalgo (legacy value still accepted) | Strategy source metadata; runtime API path is mandatory | Trade |
 | mc[:maxassetfraction] | Float | Exposure cap per asset | Trade |
 | mc[:maxbudgetquote] | Float or nothing | Global quote budget cap for sizing | Trade |
 | mc[:budgetsafetymargin] | Float [0,1) | Safety discount on budget | Trade |
 | mc[:reloadtimes] | Time[] | Schedule for trade universe/config refresh | Trade |
+
+### 1.4 Objective 7 runtime-only steady state (2026-06-01)
+
+- Strategy runtime integration in Trade is mandatory; there is no legacy runtime toggle branch.
+- `mc[:strategy_engine]` is treated as strategy-source metadata only and does not select between runtime and legacy execution paths.
+- Trade runtime path no longer calls `Classify.advice` directly; strategy snapshots are sourced via `TradingStrategy` runtime interfaces.
+- Legacy `Classify.TradeAdvice`-typed execution interfaces in Trade were removed in favor of `StrategyAdvice` execution input.
 
 ## 2) Environment Variables
 
@@ -55,7 +61,6 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 | CTS_ASYNC_SHADOW_MODE | Enables async-vs-sync shadow compare mode | Trade |
 | CTS_WS_MARKETDATA_ENABLED | Enables websocket market-data ownership path | Trade |
 | CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE | Enables OHLCV gap backfill in tradable checks | Trade |
-| CTS_USE_STRATEGY_RUNTIME_API | Overrides default runtime API gating (true/false) | Trade (tested in Trade tests) |
 
 ### 2.2 Run identity and production test gating
 
@@ -157,7 +162,6 @@ Legend:
 | CTS_TRADELOG_ENABLED | production-safe | Global TradeLog persistence switch |
 | CTS_TRADELOG_SIMULATION_ENABLED | production-safe | TradeLog simulation persistence switch |
 | CTS_TRADELOG_ROOT | production-safe | TradeLog root override |
-| CTS_USE_STRATEGY_RUNTIME_API | production-safe | Explicit runtime API on/off override |
 | CTS_ASYNC_ENGINE_ENABLED | test-only | Objective 4 rollout/experiment toggle |
 | CTS_ASYNC_SHADOW_MODE | test-only | Shadow-compare safety mode for rollout verification |
 | CTS_WS_MARKETDATA_ENABLED | test-only | Objective 4 websocket market-data ownership toggle |
@@ -192,8 +196,7 @@ Legend:
 | EnvConfig.setcoinspath! | production-safe | Path override for coin data |
 | EnvConfig.setdebugpath | test-only | Debug artifact redirection |
 | Trade mc[:trademode] | production-safe | Main runtime behavior selection |
-| Trade mc[:strategy_engine] | production-safe | Legacy classifier vs gains-algo engine |
-| Trade mc[:use_strategy_runtime_api] | production-safe | Runtime API adoption switch |
+| Trade mc[:strategy_engine] | production-safe | Runtime strategy source metadata (runtime API path is mandatory) |
 | Trade mc[:maxassetfraction] | production-safe | Risk/exposure guardrail |
 | Trade mc[:maxbudgetquote] | production-safe | Capital cap |
 | Trade mc[:budgetsafetymargin] | production-safe | Sizing safety margin |

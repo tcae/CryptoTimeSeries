@@ -1,5 +1,5 @@
 """
-tradesim.jl — Backtest simulation script using GainSegment config 046,
+tradesim.jl — Backtest simulation script using a TrendDetector config payload,
 followed by a performance report.
 
 Configuration is defined in the CONFIG block below. Adjust the parameters
@@ -58,14 +58,14 @@ const MAX_BUDGET_QUOTE = 10000  # nothing
 # Buy signal score threshold used by GainSegment strategy.
 const BUY_OPEN_THRESHOLD = 0.4f0
 
-# GainSegment strategy parameters used by the backtest.
-const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-CONFIG046_STRATEGY.openthreshold = BUY_OPEN_THRESHOLD
-const CONFIG046_NAME = "046"
-const MODEL046_FOLDER = "Trend-046-training"
+const TREND_CONFIG_REF = get(ENV, "CTS_TREND_CONFIG_REF", "046")
+const TREND_CONFIG = trenddetectorconfig(TREND_CONFIG_REF)
+const CONFIG_NAME = trendconfigref(TREND_CONFIG)
+const CONFIG_STRATEGY = deepcopy(TREND_CONFIG.tradingstrategy)
+CONFIG_STRATEGY.openthreshold = BUY_OPEN_THRESHOLD
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = "tradesim-" * CONFIG046_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
+const LOG_SUBFOLDER = "tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
 
 function backtest_bounds_from_env(default_start::DateTime, default_end::DateTime)
@@ -149,19 +149,6 @@ function ensure_quote_budget!(xc::CryptoXch.XchCache, quote_coin::AbstractString
     end
 end
 
-"Load Trend 046 classifier artifacts and return a runtime classifier instance."
-function loadtrend046classifier(model_folder::AbstractString)::Classify.RuntimeNNClassifier
-    cfg046 = mk046config()
-    nnstub = cfg046.classifiermodel(Features.featurecount(cfg046.featconfig), Targets.uniquelabels(cfg046.targetconfig), "mix")
-    required_minutes = max(Features.requiredminutes(cfg046.featconfig), 2)
-    return Classify.loadclassifier(
-        nnstub.fileprefix,
-        trendf6config09,
-        required_minutes;
-        search_folders=[String(model_folder), "Trend-046-training"],
-    )
-end
-
 # ─────────────────────────────────────────────────────────────────────────────
 # PERFORMANCE REPORT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,7 +171,7 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
     co = cache.xc.closedorders
     println()
     println("=" ^ 60)
-    println("  BACKTEST PERFORMANCE REPORT — config $CONFIG046_NAME")
+    println("  BACKTEST PERFORMANCE REPORT — config $CONFIG_NAME")
     println("  Period : $(Dates.format(startdt, "yyyy-mm-dd")) → $(Dates.format(enddt, "yyyy-mm-dd"))")
     println("=" ^ 60)
 
@@ -393,7 +380,8 @@ end
 EnvConfig.init(test)  # test mode -> bybitsim simulation, no live credentials needed
 EnvConfig.cryptoquote = QUOTE_COIN
 classifier = try
-    loadtrend046classifier(MODEL046_FOLDER)
+    # Use production mode for classifier lookup so runtime simulation always resolves training artifacts.
+    loadtrendclassifier(TREND_CONFIG; mode=production)
 catch err
     println(stderr, "$(EnvConfig.now()): ERROR failed to load configured classifier: $(sprint(showerror, err))")
     println(stderr, "$(EnvConfig.now()): tradesim aborted")
@@ -407,8 +395,7 @@ CryptoXch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 3
 
-println("$(EnvConfig.now()): starting tradesim with config=$CONFIG046_NAME")
-println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
+println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME")
 
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
 run_max_budget_quote = max_budget_from_env(MAX_BUDGET_QUOTE)
@@ -431,10 +418,10 @@ cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
-# Apply config 046 strategy parameters.
-Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
+# Apply the selected TrendDetector strategy parameters.
+Trade.apply_tradingstrategy!(cache, TREND_CONFIG;
     strategy_engine=:getgainsalgo,
-    source="tradesim:$CONFIG046_NAME")
+    source=trendconfigsource(TREND_CONFIG; prefix="tradesim"))
 
 # Override whitelist and risk parameters.
 if has_whitelist_override
@@ -446,7 +433,7 @@ cache.mc[:usenewtrade]      = false
 cache.mc[:tradelog_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
+println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
 println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): max budget cap quote=$(isnothing(run_max_budget_quote) ? "none" : run_max_budget_quote)")

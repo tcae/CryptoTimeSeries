@@ -149,3 +149,67 @@ end
     @test isapprox(gs.longta.closeprice, 108.9f0; atol=1f-4)
     @test gs.longta.label == ignore
 end
+
+@testset "Objective 7 reconciliation persistence boundaries" begin
+    gs = TradingStrategy.GainSegment()
+    TradingStrategy.setreconciliation!(gs; long_open_qty=1f0, long_avg_entry=10f0, long_open_ix=7)
+    TradingStrategy.synclanes!(gs)
+    @test gs.longta.openprice == 10f0
+    @test gs.longta.openix == 7
+
+    TradingStrategy.clearreconciliation!(gs)
+    TradingStrategy._clearactionlane!(gs.longta)
+    TradingStrategy.synclanes!(gs)
+    @test gs.longta.openprice == 0f0
+    @test gs.longta.openix == 0
+
+    TradingStrategy.setreconciliation!(gs; short_open_qty=1f0, short_avg_entry=20f0, short_open_ix=8)
+    TradingStrategy.reset!(gs)
+    @test isnothing(gs.lane_reconciliation)
+end
+
+@testset "Objective 7 overlapping lanes partial-fill and cancel keep rules" begin
+    @testset "one tick can keep overlapping lane entries without forced cancellation" begin
+        gs = TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!)
+        gs.longta = TradingStrategy.TradeAction(longbuy, 120f0, 100f0, 0)
+        gs.shortta = TradingStrategy.TradeAction(shortbuy, 80f0, 100f0, 0)
+
+        dt = DateTime(2026, 1, 6)
+        predictionsdf = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+        )
+
+        TradingStrategy.getgains(gs, predictionsdf, Float32[0.1f0], TradeLabel[allclose], false; lastix=1)
+
+        @test gs.longta.openix == 1
+        @test gs.shortta.openix == 1
+        @test nrow(gs.gaindf) == 0
+    end
+
+    @testset "lane-specific close hit realizes one lane and keeps the other" begin
+        gs = TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!)
+        gs.longta = TradingStrategy.TradeAction(longbuy, 101f0, 100f0, 1)
+        gs.shortta = TradingStrategy.TradeAction(shortbuy, 97f0, 100f0, 1)
+
+        dt = DateTime(2026, 1, 7)
+        predictionsdf = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+        )
+
+        TradingStrategy.getgains(gs, predictionsdf, Float32[0.1f0], TradeLabel[allclose], false; lastix=1)
+
+        @test nrow(gs.gaindf) == 1
+        @test gs.gaindf[end, :trend] == up
+        @test gs.longta.openix == 0
+        @test gs.longta.openprice > 0f0
+        @test gs.longta.closeprice > 0f0
+        @test gs.shortta.openix == 1
+        @test gs.shortta.openprice > 0f0
+    end
+end

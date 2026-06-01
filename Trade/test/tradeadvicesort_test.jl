@@ -11,10 +11,11 @@ Trade.verbosity = 3
 EnvConfig.init(test)
 xc = CryptoXch.XchCache()
 tc = Trade.TradeCache(xc=xc)
+testdt = DateTime(2026, 1, 1)
 tav = [
-    Classify.TradeAdvice(tc.cl, 0, longbuy, 1f0, "BTC", 123f0, nothing, 1.2, 1f0, 0)
-    Classify.TradeAdvice(tc.cl, 0, longclose, 1f0, "BTC", 123f0, nothing, 1.2, 1f0, 0)
-    Classify.TradeAdvice(tc.cl, 0, shortbuy, 1f0, "BTC", 123f0, nothing, 1.1, 1f0, 0)
+    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=longbuy, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
+    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=longclose, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
+    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=shortbuy, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.1f0, probability=1f0, investmentid=0)
 ]
 println("before sort!:\n$tav")
 sort!(tav, lt=Trade.tradeadvicelessthan)

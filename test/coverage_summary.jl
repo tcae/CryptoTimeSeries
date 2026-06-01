@@ -3,6 +3,7 @@ using Printf
 
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 const SUMMARY_PATH = joinpath(@__DIR__, "coverage_summary.md")
+const LCOV_PATH = joinpath(@__DIR__, "coverage", "latest", "lcov.info")
 
 function _coverage_ratio(covered::Int, total::Int)::Float64
     total == 0 && return 0.0
@@ -29,6 +30,50 @@ function _parse_cov_file(path::AbstractString)::Tuple{Int, Int}
     return executable, covered
 end
 
+function _source_relpath(path::AbstractString)::Union{Nothing, String}
+    full = isabspath(path) ? normpath(path) : normpath(joinpath(ROOT, path))
+    startswith(full, ROOT) || return nothing
+    return relpath(full, ROOT)
+end
+
+function _parse_lcov_file(path::AbstractString)::Dict{String, Tuple{Int, Int}}
+    per_line = Dict{String, Dict{Int, Int}}()
+    current_source = nothing
+
+    open(path, "r") do io
+        for raw in eachline(io)
+            startswith(raw, "SF:") && begin
+                src = strip(raw[4:end])
+                current_source = _source_relpath(src)
+                if !isnothing(current_source) && !haskey(per_line, current_source)
+                    per_line[current_source] = Dict{Int, Int}()
+                end
+                continue
+            end
+
+            startswith(raw, "DA:") || continue
+            isnothing(current_source) && continue
+
+            parts = split(strip(raw[4:end]), ",")
+            length(parts) >= 2 || continue
+            line_no = tryparse(Int, parts[1])
+            hits = tryparse(Int, parts[2])
+            (isnothing(line_no) || isnothing(hits)) && continue
+
+            line_hits = per_line[current_source]
+            line_hits[line_no] = get(line_hits, line_no, 0) + hits
+        end
+    end
+
+    parsed = Dict{String, Tuple{Int, Int}}()
+    for (source, line_hits) in per_line
+        executable = length(line_hits)
+        covered = count(>(0), values(line_hits))
+        parsed[source] = (executable, covered)
+    end
+    return parsed
+end
+
 function _logical_source_path(covpath::AbstractString)::String
     rel = relpath(covpath, ROOT)
     return replace(rel, r"\.\d+\.cov$" => "")
@@ -52,20 +97,28 @@ function _collect_latest_cov_files()::Dict{String, String}
     return Dict(k => v[1] for (k, v) in latest)
 end
 
-function _package_name(relpath::AbstractString)::String
-    parts = split(relpath, '/')
-    isempty(parts) && return "unknown"
-    return parts[1]
-end
+function _collect_per_file_coverage()::Vector{NamedTuple{(:source, :package, :executable, :covered, :ratio), Tuple{String, String, Int, Int, Float64}}}
+    rows = Vector{NamedTuple{(:source, :package, :executable, :covered, :ratio), Tuple{String, String, Int, Int, Float64}}}()
 
-function generate_coverage_summary()::Nothing
+    if isfile(LCOV_PATH)
+        for (source, (executable, covered)) in sort(collect(_parse_lcov_file(LCOV_PATH)); by=first)
+            ratio = _coverage_ratio(covered, executable)
+            push!(rows, (
+                source=source,
+                package=_package_name(source),
+                executable=executable,
+                covered=covered,
+                ratio=ratio,
+            ))
+        end
+        return rows
+    end
+
     latest_files = _collect_latest_cov_files()
-    per_file = Vector{NamedTuple{(:source, :package, :executable, :covered, :ratio), Tuple{String, String, Int, Int, Float64}}}()
-
     for (source, covfile) in sort(collect(latest_files); by=first)
         executable, covered = _parse_cov_file(covfile)
         ratio = _coverage_ratio(covered, executable)
-        push!(per_file, (
+        push!(rows, (
             source=source,
             package=_package_name(source),
             executable=executable,
@@ -73,6 +126,17 @@ function generate_coverage_summary()::Nothing
             ratio=ratio,
         ))
     end
+    return rows
+end
+
+function _package_name(relpath::AbstractString)::String
+    parts = split(relpath, '/')
+    isempty(parts) && return "unknown"
+    return parts[1]
+end
+
+function generate_coverage_summary()::Nothing
+    per_file = _collect_per_file_coverage()
 
     per_package = Dict{String, Tuple{Int, Int}}()
     total_exec = 0

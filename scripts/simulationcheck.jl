@@ -11,7 +11,7 @@ using EnvConfig, Ohlcv, TestOhlcv, Features, Targets, Classify, TradingStrategy
 
 include("optimizationconfigs.jl")
 
-const LABEL_ROWS_DEFAULT = ["trend target", "trend pred", "tradepairs target", "lstm pred"]
+const LABEL_ROWS_DEFAULT = ["trend target", "trend pred", "tradepairs target"]
 const LABEL_CODE = Dict{Any, Int}(
     missing => 0,
     Targets.shortbuy => 1,
@@ -94,7 +94,6 @@ function _set_deterministic_run_id!(args::Vector{String}, cfg::NamedTuple)
         "base=$( _normalize_runid_token(cfg.base) )",
         "trend=$( _normalize_runid_token(cfg.trendref) )",
         "bounds=$( _normalize_runid_token(cfg.boundsref) )",
-        "tradeadvice=$( _normalize_runid_token(cfg.tradeadviceref) )",
         "periodhours=$( Int(round(Dates.value(cfg.period) / Dates.value(Hour(1)))) )",
     ]
     runid = join(vcat(["simulationcheck"], context, argtokens), "__")
@@ -137,14 +136,6 @@ Resolve a bounds config reference like `"001"` or `"boundsmk001"`.
 _resolve_boundsconfig(ref::AbstractString) = boundsestimatorconfig(ref)
 
 """
-    _resolve_trendlstmconfig(ref)
-
-Resolve a TrendLstm config reference like `"001"`.
-"""
-_resolve_trendlstmconfig(ref::AbstractString) = trendlstmconfig(ref)
-_resolve_tradeadviceconfig(ref::AbstractString) = _resolve_trendlstmconfig(ref)
-
-"""
     parse_args(args) -> NamedTuple
 
 Parse command-line arguments for `simulationcheck.jl`.
@@ -162,7 +153,6 @@ function parse_args(args::Vector{String})::NamedTuple
     enddt_raw = _argvalue(args, "enddt", nothing)
     trendref = _argvalue(args, "trend", "025")
     boundsref = _argvalue(args, "bounds", "001")
-    tradeadviceref = _argvalue(args, "tradeadvice", "001")
     outfile = _argvalue(args, "outfile", nothing)
     inspectonly = "inspect" in args
     return (
@@ -173,7 +163,6 @@ function parse_args(args::Vector{String})::NamedTuple
         enddt=isnothing(enddt_raw) ? nothing : _parsedatetime(enddt_raw),
         trendref=trendref,
         boundsref=boundsref,
-        tradeadviceref=tradeadviceref,
         outfile=outfile,
         inspectonly=inspectonly,
     )
@@ -358,8 +347,9 @@ end
     compute_tradepair_targets(trenddf, tradecfg, trendcfg) -> Vector{TradeLabel}
 
 Convert dense Trend04 labels into sparse trade-pair lifecycle labels for the same slice.
+`tradecfg` may be `nothing`, in which case default entry/exit fractions are used.
 """
-function compute_tradepair_targets(trenddf::AbstractDataFrame, tradecfg::NamedTuple, trendcfg::NamedTuple)
+function compute_tradepair_targets(trenddf::AbstractDataFrame, tradecfg::Union{Nothing, NamedTuple}, trendcfg::NamedTuple)
     entryfraction = hasproperty(tradecfg, :entryfraction) ? Float32(getproperty(tradecfg, :entryfraction)) : 0.1f0
     exitfraction = hasproperty(tradecfg, :exitfraction) ? Float32(getproperty(tradecfg, :exitfraction)) : 0.1f0
     tp = Targets.TradePairs(trendcfg.targetconfig; entryfraction=entryfraction, exitfraction=exitfraction)
@@ -491,61 +481,23 @@ function compute_bounds_overlay(slice::NamedTuple, boundscfg::NamedTuple)::Union
 end
 
 """
-    load_lstm_overlay(slice, tradecfg) -> Union{Nothing,DataFrame}
-
-Load cached TrendLstm predictions when available. The script checks both the new
-`TrendLstm-*` subfolder and the legacy `TradeAdviceLstm-*` location.
-"""
-function load_lstm_overlay(slice::NamedTuple, tradecfg::NamedTuple)::Union{Nothing, DataFrame}
-    EnvConfig.setlogpath()
-    root = EnvConfig.logfolder()
-    candidates = [
-        joinpath(root, "TrendLstm-$(tradecfg.configname)-$(slice.mode)"),
-        joinpath(root, "TradeAdviceLstm-$(tradecfg.configname)-$(slice.mode)"),
-        root,
-    ]
-    for folderpath in candidates
-        df = EnvConfig.readdf("lstm_predictions.arrow"; folderpath=folderpath, format=:arrow)
-        if !isnothing(df) && size(df, 1) > 0 && (:opentime in propertynames(df))
-            mask = (string.(df[!, :coin]) .== slice.ohlcv.base) .& (slice.startdt .<= df[!, :opentime] .<= slice.enddt)
-            subdf = DataFrame(df[mask, :])
-            if size(subdf, 1) > 0
-                sort!(subdf, :opentime)
-                return subdf
-            end
-        end
-    end
-    return nothing
-end
-
-"""
-    build_heatmap_panel(df, trade_targets, lstmdf) -> Vector{PlotlyJS.AbstractTrace}
+    build_heatmap_panel(df, trade_targets) -> Vector{PlotlyJS.AbstractTrace}
 
 Create the upper-right classification heatmap for trend targets, trend predictions,
-trade-pair targets, and cached LSTM predictions, plus transparent hover overlays so
+trade-pair targets, plus transparent hover overlays so
 unified hover shows the textual class details reliably.
 """
-function build_heatmap_panel(trenddf::AbstractDataFrame, trade_targets, lstmdf::Union{Nothing, AbstractDataFrame})
+function build_heatmap_panel(trenddf::AbstractDataFrame, trade_targets)
     n = size(trenddf, 1)
     x = trenddf[!, :opentime]
     rows = LABEL_ROWS_DEFAULT
     z = zeros(Int, length(rows), n)
     hovertext = fill("", length(rows), n)
 
-    lstm_labels = isnothing(lstmdf) ? fill(missing, n) : begin
-        mapping = Dict(row.opentime => row.label for row in eachrow(lstmdf))
-        [get(mapping, ts, missing) for ts in x]
-    end
-    lstm_scores = isnothing(lstmdf) ? fill(missing, n) : begin
-        mapping = Dict(row.opentime => row.score for row in eachrow(lstmdf))
-        [get(mapping, ts, missing) for ts in x]
-    end
-
     datasets = [
         (name="trend target", labels=trenddf[!, :trend_target], scores=fill(missing, n)),
         (name="trend pred", labels=trenddf[!, :trend_pred], scores=trenddf[!, :trend_score]),
         (name="tradepairs target", labels=trade_targets, scores=fill(missing, n)),
-        (name="lstm pred", labels=lstm_labels, scores=lstm_scores),
     ]
 
     for (rowix, ds) in enumerate(datasets)
@@ -638,12 +590,12 @@ function _status_line_trace(x, y, statusvec, delayvec, category::AbstractString,
 end
 
 """
-    build_simulation_figure(slice, trenddf, trade_targets, boundsdf, lstmdf) -> Plot
+    build_simulation_figure(slice, trenddf, trade_targets, boundsdf) -> Plot
 
 Create the Plotly diagnostic figure modeled after the 4h cockpit view: candlesticks
 and bounds in the main panel, classification heatmap in the upper-right panel.
 """
-function build_simulation_figure(slice::NamedTuple, trenddf::AbstractDataFrame, trade_targets, boundsdf::Union{Nothing, AbstractDataFrame}, lstmdf::Union{Nothing, AbstractDataFrame})
+function build_simulation_figure(slice::NamedTuple, trenddf::AbstractDataFrame, trade_targets, boundsdf::Union{Nothing, AbstractDataFrame})
     df = slice.df
     traces = PlotlyJS.AbstractTrace[]
 
@@ -680,7 +632,7 @@ function build_simulation_figure(slice::NamedTuple, trenddf::AbstractDataFrame, 
         end
     end
 
-    append!(traces, build_heatmap_panel(trenddf, trade_targets, lstmdf))
+    append!(traces, build_heatmap_panel(trenddf, trade_targets))
 
     title = "SimulationCheck $(slice.ohlcv.base) ($(slice.datasrc))  $(slice.startdt) → $(slice.enddt)"
     layout = Layout(
@@ -706,17 +658,16 @@ function build_simulation_figure(slice::NamedTuple, trenddf::AbstractDataFrame, 
 end
 
 """
-    summary_text(slice, trenddf, boundsdf, lstmdf)
+    summary_text(slice, trenddf, boundsdf)
 
 Return a short human-readable summary of the generated overlays.
 """
-function summary_text(slice::NamedTuple, trenddf::AbstractDataFrame, boundsdf::Union{Nothing, AbstractDataFrame}, lstmdf::Union{Nothing, AbstractDataFrame})::String
+function summary_text(slice::NamedTuple, trenddf::AbstractDataFrame, boundsdf::Union{Nothing, AbstractDataFrame})::String
     trenddist = Dict(string(lbl) => count(==(lbl), trenddf[!, :trend_target]) for lbl in unique(trenddf[!, :trend_target]))
     parts = [
         "data=$(slice.datasrc)",
         "rows=$(size(slice.df, 1))",
         "trend_target=$(trenddist)",
-        "lstm_cached=$(isnothing(lstmdf) ? "no" : "yes")",
     ]
     if !isnothing(boundsdf)
         push!(parts, "bounds_high=$(combine(groupby(boundsdf, :highstatus), nrow => :rows))")
@@ -774,17 +725,15 @@ function main(args::Vector{String}=ARGS)
 
     trendcfg = _resolve_trendconfig(cfg.trendref)
     boundscfg = _resolve_boundsconfig(cfg.boundsref)
-    tradecfg = _resolve_tradeadviceconfig(cfg.tradeadviceref)
     history_minutes = required_history_minutes(trendcfg, boundscfg)
     slice = load_slice(cfg, history_minutes)
 
     trenddf = compute_trend_overlay(slice, trendcfg)
-    trade_targets = compute_tradepair_targets(trenddf, tradecfg, trendcfg)
+    trade_targets = compute_tradepair_targets(trenddf, nothing, trendcfg)
     boundsdf = compute_bounds_overlay(slice, boundscfg)
-    lstmdf = load_lstm_overlay(slice, tradecfg)
 
-    fig = build_simulation_figure(slice, trenddf, trade_targets, boundsdf, lstmdf)
-    summary = summary_text(slice, trenddf, boundsdf, lstmdf)
+    fig = build_simulation_figure(slice, trenddf, trade_targets, boundsdf)
+    summary = summary_text(slice, trenddf, boundsdf)
     println(summary)
 
     outpath = isnothing(cfg.outfile) ? begin
@@ -798,7 +747,7 @@ function main(args::Vector{String}=ARGS)
     end
 
     println("done @ $(outpath)")
-    return (cfg=cfg, slice=slice, trenddf=trenddf, trade_targets=trade_targets, boundsdf=boundsdf, lstmdf=lstmdf, fig=fig, outfile=outpath)
+    return (cfg=cfg, slice=slice, trenddf=trenddf, trade_targets=trade_targets, boundsdf=boundsdf, fig=fig, outfile=outpath)
 end
 
 main()

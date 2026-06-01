@@ -9,6 +9,7 @@ using Test
     include("objective4_scaffolding_test.jl")
     include("objective4_live_marketdata_publicread_test.jl")
     include("runtime_api_integration_test.jl")
+    include("objective7_static_guardrails_test.jl")
     include("audit_snapshot_test.jl")
     include("ownership_selection_test.jl")
 end

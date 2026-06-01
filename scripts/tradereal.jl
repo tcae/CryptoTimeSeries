@@ -1,5 +1,5 @@
 """
-tradereal.jl — Live trading script using TrendDetector config 046.
+tradereal.jl — Live trading script using a TrendDetector config payload.
 
 Configuration is defined in the CONFIG block below. Adjust the parameters
 to your requirements before starting. The loop runs until Ctrl+C is pressed.
@@ -52,15 +52,12 @@ const MAX_BUDGET_QUOTE = 500 # nothing
 # Budget limit = min(MAX_BUDGET_QUOTE, available_opening_quote * (1 - SAFETY_MARGIN)).
 const SAFETY_MARGIN = 0.1
 
-# TrendDetector config 046: GainSegment strategy parameters.
-# These come from mk046config() → tradingstrategy03().
-# Override individual fields here if needed.
-const CONFIG046_STRATEGY = tradingstrategy04()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-const CONFIG046_NAME = "046"
-const MODEL046_FOLDER = "Trend-046-production"
+const TREND_CONFIG_REF = get(ENV, "CTS_TREND_CONFIG_REF", "046")
+const TREND_CONFIG = trenddetectorconfig(TREND_CONFIG_REF)
+const CONFIG_NAME = trendconfigref(TREND_CONFIG)
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER_PREFIX = "tradereal-" * CONFIG046_NAME
+const LOG_SUBFOLDER_PREFIX = "tradereal-" * CONFIG_NAME
 
 "Return the value for key from args entries in the form key=value, or default."
 function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing, AbstractString}=nothing)
@@ -277,18 +274,6 @@ function krakenfutures_startup_order_capability_probe!(xc::CryptoXch.XchCache, w
     return nothing
 end
 
-function loadtrend046classifier(model_folder::AbstractString)::Classify.RuntimeNNClassifier
-    cfg046 = mk046config()
-    nnstub = cfg046.classifiermodel(Features.featurecount(cfg046.featconfig), Targets.uniquelabels(cfg046.targetconfig), "mix")
-    required_minutes = max(Features.requiredminutes(cfg046.featconfig), 2)
-    return Classify.loadclassifier(
-        nnstub.fileprefix,
-        trendf6config09,
-        required_minutes;
-        search_folders=[String(model_folder), "Trend-046-training"],
-    )
-end
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SETUP
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,7 +289,7 @@ EnvConfig.setcoinspath!("coins_" * exchange_log_token)
 log_subfolder = LOG_SUBFOLDER_PREFIX * "-" * exchange_log_token * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 orders_subfolder = joinpath(log_subfolder, "orders")
 classifier = try
-    loadtrend046classifier(MODEL046_FOLDER)
+    loadtrendclassifier(TREND_CONFIG)
 catch err
     println(stderr, "$(EnvConfig.now()): ERROR failed to load configured classifier: $(sprint(showerror, err))")
     println(stderr, "$(EnvConfig.now()): tradereal aborted")
@@ -313,7 +298,7 @@ end
 EnvConfig.setlogpath(log_subfolder)
 
 messagelogfn = EnvConfig.logpath("messagelog_$(EnvConfig.runid()).txt")
-println("$(EnvConfig.now()): starting tradereal with config=$CONFIG046_NAME")
+println("$(EnvConfig.now()): starting tradereal with config=$CONFIG_NAME")
 println("$(EnvConfig.now()): messages logged to $messagelogfn")
 
 demux_logger = TeeLogger(
@@ -336,10 +321,10 @@ CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 run_max_budget_quote = max_budget_from_env(MAX_BUDGET_QUOTE)
 
-# Apply config 046 strategy parameters.
-Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
+# Apply the selected TrendDetector strategy parameters.
+Trade.apply_tradingstrategy!(cache, TREND_CONFIG;
     strategy_engine=:getgainsalgo,
-    source="trenddetector:$CONFIG046_NAME")
+    source=trendconfigsource(TREND_CONFIG))
 
 # Override whitelist and risk parameters.
 whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
@@ -355,17 +340,18 @@ cache.mc[:budgetsafetymargin] = SAFETY_MARGIN
 cache.mc[:tradelog_portfolio_snapshot_mode] = :session_start
 cache.mc[:tradelog_migration_worker_probe_enabled] = _env_true("CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED", true)
 cache.xc.mc[:tradelog_migration_fill_balance_enabled] = _env_true("CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED", true)
-cache.mc[:ws_orders_enabled] = _env_true("CTS_WS_ORDERS_ENABLED", false)
-cache.mc[:ws_balances_enabled] = _env_true("CTS_WS_BALANCES_ENABLED", false)
+ws_default = selected_exchange != CryptoXch.EXCHANGE_BYBIT
+cache.mc[:ws_orders_enabled] = _env_true("CTS_WS_ORDERS_ENABLED", ws_default)
+cache.mc[:ws_balances_enabled] = _env_true("CTS_WS_BALANCES_ENABLED", ws_default)
 cache.mc[:ws_shadow_mode] = _env_true("CTS_WS_SHADOW_MODE", true)
-cache.mc[:ws_primary_mode] = _env_true("CTS_WS_PRIMARY_MODE", false)
+cache.mc[:ws_primary_mode] = _env_true("CTS_WS_PRIMARY_MODE", ws_default)
 cache.mc[:ws_primary_autofallback_on_mismatch] = _env_true("CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH", true)
 cache.xc.mc[:ws_orders_enabled] = cache.mc[:ws_orders_enabled]
 cache.xc.mc[:ws_balances_enabled] = cache.mc[:ws_balances_enabled]
 cache.xc.mc[:ws_primary_mode] = cache.mc[:ws_primary_mode]
 
 println("$(EnvConfig.now()): exchange=$selected_exchange, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo")
+println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=getgainsalgo")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): max budget cap quote=$(isnothing(run_max_budget_quote) ? "none" : run_max_budget_quote)")
 println("$(EnvConfig.now()): budget safety margin=$(SAFETY_MARGIN)")

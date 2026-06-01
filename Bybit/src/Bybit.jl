@@ -1349,6 +1349,63 @@ function balances(bc::BybitCache)
     return df
 end
 
+"""
+Return account capacity in quote currency for Bybit and BybitSim.
+
+The returned tuple aligns with `CryptoXch.accountcapacity` fields and reports
+quote-currency-conservative opening capacity while exposing full account equity:
+- `available_opening_quote`, `available_long_quote`, `available_short_quote`
+  are based on free quote balance.
+- `equity_quote` is full marked-to-market account equity in quote terms.
+
+For BybitSim, each non-quote held asset is priced individually via `_sim_lastprice`
+(which reads cached OHLCV) rather than via a bulk `get24h` join. This avoids the
+join key mismatch (`"AAVE"` vs `"AAVEUSDT"`) and the cost of loading hundreds of
+OHLCV files for symbols not in the portfolio.
+"""
+function accountcapacity(bc::BybitCache)
+    bdf = balances(bc)
+    quotecoin = uppercase(String(EnvConfig.cryptoquote))
+    cols = propertynames(bdf)
+    quotefree = 0.0
+    equity_quote = 0.0
+    if (:coin in cols) && (:free in cols)
+        for row in eachrow(bdf)
+            coin = uppercase(String(row.coin))
+            free  = max(0.0, Float64(row.free))
+            locked   = (:locked   in cols) ? max(0.0, Float64(row.locked))   : 0.0
+            borrowed = (:borrowed in cols) ? max(0.0, Float64(row.borrowed)) : 0.0
+            net = free + locked - borrowed
+            if coin == quotecoin
+                quotefree    += free
+                equity_quote += net  # quote coin priced at 1.0
+            elseif !isnothing(bc.assets) && net != 0.0
+                # BybitSim: price non-quote asset at current sim time.
+                # Any pricing failure is treated as price=0 (conservative; does not
+                # deduct the liability but also does not inflate equity).
+                symbol = string(coin, quotecoin)
+                price = try
+                    Float64(_sim_lastprice(bc, symbol))
+                catch
+                    0.0
+                end
+                equity_quote += net * price
+            end
+            # Live mode: only quote-wallet balance contributes to equity (conservative).
+        end
+    end
+    source = isnothing(bc.assets) ? "Bybit:wallet_balance" : "Bybit:sim_wallet"
+    return (
+        equity_quote=max(0.0, equity_quote),
+        available_opening_quote=max(0.0, quotefree),
+        available_long_quote=max(0.0, quotefree),
+        available_short_quote=max(0.0, quotefree),
+        initial_margin_quote=0.0,
+        maintenance_margin_quote=0.0,
+        source=source,
+    )
+end
+
 "Helper function to format balances DataFrame for both production and simulation"
 function _emptybalances(df::DataFrame)
     return select(df, :coin, :locked, :free, :borrowed, :accruedinterest)

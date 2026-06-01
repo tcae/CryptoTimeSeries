@@ -25,9 +25,7 @@ include("optimizationconfigs.jl")
 
 const COCKPIT_TREND_REF = "025"
 const COCKPIT_BOUNDS_REF = "001"
-const COCKPIT_TRENDLSTM_REF = "001"
-const COCKPIT_TRADEADVICE_REF = COCKPIT_TRENDLSTM_REF  # legacy alias for existing callback wiring
-const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target", "lstm pred"]
+const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target"]
 const DIAGNOSTIC_LABEL_CODE = Dict{Any, Int}(
     missing => 0,
     Targets.shortbuy => 1,
@@ -89,8 +87,6 @@ _cached_artifact(key::AbstractString, loader::Function) = _cached_artifact(loade
 
 _resolve_trendconfig(ref::AbstractString) = trenddetectorconfig(ref)
 _resolve_boundsconfig(ref::AbstractString) = boundsestimatorconfig(ref)
-_resolve_trendlstmconfig(ref::AbstractString) = trendlstmconfig(ref)
-_resolve_tradeadviceconfig(ref::AbstractString) = _resolve_trendlstmconfig(ref)
 
 function _config_subfolder(prefix::AbstractString, cfg, mode::EnvConfig.Mode)
     folder = _cfgget(cfg, :folder, nothing)
@@ -144,15 +140,13 @@ function _available_configrefs(kind::Symbol)
         return sort!(collect(keys(TREND_DETECTOR_CONFIGS)); by=lowercase)
     elseif kind == :bounds
         return sort!(collect(keys(BOUNDS_ESTIMATOR_CONFIGS)); by=lowercase)
-    elseif kind in (:tradeadvice, :trendlstm)
-        return sort!(collect(keys(TREND_LSTM_CONFIGS)); by=lowercase)
     end
     error("unsupported config kind=$(kind)")
 end
 
 function _has_cached_output(kind::Symbol, configref::AbstractString)
     try
-        cfg = kind == :trend ? _resolve_trendconfig(configref) : kind == :bounds ? _resolve_boundsconfig(configref) : _resolve_trendlstmconfig(configref)
+        cfg = kind == :trend ? _resolve_trendconfig(configref) : _resolve_boundsconfig(configref)
         if kind == :trend
             return any(_cockpit_model_modes()) do mode
                 folder = _config_subfolder("Trend", cfg, mode)
@@ -169,12 +163,6 @@ function _has_cached_output(kind::Symbol, configref::AbstractString)
                     isfile(Classify.nnfilename(model.fileprefix)) || _config_tableexists(folder, "maxpredictions")
                 end
             end
-        else
-            root = _root_logfolder()
-            return any(_cockpit_model_modes()) do mode
-                EnvConfig.tableexists("lstm_predictions"; folderpath=joinpath(root, _config_subfolder("TrendLstm", cfg, mode)), format=:auto) ||
-                EnvConfig.tableexists("lstm_predictions"; folderpath=joinpath(root, _config_subfolder("TradeAdviceLstm", cfg, mode)), format=:auto)
-            end || EnvConfig.tableexists("lstm_predictions"; folderpath=root, format=:auto)
         end
     catch err
         @debug "skipping config without usable cache" kind configref exception=(err, catch_backtrace())
@@ -215,11 +203,10 @@ function _active_row_id(active_cell, olddata, currentfocus)
     return currentfocus
 end
 
-function _cockpit_contracts(; trendref::AbstractString=COCKPIT_TREND_REF, boundsref::AbstractString=COCKPIT_BOUNDS_REF, tradeadviceref::AbstractString=COCKPIT_TRADEADVICE_REF)
-    tradecfg = _resolve_tradeadviceconfig(tradeadviceref)
+function _cockpit_contracts(; trendref::AbstractString=COCKPIT_TREND_REF, boundsref::AbstractString=COCKPIT_BOUNDS_REF)
     trendcfg = _resolve_trendconfig(trendref)
     boundscfg = _resolve_boundsconfig(boundsref)
-    return (tradecfg=tradecfg, trendcfg=trendcfg, boundscfg=boundscfg, trendref=trendref, boundsref=boundsref, tradeadviceref=tradeadviceref)
+    return (trendcfg=trendcfg, boundscfg=boundscfg, trendref=trendref, boundsref=boundsref)
 end
 
 function loadohlcv!(cp, base, interval)
@@ -347,7 +334,6 @@ app.layout = html_div() do
         ),
         _dropdownrow("trend config", "trend_config_select", _config_options(:trend), COCKPIT_TREND_REF),
         _dropdownrow("bounds config", "bounds_config_select", _config_options(:bounds), COCKPIT_BOUNDS_REF),
-        _dropdownrow("trend LSTM", "tradeadvice_config_select", _config_options(:tradeadvice), COCKPIT_TRENDLSTM_REF),
         dcc_checklist(
             id="indicator_select",
             options=[
@@ -658,36 +644,6 @@ function _load_regressor_from_interface(cfg)
     return nothing
 end
 
-function _load_lstm_overlay_from_interface(base::AbstractString, startdt, enddt, tradecfg)
-    candidates = String[]
-    for mode in _cockpit_model_modes()
-        push!(candidates, _config_subfolder("TrendLstm", tradecfg, mode))
-        push!(candidates, _config_subfolder("TradeAdviceLstm", tradecfg, mode))
-    end
-    push!(candidates, "")
-    seen = Set{String}()
-    for folder in candidates
-        folder in seen && continue
-        push!(seen, folder)
-        df = isempty(folder) ? _cached_artifact("lstm:root") do
-            EnvConfig.readdf("lstm_predictions")
-        end : _cached_artifact("lstm:" * folder) do
-            _with_log_subfolder(folder) do
-                EnvConfig.readdf("lstm_predictions")
-            end
-        end
-        if !isnothing(df) && size(df, 1) > 0 && (:opentime in propertynames(df))
-            mask = (string.(df[!, :coin]) .== base) .& (startdt .<= df[!, :opentime] .<= enddt)
-            subdf = copy(df[mask, :])
-            if size(subdf, 1) > 0
-                sort!(subdf, :opentime)
-                return subdf
-            end
-        end
-    end
-    return nothing
-end
-
 function _compute_trend_overlay(slice::NamedTuple, trendcfg)::DataFrame
     Features.setbase!(trendcfg.featconfig, slice.ohlcv, usecache=false)
     Targets.setbase!(trendcfg.targetconfig, slice.ohlcv)
@@ -826,27 +782,17 @@ function _compute_bounds_overlay(slice::NamedTuple, boundscfg)
     return outdf[mask, :]
 end
 
-function _build_diagnostic_heatmap(trenddf::AbstractDataFrame, trade_targets, lstmdf)
+function _build_diagnostic_heatmap(trenddf::AbstractDataFrame, trade_targets)
     n = size(trenddf, 1)
     x = trenddf[!, :opentime]
     z = zeros(Int, length(DIAGNOSTIC_LABEL_ROWS), n)
     hovertext = fill("", length(DIAGNOSTIC_LABEL_ROWS), n)
     displaycolors = fill(DIAGNOSTIC_LABEL_COLOR[missing], length(DIAGNOSTIC_LABEL_ROWS), n)
 
-    lstm_labels = isnothing(lstmdf) ? fill(missing, n) : begin
-        mapping = Dict(row.opentime => row.label for row in eachrow(lstmdf))
-        [get(mapping, ts, missing) for ts in x]
-    end
-    lstm_scores = isnothing(lstmdf) ? fill(missing, n) : begin
-        mapping = Dict(row.opentime => row.score for row in eachrow(lstmdf))
-        [get(mapping, ts, missing) for ts in x]
-    end
-
     datasets = [
         (name="trend target", labels=trenddf[!, :trend_target], scores=fill(missing, n)),
         (name="trend pred", labels=trenddf[!, :trend_pred], scores=trenddf[!, :trend_score]),
         (name="tradepairs target", labels=trade_targets, scores=fill(missing, n)),
-        (name="lstm pred", labels=lstm_labels, scores=lstm_scores),
     ]
 
     for (rowix, ds) in enumerate(datasets)
@@ -965,16 +911,15 @@ function _status_hover_trace(x, y, statusvec, delayvec, name::AbstractString)
     )
 end
 
-function _build_cockpit_diagnostics(base, period, enddt; trendref::AbstractString=COCKPIT_TREND_REF, boundsref::AbstractString=COCKPIT_BOUNDS_REF, tradeadviceref::AbstractString=COCKPIT_TRADEADVICE_REF)
-    contracts = _cockpit_contracts(; trendref=trendref, boundsref=boundsref, tradeadviceref=tradeadviceref)
+function _build_cockpit_diagnostics(base, period, enddt; trendref::AbstractString=COCKPIT_TREND_REF, boundsref::AbstractString=COCKPIT_BOUNDS_REF)
+    contracts = _cockpit_contracts(; trendref=trendref, boundsref=boundsref)
     ohlcv = loadohlcv!(cp, base, "1m")
     history_minutes = _required_history_minutes(contracts.trendcfg, contracts.boundscfg)
     slice = _diagnostic_slice(ohlcv, period, enddt, history_minutes)
     trenddf = _compute_trend_overlay(slice, contracts.trendcfg)
-    trade_targets = _compute_tradepair_targets(trenddf, contracts.tradecfg, contracts.trendcfg)
+    trade_targets = _compute_tradepair_targets(trenddf, nothing, contracts.trendcfg)
     boundsdf = _compute_bounds_overlay(slice, contracts.boundscfg)
-    lstmdf = _load_lstm_overlay_from_interface(base, slice.startdt, slice.enddt, contracts.tradecfg)
-    return (slice=slice, trenddf=trenddf, trade_targets=trade_targets, boundsdf=boundsdf, lstmdf=lstmdf)
+    return (slice=slice, trenddf=trenddf, trade_targets=trade_targets, boundsdf=boundsdf)
 end
 
 function _statuscountdict(df::AbstractDataFrame, col::Symbol)
@@ -990,10 +935,8 @@ end
 
 function _diagnostic_summary(diag)::String
     trenddist = Dict(string(lbl) => count(==(lbl), diag.trenddf[!, :trend_target]) for lbl in unique(diag.trenddf[!, :trend_target]))
-    lstmcached = isnothing(diag.lstmdf) ? "no" : "yes"
     parts = [
         "trend_target=$(trenddist)",
-        "lstm_cached=$(lstmcached)",
     ]
     if !isnothing(diag.boundsdf)
         push!(parts, "bounds_high=$(_statuscountdict(diag.boundsdf, :highstatus))")
@@ -1155,7 +1098,7 @@ function candlestickgraph(cp, traces, base, interval, period, enddt, regression,
                     _status_hover_trace(x, predhigh, diagnostics.boundsdf[!, :highstatus], diagnostics.boundsdf[!, :highdelay], "pred high"),
                 ])
             end
-            append!(traces, _build_diagnostic_heatmap(diagnostics.trenddf, diagnostics.trade_targets, diagnostics.lstmdf))
+            append!(traces, _build_diagnostic_heatmap(diagnostics.trenddf, diagnostics.trade_targets))
             fig = Plot(traces,
                 Layout(xaxis_rangeslider_visible=false,
                     yaxis=attr(title_text=price_axis_title(cp), domain=[0.18, 0.80]),
@@ -1207,11 +1150,10 @@ callback!(
     Input("graph4h_endtime", "children"),
     Input("trend_config_select", "value"),
     Input("bounds_config_select", "value"),
-    Input("tradeadvice_config_select", "value"),
     Input("spread_select", "value"),
     State("indicator_select", "value")
     # prevent_initial_call=true
-) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, trendref, boundsref, tradeadviceref, spread, indicator
+) do focus, select, enddt1d, enddt10d, enddt6M, enddtall, enddt4h, trendref, boundsref, spread, indicator
     ctx = callback_context()
     button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : ""
     s = "create linegraphs: focus = $focus, select = $select, trigger: $(ctx.triggered[1].prop_id) spread = $spread"
@@ -1224,9 +1166,9 @@ callback!(
 
     # println("enddt4h($(typeof(enddt4h)))=$(enddt4h) dtf=$(CP.dtf)")
     showtargets = "targets" in indicator
-    diagnostics4h = showtargets ? _build_cockpit_diagnostics(focus, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf); trendref=string(trendref), boundsref=string(boundsref), tradeadviceref=string(tradeadviceref)) : nothing
+    diagnostics4h = showtargets ? _build_cockpit_diagnostics(focus, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf); trendref=string(trendref), boundsref=string(boundsref)) : nothing
     fig4h = candlestickgraph(CP, nothing, focus, "1m", Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf), regression, heatmap, spread; diagnostics=diagnostics4h)
-    targets4h = isnothing(diagnostics4h) ? "enable 'targets / heatmap' to show lifecycle diagnostics" : "trend=$(trendref) | bounds=$(boundsref) | trade=$(tradeadviceref) | " * _diagnostic_summary(diagnostics4h)
+    targets4h = isnothing(diagnostics4h) ? "enable 'targets / heatmap' to show lifecycle diagnostics" : "trend=$(trendref) | bounds=$(boundsref) | " * _diagnostic_summary(diagnostics4h)
     # fig1d = linegraph!(timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf)),
     #     drawbases, "1m", Dates.Hour(24), Dates.DateTime(enddt1d, CP.dtf), regression)
     fig1d = candlestickgraph(CP, timebox!(nothing, Dates.Hour(4), Dates.DateTime(enddt4h, CP.dtf)), focus, "5m", Dates.Hour(24), Dates.DateTime(enddt1d, CP.dtf), regression, false, spread)
@@ -1241,20 +1183,6 @@ callback!(
     figall = candlestickgraph(CP, timebox!(nothing, Dates.Year(1), Dates.DateTime(enddt6M, CP.dtf)), focus, "3d", Dates.Year(4), Dates.DateTime(enddtall, CP.dtf), false, false, nothing)
 
     return fig1d, fig10d, fig6M, figall, fig4h, targets4h
-end
-
-callback!(
-    app,
-    Output("trend_config_select", "value"),
-    Output("bounds_config_select", "value"),
-    Input("tradeadvice_config_select", "value"),
-    State("trend_config_select", "value"),
-    State("bounds_config_select", "value")
-) do tradeadviceref, currenttrend, currentbounds
-    tradecfg = _resolve_tradeadviceconfig(string(tradeadviceref))
-    trendref = string(_cfgget(tradecfg, :trendconfigref, currenttrend))
-    boundsref = string(_cfgget(tradecfg, :boundsconfigref, currentbounds))
-    return trendref, boundsref
 end
 
 callback!(

@@ -3,7 +3,7 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, CryptoXch, Targets
 
-"Test runtime used to validate Trade's optional strategy-runtime integration path."
+"Test runtime used to validate Trade's mandatory strategy-runtime integration path."
 Base.@kwdef mutable struct FakeRuntime <: TradingStrategy.AbstractStrategyRuntime
     snapshots::Vector{TradingStrategy.StrategySnapshot} = TradingStrategy.StrategySnapshot[]
     mins::Int = 0
@@ -14,7 +14,7 @@ end
 "Expose deterministic history requirement for Trade runtime-history delegation tests."
 TradingStrategy.requiredhistoryminutes(rt::FakeRuntime)::Int = rt.mins
 
-"Record bases dropped by Trade when runtime API path is active."
+"Record bases dropped by Trade via the mandatory runtime API path."
 function TradingStrategy.dropbase!(rt::FakeRuntime, base::AbstractString)::Nothing
     push!(rt.dropped, uppercase(String(base)))
     return nothing
@@ -43,20 +43,19 @@ end
 
     fake = FakeRuntime()
     tc.mc[:strategy_runtime] = fake
-    tc.mc[:use_strategy_runtime_api] = true
 
     Trade._disablerestrictedbase!(tc, "BTC", "test")
     @test "BTC" in fake.dropped
 end
 
-@testset "Runtime API default and advice path" begin
+@testset "Runtime API advice path" begin
     EnvConfig.init(EnvConfig.test)
 
     xc = CryptoXch.XchCache()
     xc.mc[:simmode] = CryptoXch.nosimulation
     tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
 
-    @test tc.mc[:use_strategy_runtime_api]
+    @test !isnothing(Trade._strategyruntime(tc))
 
     tc.cfg = DataFrame(basecoin=["BTC"])
     tc.xc.currentdt = DateTime("2026-05-30T12:00:00")
@@ -77,7 +76,6 @@ end
     )
 
     tc.mc[:strategy_runtime] = fake
-    tc.mc[:use_strategy_runtime_api] = true
 
     assets = DataFrame(
         coin=["BTC", EnvConfig.cryptoquote],
@@ -90,36 +88,53 @@ end
 
     advices = Trade._collect_strategy_advices(tc, assets)
     labels = Set(ta.tradelabel for ta in advices)
+    advice_by_label = Dict(ta.tradelabel => ta for ta in advices)
 
     @test length(advices) == 2
     @test Targets.longbuy in labels
     @test Targets.longclose in labels
+    @test advice_by_label[Targets.longbuy].source == :tradingstrategy
+    @test advice_by_label[Targets.longbuy].relativeamount == 1f0
+    @test advice_by_label[Targets.longbuy].price == 100f0
+    @test advice_by_label[Targets.longclose].relativeamount == 1f0
+    @test advice_by_label[Targets.longclose].price == 110f0
 
     recon = fake.reconciliation_by_base["BTC"]
     @test recon.has_long_open
     @test recon.has_short_open
+    @test recon.long_avg_entry == 100f0
+    @test recon.short_avg_entry == 100f0
+    @test recon.long_open_ix == 0
+    @test recon.short_open_ix == 0
 
     histmins = Trade._tradeselection_history_minutes(tc)
     @test histmins >= 2001
 end
 
-@testset "Runtime API env override" begin
-    prev = get(ENV, "CTS_USE_STRATEGY_RUNTIME_API", nothing)
-    try
-        EnvConfig.init(EnvConfig.test)
+@testset "Apply trading strategy stores only canonical template" begin
+    EnvConfig.init(EnvConfig.test)
 
-        ENV["CTS_USE_STRATEGY_RUNTIME_API"] = "false"
-        tc_disabled = Trade.TradeCache(xc=CryptoXch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
-        @test !tc_disabled.mc[:use_strategy_runtime_api]
+    mc = Dict{Symbol, Any}()
+    gs = TradingStrategy.GainSegment(
+        ;
+        algorithm=TradingStrategy.gain_limit_reversal!,
+        openthreshold=0.25f0,
+        closethreshold=0.35f0,
+        buygain=0.45f0,
+        sellgain=0.55f0,
+        limitreduction=0.15f0,
+        maxwindow=12,
+    )
 
-        ENV["CTS_USE_STRATEGY_RUNTIME_API"] = "true"
-        tc_enabled = Trade.TradeCache(xc=CryptoXch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
-        @test tc_enabled.mc[:use_strategy_runtime_api]
-    finally
-        if isnothing(prev)
-            pop!(ENV, "CTS_USE_STRATEGY_RUNTIME_API", nothing)
-        else
-            ENV["CTS_USE_STRATEGY_RUNTIME_API"] = String(prev)
-        end
-    end
+    Trade.apply_tradingstrategy!(mc, gs; source="test")
+
+    @test mc[:strategy_template] isa TradingStrategy.GainSegment
+    @test mc[:strategy_algorithm] == TradingStrategy.gain_limit_reversal!
+    @test mc[:strategy_source] == "test"
+    @test !haskey(mc, :strategy_openthreshold)
+    @test !haskey(mc, :strategy_closethreshold)
+    @test !haskey(mc, :strategy_buygain)
+    @test !haskey(mc, :strategy_sellgain)
+    @test !haskey(mc, :strategy_limitreduction)
+    @test !haskey(mc, :strategy_maxwindow)
 end

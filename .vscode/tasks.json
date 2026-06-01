@@ -20,7 +20,7 @@
 			"args": [
 				"--project=Trade",
 				"-e",
-				"using Pkg; Pkg.test(\"Trade\"; coverage=true)"
+				"using Pkg; Pkg.test(\"Trade\"; coverage=\"test/coverage/latest/trade-lcov.info\")"
 			],
 			"problemMatcher": [],
 			"group": "test"
@@ -35,7 +35,7 @@
 			],
 			"problemMatcher": [],
 			"group": "test",
-			"detail": "Create markdown coverage summary from .cov files at test/coverage_summary.md."
+			"detail": "Create markdown coverage summary from test/coverage/latest/lcov.info at test/coverage_summary.md."
 		},
 		{
 			"label": "Julia: Run tests with coverage and summarize",

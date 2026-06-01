@@ -452,42 +452,8 @@ boundsmk002config() = (configname="002", featconfig = boundsf6config01(4*60), ta
 
 #endregion BoundsConfig
 
-#region AdviceConfig
-
-"Trade advice LSTM baseline config for phase smoothing over TrendDetector outputs."
-tradeadvicemk001config() = (
-    configname="001",
-    trendconfigref="029",
-    seqlen=15,
-    hidden_dim=32,
-    maxepoch=200,
-    batchsize=64,
-    openthresholds=default_openthresholds(),
-    closethresholds=default_closethresholds(),
-)
-
-"Alternative eval-sweep with a slightly longer sequence and tighter thresholds for comparison on the eval split."
-tradeadvicemk002config() = (
-    configname="002",
-    trendconfigref="025E",
-    seqlen=5,
-    hidden_dim=48,
-    maxepoch=200,
-    batchsize=64,
-    openthresholds=default_openthresholds(),
-    closethresholds=default_closethresholds(),
-)
-
-#endregion AdviceConfig
-
-"""
-    _config_from_dict(configs, ref; label, prefixes)
-
-Resolve a config reference by its `configname` from one of the shared preset dicts.
-Returns a `deepcopy` so each caller gets an isolated mutable configuration payload.
-"""
-function _config_from_dict(configs::AbstractDict{String, <:NamedTuple}, ref::AbstractString; label::AbstractString, prefixes::Tuple)
-    raw = strip(replace(String(ref), r"config$"i => ""))
+function _config_from_dict(configs::Dict{String, NamedTuple}, ref::AbstractString; label::AbstractString="config", prefixes=("",))
+    raw = strip(String(ref))
     lowerraw = lowercase(raw)
     for prefix in prefixes
         lowerprefix = lowercase(prefix)
@@ -517,11 +483,31 @@ const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg 
     boundsmk001config(), boundsmk002config(),
 ])
 
-const TREND_LSTM_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
-    tradeadvicemk001config(), tradeadvicemk002config(),
-])
-
 trenddetectorconfig(ref::AbstractString) = _config_from_dict(TREND_DETECTOR_CONFIGS, ref; label="trend", prefixes=("trenddetector", "trend", "mk"))
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
-trendlstmconfig(ref::AbstractString) = _config_from_dict(TREND_LSTM_CONFIGS, ref; label="TrendLstm", prefixes=("trendlstm", "tradeadvicelstm", "tradeadvice", "tradeadvicemk", "mk"))
+
+"Return the canonical config reference string for a TrendDetector config payload."
+trendconfigref(cfg::NamedTuple)::String = String(cfg.configname)
+
+"Return the canonical TrendDetector model folder name for a given config payload."
+trendconfigfolder(cfg::NamedTuple, phase::AbstractString)::String = "Trend-$(trendconfigref(cfg))-$(String(phase))"
+
+"Return the source tag used when wiring a TrendDetector config into Trade."
+trendconfigsource(cfg::NamedTuple; prefix::AbstractString="trenddetector")::String = "$(String(prefix)):$(trendconfigref(cfg))"
+
+"Return a fresh feature-config factory for a TrendDetector config payload."
+trendconfigfeaturefactory(cfg::NamedTuple)::Function = () -> deepcopy(cfg.featconfig)
+
+"Load a runtime classifier for a TrendDetector config payload."
+function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::Classify.TrendClassifier001
+    nnstub = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), mnemonic)
+    required_minutes = max(Features.requiredminutes(cfg.featconfig), 2)
+    spec = (
+        config_ref=trendconfigref(cfg),
+        nn_fileprefix=nnstub.fileprefix,
+        featconfig_factory=trendconfigfeaturefactory(cfg),
+        required_minutes=required_minutes,
+    )
+    return Classify.load(Classify.TrendClassifier001, spec; mode=mode)
+end
 

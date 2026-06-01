@@ -226,6 +226,11 @@ end
 "Return the minimum history window required by this runtime implementation."
 requiredhistoryminutes(rt::AbstractStrategyRuntime)::Int = 0
 
+"Raise a clear contract error when a mandatory runtime method was not overridden."
+function _runtime_contract_error(methodname::AbstractString, rt::AbstractStrategyRuntime)
+    throw(ArgumentError("$(methodname) must be implemented for runtime type $(typeof(rt)); provide a concrete $(methodname) method for your AbstractStrategyRuntime subtype"))
+end
+
 "Return the minimum history window required by the gain-segment runtime classifier."
 function requiredhistoryminutes(rt::GainSegmentRuntime)::Int
     try
@@ -269,6 +274,7 @@ end
 function reset!(rt::GainSegmentRuntime)::Nothing
     empty!(rt.strategy_state)
     empty!(rt.strategy_history)
+    empty!(rt.accepted)
     try
         Classify.removebase!(rt.classifier, nothing)
     catch
@@ -290,6 +296,11 @@ function apply_strategy!(rt::GainSegmentRuntime, gs::GainSegment; source::Abstra
     rt.source = String(source)
     empty!(rt.strategy_state)
     empty!(rt.strategy_history)
+    empty!(rt.accepted)
+    try
+        Classify.removebase!(rt.classifier, nothing)
+    catch
+    end
     return nothing
 end
 
@@ -352,7 +363,7 @@ function _apply_runtime_reconciliation!(gs::GainSegment, reconciliation::Strateg
     return gs
 end
 
-"Prepare a runtime implementation for the requested bases. Empty fallback for runtimes that do not load data themselves."
+"Prepare a runtime implementation for the requested bases. Concrete runtimes must implement this method."
 function preparebases!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}; history_startdt::DateTime, datetime::DateTime, updatecache::Bool=false)::Nothing
     _ = rt
     _ = xc
@@ -360,7 +371,7 @@ function preparebases!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, base
     _ = history_startdt
     _ = datetime
     _ = updatecache
-    return nothing
+    _runtime_contract_error("preparebases!", rt)
 end
 
 "Prepare the gain-segment runtime for the requested bases using available OHLCV data and update its accepted set."
@@ -369,11 +380,12 @@ function preparebases!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, bases::Ab
     _ = datetime
     wanted = Set{String}(uppercase.(String.(bases)))
 
-    for stale in collect(setdiff(rt.accepted, wanted))
+    loaded = Set{String}(uppercase.(String.(Classify.bases(rt.classifier))))
+    for stale in sort!(collect(setdiff(union(rt.accepted, loaded), wanted)))
         dropbase!(rt, stale)
     end
 
-    loaded = Set{String}(String.(Classify.bases(rt.classifier)))
+    loaded = Set{String}(uppercase.(String.(Classify.bases(rt.classifier))))
     any_loaded = false
     for base in sort!(collect(wanted))
         try
@@ -399,14 +411,14 @@ function preparebases!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, bases::Ab
     return nothing
 end
 
-"Return one strategy snapshot for a base, or `nothing` when the runtime has no signal to emit."
+"Return one strategy snapshot for a base. Concrete runtimes must implement this method."
 function getsnapshot!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime; reconciliation::StrategyReconciliationInput=StrategyReconciliationInput())::Union{Nothing, StrategySnapshot}
     _ = rt
     _ = xc
     _ = base
     _ = datetime
     _ = reconciliation
-    return nothing
+    _runtime_contract_error("getsnapshot!", rt)
 end
 
 "Return one strategy snapshot for a base using gain-segment runtime state and classifier output."
@@ -453,14 +465,14 @@ function getsnapshot!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, base::Abst
     )
 end
 
-"Return one strategy snapshot per requested base, or an empty vector when the runtime does not emit snapshots."
+"Return one strategy snapshot per requested base. Concrete runtimes must implement this method."
 function getsnapshots!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}, datetime::DateTime; reconciliation_by_base::AbstractDict{String, StrategyReconciliationInput}=Dict{String, StrategyReconciliationInput}())::Vector{StrategySnapshot}
     _ = rt
     _ = xc
     _ = bases
     _ = datetime
     _ = reconciliation_by_base
-    return StrategySnapshot[]
+    _runtime_contract_error("getsnapshots!", rt)
 end
 
 "Return one strategy snapshot per requested base using gain-segment runtime state."

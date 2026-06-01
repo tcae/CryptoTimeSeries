@@ -81,7 +81,7 @@
 			// "Mmap"
 		],
 		"csv-preview.resizeColumns": "all",
-		"julia.NumThreads": 0,
+		"julia.NumThreads": 4,
 		"julia.numTestProcesses": 1,
 		"chat.tools.terminal.autoApprove": {
 			"julia": true,

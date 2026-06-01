@@ -316,7 +316,14 @@ function getlatestclassifier(cfg::TrendDetectorConfig)
     nn = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), classifiermenmonic()) # to get correct filename
     (verbosity >= 3) && println("getlatestclassifier classifier file: $(Classify.nnfilename(nn.fileprefix)), isfile=$(isfile(Classify.nnfilename(nn.fileprefix)))")
     if isfile(Classify.nnfilename(nn.fileprefix))
-        nn = Classify.loadnn(nn.fileprefix)
+        spec = (
+            config_ref=cfg.configname,
+            nn_fileprefix=nn.fileprefix,
+            featconfig_factory=() -> deepcopy(cfg.featconfig),
+            required_minutes=max(Features.requiredminutes(cfg.featconfig), 2),
+            folder=cfg.folder,
+        )
+        nn = Classify.load(Classify.TrendClassifier001, spec; mode=EnvConfig.configmode).nn
         (verbosity >= 3) && println("getlatestclassifier loaded: nn=$(nn.fileprefix), labels=$(nn.labels) - classifier $(Classify.nnconverged(nn) ? "did" : "did not") converge")
     else
         (verbosity >= 3) && println("getlatestclassifier new: nn=$(nn.fileprefix), labels=$(nn.labels)")
@@ -380,7 +387,12 @@ function getclassifier(cfg::TrendDetectorConfig)
             return nothing
         else
             # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
-            Classify.savenn(nn)
+            cl = Classify.TrendClassifier001(
+                nn;
+                featconfig_factory=() -> deepcopy(cfg.featconfig),
+                required_minutes=max(Features.requiredminutes(cfg.featconfig), 2),
+            )
+            Classify.save(cl; mode=EnvConfig.configmode, folder=cfg.folder)
         end
         println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(nn) ? "did" : "did not") converge")
     end

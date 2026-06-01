@@ -1,6 +1,11 @@
 module KrakenSpot
 
-using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA, WebSockets
+using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
+
+# Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
+# The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
+# to SubArray{UInt8,1,Vector{UInt8},...} which was confirmed as root cause by Kraken support.
+const WebSockets = HTTP.WebSockets
 
 const _private_call_counter_lock = ReentrantLock()
 const _private_call_counter = Dict{String, Int}()
@@ -34,6 +39,7 @@ const _ws_private_worker_running = Ref(false)
 const _ws_private_orders_channel = Ref{Union{Nothing, Channel{Dict}}}(nothing)
 const _ws_private_balances_channel = Ref{Union{Nothing, Channel{Dict}}}(nothing)
 const _ws_private_subscribe_ack_timeout = Dates.Second(20)
+const _ws_private_ready = Ref{Union{Nothing, Bool}}(nothing)
 const _ws_private_min_reconnect_interval = Dates.Second(2)
 const _ws_private_backoff_base_seconds = 2.0
 const _ws_private_backoff_cap_seconds = 60.0
@@ -2251,6 +2257,57 @@ function _wsreconnectbackoffseconds(failure_streak::Int)::Float64
 	return basewait + jitter
 end
 
+function _ws_private_ready_probe!(bc::KrakenSpotCache)::Bool
+	lock(_ws_private_stream_lock) do
+		cached = _ws_private_ready[]
+		!isnothing(cached) && return cached::Bool
+		if !_hascredentials(bc)
+			_ws_private_ready[] = false
+			return false
+		end
+		try
+			token = _wsauthtoken(bc)
+			isnothing(token) && throw(ErrorException("missing websocket token"))
+			WebSockets.open(KRAKEN_WS_PRIVATE) do ws
+				WebSockets.send(ws, JSON3.write(Dict("method" => "subscribe", "params" => Dict("channel" => "executions", "token" => token))))
+				WebSockets.send(ws, JSON3.write(Dict("method" => "subscribe", "params" => Dict("channel" => "balances", "token" => token))))
+				orders_active = false
+				balances_active = false
+				for _ in 1:20
+					msgraw = WebSockets.receive(ws)
+					msgtxt = _wsraw2text(msgraw)
+					isnothing(msgtxt) && continue
+					msg = try
+						JSON3.read(msgtxt, Dict)
+					catch
+						continue
+					end
+					ch = String(get(msg, "channel", ""))
+					if ch == "" && haskey(msg, "result") && (msg["result"] isa AbstractDict)
+						ch = String(get(msg["result"], "channel", ""))
+					end
+					if ch in ["heartbeat", "ping", "pong"]
+						continue
+					elseif ch in ["executions", "orders", "openOrders"]
+						orders_active = true
+					elseif ch in ["balances", "balance"]
+						balances_active = true
+					end
+					if orders_active && balances_active
+						_ws_private_ready[] = true
+						return true
+					end
+				end
+				throw(ErrorException("private websocket readiness did not receive executions and balances confirmation"))
+			end
+		catch err
+			(verbosity >= 1) && @warn "Kraken private websocket readiness probe failed; using REST fallback" error=sprint(showerror, err)
+			_ws_private_ready[] = false
+			return false
+		end
+	end
+end
+
 function _run_private_ws_worker!(bc::KrakenSpotCache, order_channel::Channel{Dict}, balance_channel::Channel{Dict})
 	lastordersnapshot = ""
 	lastbalancesnapshot = ""
@@ -2411,7 +2468,7 @@ end
 Subscribe to private order updates via websocket and fall back to polling open orders.
 """
 function ws_orders(bc::KrakenSpotCache)
-	if _hascredentials(bc)
+	if _hascredentials(bc) && _ws_private_ready_probe!(bc)
 		order_channel, _ = _ensure_private_ws_worker!(bc)
 		return order_channel
 	end
@@ -2446,7 +2503,7 @@ end
 Subscribe to private balance updates via websocket and fall back to polling balances.
 """
 function ws_balances(bc::KrakenSpotCache)
-	if _hascredentials(bc)
+	if _hascredentials(bc) && _ws_private_ready_probe!(bc)
 		_, balance_channel = _ensure_private_ws_worker!(bc)
 		return balance_channel
 	end
