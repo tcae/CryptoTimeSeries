@@ -1964,7 +1964,6 @@ function _validatestrategyconfig!(mc::AbstractDict)
     sellgain = Float32(gs.sellgain)
     limitreduction = Float32(gs.limitreduction)
     minpricedelta = Float32(gs.minpricedelta)
-    min_classify_price_rel_delta = Float32(gs.min_classify_price_rel_delta)
     max_classify_staleness_minutes = Int(gs.max_classify_staleness_minutes)
     maxwindow = Int(gs.maxwindow)
 
@@ -1974,7 +1973,6 @@ function _validatestrategyconfig!(mc::AbstractDict)
     @assert 0f0 <= sellgain <= 1f0 "strategy_sellgain must be in [0, 1], got $(sellgain)"
     @assert 0f0 <= limitreduction <= 1f0 "strategy_limitreduction must be in [0, 1], got $(limitreduction)"
     @assert 0f0 <= minpricedelta <= 1f0 "strategy_minpricedelta must be in [0, 1], got $(minpricedelta)"
-    @assert 0f0 <= min_classify_price_rel_delta <= 1f0 "strategy_min_classify_price_rel_delta must be in [0, 1], got $(min_classify_price_rel_delta)"
     @assert max_classify_staleness_minutes >= 0 "strategy_max_classify_staleness_minutes must be >= 0, got $(max_classify_staleness_minutes)"
     @assert maxwindow > 0 "strategy_maxwindow must be > 0, got $(maxwindow)"
     return mc

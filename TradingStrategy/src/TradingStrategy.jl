@@ -201,17 +201,15 @@ mutable struct GainSegment
     sellgain::Float32
     limitreduction::Float32
     minpricedelta::Float32
-    min_classify_price_rel_delta::Float32
     max_classify_staleness_minutes::Int
-    more_classifier_calls_less_risk::Bool
     longta::TradeAction
     shortta::TradeAction
     trace::Union{Nothing, DataFrame}
     tracecontext::Union{Nothing, String}
     lane_reconciliation::Union{Nothing, NamedTuple}
-    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, buygain::AbstractFloat=0.001f0, sellgain::AbstractFloat=0.01f0, limitreduction::AbstractFloat=0f0, minpricedelta::AbstractFloat=0.001f0, min_classify_price_rel_delta::AbstractFloat=0.001f0, max_classify_staleness_minutes::Integer=5, more_classifier_calls_less_risk::Bool=false)
+    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, buygain::AbstractFloat=0.001f0, sellgain::AbstractFloat=0.01f0, limitreduction::AbstractFloat=0f0, minpricedelta::AbstractFloat=0.001f0, max_classify_staleness_minutes::Integer=5)
         classify_staleness_minutes = Int(max_classify_staleness_minutes)
-        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, buygain, sellgain, limitreduction, Float32(minpricedelta), Float32(min_classify_price_rel_delta), Int(max(0, classify_staleness_minutes)), more_classifier_calls_less_risk, TradeAction(), TradeAction(), nothing, nothing, nothing)
+        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, buygain, sellgain, limitreduction, Float32(minpricedelta), Int(max(0, classify_staleness_minutes)), TradeAction(), TradeAction(), nothing, nothing, nothing)
     end
 end
 
@@ -363,13 +361,11 @@ function _set_runtimegatestate!(rt::GainSegmentRuntime, base::AbstractString; la
     return rt
 end
 
-@inline _strategy_reconciliation_risk(reconciliation::StrategyReconciliationInput) = reconciliation.has_long_open || reconciliation.has_short_open
-
 @inline _classifier_gating_enabled(gs::GainSegment) = gs.algorithm === gain_limit_reversal_pricedelta!
 
 @inline function _classification_triggered(gs::GainSegment, interval_ok::Bool, delta_ok::Bool)::Bool
     interval_enabled = gs.max_classify_staleness_minutes > 0
-    delta_enabled = gs.min_classify_price_rel_delta > 0f0
+    delta_enabled = gs.minpricedelta > 0f0
     !(interval_enabled || delta_enabled) && return true
     return (interval_enabled && interval_ok) || (delta_enabled && delta_ok)
 end
@@ -386,13 +382,9 @@ function _should_skip_classifier(gs::GainSegment, gate, datetime::DateTime, clos
     end
 
     delta_ok = true
-    if gs.min_classify_price_rel_delta > 0f0
+    if gs.minpricedelta > 0f0
         gate.last_classify_close > 0f0 || return false
-        delta_ok = _relpricedelta(closeprice, gate.last_classify_close) >= gs.min_classify_price_rel_delta
-    end
-
-    if gs.more_classifier_calls_less_risk && (isopensegment(gs) || _strategy_reconciliation_risk(reconciliation))
-        return false
+        delta_ok = _relpricedelta(closeprice, gate.last_classify_close) >= gs.minpricedelta
     end
 
     return !_classification_triggered(gs, interval_ok, delta_ok)
@@ -1010,8 +1002,8 @@ function replay_classification_gating(gs::GainSegment, predictionsdf::AbstractDa
         end
 
         delta_ok = true
-        if gs.min_classify_price_rel_delta > 0f0
-            delta_ok = _relpricedelta(predictionsdf[ix, :close], predictionsdf[last_keep_ix, :close]) >= gs.min_classify_price_rel_delta
+        if gs.minpricedelta > 0f0
+            delta_ok = _relpricedelta(predictionsdf[ix, :close], predictionsdf[last_keep_ix, :close]) >= gs.minpricedelta
         end
 
         if _classification_triggered(gs, interval_ok, delta_ok)

@@ -56,9 +56,8 @@ end
     cl_gated = MockClassifier()
     gs_gated = TradingStrategy.GainSegment(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        min_classify_price_rel_delta=0.001f0,
+        minpricedelta=0.001f0,
         max_classify_staleness_minutes=1,
-        more_classifier_calls_less_risk=false,
     )
     rt_gated = TradingStrategy.GainSegmentRuntime(classifier=cl_gated, strategy=gs_gated, source="test")
     TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
@@ -77,9 +76,8 @@ end
     cl = MockClassifier()
     gs = TradingStrategy.GainSegment(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        min_classify_price_rel_delta=0.5f0,
+        minpricedelta=0.5f0,
         max_classify_staleness_minutes=1,
-        more_classifier_calls_less_risk=false,
     )
     rt = TradingStrategy.GainSegmentRuntime(classifier=cl, strategy=gs, source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
@@ -87,30 +85,6 @@ end
     evaldt = enddt
     _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt)
     _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt + Minute(1))
-    @test cl.advice_calls == 2
-end
-
-@testset "GainSegmentRuntime safety override can force classify" begin
-    EnvConfig.init(EnvConfig.test)
-    startdt = DateTime(2026, 1, 12)
-    enddt = startdt + Minute(240)
-    xc = CryptoXch.XchCache(startdt=startdt)
-    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
-
-    cl = MockClassifier()
-    gs = TradingStrategy.GainSegment(
-        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        min_classify_price_rel_delta=0.001f0,
-        max_classify_staleness_minutes=1,
-        more_classifier_calls_less_risk=true,
-    )
-    rt = TradingStrategy.GainSegmentRuntime(classifier=cl, strategy=gs, source="test")
-    TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
-
-    evaldt = enddt
-    recon = TradingStrategy.StrategyReconciliationInput(has_long_open=true, long_avg_entry=100f0, long_open_ix=3)
-    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt; reconciliation=recon)
-    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt; reconciliation=recon)
     @test cl.advice_calls == 2
 end
 
@@ -126,7 +100,7 @@ end
 
     gs = TradingStrategy.GainSegment(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        min_classify_price_rel_delta=0.001f0,
+        minpricedelta=0.001f0,
         max_classify_staleness_minutes=5,
     )
 
@@ -149,7 +123,7 @@ end
 
     gs = TradingStrategy.GainSegment(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        min_classify_price_rel_delta=0.5f0,
+        minpricedelta=0.5f0,
         max_classify_staleness_minutes=1,
     )
 

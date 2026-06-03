@@ -23,8 +23,8 @@ tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=Trad
 tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_reversal!, openthreshold=0.6, makerfee=0.0015)
 tradingstrategy03() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 tradingstrategy04() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
-tradingstrategy05() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.001f0, min_classify_price_rel_delta=0.001f0, max_classify_staleness_minutes=5, more_classifier_calls_less_risk=false)
-tradingstrategy06() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.001f0, min_classify_price_rel_delta=0.001f0, max_classify_staleness_minutes=5, more_classifier_calls_less_risk=true)
+tradingstrategy05() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.001f0, max_classify_staleness_minutes=5)
+tradingstrategy06() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.001f0, max_classify_staleness_minutes=5)
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)), holdbehaviormode=holdbehaviormode)
 
