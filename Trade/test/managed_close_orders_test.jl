@@ -112,3 +112,15 @@ end
     missing = Trade._positions_without_close_orders(tc, assets, DataFrame())
     @test isempty(missing)
 end
+
+@testset "Order amend threshold default and material change boundary" begin
+    tc = Trade.TradeCache(xc=CryptoXch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
+    @test isapprox(Trade._order_amend_price_rel_threshold(tc), 1f-3; atol=1f-8)
+
+    oldp = 100f0
+    newp_small = 100.05f0   # 0.05%
+    newp_large = 100.2f0    # 0.2%
+
+    @test !Trade._material_order_change(oldp, newp_small, 1f0, 1f0; price_reltol=Trade._order_amend_price_rel_threshold(tc))
+    @test Trade._material_order_change(oldp, newp_large, 1f0, 1f0; price_reltol=Trade._order_amend_price_rel_threshold(tc))
+end

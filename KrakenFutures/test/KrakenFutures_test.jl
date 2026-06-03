@@ -82,4 +82,11 @@ using DataFrames, Dates, KrakenFutures, Test
     ])
     @test length(filtered) == 1
     @test filtered[1]["symbol"] == "BTCUSDT"
+
+    # Official Kraken Futures websocket signing vector:
+    # https://docs.kraken.com/api/docs/guides/futures-websockets/
+    challenge = "c100b894-1729-464d-ace1-52dbce11db42"
+    api_secret = "7zxMEF5p/Z8l2p2U7Ghv6x14Af+Fx+92tPgUdVQ748FOIrEoT9bgT+bTRfXc5pz8na+hL/QdrCVG7bh9KpT0eMTm"
+    expected_signed = "4JEpF3ix66GA2B+ooK128Ift4XQVtc137N9yeg4Kqsn9PI0Kpzbysl9M1IeCEdjg0zl00wkVqcsnG4bmnlMb3A=="
+    @test KrakenFutures._wssignedchallenge(api_secret, challenge) == expected_signed
 end

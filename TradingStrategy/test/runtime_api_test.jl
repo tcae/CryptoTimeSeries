@@ -1,5 +1,6 @@
 using Test
 using Dates
+using DataFrames
 using Targets
 using EnvConfig
 using CryptoXch
@@ -13,6 +14,7 @@ end
 
 Base.@kwdef mutable struct MockClassifier <: Classify.AbstractClassifier
     bc::Dict{String, NamedTuple{(:ohlcv,), Tuple{Ohlcv.OhlcvData}}} = Dict{String, NamedTuple{(:ohlcv,), Tuple{Ohlcv.OhlcvData}}}()
+    advice_calls::Int = 0
 end
 
 function Classify.addbase!(cl::MockClassifier, ohlcv::Ohlcv.OhlcvData)
@@ -23,8 +25,8 @@ end
 Classify.supplement!(cl::MockClassifier) = cl
 
 function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::DateTime; investment=nothing)
-    _ = cl
     _ = investment
+    cl.advice_calls += 1
     return (
         tradelabel=Targets.longbuy,
         probability=0.75f0,
@@ -32,6 +34,137 @@ function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::Dat
         datetime=datetime,
         base=String(base),
     )
+end
+
+@testset "GainSegmentRuntime classifier-call gating is variant scoped" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 11)
+    enddt = startdt + Minute(240)
+    xc = CryptoXch.XchCache(startdt=startdt)
+    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
+
+    # Legacy algorithm keeps current behavior and classifies each snapshot call.
+    cl_plain = MockClassifier()
+    rt_plain = TradingStrategy.GainSegmentRuntime(classifier=cl_plain, strategy=TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
+    TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    evaldt = enddt
+    _ = TradingStrategy.getsnapshot!(rt_plain, xc, "SINE", evaldt)
+    _ = TradingStrategy.getsnapshot!(rt_plain, xc, "SINE", evaldt)
+    @test cl_plain.advice_calls == 2
+
+    # New variant gates classifier calls by price delta and minimum interval.
+    cl_gated = MockClassifier()
+    gs_gated = TradingStrategy.GainSegment(
+        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+        min_classify_price_rel_delta=0.001f0,
+        max_classify_staleness_minutes=1,
+        more_classifier_calls_less_risk=false,
+    )
+    rt_gated = TradingStrategy.GainSegmentRuntime(classifier=cl_gated, strategy=gs_gated, source="test")
+    TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    _ = TradingStrategy.getsnapshot!(rt_gated, xc, "SINE", evaldt)
+    _ = TradingStrategy.getsnapshot!(rt_gated, xc, "SINE", evaldt)
+    @test cl_gated.advice_calls == 1
+end
+
+@testset "GainSegmentRuntime classifier-call gating reclassifies on interval OR price delta" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 11)
+    enddt = startdt + Minute(240)
+    xc = CryptoXch.XchCache(startdt=startdt)
+    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
+
+    cl = MockClassifier()
+    gs = TradingStrategy.GainSegment(
+        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+        min_classify_price_rel_delta=0.5f0,
+        max_classify_staleness_minutes=1,
+        more_classifier_calls_less_risk=false,
+    )
+    rt = TradingStrategy.GainSegmentRuntime(classifier=cl, strategy=gs, source="test")
+    TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+
+    evaldt = enddt
+    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt)
+    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt + Minute(1))
+    @test cl.advice_calls == 2
+end
+
+@testset "GainSegmentRuntime safety override can force classify" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 12)
+    enddt = startdt + Minute(240)
+    xc = CryptoXch.XchCache(startdt=startdt)
+    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
+
+    cl = MockClassifier()
+    gs = TradingStrategy.GainSegment(
+        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+        min_classify_price_rel_delta=0.001f0,
+        max_classify_staleness_minutes=1,
+        more_classifier_calls_less_risk=true,
+    )
+    rt = TradingStrategy.GainSegmentRuntime(classifier=cl, strategy=gs, source="test")
+    TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+
+    evaldt = enddt
+    recon = TradingStrategy.StrategyReconciliationInput(has_long_open=true, long_avg_entry=100f0, long_open_ix=3)
+    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt; reconciliation=recon)
+    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt; reconciliation=recon)
+    @test cl.advice_calls == 2
+end
+
+@testset "replay classification gating carries forward skipped predictions" begin
+    df = DataFrame(
+        opentime=[DateTime(2026, 1, 1, 0, 0), DateTime(2026, 1, 1, 0, 1), DateTime(2026, 1, 1, 0, 2)],
+        high=Float32[101f0, 101f0, 101f0],
+        low=Float32[99f0, 99f0, 99f0],
+        close=Float32[100f0, 100.02f0, 100.5f0],
+    )
+    scores = Float32[0.7f0, 0.2f0, 0.9f0]
+    labels = Targets.TradeLabel[Targets.longbuy, Targets.shortbuy, Targets.shortbuy]
+
+    gs = TradingStrategy.GainSegment(
+        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+        min_classify_price_rel_delta=0.001f0,
+        max_classify_staleness_minutes=5,
+    )
+
+    rs, rl = TradingStrategy.replay_classification_gating(gs, df, scores, labels)
+    @test rs[2] == rs[1]
+    @test rl[2] == rl[1]
+    @test rs[3] == scores[3]
+    @test rl[3] == labels[3]
+end
+
+@testset "replay classification gating keeps bars when interval OR price delta is satisfied" begin
+    df = DataFrame(
+        opentime=[DateTime(2026, 1, 1, 0, 0), DateTime(2026, 1, 1, 0, 1), DateTime(2026, 1, 1, 0, 2)],
+        high=Float32[101f0, 101f0, 101f0],
+        low=Float32[99f0, 99f0, 99f0],
+        close=Float32[100f0, 100.02f0, 100.03f0],
+    )
+    scores = Float32[0.7f0, 0.2f0, 0.9f0]
+    labels = Targets.TradeLabel[Targets.longbuy, Targets.shortbuy, Targets.shortbuy]
+
+    gs = TradingStrategy.GainSegment(
+        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+        min_classify_price_rel_delta=0.5f0,
+        max_classify_staleness_minutes=1,
+    )
+
+    rs, rl = TradingStrategy.replay_classification_gating(gs, df, scores, labels)
+    @test rs[2] == scores[2]
+    @test rl[2] == labels[2]
+    @test rs[3] == scores[3]
+    @test rl[3] == labels[3]
+end
+
+@testset "GainSegment max staleness naming" begin
+    gs_new = TradingStrategy.GainSegment(max_classify_staleness_minutes=3)
+
+    @test gs_new.max_classify_staleness_minutes == 3
+    @test TradingStrategy.max_classify_staleness_minutes(gs_new) == 3
 end
 
 @testset "Runtime API compatibility adapter" begin

@@ -67,4 +67,27 @@ using Targets
         @test longta.openprice == 99.9f0
         @test longta.closeprice == 101f0
     end
+
+    @testset "pricedelta variant keeps lane prices unchanged below threshold" begin
+        longta = TradingStrategy.TradeAction(longbuy, 101f0, 99.9f0, 0)
+        shortta = TradingStrategy.TradeAction()
+
+        TradingStrategy.reachgainuntilreversal_pricedelta!(
+            longta,
+            shortta,
+            longbuy,
+            0.9f0,
+            101f0,
+            99f0,
+            100.02f0,
+            0.6f0,
+            0.001f0,
+            0.01f0,
+            0f0,
+            0.01f0,
+        )
+
+        @test longta.openprice == 99.9f0
+        @test longta.closeprice == 101f0
+    end
 end

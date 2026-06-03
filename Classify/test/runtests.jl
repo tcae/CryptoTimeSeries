@@ -8,9 +8,16 @@ using Test
 using Classify, Features, Targets
 
 include("setpartitions_test.jl")
-include("lstm_contract_test.jl")
-include("lstm_phase2_training_test.jl")
 include("storage_format_test.jl")
+
+for optional_test in ("lstm_contract_test.jl", "lstm_phase2_training_test.jl")
+	optional_path = joinpath(@__DIR__, optional_test)
+	if isfile(optional_path)
+		include(optional_test)
+	else
+		println("Skipping optional test file: $(optional_test)")
+	end
+end
 
 
 @testset "Classify tests" begin

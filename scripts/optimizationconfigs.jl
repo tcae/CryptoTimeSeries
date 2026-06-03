@@ -23,6 +23,8 @@ tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=Trad
 tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_reversal!, openthreshold=0.6, makerfee=0.0015)
 tradingstrategy03() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 tradingstrategy04() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
+tradingstrategy05() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.001f0, min_classify_price_rel_delta=0.001f0, max_classify_staleness_minutes=5, more_classifier_calls_less_risk=false)
+tradingstrategy06() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.001f0, min_classify_price_rel_delta=0.001f0, max_classify_staleness_minutes=5, more_classifier_calls_less_risk=true)
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)), holdbehaviormode=holdbehaviormode)
 
@@ -427,6 +429,8 @@ mk031config() = (configname="031", featconfig = trendf6config09(), targetconfig 
 mk032config() = (configname="032", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 mk046config() = (configname="046", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy03(), classbalancing=true)
 mk047config() = (configname="047", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy04(), classbalancing=true)
+mk048config() = (configname="048", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy05(), classbalancing=true)
+mk049config() = (configname="049", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy06(), classbalancing=true)
 mk033config() = (configname="033", featconfig = trendf6config09(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 mk034config() = (configname="034", featconfig = trendf6config09(), targetconfig = targetconfig07(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
 mk035config() = (configname="035", featconfig = trendf6config10(), targetconfig = targetconfig14(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
@@ -476,7 +480,7 @@ const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg fo
     mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
     mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
     mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk039config(), mk040config(), 
-    mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(),
+    mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(), mk048config(), mk049config(),
 ])
 
 const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [

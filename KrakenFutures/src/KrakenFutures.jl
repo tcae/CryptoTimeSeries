@@ -2363,12 +2363,9 @@ end
 Sign websocket challenge for private futures subscriptions.
 """
 function _wssignedchallenge(secret::String, challenge::String)::String
-	decoded = try
-		Base64.base64decode(secret)
-	catch
-		Vector{UInt8}(secret)
-	end
-	return Base64.base64encode(_hmac(decoded, Vector{UInt8}(challenge), SHA.sha512, 128))
+	decoded = Base64.base64decode(strip(secret))
+	challengedigest = SHA.sha256(Vector{UInt8}(challenge))
+	return Base64.base64encode(_hmac(decoded, challengedigest, SHA.sha512, 128))
 end
 
 """
@@ -2381,6 +2378,41 @@ function _wsraw2text(msgraw)
 		return String(Vector{UInt8}(msgraw))
 	end
 	return nothing
+end
+
+function _wsauthremediation(msgtxt::AbstractString)::String
+	base = "verify KrakenFutures key/secret pair and permissions"
+	lower = lowercase(String(msgtxt))
+	if occursin("failed to subscribe to authenticated feed", lower)
+		return "$(base); ensure signed_challenge is computed from SHA-256(challenge) and HMAC-SHA-512 with base64-decoded secret"
+	end
+	return base
+end
+
+function _throwonwsautherror!(msg::Dict, msgtxt::AbstractString, context::AbstractString)::Nothing
+	event = lowercase(String(get(msg, "event", "")))
+	if event in ["alert", "error"] || (haskey(msg, "success") && msg["success"] === false)
+		throw(ErrorException("$(context): $(msgtxt); remediation: $(_wsauthremediation(msgtxt))"))
+	end
+	return nothing
+end
+
+function _wsreceivechallenge(ws; max_frames::Int=10)::String
+	for _ in 1:max_frames
+		challraw = WebSockets.receive(ws)
+		challtxt = _wsraw2text(challraw)
+		isnothing(challtxt) && continue
+		chall = try
+			JSON3.read(challtxt, Dict)
+		catch
+			continue
+		end
+		_throwonwsautherror!(chall, challtxt, "private websocket challenge rejected")
+		if haskey(chall, "message")
+			return String(chall["message"])
+		end
+	end
+	throw(ErrorException("missing websocket challenge after $(max_frames) frames"))
 end
 
 function _newprivatechannel()
@@ -2435,26 +2467,7 @@ function _ws_private_ready_probe!(bc::KrakenFuturesCache)::Bool
 		try
 			WebSockets.open(KRAKEN_FUTURES_WS_PRIVATE) do ws
 				WebSockets.send(ws, JSON3.write(Dict("event" => "challenge", "api_key" => bc.publickey)))
-				challenge = nothing
-				for _ in 1:10
-					challraw = WebSockets.receive(ws)
-					challtxt = _wsraw2text(challraw)
-					isnothing(challtxt) && continue
-					chall = try
-						JSON3.read(challtxt, Dict)
-					catch
-						continue
-					end
-					event = lowercase(String(get(chall, "event", "")))
-					if event in ["alert", "error"] || (haskey(chall, "success") && chall["success"] === false)
-						throw(ErrorException("private websocket readiness challenge rejected: $(challtxt)"))
-					end
-					if haskey(chall, "message")
-						challenge = String(chall["message"])
-						break
-					end
-				end
-				isnothing(challenge) && throw(ErrorException("missing websocket challenge"))
+				challenge = _wsreceivechallenge(ws; max_frames=10)
 
 				WebSockets.send(ws, JSON3.write(Dict(
 					"event" => "subscribe",
@@ -2472,10 +2485,7 @@ function _ws_private_ready_probe!(bc::KrakenFuturesCache)::Bool
 					catch
 						continue
 					end
-					event = lowercase(String(get(msg, "event", "")))
-					if event in ["alert", "error"] || (haskey(msg, "success") && msg["success"] === false)
-						throw(ErrorException("private websocket readiness subscribe rejected: $(msgtxt)"))
-					end
+					_throwonwsautherror!(msg, msgtxt, "private websocket readiness subscribe rejected")
 					feed = lowercase(String(get(msg, "feed", "")))
 					if feed == "open_orders" || lowercase(String(get(msg, "channel", ""))) == "open_orders"
 						_ws_private_ready[] = true
@@ -2520,14 +2530,7 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 				orders_active = false
 				balances_active = false
 				WebSockets.send(ws, JSON3.write(Dict("event" => "challenge", "api_key" => bc.publickey)))
-				challraw = WebSockets.receive(ws)
-				challtxt = _wsraw2text(challraw)
-				challenge = nothing
-				if !isnothing(challtxt)
-					chall = JSON3.read(challtxt, Dict)
-					challenge = haskey(chall, "message") ? String(chall["message"]) : nothing
-				end
-				isnothing(challenge) && throw(ErrorException("missing websocket challenge"))
+				challenge = _wsreceivechallenge(ws; max_frames=10)
 
 				WebSockets.send(ws, JSON3.write(Dict(
 					"event" => "subscribe",
@@ -2553,7 +2556,8 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 					catch
 						continue
 					end
-					feed = String(get(msg, "feed", ""))
+					_throwonwsautherror!(msg, msgtxt, "private websocket stream error")
+					feed = lowercase(String(get(msg, "feed", "")))
 					if feed in ["heartbeat", "alive"]
 						_touch_ws_orders_heartbeat!()
 						_touch_ws_balances_heartbeat!()

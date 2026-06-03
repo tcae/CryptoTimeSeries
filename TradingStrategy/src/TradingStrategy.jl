@@ -138,6 +138,16 @@ end
 
 @inline _lanehascloseguidance(ta::TradeAction) = (ta.openprice > 0f0) && (ta.closeprice > 0f0)
 @inline _price_in_bar(price::Float32, low::Real, high::Real) = (Float32(low) <= price) && (price <= Float32(high))
+@inline _relpricedelta(a::Real, b::Real) = abs(Float32(a) - Float32(b)) / max(abs(Float32(b)), 1f-6)
+
+@inline function _should_update_price(current::Real, candidate::Real, minpricedelta::Float32)
+    currentf = Float32(current)
+    candidatef = Float32(candidate)
+    if currentf <= 0f0 || minpricedelta <= 0f0
+        return true
+    end
+    return _relpricedelta(candidatef, currentf) >= minpricedelta
+end
 
 abstract type AbstractStrategyRuntime end
 
@@ -146,10 +156,11 @@ mutable struct GainSegmentRuntime <: AbstractStrategyRuntime
     strategy_template::Any
     strategy_state::Dict{String, Any}
     strategy_history::Dict{String, NamedTuple{(:predictionsdf, :scores, :labels), Tuple{DataFrame, Vector{Float32}, Vector{Targets.TradeLabel}}}}
+    classifier_gate_state::Dict{String, NamedTuple{(:last_advice, :last_classify_dt, :last_classify_close), Tuple{Any, Union{Nothing, DateTime}, Float32}}}
     accepted::Set{String}
     source::String
     function GainSegmentRuntime(; classifier::Classify.AbstractClassifier=Classify.Classifier011(), strategy::Any=nothing, source::AbstractString="manual")
-        return new(classifier, deepcopy(strategy), Dict{String, Any}(), Dict{String, NamedTuple{(:predictionsdf, :scores, :labels), Tuple{DataFrame, Vector{Float32}, Vector{Targets.TradeLabel}}}}(), Set{String}(), String(source))
+        return new(classifier, deepcopy(strategy), Dict{String, Any}(), Dict{String, NamedTuple{(:predictionsdf, :scores, :labels), Tuple{DataFrame, Vector{Float32}, Vector{Targets.TradeLabel}}}}(), Dict{String, NamedTuple{(:last_advice, :last_classify_dt, :last_classify_close), Tuple{Any, Union{Nothing, DateTime}, Float32}}}(), Set{String}(), String(source))
     end
 end
 
@@ -189,15 +200,22 @@ mutable struct GainSegment
     buygain::Float32
     sellgain::Float32
     limitreduction::Float32
+    minpricedelta::Float32
+    min_classify_price_rel_delta::Float32
+    max_classify_staleness_minutes::Int
+    more_classifier_calls_less_risk::Bool
     longta::TradeAction
     shortta::TradeAction
     trace::Union{Nothing, DataFrame}
     tracecontext::Union{Nothing, String}
     lane_reconciliation::Union{Nothing, NamedTuple}
-    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, buygain::AbstractFloat=0.001f0, sellgain::AbstractFloat=0.01f0, limitreduction::AbstractFloat=0f0)
-        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, buygain, sellgain, limitreduction, TradeAction(), TradeAction(), nothing, nothing, nothing)
+    function GainSegment(;maxwindow::Integer=4*60, openthreshold=0.6, closethreshold=0.5, algorithm=gain_reversal!, makerfee::AbstractFloat=0f0, takerfee::AbstractFloat=0f0, buygain::AbstractFloat=0.001f0, sellgain::AbstractFloat=0.01f0, limitreduction::AbstractFloat=0f0, minpricedelta::AbstractFloat=0.001f0, min_classify_price_rel_delta::AbstractFloat=0.001f0, max_classify_staleness_minutes::Integer=5, more_classifier_calls_less_risk::Bool=false)
+        classify_staleness_minutes = Int(max_classify_staleness_minutes)
+        return new(algorithm, openthreshold, closethreshold, maxwindow, 0, emptygaindf(), makerfee, takerfee, nothing, nothing, nothing, 0, buygain, sellgain, limitreduction, Float32(minpricedelta), Float32(min_classify_price_rel_delta), Int(max(0, classify_staleness_minutes)), more_classifier_calls_less_risk, TradeAction(), TradeAction(), nothing, nothing, nothing)
     end
 end
+
+@inline max_classify_staleness_minutes(gs::GainSegment) = gs.max_classify_staleness_minutes
 
 Base.@kwdef mutable struct StrategySnapshot
     base::String
@@ -260,6 +278,7 @@ function dropbase!(rt::GainSegmentRuntime, base::AbstractString)::Nothing
     end
     delete!(rt.strategy_state, basekey)
     delete!(rt.strategy_history, basekey)
+    delete!(rt.classifier_gate_state, basekey)
     delete!(rt.accepted, basekey)
     return nothing
 end
@@ -274,6 +293,7 @@ end
 function reset!(rt::GainSegmentRuntime)::Nothing
     empty!(rt.strategy_state)
     empty!(rt.strategy_history)
+    empty!(rt.classifier_gate_state)
     empty!(rt.accepted)
     try
         Classify.removebase!(rt.classifier, nothing)
@@ -296,6 +316,7 @@ function apply_strategy!(rt::GainSegmentRuntime, gs::GainSegment; source::Abstra
     rt.source = String(source)
     empty!(rt.strategy_state)
     empty!(rt.strategy_history)
+    empty!(rt.classifier_gate_state)
     empty!(rt.accepted)
     try
         Classify.removebase!(rt.classifier, nothing)
@@ -322,6 +343,59 @@ function _runtimestate!(rt::GainSegmentRuntime, base::AbstractString)
     return get!(rt.strategy_state, basekey) do
         deepcopy(rt.strategy_template)
     end
+end
+
+"Return the per-base classifier gate state, creating an empty one when needed."
+function _runtimegatestate!(rt::GainSegmentRuntime, base::AbstractString)
+    basekey = uppercase(String(base))
+    return get!(rt.classifier_gate_state, basekey) do
+        (last_advice=nothing, last_classify_dt=nothing, last_classify_close=0f0)
+    end
+end
+
+function _set_runtimegatestate!(rt::GainSegmentRuntime, base::AbstractString; last_advice, last_classify_dt::Union{Nothing, DateTime}, last_classify_close::Real)
+    basekey = uppercase(String(base))
+    rt.classifier_gate_state[basekey] = (
+        last_advice=last_advice,
+        last_classify_dt=last_classify_dt,
+        last_classify_close=Float32(last_classify_close),
+    )
+    return rt
+end
+
+@inline _strategy_reconciliation_risk(reconciliation::StrategyReconciliationInput) = reconciliation.has_long_open || reconciliation.has_short_open
+
+@inline _classifier_gating_enabled(gs::GainSegment) = gs.algorithm === gain_limit_reversal_pricedelta!
+
+@inline function _classification_triggered(gs::GainSegment, interval_ok::Bool, delta_ok::Bool)::Bool
+    interval_enabled = gs.max_classify_staleness_minutes > 0
+    delta_enabled = gs.min_classify_price_rel_delta > 0f0
+    !(interval_enabled || delta_enabled) && return true
+    return (interval_enabled && interval_ok) || (delta_enabled && delta_ok)
+end
+
+function _should_skip_classifier(gs::GainSegment, gate, datetime::DateTime, closeprice::Float32, reconciliation::StrategyReconciliationInput)::Bool
+    _classifier_gating_enabled(gs) || return false
+    isnothing(gate.last_advice) && return false
+
+    interval_ok = true
+    if gs.max_classify_staleness_minutes > 0
+        isnothing(gate.last_classify_dt) && return false
+        elapsed_minutes = Int(div(Dates.value(datetime - gate.last_classify_dt), 60000))
+        interval_ok = elapsed_minutes >= gs.max_classify_staleness_minutes
+    end
+
+    delta_ok = true
+    if gs.min_classify_price_rel_delta > 0f0
+        gate.last_classify_close > 0f0 || return false
+        delta_ok = _relpricedelta(closeprice, gate.last_classify_close) >= gs.min_classify_price_rel_delta
+    end
+
+    if gs.more_classifier_calls_less_risk && (isopensegment(gs) || _strategy_reconciliation_risk(reconciliation))
+        return false
+    end
+
+    return !_classification_triggered(gs, interval_ok, delta_ok)
 end
 
 "Append or update one runtime sample derived from the current OHLCV bar and classifier output."
@@ -424,19 +498,35 @@ end
 "Return one strategy snapshot for a base using gain-segment runtime state and classifier output."
 function getsnapshot!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime; reconciliation::StrategyReconciliationInput=StrategyReconciliationInput())::Union{Nothing, StrategySnapshot}
     basekey = uppercase(String(base))
-    advice = Classify.advice(rt.classifier, basekey, datetime, investment=nothing)
-    isnothing(advice) && return nothing
-
     if !haskey(xc.bases, basekey)
         (verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping getsnapshot" base=basekey
         return nothing
     end
-    ohlcv = CryptoXch.ohlcv(xc, basekey)
-    history = _runtimehistory!(rt, basekey)
-    _upsert_runtime_sample!(history, ohlcv, advice.tradelabel, advice.probability)
 
+    ohlcv = CryptoXch.ohlcv(xc, basekey)
     gs = _runtimestate!(rt, basekey)
     _apply_runtime_reconciliation!(gs, reconciliation)
+    gate = _runtimegatestate!(rt, basekey)
+
+    rowix = ohlcv.ix
+    odf = Ohlcv.dataframe(ohlcv)
+    @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
+    closeprice = Float32(odf[rowix, :close])
+
+    advice = nothing
+    if _should_skip_classifier(gs, gate, datetime, closeprice, reconciliation)
+        advice = gate.last_advice
+    else
+        advice = Classify.advice(rt.classifier, basekey, datetime, investment=nothing)
+        if !isnothing(advice)
+            _set_runtimegatestate!(rt, basekey; last_advice=advice, last_classify_dt=datetime, last_classify_close=closeprice)
+        end
+    end
+
+    isnothing(advice) && return nothing
+
+    history = _runtimehistory!(rt, basekey)
+    _upsert_runtime_sample!(history, ohlcv, advice.tradelabel, advice.probability)
 
     lastix = length(history.scores)
     if lastix > 0
@@ -788,6 +878,69 @@ function reachgainuntilreversal!(longta::TradeAction, shortta::TradeAction, labe
     return branch
 end
 
+"Adjust lane intents with minimum relative price-delta gating for all updates."
+function reachgainuntilreversal_pricedelta!(longta::TradeAction, shortta::TradeAction, label::TradeLabel, score, high, low, close, openthreshold, buygain, sellgain, limitreduction, minpricedelta)
+    _ = high
+    _ = low
+    branch = "none"
+
+    longsignal = (label in [longbuy, longstrongbuy]) && (score >= openthreshold)
+    shortsignal = (label in [shortbuy, shortstrongbuy]) && (score >= openthreshold)
+
+    !longsignal && _clearopenintent!(longta)
+    !shortsignal && _clearopenintent!(shortta)
+
+    if longsignal
+        branch = "long_signal"
+        short_candidate = close * (1f0 - buygain)
+        long_open_candidate = close * (1f0 - buygain)
+        long_close_candidate = close * (1f0 + sellgain)
+
+        if _lanehascloseguidance(shortta) && _should_update_price(shortta.closeprice, short_candidate, minpricedelta)
+            shortta.closeprice = short_candidate
+        end
+        if _should_update_price(longta.openprice, long_open_candidate, minpricedelta)
+            longta.openprice = long_open_candidate
+        end
+        longta.label = label == longstrongbuy ? longstrongbuy : longbuy
+        if _should_update_price(longta.closeprice, long_close_candidate, minpricedelta)
+            longta.closeprice = long_close_candidate
+        end
+    elseif shortsignal
+        branch = "short_signal"
+        long_candidate = close * (1f0 + buygain)
+        short_open_candidate = close * (1f0 + buygain)
+        short_close_candidate = close * (1f0 - sellgain)
+
+        if _lanehascloseguidance(longta) && _should_update_price(longta.closeprice, long_candidate, minpricedelta)
+            longta.closeprice = long_candidate
+        end
+        if _should_update_price(shortta.openprice, short_open_candidate, minpricedelta)
+            shortta.openprice = short_open_candidate
+        end
+        shortta.label = label == shortstrongbuy ? shortstrongbuy : shortbuy
+        if _should_update_price(shortta.closeprice, short_close_candidate, minpricedelta)
+            shortta.closeprice = short_close_candidate
+        end
+    else
+        branch = "reduce_limit"
+        if _lanehascloseguidance(longta) && (longta.closeprice > longta.openprice)
+            candidate = max(close, longta.closeprice * (1f0 - sellgain * limitreduction))
+            if _should_update_price(longta.closeprice, candidate, minpricedelta)
+                longta.closeprice = candidate
+            end
+        end
+        if _lanehascloseguidance(shortta) && (shortta.closeprice < shortta.openprice)
+            candidate = min(close, shortta.closeprice * (1f0 + sellgain * limitreduction))
+            if _should_update_price(shortta.closeprice, candidate, minpricedelta)
+                shortta.closeprice = candidate
+            end
+        end
+    end
+
+    return branch
+end
+
 """Limit-reversal strategy with lane-based independent open/close guidance."""
 function gain_limit_reversal!(gs::GainSegment, lastix)
     for ix in (gs.endix + 1):lastix
@@ -810,6 +963,66 @@ function gain_limit_reversal!(gs::GainSegment, lastix)
     gs.endix = lastix
     _apply_reconciliation_to_lanes!(gs)
     return gs
+end
+
+"Limit-reversal strategy variant with minimum relative price-delta update gating."
+function gain_limit_reversal_pricedelta!(gs::GainSegment, lastix)
+    for ix in (gs.endix + 1):lastix
+        processclosedorder!(gs, ix, gs.longta)
+        processclosedorder!(gs, ix, gs.shortta)
+        reachgainuntilreversal_pricedelta!(
+            gs.longta,
+            gs.shortta,
+            gs.labels[ix],
+            gs.scores[ix],
+            gs.predictionsdf[ix, :high],
+            gs.predictionsdf[ix, :low],
+            gs.predictionsdf[ix, :close],
+            gs.openthreshold,
+            gs.buygain,
+            gs.sellgain,
+            gs.limitreduction,
+            gs.minpricedelta,
+        )
+    end
+    gs.endix = lastix
+    _apply_reconciliation_to_lanes!(gs)
+    return gs
+end
+
+"Replay runtime-equivalent classification gating over precomputed score/label vectors."
+function replay_classification_gating(gs::GainSegment, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector)
+    n = length(scores)
+    @assert n == length(labels) == size(predictionsdf, 1) "n=$(n) must match labels and predictionsdf rows"
+
+    out_scores = Float32.(scores)
+    out_labels = Targets.TradeLabel[labels[i] for i in eachindex(labels)]
+    if n <= 1 || !_classifier_gating_enabled(gs)
+        return out_scores, out_labels
+    end
+
+    last_keep_ix = 1
+    for ix in 2:n
+        interval_ok = true
+        if gs.max_classify_staleness_minutes > 0
+            elapsed_minutes = Int(div(Dates.value(predictionsdf[ix, :opentime] - predictionsdf[last_keep_ix, :opentime]), 60000))
+            interval_ok = elapsed_minutes >= gs.max_classify_staleness_minutes
+        end
+
+        delta_ok = true
+        if gs.min_classify_price_rel_delta > 0f0
+            delta_ok = _relpricedelta(predictionsdf[ix, :close], predictionsdf[last_keep_ix, :close]) >= gs.min_classify_price_rel_delta
+        end
+
+        if _classification_triggered(gs, interval_ok, delta_ok)
+            last_keep_ix = ix
+        else
+            out_scores[ix] = out_scores[last_keep_ix]
+            out_labels[ix] = out_labels[last_keep_ix]
+        end
+    end
+
+    return out_scores, out_labels
 end
 
 """

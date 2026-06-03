@@ -24,11 +24,9 @@ EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 Features = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
 Gtk = "4c0ca9eb-093a-5379-98c5-f87ac0bbbf44"
-HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 Hwloc = "0e44f5e4-bd66-52a0-8798-143a42290a1d"
 IJulia = "7073ff75-c697-5162-941a-fcdaad2a7d2a"
 Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
-Indicators = "70c4c096-89a6-5ec6-8236-da8aa3bd86fd"
 InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
 JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
 JLSO = "9da8a3cd-07a3-59c0-a743-3fdc52c30d11"
@@ -71,6 +69,20 @@ TradingStrategy = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
 Transducers = "28d57a85-8fef-5791-bfe6-a80928e7c999"
 WebSockets = "104b5d7c-a370-577a-8038-80a2059c5097"
 cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
+
+[sources]
+Bybit = {path = "Bybit"}
+Classify = {path = "Classify"}
+CryptoXch = {path = "CryptoXch"}
+EnvConfig = {path = "EnvConfig"}
+Features = {path = "Features"}
+KrakenFutures = {path = "KrakenFutures"}
+KrakenSpot = {path = "KrakenSpot"}
+Ohlcv = {path = "Ohlcv"}
+Targets = {path = "Targets"}
+TestOhlcv = {path = "TestOhlcv"}
+Trade = {path = "Trade"}
+TradingStrategy = {path = "TradingStrategy"}
 
 [compat]
 julia = "1.5.3"

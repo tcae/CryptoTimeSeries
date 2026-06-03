@@ -501,12 +501,13 @@ function getgainsdf(cfg::TrendDetectorConfig)
         sampleset = resultsview[begin, :set]
         scores = resultsview[!, :score]
         labels = resultsview[!, :label]
+        replayscores, replaylabels = TradingStrategy.replay_classification_gating(cfg.tradingstrategy, resultsview, scores, labels)
         targets = resultsview[!, :target]
         truescores = fill(1f0, size(resultsview, 1))
 
         for (openthreshold, closethreshold) in GAIN_THRESHOLDS
             TradingStrategy.reset!(cfg.tradingstrategy)
-            gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, scores, labels, true, openthreshold=openthreshold, closethreshold=closethreshold)
+            gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, replayscores, replaylabels, true, openthreshold=openthreshold, closethreshold=closethreshold)
             if size(gdf, 1) > 0
                 addgainadmin!(gdf, coin, sampleset, true, rng, openthreshold, closethreshold)
                 push!(gainparts, gdf)

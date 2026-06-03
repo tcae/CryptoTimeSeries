@@ -685,6 +685,14 @@ function _tradelogslippagebps(limitprice, fill_price::Union{Missing, Float64}, o
     return ((fill - req) / req) * 10000.0
 end
 
+"Return TradeLog event timestamp in UTC; use simulated time in sim mode when available."
+function _tradelogeventtimeutc(xc::XchCache)::DateTime
+    if !isnothing(xc.currentdt)
+        return DateTime(xc.currentdt)
+    end
+    return Dates.now(Dates.UTC)
+end
+
 function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed; orderinfo=nothing, status_reason=nothing)
     pair = basequote(symbol)
     simmode = String(Symbol(xc.mc[:simmode]))
@@ -723,10 +731,12 @@ function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType,
     !ismissing(leg_group_id) && push!(notes_parts, "leg_group_id=$(leg_group_id)")
     !ismissing(leg_label) && push!(notes_parts, "leg_label=$(leg_label)")
     notes = isempty(notes_parts) ? missing : join(notes_parts, ";")
+    event_time = _tradelogeventtimeutc(xc)
+    created_at = Dates.now(Dates.UTC)
     event = TradeLog.AuditEventRow(
         event_type=event_type,
-        event_time_utc=Dates.now(Dates.UTC),
-        created_at_utc=Dates.now(Dates.UTC),
+        event_time_utc=event_time,
+        created_at_utc=created_at,
         source_module="CryptoXch",
         environment=string(Symbol(EnvConfig.configmode)),
         run_mode=tradelogrunmode(xc),
@@ -1011,10 +1021,12 @@ function _tradelogwritefillbalancesnapshot!(xc::XchCache, trigger_event::TradeLo
         "base_delta=$(base_after - base_before)",
         "quote_delta=$(quote_after - quote_before)",
     ]
+    event_time = _tradelogeventtimeutc(xc)
+    created_at = Dates.now(Dates.UTC)
     event = TradeLog.AuditEventRow(
         event_type=TradeLog.POSITION_SNAPSHOT,
-        event_time_utc=Dates.now(Dates.UTC),
-        created_at_utc=Dates.now(Dates.UTC),
+        event_time_utc=event_time,
+        created_at_utc=created_at,
         source_module="CryptoXch",
         environment=string(Symbol(EnvConfig.configmode)),
         run_mode=tradelogrunmode(xc),

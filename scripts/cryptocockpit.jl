@@ -203,6 +203,20 @@ function _active_row_id(active_cell, olddata, currentfocus)
     return currentfocus
 end
 
+function _basecoin_options(cfg)
+    if isnothing(cfg) || (size(cfg, 1) == 0)
+        return []
+    end
+    return [(label = i, value = i) for i in cfg[!, :basecoin]]
+end
+
+function _first_basecoin(cfg)
+    if isnothing(cfg) || (size(cfg, 1) == 0)
+        return nothing
+    end
+    return cfg[1, :basecoin]
+end
+
 function _cockpit_contracts(; trendref::AbstractString=COCKPIT_TREND_REF, boundsref::AbstractString=COCKPIT_BOUNDS_REF)
     trendcfg = _resolve_trendconfig(trendref)
     boundscfg = _resolve_boundsconfig(boundsref)
@@ -231,12 +245,37 @@ function loadohlcv!(cp, base, interval)
 end
 
 function updateassets!(cp, download=false)
+    function _selection_datetimes(nowdt::DateTime)
+        dt = floor(nowdt, Minute(1))
+        offsets = [0, 1, 7, 30, 90, 180, 365, 730]
+        dts = DateTime[]
+        for d in offsets
+            cand = dt - Day(d)
+            cand in dts || push!(dts, cand)
+        end
+        return dts
+    end
+
     assets = DataFrame((coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], usdtprice=Float32[], usdtvalue=Float32[])) # CryptoXch.portfolio!(cp.tc.xc)
     cp.coin = Dict()
     if download || (size(cp.tc.cfg, 1) == 0)
-        Trade.tradeselection!(cp.tc, assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true)
+        selecteddt = nothing
+        simmode = get(cp.tc.xc.mc, :simmode, CryptoXch.nosimulation)
+        for dt in _selection_datetimes(Dates.now(UTC))
+            Trade.tradeselection!(cp.tc, assets[!, :coin]; datetime=dt, updatecache=true)
+            if size(cp.tc.cfg, 1) > 0
+                selecteddt = dt
+                break
+            end
+            simmode == CryptoXch.nosimulation && break
+        end
+        if isnothing(selecteddt) && (simmode != CryptoXch.nosimulation)
+            @warn "no tradable coins found for simulated market snapshots in tested datetime probe window" probe_datetimes=_selection_datetimes(Dates.now(UTC))
+        elseif !isnothing(selecteddt)
+            println("$(EnvConfig.now()) cockpit tradeselection datetime=$(selecteddt)")
+        end
     end
-    cp.tc.cfg = cp.tc.cfg[cp.tc.cfg[!, :classifieraccepted], :]
+    Trade.filtertradeconfig!(cp.tc; mode=:tradeloop)
     Trade.addassetsconfig!(cp.tc, assets)
     # cp.update = Dates.now(UTC)
     # select!(cp.tc.cfg, Not(:update))
@@ -307,6 +346,8 @@ app = dash(external_stylesheets = ["dashboard.css"], assets_folder=CP.cssdir)
 
 # println(CP.tc.cfg)
 println("last assetsconfig update: $(CP.update)")
+focus_options = _basecoin_options(CP.tc.cfg)
+focus_value = _first_basecoin(CP.tc.cfg)
 app.layout = html_div() do
     html_div(id="leftside", [
         html_div(id="select_buttons", [
@@ -329,8 +370,8 @@ app.layout = html_div() do
     html_div(id="rightside", [
         dcc_dropdown(
             id="crypto_focus",
-            options=[(label = i, value = i) for i in CP.tc.cfg[!, :basecoin]],
-            value=CP.tc.cfg[1, :basecoin]
+            options=focus_options,
+            value=focus_value
         ),
         _dropdownrow("trend config", "trend_config_select", _config_options(:trend), COCKPIT_TREND_REF),
         _dropdownrow("bounds config", "bounds_config_select", _config_options(:bounds), COCKPIT_BOUNDS_REF),
@@ -1209,11 +1250,11 @@ callback!(
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
                 updateassets!(CP, false)
-                active_row_id = CP.tc.cfg[1, :basecoin]
+                active_row_id = _first_basecoin(CP.tc.cfg)
             elseif (EnvConfig.configmode == EnvConfig.test) && !("test" in indicator)  # switch from test to prodcution data
                 EnvConfig.init(EnvConfig.production)
                 updateassets!(CP, false)
-                active_row_id = CP.tc.cfg[1, :basecoin]
+                active_row_id = _first_basecoin(CP.tc.cfg)
             end
 
         if button_id == "update_data"
@@ -1222,8 +1263,12 @@ callback!(
         #     return 0, olddata, active_row_id, options
         end
         if !isnothing(CP.tc.cfg)
+            options_now = _basecoin_options(CP.tc.cfg)
+            if isnothing(active_row_id) || !any(opt -> opt.value == active_row_id, options_now)
+                active_row_id = _first_basecoin(CP.tc.cfg)
+            end
             # println("data update CP.tc.cfg.size: $(size(CP.tc.cfg))")
-            return 1, Dict.(pairs.(eachrow(CP.tc.cfg))), active_row_id, [(label = i, value = i) for i in CP.tc.cfg[!, :basecoin]]
+            return 1, Dict.(pairs.(eachrow(CP.tc.cfg))), active_row_id, options_now
         else
             @warn "found no assetsconfig"
             return 0, olddata, active_row_id, options
@@ -1246,8 +1291,10 @@ callback!(
         # println(s)
         setselectrows = (selectrows === nothing) ? [] : [r for r in selectrows]  # convert JSON3 array to ordinary String array
         setselectids = (selectids === nothing) ? [] : [r for r in selectids]   # convert JSON3 array to ordinary Int64 array
+        all_rows = isnothing(CP.tc.cfg) ? Int[] : collect(0:(size(CP.tc.cfg, 1)-1))
+        all_ids = isnothing(CP.tc.cfg) ? String[] : collect(CP.tc.cfg[!, :basecoin])
         res = Dict(
-            "all_button" => (0:(size(CP.tc.cfg[!, :basecoin], 1)-1), CP.tc.cfg[!, :basecoin]),
+            "all_button" => (all_rows, all_ids),
             "none_button" => ([], []),
             "kpi_table" => (setselectrows, setselectids),
             "" => (setselectrows, setselectids))
@@ -1269,4 +1316,30 @@ callback!(
     # end
 
 
-run_server(app, "0.0.0.0", debug=false)
+function _env_int(name::AbstractString, default::Int)
+    raw = strip(get(ENV, String(name), ""))
+    isempty(raw) && return default
+    parsed = tryparse(Int, raw)
+    return isnothing(parsed) ? default : parsed
+end
+
+function _run_cockpit_server(app; host::String="0.0.0.0", default_port::Int=8050, max_port_tries::Int=20)
+    base_port = _env_int("CTS_COCKPIT_PORT", default_port)
+    for offset in 0:(max_port_tries - 1)
+        port = base_port + offset
+        try
+            println("$(EnvConfig.now()) starting cockpit server on $(host):$(port)")
+            run_server(app, host, port, debug=false)
+            return
+        catch err
+            if isa(err, IOError) && occursin("EADDRINUSE", sprint(showerror, err)) && (offset < max_port_tries - 1)
+                @warn "cockpit port in use; trying next port" port=port
+                continue
+            end
+            rethrow(err)
+        end
+    end
+    error("unable to start cockpit server after $(max_port_tries) port attempts starting at $(base_port)")
+end
+
+_run_cockpit_server(app)

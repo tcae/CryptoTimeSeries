@@ -1,6 +1,6 @@
 # CryptoTimeSeries Config And Env Options
 
-Last updated: 2026-05-31
+Last updated: 2026-06-02
 
 This document lists externally configurable options discovered from source code:
 - Code-level configuration options (public init and runtime knobs)
@@ -57,10 +57,13 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 
 | Env var | Intent | Used by modules |
 |---|---|---|
-| CTS_ASYNC_ENGINE_ENABLED | Enables Objective-4 async engine path | Trade |
-| CTS_ASYNC_SHADOW_MODE | Enables async-vs-sync shadow compare mode | Trade |
-| CTS_WS_MARKETDATA_ENABLED | Enables websocket market-data ownership path | Trade |
-| CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE | Enables OHLCV gap backfill in tradable checks | Trade |
+| CTS_WS_ORDERS_ENABLED | Enables websocket-backed open-order ownership updates | Trade, scripts/tradereal |
+| CTS_WS_BALANCES_ENABLED | Enables websocket-backed balances ownership updates | Trade, scripts/tradereal |
+| CTS_WS_PRIMARY_MODE | Promotes websocket snapshots to primary source (with REST fallback) | Trade, scripts/tradereal |
+| CTS_WS_SHADOW_MODE | Enables websocket-vs-REST shadow comparison diagnostics | scripts/tradereal |
+| CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH | Auto-fallback to REST when primary websocket mode detects mismatches | scripts/tradereal |
+| CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED | Enables startup worker probe for TradeLog migration/cutover checks | scripts/tradereal |
+| CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED | Enables migration fill-balance behavior during startup/cutover | scripts/tradereal |
 
 ### 2.2 Run identity and production test gating
 
@@ -100,6 +103,12 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 
 ### 2.6 Script-level simulation/real-trading options
 
+#### Shared script options
+
+| Env var | Intent | Used by modules |
+|---|---|---|
+| CTS_TREND_CONFIG_REF | Selects TrendDetector config reference loaded by run scripts (default: "046") | scripts/tradesim, scripts/tradereal |
+
 #### tradesim.jl and benchmark_tradesim_audit.jl
 
 | Env var | Intent | Used by modules |
@@ -124,10 +133,12 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 | TRADEREAL_KRAKENFUTURES_STARTUP_ORDER_PROBE | Enable/disable KrakenFutures startup capability probe | scripts/tradereal |
 | TRADEREAL_KRAKENFUTURES_STARTUP_ORDER_PROBE_BASE | Force base coin for KrakenFutures startup probe | scripts/tradereal |
 
-### 2.7 Test-only toggles
+### 2.7 Test and coverage toggles
 
 | Env var | Intent | Used by modules |
 |---|---|---|
+| CTS_TEST_COVERAGE | Enables/disables coverage collection in root `test/runtests.jl` | root tests |
+| CTS_TEST_COVERAGE_TRACEFILE | Overrides LCOV output path for root coverage run | root tests |
 | RUN_SLOW_BTC_TREND04 | Enables skipped slow test path for BTC Trend04 test | Targets tests |
 
 ## 3) Value conventions
@@ -162,12 +173,18 @@ Legend:
 | CTS_TRADELOG_ENABLED | production-safe | Global TradeLog persistence switch |
 | CTS_TRADELOG_SIMULATION_ENABLED | production-safe | TradeLog simulation persistence switch |
 | CTS_TRADELOG_ROOT | production-safe | TradeLog root override |
-| CTS_ASYNC_ENGINE_ENABLED | test-only | Objective 4 rollout/experiment toggle |
-| CTS_ASYNC_SHADOW_MODE | test-only | Shadow-compare safety mode for rollout verification |
-| CTS_WS_MARKETDATA_ENABLED | test-only | Objective 4 websocket market-data ownership toggle |
-| CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE | test-only | Objective 4 tradable-gap backfill toggle |
+| CTS_WS_ORDERS_ENABLED | production-safe | Enables websocket order ownership path |
+| CTS_WS_BALANCES_ENABLED | production-safe | Enables websocket balance ownership path |
+| CTS_WS_PRIMARY_MODE | production-safe | Enables websocket-primary ownership mode with fallback |
+| CTS_WS_SHADOW_MODE | test-only | Websocket-vs-REST shadow comparison diagnostic mode |
+| CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH | production-safe | Auto-fallback safety guard when websocket-primary mismatches are detected |
+| CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED | test-only | Startup/cutover probe for migration worker behavior |
+| CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED | production-safe | Enables fill-balance migration behavior in startup/cutover path |
+| CTS_TREND_CONFIG_REF | production-safe | Selects TrendDetector config reference for scripts |
 | CTS_RUN_PRODUCTION_TESTS | test-only | Allows production test suite execution |
 | KRAKEN_ONLINE_TESTS | test-only | Enables online KrakenSpot integration tests |
+| CTS_TEST_COVERAGE | test-only | Enables root-suite coverage generation |
+| CTS_TEST_COVERAGE_TRACEFILE | test-only | Coverage trace output location override |
 | RUN_SLOW_BTC_TREND04 | test-only | Enables slow Targets test path |
 | TRADESIM_WHITELIST | test-only | Script-level simulation input override |
 | TRADESIM_STARTDT | test-only | Script-level simulation interval override |

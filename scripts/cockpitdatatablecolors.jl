@@ -24,6 +24,10 @@ function palette(N::Int=100)
 end
 
 function discrete_background_color_bins(df; n_bins=5, columns="all")
+    if n_bins < 1
+        return Dict[]
+    end
+
     bounds = [(i-1) * (1.0 / n_bins) for i in 1:n_bins+1]
     nme = names(df, Number)
     if columns == "all"
@@ -31,19 +35,32 @@ function discrete_background_color_bins(df; n_bins=5, columns="all")
     else
         df_numeric_columns = df[!,[columns]]
     end
+    if (size(df_numeric_columns, 1) == 0) || (size(df_numeric_columns, 2) == 0)
+        return Dict[]
+    end
+
     styles = Dict[]
     ps = ["#" * string(c, base=16, pad=6) for c in palette(n_bins)]
+
+    vals = Float64[]
+    for column in names(df_numeric_columns, Number)
+        for v in df_numeric_columns[!, column]
+            ismissing(v) && continue
+            push!(vals, Float64(v))
+        end
+    end
+    isempty(vals) && return Dict[]
+
+    df_max = maximum(vals)
+    df_min = minimum(vals)
+    df_max = maximum([df_max, abs(df_min)])
+    df_min = -df_max
+    ranges = [((df_max - df_min) * i) + df_min for i in bounds]
+
     # for (ix, c) in enumerate(ps)
     #     println("$ix $c")
     # end
     for column in names(df_numeric_columns, Number)
-        df_max = maximum(Array(df_numeric_columns))
-        df_min = minimum(Array(df_numeric_columns))
-
-        df_max = maximum([df_max, abs(df_min)])
-        df_min = -df_max
-
-        ranges = [((df_max - df_min) * i) + df_min for i in bounds]
         for i in 1:length(bounds)-1
             min_bound = ranges[i]
             max_bound = ranges[i+1]
