@@ -108,7 +108,6 @@ const _ws_private_worker_running = Ref(false)
 const _ws_private_orders_channel = Ref{Union{Nothing, Channel{Dict}}}(nothing)
 const _ws_private_balances_channel = Ref{Union{Nothing, Channel{Dict}}}(nothing)
 const _ws_private_subscribe_ack_timeout = Dates.Second(20)
-const _ws_private_ready = Ref{Union{Nothing, Bool}}(nothing)
 const _ws_private_min_reconnect_interval = Dates.Second(2)
 const _ws_private_backoff_base_seconds = 2.0
 const _ws_private_backoff_cap_seconds = 60.0
@@ -2363,9 +2362,12 @@ end
 Sign websocket challenge for private futures subscriptions.
 """
 function _wssignedchallenge(secret::String, challenge::String)::String
-	decoded = Base64.base64decode(strip(secret))
-	challengedigest = SHA.sha256(Vector{UInt8}(challenge))
-	return Base64.base64encode(_hmac(decoded, challengedigest, SHA.sha512, 128))
+	decoded = try
+		Base64.base64decode(secret)
+	catch
+		Vector{UInt8}(secret)
+	end
+	return Base64.base64encode(_hmac(decoded, Vector{UInt8}(challenge), SHA.sha512, 128))
 end
 
 """
@@ -2378,41 +2380,6 @@ function _wsraw2text(msgraw)
 		return String(Vector{UInt8}(msgraw))
 	end
 	return nothing
-end
-
-function _wsauthremediation(msgtxt::AbstractString)::String
-	base = "verify KrakenFutures key/secret pair and permissions"
-	lower = lowercase(String(msgtxt))
-	if occursin("failed to subscribe to authenticated feed", lower)
-		return "$(base); ensure signed_challenge is computed from SHA-256(challenge) and HMAC-SHA-512 with base64-decoded secret"
-	end
-	return base
-end
-
-function _throwonwsautherror!(msg::Dict, msgtxt::AbstractString, context::AbstractString)::Nothing
-	event = lowercase(String(get(msg, "event", "")))
-	if event in ["alert", "error"] || (haskey(msg, "success") && msg["success"] === false)
-		throw(ErrorException("$(context): $(msgtxt); remediation: $(_wsauthremediation(msgtxt))"))
-	end
-	return nothing
-end
-
-function _wsreceivechallenge(ws; max_frames::Int=10)::String
-	for _ in 1:max_frames
-		challraw = WebSockets.receive(ws)
-		challtxt = _wsraw2text(challraw)
-		isnothing(challtxt) && continue
-		chall = try
-			JSON3.read(challtxt, Dict)
-		catch
-			continue
-		end
-		_throwonwsautherror!(chall, challtxt, "private websocket challenge rejected")
-		if haskey(chall, "message")
-			return String(chall["message"])
-		end
-	end
-	throw(ErrorException("missing websocket challenge after $(max_frames) frames"))
 end
 
 function _newprivatechannel()
@@ -2456,52 +2423,6 @@ function _wsreconnectbackoffseconds(failure_streak::Int)::Float64
 	return basewait + jitter
 end
 
-function _ws_private_ready_probe!(bc::KrakenFuturesCache)::Bool
-	lock(_ws_private_stream_lock) do
-		cached = _ws_private_ready[]
-		!isnothing(cached) && return cached::Bool
-		if !_hascredentials(bc)
-			_ws_private_ready[] = false
-			return false
-		end
-		try
-			WebSockets.open(KRAKEN_FUTURES_WS_PRIVATE) do ws
-				WebSockets.send(ws, JSON3.write(Dict("event" => "challenge", "api_key" => bc.publickey)))
-				challenge = _wsreceivechallenge(ws; max_frames=10)
-
-				WebSockets.send(ws, JSON3.write(Dict(
-					"event" => "subscribe",
-					"feed" => "open_orders",
-					"api_key" => bc.publickey,
-					"original_challenge" => challenge,
-					"signed_challenge" => _wssignedchallenge(bc.secretkey, challenge),
-				)))
-				for _ in 1:3
-					msgraw = WebSockets.receive(ws)
-					msgtxt = _wsraw2text(msgraw)
-					isnothing(msgtxt) && continue
-					msg = try
-						JSON3.read(msgtxt, Dict)
-					catch
-						continue
-					end
-					_throwonwsautherror!(msg, msgtxt, "private websocket readiness subscribe rejected")
-					feed = lowercase(String(get(msg, "feed", "")))
-					if feed == "open_orders" || lowercase(String(get(msg, "channel", ""))) == "open_orders"
-						_ws_private_ready[] = true
-						return true
-					end
-				end
-				throw(ErrorException("private websocket readiness did not receive open_orders confirmation"))
-			end
-		catch err
-			(verbosity >= 1) && @warn "KrakenFutures private websocket readiness probe failed; using REST fallback" error=sprint(showerror, err)
-			_ws_private_ready[] = false
-			return false
-		end
-	end
-end
-
 function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{Dict}, balance_channel::Channel{Dict})
 	lastordersnapshot = ""
 	lastbalancesnapshot = ""
@@ -2530,7 +2451,14 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 				orders_active = false
 				balances_active = false
 				WebSockets.send(ws, JSON3.write(Dict("event" => "challenge", "api_key" => bc.publickey)))
-				challenge = _wsreceivechallenge(ws; max_frames=10)
+				challraw = WebSockets.receive(ws)
+				challtxt = _wsraw2text(challraw)
+				challenge = nothing
+				if !isnothing(challtxt)
+					chall = JSON3.read(challtxt, Dict)
+					challenge = haskey(chall, "message") ? String(chall["message"]) : nothing
+				end
+				isnothing(challenge) && throw(ErrorException("missing websocket challenge"))
 
 				WebSockets.send(ws, JSON3.write(Dict(
 					"event" => "subscribe",
@@ -2556,8 +2484,7 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 					catch
 						continue
 					end
-					_throwonwsautherror!(msg, msgtxt, "private websocket stream error")
-					feed = lowercase(String(get(msg, "feed", "")))
+					feed = String(get(msg, "feed", ""))
 					if feed in ["heartbeat", "alive"]
 						_touch_ws_orders_heartbeat!()
 						_touch_ws_balances_heartbeat!()
@@ -2671,7 +2598,7 @@ end
 Subscribe to private order updates via websocket, then fall back to REST polling.
 """
 function ws_orders(bc::KrakenFuturesCache)
-	if _hascredentials(bc) && _ws_private_ready_probe!(bc)
+	if _hascredentials(bc)
 		order_channel, _ = _ensure_private_ws_worker!(bc)
 		return order_channel
 	end
@@ -2706,7 +2633,7 @@ end
 Subscribe to private balance updates via websocket, then fall back to REST polling.
 """
 function ws_balances(bc::KrakenFuturesCache)
-	if _hascredentials(bc) && _ws_private_ready_probe!(bc)
+	if _hascredentials(bc)
 		_, balance_channel = _ensure_private_ws_worker!(bc)
 		return balance_channel
 	end

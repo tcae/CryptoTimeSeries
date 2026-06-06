@@ -264,7 +264,7 @@ function backtestcl011()
                                     cfgid = configurationid(cl, cfgnt)
                                     println("cfgid=$cfgid for $cfgnt")
                                     Classify.configureclassifier!(cl, cfgid, true) 
-                                    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.buysell), [base], assetonly=true)
+                                    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.openclose), [base], assetonly=true)
                                     cache.mc[:reloadtimes] = []
                                     # println("cl=$cl")
                                     # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"

@@ -30,8 +30,8 @@ const EXCHANGE = CryptoXch.EXCHANGE_BYBITSIM
 const BACKTEST_STARTDT = DateTime("2025-01-01T00:00:00")
 const BACKTEST_ENDDT   = DateTime("2025-08-01T00:00:00")
 
-# Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
-const TRADE_MODE = Trade.buysell
+# Trade mode during backtest: Trade.openclose, Trade.closeonly, Trade.notrade.
+const TRADE_MODE = Trade.openclose
 
 # Whitelist of base coins to consider for trading during the simulation.
 const QUOTE_COIN = "USDT"

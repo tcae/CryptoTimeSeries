@@ -33,7 +33,7 @@ cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-1f0, v
 cfgid = configurationid(cl, cfgnt)
 println("cfgid=$cfgid for $cfgnt")
 Classify.configureclassifier!(cl, cfgid, true)
-cache = Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.quickexit) # buysell closeonly quickexit notrade
+cache = Trade.TradeCache(xc=xc, cl=cl, trademode=Trade.quickexit) # openclose closeonly quickexit notrade
 
 
 try

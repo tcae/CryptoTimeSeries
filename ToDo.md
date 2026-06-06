@@ -1,12 +1,21 @@
 
 # Known issues
 
-- /Users/tc/github/CryptoTimeSeries/CryptoXch/test/productionruntests.jl fails rpobably because it is still attached to Bybit.com. Mitigation: complete move to Bybit.eu and Kraken.com
-- Complete package tests because CryptoXch is failing and Kraken not yet in
+- check memory usage, which seems at least with tradesim very high
+	- memory break down
+	- is classifier loaded once or per symbol?
+	- what is the length of OHLCV history that is maintained in memeory?
+- multiple orders per symbol
+- frequent order change
+- what is the log semantic of opened/closed? Is it order placed or order filled?
+- why are so many warnings? I don't believe those are all race conditions
+- liquidity check too relaxed?
 
-# 2026-04-22 Next steps
-	- mk038 as basis for a decision classifier that only decides the longbuy/shortbuy decision
-	- longbuy and shortbuy cancel each other, i.e. closes the opposite trend
-	- the decision classifier will be trained on sequences of mk038 and the y distance from a window regression 
-	- target is a trend that meets or exceeds x% gain
-    - experiments can entail different gain levels or criteria concernign the y-position (e.g. below/above with y%) or regression window length
+# To be observed
+
+- positions shall apply to constraints as documented in docs/tradereal-risk-constraints-overview-2026-06-03.md
+
+# intent
+
+- max 1 long and 1 short order per symbol
+

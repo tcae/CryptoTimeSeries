@@ -743,15 +743,6 @@ Progress update 2026-05-31 (private WS mitigation, REST-first operations):
 - [ ] Resume Phase A parity evidence collection only after private WS reliability is restored enough to gather clean order/balance observability artifacts.
 - [ ] Keep Phase B switch blocked until Phase A promotion gate criteria are satisfied for both KrakenSpot and KrakenFutures.
 
-Progress update 2026-06-02 (exchange-layer WS cutover):
-- [x] Moved the private WS readiness decision into the exchange adapters so upper layers no longer inspect challenge/subscribe details.
-	- `KrakenFutures` now caches authenticated private WS readiness and falls back to REST polling when the subscribe probe fails.
-	- `KrakenSpot` now uses the same adapter-owned readiness gate before starting its private WS worker.
-- [x] Restored the upper-layer contract: `CryptoXch`, `Trade`, and `scripts/tradereal.jl` now only set WS policy defaults and consume adapter results.
-- [x] Preserved the asymmetry required by the cutover plan: Spot private WS is promoted when ready; Futures private WS remains guarded and REST-backed until authenticated subscription succeeds.
-- [x] Validated the edited adapter files and startup script with full syntax parsing and error checks after the move.
-- [ ] Keep collecting evidence on KrakenFutures authenticated private WS subscribe failures before promoting it to unconditional private-WS primary mode.
-
 ### Objective 4 increment mapping (legacy notes merged)
 - Worker topology originally listed as old Increment 4.1 is now covered by Increment 4.2 (async worker topology in shadow mode).
 - Event-driven orchestration originally listed as old Increment 4.2 is now covered by Increment 4.2 and Increment 4.5 (controlled activation gates).

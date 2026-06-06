@@ -187,10 +187,10 @@ The lane model keeps long and short guidance independently in `longta` and `shor
 mutable struct GainSegment
     algorithm
     openthreshold::Float32
-    closethreshold::Float32
-    maxwindow::Integer
-    endix::Integer
-    gaindf::DataFrame
+    closethreshold::Float32 # candidate for removal
+    maxwindow::Integer # not yet used but only after maxwindow incremental limitreduction should start
+    endix::Integer # last processed ix in the predictionsdf
+    gaindf::DataFrame # not used by Trade only used by TrendDetector
     makerfee::Float32
     takerfee::Float32
     scores::Union{AbstractVector, Nothing}
@@ -491,7 +491,7 @@ end
 function getsnapshot!(rt::GainSegmentRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime; reconciliation::StrategyReconciliationInput=StrategyReconciliationInput())::Union{Nothing, StrategySnapshot}
     basekey = uppercase(String(base))
     if !haskey(xc.bases, basekey)
-        (verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping getsnapshot" base=basekey
+        (EnvConfig.verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping getsnapshot" base=basekey
         return nothing
     end
 

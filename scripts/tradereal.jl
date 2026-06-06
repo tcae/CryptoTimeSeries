@@ -5,12 +5,13 @@ Configuration is defined in the CONFIG block below. Adjust the parameters
 to your requirements before starting. The loop runs until Ctrl+C is pressed.
 
 Usage:
-    julia --project=scripts scripts/tradereal.jl
-    julia --project=scripts scripts/tradereal.jl xch=KrakenFutures
+    julia --project=. scripts/tradereal.jl
+    julia --project=. scripts/tradereal.jl xch=KrakenFutures
+    TRADEREAL_XCH=KrakenFutures tradereal
 """
 
 import Pkg
-Pkg.activate(joinpath(@__DIR__), io=devnull)
+Pkg.activate(normpath(joinpath(@__DIR__, "..")), io=devnull)
 
 using Dates, Logging, LoggingExtras
 using EnvConfig, TradingStrategy, Trade, Classify, CryptoXch, Features, Ohlcv, Targets
@@ -25,8 +26,8 @@ include(joinpath(@__DIR__, "optimizationconfigs.jl"))
 # or EXCHANGE_KRAKENFUTURES.
 const EXCHANGE = CryptoXch.EXCHANGE_KRAKENSPOT
 
-# Trade mode: Trade.buysell, Trade.closeonly, Trade.quickexit, or Trade.notrade.
-const TRADE_MODE = Trade.buysell
+# Trade mode: Trade.openclose, Trade.closeonly, Trade.quickexit, or Trade.notrade.
+const TRADE_MODE = Trade.openclose
 
 # Whitelist of base coins to consider for trading.
 # Only coins in this list and meeting liquidity requirements will be traded.
@@ -69,15 +70,25 @@ function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Not
     return default
 end
 
-"Resolve exchange override from args (xch=...) or return the configured default exchange."
+"Resolve exchange override from args/env or return the configured default exchange."
 function _resolve_exchange(args::Vector{String}, default_exchange::AbstractString)::String
     raw = _argvalue(args, "xch", nothing)
+    if isnothing(raw)
+        env_raw = strip(get(ENV, "TRADEREAL_XCH", ""))
+        if isempty(env_raw)
+            env_raw = strip(get(ENV, "CTS_XCH", ""))
+        end
+        raw = isempty(env_raw) ? nothing : env_raw
+    end
     isnothing(raw) && return String(default_exchange)
     key = lowercase(strip(String(raw)))
+    key = replace(key, '_' => '-', ' ' => '-')
     aliases = Dict(
         "bybit" => CryptoXch.EXCHANGE_BYBIT,
         "krakenspot" => CryptoXch.EXCHANGE_KRAKENSPOT,
+        "kraken-spot" => CryptoXch.EXCHANGE_KRAKENSPOT,
         "krakenfutures" => CryptoXch.EXCHANGE_KRAKENFUTURES,
+        "kraken-futures" => CryptoXch.EXCHANGE_KRAKENFUTURES,
     )
     haskey(aliases, key) && return aliases[key]
     valid = collect(values(aliases))

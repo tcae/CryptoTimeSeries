@@ -37,7 +37,7 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 
 | Option | Typical values | Intent | Used by modules |
 |---|---|---|---|
-| mc[:trademode] | Trade.buysell, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
+| mc[:trademode] | Trade.openclose, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
 | mc[:strategy_engine] | :getgainsalgo (legacy value still accepted) | Strategy source metadata; runtime API path is mandatory | Trade |
 | mc[:maxassetfraction] | Float | Exposure cap per asset | Trade |
 | mc[:maxbudgetquote] | Float or nothing | Global quote budget cap for sizing | Trade |

@@ -370,12 +370,19 @@ function _ensurewschannel!(xc::XchCache, channel_key::Symbol, role::ExchangeRole
         xc.mc[channel_key] = nothing
         return nothing
     end
+    fn = getproperty(mod, fn_name)
+    bc = _routedbc(xc, role)
     ch = try
-        getproperty(mod, fn_name)(_routedbc(xc, role))
-    catch
-        try
-            getproperty(mod, fn_name)()
-        catch err
+        fn(bc)
+    catch err
+        if (err isa MethodError) && (getproperty(err, :f) === fn)
+            try
+                fn()
+            catch err_fallback
+                (verbosity >= 1) && @warn "failed to start websocket channel" fn=String(fn_name) role=Symbol(role) error=sprint(showerror, err_fallback)
+                nothing
+            end
+        else
             (verbosity >= 1) && @warn "failed to start websocket channel" fn=String(fn_name) role=Symbol(role) error=sprint(showerror, err)
             nothing
         end

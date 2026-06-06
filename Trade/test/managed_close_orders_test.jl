@@ -97,7 +97,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = CryptoXch.XchCache()
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
+    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.openclose)
 
     assets = DataFrame(
         coin=["BTC", EnvConfig.cryptoquote],
