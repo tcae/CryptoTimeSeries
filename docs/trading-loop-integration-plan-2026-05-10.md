@@ -28,101 +28,8 @@
 - First target workflow: TrendDetector config `046` with `gain_limit_reversal!`.
 - This section is the active interruption-safe tracker for the current interface refactor.
 
-## 2026-05-30 Progress Update: Audit Renamed to TradeLog (Private Trader Scope)
-
-### Design decision
-- Replace "audit trail" terminology with `TradeLog` for the active trading runtime.
-- Relax tamper-evidence requirements (no organizational hash-chain guarantee required).
-- Keep structured context logging focused on practical trader diagnostics:
-	- order intent vs execution outcome
-	- fee/cost cross-checks
-	- replay against historic OHLCV windows
-
-### Runtime policy
-- Canonical log root defaults to `$HOME/crypto/tradelog`.
-- Primary enable flags are now:
-	- `CTS_TRADELOG_ENABLED`
-	- `CTS_TRADELOG_SIMULATION_ENABLED`
-
-### Migration status
-- [x] Added new workspace package `TradeLog` with append-only JSONL logging API compatible with current `Trade` and `CryptoXch` call paths.
-- [x] Switched `Trade` and `CryptoXch` imports/dependencies to `TradeLog`.
-- [x] Disabled hash-chain persistence in the default write path (`writeeventwithhash` now behaves as plain append for compatibility).
-- [x] Follow-up: renamed remaining internal helper identifiers containing "audit" to TradeLog-oriented names where this improved readability without behavior changes; kept compatibility aliases for transition.
-
-## 2026-05-30 Progress Update: KrakenFutures Managed Close Routing and Limit Drift Investigation
-
-### Completed in code
-- [x] Added routed symbol-aware amend path in `CryptoXch` and switched managed close amend callsites to pass symbol explicitly.
-- [x] Added orderid-only `KrakenFutures.amendorder` overload so routed amend calls no longer fail with method dispatch gaps.
-- [x] Removed open-order lookup fallback from Kraken futures single-order resolution and switched to `/orders/status` for direct order-status lookup.
-- [x] Eliminated the immediate `/openorders?order_id=...` fallback path that had triggered intermittent `authenticationError` during amend handling.
-- [x] Added explicit TrendDetector coinspath routing to `coins_bybit` so training/eval reads the active Bybit OHLCV store.
-
-### Validation snapshot
-- [x] Method presence checks for routed amend and Kraken futures order/amend overloads passed in workspace runtime checks.
-- [x] Static diagnostics for touched files were clean after the amend-path fixes.
-- [x] Live tradereal runs now proceed past the earlier amend dispatch/auth lookup failures.
-
-### Current investigation status (open)
-- [x] Confirmed repeated warnings in the latest Kraken futures tradereal log: open positions without active full close coverage.
-- [x] Confirmed two bases (notably TON and ONDO in the latest run) remained materially above `maxassetquote` across multiple minutes.
-- [x] Confirmed open-buy sizing path enforces cap intent via `remaininglongcapacityquote` guard.
-- [ ] Resolve root cause of sustained above-cap exposure in live loop (likely close-order fill/maintenance behavior and/or valuation basis mismatch under runtime conditions).
-- [ ] Add targeted runtime diagnostics in `Trade` for per-base: exposure quote, required reduction quote, managed close order qty, and observed fill delta.
-
-### Next actions
-- [ ] Instrument one focused live diagnostic slice for affected bases only (TON, ONDO) to avoid broad log noise.
-- [ ] Decide policy adjustment after diagnostics: either stronger close escalation/execution policy for above-cap inventory, or revised valuation/trigger alignment for cap enforcement and strong-close promotion.
-- [ ] Add regression tests that keep a base above cap for multiple ticks and assert reduction trajectory under managed close maintenance.
-
 ## Goal
-Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, TradeLog-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
-
-## 2026-05-31 Objective: Exchange-Concept Equity and Mixed Spot+Margin Capacity
-
-### Intent
-- Align runtime account semantics with exchange-native concepts for both reporting and sizing.
-- Track net worth development using exchange equity semantics instead of reconstructed exposure totals.
-- Size new openings from exchange-available capacity with `SAFETY_MARGIN` applied, while retaining exposure metrics for diagnostics.
-- Treat mixed spot-long plus spot-margin-short as the default/most general account case.
-
-### Design decision (ownership boundary)
-- Exchange adapters own exchange semantics extraction:
-	- Canonical account snapshot fields: `equity_quote`, `available_opening_quote`, optional `initial_margin_quote`, optional `maintenance_margin_quote`, timestamp, source metadata.
-	- KrakenSpot adapter derives mixed-case capacity (cash long lane and margin short lane) from Kraken account endpoints.
-	- KrakenFutures adapter derives collateral/equity/margin capacity from futures account endpoints.
-- `Trade` owns strategy/runtime policy:
-	- Applies `SAFETY_MARGIN` and global caps.
-	- Applies per-asset allocation constraints and directional trade policy.
-	- Consumes one normalized account-capacity snapshot regardless of venue.
-
-### Mixed-case policy (KrakenSpot)
-- Do not treat `free quote` alone as total opening capacity in mixed long+short spot margin accounts.
-- Model capacity as side-aware lanes:
-	- long lane: quote cash available for spot buys.
-	- short lane: margin availability for new shorts (after existing margin usage).
-- For new open orders, choose the lane by intended side and apply safety haircut before final caps.
-
-### Budget formulas (canonical)
-- `safe_opening_quote = max(0, available_opening_quote * (1 - SAFETY_MARGIN))`
-- `effective_budget_quote = min(safe_opening_quote, MAX_BUDGET_QUOTE)` when cap is configured.
-- Keep exposure-oriented values (`project_net_exposure_quote`, `project_gross_exposure_quote`) as secondary diagnostics only.
-
-### Implementation slices
-- [ ] Add `CryptoXch.accountcapacity(xc; role=...)` normalized API and snapshot struct/NamedTuple.
-- [ ] Implement KrakenSpot mixed-case extractor (cash long lane + margin short lane) and map to normalized snapshot.
-- [ ] Implement KrakenFutures extractor and map to normalized snapshot.
-- [ ] Add `Trade` budget mode switch with default `:exchange_capacity` for live runtimes and compatibility fallback for simulation/tests.
-- [ ] Update startup and periodic logs to show: `equity_quote`, `available_opening_quote`, `safe_opening_quote`, `effective_budget_quote`, and exposure diagnostics.
-- [ ] Add tests for mixed spot+margin scenarios and side-aware lane selection behavior.
-- [x] Add tradable OHLCV readiness helper with exchange-requested backfill (`CryptoXch.cryptoupdate!`) and candidate gating, plus regression coverage for backfill-triggered readiness.
-
-### Exit criteria
-- Net-worth reporting in live loops is sourced from exchange-equity semantics.
-- Opening budget uses exchange available capacity with `SAFETY_MARGIN` and cap policy.
-- Mixed spot+margin KrakenSpot behavior is validated by tests for both long-open and short-open paths.
-- Existing simulation/backtest flows remain available via explicit compatibility mode until migration is complete.
+Integrate `algorithm03!` into a production-ready trading loop with exchange abstraction, audit-grade logging, asynchronous orchestration, and a non-blocking dashboard, then extend the exchange layer with Interactive Brokers.
 
 ## 2026-05-25 Trade Selection Ownership Integration
 
@@ -132,13 +39,13 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 ### Requirements
 - Whitelist constrains opening trades only; it must not implicitly authorize sells of externally acquired positions.
 - Sell eligibility must be based on robot-owned exposure, not raw wallet presence.
-- Robot-owned exposure must be partitioned by routed trading venue so tradelog fills from different exchanges never mix.
+- Robot-owned exposure must be partitioned by routed trading venue so audit fills from different exchanges never mix.
 - For the current deployment model, exchange-level separation is sufficient; multiple accounts per exchange are not planned.
 - Directional exposure must be tracked separately for long and short inventory because buy-long and short-open fills have different close paths.
 - `classifieraccepted` remains required for both buy and sell because the robot needs classifier/strategy output to emit either entry or exit signals.
 
 ### First implementation slice
-- Add tradelog-derived directional ownership helpers in `Trade` that read only the current routed spot trading partition.
+- Add audit-derived directional ownership helpers in `Trade` that read only the current routed spot trading audit partition.
 - Store `robotownedlongqty` and `robotownedshortqty` in `TradeCache.cfg`.
 - Set `sellenabled` from `(robotownedlongqty > 0 || robotownedshortqty > 0) && classifieraccepted`.
 - Cap long-close sizing by `min(freebase, robotownedlongqty)` and short-close sizing by `min(borrowedbase, robotownedshortqty)` so external inventory is ignored.
@@ -192,7 +99,7 @@ Keep protective/target close orders active across minute ticks for strategy-driv
 - [x] Added per-tick reconstruction of managed close-order state from live open orders plus robot-owned position direction.
 - [x] Added amend-first close-order behavior in `trade!` long-close and short-close branches (`changeorder` first, cancel+recreate fallback).
 - [x] Added continuous close maintenance pass so one close order remains active for each open robot-owned position even when minute advice is hold/allclose-like.
-- [x] Added strategy close-price extraction from `TradingStrategy` lane state (`longta.closeprice` / `shortta.closeprice`) for `:getgainsalgo` flow when available.
+- [x] Added strategy close-limit extraction from `TradingStrategy` state (`sellta.orderlimit`) for `:getgainsalgo` flow when available.
 - [x] Cleared managed close-order state when applying a new strategy config via `apply_tradingstrategy!`.
 
 ### Validation status
@@ -416,17 +323,17 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 
 ---
 
-## Objective 3 (Third): Multi-exchange TradeLog order/trade logging
+## Objective 3 (Third): Multi-exchange audit-grade order/trade logging
 
 ### Design intent
-Create complete and queryable TradeLog records for trader diagnostics and tax workflows, designed for multiple exchanges in parallel.
+Create immutable, complete, and queryable records sufficient for audit and tax workflows, designed for multiple exchanges in parallel.
 
 ### Progress as of 2026-05-26
 - Completed: no schema/storage redesign changes in this slice.
 - Completed: cancellation-path robustness improvements in Objective 2 reduce risk of missing downstream cancel-state reconciliation for later orders in the same loop iteration.
 - Pending: continue planned Objective 3 increments (canonical schema, append-only sink, replay tests) after Objective 2 follow-up cancellation tests are in place.
 
-### Increment 3.1: Canonical TradeLog schema
+### Increment 3.1: Canonical audit schema
 - Define canonical event model with required fields:
 	- event metadata: timestamp (UTC), source module, environment, correlation IDs
 	- exchange metadata: exchange name, account/auth alias, routing role used, market type
@@ -435,7 +342,7 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 	- execution metadata: fill qty/price, fees, fee currency, status transitions
 	- position/portfolio snapshot deltas before and after action
 	- strategy context: config ref, signal label/score, algorithm version
-- Introduce an explicit TradeLog classification field set so logs can distinguish at least:
+- Introduce an explicit audit classification field set so logs can distinguish at least:
 	- crypto spot pair trades
 	- crypto perpetual futures on pairs
 	- shares against FIAT
@@ -445,15 +352,15 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 	- `instrument_type`: `spot_pair`, `perpetual_future`, `share_fiat`, later extensible
 	- `venue_instrument_type`: raw exchange-specific type when available
 - The combination of `exchange name + account/auth alias + asset_class + instrument_type + symbol` must be sufficient to disambiguate what was actually traded even when symbols overlap across venues.
-- Separate event types: `ORDER_SUBMITTED`, `ORDER_OBSERVED`, `ORDER_ACK`, `ORDER_AMENDED`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
+- Separate event types: `ORDER_SUBMITTED`, `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, `ORDER_REJECTED`, `POSITION_SNAPSHOT`, `PORTFOLIO_SNAPSHOT`.
 - Concrete implementation proposal:
-	- Preferred module/package name: `TradeLog` as a dedicated workspace package if reused across `Trade`, dashboard export, and future IB integration; fallback is a focused `Trade/src/tradelog.jl` module if package extraction would slow delivery.
+	- Preferred module/package name: `TradeAudit` as a dedicated workspace package if reused across `Trade`, dashboard export, and future IB integration; fallback is a focused `Trade/src/audit.jl` module if package extraction would slow delivery.
 	- Define small canonical enums for:
-		- `TradeLogEventType`
-		- `TradeLogAssetClass`
-		- `TradeLogInstrumentType`
-		- `TradeLogMarketType`
-		- `TradeLogRoutingRole`
+		- `AuditEventType`
+		- `AuditAssetClass`
+		- `AuditInstrumentType`
+		- `AuditMarketType`
+		- `AuditRoutingRole`
 	- Use one canonical flat event row schema for storage and replay rather than multiple incompatible tables. Nested Julia structs may exist in memory, but persisted records should flatten to a single column set.
 	- Minimum persisted columns for each event row:
 		- event identity: `event_id`, `event_type`, `event_time_utc`, `created_at_utc`, `source_module`, `environment`, `run_id`, `loop_id`, `correlation_id`, `parent_event_id`
@@ -469,10 +376,10 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 
 ### Increment 3.2: Append-only log writer
 - Add write-once append log sink (Arrow/CSV/JSONL based on EnvConfig format policy).
-- Add partitioning by `exchange/account/date` under `$HOME/crypto/tradelog`.
+- Add partitioning by `exchange/account/date` under `$HOME/crypto/audit`.
 - Add tamper-evidence option via per-file hash chain (stored in companion manifest).
 - Concrete storage layout proposal:
-	- Root folder: `$HOME/crypto/tradelog/`
+	- Root folder: `$HOME/crypto/audit/`
 	- Partition dimensions in path:
 		- `environment=<mode>/`
 		- `exchange=<exchange>/`
@@ -481,9 +388,9 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 		- `instrument_type=<instrument_type>/`
 		- `date=YYYY-MM-DD/`
 	- Example paths:
-		- `$HOME/crypto/tradelog/environment=production/exchange=KrakenSpot/account=krakenspot-tcae1/asset_class=crypto/instrument_type=spot_pair/date=2026-05-10/events.jsonl`
-		- `$HOME/crypto/tradelog/environment=production/exchange=KrakenFutures/account=krakenfutures-tcae2/asset_class=crypto/instrument_type=perpetual_future/date=2026-05-10/events.jsonl`
-		- `$HOME/crypto/tradelog/environment=production/exchange=InteractiveBrokers/account=paper/asset_class=equity/instrument_type=share_fiat/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/audit/environment=production/exchange=KrakenSpot/account=krakenspot-tcae1/asset_class=crypto/instrument_type=spot_pair/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/audit/environment=production/exchange=KrakenFutures/account=krakenfutures-tcae2/asset_class=crypto/instrument_type=perpetual_future/date=2026-05-10/events.jsonl`
+		- `$HOME/crypto/audit/environment=production/exchange=InteractiveBrokers/account=paper/asset_class=equity/instrument_type=share_fiat/date=2026-05-10/events.jsonl`
 	- Canonical write path should be append-only `events.jsonl` because JSONL is simple for crash-safe append semantics and diff-friendly diagnostics.
 	- Optional read-optimized companions may be produced per partition after rotation:
 		- `events.arrow` for analytics/dashboard scans
@@ -504,16 +411,16 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 ### Increment 3.4: Tests and replay utility
 - Schema validation tests.
 - Replay test that reconstructs order lifecycle from logs.
-- Utility script to export tax/TradeLog-friendly reports.
+- Utility script to export tax/audit friendly reports.
 
 ### Exit criteria
 - Every order status transition is persisted with traceable identifiers.
 - Logs are partitioned for multiple exchanges/accounts.
-- TradeLog records identify both the concrete exchange/account used and the traded asset type beyond the raw symbol.
+- Audit records identify both the concrete exchange/account used and the traded asset type beyond the raw symbol.
 - Replay utility can rebuild per-order lifecycle and daily PnL-relevant events.
 
 ### Deliverables
-- New TradeLog module in `Trade` or dedicated package (preferred if reused across packages)
+- New audit logging module in `Trade` or dedicated package (preferred if reused across packages)
 - Tests plus report/export script
 
 ---
@@ -523,237 +430,27 @@ Create complete and queryable TradeLog records for trader diagnostics and tax wo
 ### Design intent
 Prevent blocking between data updates, signal evaluation, order management, and portfolio refresh. Also implement dynamic adjustment of adaptive orders.
 
-### 2026-05-30 incremental rollout plan (low-risk)
+### Increment 4.1: Task topology
+- Introduce asynchronous workers (Julia `Task` + `Channel`) for:
+	- market data updater
+	- strategy evaluator
+	- order executor
+	- order status reconciler
+	- portfolio synchronizer
+- Introduce bounded channels and backpressure strategy.
 
-#### Target architecture contract
-- `TradingStrategy` emits action/price intent only.
-- `Trade` computes requested amounts from allocation/risk policy.
-- Exchange adapters normalize/adjust requests for venue constraints (qty step, min qty, tick size, reduce-only, tif/venue specifics).
-- Exchange adapters own balances cache and publish one synchronized snapshot per cycle to `Trade`.
-- Exchange adapters own persistent OHLCV update for actively traded bases.
-- A base is only `data_ready` for strategy execution after OHLCV gaps to persisted history are closed.
+### Increment 4.2: Event-driven orchestration
+- Define typed events and command messages for inter-task communication.
+- Use idempotent handlers keyed by correlation/order IDs to avoid double execution.
 
-#### Safety constraints during migration
-- Keep current synchronous `tradereal` flow as default for KrakenSpot/KrakenFutures.
-- Gate all new behavior behind feature flags (default `off`).
-- Enable async workers in shadow mode before any order-affecting cutover.
-- Keep immediate fallback switch to synchronous execution.
+### Increment 4.3: Safety and resilience
+- Add timeout/retry policy by operation type.
+- Add watchdog heartbeat and circuit breaker for exchange/API failures.
+- Add graceful shutdown to flush in-flight events and persist checkpoints.
 
-#### Increment 4.0: Safety scaffolding
-- Add feature flags:
-	- `CTS_ASYNC_ENGINE_ENABLED`
-	- `CTS_ASYNC_SHADOW_MODE`
-	- `CTS_WS_MARKETDATA_ENABLED`
-	- `CTS_WS_ORDERS_ENABLED`
-	- `CTS_WS_BALANCES_ENABLED`
-	- `CTS_WS_SHADOW_MODE`
-	- `CTS_WS_PRIMARY_MODE`
-	- `CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH`
-	- `CTS_OHLCV_GAP_BACKFILL_ON_TRADABLE`
-- Add dual-path shadow comparator:
-	- sync decision snapshot vs async candidate snapshot
-	- compare labels, limit prices, and normalized quantities
-	- auto-disable async execution on critical divergence.
-
-#### Increment 4.1: Exchange-owned balance cache sync
-- Move balance refresh ownership to exchange adapters.
-- Publish exactly one canonical balances snapshot per cycle into `Trade`.
-- Keep `Trade` read-only relative to adapter caches.
-- Add tests for freshness policy, staleness fallback, and sync parity.
-
-Progress update 2026-05-31:
-- [x] Added canonical exchange-owned balances snapshot API in `CryptoXch` (`refreshbalancessnapshot!`, `balancessnapshot`).
-- [x] Wired `Trade` Objective-4 balance-owner path to consume the canonical `CryptoXch` snapshot (with local fallback on refresh failure).
-- [x] Extended `Trade` Objective-4 scaffolding tests to verify snapshot ownership and freshness/staleness semantics.
-
-#### Increment 4.2: Async worker topology in shadow mode
-- Introduce bounded-channel workers:
-	- marketdata, balance-sync, order-management
-- Keep strategy evaluation and order-intent shaping synchronous in `Trade` for deterministic debugging.
-- Keep order submission authoritative in synchronous path while shadow mode records async parity.
-- Add heartbeat/watchdog metrics per worker.
-
-Progress update 2026-05-31:
-- [x] Refined worker boundary to exchange-interaction-only async domains: marketdata, balance-sync, order-management.
-- [x] Kept strategy and order-intent stages synchronous for easier step-through debugging and deterministic parity checks.
-- [x] Wired async shadow path through exchange-worker topology while keeping synchronous execution authoritative for order placement.
-- [x] Added per-worker heartbeat, latency, and watchdog-breach metrics in `TradeCache.mc`.
-- [x] Extended `Trade/test/objective4_scaffolding_test.jl` with worker-topology and watchdog assertions.
-
-#### Increment 4.3: WebSocket ingestion with HTTP fallback
-- Prefer websocket trades/klines where supported.
-- Maintain HTTP fallback per symbol/venue when stream quality drops.
-- Add freshness SLA checks and automatic fallback switching.
-- Closed-candle policy: feature generation, classification, and strategy updates run only on closed candles, where candle closure is implicit when a newer candle exists (no explicit ready marker).
-
-Progress update 2026-05-31:
-- [x] Added marketdata freshness-policy scaffolding in `Trade` with websocket freshness SLA evaluation.
-- [x] Added automatic source switching policy (`:ws` <-> `:http`) with explicit fallback reasons (`ws_disabled`, `ws_no_updates`, `ws_stale`).
-- [x] Added fallback switch counters and policy-evaluation state in `TradeCache.mc` for observability.
-- [x] Extended Objective-4 scaffolding tests to cover stale/missing websocket updates and automatic HTTP fallback/recovery behavior.
-- [x] Added exchange-heartbeat bridge (`CryptoXch.marketdataheartbeat` / `setmarketdataheartbeat!`) and wired `Trade` freshness policy to consume exchange-owned websocket update timestamps when available.
-- [x] Wired websocket ingress handlers in KrakenSpot/KrakenFutures to emit marketdata heartbeat timestamps and made `CryptoXch.marketdataheartbeat` prefer latest adapter heartbeat automatically.
-- [x] Added per-symbol websocket freshness accounting (adapter symbol heartbeats, `CryptoXch.marketdataheartbeats`, and `Trade` symbol-scoped staleness fallback reason `ws_symbol_stale`).
-- [x] Implemented implicit closed-candle mapping in websocket adapters (closed candle recognized when newer in-progress candle arrives) and wired `CryptoXch.setcurrenttime!` to upsert newest confirmed closed WS candle into OHLCV cache.
-- [x] Enforced closed-candle-only strategy/classification updates via Trade closed-minute progression gate (`_next_closed_candle_dt!`) so classifier/runtime advice runs only once per newly closed candle.
-- [x] Test policy decision: warning/log masking is not required for this workstream; market-data tests may use live exchange public-read data paths (HTTP/WS) when validating websocket/fallback behavior.
-
-#### Increment 4.4: Tradable-base OHLCV persistence + gap closure
-- Introduce base state machine:
-	- `discovered -> backfill_required -> backfill_in_progress -> data_ready -> tradable`
-- On tradable candidate transition:
-	- detect persisted OHLCV range
-	- close gaps up to cycle boundary
-	- gate strategy/order path until `data_ready`.
-- Add restart-safe tests for gap closure and no-order-before-data-ready behavior.
-
-Progress update 2026-05-31:
-- [x] Added persistent per-base tradable OHLCV state tracking in `TradeCache.mc` (`:tradable_ohlcv_state_by_base`, `:tradable_ohlcv_state_dt_by_base`) with restart-safe restoration semantics.
-- [x] Wired `tradeselection!` to restore prior OHLCV states, persist state transitions from `_prepare_tradable_ohlcv!`, and promote accepted bases to `:tradable`.
-- [x] Extended Objective-4 scaffolding tests to cover discovered/backfill-required/data-ready/tradable state transitions and restart-safe state carry-over.
-
-Progress update 2026-05-31 (4.5 test slice):
-- [x] Added env-gated live public-read market-data validation test `Trade/test/objective4_live_marketdata_publicread_test.jl` and wired it into `Trade/test/runtests.jl`.
-- [x] Default test runs remain green (test is informationally skipped unless enabled).
-- [x] Activation flags: `CTS_RUN_LIVE_MARKETDATA_TESTS=1` and optional `CTS_LIVE_MARKETDATA_EXCHANGE` (default `KrakenSpot`).
-
-#### Increment 4.5: Controlled activation
-- Phase A: shadow mode only.
-- Phase B: immediate full execution switch with fallback capability enabled.
-- Phase C: full async primary with synchronous emergency fallback retained.
-
-WS order/balance activation policy update (2026-05-31):
-- Phase A shadow requires parity checks between sync REST snapshots and WS snapshots for both:
-	- open-order lifecycle visibility (`orderid` parity and lifecycle traceability)
-	- balances state (`free/locked/borrowed` parity by coin)
-- Phase B uses immediate WS-primary execution for order/balance state (`CTS_WS_PRIMARY_MODE=1`) with automatic fallback to REST when:
-	- WS snapshots are unavailable/stale, or
-	- parity mismatch is detected while `CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH=1`.
-- Fallback is explicit and observable via runtime counters and warning logs; primary mode can be re-enabled after remediation.
-- Acceptance metrics:
-	- no increase in reject rate due to normalization
-	- reduced REST request volume
-	- improved or unchanged reaction latency
-	- no OHLCV gaps on active tradable bases.
-
-Phase A -> Phase B promotion gate (approved 2026-05-31):
-- Phase A remains shadow-only until evidence exists for all three aspects:
-	- Market data matches between authoritative sync path and async-shadow observed inputs/derived snapshots.
-	- Balances match between exchange snapshot and Trade-side consumed snapshot for decision cycles.
-	- All orders are observable end-to-end (creation/update/cancel/fill visibility in runtime state and logs).
-- As soon as evidence for all three aspects is collected, proceed to Phase B full execution switch.
-- Learning captured 2026-05-31:
-	- Shadow mode proves observability and comparison quality, not async order-control correctness, because synchronous order execution remains authoritative in Phase A.
-	- During the migration, extend `TradeLog` with explicitly temporary probes for success judgment instead of relying on terminal output alone.
-	- Temporary migration probes must be easy to identify and easy to remove.
-
-Phase A evidence contract (operational proposal, 2026-05-31):
-- Observation window:
-	- Run Phase A evidence for both `KrakenSpot` and `KrakenFutures`.
-	- Evidence is exchange-scoped; each exchange must satisfy the full contract independently.
-	- The primary gate is scenario coverage, not long runtime duration.
-	- One decision cycle means one full `Trade._tradestep!` loop iteration, not one individual order create/amend/cancel event.
-	- Elapsed wall-clock minutes and decision-cycle counts are informative only.
-	- Promotion is allowed as soon as required real-environment order lifecycle coverage is observed and all checks pass.
-	- Running both exchanges in parallel processes is supported and recommended for faster validation, provided logs/metrics are isolated per process.
-- Check A: Market data match
-	- Compare sync vs shadow per cycle on active bases for source mode (`ws`/`http`), candle opentime used for decision, and decision price.
-	- Pass when source and candle-time mismatches are zero, and price delta is within one tick for at least 99.5% of comparisons (maximum outlier two ticks).
-- Check B: Balance match
-	- Compare exchange snapshot vs Trade-consumed snapshot per cycle for `free`, `locked`, `borrowed`, and quote-equivalent total.
-	- Pass when quote-equivalent delta is at most 0.1% for at least 99.5% of cycles, no drift persists more than 3 consecutive cycles, and no snapshot is missing.
-- Check C: Order observability
-	- Every touched order id in the window must be traceable across lifecycle states: created, amended-or-unchanged, canceled-or-filled, and final runtime/audit visibility.
-	- Pass when lifecycle trace coverage is 100%, with zero orphan orders and zero phantom orders.
-	- Required Phase-A coverage per exchange:
-		- at least one real order creation is observed
-		- at least one real order amendment or amendment-equivalent managed replacement path is observed
-		- at least one real order cancellation is observed
-	- Repeating the same lifecycle many more times is not required once these real-environment cases are covered cleanly.
-	- Temporary migration probe for balance-after-fill evidence:
-		- Emit one additional `POSITION_SNAPSHOT` TradeLog row only when an `ORDER_FILLED` event is observed.
-		- Tag every such row with `migration_probe=fill_balance_check_v1` so the slice is queryable and removable.
-		- Persist `position_qty_before/after` for the base asset and `cash_before/after` for the quote asset using the cached pre-refresh balance snapshot and a forced exchange refresh after fill observation.
-		- Keep the probe opt-in at the exchange-cache runtime flag `:tradelog_migration_fill_balance_enabled` and default it on in `scripts/tradereal.jl` for the Objective 4 migration window.
-		- Volume control: do not emit this probe for create/amend/cancel events; emit it only for `ORDER_FILLED` so amendment-heavy minutes do not flood TradeLog.
-	- Temporary migration probe for worker-side balance/order observation:
-		- Emit one additional `POSITION_SNAPSHOT` TradeLog row only when the async worker payload for `balance_sync` or `order_management` changes.
-		- Tag every such row with `migration_probe=async_worker_observation_v1` so the slice is queryable and removable.
-		- Persist the payload summary in `notes`, plus `position_qty_after` as the observed row/open-order count and `cash_after` as the observed quote snapshot for balance-sync payloads when available.
-		- Keep the probe opt-in at the Trade runtime flag `:tradelog_migration_worker_probe_enabled` and default it on in `scripts/tradereal.jl` for the Objective 4 migration window.
-		- Volume control: write only on payload change; repeated identical worker observations must not append more rows.
-- Hard blockers (fail regardless of A/B/C):
-	- Any async divergence auto-disable event.
-	- Any increase in watchdog breach totals during the evidence window.
-	- Any increase in permission rejects attributable to runtime wiring changes.
-- Promotion decision rule:
-	- Promote Phase A -> Phase B if and only if checks A/B/C pass for both `KrakenSpot` and `KrakenFutures`, the required create/amend/cancel coverage is observed on both exchanges, no hard blocker occurs on either exchange, and evidence reports (timestamp + runtime config + metrics snapshot) are archived per exchange.
-
-Phase B full-switch policy (updated 2026-05-31):
-- Switch async execution scope to full tradeselection when Phase A parity checks pass.
-- Keep fallback capability active and observable; revert to synchronous authority automatically on critical divergence.
-- Do not scope execution to a base subset.
-
-Parallel execution policy (KrakenSpot + KrakenFutures):
-- Start one process per exchange with explicit exchange selection and distinct run labels.
-- Store logs and evidence artifacts in exchange-specific files/folders to avoid mixed traces.
-- Evaluate pass/fail independently per exchange first, then apply the combined promotion rule above.
-
-Parallel launch template (Phase A evidence):
-```bash
-cd /Users/torsten/github/CryptoTimeSeries
-mkdir -p "$HOME/crypto/logs/objective4-phaseA/$(date +%Y%m%d-%H%M%S)"
-RUN_ROOT="$HOME/crypto/logs/objective4-phaseA/$(date +%Y%m%d-%H%M%S)"
-
-# KrakenSpot shadow process
-CTS_ASYNC_ENGINE_ENABLED=1 \
-CTS_ASYNC_SHADOW_MODE=1 \
-CTS_WS_MARKETDATA_ENABLED=1 \
-CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED=1 \
-julia --project=scripts scripts/tradereal.jl xch=KrakenSpot \
-	> "$RUN_ROOT/krakenspot-phaseA.log" 2>&1 &
-
-# KrakenFutures shadow process
-CTS_ASYNC_ENGINE_ENABLED=1 \
-CTS_ASYNC_SHADOW_MODE=1 \
-CTS_WS_MARKETDATA_ENABLED=1 \
-CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED=1 \
-julia --project=scripts scripts/tradereal.jl xch=KrakenFutures \
-	> "$RUN_ROOT/krakenfutures-phaseA.log" 2>&1 &
-
-echo "logs: $RUN_ROOT"
-```
-
-Progress update 2026-05-31 (4.5 implementation complete):
-- [x] Removed canary-base gating from async shadow candidate generation; Phase A now evaluates full tradeselection scope.
-- [x] Kept synchronous execution authoritative for all bases in Phase A shadow mode.
-- [x] Wired Objective-4.5 acceptance counters in `TradeCache.mc`:
-	- `:objective4_cycle_count`
-	- `:objective4_order_rejects`, `:objective4_permission_rejects`, `:objective4_privatecooldown_skips`
-	- `:objective4_marketdata_fallback_activations`, `:objective4_watchdog_breaches_total`, `:objective4_last_worker_latency_ms`
-- [x] Extended `Trade/test/objective4_scaffolding_test.jl` to verify full-scope shadow behavior and metric updates for fallback/watchdog/latency snapshots.
-- [x] Validation runs: Objective 4 scaffolding and Trade package tests pass after full-scope shadow migration update.
-
-Progress update 2026-05-31 (private WS mitigation, REST-first operations):
-- [x] Updated `scripts/tradereal.jl` defaults to disable private WS order/balance ingestion in live runs unless explicitly enabled by env override.
-	- `CTS_WS_ORDERS_ENABLED` default is now `false`.
-	- `CTS_WS_BALANCES_ENABLED` default is now `false`.
-- [x] Confirmed operational policy for current window: use REST as authoritative path while private WS adapter/connectivity issues are unresolved.
-- [x] Captured that explicit env overrides still take precedence, so evidence runs can re-enable WS intentionally for diagnostics.
-- [ ] Resume Phase A parity evidence collection only after private WS reliability is restored enough to gather clean order/balance observability artifacts.
-- [ ] Keep Phase B switch blocked until Phase A promotion gate criteria are satisfied for both KrakenSpot and KrakenFutures.
-
-### Objective 4 increment mapping (legacy notes merged)
-- Worker topology originally listed as old Increment 4.1 is now covered by Increment 4.2 (async worker topology in shadow mode).
-- Event-driven orchestration originally listed as old Increment 4.2 is now covered by Increment 4.2 and Increment 4.5 (controlled activation gates).
-- Safety/resilience originally listed as old Increment 4.3 is now split across Increment 4.0 (rollback and divergence guard), Increment 4.2 (watchdog/heartbeat), and Increment 4.5 (full-switch rollout and fallback).
-- Test scope originally listed as old Increment 4.4 is now distributed across:
-	- Increment 4.0 comparator/parity tests
-	- Increment 4.1 balance-cache sync tests
-	- Increment 4.3 websocket fallback/freshness tests
-	- Increment 4.4 OHLCV gap closure and readiness-gate tests
-	- Increment 4.5 rollout acceptance metrics and regression checks
-- The authoritative Objective 4 sequence is now Increment 4.0 through Increment 4.5 above; the old duplicate numbering is retired.
+### Increment 4.4: Tests
+- Concurrency tests for no deadlocks and no lost events.
+- Fault-injection tests (slow API, temporary HTTP failure).
 
 ### Exit criteria
 - Data refresh and order handling proceed independently.
@@ -799,7 +496,7 @@ Guardrails (both options):
 ## Objective 5 (Fifth): Interactive non-blocking dashboard for history and open orders
 
 ### Design intent
-Build on existing cockpit script and feed it with live state and TradeLog logs without blocking the trading engine.
+Build on existing cockpit script and feed it with live state and audit logs without blocking the trading engine.
 
 ### Increment 5.1: Dashboard data contract
 - Define read model for:
@@ -815,7 +512,7 @@ Build on existing cockpit script and feed it with live state and TradeLog logs w
 	- live open orders
 	- historical trades (filter by exchange/account/symbol/date)
 	- order timeline view
-	- TradeLog export trigger
+	- audit export trigger
 - Ensure polling/subscription updates are asynchronous.
 
 ### Increment 5.3: Performance and UX hardening
@@ -890,13 +587,11 @@ Update this section after each work session.
 
 ### Status Summary
 - Objective 1: IN PROGRESS (Increment 1.1 started)
-- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, explicit screening vs valuation USDT market intents, native `accountcapacity` for BybitSim, MTM equity join bug fix 2026-06-01)
-- Objective 3: IN PROGRESS (3.1 schema + integration slice + TradeLog chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
-- Objective 4: IN PROGRESS (adaptive-maker repricing implemented; incremental async/socket migration plan defined with shadow-mode rollout)
+- Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, and explicit screening vs valuation USDT market intents)
+- Objective 3: IN PROGRESS (3.1 schema + integration slice + audit chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
+- Objective 4: IN PROGRESS (adaptive-maker steady-loop repricing slice implemented in Trade/CryptoXch)
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED
-- Objective 7: IN PROGRESS (increments 7.1-7.5 and 7.7 are implemented with regression/documentation closure completed; remaining work is resolving workspace-level validation blockers outside Objective 7 core changes)
-- Objective 8: DEFINED (resilient trade loop — exchange outage and intermittent response handling; partial fix for base_ohlcv_unavailable crash applied 2026-05-31; full recovery mode not yet implemented)
 
 ### Session Log Template
 - Date:
@@ -1061,7 +756,7 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / getorder-getopenorders lifecycle reconciliation + per-asset snapshots
 - Completed:
-	- Added transition-aware audit reconciliation in `CryptoXch` so `getorder`/`getopenorders` persist first observation as `ORDER_OBSERVED`, amendments as `ORDER_AMENDED`, and later status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
+	- Added transition-aware audit reconciliation in `CryptoXch` so `getorder`/`getopenorders` persist status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
 	- Added lightweight in-memory order audit state cache keyed by order id to emit events only on status/fill deltas.
 	- Extended `getorder` with `auditevent` control to avoid duplicate events for internal lookup usage during order creation.
 	- Upgraded `Trade` portfolio snapshots from one aggregate row to per-asset snapshot rows with asset symbol, position quantity, and portfolio totals for replay-grade holdings history.
@@ -1084,16 +779,16 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / Integration slice across CryptoXch and Trade
 - Completed:
-	- Added `TradeLog` as a dependency of `CryptoXch` and `Trade`.
+	- Added `TradeAudit` as a dependency of `CryptoXch` and `Trade`.
 	- Integrated `CryptoXch` order audit emission for submitted and rejected order events at the public create-order boundary.
 	- Added explicit `run_mode` and `run_id` stamping on emitted order and portfolio audit rows.
 	- Added per-run-mode partitioning (`run_mode=<live|simulation>`) in the audit folder layout to prevent simulation/live mixing.
-	- Added an environment override for the audit root to support deterministic package-local tests without writing into the shared `\$HOME/crypto/tradelog` tree.
+	- Added an environment override for the audit root to support deterministic package-local tests without writing into the shared `\$HOME/crypto/audit` tree.
 	- Integrated `Trade` portfolio snapshot emission once per trading tick.
 	- Added focused tests for CryptoXch order audit persistence and Trade portfolio snapshot persistence.
 - Files changed:
-	- `TradeLog/src/TradeLog.jl`
-	- `TradeLog/test/runtests.jl`
+	- `TradeAudit/src/TradeAudit.jl`
+	- `TradeAudit/test/runtests.jl`
 	- `CryptoXch/Project.toml`
 	- `CryptoXch/Manifest.toml`
 	- `CryptoXch/src/CryptoXch.jl`
@@ -1106,8 +801,8 @@ Update this section after each work session.
 	- `Trade/test/audit_snapshot_test.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeLog"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
-	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeLog"); Pkg.resolve(); include("test/audit_snapshot_test.jl")'` → passed
+	- `cd CryptoXch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
+	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_snapshot_test.jl")'` → passed
 - Open issues/blockers:
 	- Order status polling, fills, and cancel/amend lifecycle events are not emitted yet.
 	- Portfolio snapshots are currently aggregate rows; per-asset or per-position snapshots remain for a later Objective 3 increment.
@@ -1118,27 +813,27 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / Initial Increment 3.1 slice
 - Completed:
-	- Added new `TradeLog` workspace package as the first Objective 3 implementation surface.
+	- Added new `TradeAudit` workspace package as the first Objective 3 implementation surface.
 	- Implemented canonical audit enums for event type, asset class, instrument type, market type, and routing role.
 	- Implemented flat `AuditEventRow` schema aligned with the Objective 3 canonical event proposal.
-	- Implemented partitioned audit path helpers rooted at `\$HOME/crypto/tradelog`.
+	- Implemented partitioned audit path helpers rooted at `\$HOME/crypto/audit`.
 	- Implemented append-only JSONL event writing for canonical audit rows.
 	- Added isolated unit tests covering schema defaults, payload serialization, partition layout, and append-only file writes.
 - Files changed:
-	- `TradeLog/Project.toml`
-	- `TradeLog/Manifest.toml`
-	- `TradeLog/setup.jl`
-	- `TradeLog/src/TradeLog.jl`
-	- `TradeLog/test/runtests.jl`
+	- `TradeAudit/Project.toml`
+	- `TradeAudit/Manifest.toml`
+	- `TradeAudit/setup.jl`
+	- `TradeAudit/src/TradeAudit.jl`
+	- `TradeAudit/test/runtests.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd TradeLog && julia --project=. -e 'using Pkg; Pkg.develop(path="../EnvConfig"); Pkg.resolve(); Pkg.test()'` → passed
+	- `cd TradeAudit && julia --project=. -e 'using Pkg; Pkg.develop(path="../EnvConfig"); Pkg.resolve(); Pkg.test()'` → passed
 - Open issues/blockers:
-	- `TradeLog` is not integrated into `Trade` or `CryptoXch` yet.
+	- `TradeAudit` is not integrated into `Trade` or `CryptoXch` yet.
 	- No lifecycle events are emitted yet; only schema and writer infrastructure exist.
 	- Hash-chain manifest generation and Arrow companion output remain for later Objective 3 increments.
 - Next immediate step:
-	- Wire `TradeLog` into the first order lifecycle boundary, starting with order submission and rejection events in `CryptoXch`.
+	- Wire `TradeAudit` into the first order lifecycle boundary, starting with order submission and rejection events in `CryptoXch`.
 
 - Date: 2026-05-10
 - Objective/Increment: Objective 2 / Increments 2.1-2.5
@@ -1196,7 +891,7 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 1 / Legacy compatibility + migration cleanup support
 - Completed:
-	- Removed temporary `TradingStrategy.TradeAction` compatibility shims and completed full workspace migration to the canonical fields (`label`, `openprice`, `openix`, `closeprice`).
+	- Added legacy compatibility shims for `TradingStrategy.TradeAction` field access (`cancelrunningorder`, `amountfactor`) and legacy `orderlimit = nothing` assignment handling.
 	- Simplified package setup scripts by removing `Pkg.update()` side effects in `EnvConfig/setup.jl`, `Features/setup.jl`, and `Ohlcv/setup.jl` while keeping `Pkg.instantiate()` + `Pkg.resolve()` flow.
 	- Updated remaining legacy manifest header in `Assets/Manifest.toml` from Julia `1.10.3` to `1.12.6`.
 - Files changed:
@@ -1236,39 +931,12 @@ Update this section after each work session.
 - Next immediate step:
 	- Continue Objective 1 with `tradestep!` extraction and deterministic loop-step tests.
 
-- Date: 2026-06-01
-- Objective/Increment: Objective 2 maintenance / BybitSim `accountcapacity` native implementation and MTM equity join fix
-- Completed:
-	- Added native `Bybit.accountcapacity(bc::BybitCache)` so `CryptoXch._exchangeaccountcapacity` dispatches to BybitSim instead of falling through to the portfolio-based `_fallbackaccountcapacity`.
-	- Eliminated the broken `get24h` bulk join (which joined `bdf.coin = "AAVE"` against `pricedf.symbol = "AAVEUSDT"`, always producing `missing` → price coerced to `1.0f0`).
-	- Replaced with a direct per-asset price lookup via `_sim_lastprice(bc, coin * quotecoin)` for each non-quote coin that has non-zero net exposure (`free + locked - borrowed ≠ 0`).
-	- Root cause of `equityquote=0` in tradesim: PEPE short borrowed quantity was ~20 million units; at price `1.0f0` instead of `0.00002`, the portfolio deduction exceeded USDT free balance → sum negative → `max(0, negative) = 0` → `equityquote=0` → all subsequent coin iterations skipped.
-	- Pricing failure per asset (e.g. OHLCV cache miss for a coin) now falls back to `price=0.0` for that asset only; it does not propagate a throw to the caller or affect equity from other assets.
-	- `equity_quote` in the return tuple wrapped in `max(0.0, ...)` to preserve the non-negative invariant.
-	- Removed all Trade-side capacity fallback machinery (`:_capacity_fallback_mode`, `:_capacity_fallback_allowed`, `capacity_fallback_mode` mc key, `capacity_fallback_applied_count` mc key) that was previously masking the root cause.
-	- Added two-tier divergence logging in `Trade._resolve_capacity_quote`:
-		- `@info` when capacity source and asset totals diverge by more than `CTS_CAPACITY_DIVERGENCE_INFO_THRESHOLD` (default 2%).
-		- `@warn` when divergence exceeds `CTS_CAPACITY_DIVERGENCE_WARN_THRESHOLD` (default 5%).
-	- Strengthened `Bybit/test/runtests.jl` assertion: `sim_capacity.equity_quote > sim_capacity.available_opening_quote` now verifiable only when non-quote positions are priced at real market values (not `1.0f0`).
-- Files changed:
-	- `Bybit/src/Bybit.jl`
-	- `Trade/src/Trade.jl`
-	- `Bybit/test/runtests.jl`
-- Tests run and result:
-	- `~/.juliaup/bin/julia --project=Bybit -e 'using Bybit; println("OK")'` → precompiled and passed.
-- Open issues/blockers:
-	- Live Bybit mode still uses conservative quote-wallet equity only (no MTM for live accounts); this is an intentional temporary simplification noted in the `accountcapacity` docstring.
-	- Phase A evidence collection for Objective 4 async promotion (KrakenSpot + KrakenFutures) is still gated by private WS reliability.
-- Next immediate step:
-	- Run tradesim to confirm `equityquote=0` warning no longer appears after the join fix.
-	- Verify divergence logging emits `@info` only (not `@warn`) in normal simulation runs where capacity source and asset totals agree within 5%.
-
 ## First Execution Slice (Recommended Next Coding Step)
-Start Objective 4 with Increment 4.0 safety scaffolding (feature flags + shadow comparator + rollback rule), then implement Increment 4.1 exchange-owned balance cache sync before enabling async order execution.
+Continue Objective 4 by deciding between (a) tick-driven adaptive maker repricing only and (b) a dedicated websocket-driven repricing worker, then add deterministic tests for the chosen cadence policy.
 
 ---
 
-## Objective 4A Workstream: WebSocket-based Market Data for Klines/Trades
+## Objective 4 (New): WebSocket-based Market Data for Kliness/Trades
 
 ### Design intent
 Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLCV) and trade data acquisition from HTTP polling to WebSocket streaming where supported by the exchange. This will allow for more efficient, real-time updates and lower the risk of hitting REST rate limits.
@@ -1285,332 +953,5 @@ Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLC
 - REST API usage for klines/trades is minimized, reducing rate-limit risk.
 - Data freshness and latency are improved or at least equivalent to HTTP polling.
 - Fallback to HTTP polling is robust and well-documented.
-
----
-
-## Objective 7 (New): Strategy-Execution Contract Refactor for Independent Long/Short Action Lanes
-
-### Design intent
-Align `TradingStrategy` outputs with real execution behavior where order amount is owned by `Trade`, partial fills are normal, and long/short exposures can overlap (not net out) on KrakenSpot and KrakenFutures. This objective supersedes the earlier proposal statement that implied `buyta` carried amount and that touching `buyta.limitprice` implied complete execution.
-
-### 2026-05-30 Architecture refinement
-- `Trade` shall consume strategy output from `TradingStrategy` only and shall not call `Classify` directly at runtime.
-- Required-history/readiness shall be propagated as: `Features -> Classifier -> TradingStrategy -> Trade`.
-- OHLCV update propagation only shall migrate to a subscription model with `CryptoXch` as the source of new OHLCV samples.
-- `Features`, `Targets`, and `Ohlcv` persistence/cache updaters subscribe to OHLCV updates and maintain derived state incrementally.
-- `TradingStrategy` and `Trade` integration shall use explicit call interfaces (no pub/sub contract between these layers):
-	- `TradingStrategy` pulls required classifier outputs via a clear strategy-runtime API.
-	- `Trade` pulls strategy snapshots from `TradingStrategy` via a clear execution-facing API.
-- `Trade` remains owner of execution sizing/risk/order lifecycle and receives strategy state snapshots plus exchange reconciliation context.
-
-### Contract corrections
-- `TradingStrategy` provides price and direction intent only; it does not provide execution amount.
-- `Trade` remains the single owner of order quantity based on allocation constraints, `minimumqty`, and current inventory/borrowed state.
-- Strategy state must not assume full fills when a price is touched; fill state must come from exchange order status/reconciliation.
-- Strategy emits exactly one shared `label` per sample; long/short lane states remain in parallel for open/close guidance and partial-fill continuity.
-- Close orders shall be adapted in each loop cycle to the actual open position/asset amount
-
-### Target action model
-- Replace `buyta`/`sellta` semantics with one shared sample label plus independent directional lane state:
-	- shared `label` per sample (single source of directional intent)
-	- `longta` lane state (`openprice`, `closeprice`, `openix`)
-	- `shortta` lane state (`openprice`, `closeprice`, `openix`)
-- Shared `label` domain:
-	- `longstrongbuy`, `longbuy`, `ignore`, `longstrongclose`, `shortstrongbuy`, `shortbuy`, `shortstrongclose`
-- `longta.openprice`:
-	- Used as long entry limit price when shared `label == longbuy`.
-- `shortta.openprice`:
-	- Used as short entry limit price when shared `label == shortbuy`.
-- `longta.closeprice`:
-	- Always represents the close target price for open long exposure and is updated incrementally each sample.
-- `shortta.closeprice`:
-	- Always represents the close target price for open short exposure and is updated incrementally each sample.
-- Strong labels execution semantics:
-	- `longstrongbuy`: ignore `longta.openprice`; submit entry as aggressive maker intent.
-	- `longstrongclose`: ignore `longta.closeprice`; close long as aggressive maker intent.
-	- `shortstrongbuy`: ignore `shortta.openprice`; submit entry as aggressive maker intent.
-	- `shortstrongclose`: ignore `shortta.closeprice`; close short as aggressive maker intent.
-- Cancellation semantics:
-	- If shared `label` is not in `{longbuy, longstrongbuy}`, cancel existing open long-entry buy orders.
-	- If shared `label` is not in `{shortbuy, shortstrongbuy}`, cancel existing open short-entry sell orders.
-- Consistency rule
-	- Exactly one shared label is emitted per sample.
-
-### Required `gain_limit_reversal!` behavior changes
-- Remove the current implicit full-fill handoff behavior where `buyta` is swapped into `sellta` solely because `buyta.limitprice` was touched.
-- Keep directional lane state independent (`longta`, `shortta`) and update each lane from observed exchange fill/reconcile state while emitting one shared sample label.
-- For open exposure with missing active close guidance, synthesize close advice in-lane:
-	- Long exposure: ensure `longta.closeprice > 0` with close direction and entry reference populated.
-	- Short exposure: ensure `shortta.closeprice > 0` with close direction and entry reference populated.
-- Synthesis inputs must use exchange-observed position/asset context (including average entry price), not simulated full-fill assumptions.
-
-### Trade integration rules
-- `Trade` consumes one shared sample label plus `longta`/`shortta` lane state in one tick.
-- Open-order prices follow strategy lane entry intent (`openprice` or strong-open signal).
-- Close-order prices follow strategy lane close intent (`closeprice` or strong-close signal).
-- Open/close order amounts are always computed in `Trade` from:
-	- allocation constraints,
-	- minimum quantity constraints,
-	- available free/borrowed inventory,
-	- active risk controls.
-
-### Increments
-- 7.1: Introduce new lane structs/fields in `TradingStrategy` and migrate all callers to canonical lane fields.
-- 7.2: Refactor `gain_limit_reversal!` to remove full-fill-by-touch assumption and emit one shared label plus lane-state intents each sample.
-- 7.3: Add reconciliation hook inputs for partial fills and average entry price per lane.
-- 7.4: Update `Trade` adapter path to consume TradingStrategy-only snapshots (no direct `Classify` runtime calls) and keep amount sizing in `Trade` only.
-- 7.5: Add deterministic tests for overlapping long/short partial-fill scenarios and cancel/keep rules per lane.
-- 7.6: Introduce CryptoXch-driven OHLCV subscription flow and migrate Features/Targets/Ohlcv cache updates off direct Trade-managed classifier refresh.
-- 7.7: Add explicit `TradingStrategy` runtime call interfaces for classifier-output ingestion and `Trade` snapshot consumption (no strategy/trade pub-sub coupling).
-
-### Draft Runtime API Signatures (Objective 7.7)
-
-```julia
-# TradingStrategy/src/runtime.jl (proposed)
-
-abstract type AbstractStrategyRuntime end
-
-Base.@kwdef mutable struct StrategySnapshot
-	base::String
-	datetime::DateTime
-	label::Targets.TradeLabel = Targets.ignore  # exactly one shared label per sample
-	long_openprice::Float32 = 0f0
-	long_closeprice::Float32 = 0f0
-	long_openix::Int = 0
-	short_openprice::Float32 = 0f0
-	short_closeprice::Float32 = 0f0
-	short_openix::Int = 0
-	probability::Float32 = 0f0
-	configid::Int = 0
-	source::Symbol = :tradingstrategy
-end
-
-Base.@kwdef struct StrategyReconciliationInput
-	has_long_open::Bool = false
-	long_avg_entry::Float32 = 0f0
-	long_open_ix::Int = 0
-	has_short_open::Bool = false
-	short_avg_entry::Float32 = 0f0
-	short_open_ix::Int = 0
-end
-
-"Required history for readiness checks (Features -> Classifier -> TradingStrategy)."
-requiredhistoryminutes(rt::AbstractStrategyRuntime)::Int
-
-"Synchronize runtime readiness state for candidate bases after OHLCV-derived updates are available."
-preparebases!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString};
-	history_startdt::DateTime,
-	datetime::DateTime,
-	updatecache::Bool=false,
-)::Nothing
-
-"Return accepted/ready bases after preparebases! in canonical uppercase base symbols."
-acceptedbases(rt::AbstractStrategyRuntime)::Set{String}
-
-"Drop one base from runtime readiness/signal state."
-dropbase!(rt::AbstractStrategyRuntime, base::AbstractString)::Nothing
-
-"Reset all per-base runtime state (used on strategy config changes)."
-reset!(rt::AbstractStrategyRuntime)::Nothing
-
-"Apply gain-segment configuration to runtime."
-apply_strategy!(rt::AbstractStrategyRuntime, gs::TradingStrategy.GainSegment; source::AbstractString="manual")::Nothing
-
-"Produce one strategy snapshot for one base and sample time."
-getsnapshot!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, base::AbstractString, datetime::DateTime;
-	reconciliation::StrategyReconciliationInput,
-)::Union{Nothing, StrategySnapshot}
-
-"Batch variant for one tick."
-getsnapshots!(rt::AbstractStrategyRuntime, xc::CryptoXch.XchCache, bases::AbstractVector{<:AbstractString}, datetime::DateTime;
-	reconciliation_by_base::AbstractDict{String, StrategyReconciliationInput}=Dict{String, StrategyReconciliationInput}(),
-)::Vector{StrategySnapshot}
-```
-
-Notes:
-- `LaneState` remains an internal TradingStrategy implementation detail if needed for code reuse.
-- The public runtime API contract exposes only `StrategySnapshot` flattened fields to avoid redundant public typing.
-- Baseline `Trade -> TradingStrategy` reconciliation feedback is intentionally minimal: open-presence flags (`has_long_open`, `has_short_open`), average-entry hints, and optional `open_ix` markers for continuity/diagnostics.
-
-### Trade Function Migration Map (Strategy/Classifier coupling scope)
-
-| Current function in Trade | Decision | Target/notes |
-|---|---|---|
-| `_tradeselection_history_minutes(tc::TradeCache)` | Move | Replace with `TradingStrategy.requiredhistoryminutes(cache.sr)`.
-| `_disablerestrictedbase!(cache, base, reason)` | Keep (edit) | Keep restricted-base behavior in Trade; remove direct `Classify.removebase!` call and call `TradingStrategy.dropbase!(cache.sr, base)`.
-| `tradeselection!(tc, assetbases; ...)` | Keep (edit) | Keep portfolio/universe policy in Trade; replace classifier base add/supplement/remove/readiness with `preparebases!` + `acceptedbases` on runtime.
-| `_strategyadvice(ta::Classify.TradeAdvice; ...)` | Delete | Removed once Trade no longer receives classifier advice payloads.
-| `policyenforcement(cache, tavec::Vector{Classify.TradeAdvice}, ...)` | Delete | Legacy path; replace with policy on `Vector{TradingStrategy.StrategySnapshot}` where needed.
-| `tradeamount(cache, tavec::Vector{Classify.TradeAdvice}, ...)` | Delete | Legacy path; sizing remains in Trade but inputs become snapshots/advice rows from runtime.
-| `trade!(cache, basecfg, ta::Classify.TradeAdvice, assets)` | Delete | Compatibility overload removed; Trade executes from strategy snapshots only.
-| `apply_tradingstrategy!(mc, gs; ...)` | Keep (edit) | Keep as Trade config entrypoint; delegate runtime application to `TradingStrategy.apply_strategy!(cache.sr, gs; source=...)`.
-| `apply_tradingstrategy!(cache, gs; ...)` | Keep (edit) | Keep public API for scripts/tests; same delegation as above.
-| `_strategyhistory!(cache, base)` | Delete | Deleted from Trade; runtime-owned rolling state stays inside `TradingStrategy` runtime implementation.
-| `_strategystate!(cache, base)` | Delete | Deleted from Trade; runtime-owned per-base strategy state stays inside runtime implementation.
-| `_upsert_getgainsalgo_sample!(history, ohlcv, label, score)` | Delete | Deleted from Trade; sample/history maintenance is runtime-internal.
-| `_set_gainsalgo_reconciliation!(gs, base, assets)` | Delete (replaced) | Replaced by `_strategy_reconciliation_input(cache, base, assets)` translation helper for snapshot API calls.
-| `_getgainsalgo_lane_advices(gs, ta)` | Delete | Replaced by `TradingStrategy.getsnapshot!` output contract.
-| `_getgainsalgo_advices!(cache, base, ta, assets)` | Delete | Replaced by `TradingStrategy.getsnapshot!`/`getsnapshots!`.
-| `_getgainsalgo_advice!(cache, base, ta, assets)` | Delete | Replaced by snapshot retrieval API.
-| `_collect_strategy_advices(cache, assets)` | Keep (rewrite) | Rewrite to call `TradingStrategy.getsnapshots!` and convert snapshots to execution actions in Trade without `Classify` calls.
-
-### Structural type changes in TradeCache
-- `TradeCache.cl::Classify.AbstractClassifier` -> replace with `TradeCache.sr::TradingStrategy.AbstractStrategyRuntime`.
-- Keep strategy config mirrors in `mc` during transition, but runtime-owned rolling state moves out of `Trade.mc[:strategy_state]` and `Trade.mc[:strategy_history]`.
-- Update script constructors (`tradereal.jl`, `tradesim.jl`) to build strategy runtime and pass it into `TradeCache`.
-
-### Progress update (2026-05-29)
-- [x] Completed lane field rename in `TradingStrategy.TradeAction`: `orderlabel` -> `label`, `buyprice` -> `openprice`, `buyix` -> `openix`, `orderlimit` -> `closeprice`.
-- [x] Completed workspace migration of call sites in `Trade` and relevant tests to canonical lane field names.
-- [x] Removed temporary compatibility shims and legacy field bridging from `TradingStrategy.TradeAction`.
-- [x] Updated integration-plan documentation and test descriptions to canonical field names.
-- [x] Validation rerun passed after cleanup: `Trade/test/runtests.jl` = `118/118` passing.
-
-### Progress update (2026-05-31)
-- [x] Added `TradingStrategy` runtime API compatibility layer (`AbstractStrategyRuntime`, `GainSegmentRuntime`, `StrategySnapshot`, `StrategyReconciliationInput`, `preparebases!`, `acceptedbases`, `dropbase!`, `getsnapshot!`, `getsnapshots!`, and reconciliation helpers) with docstrings for the new public surface.
-- [x] Moved `Trade` toward the runtime API by making strategy advice collection optionally source snapshots from `TradingStrategy` and by delegating tradeselection readiness/accepted-base bookkeeping through the runtime when enabled.
-- [x] Completed hard-cutover to mandatory `TradingStrategy` runtime API in `Trade` (legacy runtime gating and getgainsalgo mirror-state helpers removed).
-- [x] Added and validated focused Trade runtime-path tests covering advice conversion and restricted-base runtime drop propagation.
-
-### Merged execution checklist (from active Objective 7 session plan)
-
-#### Phase status
-- [x] Phase A (contract freeze/cutover baseline): canonical Objective 7 runtime API and migration map are documented in this section.
-- [x] Phase B (TradingStrategy runtime shell hardening): mandatory runtime methods fail fast and lifecycle determinism coverage was added.
-- [x] Phase C (Trade hard-cutover): runtime-only advice/tradeselection path in Trade completed; legacy getgainsalgo mirror helpers removed.
-- [x] Phase D (ownership boundaries): Trade remains the sole owner of sizing/risk/order lifecycle; reconciliation and managed-close boundaries are covered by focused Trade tests.
-- [x] Phase E (regression expansion): overlapping-lane partial-fill and reconciliation persistence regression coverage added in `TradingStrategy` tests; static Trade guardrails added.
-- [x] Phase F (docs/tracking): Objective 7 progress evidence and migration changelog are now captured; 7.6 is explicitly deferred.
-
-#### Completed since 2026-05-31 cutover start
-- [x] Removed deprecated Trade policy/sizing interfaces typed on `Classify.TradeAdvice`; active Trade execution input is now `StrategyAdvice` only.
-- [x] Removed duplicated numeric strategy mirror fields from `TradeCache.mc`; strategy validation now reads the canonical `strategy_template` only.
-- [x] Added explicit Trade runtime regression assertions that runtime snapshots produce neutral `StrategyAdvice` objects (`source=:tradingstrategy`, `relativeamount=1f0`) while Trade keeps sizing ownership.
-- [x] Added explicit Trade reconciliation assertions confirming the `assets -> StrategyReconciliationInput` translation remains the runtime feedback path.
-- [x] Validated managed-close/runtime boundary coverage remains in focused tests (`managed_close_orders_test.jl`) and reran full `Trade` package tests successfully (`181/181`).
-- [x] Added Objective 7 lane regressions for overlapping long/short partial-fill behavior and lane-specific keep/realize semantics in one tick (`TradingStrategy/test/objective7_lane_state_test.jl`).
-- [x] Added reconciliation persistence-boundary regression checks (`clearreconciliation!` and `reset!` stale-hint prevention) in `TradingStrategy/test/objective7_lane_state_test.jl`.
-- [x] Added deterministic snapshot-production coverage for runtime snapshots in `TradingStrategy/test/runtime_api_test.jl`.
-- [x] Added post-cutover static guardrails in `Trade` tests to prevent reintroduction of direct runtime `Classify.advice`, `Classify.TradeAdvice` interfaces, and `CTS_USE_STRATEGY_RUNTIME_API` branching (`Trade/test/objective7_static_guardrails_test.jl`).
-
-#### Remaining active tasks
-- [~] Re-run complete workspace package/root validation after external blockers are resolved:
-	- `Pkg.test("TradingStrategy")` is still blocked by known workspace dependency path issue (`Features` expected at `/Users/torsten/github/Features`).
-	- Workspace root tests currently fail in `KrakenFutures` with a pre-existing DataFrames row-schema insertion error unrelated to Objective 7 changes.
-
-### Objective 7 increment completion evidence (2026-06-01)
-
-- [x] 7.1 lane struct/field migration completed (`TradeAction` canonical fields adopted across `Trade` and tests).
-- [x] 7.2 `gain_limit_reversal!` lane-intent behavior retained without full-fill-by-touch assumption; lane-level tests cover keep/reduce behavior.
-- [x] 7.3 reconciliation hooks implemented and covered (`StrategyReconciliationInput`, `setreconciliation!`, `clearreconciliation!`, `synclanes!`, stale-hint boundary tests).
-- [x] 7.4 `Trade` consumes `TradingStrategy` snapshots only in runtime path; direct runtime `Classify` calls removed.
-- [x] 7.5 deterministic overlapping-lane partial-fill and cancel/keep regressions added in Objective 7 lane tests.
-- [~] 7.6 deferred by decision: OHLCV subscription migration is tracked separately and intentionally not included in this cutover.
-- [x] 7.7 runtime API interfaces implemented and used (`AbstractStrategyRuntime`, snapshot/reconciliation contracts, prepare/drop/reset/apply/getsnapshot/getsnapshots).
-
-### Objective 7 migration changelog (2026-06-01)
-
-- Removed legacy Trade strategy execution interfaces tied to `Classify.TradeAdvice` and transitioned execution intake to `StrategyAdvice`.
-- Removed Trade-side getgainsalgo compatibility helper family and runtime toggle branch (`CTS_USE_STRATEGY_RUNTIME_API`), making runtime API path unconditional.
-- Removed duplicated Trade strategy mirror state/threshold storage and consolidated runtime validation onto canonical `strategy_template`.
-- Introduced explicit runtime contract failure semantics for mandatory `AbstractStrategyRuntime` methods.
-- Added Objective 7 regression coverage for runtime-only advice conversion, reconciliation boundaries, overlapping-lane partial-fill behavior, and static guardrails against legacy-path reintroduction.
-
-### Exit criteria
-- Strategy emits independent long-lane and short-lane intents every sample.
-- No strategy path assumes complete execution from limit-price touch alone.
-- `Trade` remains sole owner of amount sizing and enforces exchange constraints.
-- For any open long/short exposure, corresponding close guidance is always present (explicit or synthesized) and consumed by `Trade`.
-
----
-
-## Objective 8 (New): Resilient Trade Loop — Exchange Outage and Intermittent Response Handling
-
-### Motivation (2026-05-31)
-Live tradereal sessions already experience transient exchange API failures. The existing `_servertime_retry_1m` helper in `CryptoXch` handles the case where the server time endpoint is unreachable, but it does not extend to the full set of exchange interactions required per tick (open orders, portfolio, OHLCV klines). When a response fails inside `setcurrenttime!` the affected base is silently removed from `xc.bases`, which caused the `KeyError("TRX")` crash observed in the 2026-05-31 KrakenSpot tradereal run. A broader recovery strategy is needed that:
-- classifies exchange errors as transient or persistent,
-- suspends execution for the minimum time needed to re-establish connectivity,
-- re-synchronizes all state (OHLCV, open orders, positions/portfolio) from the exchange before resuming, and
-- leaves open orders and existing positions in place during the outage window rather than attempting to cancel or amend in a degraded state.
-
-### Design intent
-Give the trading loop a first-class recovery mode that activates automatically when any exchange API call fails with a connectivity-class error, polls for connectivity on a one-minute cadence, and resumes trading from a clean, fully-synchronized state once the exchange is responsive again.
-
-### Error classification taxonomy
-
-| Class | Examples | Loop action |
-|---|---|---|
-| `transient_rate_limit` | HTTP 429, cooldown-until error | Already handled via private-read cooldown path; keep as-is. |
-| `transient_connectivity` | `HTTP 503`, timeout, connection refused, DNS failure | Activate outage recovery mode. |
-| `persistent_auth` | Authentication failure, invalid API key | Log, alert, and abort loop (not recoverable without operator action). |
-| `persistent_symbol` | Symbol not found, symbol not tradable | Log and disable the affected base for the current session only. |
-| `base_ohlcv_unavailable` | `KeyError` for base in `xc.bases` after `setcurrenttime!` strips it | Skip strategy advice for that base this tick; no crash. |
-
-The `base_ohlcv_unavailable` class is the immediate fix already applied (2026-05-31). The `transient_connectivity` class is the primary target of this objective.
-
-### Recovery mode state machine
-
-```
-RUNNING
-  │
-  │ transient_connectivity error anywhere in _tradestep!
-  ▼
-OUTAGE_DETECTED
-  │  log warning with timestamp; do not cancel/amend open orders
-  ▼
-POLLING_CONNECTIVITY  (once per minute)
-  │  probe: exchange server time endpoint
-  │  if still unreachable → sleep 60s, retry
-  │  if reachable → proceed to RESYNC
-  ▼
-RESYNC
-  │  1. re-fetch open orders  (getopenorders)
-  │  2. re-fetch portfolio    (portfolio!)
-  │  3. call setcurrenttime!(xc, datetime) to refresh all base OHLCV
-  │     (skip and warn on individual base failures, do not removebase)
-  │  if resync succeeds → RUNNING
-  │  if resync itself fails → back to POLLING_CONNECTIVITY
-  ▼
-RUNNING  (resume normal tick cadence from current wall-clock minute)
-```
-
-### Policy constraints during outage
-- No order cancellations or amendments are attempted while in `OUTAGE_DETECTED` or `POLLING_CONNECTIVITY`.
-- The loop does not advance the per-minute tick counter during the outage; it resumes from the current wall-clock minute after resync.
-- Maximum outage tolerated before escalating to operator alert: configurable via `CTS_OUTAGE_MAX_MINUTES` (default `60`); after this the loop sets `loop_stopping` state and logs a final alert.
-- Individual base OHLCV re-fetch failures during resync produce a warning and skip that base for the tick; they do not block resync completion.
-- The existing `stale_openorders_snapshot` fallback path remains active for single-tick private-read cooldowns and does not interact with outage recovery mode.
-
-### OHLCV gap handling after resync
-When the loop resumes after an outage of duration `D` minutes, the cached OHLCV for active bases has a gap of up to `D` minutes. Recovery action:
-- Call `cryptoupdate!(xc, ohlcv, last_known_dt, current_dt)` for each active base to close the gap.
-- Only bases that are fully caught up (OHLCV gap closed) proceed to strategy advice in the resumed tick.
-- Bases with persistent OHLCV fetch failures are logged and disabled for the rest of the session (same `persistent_symbol` handling).
-
-### Implementation surface
-
-| Component | Change |
-|---|---|
-| `CryptoXch.jl` | Add `_isconnectivityerror(err)::Bool` classifier. Keep `_servertime_retry_1m` for server-time-only retry; add separate `_probeconnectivity(xc)::Bool` for lightweight reachability check. Add `_resynccache!(xc, bases)` to re-fetch OHLCV for a given set of bases. Fix `setcurrenttime!(xc, datetime)` to not call `removebase!` on transient failures; instead warn and leave the base in place (missing kline data is tolerable for one tick). |
-| `Trade.jl` | Add `loop_outage` to the `LoopState` enum. Add `_activate_outage_recovery!(cache)` to transition state, log, and suppress order actions. Add `_poll_until_responsive!(cache)` with 60s sleep between probes and `CTS_OUTAGE_MAX_MINUTES` escalation. Add `_resync_after_outage!(cache)` to refresh orders, portfolio, and OHLCV. Wire these into `_run_tradeloop!` catch block: connectivity errors → outage recovery path; all other non-interrupt errors → current log-and-stop behavior. |
-| `EnvConfig.jl` / env docs | Document `CTS_OUTAGE_MAX_MINUTES` in `docs/config-and-env-options-2026-05-31.md`. |
-
-### Increments
-- [ ] **8.0** Fix `setcurrenttime!(xc, datetime)` in `CryptoXch` to not call `removebase!` on transient fetch errors. *(immediate — blocks the current crash)*
-- [ ] **8.1** Add `_isconnectivityerror(err)::Bool` classifier and `_probeconnectivity(xc)::Bool` in `CryptoXch`.
-- [ ] **8.2** Add `loop_outage` state, `_activate_outage_recovery!`, `_poll_until_responsive!`, and `_resync_after_outage!` in `Trade`. Wire into `_run_tradeloop!`.
-- [ ] **8.3** Add OHLCV gap-close pass in `_resync_after_outage!` using `cryptoupdate!` for each active base, gated behind the base-readiness check before strategy advice is collected.
-- [ ] **8.4** Add `CTS_OUTAGE_MAX_MINUTES` env flag with default of 60. Log structured alert and set `loop_stopping` when threshold is exceeded.
-- [ ] **8.5** Add focused tests: mock connectivity failure mid-loop, assert no cancel/amend attempted during outage, assert OHLCV gap is closed on resync, assert loop resumes.
-
-### Exit criteria
-- A connectivity-class exchange error anywhere in `_tradestep!` transitions the loop into recovery mode without raising an exception or losing base state.
-- Open orders are preserved as-is during outage; no cancellation or amendment is attempted until resync confirms connectivity.
-- After resync, OHLCV gaps for all active bases are closed before the first strategy advice is generated.
-- The loop automatically resumes normal minute-cadence operation after a successful resync.
-- If the outage exceeds `CTS_OUTAGE_MAX_MINUTES`, the loop stops cleanly and logs a structured alert for operator intervention.
-
-### Note on immediate partial fix (2026-05-31)
-Increment 8.0 is partially addressed by the `haskey(cache.xc.bases, base)` guards added to `_getgainsalgo_advices!` (Trade) and `getsnapshot!` (TradingStrategy) in the 2026-05-31 KeyError fix. The `removebase!` call in `setcurrenttime!` itself is the root cause and should be removed/scoped in Increment 8.0 for a complete fix.
 
 ---

@@ -554,60 +554,6 @@ function readcsv!(ohlcv::OhlcvData)::OhlcvData
 
 end
 
-function setsplit()::AbstractDataFrame
-    io = CSV.File(EnvConfig.setsplitfilename())
-    iodf = DataFrame(io)
-    len = size(iodf, 1)
-
-    df = iodf[!, [:set_type]]
-    df[!, :start] = Vector{DateTime}(undef, len)
-    df[!, :end] = Vector{DateTime}(undef, len)
-    [df[ix, :start] = DateTime.(DateTime.(String(iodf[ix, :start]), "y-m-d H:M:s+z"), UTC) for ix in 1:len]
-    [df[ix, :end] = DateTime.(DateTime.(String(iodf[ix, :end]), "y-m-d H:M:s+z"), UTC) for ix in 1:len]
-    # println(df)
-    return df
-
-end
-
-function setassign!(ohlcv::OhlcvData)
-    setname = ["NA" for ix in eachrow(ohlcv.df)]
-
-    splitdf = setsplit()
-    # display(splitdf)
-    sort!(splitdf, [:start, :end])
-    sizesplitdf = size(splitdf, 1)
-    setix = 1
-    opentimes = ohlcv.df[!, :opentime]
-    for ix in eachindex(opentimes)
-        while (setix <= sizesplitdf) && (splitdf[setix, :end] < opentimes[ix])
-            setix += 1
-        end
-        if (setix <= sizesplitdf) && (splitdf[setix, :start] <= opentimes[ix])
-            setname[ix] = splitdf[setix, :set_type]
-        end
-    end
-
-    setcategory = CategoricalArrays.categorical(setname, compress=true)
-    ohlcv.df[!, :set] = setcategory
-end
-
-"""
-Selects the given columns and returns them as transposed array, i.e. values of one column belong to one sample and rows represent samples.
-setname selects one of several disjunct subsets, e.g. : , : test, as defined in the sets split csv file.
-"""
-function columnarray(ohlcv::OhlcvData, setname::String, cols::Array{Symbol,1})::Array{Float32,2}
-    setassign!(ohlcv)
-    gd = groupby(ohlcv.df, [:set])
-    subdf = gd[(set=setname,)]
-    stackarr = [subdf[:,sym] for sym in cols]
-    n = size(stackarr, 1)
-    colarray = zeros(eltype(stackarr[1]),(n, size(stackarr[1],1)))
-    for i in 1:n
-        colarray[i, :] .= stackarr[i]
-    end
-    return colarray
-end
-
 mnemonic(ohlcv::OhlcvData) = uppercase(ohlcv.base) * "_" * uppercase(ohlcv.quotecoin) * "_" * ohlcv.interval * "_OHLCV"
 
 function legacyfile(ohlcv::OhlcvData)

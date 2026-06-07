@@ -2367,7 +2367,8 @@ function _wssignedchallenge(secret::String, challenge::String)::String
 	catch
 		Vector{UInt8}(secret)
 	end
-	return Base64.base64encode(_hmac(decoded, Vector{UInt8}(challenge), SHA.sha512, 128))
+	challenge_digest = SHA.sha256(challenge)
+	return Base64.base64encode(_hmac(decoded, challenge_digest, SHA.sha512, 128))
 end
 
 """

@@ -165,6 +165,4 @@ testtableio()
 
 end
 
-# println(EnvConfig.setsplitfilename())
-
 end  # module

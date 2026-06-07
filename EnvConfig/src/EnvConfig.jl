@@ -26,8 +26,6 @@ cryptoquote = "USDT"
 datetimeformat = "yymmdd HH:MM"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
-setsplitfname = "sets_split.csv"
-testsetsplitfname = "test_sets_split.csv"
 bases = String[]
 trainingbases = String[]
 
@@ -774,15 +772,6 @@ function init(mode::Mode; newdatafolder=false, authname::Union{Nothing, Abstract
     end
     bases = uppercase.(bases)
     trainingbases = uppercase.(trainingbases)
-end
-
-function setsplitfilename()::String
-    # println(configmode)
-    if configmode == production
-        return normpath(joinpath(cryptopath, datafolder, setsplitfname))
-    else
-        return normpath(joinpath(cryptopath, datafolder, testsetsplitfname))
-    end
 end
 
 function backupfilename(filenameprefix, backupnbr, filenameextension)

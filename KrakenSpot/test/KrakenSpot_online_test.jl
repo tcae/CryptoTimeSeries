@@ -3,7 +3,7 @@ using EnvConfig, KrakenSpot, Test
 # Run online KrakenSpot tests only when explicitly enabled.
 # Enable by setting environment variable: KRAKEN_ONLINE_TESTS=true
 @testset "KrakenSpot online tests" begin
-    enabled = lowercase(get(ENV, "KRAKEN_ONLINE_TESTS", "true")) in ["1", "true", "yes", "on"]
+    enabled = lowercase(get(ENV, "KRAKEN_ONLINE_TESTS", "false")) in ["1", "true", "yes", "on"]
     if !enabled
         @info "Skipping KrakenSpot online tests. Set KRAKEN_ONLINE_TESTS=true to enable."
     else

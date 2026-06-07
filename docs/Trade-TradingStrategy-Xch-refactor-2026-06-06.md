@@ -1,37 +1,31 @@
-# Motivation
+# Why this refactoring is required?
 
-## Observations
+It became clear that we run into a situation with more and more omplex code although the underlying logic does not seem to justify it.
 
 - Many helper functions
 - Redundant structs
 - Difficult to understand how the different data structures are kept in sync
-- Too much code for teh intended functionality
-
-## Cosmetics
-
-- CryptoXch shall be renamed as workspace wide hard cutover from CryptoXch to Xch
-- coins_exchange folder shall be renamed to corresponding exhange, i.e. coins_bybit to bybit, coins_krakenfutures to krakenfutures, coins_krakenspot to krakenspot
-- because opening a short position is a sell order the following hard cutover renaming shall be done: shortstrongbuy to shortstrongopen, shortbuy to shortopen, longbuy to longopen, longstrongbuy to longstrongopen
+- Too much code for the intended functionality
 
 ## Target Data Architecture
 
 - Share 1 dashboard struct per trading pair (base/quote) between Trade, TradingStrategy, Xch enabling all modules to access all relevant data without redundancy
-- Store per trading pair (base/quote) all sample relevant data in a Trading DataFrame that can also be saved
+- Store per trading pair (base/quote) all sample relevant data in a Trades DataFrame that can also be saved
   - Shall replace a significant part of the current textual logging
   - Provides a data to allow diagnostics of unintended trading mistakes in order to fix them
   - Provides data to compare simualted training against real trading to understand deviations and improve simulation 
   - The data shall be stored as arrow file in the exchange specific coins folders next to ohlcv.arrow
-  - data of a trading session shall be appended with an outerjoin to already present data
+  - data of a trading session shall be appended to already present data
 - Ohlcv data shall stay in its own DataFrame managed by Xch
 - Features shall stay in their own DataFrame managed by Features
 - Targets shall stay in their own DataFrame managed by Targets
-- The Trading, Targets, Features, Ohlcv DataFrames must stay in sync to allow row access via the same index
+- The Trades, Targets, Features, Ohlcv DataFrames must stay in sync to allow row access via the same index
   - If Features require history, i.e. it starts later than Ohlcv, then the dashboard shall use a view to Ohlcv to keep the indices of all DataFrames in sync
-- The Trading Data Frame shall comprise at least the following sample info
+- The Trades Data Frame shall comprise at least the following sample info
   - DateTime timestamp of sample (copy of corresponding OHLCV :opentime)
   - TradingStrategy advice concerning long buy price, long sell price, short buy price, short sell price, trade label
   - Trade order request for short and long order: order type (open, amend, close, noop), leverage, base amount, limit quote price
-  - Xch order feedback for short and long order: order id or missing, order status (accepted, rejected, partially filled, filled, cancelled, noop in case of no order), not yet filled order amount, average order fill price, categorized order error from exchange or internal signals (e.g. coin pair not tradable, order amount smaller than minimum amount)
+  - Xch order feedback for short and long order: order id or missing, order status (accepted, rejected, partially filled, filled, cancelled, noop in case of no order), not yet filled order amount, average order fill price, message id (see below)
   - Xch available asset or position type (asset, margin, future), leverage, position amount, quote price, maintenance margin
 
   ## Responsibilities
@@ -52,6 +46,22 @@
 - Xch only accepts open orders for margin and futures positions if free margin > used margin * MARGINHEADROOM
 - provides per exchange layer an implementation for available exposure and initial margin for a trading pair with leverage
 - strongbuy or strongclose orders without limit are post-only makers orders that are periodicly amended to stay 1 tick next to the ask price
+- trading issues shall be logged by a Xch.log_trading_issue(issuer, message) function
+  - when Xch.XchCache is initialized existing general and exchange specific messages shall be loaded by a Xch.load_messages function
+    - if the exchange specific folder contains an _errors.json file that contains an exchange object with a table of objects with at least a code and a message element and an optional id in it
+    - if the top data folder contains an _errors.json file that contains a "Trading" object with a table of objects each containing a UNIT8 id a code string and a message string
+    - This info will be loaded into a XchCache.messages Dict(issuer, named tuple vector) and a running id shall be added to each tuple, if it is not already part it.
+    - The id shall be a running UINT8 that starts for Trading messages from 1, for Bybit from 50, for KrakenSpot from 100, and for KrakenFutures from 150
+    - Xch.log_trading_issue(issuer, message) shall use that XchCache.messages Dict(issuer, tuple table) to compare whether the message of any of the tuple.message strings is equal or a substring of the given message. 
+      - If so, then the corresponding id is used as the message id. 
+      - If not, then a new tuple is added with an empty code, the next available id, and the provided message. 
+        - If the new id exceeds the foreseen id range this shall result in a fatal error with a qualified message. It is considered unliekly that this happens considering the maturity of the exchanges and overseeable number of messages collected.
+      - If a new message is added the corresponding _errors.json file shall be updaed.
+      - The message shall be send as warning to terminal output and logged as "Xch.ttstr(xc::XchCache) $id $(issuer): $message"
+      - The message id shall be captured in the pair specific Trades DataFrame that is currently processed
+      - The purpose of this approach is to store the ultimate reason an issue with a trading pair in a compact form together with all other relevant sample trading data
+        - The issuer "Trading" is a message from the tradereal program and may be issued in TradingStrategy, Trade or Crypto before any exchaneg interaction takes place
+        - The issuer KrakenSport, Bybit, KrakenFutures is a message response from the exchange that signals a failing interaction, which should not crash the program  
 
 ### TradingStrategy
 
@@ -63,19 +73,263 @@
 
 - Is controlling the trade loop of max 1 minute duration
     - Is receiving from Xch an update of 
-    - open orders
-    - available assets, positions, maintenance margin, equity
+      - open orders
+      - available free quote, balance, free margin, equity
     - Is receiving the trading advice from TradingStrategy
     - In case of an advice to open an asset or position
-        - requests close order for any open asset or position of the opposite trend (short vs long) as redcue only (if applicable) maker order without limit = 1 tick next to ask
-        - if long asset order
-        - amount = min(min(balance, MAXBUDGET) * MAXFRACTION - already bought base assets, free quote)
-        - if margin or futures order 
-        - open order only if free margin > used margin * MARGINHEADROOM
-        - amount = min(min(equity, MAXBUDGET) * MAXFRACTION - already bought position, free exposure(trading pair, leverage))
-        - no order if amount < tradable minimum quantity
-        - requests an open order with a buy limit (longbuy) or an open order without limit (strongbuy)
-- At session start and periodically as configured a selection takes place that checks trading pairs according to liquidity and selects a set that is tradable
+        - requests close order from Xch for any open asset or position of the opposite trend (short vs long) as redcue only (if applicable) maker order without limit = 1 tick next to ask
+        - requests an open order from Xch with a buy limit (longbuy) or an open order without limit (strongbuy)
+- At session start and periodically as configured a selection takes place via tradeselection! that checks trading pairs according to liquidity and selects a set that is tradable
   - portfolio assets or open positions are by default sellable
   - trading pairs that are valid AND per exchange tradable AND white listed AND have enough OHLCV history to be accepted by TradingStrategy  AND sufficient liquidity contiuity are considered openclose tradable
 - beside the trading pair specific categorization the following trade modes shall be supported: openclose, closeonly, quickexit (market sell of all positions), notrade (for testing)
+- the current implementation distinguishes robot owned orders from not robot owned orders. This difference shall no longer apply and all orders shall be considered
+
+## Phases
+
+### Phase 1: cosmetics
+
+- renaming cosmetics
+  - CryptoXch shall be renamed as workspace wide hard cutover from CryptoXch to Xch
+  - coins_exchange folder shall be renamed to corresponding exchange, i.e. coins_bybit to Bybit, coins_krakenfutures to KrakenFutures, coins_krakenspot to KrakenSpot.In teh same context Xch._setexchangecoinspath! shall be renamed to _setexchangepath!
+  - because opening a short position is a sell order the following hard cutover renaming shall be done: shortstrongbuy to shortstrongopen, shortbuy to shortopen, longbuy to longopen, longstrongbuy to longstrongopen
+- EnvConfig.cryptoquote shall be reanmed to EnvConfig.pairquote
+- EnvConfig.cryptopath shall be renamed to EnvConfig.tradingfolder
+- The authname parameter of XchCache shall be removed as it should be equal to the exchange name
+- The tradeselection! produced DataFrame has the columns sellenabled and buyenabled that shall be renamed: from buyenabled to openenabled, from sellenabled to closeenabled
+- A defaultquote shall be added to XchCache that shall be optional and shall be USDT for Bybit, USDC for KrakenSpot, USD for KrakenFutures. The XchCache function shall set the EnvConfig.pairquote accordingly
+- Authentication shall move from EnvConfig to Xch because it is exchange related
+- pass criteria: passing runtests, TrendDetector works on synthetic patterns, tradereal on KrakenSpot runs
+
+### Phase 2: introduce Trades DataFrame and use it in TrendDetector 
+
+- add a trading pair Dict(trading pair, Trades DataFrame) to Xch.XchCache and provide Xch creation and access functions because Xch is used by Trade and TradingStrategy
+- create a new TsCache struct inside TradingStrategy for internal session data, e.g. configuration, Classifier reference
+- implement an alternative TradingStrategy.getgains function that uses TsCache and Ohlcv, Trades DataFrame from xch
+- TradingStrategy trading pair specific data shall be maintained in a TsTp struct that can be accessed via TsCache by trading pair Dict lookup
+  - TsTp may also have a (read only) reference to trading pair specific Ohlcv data, which is updated by Xch
+- The TradingStrategy algorithm configuration that exist shall be maintained
+- gain_limit_reversal_pricedelta! shall be implemented using TsTp and Trades DataFrame
+- TrendDetector shall be adapted accordingly
+  - TradingStrategy.tradingstrategy shall use the trading pair specific Trades DataFrame instead of GainSegment
+  - trades.arrow shall represent the Trades DataFrame and shall be stored next to gains.arrow
+  - the configured TradingStrategy algorithm, e.g. gain_limit_reversal_pricedelta!, shall work on the Trades DataFrame to derive gains
+- pass criteria: 
+  - TrendDetector can still adapt a classifier based on synthetic SINE, DOUBLESINE data
+  - TrendDetector can still load an already adapted classifier and create gains data and provide a result summary as today
+
+### Phase 3: adapt Trade and Xch to use the Trading DataFrame 
+
+- add Xch functions log_trading_issue(issuer, message) and load_messages(exchange), integrate load_messages to XchCache initialization and implement unit tests
+- add functions to Xch to be called by Trade in the trade loop
+  - account_status to update equity, balance, free margin, free quote
+  - order_status to update the order status of a specific trading pair in the Trades DataFrame
+  - process_order_request to evaluate the order request for a specific trading pair from Trades DataFrame
+    - to close an order first if an opposite position is open
+    - if possible prepare open order and issue it async (without blocking trade loop) as soon as opposite position is closed
+    - to check constraints before an order is opened and reject the request in case of inconsistencies or constraints are not fullfilled
+      - if long asset open order request
+        - round amount to supported precision
+        - reject order request if (amount < minimum tradable amount) OR (amount > free quote)
+          - log reject with Xch.log_trading_issue("Trading")
+      - if margin or futures open order request 
+        - round amount to supported precision
+        - reject order request if (amount < minimum tradable amount) OR (initial margin(amount) > free margin)
+          - log reject with Xch.log_trading_issue("Trading")
+    - if amount is confirmed then check open orders for that position and consolidate them in 1 amended order by adding old order amount to new order amount and setting the limit to current openlimit
+    - else open a new order to open a position or buy an asset
+    - failure to place an order shall be logged by Xch.log_trading_issue() using the exchange string as issuer
+  - exchange communication failures that are related to connection or workload but not related to the content of a request
+    - Web Sockets connection drops and REST connection timeouts shall result in REST server time request to make sure the Internet and servers are available
+    - retry with exponential delays up to 1 minute until server time is provided
+    - reestablish Web Sockets and issue order
+      - in case of repeated Web Socket failures, fall back to REST interface
+    - unavailable server shall be retried with increasingly longer waittime up to 1 minute
+  - to indicate a reject/failure reason by Xch.log_trading_issue in the Trades DataFrame
+    - logs all messages at terminal and log file and leaves last failure as error id in sample data of Trades DataFrame
+- implement Trade.open_amount(account status, unfilled open order amount, trading pair, order type, leverage), which considers constraints and returns a base amount that can be requested in case of a positive value or reduced in case of a negative value
+    - if long asset order
+      - amount = min(min(balance, MAXBUDGET) * MAXFRACTION - already bought base assets, free quote * (1 - BALANCEHEADROOM))
+    - if margin or futures order 
+      - open order only if free margin > used margin * MARGINHEADROOM
+      - if free margin == 0
+        - amount = - max(10% * already bought position, minimum tradable amount)
+      else
+        - amount = min(min(equity, MAXBUDGET) * MAXFRACTION - already bought position, min(free exposure(trading pair, leverage), free margin) * (1 - MARGINHEADROOM))
+        - if 0 <= amount < tradable minimum quantity then amount = 0
+- implement trade loop variant of Trade.tradeloop and Trade.trade! with minimum required functionality
+  - as per configuration tradeselection! shall identify at session start and periodically trade pairs that are considered for open and close, for close only, for quick close (to be mapped to strongclose)
+  - update account status via Xch
+  - per buysell or sellonly identified trading pair as long as it fits in 60s loop, otherwise start with not yet processed trading pairs in next trade loop cycle
+    - request trade advice from TradingStrategy using Trades DataFrame
+    - update order status via Xch using Trades DataFrame
+    - in case of advice to open orders calculate amount by Trade.open_amount if the trading pair is identified as openclose tradable
+      - if an opposite position is open Xch will first close it before issuing an order to open the requested position
+      - deducting amount of requested order from free margin and free quote shall ensure sufficient funding 
+    - in case of a close advice a maker reduce-only (if supported by the exchange) order shall use the closelimit
+    - in case of a strongclose advice a maker reduce-only (if supported by the exchange) order shall use limit=nothing (i.e. limit is adapted periodically to 1 tick next to ask)
+- Trade shall implement an account DataFrame that it shall use in the trade loop to store the account summary (tradetime(xc::XchCache), equity, balance, free margin, free quote), pairs (closeenabled trading pairs stored as blank separated String of pairs) per sample
+- tradereal, and tradesim shall be adapted to use the new implementation
+- on session exit and before the tradeselection! periodic refresh (not before the initial) the account DataFrame shall be appended to accountV1.arrow in the Xch.exchangepath, the trading pair specific Trades DataFrame shall be appended to tradesV1.arrow in the trading pair specific subfolder of the exchangepath, the Ohlcv data shall be appended to ohlcv.arrow in the trading pair specific subfolder of the exchangepath
+-  pass criteria: tradereal and tradesim run without errors
+
+### Phase 4: cleanup and 
+
+- remove all code in Trade and TradingStrategy that is no longer used in the call graph of tradesim, tradereal, TrendDetector after switching them over to deprecate GainSegment and GainSegmentRuntime
+-  pass criteria: tradereal, tradesim, TrendDetector run without errors
+
+## Copilot review comments (2026-06-07)
+
+### High severity
+
+- Message id space is underspecified and can overflow fast because ids are planned as UINT8 with fixed issuer ranges. The current design has no collision/overflow policy and no rollover behavior when new messages are appended over time.
+  - Proposal: keep in-memory UInt16 ids, persist compact UInt8 only for known catalog entries, and reserve 255 as unknown/overflow sentinel. Add deterministic remap rules during load/save.
+  - Response: considered in approach with FataalError in case of overrun
+
+- Async close-then-open behavior can create duplicate or contradictory orders when trade loop cycles before close confirmation.
+  - Proposal: introduce explicit per-pair order state machine states (idle, close_pending, close_confirmed, open_pending, open_confirmed, failed) and allow one transition per loop tick.
+  - Response: the tradeloop is async from the web socket service but it is the requirement that Xch handles the complete closure of the opposite position before issuing an opening order synchronuously in thsi web socket service
+
+- Trades DataFrame append model is missing schema versioning and migration rules. With hard cutovers and renamed columns, old sessions can become unreadable.
+  - Proposal: persist schema_version and producer_version columns and add migration adapters at read time.
+  - Response is now considered by adding a V1 to accountV1.arrow and tradesV1.arrow. ohlcv.arrow is very stable over years and not considered a change candidate.
+
+### Medium severity
+
+- DataFrame sync by index across Ohlcv, Features, Targets, Trades needs a formal contract for startup gaps and late feature availability.
+  - Proposal: define one canonical sample key as (pair, opentime) and use explicit joins/views, not only positional index assumptions.
+  - Response: The canonical sample key is used as exchange + pair to select the data folder, the opentime at start and end as timestamp check. I see insufficient value in a join and later split for storage
+
+- Accounting formulas for open_amount mix free quote, free margin, equity, and already-open quantities but do not define behavior for stale account snapshots and concurrent pending orders.
+  - Proposal: compute against a loop-local reserved-funds ledger and expire reservations deterministically after timeout.
+  - Response: good proposal but refresh per cycle of account and open order status to be considered in the loop-local ledger
+
+- Message matching uses substring rules, which can misclassify unrelated errors.
+  - Proposal: use priority matching order: exact code, exact message, normalized message hash, then fallback substring.
+  - Response: as long as existing messages from the list are no substrings of each other, I don't see a risk. Clarification: The message of the registered list shall be a substring of the provided message. Rationale: Composition and additional info added to a message can vary between exchanges. The messages from the registered list shall be long enough to avoid misclassification.
+
+### Low severity
+
+- Several renamed terms are broad hard cutovers across many packages.
+  - Proposal: keep one temporary compatibility layer for one release cycle to reduce breakage risk while tests are expanded.
+  - Response: No need for compatibility layer. I prefer quick fixes instead and keep code compact.
+
+## Updated implementation plan (Copilot)
+
+### Phase 0: contracts and safety rails
+
+Goal: lock interfaces before implementation work in phases 1-5.
+
+#### Xch package checklist
+
+- Required structs/types
+  - [ ] `Xch.TradesSchemaV1` constant contract (column names, eltypes, nullability).
+  - [ ] `Xch.ErrorCatalogEntry` with fields: `id::UInt8`, `code::String`, `message::String`, `issuer::String`.
+  - [ ] `Xch.XchCache` additions: `pairstates::Dict{String,DataFrame}`, `messages::Dict{String,Vector{ErrorCatalogEntry}}`, `defaultquote::Union{Nothing,String}`.
+- Required Trades DataFrame v1 columns (must be created by Xch helper)
+  - [ ] Identity/time: `opentime::DateTime`.
+    - comment: `exchange::String`, `pair::String` notrequired as column because folder structure is used for that info
+  - [ ] Strategy advice: `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`, `tradelabel::TradeLabel`, `labelscore::Float32`.
+  - [ ] Trade request long: `longleverage::Union{Missing,UINT8}`, `longamount::Union{Missing,Float32}`, `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`.
+  - [ ] Trade request short: `shortleverage::Union{Missing,UINT8}`, `shortamount::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`.
+  - [ ] Exchange feedback long: `longid::Union{Missing,String}`, `longstatus::String`, `longunfilled::Union{Missing,Float32}`, `longpriceavg::Union{Missing,Float32}`, `longmsgid::Union{Missing,UInt8}`.
+  - [ ] Exchange feedback short: `shortid::Union{Missing,String}`, `shortstatus::String`, `shortunfilled::Union{Missing,Float32}`, `shortpriceavg::Union{Missing,Float32}`, `shortmsgid::Union{Missing,UInt8}`.
+  - [ ] Position/account snapshot: `postype::String`, `posleverage::Union{Missing,Float32}`, `posamount::Union{Missing,Float32}`, `quoteprice::Union{Missing,Float32}`, `maintmargin::Union{Missing,Float32}`, `equity::Union{Missing,Float32}`, `balance::Union{Missing,Float32}`, `freemargin::Union{Missing,Float32}`, `freequote::Union{Missing,Float32}`.
+- Required tests (Xch/test)
+  - [ ] schema test: a newly created trades table contains exactly all v1 columns with expected eltypes.
+  - [ ] error-catalog test: `load_messages` reads Trading + exchange catalogs and preserves ids.
+  - [ ] error-id bounds test: adding a message beyond issuer range throws fatal error with qualified message.
+  - [ ] close order for open position followed by open order in opposite direction for the same trading pair in the same minute: close is fully completed before open request for opposite direction in async web socket service 
+    - [ ] connection errors are handled gracefully such that rate limit overrun does not occur and that connections are reestablished after a connection break
+    - [ ] all exchange site errors are handled such that they don't result in a fatal errors but they are reported, the situation is mitigated and trading can continue as soon as teh exchange is available again
+
+#### TradingStrategy package checklist
+
+- Required structs/types
+  - [ ] `TradingStrategy.TsTp` with fields: `ohlcv`, `trades::DataFrame`.
+  - [ ] `TradingStrategy.TsCache` with fields: `mc::Dict`, `classifier::AbstractClassifier`, `pair::Dict{String,TsTp}`.
+  - [ ] `TradingStrategy.TsCache.mc` modules constant keys: `:configname`, `:buygain`, `:sellgain`, `:limitreduction`, `:minpricedelta`, `:maxnoclassifyminutes`, `:maxwindow`.
+- Required column ownership contract
+  - [ ] TradingStrategy writes only advice columns (`longopenlimit`, `longcloselimit`, `shortopenlimit`, `shortcloselimit`, `tradelabel`, `labelscore`).
+  - [ ] TradingStrategy does not mutate exchange feedback/account columns.
+- Required tests (TradingStrategy/test)
+  - [ ] ownership test: strategy functions modify only the advice columns.
+  - [ ] continuity test: SINE/DOUBLESINE results still produce deterministic advice series.
+  - [ ] initialization test: TsCache/TsTp creation works for first sample and warm restart.
+
+#### Trade package checklist
+
+- Required structs/types
+  - [ ] `Trade.Account` with fields: `tradetime`, `equity`, `balance`, `free_margin`, `free_quote`, `pairs`.
+- Required DataFrame contract
+  - [ ] `accountV1.arrow` schema has columns: `tradetime::DateTime`, `equity::Float32`, `balance::Float32`, `free_margin::Float32`, `free_quote::Float32`, `pairs::String`.
+- Required tests (Trade/test)
+  - [ ] open_amount contract test for asset and margin/futures paths.
+  - [ ] immediate-funding test: issuing an order reduces free margin/free quote in the current account snapshot without a separate reservation ledger.
+  - [ ] TsCache init test: all expected data structures are filled and are consistent
+  - [ ] loop sequencing test: 
+    - [ ] all openenabled and closeenabled trading pairs are processed round robin
+    - [ ] if not all trading pairs can be processed in a minute processing starts the next cycle with the next trading pair to ensure fair round robin processing
+    - [ ] tradeselection! updates the list of tradable pairs at session start and periodically as configured
+    - [ ] before tradeselection!  all data that is identified as to be saved is actually appended to the corresponding arrow files
+    - [ ] fatal errors and interrupts are handled such that all data that is identified as to be saved is actually appended to the corresponding arrow files
+
+#### EnvConfig package checklist
+
+- Required config contract
+  - [ ] `pairquote` and `tradingfolder` are canonical fields used by Xch/Trade.
+  - [ ] authentication keys are no longer owned by EnvConfig APIs used in runtime path.
+- Required tests (EnvConfig/test)
+  - [ ] runtime config load test verifies `pairquote` and `tradingfolder` default/override behavior.
+  - [ ] guard test verifies deprecated auth access path is absent from runtime code path.
+
+#### Workspace-level integration checklist
+
+- Required cross-package tests
+  - [ ] integration smoke: create Xch cache, create trades table, run one TradingStrategy advice write, run one Trade loop iteration.
+  - [ ] persistence smoke: append one row to `tradesV1.arrow` and one row to `accountV1.arrow` and read back with expected schema.
+  - [ ] deterministic replay smoke: same input OHLCV and config yields same advice/request columns.
+
+- Exit gate
+  - [ ] Xch, TradingStrategy, Trade, EnvConfig package tests pass.
+  - [ ] workspace test entrypoint passes with no schema-contract failures.
+
+### Phase 1: naming and path cutover with compatibility shims
+
+- Apply renames from CryptoXch to Xch and naming updates for open/close terminology.
+- Introduce temporary alias wrappers for old names in all affected packages. Those shall be marked as to be removed in phase 5.
+- Move authentication ownership to Xch while not keeping EnvConfig readers.
+- Exit gate:
+  - workspace tests pass and only new names resolve in smoke tests.
+
+### Phase 2: Trades DataFrame foundation in Xch and TradingStrategy
+
+- Add per-pair Trades tables in XchCache and creation/access API.
+- Add TsCache/TsTp with strict ownership rules (Xch owns mutable trade tables, TradingStrategy reads/writes only its columns).
+- Adapt TrendDetector path to write tradesV1.arrow with V1 indicator as schema version.
+- Exit gate:
+  - synthetic SINE and DOUBLESINE adaptation and reload scenarios still pass.
+
+### Phase 3: Trade loop integration and deterministic order orchestration
+
+- Implement account_status, order_status, process_order_request with state-machine transitions.
+- Add loop-local reservation ledger for quote and margin to avoid over-allocation across pairs.
+- Implement close-first then open sequencing with explicit close confirmation requirement within web socket handling of orders.
+- Integrate log_trading_issue and message-id capture into Trades rows.
+- Exit gate:
+  - tradesim and tradereal run with no errors and no duplicate open orders under reversal stress tests.
+
+### Phase 4: persistence, retries, and resilience hardening
+
+- Persist account.arrow, trades.arrow, ohlcv.arrow with atomic append strategy and crash-safe flush checkpoints.
+- Implement connection retry policy with bounded backoff and explicit degraded-mode flags.
+- Add tests for websocket drop, REST timeout, and reconnect fallback behavior.
+- Exit gate:
+  - resilience tests pass and data files stay consistent after forced interruption tests.
+
+### Phase 5: cleanup and hard cutover
+
+- Remove deprecated GainSegment/GainSegmentRuntime call paths after all entrypoints are migrated.
+- Remove temporary compatibility aliases introduced in phase 1.
+- Exit gate:
+  - tradereal, tradesim, TrendDetector pass and no deprecated symbol is referenced in call graph checks.

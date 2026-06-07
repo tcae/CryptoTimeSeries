@@ -29,37 +29,6 @@ end
 #     return r[7] == 0.310714285714285
 # end
 
-function setsplit_test()
-    splitdf = Ohlcv.setsplit()
-    # println("splitdf: $splitdf")
-    nrow(splitdf) == 3 || return false
-    return true
-end
-
-function setassign_test()
-    ohlcv = Ohlcv.defaultohlcv("test")
-    ohlcv = Ohlcv.read!(ohlcv)
-    Ohlcv.setassign!(ohlcv)
-    # println("ohlcv after split set: $ohlcv")
-    nrow(ohlcv.df) == 9 || return false
-    names(ohlcv.df) == ["opentime", "open", "high", "low", "close", "basevolume", "set"] || return false
-    return true
-end
-
-function columnarray_test()
-    expected = [ 0.205815  0.204343     0.204343      0.204522      0.214546;
-    725.0       0.0       3137.0       14150.0       33415.0;
-    0.207287  0.204343     0.204343      0.204703      0.213031]
-    # display(expected)
-    ohlcv = Ohlcv.defaultohlcv("test")
-    ohlcv = Ohlcv.read!(ohlcv)
-    Ohlcv.addpivot!(ohlcv)
-    # display(ohlcv2)
-    cols = [:pivot, :basevolume, :open]
-    colarray = Ohlcv.columnarray(ohlcv, "training", cols)
-    return isapprox(expected, colarray)
-end
-
 function pivot_test()
     expected = [ 0.205815  0.204343     0.204343      0.204522      0.214546;
     725.0       0.0       3137.0       14150.0       33415.0;
@@ -227,9 +196,6 @@ ohlcv2 = readwrite(ohlcv1)
 Ohlcv.delete(ohlcv1t)
 @test Ohlcv.file(ohlcv1t).existing == false
 EnvConfig.init(mode)
-# @test setsplit_test()
-# @test setassign_test()  #! fails but setassign currently not relevant
-# @test columnarray_test()
 
 ohlcva, ohlcvb = ohlcvab(-3)  # add ohlcvb at start ohlcba
 # println(ohlcva.df)
