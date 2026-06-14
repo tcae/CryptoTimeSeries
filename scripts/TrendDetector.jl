@@ -27,7 +27,7 @@ mutable struct TrendDetectorConfig
     featconfig::Features.AbstractFeatures
     targetconfig::Targets.AbstractTargets
     classifiermodel
-    tradingstrategy::TradingStrategy.StrategySpec
+    tradingstrategy::TradingStrategy.StrategyConfig
     startdt::DateTime
     enddt::DateTime
     opmode::TrendDetectorMode

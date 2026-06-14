@@ -52,14 +52,14 @@ const INITIAL_QUOTE_BALANCE = 100000.0
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
-# Buy signal score threshold used by GainSegment strategy.
+# Buy signal score threshold used by strategy spec.
 const BUY_OPEN_THRESHOLD = 0.4f0
 
-# GainSegment strategy parameters used by the backtest.
+# Strategy parameters used by the backtest.
 const CONFIG_REF = get(ENV, "TRADESIM_CONFIG_REF", "046")
 const CONFIG = trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
-const CONFIG_STRATEGY = TradingStrategy.GainSegment(
+const CONFIG_STRATEGY = TradingStrategy.makestrategy(
     maxwindow=CONFIG.tradingstrategy.maxwindow,
     openthreshold=BUY_OPEN_THRESHOLD,
     closethreshold=CONFIG.tradingstrategy.closethreshold,
@@ -85,6 +85,13 @@ function backtest_bounds_from_env(default_start::DateTime, default_end::DateTime
     edt = isempty(eraw) ? default_end : DateTime(eraw)
     @assert sdt <= edt "TRADESIM_STARTDT must be <= TRADESIM_ENDDT; got start=$(sdt), end=$(edt)"
     return sdt, edt
+end
+
+function env_bool(name::AbstractString, default::Bool)::Bool
+    raw = strip(lowercase(get(ENV, String(name), default ? "true" : "false")))
+    raw in ["1", "true", "yes", "on"] && return true
+    raw in ["0", "false", "no", "off"] && return false
+    return default
 end
 
 # Normalize whitelist entries to base coins for the configured quote coin.
@@ -460,7 +467,7 @@ Trade.apply_tradingstrategy!(cache, CONFIG_STRATEGY;
 # Override whitelist and risk parameters.
 cache.mc[:whitelistcoins]   = whitelist
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
-cache.mc[:usenewtrade]      = false
+cache.mc[:usenewtrade]      = env_bool("TRADESIM_USE_NEW_TRADE", true)
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")

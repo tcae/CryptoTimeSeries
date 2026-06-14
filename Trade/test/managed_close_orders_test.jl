@@ -4,21 +4,30 @@ using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
 Base.@kwdef mutable struct ClosePriceRuntime <: TradingStrategy.AbstractStrategyRuntime
-    snap::Union{Nothing, TradingStrategy.StrategySnapshot} = nothing
+    long_closeprice::Float32 = 0f0
+    short_closeprice::Float32 = 0f0
 end
 
-function TradingStrategy.getsnapshot!(
+function TradingStrategy.gettradesrow!(
     rt::ClosePriceRuntime,
     xc::Xch.XchCache,
     base::AbstractString,
     datetime::DateTime;
-    reconciliation::TradingStrategy.StrategyReconciliationInput=TradingStrategy.StrategyReconciliationInput(),
-)::Union{Nothing, TradingStrategy.StrategySnapshot}
+    reconciliation=nothing,
+)::Union{Nothing, NamedTuple}
     _ = xc
-    _ = base
-    _ = datetime
     _ = reconciliation
-    return rt.snap
+    basekey = uppercase(String(base))
+    tdf = Xch.trades(xc, basekey, EnvConfig.pairquote)
+    rowix = findlast(==(datetime), tdf[!, :opentime])
+    if isnothing(rowix)
+        push!(tdf, (opentime=datetime, lastopentrade=missing, pair=Xch.tradingpairkey(basekey, EnvConfig.pairquote), coin=basekey); cols=:subset)
+        rowix = nrow(tdf)
+    end
+    tdf[rowix, :tradelabel] = Targets.ignore
+    tdf[rowix, :longcloselimit] = rt.long_closeprice
+    tdf[rowix, :shortcloselimit] = rt.short_closeprice
+    return (base=basekey, datetime=datetime, tradesdf=tdf, rowix=rowix, probability=0f0, configid=0, source=:test)
 end
 
 @testset "Managed close order state" begin
@@ -71,21 +80,12 @@ end
     @test managed[longkey][:orderid] == "oid-close"
     @test managed[longkey][:tradelabel] == Targets.longclose
 
-    tc.mc[:strategy_runtime] = ClosePriceRuntime(
-        snap=TradingStrategy.StrategySnapshot(
-            base="BTC",
-            datetime=DateTime("2025-01-01T00:00:00"),
-            label=Targets.ignore,
-            long_closeprice=111.0f0,
-            short_closeprice=0.0f0,
-        ),
-    )
+    tc.mc[:strategy_runtime] = ClosePriceRuntime(long_closeprice=111.0f0, short_closeprice=0.0f0)
 
     @test Trade._strategy_sell_limitprice(tc, "BTC", Targets.longclose; assets=assets) == 111.0f0
     @test isnothing(Trade._strategy_sell_limitprice(tc, "BTC", Targets.shortclose; assets=assets))
 
-    gs = TradingStrategy.GainSegment(; algorithm=TradingStrategy.gain_limit_reversal!)
-    gs.longta = TradingStrategy.TradeAction(longclose, 111.0f0, 100.0f0, 1)
+    gs = TradingStrategy.makestrategy(; algorithm=TradingStrategy.gain_limit_reversal!)
 
     Trade._managedcloseset!(tc, "BTC", "oid-x", Targets.longclose; limitprice=111.0f0, baseqty=0.5f0)
     @test haskey(tc.mc[:managed_close_orders], longkey)
@@ -109,6 +109,25 @@ end
     )
 
     Trade._managedcloseset!(tc, "BTC", "oid-pending-shortclose", Targets.shortclose; limitprice=100.0f0, baseqty=1.0f0)
+    missing = Trade._positions_without_close_orders(tc, assets, DataFrame())
+    @test isempty(missing)
+end
+
+@testset "Missing close-order check ignores dust quantities" begin
+    EnvConfig.init(EnvConfig.test)
+
+    xc = Xch.XchCache()
+    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
+
+    assets = DataFrame(
+        coin=["BTC", EnvConfig.pairquote],
+        free=Float32[5f-7, 2000.0f0],
+        locked=Float32[0.0f0, 0.0f0],
+        borrowed=Float32[0.0f0, 0.0f0],
+        usdtprice=Float32[100.0f0, 1.0f0],
+        usdtvalue=Float32[0.0f0, 2000.0f0],
+    )
+
     missing = Trade._positions_without_close_orders(tc, assets, DataFrame())
     @test isempty(missing)
 end

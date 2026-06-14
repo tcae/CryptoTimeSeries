@@ -86,7 +86,7 @@ mutable struct BoundsEstimatorConfig
     featconfig::Features.AbstractFeatures
     targetconfig::Targets.AbstractTargets
     regressormodel
-    tradingstrategy::TradingStrategy.StrategySpec
+    tradingstrategy::TradingStrategy.StrategyConfig
     startdt::DateTime
     enddt::DateTime
     opmode::BoundsEstimatorMode

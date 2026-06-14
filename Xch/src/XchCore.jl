@@ -244,6 +244,7 @@ mutable struct XchCache
         EnvConfig.setpairquote!(dq)
         xc.mc[:simmode] = simmode
         xc.mc[:message_catalog_root] = EnvConfig.coinspath()
+        xc.mc[:trades_v1_required_columns] = TRADES_V1_REQUIRED_COLUMNS
         _setexchangepath!(xc)
         if hasproperty(xc.bc, :syminfodf) && !isnothing(xc.bc.syminfodf)
             for row in eachrow(xc.bc.syminfodf)
@@ -488,7 +489,55 @@ function _emptytradesv1df()::DataFrame
     return DataFrame(
         opentime=DateTime[],
         lastopentrade=Vector{Union{Missing, DateTime}}(),
+        pair=Vector{Union{Missing, String}}(),
+        coin=Vector{Union{Missing, String}}(),
+        tradelabel=Vector{Union{Missing, Any}}(),
+        labelscore=Vector{Union{Missing, Float32}}(),
+        longleverage=Vector{Union{Missing, UInt8}}(),
+        longamount=Vector{Union{Missing, Float32}}(),
+        shortleverage=Vector{Union{Missing, UInt8}}(),
+        shortamount=Vector{Union{Missing, Float32}}(),
+        longopenlimit=Vector{Union{Missing, Float32}}(),
+        longcloselimit=Vector{Union{Missing, Float32}}(),
+        shortopenlimit=Vector{Union{Missing, Float32}}(),
+        shortcloselimit=Vector{Union{Missing, Float32}}(),
+        longid=Vector{Union{Missing, String}}(),
+        longstatus=String[],
+        longunfilled=Vector{Union{Missing, Float32}}(),
+        longpriceavg=Vector{Union{Missing, Float32}}(),
+        longmsgid=Vector{Union{Missing, UInt8}}(),
+        shortid=Vector{Union{Missing, String}}(),
+        shortstatus=String[],
+        shortunfilled=Vector{Union{Missing, Float32}}(),
+        shortpriceavg=Vector{Union{Missing, Float32}}(),
+        shortmsgid=Vector{Union{Missing, UInt8}}(),
+        postype=String[],
+        posleverage=Vector{Union{Missing, Float32}}(),
+        posamount=Vector{Union{Missing, Float32}}(),
+        quoteprice=Vector{Union{Missing, Float32}}(),
+        maintmargin=Vector{Union{Missing, Float32}}(),
+        equity=Vector{Union{Missing, Float32}}(),
+        balance=Vector{Union{Missing, Float32}}(),
+        freemargin=Vector{Union{Missing, Float32}}(),
+        freequote=Vector{Union{Missing, Float32}}(),
     )
+end
+
+const TRADES_V1_REQUIRED_COLUMNS = (
+    :opentime, :lastopentrade, :pair, :coin, :tradelabel, :labelscore,
+    :longleverage, :longamount, :shortleverage, :shortamount,
+    :longopenlimit, :longcloselimit, :shortopenlimit, :shortcloselimit,
+    :longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid,
+    :shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsgid,
+    :postype, :posleverage, :posamount, :quoteprice, :maintmargin,
+    :equity, :balance, :freemargin, :freequote,
+)
+
+function _asserttradesv1schema(df::DataFrame)::Nothing
+    present = Set(Symbol.(names(df)))
+    missing = [c for c in TRADES_V1_REQUIRED_COLUMNS if !(c in present)]
+    isempty(missing) || throw(ArgumentError("trades dataframe violates v1 schema contract; missing columns=$(missing), names=$(names(df))"))
+    return nothing
 end
 
 """
@@ -507,6 +556,66 @@ function _ensuretradesv1schema(df::DataFrame)::DataFrame
     end
     if !(:lastopentrade in cols)
         df[!, :lastopentrade] = Vector{Union{Missing, DateTime}}(missing, nrow(df))
+    end
+    if !(:pair in cols)
+        df[!, :pair] = Vector{Union{Missing, String}}(missing, nrow(df))
+    end
+    if !(:coin in cols)
+        df[!, :coin] = Vector{Union{Missing, String}}(missing, nrow(df))
+    end
+    if !(:tradelabel in cols)
+        df[!, :tradelabel] = Vector{Union{Missing, Any}}(missing, nrow(df))
+    end
+    if !(:labelscore in cols)
+        df[!, :labelscore] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    for col in (:longamount, :shortamount, :longopenlimit, :longcloselimit, :shortopenlimit, :shortcloselimit)
+        if !(col in cols)
+            df[!, col] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        end
+    end
+    for col in (:longleverage, :shortleverage)
+        if !(col in cols)
+            df[!, col] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+        end
+    end
+    if !(:longid in cols)
+        df[!, :longid] = Vector{Union{Missing, String}}(missing, nrow(df))
+    end
+    if !(:longstatus in cols)
+        df[!, :longstatus] = fill("none", nrow(df))
+    end
+    if !(:longunfilled in cols)
+        df[!, :longunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    if !(:longpriceavg in cols)
+        df[!, :longpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    if !(:longmsgid in cols)
+        df[!, :longmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+    end
+    if !(:shortid in cols)
+        df[!, :shortid] = Vector{Union{Missing, String}}(missing, nrow(df))
+    end
+    if !(:shortstatus in cols)
+        df[!, :shortstatus] = fill("none", nrow(df))
+    end
+    if !(:shortunfilled in cols)
+        df[!, :shortunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    if !(:shortpriceavg in cols)
+        df[!, :shortpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    if !(:shortmsgid in cols)
+        df[!, :shortmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+    end
+    if !(:postype in cols)
+        df[!, :postype] = fill("flat", nrow(df))
+    end
+    for col in (:posleverage, :posamount, :quoteprice, :maintmargin, :equity, :balance, :freemargin, :freequote)
+        if !(col in cols)
+            df[!, col] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        end
     end
     return df
 end
@@ -911,6 +1020,7 @@ end
 _tradelogstring(value) = ismissing(value) || isnothing(value) ? missing : String(value)
 _tradelogstring(value::Enum) = String(Symbol(value))
 _tradelogfloat(value) = ismissing(value) || isnothing(value) ? missing : Float64(value)
+_tradelogenabled(xc::XchCache)::Bool = Bool(get(xc.mc, :enable_tradelog, true))
 
 function _orderfield(orderinfo, field::Symbol)
     if isnothing(orderinfo) || !hasproperty(orderinfo, field)
@@ -1014,6 +1124,7 @@ function _tradelogeventtimeutc(xc::XchCache)::DateTime
 end
 
 function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed; orderinfo=nothing, status_reason=nothing)
+    !_tradelogenabled(xc) && return nothing
     pair = basequote(symbol)
     simmode = String(Symbol(xc.mc[:simmode]))
     exchange_order_id = _tradelogstring(_orderfield(orderinfo, :orderid))
@@ -1110,6 +1221,7 @@ function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType,
 end
 
 function _tradelogcreatedorder!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, orderinfo)
+    !_tradelogenabled(xc) && return nothing
     if isnothing(orderinfo)
         _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason="createorder returned nothing")
         return nothing
@@ -1124,6 +1236,7 @@ function _tradelogcreatedorder!(xc::XchCache, role::ExchangeRole, symbol::Abstra
 end
 
 function _tradelogordererror!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, err)
+    !_tradelogenabled(xc) && return nothing
     _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason=sprint(showerror, err))
     return nothing
 end
@@ -1411,6 +1524,7 @@ function _tradelogeventtypeforstatus(status::AbstractString, previous_status::Un
 end
 
 function _tradelogreconcileorderstate!(xc::XchCache, orderinfo; role::ExchangeRole=trade_exchange_spot, source::AbstractString="orderpoll")
+    !_tradelogenabled(xc) && return nothing
     orderid = _tradelogstring(_orderfield(orderinfo, :orderid))
     symbol = _tradelogstring(_orderfield(orderinfo, :symbol))
     if ismissing(orderid) || ismissing(symbol)
@@ -1454,6 +1568,7 @@ Emit cancellation events for orders that were previously observed as open but ar
 missing from the latest full `getopenorders` response.
 """
 function _tradeloglogmissingopenorders!(xc::XchCache, openorderids)
+    !_tradelogenabled(xc) && return nothing
     active = Set(String.(collect(openorderids)))
     states = _tradelogorderstatecache!(xc)
     snapshots = _tradelogordersnapshotcache!(xc)
@@ -2371,79 +2486,7 @@ order_status(xc::XchCache, orderid; auditevent::Bool=true) = getorder(xc, orderi
 
 _hascol(df::DataFrame, col::Symbol) = col in propertynames(df)
 
-function _ensuretradesexecutioncolumns!(tradesdf::DataFrame)::DataFrame
-    n = nrow(tradesdf)
-    if !_hascol(tradesdf, :longleverage)
-        tradesdf[!, :longleverage] = Vector{Union{Missing, UInt8}}(missing, n)
-    end
-    if !_hascol(tradesdf, :longamount)
-        tradesdf[!, :longamount] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :shortleverage)
-        tradesdf[!, :shortleverage] = Vector{Union{Missing, UInt8}}(missing, n)
-    end
-    if !_hascol(tradesdf, :shortamount)
-        tradesdf[!, :shortamount] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :longid)
-        tradesdf[!, :longid] = Vector{Union{Missing, String}}(missing, n)
-    end
-    if !_hascol(tradesdf, :longstatus)
-        tradesdf[!, :longstatus] = fill("none", n)
-    end
-    if !_hascol(tradesdf, :longunfilled)
-        tradesdf[!, :longunfilled] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :longpriceavg)
-        tradesdf[!, :longpriceavg] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :longmsgid)
-        tradesdf[!, :longmsgid] = Vector{Union{Missing, UInt8}}(missing, n)
-    end
-    if !_hascol(tradesdf, :shortid)
-        tradesdf[!, :shortid] = Vector{Union{Missing, String}}(missing, n)
-    end
-    if !_hascol(tradesdf, :shortstatus)
-        tradesdf[!, :shortstatus] = fill("none", n)
-    end
-    if !_hascol(tradesdf, :shortunfilled)
-        tradesdf[!, :shortunfilled] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :shortpriceavg)
-        tradesdf[!, :shortpriceavg] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :shortmsgid)
-        tradesdf[!, :shortmsgid] = Vector{Union{Missing, UInt8}}(missing, n)
-    end
-    if !_hascol(tradesdf, :postype)
-        tradesdf[!, :postype] = fill("flat", n)
-    end
-    if !_hascol(tradesdf, :posleverage)
-        tradesdf[!, :posleverage] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :posamount)
-        tradesdf[!, :posamount] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :quoteprice)
-        tradesdf[!, :quoteprice] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :maintmargin)
-        tradesdf[!, :maintmargin] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :equity)
-        tradesdf[!, :equity] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :balance)
-        tradesdf[!, :balance] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :freemargin)
-        tradesdf[!, :freemargin] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    if !_hascol(tradesdf, :freequote)
-        tradesdf[!, :freequote] = Vector{Union{Missing, Float32}}(missing, n)
-    end
-    return tradesdf
-end
+_ensuretradesexecutioncolumns!(tradesdf::DataFrame)::DataFrame = _ensuretradesv1schema(tradesdf)
 
 function _pairfromtradesrow(tradesdf::DataFrame, ix::Integer)
     if _hascol(tradesdf, :pair)
@@ -2509,7 +2552,7 @@ end
 "Synchronize one trades row's exchange feedback columns from current order ids."
 function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent::Bool=true)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-    _ensuretradesexecutioncolumns!(tradesdf)
+        _asserttradesv1schema(tradesdf)
 
     for (idcol, stcol, unfilledcol, avgcol, msgcol) in [
         (:longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid),
@@ -2544,13 +2587,13 @@ end
 "Evaluate and execute one row-level order request from the Trades DataFrame."
 function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-    _ensuretradesexecutioncolumns!(tradesdf)
+    _ensuretradesv1schema(tradesdf)
     acct = account_status(xc)
 
     pair = _pairfromtradesrow(tradesdf, ix)
     base = pair.basecoin
     quotecoin = pair.quotecoin
-    labelval = _hascol(tradesdf, :tradelabel) ? tradesdf[ix, :tradelabel] : (_hascol(tradesdf, :label) ? tradesdf[ix, :label] : missing)
+    labelval = tradesdf[ix, :tradelabel]
     labelstr = ismissing(labelval) ? "ignore" : lowercase(String(Symbol(labelval)))
     action = if labelstr in ["longopen", "longstrongopen"]
         :long_open

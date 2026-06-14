@@ -19,8 +19,8 @@ targetissuesfilename() = joinpath("results", "targetissues")
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
 default_closethresholds() = Float32[0.1f0]
 
-tradingstrategy01() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_open_close!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
-tradingstrategy02() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy01() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
+tradingstrategy02() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 tradingstrategy03() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
 tradingstrategy04() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
 tradingstrategy05() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)

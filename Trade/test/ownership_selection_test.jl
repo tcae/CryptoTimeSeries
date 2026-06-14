@@ -113,7 +113,6 @@ end
             usdtvalue=Float32[1000, 200],
         )
         advice = Trade.StrategyAdvice(
-            classifier=tc.cl,
             configid=0,
             tradelabel=Targets.longclose,
             relativeamount=1f0,

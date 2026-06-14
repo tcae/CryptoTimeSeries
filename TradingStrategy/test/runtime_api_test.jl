@@ -36,7 +36,7 @@ function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::Dat
     )
 end
 
-@testset "GainSegmentRuntime classifier-call gating is variant scoped" begin
+@testset "TsCache classifier-call gating is variant scoped" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 11)
     enddt = startdt + Minute(240)
@@ -45,28 +45,28 @@ end
 
     # Legacy algorithm keeps current behavior and classifies each snapshot call.
     cl_plain = MockClassifier()
-    rt_plain = TradingStrategy.GainSegmentRuntime(classifier=cl_plain, strategy=TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
+    rt_plain = TradingStrategy.TsCache(classifier=cl_plain, strategy=TradingStrategy.makestrategy(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
     evaldt = enddt
-    _ = TradingStrategy.getsnapshot!(rt_plain, xc, "SINE", evaldt)
-    _ = TradingStrategy.getsnapshot!(rt_plain, xc, "SINE", evaldt)
+    _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
+    _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
     @test cl_plain.advice_calls == 2
 
     # New variant gates classifier calls by price delta and minimum interval.
     cl_gated = MockClassifier()
-    gs_gated = TradingStrategy.GainSegment(
+    gs_gated = TradingStrategy.makestrategy(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
         minpricedelta=0.001f0,
         max_classify_staleness_minutes=1,
     )
-    rt_gated = TradingStrategy.GainSegmentRuntime(classifier=cl_gated, strategy=gs_gated, source="test")
+    rt_gated = TradingStrategy.TsCache(classifier=cl_gated, strategy=gs_gated, source="test")
     TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
-    _ = TradingStrategy.getsnapshot!(rt_gated, xc, "SINE", evaldt)
-    _ = TradingStrategy.getsnapshot!(rt_gated, xc, "SINE", evaldt)
+    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt)
+    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt)
     @test cl_gated.advice_calls == 1
 end
 
-@testset "GainSegmentRuntime classifier-call gating reclassifies on interval OR price delta" begin
+@testset "TsCache classifier-call gating reclassifies on interval OR price delta" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 11)
     enddt = startdt + Minute(240)
@@ -74,17 +74,17 @@ end
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     cl = MockClassifier()
-    gs = TradingStrategy.GainSegment(
+    gs = TradingStrategy.makestrategy(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
         minpricedelta=0.5f0,
         max_classify_staleness_minutes=1,
     )
-    rt = TradingStrategy.GainSegmentRuntime(classifier=cl, strategy=gs, source="test")
+    rt = TradingStrategy.TsCache(classifier=cl, strategy=gs, source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
 
     evaldt = enddt
-    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt)
-    _ = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt + Minute(1))
+    _ = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt)
+    _ = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt + Minute(1))
     @test cl.advice_calls == 2
 end
 
@@ -98,7 +98,7 @@ end
     scores = Float32[0.7f0, 0.2f0, 0.9f0]
     labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen, Targets.shortopen]
 
-    gs = TradingStrategy.GainSegment(
+    gs = TradingStrategy.makestrategy(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
         minpricedelta=0.001f0,
         max_classify_staleness_minutes=5,
@@ -121,7 +121,7 @@ end
     scores = Float32[0.7f0, 0.2f0, 0.9f0]
     labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen, Targets.shortopen]
 
-    gs = TradingStrategy.GainSegment(
+    gs = TradingStrategy.makestrategy(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
         minpricedelta=0.5f0,
         max_classify_staleness_minutes=1,
@@ -134,36 +134,25 @@ end
     @test rl[3] == labels[3]
 end
 
-@testset "GainSegment max staleness naming" begin
-    gs_new = TradingStrategy.GainSegment(max_classify_staleness_minutes=3)
+@testset "StrategyConfig max staleness naming" begin
+    gs_new = TradingStrategy.makestrategy(max_classify_staleness_minutes=3)
 
     @test gs_new.max_classify_staleness_minutes == 3
     @test TradingStrategy.max_classify_staleness_minutes(gs_new) == 3
 end
 
 @testset "Runtime API compatibility adapter" begin
-    @test_throws ArgumentError TradingStrategy.GainSegmentRuntime()
-    rt = TradingStrategy.GainSegmentRuntime(classifier=MockClassifier())
+    @test_throws ArgumentError TradingStrategy.TsCache(source="test")
+    rt = TradingStrategy.TsCache(classifier=MockClassifier())
 
     @test TradingStrategy.requiredhistoryminutes(rt) >= 0
     @test isempty(TradingStrategy.acceptedbases(rt))
 
-    snap = TradingStrategy.StrategySnapshot(
-        base="BTC",
-        datetime=DateTime(2026, 1, 1),
-        label=Targets.longopen,
-        long_openprice=100f0,
-        long_closeprice=101f0,
-        long_openix=1,
-    )
-    @test snap.label == Targets.longopen
-    @test snap.long_openix == 1
-
-    gs = TradingStrategy.GainSegment(maxwindow=12)
+    gs = TradingStrategy.makestrategy(maxwindow=12)
     push!(rt.accepted, "BTC")
     TradingStrategy.apply_strategy!(rt, gs; source="test")
-    @test isempty(rt.strategy_state)
-    @test isempty(rt.strategy_history)
+    @test isempty(rt.pairs)
+    @test isempty(rt.classifier_gate_state)
     @test isempty(TradingStrategy.acceptedbases(rt))
 
     TradingStrategy.dropbase!(rt, "BTC")
@@ -171,9 +160,21 @@ end
     TradingStrategy.reset!(rt)
     @test isempty(TradingStrategy.acceptedbases(rt))
 
-    recon = TradingStrategy.StrategyReconciliationInput(has_long_open=true, long_avg_entry=100f0, long_open_ix=7)
+    recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=7))
     @test recon.has_long_open
     @test recon.long_open_ix == 7
+
+    startdt = DateTime(2026, 1, 1)
+    evaldt = startdt + Minute(1)
+    xc = Xch.XchCache(startdt=startdt)
+    Xch.addbase!(xc, "BTC", startdt, startdt + Minute(120))
+    xc.currentdt = evaldt
+    TradingStrategy.preparebases!(rt, xc, ["BTC"]; history_startdt=startdt, datetime=evaldt, updatecache=false)
+    rowmeta = TradingStrategy.gettradesrow!(rt, xc, "BTC", evaldt; reconciliation=recon)
+    @test !isnothing(rowmeta)
+    @test rowmeta.base == "BTC"
+    @test rowmeta.rowix >= 1
+    @test rowmeta.tradesdf[rowmeta.rowix, :pair] == Xch.tradingpairkey("BTC", EnvConfig.pairquote)
 end
 
 @testset "TsCache pair-state scaffolding syncs Xch trades" begin
@@ -197,7 +198,7 @@ end
     @test TradingStrategy.haspairstate(ts, "btcusdt")
     @test tp.tradesdf === Xch.trades(xc, "BTCUSDT")
 
-    push!(tp.tradesdf, (opentime=startdt + Minute(1), lastopentrade=missing))
+    push!(tp.tradesdf, (opentime=startdt + Minute(1), lastopentrade=missing); cols=:subset)
     @test nrow(Xch.trades(xc, "BTCUSDT")) == 2
 
     tp2 = TradingStrategy.getpairstate!(ts, "eth", "usdt")
@@ -216,7 +217,7 @@ end
 
     cfg = Dict{Symbol, Any}(
         :classifier_factory => () -> MockClassifier(),
-        :strategy_template => TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!),
+        :strategy_template => TradingStrategy.makestrategy(algorithm=TradingStrategy.gain_limit_reversal!),
     )
     ts = TradingStrategy.TsCache(configuration=cfg, source="test")
 
@@ -267,11 +268,11 @@ end
     dt = DateTime(2026, 1, 1)
 
     @test_throws ArgumentError TradingStrategy.preparebases!(rt, xc, ["BTC"]; history_startdt=dt - Minute(120), datetime=dt, updatecache=false)
-    @test_throws ArgumentError TradingStrategy.getsnapshot!(rt, xc, "BTC", dt)
-    @test_throws ArgumentError TradingStrategy.getsnapshots!(rt, xc, ["BTC"], dt)
+    @test_throws ArgumentError TradingStrategy.gettradesrow!(rt, xc, "BTC", dt)
+    @test_throws ArgumentError TradingStrategy.gettradesrows!(rt, xc, ["BTC"], dt)
 end
 
-@testset "GainSegmentRuntime multi-base lifecycle is deterministic" begin
+@testset "TsCache multi-base lifecycle is deterministic" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 1)
     enddt = startdt + Minute(240)
@@ -279,7 +280,7 @@ end
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
     xc.bases["DOUBLESINE"] = TestOhlcv.testohlcv("DOUBLESINE", startdt, enddt)
 
-    rt = TradingStrategy.GainSegmentRuntime(classifier=MockClassifier(), strategy=TradingStrategy.GainSegment(), source="test")
+    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.makestrategy(), source="test")
 
     TradingStrategy.preparebases!(rt, xc, ["SINE", "DOUBLESINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["SINE", "DOUBLESINE"])
@@ -293,7 +294,7 @@ end
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
     @test Set(String.(Classify.bases(rt.classifier))) == Set(["DOUBLESINE"])
 
-    TradingStrategy.apply_strategy!(rt, TradingStrategy.GainSegment(maxwindow=60); source="reconfigured")
+    TradingStrategy.apply_strategy!(rt, TradingStrategy.makestrategy(maxwindow=60); source="reconfigured")
     @test isempty(TradingStrategy.acceptedbases(rt))
     @test isempty(Set(String.(Classify.bases(rt.classifier))))
 
@@ -302,30 +303,31 @@ end
     @test isempty(Set(String.(Classify.bases(rt.classifier))))
 end
 
-@testset "GainSegmentRuntime snapshot production is deterministic" begin
+@testset "TsCache row production is deterministic" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 10)
     enddt = startdt + Minute(240)
     xc = Xch.XchCache(startdt=startdt)
-    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
+    Xch.addbase!(xc, "SINE", startdt, enddt)
 
-    rt = TradingStrategy.GainSegmentRuntime(classifier=MockClassifier(), strategy=TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
+    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.makestrategy(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
 
     evaldt = enddt
-    recon = TradingStrategy.StrategyReconciliationInput(has_long_open=true, long_avg_entry=100f0, long_open_ix=5)
+    xc.currentdt = evaldt
+    recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=5))
 
-    snap1 = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt; reconciliation=recon)
-    snap2 = TradingStrategy.getsnapshot!(rt, xc, "SINE", evaldt; reconciliation=recon)
+    snap1 = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt; reconciliation=recon)
+    snap2 = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt; reconciliation=recon)
 
     @test !isnothing(snap1)
     @test !isnothing(snap2)
     @test snap1.base == snap2.base
     @test snap1.datetime == snap2.datetime
-    @test snap1.label == snap2.label
-    @test snap1.long_openprice == snap2.long_openprice
-    @test snap1.long_closeprice == snap2.long_closeprice
-    @test snap1.short_openprice == snap2.short_openprice
-    @test snap1.short_closeprice == snap2.short_closeprice
+    @test snap1.tradesdf[snap1.rowix, :tradelabel] == snap2.tradesdf[snap2.rowix, :tradelabel]
+    @test isequal(snap1.tradesdf[snap1.rowix, :longopenlimit], snap2.tradesdf[snap2.rowix, :longopenlimit])
+    @test isequal(snap1.tradesdf[snap1.rowix, :longcloselimit], snap2.tradesdf[snap2.rowix, :longcloselimit])
+    @test isequal(snap1.tradesdf[snap1.rowix, :shortopenlimit], snap2.tradesdf[snap2.rowix, :shortopenlimit])
+    @test isequal(snap1.tradesdf[snap1.rowix, :shortcloselimit], snap2.tradesdf[snap2.rowix, :shortcloselimit])
     @test snap1.configid == snap2.configid
 end

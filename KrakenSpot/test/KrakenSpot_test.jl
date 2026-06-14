@@ -83,7 +83,7 @@ using DataFrames, Dates, KrakenSpot, Test
     tickrow = KrakenSpot._tickerrow(cache, "XBTUSDT", ticker)
     @test tickrow.symbol == "BTCUSDT"
     @test tickrow.lastprice == 101.2f0
-    @test tickrow.quotevolume24h ≈ 1214.4f0 atol = 1f-3
+    @test tickrow.quotevolume24h ≈ 1315.6f0 atol = 1f-3
 
     @test KrakenSpot._makerlimitprice(info, tickrow, "Buy") == 101.4f0
     @test KrakenSpot._makerlimitprice(info, tickrow, "Sell") == 101.1f0

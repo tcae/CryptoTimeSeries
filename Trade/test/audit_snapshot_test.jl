@@ -10,6 +10,8 @@ using EnvConfig, Xch, Trade, TradeLog
 
         xc = Xch.XchCache()
         tc = Trade.TradeCache(xc=xc)
+        tc.mc[:enable_tradelog] = true
+        tc.xc.mc[:enable_tradelog] = true
         assets = DataFrame(
             coin=["USDT", "BTC"],
             locked=Float32[0, 0],

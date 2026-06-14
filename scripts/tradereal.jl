@@ -64,27 +64,6 @@ function safe_runid()::String
     end
 end
 
-function as_gainsegment(strategy)
-    if strategy isa TradingStrategy.GainSegment
-        return strategy
-    elseif strategy isa TradingStrategy.StrategySpec
-        return TradingStrategy.GainSegment(
-            maxwindow=strategy.maxwindow,
-            openthreshold=strategy.openthreshold,
-            closethreshold=strategy.closethreshold,
-            algorithm=strategy.algorithm,
-            makerfee=strategy.makerfee,
-            takerfee=strategy.takerfee,
-            buygain=strategy.buygain,
-            sellgain=strategy.sellgain,
-            limitreduction=strategy.limitreduction,
-            minpricedelta=strategy.minpricedelta,
-            max_classify_staleness_minutes=strategy.max_classify_staleness_minutes,
-        )
-    end
-    throw(ArgumentError("Unsupported strategy type $(typeof(strategy)); expected TradingStrategy.GainSegment or TradingStrategy.StrategySpec"))
-end
-
 # Normalize whitelist entries to base coins for the configured quote coin.
 function normalize_whitelist(entries, quote_coin::AbstractString)
     quote_up = uppercase(quote_coin)
@@ -105,6 +84,13 @@ function normalize_whitelist(entries, quote_coin::AbstractString)
         end
     end
     return unique(bases)
+end
+
+function env_bool(name::AbstractString, default::Bool)::Bool
+    raw = strip(lowercase(get(ENV, String(name), default ? "true" : "false")))
+    raw in ["1", "true", "yes", "on"] && return true
+    raw in ["0", "false", "no", "off"] && return false
+    return default
 end
 
 mutable struct TrendConfigRuntimeClassifier <: Classify.AbstractClassifier
@@ -205,7 +191,7 @@ Xch.setstartdt(xc, Xch.tradetime(xc))
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 
 # Apply the selected TrendDetector strategy parameters.
-Trade.apply_tradingstrategy!(cache, as_gainsegment(CONFIG_STRATEGY);
+Trade.apply_tradingstrategy!(cache, CONFIG_STRATEGY;
     strategy_engine=:getgainsalgo,
     source="trenddetector:$CONFIG_NAME")
 
@@ -213,10 +199,12 @@ Trade.apply_tradingstrategy!(cache, as_gainsegment(CONFIG_STRATEGY);
 whitelist = normalize_whitelist(WHITELIST_INPUT, QUOTE_COIN)
 cache.mc[:whitelistcoins]    = whitelist
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
+cache.mc[:usenewtrade]       = env_bool("TRADEREAL_USE_NEW_TRADE", true)
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=getgainsalgo")
+println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")

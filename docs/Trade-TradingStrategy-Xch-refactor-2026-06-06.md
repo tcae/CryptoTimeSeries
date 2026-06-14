@@ -157,6 +157,7 @@ It became clear that we run into a situation with more and more omplex code alth
       else
         - amount = min(min(equity, MAXBUDGET) * MAXFRACTION - already bought position, min(free exposure(trading pair, leverage), free margin) * (1 - MARGINHEADROOM))
         - if 0 <= amount < tradable minimum quantity then amount = 0
+        - by default the smallest available leverage shall be chosen
 - implement trade loop variant of Trade.tradeloop and Trade.trade! with minimum required functionality
   - as per configuration tradeselection! shall identify at session start and periodically trade pairs that are considered for open and close, for close only, for quick close (to be mapped to strongclose)
   - update account status via Xch
@@ -251,16 +252,17 @@ Goal: lock interfaces before implementation work in phases 1-5.
   - [ ] `Xch.ErrorCatalogEntry` with fields: `id::UInt8`, `code::String`, `message::String`, `issuer::String`.
   - [ ] `Xch.XchCache` additions: `pairstates::Dict{String,DataFrame}`, `messages::Dict{String,Vector{ErrorCatalogEntry}}`, `defaultquote::Union{Nothing,String}`.
 - Required Trades DataFrame v1 columns (must be created by Xch helper)
-  - [ ] Identity/time: `opentime::DateTime`, `lastopentrade::Union{Missing,DateTime}`.
+  - [x] Canonical naming contract: `tradelabel` is the only supported label column in Trades v1 (`label` is not part of the contract).
+  - [x] Identity/time: `opentime::DateTime`, `lastopentrade::Union{Missing,DateTime}`.
     - comment: `exchange::String`, `pair::String` notrequired as column because folder structure is used for that info
-  - [ ] Strategy advice: `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`, `tradelabel::TradeLabel`, `labelscore::Float32`.
-  - [ ] Trade request long: `longleverage::Union{Missing,UINT8}`, `longamount::Union{Missing,Float32}`, `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`.
-  - [ ] Trade request short: `shortleverage::Union{Missing,UINT8}`, `shortamount::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`.
-  - [ ] Exchange feedback long: `longid::Union{Missing,String}`, `longstatus::String`, `longunfilled::Union{Missing,Float32}`, `longpriceavg::Union{Missing,Float32}`, `longmsgid::Union{Missing,UInt8}`.
-  - [ ] Exchange feedback short: `shortid::Union{Missing,String}`, `shortstatus::String`, `shortunfilled::Union{Missing,Float32}`, `shortpriceavg::Union{Missing,Float32}`, `shortmsgid::Union{Missing,UInt8}`.
-  - [ ] Position/account snapshot: `postype::String`, `posleverage::Union{Missing,Float32}`, `posamount::Union{Missing,Float32}`, `quoteprice::Union{Missing,Float32}`, `maintmargin::Union{Missing,Float32}`, `equity::Union{Missing,Float32}`, `balance::Union{Missing,Float32}`, `freemargin::Union{Missing,Float32}`, `freequote::Union{Missing,Float32}`.
+  - [x] Strategy advice: `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`, `tradelabel::TradeLabel`, `labelscore::Float32`.
+  - [x] Trade request long: `longleverage::Union{Missing,UINT8}`, `longamount::Union{Missing,Float32}`, `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`.
+  - [x] Trade request short: `shortleverage::Union{Missing,UINT8}`, `shortamount::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`.
+  - [x] Exchange feedback long: `longid::Union{Missing,String}`, `longstatus::String`, `longunfilled::Union{Missing,Float32}`, `longpriceavg::Union{Missing,Float32}`, `longmsgid::Union{Missing,UInt8}`.
+  - [x] Exchange feedback short: `shortid::Union{Missing,String}`, `shortstatus::String`, `shortunfilled::Union{Missing,Float32}`, `shortpriceavg::Union{Missing,Float32}`, `shortmsgid::Union{Missing,UInt8}`.
+  - [x] Position/account snapshot: `postype::String`, `posleverage::Union{Missing,Float32}`, `posamount::Union{Missing,Float32}`, `quoteprice::Union{Missing,Float32}`, `maintmargin::Union{Missing,Float32}`, `equity::Union{Missing,Float32}`, `balance::Union{Missing,Float32}`, `freemargin::Union{Missing,Float32}`, `freequote::Union{Missing,Float32}`.
 - Required tests (Xch/test)
-  - [ ] schema test: a newly created trades table contains exactly all v1 columns with expected eltypes.
+  - [x] schema test: a newly created trades table contains exactly all v1 columns with expected eltypes.
   - [ ] error-catalog test: `load_messages` reads Trading + exchange catalogs and preserves ids.
   - [ ] error-id bounds test: adding a message beyond issuer range throws fatal error with qualified message.
   - [ ] close order for open position followed by open order in opposite direction for the same trading pair in the same minute: close is fully completed before open request for opposite direction in async web socket service 
@@ -289,7 +291,7 @@ Goal: lock interfaces before implementation work in phases 1-5.
 - Required DataFrame contract
   - [ ] `accountV1.arrow` schema has columns: `tradetime::DateTime`, `equity::Float32`, `balance::Float32`, `free_margin::Float32`, `free_quote::Float32`, `pairs::String`.
 - Required tests (Trade/test)
-  - [ ] open_amount contract test for asset and margin/futures paths.
+  - [x] open_amount contract test for asset and margin/futures paths.
   - [ ] immediate-funding test: issuing an order reduces free margin/free quote in the current account snapshot without a separate reservation ledger.
   - [ ] TsCache init test: all expected data structures are filled and are consistent
   - [ ] loop sequencing test: 
@@ -319,7 +321,7 @@ Goal: lock interfaces before implementation work in phases 1-5.
   - [ ] Xch, TradingStrategy, Trade, EnvConfig package tests pass.
   - [x] workspace test entrypoint passes with no schema-contract failures.
 
-### Validation checklist snapshot (2026-06-13)
+### Validation checklist snapshot (2026-06-15)
 
 - [x] `Pkg.test("Xch")` passed in this refactor cycle.
 - [x] `Pkg.test("Targets")` passed after removing duplicate `longopenbinarytargets` overwrite.
@@ -328,7 +330,9 @@ Goal: lock interfaces before implementation work in phases 1-5.
 - [x] focused TrendDetector path `include("test/trend_detector_cache_test.jl")` re-run passed.
 - [x] `KrakenSpot` package tests passed (`Pkg.test("KrakenSpot")`, offline suite green).
 - [~] `KrakenSpot` online tests remain opt-in and were skipped by default (`KRAKEN_ONLINE_TESTS=true` required).
-- [x] `TradingStrategy.reset!(::StrategySpec)` runtime crash mitigated by using `resetstrategy!` in TrendDetector.
+- [x] `TradingStrategy.reset!(::StrategyConfig)` runtime crash mitigated by using `resetstrategy!` in TrendDetector.
+- [x] `Pkg.test("TradingStrategy")` re-run passed after `StrategyConfig` rename.
+- [x] `Pkg.test("Trade")` re-run passed after `StrategyConfig` rename.
 
 Progress note:
 - Baseline validation is complete enough to start the refactor work: package/workspace tests were repaired and brought back to passing state.
@@ -369,7 +373,7 @@ Audit update (2026-06-13):
 Current pass-criteria verification:
 - [x] package runtests: workspace `test/runtests.jl` is passing, and the focused `Targets` and `Trade` package suites were rerun successfully after the naming/API cutover.
 - [x] TrendDetector still works on synthetic patterns (validated with config=046 parity workflow).
-- [ ] tradereal on KrakenSpot still lacks a confirmed live-run validation in this audit pass.
+- [x] tradereal on KrakenSpot live run confirmed by manual test (2026-06-14).
 
 Progress note:
 - The most disruptive Phase 1 naming cutover is now functionally complete in the active code paths: runtime labels use `longopen/shortopen`, and the `Targets` threshold/config API now uses `shortopen` consistently.
@@ -390,17 +394,74 @@ Checklist (Phase 2)
   - [x] Persist tradesV1.arrow artifacts in the refactored path.
 - Strategy behavior continuity
   - [x] Keep strategy configuration behavior while removing active GainSegment dependency from runtime flow.
-  - [~] gain_limit_reversal_pricedelta! runs through TsTp/Trades row-state updates; some summary internals still pass through compatibility bridge code.
+  - [x] gain_limit_reversal_pricedelta! runs through TsTp/Trades row-state updates.
 - Validation and pass criteria
   - [x] Synthetic SINE and DOUBLESINE adaptation/reload scenarios pass.
   - [x] TradingStrategy package tests pass in the current cycle.
   - [x] TrendDetector parity run against Trend-046-test-ref passes.
 
+### Trades v1 Schema Consolidation Refactor (2026-06-14)
+
+**Objective**: Eliminate duplication of Trades DataFrame schema normalization logic, consolidate column requirements into a single source-of-truth contract, and enforce that contract via explicit assertions rather than repeated per-call expansion.
+
+**Completed work**:
+
+1. **Schema contract definition** (`Xch/src/XchCore.jl`)
+   - Added `TRADES_V1_REQUIRED_COLUMNS` constant tuple defining all 33 required columns at module scope.
+   - Defined `_asserttradesv1schema(df::DataFrame)::Nothing` to validate schema completeness against the canonical contract.
+   - Error messages now include missing columns and actual column names for clarity.
+
+2. **Schema expansion consolidation** (`Xch/src/XchCore.jl`)
+   - `_ensuretradesv1schema(df::DataFrame)::DataFrame` now the single normalization path:
+     - Handles missing `opentime` by throwing for non-empty rows (safety gate).
+     - Lazily instantiates missing columns with correct types (`Union{Missing, T}` or String default values).
+     - Now calls `_asserttradesv1schema` internally to validate final contract completion.
+   - Replaced 60+ lines of repeated `_ensuretradesexecutioncolumns!` implementation with single-line delegation alias to `_ensuretradesv1schema`.
+
+3. **Contract persistence** (`Xch/src/XchCore.jl`)
+   - Stored `TRADES_V1_REQUIRED_COLUMNS` tuple in `XchCache.mc[:trades_v1_required_columns]` at cache construction time.
+   - Enables future runtime schema audits and documentation without re-parsing the constant.
+
+4. **Runtime assertion usage** (`Xch/src/XchCore.jl`)
+   - Replaced repeated `_ensuretradesexecutioncolumns!(tradesdf)` calls in runtime entry points with lightweight `_asserttradesv1schema(tradesdf)`.
+   - `order_status(xc, tradesdf, ix)` and `process_order_request(xc, tradesdf, ix)` now assert contract instead of expanding.
+   - Separation of concerns: expansion happens once at `settrades!` or first use; assertions happen at runtime entry points.
+
+5. **Schema contract test** (`Xch/test/trades_schema_contract_test.jl`)
+   - New unit test module ensures all required columns are present in empty trades DataFrames.
+   - Validates column types match contract (String, Float32, UInt8, DateTime, Any).
+   - Test uses `_asserttradesv1schema` directly to confirm schema-validation logic is correct.
+   - Added `cols=:subset` to row insertions to maintain compatibility with expanded schema.
+
+6. **Test fallout fix** (`TradingStrategy/test/runtime_api_test.jl`)
+   - Fixed `TsCache pair-state scaffolding syncs Xch trades` test (line 200).
+   - Changed `push!(tp.tradesdf, (opentime=..., lastopentrade=missing))` to use `cols=:subset` to allow partial-row insertion into expanded DataFrame.
+   - All TradingStrategy tests now pass (12/12 in this testset).
+
+**Validation results**:
+- [x] `Pkg.test("Xch")` passes with new schema-contract test included.
+- [x] `Pkg.test("TradingStrategy")` passes (92 total tests, including refactored row-insertion logic).
+- [x] `Pkg.test("Trade")` passes (94 tests).
+- [x] No redundant column-expansion calls remain in runtime paths.
+- [x] Schema contract is now explicitly documented in code and enforced at entry points.
+
+**Impact**:
+- Eliminated code duplication: ~60-line `_ensuretradesexecutioncolumns!` is now a single-line alias.
+- Single source of truth: `TRADES_V1_REQUIRED_COLUMNS` is the canonical reference for expected schema.
+- Improved maintainability: adding a required column now requires a single edit to the constant and its usage documentation.
+- Regression protection: new test ensures schema contract is not silently violated by row insertions or DataFrame mutations.
+- Easier debugging: schema assertion errors now report missing columns explicitly instead of failing downstream on first field access.
+
+**Remaining work in Phase 2**:
+- [ ] Account DataFrame schema contract (similar pattern to Trades).
+- [ ] OHLCV schema validation if needed (currently stable, not modified in this phase).
+- [ ] Runtime audit trail that logs schema-contract assertion results for suspicious mutations.
+
 - [x] Add per-pair Trades tables in XchCache and creation/access API.
 - [x] Add TsCache/TsTp with strict ownership rules (Xch owns mutable trade tables, TradingStrategy reads/writes only its columns).
 - [x] Adapt TrendDetector path to write tradesV1.arrow artifacts.
-- [x] Keep strategy configuration behavior while moving TrendDetector coupling away from GainSegment (StrategySpec cutover with compatibility adapter).
-- [~] gain_limit_reversal_pricedelta! is executed through TsTp/Trades DataFrame row-state updates in TsCache path; gain summary materialization still uses compatibility bridge internals.
+- [x] Keep strategy configuration behavior while moving TrendDetector coupling away from GainSegment (StrategyConfig cutover with compatibility adapter).
+- [x] gain_limit_reversal_pricedelta! is executed through TsTp/Trades DataFrame row-state updates in TsCache path.
 - Exit gate:
   - [x] synthetic SINE and DOUBLESINE adaptation and reload scenarios still pass.
 
@@ -412,36 +473,54 @@ Progress note:
 
 
 
-### Phase 3: Trade loop integration and deterministic order orchestration `[not started]`
+### Phase 3: Trade loop integration and deterministic order orchestration `[completed]`
 
-- Implement account_status, order_status, process_order_request with state-machine transitions.
-- Add loop-local reservation ledger for quote and margin to avoid over-allocation across pairs.
-- Implement close-first then open sequencing with explicit close confirmation requirement within web socket handling of orders.
-- Integrate log_trading_issue and message-id capture into Trades rows.
+- [x] Implement account_status, order_status, process_order_request with state-machine transitions.
+- [x] Add loop-local reservation ledger for quote and margin to avoid over-allocation across pairs.
+- [x] Implement close-first then open sequencing with explicit close confirmation requirement within web socket handling of orders.
+- [x] Integrate log_trading_issue and message-id capture into Trades rows.
+- [x] Default integration mode runs with TradeLog disabled (opt-in only) to reduce runtime overhead during refactor rollout.
+- [x] `usenewtrade` is default-on in `TradeCache`; scripts `tradesim.jl` and `tradereal.jl` now follow this default (with env opt-out toggles).
 - Exit gate:
-  - tradesim and tradereal run with no errors and no duplicate open orders under reversal stress tests.
+  - [x] tradesim and tradereal runtime entry paths are switched to the new Trade/Xch DataFrame orchestration path.
+  - [~] no duplicate open orders under reversal stress is covered by integration tests for close-then-open blocking; extended long-run stress soak remains operational follow-up.
 
 Progress note:
-- Recent `Trade` repairs restored current behavior and tests, but this phase's new orchestration model is still pending.
+- Xch-side helpers (`account_status`, `order_status`, `process_order_request`, message catalog/id logging) are implemented with tests.
+- Trade now has a default-on (`cache.mc[:usenewtrade]=true`) per-tick delegation path that writes Trades DataFrame request/advice rows and calls Xch request/status APIs.
+- Legacy Trade path remains available as fallback for runtime safety; Trade package tests pass after this integration slice.
+- Reservation-ledger semantics are now integrated in the new path (`_tick_opening_reservations`, `_reserve_opening_budget!`, account projection helpers).
+- `open_amount` now applies account constraints in the new path and is covered by integration tests.
+- Close-then-open sequencing guard is active in the new path and covered by integration tests.
+- Dust-level false warnings for positions-without-close-order were suppressed to reduce noise (`qty` below tradable minimum is ignored).
+- TradeLog/audit writes are now default-off in integration mode (`TradeCache` sets `enable_tradelog=false`), with explicit test/runtime opt-in where audit artifacts are required.
+- Validation snapshot (2026-06-14): `Pkg.test("Trade")` passes (94/94), and workspace `test/runtests.jl` is green.
+- `usenewtrade` default-ready cutover is complete and enabled by default.
+- Script-level runtime toggle support added: `TRADESIM_USE_NEW_TRADE` and `TRADEREAL_USE_NEW_TRADE` (default `true`, set `false` to force legacy path during rollback diagnostics).
+- Remaining operational follow-up: optional extended reversal soak validation in long-run live/sim sessions.
+
+#### Phase 3.1 Questions concerning simplified tradeloop
+
+- Xch.account_status is called called multiple times before tradeloop but also at start of tradestep!
 
 ### Phase 4: persistence, retries, and resilience hardening `[partially addressed outside refactor]`
 
-- Persist account.arrow, trades.arrow, ohlcv.arrow with atomic append strategy and crash-safe flush checkpoints.
-- Implement connection retry policy with bounded backoff and explicit degraded-mode flags.
-- Add tests for websocket drop, REST timeout, and reconnect fallback behavior.
+- [ ] Persist account.arrow, trades.arrow, ohlcv.arrow with atomic append strategy and crash-safe flush checkpoints.
+- [ ] Implement connection retry policy with bounded backoff and explicit degraded-mode flags.
+- [ ] Add tests for websocket drop, REST timeout, and reconnect fallback behavior.
 - Exit gate:
-  - resilience tests pass and data files stay consistent after forced interruption tests.
+  - [ ] resilience tests pass and data files stay consistent after forced interruption tests.
 
 Progress note:
 - Some exchange/runtime stability issues were fixed during baseline stabilization, especially around KrakenSpot/KrakenFutures test behavior.
 - The persistence and resilience model described here has not yet been implemented as a dedicated refactor phase.
 
-### Phase 5: cleanup and hard cutover `[not started]`
+### Phase 5: cleanup and hard cutover `[in progress]`
 
-- Remove deprecated GainSegment/GainSegmentRuntime call paths after all entrypoints are migrated.
-- Remove temporary compatibility aliases introduced in phase 1.
+- [x] Remove deprecated GainSegment/GainSegmentRuntime call paths after all entrypoints are migrated.
+- [ ] Remove temporary compatibility aliases introduced in phase 1.
 - Exit gate:
-  - tradereal, tradesim, TrendDetector pass and no deprecated symbol is referenced in call graph checks.
+  - [~] tradereal, tradesim, TrendDetector pass and no deprecated symbol is referenced in call graph checks.
 
 Progress note:
-- Cleanup cannot start until phases 1-4 are implemented.
+- Deprecated symbol cleanup is complete in active Julia code paths; remaining work is compatibility alias retirement plus final end-to-end pass/soak confirmation.
