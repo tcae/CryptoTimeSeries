@@ -17,8 +17,8 @@ Notes:
 
 | Option | Allowed values | Intent | Used by modules |
 |---|---|---|---|
-| EnvConfig.init(mode) | EnvConfig.test, EnvConfig.production, EnvConfig.training | Selects global data/auth mode, base universe, and default data folder naming | EnvConfig, CryptoXch, Ohlcv, Features, Targets, Classify, Trade, scripts |
-| EnvConfig.init(; newdatafolder) | Bool | Appends run-id to generated data folder name when true | EnvConfig, CryptoXch tests |
+| EnvConfig.init(mode) | EnvConfig.test, EnvConfig.production, EnvConfig.training | Selects global data/auth mode, base universe, and default data folder naming | EnvConfig, Xch, Ohlcv, Features, Targets, Classify, Trade, scripts |
+| EnvConfig.init(; newdatafolder) | Bool | Appends run-id to generated data folder name when true | EnvConfig, Xch tests |
 | EnvConfig.init(; authname) | String or nothing | Selects named auth tuple from auth.json/authtest.json | EnvConfig, exchange adapters via EnvConfig.authorization |
 | EnvConfig.configmode | Mode enum | Current active mode queried by many modules | Broadly across workspace |
 
@@ -29,7 +29,8 @@ Notes:
 | EnvConfig.setdfformat!(format) | :jdf, :arrow, :csv | Default dataframe storage format for read/write helpers | EnvConfig and callers of table/read/write helpers |
 | EnvConfig.setcoinspath!(folder) | path string | Override coin data root used by coinfile/coinfolder helpers | EnvConfig and data-loading callers |
 | EnvConfig.setdebugpath(folder) | path string or nothing | Override debug output path helper target | EnvConfig and debug workflows |
-| EnvConfig.cryptoquote | usually "USDT" | Default quote currency used by symbol/path helpers | EnvConfig, Trade, CryptoXch, scripts |
+| EnvConfig.tradingfolder | usually "$HOME/crypto" | Canonical shared runtime/data root folder | EnvConfig, TradeLog, KrakenFutures, scripts |
+| EnvConfig.pairquote / EnvConfig.setpairquote!(quote) | usually "USDT" | Canonical quote currency configuration for symbol/path helpers | EnvConfig, Trade, Xch, scripts |
 
 ### 1.3 Trade runtime knobs (cache-level)
 
@@ -37,7 +38,7 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 
 | Option | Typical values | Intent | Used by modules |
 |---|---|---|---|
-| mc[:trademode] | Trade.openclose, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
+| mc[:trademode] | Trade.buysell, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
 | mc[:strategy_engine] | :getgainsalgo (legacy value still accepted) | Strategy source metadata; runtime API path is mandatory | Trade |
 | mc[:maxassetfraction] | Float | Exposure cap per asset | Trade |
 | mc[:maxbudgetquote] | Float or nothing | Global quote budget cap for sizing | Trade |
@@ -69,8 +70,8 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 
 | Env var | Intent | Used by modules |
 |---|---|---|
-| CTS_RUN_ID | Correlation/run ID used for tradelog/audit partitioning | CryptoXch, scripts/BoundsEstimator, scripts/TrendDetector, scripts/simulationcheck |
-| CTS_RUN_PRODUCTION_TESTS | Allows production-only CryptoXch tests when explicitly enabled | CryptoXch tests |
+| CTS_RUN_ID | Correlation/run ID used for tradelog/audit partitioning | Xch, scripts/BoundsEstimator, scripts/TrendDetector, scripts/simulationcheck |
+| CTS_RUN_PRODUCTION_TESTS | Allows production-only Xch tests when explicitly enabled | Xch tests |
 
 ### 2.3 TradeLog persistence controls
 
@@ -78,7 +79,7 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 |---|---|---|
 | CTS_TRADELOG_ENABLED | Global TradeLog write on/off | TradeLog, scripts/benchmark_tradesim_audit, TradeLog tests |
 | CTS_TRADELOG_SIMULATION_ENABLED | TradeLog write on/off for simulation run_mode | TradeLog, scripts/benchmark_tradesim_audit, TradeLog tests |
-| CTS_TRADELOG_ROOT | Overrides TradeLog storage root folder | TradeLog, CryptoXch tests |
+| CTS_TRADELOG_ROOT | Overrides TradeLog storage root folder | TradeLog, Xch tests |
 
 ### 2.4 Exchange credentials and exchange-specific behavior
 
@@ -224,7 +225,7 @@ Legend:
 - EnvConfig/src/EnvConfig.jl
 - Trade/src/Trade.jl
 - TradeLog/src/TradeLog.jl
-- CryptoXch/src/CryptoXch.jl
+- Xch/src/Xch.jl
 - Bybit/src/Bybit.jl
 - KrakenSpot/src/KrakenSpot.jl
 - KrakenFutures/src/KrakenFutures.jl

@@ -1,7 +1,7 @@
 module TradeProduction
 
 using Test, Dates, Logging, LoggingExtras
-using EnvConfig, Trade, Classify, CryptoXch, Bybit
+using EnvConfig, Trade, Classify, Xch, Bybit
 
 # # Disable the default behavior of exiting on Ctrl+C
 # Base.exit_on_sigint(false)
@@ -19,14 +19,14 @@ demux_logger = TeeLogger(
 )
 defaultlogger = global_logger(demux_logger)
 
-CryptoXch.verbosity = 1
+Xch.verbosity = 1
 Classify.verbosity = 2
 Trade.verbosity = 2
 Bybit.verbosity = 1
 EnvConfig.init(production)
 enddt = nothing  # == continue endless
-xc = CryptoXch.XchCache(enddt=enddt)
-CryptoXch.setstartdt(xc, CryptoXch.tradetime(xc))
+xc = Xch.XchCache(enddt=enddt)
+Xch.setstartdt(xc, Xch.tradetime(xc))
 cl = Classify.Classifier011()
 # cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-0.04f0, volatilitybuythreshold=-0.01f0, volatilitysellthreshold=0.01f0, volatilitylongthreshold=0.0f0, volatilityshortthreshold=-1f0)
 cfgnt = (regrwindow=24*60,longtrendthreshold=0.02f0, shorttrendthreshold=-1f0, volatilitybuythreshold=-0.04f0, volatilitysellthreshold=0.03f0, volatilitylongthreshold=0f0, volatilityshortthreshold=-1f0)

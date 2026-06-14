@@ -75,7 +75,7 @@ end
 
 " Returns an empty default crypto OhlcvData with quotecoin=usdt, interval=1m"
 function defaultohlcv(base, interval="1m", rows=0)::OhlcvData
-    ohlcv = OhlcvData(defaultohlcvdataframe(rows), uppercase(base), uppercase(EnvConfig.cryptoquote), interval, 1, nothing)
+    ohlcv = OhlcvData(defaultohlcvdataframe(rows), uppercase(base), uppercase(EnvConfig.pairquote), interval, 1, nothing)
     return ohlcv
 end
 
@@ -881,7 +881,7 @@ function Base.iterate(of::OhlcvFiles, state=1)
     end
     pairparts = split(of.filenames[state], "-")
     basecoin = pairparts[1]
-    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.cryptoquote
+    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.pairquote
     ohlcv = defaultohlcv(basecoin, "1m")
     setquotesymbol!(ohlcv, quotecoin)
     read!(ohlcv)

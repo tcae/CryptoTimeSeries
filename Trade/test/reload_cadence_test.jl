@@ -1,11 +1,11 @@
 using Test
 using Dates
 using Trade
-using CryptoXch
+using Xch
 
 @testset "trade reload cadence" begin
     ts = DateTime("2026-05-18T04:00:30")
-    tc = Trade.TradeCache(xc=CryptoXch.XchCache(startdt=ts, enddt=ts), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=Xch.XchCache(startdt=ts, enddt=ts), trademode=Trade.notrade)
 
     tc.xc.currentdt = ts
     tc.mc[:reloadtimes] = [Time("04:00:00")]

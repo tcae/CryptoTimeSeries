@@ -1,7 +1,7 @@
 module Cls001Best
 
 using Test, Dates, Logging, CSV
-using EnvConfig, Classify, CryptoXch, Features, Ohlcv
+using EnvConfig, Classify, Xch, Features, Ohlcv
 
 
 EnvConfig.init(production)
@@ -17,7 +17,7 @@ println("$(EnvConfig.now()): started")
 update=true
 
 cls = Classify.ClassifierSet001()
-xc= CryptoXch.XchCache()
+xc= Xch.XchCache()
 
 enddt = nothing # nothing == latest;   DateTime("2024-03-22T20:40:00")
 period = Day(10)  # Year(20)

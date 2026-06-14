@@ -19,7 +19,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using DataFrames
-using CryptoXch, EnvConfig
+using Xch, EnvConfig
 
 function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing, AbstractString}=nothing)
     prefix = String(key) * "="
@@ -31,12 +31,12 @@ function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Not
 end
 
 function _resolve_exchange(raw::Union{Nothing, AbstractString})::String
-    isnothing(raw) && return CryptoXch.EXCHANGE_KRAKENSPOT
+    isnothing(raw) && return Xch.EXCHANGE_KRAKENSPOT
     key = lowercase(strip(String(raw)))
     aliases = Dict(
-        "krakenspot" => CryptoXch.EXCHANGE_KRAKENSPOT,
-        "krakenfutures" => CryptoXch.EXCHANGE_KRAKENFUTURES,
-        "bybit" => CryptoXch.EXCHANGE_BYBIT,
+        "krakenspot" => Xch.EXCHANGE_KRAKENSPOT,
+        "krakenfutures" => Xch.EXCHANGE_KRAKENFUTURES,
+        "bybit" => Xch.EXCHANGE_BYBIT,
     )
     haskey(aliases, key) || error("unsupported xch=$(raw). Expected one of krakenspot|krakenfutures|bybit")
     return aliases[key]
@@ -46,7 +46,7 @@ function _covered_qty(oo::AbstractDataFrame, symbol::String, side::String; requi
     total = 0f0
     wanted_side = uppercase(String(side))
     for r in eachrow(oo)
-        CryptoXch.openstatus(String(r.status)) || continue
+        Xch.openstatus(String(r.status)) || continue
         String(r.symbol) == symbol || continue
         uppercase(String(r.side)) == wanted_side || continue
         if !isnothing(require_leverage)
@@ -64,25 +64,25 @@ function main(args::Vector{String})
     exchange = _resolve_exchange(_argvalue(args, "xch", nothing))
 
     EnvConfig.init(EnvConfig.production)
-    EnvConfig.cryptoquote = quote_coin
+    EnvConfig.setpairquote!(quote_coin)
 
-    xc = CryptoXch.XchCache(exchange=exchange)
+    xc = Xch.XchCache(exchange=exchange)
 
-    if exchange == CryptoXch.EXCHANGE_KRAKENSPOT
-        CryptoXch.KrakenSpot._invalidate_openorders_cache!()
-    elseif exchange == CryptoXch.EXCHANGE_KRAKENFUTURES
-        CryptoXch.KrakenFutures._invalidate_openorders_cache!()
+    if exchange == Xch.EXCHANGE_KRAKENSPOT
+        Xch.KrakenSpot._invalidate_openorders_cache!()
+    elseif exchange == Xch.EXCHANGE_KRAKENFUTURES
+        Xch.KrakenFutures._invalidate_openorders_cache!()
     end
 
-    balances = CryptoXch.balances(xc; ignoresmallvolume=false)
-    assets = CryptoXch.portfolio!(xc, balances; ignoresmallvolume=false)
-    oo = CryptoXch.getopenorders(xc)
+    balances = Xch.balances(xc; ignoresmallvolume=false)
+    assets = Xch.portfolio!(xc, balances; ignoresmallvolume=false)
+    oo = Xch.getopenorders(xc)
 
     if !(:isLeverage in names(oo))
         oo.isLeverage = falses(size(oo, 1))
     end
 
-    q = uppercase(String(EnvConfig.cryptoquote))
+    q = uppercase(String(EnvConfig.pairquote))
     rows = NamedTuple[]
 
     for row in eachrow(assets)
@@ -91,10 +91,10 @@ function main(args::Vector{String})
 
         freebase = Float32(row.free)
         borrowed = Float32(row.borrowed)
-        symbol = CryptoXch.symboltoken(xc, base, EnvConfig.cryptoquote; role=CryptoXch.trade_exchange_spot)
+        symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote; role=Xch.trade_exchange_spot)
 
         minq = try
-            Float32(CryptoXch.minimumbasequantity(xc, base, Float32(row.usdtprice)))
+            Float32(Xch.minimumbasequantity(xc, base, Float32(row.usdtprice)))
         catch
             0f0
         end
@@ -123,10 +123,10 @@ function main(args::Vector{String})
 
     rep = DataFrame(rows)
 
-    println("exchange=$(exchange) quote=$(EnvConfig.cryptoquote)")
+    println("exchange=$(exchange) quote=$(EnvConfig.pairquote)")
     println("asset_rows=$(size(rep,1)) open_orders_rows=$(size(oo,1))")
-    println("open_sell_nonleverage=$(sum((uppercase.(String.(oo.side)) .== "SELL") .& .!Bool.(oo.isLeverage) .& CryptoXch.openstatus.(String.(oo.status))))")
-    println("open_buy_leverage=$(sum((uppercase.(String.(oo.side)) .== "BUY") .& Bool.(oo.isLeverage) .& CryptoXch.openstatus.(String.(oo.status))))")
+    println("open_sell_nonleverage=$(sum((uppercase.(String.(oo.side)) .== "SELL") .& .!Bool.(oo.isLeverage) .& Xch.openstatus.(String.(oo.status))))")
+    println("open_buy_leverage=$(sum((uppercase.(String.(oo.side)) .== "BUY") .& Bool.(oo.isLeverage) .& Xch.openstatus.(String.(oo.status))))")
 
     println("\n--- MISSING LONG CLOSE ---")
     missing_long = rep[rep.need_long_close .== true, [:base, :free, :locked, :borrowed, :usdtvalue, :minqty, :sell_cov, :sell_gap]]

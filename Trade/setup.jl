@@ -8,7 +8,7 @@ cd(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 
-mypackages = ["EnvConfig", "Ohlcv", "CryptoXch", "Features", "Targets"]
+mypackages = ["EnvConfig", "Ohlcv", "Xch", "Features", "Targets"]
 rootpath = ".."
 for mypackage in mypackages
     folderpath = joinpath(rootpath, mypackage)

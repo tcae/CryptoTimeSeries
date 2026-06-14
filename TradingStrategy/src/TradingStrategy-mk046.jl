@@ -90,10 +90,10 @@ end
 
 "Maps label strings to the trade label symbols used in Targets."
 const _LSTM_LABEL_MAP = Dict(
-    "longbuy" => longbuy,
+    "longopen" => longopen,
     "longhold" => longhold,
     "longclose" => longclose,
-    "shortbuy" => shortbuy,
+    "shortopen" => shortopen,
     "shorthold" => shorthold,
     "shortclose" => shortclose,
     "allclose" => allclose,
@@ -194,14 +194,14 @@ function scorethresholdnt2dict(scorethreshold)::Dict
     return d
 end
 
-@inline islongopenlabel(label::TradeLabel) = (label == longbuy) || (label == longstrongbuy)
-@inline isshortopenlabel(label::TradeLabel) = (label == shortbuy) || (label == shortstrongbuy)
+@inline islongopenlabel(label::TradeLabel) = (label == longopen) || (label == longstrongopen)
+@inline isshortopenlabel(label::TradeLabel) = (label == shortopen) || (label == shortstrongopen)
 @inline islongholdoropenlabel(label::TradeLabel) = (label == longhold) || islongopenlabel(label)
 @inline isshortholdoropenlabel(label::TradeLabel) = (label == shorthold) || isshortopenlabel(label)
 @inline islongcloselabel(label::TradeLabel) = (label == allclose) || (label == longstrongclose) || (label == longclose)
 @inline isshortcloselabel(label::TradeLabel) = (label == shortclose) || (label == shortstrongclose) || (label == allclose)
 
-# println("scorethresholdnt2dict((longbuy=0.8, allclose=0.5, shortbuy=0.7)) = $(scorethresholdnt2dict((longbuy=0.8,  allclose=0.5, shortbuy=0.7)))")
+# println("scorethresholdnt2dict((longopen=0.8, allclose=0.5, shortopen=0.7)) = $(scorethresholdnt2dict((longopen=0.8,  allclose=0.5, shortopen=0.7)))")
 
 """
 This struct is used to convey input data to the selected trading startegy and to receive trade action instructions.  
@@ -218,7 +218,7 @@ The absolute amount is not determined by trading strategy but a factor of an unk
   
 """
 mutable struct TradeAction
-    orderlabel::Union{TradeLabel, Nothing} # used: longbuy, longclose, shortclose, shortbuy or ignore as default
+    orderlabel::Union{TradeLabel, Nothing} # used: longopen, longclose, shortclose, shortopen or ignore as default
     orderlimit::Float32 # order limit or 0f0 if no limit order placed
     buyprice::Float32 # price at which the position was opened; used for gain calculation and limit adjustments; 0f0 if no position open
     buyix::Integer # index of the bar at which the position was opened; used for gain calculation and limit adjustments; 0 if no position open
@@ -278,7 +278,7 @@ end
 LSTM-based action decider that maps class probabilities to trade actions.
 
 The expected default class order is:
-`["longbuy", "longclose", "shortbuy", "shortclose"]`.
+`["longopen", "longclose", "shortopen", "shortclose"]`.
 """
 mutable struct LstmTradeDecider <: AbstractSingleSymbolTrading
     labels::Vector{Any}
@@ -296,7 +296,7 @@ Create a new `LstmTradeDecider`.
 - `scorethresholds`: per-label acceptance score thresholds
 - `fallbacklabel`: label or phase used when confidence is below threshold
 """
-function LstmTradeDecider(; labels=["longbuy", "longclose", "shortbuy", "shortclose"], scorethresholds=(longbuy=0.5f0, longclose=0.5f0, shortbuy=0.5f0, shortclose=0.5f0), fallbacklabel::Union{TradeLabel, TrendPhase}=allclose)
+function LstmTradeDecider(; labels=["longopen", "longclose", "shortopen", "shortclose"], scorethresholds=(longopen=0.5f0, longclose=0.5f0, shortopen=0.5f0, shortclose=0.5f0), fallbacklabel::Union{TradeLabel, TrendPhase}=allclose)
     @assert length(labels) > 0 "labels length must be > 0; got $(length(labels))"
     mapped = Any[]
     for label in labels
@@ -317,7 +317,7 @@ end
 
 "Resolves the final order label to be emitted for a selected trade label."
 function _label2orderlabel(label::TradeLabel, assettype::TrendPhase)
-    if label in [longbuy, longclose, shortbuy, shortclose]
+    if label in [longopen, longclose, shortopen, shortclose]
         return label
     elseif label == allclose
         if assettype == up
@@ -338,7 +338,7 @@ function _label2orderlabel(phase::TrendPhase, assettype::TrendPhase)
         if assettype == down
             return shortclose
         elseif assettype == flat
-            return longbuy
+            return longopen
         else
             return nothing
         end
@@ -346,7 +346,7 @@ function _label2orderlabel(phase::TrendPhase, assettype::TrendPhase)
         if assettype == up
             return longclose
         elseif assettype == flat
-            return shortbuy
+            return shortopen
         else
             return nothing
         end
@@ -471,9 +471,9 @@ function phase_sequence_trade_labels(phases::AbstractVector)
         end
 
         if phase == up
-            tradelabels[ix] = prevphase == up ? longhold : longbuy
+            tradelabels[ix] = prevphase == up ? longhold : longopen
         elseif phase == down
-            tradelabels[ix] = prevphase == down ? shorthold : shortbuy
+            tradelabels[ix] = prevphase == down ? shorthold : shortopen
         else
             tradelabels[ix] = prevphase == up ? longclose : (prevphase == down ? shortclose : allclose)
         end
@@ -565,7 +565,7 @@ trades and upper band for short trades. Exit limits use the opposite band. If an
 exit limit is not hit within `exittimeout` bars, the position is force-closed at
 market, so missed exits can realize losses.
 
-`labels` may either be direct trade labels (`longbuy`, `shortclose`, ...) or a
+`labels` may either be direct trade labels (`longopen`, `shortclose`, ...) or a
 coarse trend-phase sequence (`up`, `down`, `flat`). Phase sequences are converted
 internally so that actions are only emitted when a trend starts or ends.
 """
@@ -878,13 +878,13 @@ end
 "check price ranges whether an open order is closed and calculates the gain"
 function processclosedorder!(gs::GainSegment, ix::Integer, ta::TradeAction)
     if isopen(ta) 
-        if (ta.orderlabel in [longbuy, longstrongbuy]) 
+        if (ta.orderlabel in [longopen, longstrongopen]) 
             if (gs.predictionsdf[ix, :low] <= ta.buyprice)
                 # assume trade took place
                 ta.orderlabel = longclose
                 ta.buyix = ix
             end
-        elseif (ta.orderlabel in [shortbuy, shortstrongbuy]) 
+        elseif (ta.orderlabel in [shortopen, shortstrongopen]) 
             if (gs.predictionsdf[ix, :high] >= ta.buyprice)
                 # assume trade took place
                 ta.orderlabel = shortclose
@@ -925,7 +925,7 @@ configuration parameters are:
 - limitreduction: factor to reduce limit price in case of unfilled order for every trend sample with a label that does not support the trend (e.g. allclose label for a long sell action)
 """
 function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label::TradeLabel, score, high, low, close, openthreshold, buygain, sellgain, limitreduction)
-    if (label in [longbuy, longstrongbuy]) && (score >= openthreshold)
+    if (label in [longopen, longstrongopen]) && (score >= openthreshold)
         if isopen(sellta) 
             if isshortclose(sellta.orderlabel)
                 sellta.orderlimit = close * (1f0 - buygain) # adapt to buy limit of opposite order due to trend reversal
@@ -934,10 +934,10 @@ function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label:
             end
         else  # no sell order but if buy order present then it did not reach buy limit and need to be reestablihed with new buy limit
             buyta.buyprice = close * (1f0 - buygain)
-            buyta.orderlabel = longbuy
+            buyta.orderlabel = longopen
             buyta.orderlimit = close * (1f0 + sellgain)
         end
-    elseif (label in [shortbuy, shortstrongbuy]) && (score >= openthreshold)
+    elseif (label in [shortopen, shortstrongopen]) && (score >= openthreshold)
         if isopen(sellta) 
             if islongclose(sellta.orderlabel)
                 sellta.orderlimit = close * (1f0 + buygain) # adapt to buy limit of opposite order due to trend reversal
@@ -946,7 +946,7 @@ function reachgainuntilreversal!(sellta::TradeAction, buyta::TradeAction, label:
             end
         else  # no sell order but if buy order present then it did not reach buy limit and need to be reestablihed with new buy limit
             buyta.buyprice = close * (1f0 + buygain)
-            buyta.orderlabel = shortbuy
+            buyta.orderlabel = shortopen
             buyta.orderlimit = close * (1f0 - sellgain)
         end
     elseif isopen(sellta)
@@ -1062,7 +1062,7 @@ Input is
   - maxwindow of sample window considered for the prediction
   - scorethresholds as named tuple with acceptance score; trade label names that are not included are ignored
 """
-function getgainsdf(predictionsdf::AbstractDataFrame; maxwindow, scorethresholds=(longbuy=0.6, allclose=0.6, shortbuy=0.6))
+function getgainsdf(predictionsdf::AbstractDataFrame; maxwindow, scorethresholds=(longopen=0.6, allclose=0.6, shortopen=0.6))
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
         return nothing
     end

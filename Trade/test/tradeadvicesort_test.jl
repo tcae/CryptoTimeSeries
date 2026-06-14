@@ -1,5 +1,5 @@
 using Test, Dates, Logging, LoggingExtras, DataFrames
-using EnvConfig, Trade, Classify, Targets, Ohlcv, CryptoXch
+using EnvConfig, Trade, Classify, Targets, Ohlcv, Xch
 
 println("$(EnvConfig.now()): started")
 
@@ -9,13 +9,13 @@ Features.verbosity = 1
 Trade.verbosity = 3
 # EnvConfig.init(training)
 EnvConfig.init(test)
-xc = CryptoXch.XchCache()
+xc = Xch.XchCache()
 tc = Trade.TradeCache(xc=xc)
 testdt = DateTime(2026, 1, 1)
 tav = [
-    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=longbuy, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
+    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=longopen, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
     Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=longclose, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
-    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=shortbuy, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.1f0, probability=1f0, investmentid=0)
+    Trade.StrategyAdvice(classifier=tc.cl, configid=0, tradelabel=shortopen, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.1f0, probability=1f0, investmentid=0)
 ]
 println("before sort!:\n$tav")
 sort!(tav, lt=Trade.tradeadvicelessthan)

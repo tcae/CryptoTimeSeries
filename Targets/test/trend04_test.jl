@@ -10,7 +10,7 @@
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 constructor assertions" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
 
     # minwindow == maxwindow violates strict inequality
     @test_throws AssertionError Targets.Trend04(10, 10, thres)
@@ -19,11 +19,11 @@
     # negative minwindow
     @test_throws AssertionError Targets.Trend04(-1, 10, thres)
 
-    # threshold order violated: longbuy < longhold
-    bad_thres1 = Targets.LabelThresholds(longbuy=0.005f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    # threshold order violated: longopen threshold < longhold
+    bad_thres1 = Targets.LabelThresholds(0.005f0, 0.01f0, -0.01f0, -0.03f0)
     @test_throws AssertionError Targets.Trend04(2, 10, bad_thres1)
-    # threshold order violated: shortbuy > shorthold
-    bad_thres2 = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.005f0)
+    # threshold order violated: short-open threshold > shorthold
+    bad_thres2 = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.005f0)
     @test_throws AssertionError Targets.Trend04(2, 10, bad_thres2)
     # unsupported hold anchor mode
     @test_throws ArgumentError Targets.Trend04(2, 10, thres; holdanchormode=:invalid_mode)
@@ -60,7 +60,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 firstrowix/lastrowix" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     @test Targets.firstrowix(trd) == 1
     @test Targets.lastrowix(trd)  == 0
@@ -77,7 +77,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 describe" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     d = Targets.describe(trd)
     @test occursin("Trend04", d)
@@ -96,7 +96,7 @@ end
 end
 
 @testset "Trend04 hold anchor mode semantics" begin
-    thres = Targets.LabelThresholds(longbuy=0.04f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.04f0)
+    thres = Targets.LabelThresholds(0.04f0, 0.02f0, -0.01f0, -0.04f0)
     pivots = Float32[100.0, 104.031, 99.91, 105.402, 106.31, 108.852, 107.052, 106.409, 107.576]
 
     # :entry_anchor uses original buy-entry anchor.
@@ -113,7 +113,7 @@ end
 end
 
 @testset "Trend04 last_buy_anchor hold behavior modes" begin
-    thres = Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0)
+    thres = Targets.LabelThresholds(0.06f0, 0.02f0, -0.01f0, -0.06f0)
     pivots = Float32[100.0, 99.886, 98.557, 97.65, 101.708, 104.445, 107.335]
 
     trd_within = Targets.Trend04(2, 3, thres; holdanchormode=:last_buy_anchor, holdbehaviormode=:within_maxwindow)
@@ -134,12 +134,12 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 uniquelabels" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     ul = Targets.uniquelabels(trd)
-    @test longbuy   in ul
+    @test longopen  in ul
     @test longhold  in ul
-    @test shortbuy  in ul
+    @test shortopen in ul
     @test shorthold in ul
     @test allclose  in ul
 end
@@ -149,7 +149,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 supplement! without ohlcv" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     Targets.supplement!(trd)  # must not throw
     @test isnothing(trd.df)
@@ -160,7 +160,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 supplement! incremental" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
 
     pivots_short = Float32[100.0, 104.0, 108.0, 112.0]
@@ -183,7 +183,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 removebase!" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     pivots = Float32[100.0, 102.0, 105.0, 108.0, 110.0]
     ohlcv = testohlcvfrompivots(pivots)
@@ -200,7 +200,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 timerangecut! without ohlcv" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     Targets.timerangecut!(trd)  # must not throw
     @test isnothing(trd.df)
@@ -211,7 +211,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 labels()" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
 
     # Before setbase!: returns empty
@@ -240,35 +240,35 @@ end
 end
 
 @testset "Trend04 hold requires current hold threshold" begin
-    longthres = Targets.LabelThresholds(longbuy=0.06f0, longhold=0.05f0, shorthold=-0.01f0, shortbuy=-0.06f0)
+    longthres = Targets.LabelThresholds(0.06f0, 0.05f0, -0.01f0, -0.06f0)
     longtrd = Targets.Trend04(1, 10, longthres)
     Targets.setbase!(longtrd, testohlcvfrompivots(Float32[100.0, 106.0, 104.95]))
-    @test longtrd.df[2, :label] == longbuy
+    @test longtrd.df[2, :label] == longopen
     @test longtrd.df[3, :label] == allclose
 
-    shortthres = Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.05f0, shortbuy=-0.06f0)
+    shortthres = Targets.LabelThresholds(0.06f0, 0.02f0, -0.05f0, -0.06f0)
     shorttrd = Targets.Trend04(1, 10, shortthres)
     Targets.setbase!(shorttrd, testohlcvfrompivots(Float32[100.0, 94.0, 95.8]))
-    @test shorttrd.df[2, :label] == shortbuy
+    @test shorttrd.df[2, :label] == shortopen
     @test shorttrd.df[3, :label] == allclose
 
-    recoveringlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
+    recoveringlong = Targets.Trend04(2, 10, Targets.LabelThresholds(0.06f0, 0.02f0, -0.01f0, -0.06f0))
     Targets.setbase!(recoveringlong, testohlcvfrompivots(Float32[100.0, 106.0, 102.0, 104.5]))
     @test recoveringlong.df[3, :label] == allclose
     @test recoveringlong.df[4, :label] == allclose
 
-    recoveringshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
+    recoveringshort = Targets.Trend04(2, 10, Targets.LabelThresholds(0.06f0, 0.01f0, -0.02f0, -0.06f0))
     Targets.setbase!(recoveringshort, testohlcvfrompivots(Float32[100.0, 94.0, 98.0, 95.5]))
     @test recoveringshort.df[3, :label] == allclose
     @test recoveringshort.df[4, :label] == allclose
 
-    delayedlong = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.02f0, shorthold=-0.01f0, shortbuy=-0.06f0))
+    delayedlong = Targets.Trend04(2, 10, Targets.LabelThresholds(0.06f0, 0.02f0, -0.01f0, -0.06f0))
     Targets.setbase!(delayedlong, testohlcvfrompivots(Float32[100.0, 106.0, 103.0, 102.0, 104.5]))
     @test delayedlong.df[3, :label] == allclose
     @test delayedlong.df[4, :label] == allclose
     @test delayedlong.df[5, :label] == allclose
 
-    delayedshort = Targets.Trend04(2, 10, Targets.LabelThresholds(longbuy=0.06f0, longhold=0.01f0, shorthold=-0.02f0, shortbuy=-0.06f0))
+    delayedshort = Targets.Trend04(2, 10, Targets.LabelThresholds(0.06f0, 0.01f0, -0.02f0, -0.06f0))
     Targets.setbase!(delayedshort, testohlcvfrompivots(Float32[100.0, 94.0, 97.0, 98.0, 95.5]))
     @test delayedshort.df[3, :label] == allclose
     @test delayedshort.df[4, :label] == allclose
@@ -280,7 +280,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 relativegain()" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
 
     # Before setbase!: returns empty Float32 vector
@@ -313,7 +313,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 labelbinarytargets and labelrelativegain" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     pivots = Float32[100.0, 104.0, 108.0, 112.0, 116.0, 120.0]
     ohlcv = testohlcvfrompivots(pivots)
@@ -324,17 +324,17 @@ end
     rg   = Targets.relativegain(trd)
 
     # labelbinarytargets: true exactly where label matches
-    bt = Targets.labelbinarytargets(trd, longbuy)
+    bt = Targets.labelbinarytargets(trd, longopen)
     @test length(bt) == n
-    @test all(bt[i] == (lbls[i] == longbuy) for i in 1:n)
+    @test all(bt[i] == (lbls[i] == longopen) for i in 1:n)
 
     # labelbinarytargets with DateTime range
     df = Ohlcv.dataframe(ohlcv)
-    bt_dt = Targets.labelbinarytargets(trd, longbuy, df[1, :opentime], df[n, :opentime])
+    bt_dt = Targets.labelbinarytargets(trd, longopen, df[1, :opentime], df[n, :opentime])
     @test collect(bt_dt) == collect(bt)
 
     # labelrelativegain: zeroes out non-matching positions
-    lrg = Targets.labelrelativegain(trd, longbuy)
+    lrg = Targets.labelrelativegain(trd, longopen)
     @test length(lrg) == n
     for i in 1:n
         if bt[i]
@@ -345,11 +345,11 @@ end
     end
 
     # labelrelativegain with index range
-    lrg_sub = Targets.labelrelativegain(trd, longbuy, 2, 4)
+    lrg_sub = Targets.labelrelativegain(trd, longopen, 2, 4)
     @test length(lrg_sub) == 3
 
     # labelrelativegain with DateTime range
-    lrg_dt = Targets.labelrelativegain(trd, longbuy, df[2, :opentime], df[4, :opentime])
+    lrg_dt = Targets.labelrelativegain(trd, longopen, df[2, :opentime], df[4, :opentime])
     @test collect(lrg_dt) ≈ collect(lrg_sub)  atol=1e-6
 end
 
@@ -362,7 +362,7 @@ end
     @test isempty(Targets.trend04_diagnostics())
 
     Targets.enable_trend04_diagnostics!(true)
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     pivots = Float32[100.0, 104.0, 108.0, 112.0, 116.0]
     ohlcv = testohlcvfrompivots(pivots)
@@ -388,7 +388,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 Base.show" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     s = sprint(show, trd)
     @test occursin("Trend04", s)
@@ -406,11 +406,11 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 crosscheck(trd, labels, pivots) edge cases" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
 
     # length mismatch
-    issues = Targets.crosscheck(trd, TradeLabel[longbuy], Float32[1.0, 2.0])
+    issues = Targets.crosscheck(trd, TradeLabel[longopen], Float32[1.0, 2.0])
     @test !isempty(issues)
     @test any(occursin("length mismatch", s) for s in issues)
 
@@ -419,32 +419,32 @@ end
     @test !isempty(issues)
     @test any(occursin("empty inputs", s) for s in issues)
 
-    # longhold not preceded by longbuy
+        # longhold not preceded by longopen
     issues = Targets.crosscheck(trd, TradeLabel[longhold, longhold], Float32[100.0, 101.0])
     @test !isempty(issues)
-    @test any(occursin("must be preceded by a longbuy segment", s) for s in issues)
+    @test any(occursin("must be preceded by a longopen segment", s) for s in issues)
 
-    # shorthold not preceded by shortbuy
+    # shorthold not preceded by shortopen
     issues = Targets.crosscheck(trd, TradeLabel[shorthold, shorthold], Float32[100.0, 99.0])
     @test !isempty(issues)
-    @test any(occursin("must be preceded by a shortbuy segment", s) for s in issues)
+    @test any(occursin("must be preceded by a shortopen segment", s) for s in issues)
 
     # pure allclose is always valid
     issues = Targets.crosscheck(trd, TradeLabel[allclose, allclose, allclose], Float32[100.0, 100.5, 101.0])
     @test isempty(issues)
 
-    # well-formed longbuy segment (5 bars, >3% gain, at segment high)
-    issues = Targets.crosscheck(trd, TradeLabel[longbuy, longbuy, longbuy, longbuy, longbuy], Float32[100.0, 101.0, 102.0, 103.0, 104.0])
+    # well-formed longopen segment (5 bars, >3% gain, at segment high)
+    issues = Targets.crosscheck(trd, TradeLabel[longopen, longopen, longopen, longopen, longopen], Float32[100.0, 101.0, 102.0, 103.0, 104.0])
     if !isempty(issues)
-        println("Trend04 crosscheck longbuy issues (informational): " * join(issues, "; "))
+        println("Trend04 crosscheck longopen issues (informational): " * join(issues, "; "))
     end
     # gain = (104-100)/100 = 4% > 3%, span = 5 >= minwindow = 2 → should be valid
     @test isempty(issues)
 
-    # well-formed shortbuy segment (5 bars, >3% loss, at segment low)
-    issues = Targets.crosscheck(trd, TradeLabel[shortbuy, shortbuy, shortbuy, shortbuy, shortbuy], Float32[104.0, 103.0, 102.0, 101.0, 100.0])
+    # well-formed shortopen segment (5 bars, >3% loss, at segment low)
+    issues = Targets.crosscheck(trd, TradeLabel[shortopen, shortopen, shortopen, shortopen, shortopen], Float32[104.0, 103.0, 102.0, 101.0, 100.0])
     if !isempty(issues)
-        println("Trend04 crosscheck shortbuy issues (informational): " * join(issues, "; "))
+        println("Trend04 crosscheck shortopen issues (informational): " * join(issues, "; "))
     end
     # gain = (100-104)/104 ≈ -3.85% < -3% → should be valid
     @test isempty(issues)
@@ -455,7 +455,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 crosscheck(trd) without setbase!" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 10, thres)
     issues = Targets.crosscheck(trd)
     @test !isempty(issues)
@@ -467,7 +467,7 @@ end
 # ---------------------------------------------------------------------------
 
 @testset "Trend04 full SINE workflow crosscheck" begin
-    thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+    thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
     trd = Targets.Trend04(2, 240, thres)
     startdt = DateTime("2025-01-02T01:11:00")
     enddt   = startdt + Dates.Minute(200)
@@ -493,7 +493,7 @@ end
     prevcoinspath = EnvConfig.coinspath()
     try
         EnvConfig.init(training)
-        EnvConfig.setcoinspath!("coins_bybit")
+        EnvConfig.setcoinspath!("Bybit")
         startdt = DateTime("2025-01-30T00:00:00")
         enddt = DateTime("2025-05-30T23:59:00")
         expectedrows = length(startdt:Minute(1):enddt)
@@ -507,13 +507,13 @@ end
         @test odf[begin, :opentime] == startdt
         @test odf[end, :opentime] == enddt
 
-        thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+        thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
         trd = Targets.Trend04(2, 360, thres)
         Targets.setbase!(trd, ohlcv)
 
         labels = trd.df[!, :label]
-        @test count(==(longbuy), labels) > 0
-        @test count(==(shortbuy), labels) > 0
+        @test count(==(longopen), labels) > 0
+        @test count(==(shortopen), labels) > 0
         @test count(==(allclose), labels) > 0
 
         issues = Targets.crosscheck(trd)
@@ -536,17 +536,17 @@ end
         prevcoinspath = EnvConfig.coinspath()
         try
             EnvConfig.init(training)
-            EnvConfig.setcoinspath!("coins_bybit")
+            EnvConfig.setcoinspath!("Bybit")
             ohlcv = Ohlcv.read("BTC")
             @test size(Ohlcv.dataframe(ohlcv), 1) > 0
 
-            thres = Targets.LabelThresholds(longbuy=0.03f0, longhold=0.01f0, shorthold=-0.01f0, shortbuy=-0.03f0)
+            thres = Targets.LabelThresholds(0.03f0, 0.01f0, -0.01f0, -0.03f0)
             trd = Targets.Trend04(10, 240, thres)
             Targets.setbase!(trd, ohlcv)
 
             labels = trd.df[!, :label]
-            @test count(==(longbuy), labels) > 0
-            @test count(==(shortbuy), labels) > 0
+            @test count(==(longopen), labels) > 0
+            @test count(==(shortopen), labels) > 0
             @test count(==(allclose), labels) > 0
 
             issues = Targets.crosscheck(trd)

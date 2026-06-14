@@ -4,13 +4,13 @@ using Targets
 
 @testset "gain_limit_reversal direction" begin
     @testset "short signal with open longclose mirrors short entry openprice" begin
-        longta = TradingStrategy.TradeAction(longclose, 110f0, 100f0, 1)
+        longta = TradingStrategy.TradeAction(Targets.longclose, 110f0, 100f0, 1)
         shortta = TradingStrategy.TradeAction()
 
         TradingStrategy.reachgainuntilreversal!(
             longta,
             shortta,
-            shortbuy,
+            Targets.shortopen,
             0.9f0,
             101f0,
             99f0,
@@ -26,12 +26,12 @@ using Targets
 
     @testset "long signal with open shortclose mirrors long entry openprice" begin
         longta = TradingStrategy.TradeAction()
-        shortta = TradingStrategy.TradeAction(shortclose, 90f0, 100f0, 1)
+        shortta = TradingStrategy.TradeAction(Targets.shortclose, 90f0, 100f0, 1)
 
         TradingStrategy.reachgainuntilreversal!(
             longta,
             shortta,
-            longbuy,
+            Targets.longopen,
             0.9f0,
             101f0,
             99f0,
@@ -52,7 +52,7 @@ using Targets
         TradingStrategy.reachgainuntilreversal!(
             longta,
             shortta,
-            longbuy,
+            Targets.longopen,
             0.9f0,
             101f0,
             99f0,
@@ -63,19 +63,19 @@ using Targets
             0f0,
         )
 
-        @test longta.label == longbuy
+        @test longta.label == Targets.longopen
         @test longta.openprice == 99.9f0
         @test longta.closeprice == 101f0
     end
 
     @testset "pricedelta variant keeps lane prices unchanged below threshold" begin
-        longta = TradingStrategy.TradeAction(longbuy, 101f0, 99.9f0, 0)
+        longta = TradingStrategy.TradeAction(Targets.longopen, 101f0, 99.9f0, 0)
         shortta = TradingStrategy.TradeAction()
 
         TradingStrategy.reachgainuntilreversal_pricedelta!(
             longta,
             shortta,
-            longbuy,
+            Targets.longopen,
             0.9f0,
             101f0,
             99f0,

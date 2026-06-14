@@ -3,11 +3,20 @@
 # Pkg.add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
 
 
-module CryptoXch
+module Xch
 
-using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
+using Dates, DataFrames, DataAPI, JDF, CSV, JSON3, Logging, InlineStrings, UUIDs
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeLog
 import Ohlcv: intervalperiod
+
+const authorization = Ref{Any}(nothing)
+
+Authentication(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing) = EnvConfig.Authentication(name; exchange=exchange)
+
+function setauthorization!(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing)
+    authorization[] = Authentication(name; exchange=exchange)
+    return authorization[]
+end
 
 """
 verbosity =
@@ -30,11 +39,10 @@ Exchange operation roles used for routing.
 @enum ExchangeRole data_exchange trade_exchange_spot trade_exchange_futures
 
 """
-Holds the exchange name and authentication alias for one exchange role.
+Holds the exchange name for one exchange role.
 """
 struct ExchangeRouteEntry
     exchange::String
-    authname::Union{Nothing, String}
 end
 
 """
@@ -47,11 +55,8 @@ struct ExchangeRouting
 end
 
 "Set a role mapping in an `ExchangeRouting`."
-function setrole!(routing::ExchangeRouting, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
-    if !isnothing(authname)
-        throw(ArgumentError("setrole! authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json."))
-    end
-    routing.routes[role] = ExchangeRouteEntry(_normalizeexchange(String(exchange)), isnothing(authname) ? nothing : String(authname))
+function setrole!(routing::ExchangeRouting, role::ExchangeRole, exchange::AbstractString)
+    routing.routes[role] = ExchangeRouteEntry(_normalizeexchange(String(exchange)))
     return routing
 end
 
@@ -64,6 +69,14 @@ const EXCHANGE_BYBIT::String = "Bybit"
 const EXCHANGE_BYBITSIM::String = "BybitSim"
 const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
 const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
+
+"Canonical error-catalog entry loaded from an `_errors.json` file."
+struct ErrorCatalogEntry
+    id::UInt8
+    code::String
+    message::String
+    issuer::String
+end
 
 function _normalizeexchange(exchange::AbstractString)::String
     ex = lowercase(strip(exchange))
@@ -88,10 +101,33 @@ function _coinsfoldertoken(exchange::AbstractString)::String
     return lowercase(replace(ex, r"[^A-Za-z0-9]+" => ""))
 end
 
-"Update EnvConfig coin root to coins_<exchange> based on active data exchange routing."
-function _setexchangecoinspath!(xc)::String
+"Return the canonical exchange data-folder token used for hard-cutover paths."
+function _exchangefoldertoken(exchange::AbstractString)::String
+    ex = _normalizeexchange(exchange)
+    return ex == EXCHANGE_BYBITSIM ? EXCHANGE_BYBIT : ex
+end
+
+"Return the default quote coin for one normalized exchange."
+function _defaultquote(exchange::AbstractString)::String
+    ex = _normalizeexchange(exchange)
+    if ex == EXCHANGE_KRAKENFUTURES
+        return "USD"
+    elseif ex == EXCHANGE_KRAKENSPOT
+        return "USDC"
+    end
+    return "USDT"
+end
+
+"Return true when the given coin-root folder exists under the trading folder."
+function _coinrootexists(foldername::AbstractString)::Bool
+    return isdir(normpath(joinpath(EnvConfig.tradingfolder, String(foldername))))
+end
+
+"Update EnvConfig coin root to the canonical exchange-specific path."
+function _setexchangepath!(xc)::String
     data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
-    return EnvConfig.setcoinspath!("coins_" * _coinsfoldertoken(data_ex))
+    canonical = _exchangefoldertoken(data_ex)
+    return EnvConfig.setcoinspath!(canonical)
 end
 
 function _exchangeModule(exchange::AbstractString)
@@ -113,10 +149,16 @@ function _authfromname(exchange::AbstractString)
     # Kraken adapters require exchange-specific credentials and should always
     # resolve auth tuples constrained by exchange.
     if ex == EXCHANGE_KRAKENSPOT || ex == EXCHANGE_KRAKENFUTURES
-        return EnvConfig.Authentication(nothing; exchange=ex)
+        return Authentication(nothing; exchange=ex)
     elseif ex == EXCHANGE_BYBIT
-        # Bybit keeps legacy global authorization behavior.
-        return EnvConfig.authorization
+        # Bybit keeps one optional global auth tuple resolved once per process.
+        if isnothing(authorization[])
+            try
+                setauthorization!(nothing)
+            catch
+            end
+        end
+        return authorization[]
     end
     return nothing
 end
@@ -172,9 +214,11 @@ mutable struct XchCache
     closedorders  # ::DataFrame
     assets  # :: DataFrame
     bases  # ::Dict{String, Ohlcv.OhlcvData}
+    pairstates::Dict{String, DataFrame}  # keyed by canonical trading pair, stores phase-2 Trades DataFrames
+    messages::Dict{String, Vector{ErrorCatalogEntry}}  # keyed by issuer, stores loaded and observed issue catalog entries
     bc  # exchange specific cache, e.g. Bybit.BybitCache or KrakenSpot.KrakenSpotCache
     exchange::String
-    authname::Union{Nothing, String}
+    defaultquote::String
     feerate  # 0.001 = 0.1% maker/taker fee by default  #TODO store exchange info and account fee rate and use it in offline backtest simulation
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
@@ -183,24 +227,24 @@ mutable struct XchCache
     mc::Dict # MC = module constants
     routing::ExchangeRouting   # per-role exchange/auth overrides; empty = all ops go to `exchange`/`bc`
     routecaches::Dict{String, Any}  # keyed by exchange name; lazily populated adapter caches for routing
-    function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, exchange::String=EXCHANGE_BYBIT, authname::Union{Nothing, AbstractString}=nothing)
+    function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, exchange::String=EXCHANGE_BYBIT, defaultquote::Union{Nothing, AbstractString}=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         # simmode = bybitsim # simulation mode with adapter-backed trading + deterministic offline market data
         # simmode = nosimulation # uses production mode of Bybit without any exchange simulation
-        if !isnothing(authname)
-            throw(ArgumentError("XchCache authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json and pass only exchange."))
-        end
         exchange = _normalizeexchange(exchange)
-        authname = nothing
+        dq = isnothing(defaultquote) ? _defaultquote(exchange) : uppercase(String(defaultquote))
+        messages = load_messages(exchange; root=EnvConfig.coinspath())
         simmode = if EnvConfig.configmode == production
             nosimulation
         else
             bybitsim
         end
-        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), _exchangecache(exchange, simmode), exchange, authname, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
+        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), Dict{String, DataFrame}(), messages, _exchangecache(exchange, simmode), exchange, dq, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
+        EnvConfig.setpairquote!(dq)
         xc.mc[:simmode] = simmode
-        _setexchangecoinspath!(xc)
+        xc.mc[:message_catalog_root] = EnvConfig.coinspath()
+        _setexchangepath!(xc)
         if hasproperty(xc.bc, :syminfodf) && !isnothing(xc.bc.syminfodf)
             for row in eachrow(xc.bc.syminfodf)
                 setsymbolinfocache!(xc, row.symbol, (
@@ -242,8 +286,280 @@ auditrunmode(xc::XchCache)::String = tradelogrunmode(xc)
 auditrunid(xc::XchCache)::String = tradelogrunid(xc)
 
 exchange(xc::XchCache)::String = xc.exchange
-authname(xc::XchCache) = xc.authname
 _exchangeModule(xc::XchCache) = _exchangeModule(xc.exchange)
+
+"""
+    tradingpairkey(base, quotecoin)
+
+Return the canonical in-memory key for one trading pair state table.
+Phase 2 stores Trades DataFrames by uppercase concatenated base and quote.
+"""
+function tradingpairkey(base::AbstractString, quotecoin::AbstractString)::String
+    return uppercase(String(base)) * uppercase(String(quotecoin))
+end
+
+function _messagecatalogroot(root::AbstractString, issuer::AbstractString)::String
+    if issuer == "Trading"
+        return normpath(joinpath(root, "Trading"))
+    end
+    return normpath(joinpath(root, _coinsfoldertoken(issuer)))
+end
+
+function _messagecatalogpath(root::AbstractString, issuer::AbstractString)::String
+    return normpath(joinpath(_messagecatalogroot(root, issuer), "_errors.json"))
+end
+
+function _issueridrange(issuer::AbstractString)
+    if issuer == "Trading"
+        return 1:49
+    elseif issuer == EXCHANGE_BYBIT
+        return 50:99
+    elseif issuer == EXCHANGE_KRAKENSPOT
+        return 100:149
+    elseif issuer == EXCHANGE_KRAKENFUTURES
+        return 150:255
+    end
+    return 1:255
+end
+
+function _catalogentrydict(entry::ErrorCatalogEntry)
+    return Dict(
+        "id" => Int(entry.id),
+        "code" => entry.code,
+        "message" => entry.message,
+        "issuer" => entry.issuer,
+    )
+end
+
+function _jsonproperty(value, field::AbstractString, default=nothing)
+    key = Symbol(field)
+    if hasproperty(value, key)
+        return getproperty(value, key)
+    end
+    if value isa AbstractDict
+        return get(value, field, default)
+    end
+    return default
+end
+
+function _loadcatalogentries(issuer::AbstractString, raw)
+    entries = ErrorCatalogEntry[]
+    idrange = _issueridrange(issuer)
+    nextid = first(idrange)
+    usedids = Set{UInt8}()
+    rows = if raw isa AbstractVector
+        raw
+    elseif raw isa AbstractDict
+        if haskey(raw, issuer)
+            raw[issuer]
+        elseif haskey(raw, "messages")
+            raw["messages"]
+        else
+            collect(values(raw))
+        end
+    else
+        Any[]
+    end
+
+    for row in rows
+        code = String(_jsonproperty(row, "code", ""))
+        message = String(_jsonproperty(row, "message", ""))
+        rawid = _jsonproperty(row, "id", nothing)
+        if isnothing(rawid) || ismissing(rawid) || (rawid isa AbstractString && isempty(strip(String(rawid))))
+            while (UInt8(nextid) in usedids) && (nextid <= last(idrange))
+                nextid += 1
+            end
+            nextid > last(idrange) && error("error catalog id overflow for issuer=$(issuer): next id $(nextid) exceeds range $(first(idrange)):$(last(idrange))")
+            id = UInt8(nextid)
+            push!(entries, ErrorCatalogEntry(id, code, message, String(issuer)))
+            push!(usedids, id)
+            nextid += 1
+        else
+            idvalue = rawid isa Integer ? Int(rawid) : parse(Int, String(rawid))
+            id = UInt8(idvalue)
+            (id in usedids) && error("duplicate error catalog id $(id) for issuer=$(issuer)")
+            (Int(id) < first(idrange) || Int(id) > last(idrange)) && error("error catalog id $(id) for issuer=$(issuer) is outside the allowed range $(first(idrange)):$(last(idrange))")
+            push!(entries, ErrorCatalogEntry(id, code, message, String(issuer)))
+            push!(usedids, id)
+            nextid = max(nextid, Int(id) + 1)
+        end
+    end
+    return entries
+end
+
+function _readcatalogfile(path::AbstractString)
+    if !isfile(path)
+        return nothing
+    end
+    text = read(path, String)
+    isempty(strip(text)) && return nothing
+    return JSON3.read(text)
+end
+
+"Load general and exchange specific issue catalog entries from the shared coin root."
+function load_messages(exchange::AbstractString; root::AbstractString=EnvConfig.coinspath())::Dict{String, Vector{ErrorCatalogEntry}}
+    exchange = _normalizeexchange(exchange)
+    messages = Dict{String, Vector{ErrorCatalogEntry}}(
+        "Trading" => ErrorCatalogEntry[],
+        exchange => ErrorCatalogEntry[],
+    )
+    for issuer in ("Trading", exchange)
+        path = _messagecatalogpath(root, issuer)
+        raw = _readcatalogfile(path)
+        if !isnothing(raw)
+            messages[issuer] = _loadcatalogentries(issuer, raw)
+        end
+    end
+    return messages
+end
+
+"Reload issue catalogs into the cache using the cache's configured root."
+load_messages(xc::XchCache) = load_messages(exchange(xc); root=get(xc.mc, :message_catalog_root, EnvConfig.coinspath()))
+
+function _persist_messages!(xc::XchCache, issuer::AbstractString)
+    root = get(xc.mc, :message_catalog_root, EnvConfig.coinspath())
+    path = _messagecatalogpath(root, issuer)
+    mkpath(dirname(path))
+    entries = sort(get!(xc.messages, String(issuer), ErrorCatalogEntry[]), by = e -> e.id)
+    payload = Dict(String(issuer) => [_catalogentrydict(entry) for entry in entries])
+    open(path, "w") do io
+        JSON3.write(io, payload)
+    end
+    return path
+end
+
+"Log a trading issue, record it in the per-issuer catalog, and persist new catalog entries."
+function log_trading_issue(xc::XchCache, issuer::AbstractString, message::AbstractString)
+    issuer = String(issuer)
+    message = String(message)
+    haskey(xc.messages, issuer) || (xc.messages[issuer] = ErrorCatalogEntry[])
+    entries = xc.messages[issuer]
+    entry = nothing
+    for candidate in entries
+        if occursin(candidate.message, message)
+            entry = candidate
+            break
+        end
+    end
+    if isnothing(entry)
+        idrange = _issueridrange(issuer)
+        usedids = Set(entry.id for entry in entries)
+        nextid = first(idrange)
+        while (UInt8(nextid) in usedids) && (nextid <= last(idrange))
+            nextid += 1
+        end
+        nextid > last(idrange) && error("error catalog id overflow for issuer=$(issuer): next id $(nextid) exceeds range $(first(idrange)):$(last(idrange))")
+        entry = ErrorCatalogEntry(UInt8(nextid), "", message, issuer)
+        push!(entries, entry)
+        _persist_messages!(xc, issuer)
+    end
+    @warn "Xch.$(ttstr(xc)) $(Int(entry.id)) $(issuer): $(message)"
+    return entry
+end
+
+log_trading_issue(issuer::AbstractString, message::AbstractString) = error("log_trading_issue requires an XchCache; call log_trading_issue(xc, issuer, message)")
+
+"""
+    hastrades(xc, pair)
+
+Return `true` when a Phase 2 Trades DataFrame is already stored for `pair`.
+`pair` can be a concatenated symbol like `"BTCUSDT"`.
+"""
+function hastrades(xc::XchCache, pair::AbstractString)::Bool
+    return haskey(xc.pairstates, uppercase(String(pair)))
+end
+
+"""
+    hastrades(xc, base, quotecoin)
+
+Return `true` when a Phase 2 Trades DataFrame is already stored for `(base, quotecoin)`.
+"""
+function hastrades(xc::XchCache, base::AbstractString, quotecoin::AbstractString)::Bool
+    return hastrades(xc, tradingpairkey(base, quotecoin))
+end
+
+"""
+    _emptytradesv1df()
+
+Return an empty Trades DataFrame that follows the current v1 minimum
+identity/time contract.
+"""
+function _emptytradesv1df()::DataFrame
+    return DataFrame(
+        opentime=DateTime[],
+        lastopentrade=Vector{Union{Missing, DateTime}}(),
+    )
+end
+
+"""
+    _ensuretradesv1schema(df)
+
+Backfill required Trades v1 identity/time columns when missing.
+"""
+function _ensuretradesv1schema(df::DataFrame)::DataFrame
+    cols = Set(Symbol.(names(df)))
+    if !(:opentime in cols)
+        if nrow(df) == 0
+            df[!, :opentime] = DateTime[]
+        else
+            throw(ArgumentError("settrades! requires :opentime for non-empty trades dataframes; names=$(names(df))"))
+        end
+    end
+    if !(:lastopentrade in cols)
+        df[!, :lastopentrade] = Vector{Union{Missing, DateTime}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""
+    trades(xc, pair)
+
+Return the stored Phase 2 Trades DataFrame for `pair`, creating an empty one when missing.
+The returned dataframe is the cache-owned object so callers can mutate it in place.
+"""
+function trades(xc::XchCache, pair::AbstractString)::DataFrame
+    key = uppercase(String(pair))
+    return get!(xc.pairstates, key) do
+        _emptytradesv1df()
+    end
+end
+
+"""
+    trades(xc, base, quotecoin)
+
+Return the stored Phase 2 Trades DataFrame for one `(base, quotecoin)` pair.
+"""
+function trades(xc::XchCache, base::AbstractString, quotecoin::AbstractString)::DataFrame
+    return trades(xc, tradingpairkey(base, quotecoin))
+end
+
+"""
+    settrades!(xc, pair, df)
+
+Store `df` as the Phase 2 Trades DataFrame for `pair` and return the cache.
+"""
+function settrades!(xc::XchCache, pair::AbstractString, df::AbstractDataFrame)
+    xc.pairstates[uppercase(String(pair))] = _ensuretradesv1schema(DataFrame(df))
+    return xc
+end
+
+"""
+    settrades!(xc, base, quotecoin, df)
+
+Store `df` as the Phase 2 Trades DataFrame for one `(base, quotecoin)` pair.
+"""
+function settrades!(xc::XchCache, base::AbstractString, quotecoin::AbstractString, df::AbstractDataFrame)
+    return settrades!(xc, tradingpairkey(base, quotecoin), df)
+end
+
+"""
+    tradingpairs(xc)
+
+Return stored Phase 2 trading-pair keys in sorted order.
+"""
+function tradingpairs(xc::XchCache)::Vector{String}
+    return sort!(collect(keys(xc.pairstates)))
+end
 
 "Store one canonical websocket marketdata heartbeat timestamp in `xc.mc`."
 function setmarketdataheartbeat!(xc::XchCache, dt::DateTime)
@@ -478,9 +794,6 @@ function _routedbc(xc::XchCache, role::ExchangeRole)
     entry = xc.routing.routes[role]
     # lazily build and cache the adapter for this exchange
     if !haskey(xc.routecaches, entry.exchange)
-        if !isnothing(entry.authname)
-            throw(ArgumentError("route-level authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json."))
-        end
         xc.routecaches[entry.exchange] = _exchangecache(entry.exchange, xc.mc[:simmode])
     end
     return xc.routecaches[entry.exchange]
@@ -499,19 +812,19 @@ Configure exchange role routing on an `XchCache`.
 
 Example — Bybit for data, KrakenSpot for spot trading, KrakenFutures for futures:
 ```julia
-setrole!(xc, data_exchange, CryptoXch.EXCHANGE_BYBIT)
-setrole!(xc, trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT)
-setrole!(xc, trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES)
+setrole!(xc, data_exchange, Xch.EXCHANGE_BYBIT)
+setrole!(xc, trade_exchange_spot, Xch.EXCHANGE_KRAKENSPOT)
+setrole!(xc, trade_exchange_futures, Xch.EXCHANGE_KRAKENFUTURES)
 ```
 """
-function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString, authname::Union{Nothing, AbstractString}=nothing)
-    if !isnothing(authname)
-        throw(ArgumentError("setrole! authname is deprecated and no longer needed. Configure exactly one auth tuple per exchange in auth.json."))
-    end
-    setrole!(xc.routing, role, exchange, authname)
+function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString)
+    setrole!(xc.routing, role, exchange)
     # Evict stale cached adapter so it is rebuilt with the new auth on next use.
     delete!(xc.routecaches, _normalizeexchange(String(exchange)))
-    _setexchangecoinspath!(xc)
+    data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
+    xc.defaultquote = _defaultquote(data_ex)
+    EnvConfig.setpairquote!(xc.defaultquote)
+    _setexchangepath!(xc)
     return xc
 end
 
@@ -744,7 +1057,7 @@ function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType,
         event_type=event_type,
         event_time_utc=event_time,
         created_at_utc=created_at,
-        source_module="CryptoXch",
+        source_module="Xch",
         environment=string(Symbol(EnvConfig.configmode)),
         run_mode=tradelogrunmode(xc),
         run_id=tradelogrunid(xc),
@@ -1034,7 +1347,7 @@ function _tradelogwritefillbalancesnapshot!(xc::XchCache, trigger_event::TradeLo
         event_type=TradeLog.POSITION_SNAPSHOT,
         event_time_utc=event_time,
         created_at_utc=created_at,
-        source_module="CryptoXch",
+        source_module="Xch",
         environment=string(Symbol(EnvConfig.configmode)),
         run_mode=tradelogrunmode(xc),
         run_id=tradelogrunid(xc),
@@ -1250,7 +1563,7 @@ function closeorder(xc::XchCache, base::AbstractString; positionside::Symbol, li
     @assert side in (:long, :short) "closeorder positionside=$(positionside) must be :long or :short"
 
     baseup = uppercase(String(base))
-    symbol = symboltoken(xc, baseup, EnvConfig.cryptoquote; role=trade_exchange_spot)
+    symbol = symboltoken(xc, baseup, EnvConfig.pairquote; role=trade_exchange_spot)
     mod = _routedModule(xc, trade_exchange_spot)
     bc = _routedbc(xc, trade_exchange_spot)
 
@@ -1311,7 +1624,8 @@ _isleveraged(token) = !isnothing(token) && (length(token) > 2) && (token[end] in
 #region support
 
 validbase(xc::XchCache, base::AbstractString) =
-    (uppercase(base) != uppercase(EnvConfig.cryptoquote)) && validsymbol(xc, symboltoken(base))
+    (uppercase(base) != uppercase(EnvConfig.pairquote)) &&
+    validsymbol(xc, symboltoken(xc, base, EnvConfig.pairquote; role=data_exchange))
 
 removebase!(xc::XchCache, base) = delete!(xc.bases, base)
 removeallbases(xc::XchCache) = xc.bases = Dict()
@@ -1337,15 +1651,15 @@ function addbases!(xc::XchCache, bases, startdt, enddt)
     end
 end
 
-assetbases(xc::XchCache) = filter(!=(uppercase(EnvConfig.cryptoquote)), uppercase.(CryptoXch.balances(xc)[!, :coin]))
+assetbases(xc::XchCache) = filter(!=(uppercase(EnvConfig.pairquote)), uppercase.(Xch.balances(xc)[!, :coin]))
 
-symboltoken(basecoin, quotecoin=EnvConfig.cryptoquote) = isnothing(basecoin) ? nothing : uppercase(basecoin * quotecoin)
+symboltoken(basecoin, quotecoin=EnvConfig.pairquote) = isnothing(basecoin) ? nothing : uppercase(basecoin * quotecoin)
 
 """
 Resolve the exchange-specific symbol token for a pair on the routed exchange.
 Falls back to a concatenated symbol if the adapter cannot map the pair yet.
 """
-function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote; role::ExchangeRole=trade_exchange_spot)
+function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote; role::ExchangeRole=trade_exchange_spot)
     bc = _routedbc(xc, role)
     if isnothing(bc)
         return symboltoken(basecoin, quotecoin)
@@ -1382,13 +1696,13 @@ roundbase(base, qty) = base == "usdt" ? round(qty, digits=3) : round(qty, digits
 # TODO read base specific digits from binance and use them base specific
 
 onlyconfiguredsymbols(symbol) =
-    endswith(symbol, uppercase(EnvConfig.cryptoquote)) &&
-    !(uppercase(symbol[1:end-length(EnvConfig.cryptoquote)]) in baseignore)
+    endswith(symbol, uppercase(EnvConfig.pairquote)) &&
+    !(uppercase(symbol[1:end-length(EnvConfig.pairquote)]) in baseignore)
 
-"Returns pair of basecoin and quotecoin if quotecoin in `quotecoins` or equals `EnvConfig.cryptoquote` else `nothing` is returned"
+"Returns pair of basecoin and quotecoin if quotecoin in `quotecoins` or equals `EnvConfig.pairquote` else `nothing` is returned"
 function basequote(symbol)
     symbol = uppercase(symbol)
-    candidates = union(quotecoins, [uppercase(EnvConfig.cryptoquote)])
+    candidates = union(quotecoins, [uppercase(EnvConfig.pairquote)])
     range = nothing
     for qc in candidates
         range = findfirst(qc, symbol)
@@ -1421,7 +1735,7 @@ end
 Removes ohlcv data rows that are outside the date boundaries (nothing= no boundary) and adjusts ohlcv.ix to stay within the new data range.
 """
 function timerangecut!(xc::XchCache, startdt, enddt)
-    for ohlcv in CryptoXch.ohlcv(xc)
+    for ohlcv in Xch.ohlcv(xc)
         (verbosity >= 3) && println("before Ohlcv.timerangecut!($ohlcv, $startdt, $enddt)")
         Ohlcv.timerangecut!(ohlcv, startdt, enddt)
         (verbosity >= 3) && println("after Ohlcv.timerangecut!($ohlcv, $startdt, $enddt)")
@@ -1438,7 +1752,7 @@ function Base.iterate(xc::XchCache, currentdt=nothing)
         xc.currentdt = nothing
         return nothing
     else
-        CryptoXch.setcurrenttime!(xc, currentdt)  # also updates bases if current time is > last time of xc
+        Xch.setcurrenttime!(xc, currentdt)  # also updates bases if current time is > last time of xc
     end
     (verbosity >= 3) && println("iterate: utcnow=$(Dates.now(UTC)) startdt=$(xc.startdt), currentdt=$(xc.currentdt), enddt=$(xc.enddt)")
     return xc, currentdt
@@ -1600,8 +1914,8 @@ Subsequent calls are required to get > 1000 entries.
 Kline/Candlestick chart intervals (m -> minutes; h -> hours; d -> days; w -> weeks; M -> months):
 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
 """
-function _ohlcfromexchange(xc::XchCache, base::AbstractString, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
-    symbol = uppercase(base*cryptoquote)
+function _ohlcfromexchange(xc::XchCache, base::AbstractString, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", quotecoin=EnvConfig.pairquote)
+    symbol = uppercase(base*quotecoin)
     df = _exchangegetklines(xc, symbol; startDateTime=startdt, endDateTime=enddt, interval=interval)
     Ohlcv.addpivot!(df)
     return df
@@ -1753,7 +2067,7 @@ function downloadupdate!(xc::XchCache, bases, enddt, period=Dates.Year(10))
     for (ix, base) in enumerate(bases)
         # break
         (verbosity >= 2) && println("\n$(EnvConfig.now()) start updating $base ($ix of $count) request from $startdt until $enddt")
-        ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt, enddt)
+        ohlcv = Xch.cryptodownload(xc, base, "1m", startdt, enddt)
         Ohlcv.write(ohlcv)
     end
 end
@@ -1763,7 +2077,7 @@ function downloadallUSDT(xc::XchCache, enddt, period=Dates.Year(10), minimumdayq
     df = getUSDTmarket(xc)
     df = df[df.quotevolume24h .> minimumdayquotevolume , :]
     bases = sort!(setdiff(df[!, :basecoin], baseignore))
-    (verbosity >= 2) && println("$(EnvConfig.now())downloading the following bases bases with $(EnvConfig.cryptoquote) quote: $bases")
+    (verbosity >= 2) && println("$(EnvConfig.now())downloading the following bases bases with $(EnvConfig.pairquote) quote: $bases")
     downloadupdate!(xc, bases, enddt, period)
     return df
 end
@@ -1804,8 +2118,8 @@ function minimumbasequantity(xc::XchCache, base::AbstractString, price=(base in 
     if isnothing(price)
         return nothing
     end
-    sym = CryptoXch.symboltoken(base)
-    syminfo = CryptoXch.minimumqty(xc, sym)
+    sym = Xch.symboltoken(base)
+    syminfo = Xch.minimumqty(xc, sym)
     return isnothing(syminfo) ? nothing : 1.01 * max(syminfo.minbaseqty, syminfo.minquoteqty/price) # 1% more to avoid issues by rounding errors
 end
 
@@ -1813,8 +2127,8 @@ function minimumquotequantity(xc::XchCache, base::AbstractString, price=(base in
     if isnothing(price)
         return nothing
     end
-    sym = CryptoXch.symboltoken(base)
-    syminfo = CryptoXch.minimumqty(xc, sym)
+    sym = Xch.symboltoken(base)
+    syminfo = Xch.minimumqty(xc, sym)
     return isnothing(syminfo) ? nothing : 1.01 * max(syminfo.minbaseqty * price, syminfo.minquoteqty) # 1% more to avoid issues by rounding errors
 end
 
@@ -1835,7 +2149,7 @@ function _usdtmarkettickers(xc::XchCache; requestedbases=nothing)
     end
 
     rows = DataFrame(askprice=Float32[], bidprice=Float32[], lastprice=Float32[], quotevolume24h=Float32[], pricechangepercent=Float32[], symbol=String[])
-    quotetoken = uppercase(String(EnvConfig.cryptoquote))
+    quotetoken = uppercase(String(EnvConfig.pairquote))
     wanted = unique([uppercase(String(base)) for base in requestedbases if !isnothing(base) && (uppercase(String(base)) != quotetoken)])
     for base in wanted
         symbol = symboltoken(xc, base, quotetoken; role=data_exchange)
@@ -1893,8 +2207,21 @@ function getUSDTmarket(xc::XchCache; dt::DateTime=tradetime(xc), requestedbases=
 
     bq = [basequote(s) for s in usdtdf.symbol]  # create vector of pairs (basecoin, quotecoin)
     @assert length(bq) == size(usdtdf, 1)
-    usdtdf[!, :basecoin] = [isnothing(bqe) ? missing : bqe.basecoin for bqe in bq]
-    nbq = [!isnothing(bqe) && validbase(xc, bqe.basecoin) && (bqe.quotecoin == EnvConfig.cryptoquote) for bqe in bq]  # create binary vector as DataFrame filter
+    
+    # Normalize base coins using the exchange adapter's normalization (e.g., XBT→BTC for KrakenSpot/KrakenFutures)
+    function normalize_basecoin(xc_inner, basecoin_raw)
+        ex = _normalizeexchange(xc_inner.exchange)
+        if ex == EXCHANGE_KRAKENSPOT || ex == EXCHANGE_KRAKENFUTURES
+            # Both KrakenSpot and KrakenFutures use _normalizeasset for XBT→BTC, XDG→DOGE, etc.
+            ex_mod = _exchangeModule(xc_inner.exchange)
+            return ex_mod._normalizeasset(basecoin_raw)
+        end
+        return basecoin_raw
+    end
+    
+    normalized_bases = [isnothing(bqe) ? missing : normalize_basecoin(xc, bqe.basecoin) for bqe in bq]
+    usdtdf[!, :basecoin] = normalized_bases
+    nbq = [!ismissing(bc) && validbase(xc, bc) && (bqe.quotecoin == EnvConfig.pairquote) for (bc, bqe) in zip(normalized_bases, bq)]
     usdtdf = usdtdf[nbq, Not(:symbol)]
     return usdtdf
 end
@@ -1959,7 +2286,7 @@ end
 function _fallbackaccountcapacity(xc::XchCache)
     balancesdf = balances(xc; ignoresmallvolume=false)
     assets = portfolio!(xc, balancesdf; ignoresmallvolume=false)
-    quotecoin = uppercase(String(EnvConfig.cryptoquote))
+    quotecoin = uppercase(String(EnvConfig.pairquote))
     quotefree = 0.0
     if (:coin in names(assets)) && (:free in names(assets))
         for row in eachrow(assets)
@@ -1976,7 +2303,7 @@ function _fallbackaccountcapacity(xc::XchCache)
         available_short_quote=max(0.0, quotefree),
         initial_margin_quote=0.0,
         maintenance_margin_quote=0.0,
-        source="CryptoXch:portfolio_fallback",
+        source="Xch:portfolio_fallback",
     )
 end
 
@@ -2015,17 +2342,354 @@ function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::I
     return normalized
 end
 
+"Return the current account snapshot used by Trade loop orchestration."
+function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5)
+    balancesdf = balances(xc; ignoresmallvolume=false)
+    assetsdf = portfolio!(xc, balancesdf; ignoresmallvolume=false)
+    capacity = accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
+    quotecoin = uppercase(String(EnvConfig.pairquote))
+    free_quote = 0.0
+    if (:coin in names(assetsdf)) && (:free in names(assetsdf))
+        for row in eachrow(assetsdf)
+            if uppercase(String(row.coin)) == quotecoin
+                free_quote += max(0.0, Float64(row.free))
+            end
+        end
+    end
+    return (
+        balances=balancesdf,
+        assets=assetsdf,
+        capacity=capacity,
+        equity_quote=capacity.equity_quote,
+        free_quote=free_quote,
+        free_margin_quote=capacity.available_opening_quote,
+    )
+end
+
+"Return the current order state for one order id and optionally reconcile it to TradeLog."
+order_status(xc::XchCache, orderid; auditevent::Bool=true) = getorder(xc, orderid; auditevent=auditevent)
+
+_hascol(df::DataFrame, col::Symbol) = col in propertynames(df)
+
+function _ensuretradesexecutioncolumns!(tradesdf::DataFrame)::DataFrame
+    n = nrow(tradesdf)
+    if !_hascol(tradesdf, :longleverage)
+        tradesdf[!, :longleverage] = Vector{Union{Missing, UInt8}}(missing, n)
+    end
+    if !_hascol(tradesdf, :longamount)
+        tradesdf[!, :longamount] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :shortleverage)
+        tradesdf[!, :shortleverage] = Vector{Union{Missing, UInt8}}(missing, n)
+    end
+    if !_hascol(tradesdf, :shortamount)
+        tradesdf[!, :shortamount] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :longid)
+        tradesdf[!, :longid] = Vector{Union{Missing, String}}(missing, n)
+    end
+    if !_hascol(tradesdf, :longstatus)
+        tradesdf[!, :longstatus] = fill("none", n)
+    end
+    if !_hascol(tradesdf, :longunfilled)
+        tradesdf[!, :longunfilled] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :longpriceavg)
+        tradesdf[!, :longpriceavg] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :longmsgid)
+        tradesdf[!, :longmsgid] = Vector{Union{Missing, UInt8}}(missing, n)
+    end
+    if !_hascol(tradesdf, :shortid)
+        tradesdf[!, :shortid] = Vector{Union{Missing, String}}(missing, n)
+    end
+    if !_hascol(tradesdf, :shortstatus)
+        tradesdf[!, :shortstatus] = fill("none", n)
+    end
+    if !_hascol(tradesdf, :shortunfilled)
+        tradesdf[!, :shortunfilled] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :shortpriceavg)
+        tradesdf[!, :shortpriceavg] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :shortmsgid)
+        tradesdf[!, :shortmsgid] = Vector{Union{Missing, UInt8}}(missing, n)
+    end
+    if !_hascol(tradesdf, :postype)
+        tradesdf[!, :postype] = fill("flat", n)
+    end
+    if !_hascol(tradesdf, :posleverage)
+        tradesdf[!, :posleverage] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :posamount)
+        tradesdf[!, :posamount] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :quoteprice)
+        tradesdf[!, :quoteprice] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :maintmargin)
+        tradesdf[!, :maintmargin] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :equity)
+        tradesdf[!, :equity] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :balance)
+        tradesdf[!, :balance] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :freemargin)
+        tradesdf[!, :freemargin] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    if !_hascol(tradesdf, :freequote)
+        tradesdf[!, :freequote] = Vector{Union{Missing, Float32}}(missing, n)
+    end
+    return tradesdf
+end
+
+function _pairfromtradesrow(tradesdf::DataFrame, ix::Integer)
+    if _hascol(tradesdf, :pair)
+        pair = String(tradesdf[ix, :pair])
+        bq = basequote(pair)
+        !isnothing(bq) && return bq
+    end
+    if _hascol(tradesdf, :coin)
+        return (basecoin=uppercase(String(tradesdf[ix, :coin])), quotecoin=uppercase(String(EnvConfig.pairquote)))
+    end
+    error("trades row must provide :pair or :coin for request processing")
+end
+
+function _ordersidefromaction(action::Symbol)::String
+    if action in [:long_open, :short_close]
+        return "Buy"
+    end
+    return "Sell"
+end
+
+function _openorderremaining(orow)
+    baseqty = hasproperty(orow, :baseqty) ? Float64(orow.baseqty) : 0.0
+    executed = hasproperty(orow, :executedqty) ? Float64(orow.executedqty) : 0.0
+    return max(0.0, baseqty - executed)
+end
+
+function _matchingopenorder(xc::XchCache, base::AbstractString, side::AbstractString)
+    oo = getopenorders(xc, base)
+    size(oo, 1) == 0 && return nothing
+    for row in eachrow(oo)
+        st = hasproperty(row, :status) ? String(row.status) : ""
+        openstatus(st) || continue
+        s = hasproperty(row, :side) ? String(row.side) : ""
+        uppercase(s) == uppercase(side) || continue
+        return row
+    end
+    return nothing
+end
+
+function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct, quoteprice)
+    tradesdf[ix, :equity] = Float32(acct.equity_quote)
+    tradesdf[ix, :balance] = Float32(acct.free_quote)
+    tradesdf[ix, :freemargin] = Float32(acct.free_margin_quote)
+    tradesdf[ix, :freequote] = Float32(acct.free_quote)
+    if !isnothing(quoteprice) && !ismissing(quoteprice)
+        tradesdf[ix, :quoteprice] = Float32(quoteprice)
+    end
+    return nothing
+end
+
+function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
+    entry = log_trading_issue(xc, "Trading", message)
+    if action in [:long_open, :long_close]
+        tradesdf[ix, :longstatus] = "Rejected"
+        tradesdf[ix, :longmsgid] = entry.id
+    else
+        tradesdf[ix, :shortstatus] = "Rejected"
+        tradesdf[ix, :shortmsgid] = entry.id
+    end
+    return entry
+end
+
+"Synchronize one trades row's exchange feedback columns from current order ids."
+function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent::Bool=true)
+    @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
+    _ensuretradesexecutioncolumns!(tradesdf)
+
+    for (idcol, stcol, unfilledcol, avgcol, msgcol) in [
+        (:longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid),
+        (:shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsgid),
+    ]
+        oid = tradesdf[ix, idcol]
+        (ismissing(oid) || isnothing(oid)) && continue
+        info = getorder(xc, String(oid); auditevent=auditevent)
+        if isnothing(info)
+            tradesdf[ix, stcol] = "Missing"
+            continue
+        end
+        status = hasproperty(info, :status) ? String(info.status) : "Unknown"
+        tradesdf[ix, stcol] = status
+        if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
+            tradesdf[ix, unfilledcol] = Float32(max(0.0, Float64(info.baseqty) - Float64(info.executedqty)))
+        end
+        if hasproperty(info, :avgprice) && !ismissing(info.avgprice)
+            tradesdf[ix, avgcol] = Float32(info.avgprice)
+        end
+        if hasproperty(info, :rejectreason)
+            rr = String(info.rejectreason)
+            if !isempty(strip(rr)) && (uppercase(rr) != "NO ERROR")
+                entry = log_trading_issue(xc, exchange(xc), rr)
+                tradesdf[ix, msgcol] = entry.id
+            end
+        end
+    end
+    return tradesdf
+end
+
+"Evaluate and execute one row-level order request from the Trades DataFrame."
+function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
+    @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
+    _ensuretradesexecutioncolumns!(tradesdf)
+    acct = account_status(xc)
+
+    pair = _pairfromtradesrow(tradesdf, ix)
+    base = pair.basecoin
+    quotecoin = pair.quotecoin
+    labelval = _hascol(tradesdf, :tradelabel) ? tradesdf[ix, :tradelabel] : (_hascol(tradesdf, :label) ? tradesdf[ix, :label] : missing)
+    labelstr = ismissing(labelval) ? "ignore" : lowercase(String(Symbol(labelval)))
+    action = if labelstr in ["longopen", "longstrongopen"]
+        :long_open
+    elseif labelstr in ["longclose", "longstrongclose"]
+        :long_close
+    elseif labelstr in ["shortopen", "shortstrongopen"]
+        :short_open
+    elseif labelstr in ["shortclose", "shortstrongclose"]
+        :short_close
+    else
+        :none
+    end
+    action == :none && return (accepted=false, action=:none, reason="no actionable label")
+
+    limitcol = action in [:long_open, :long_close] ? :longopenlimit : :shortopenlimit
+    if action in [:long_close, :short_close]
+        limitcol = action == :long_close ? :longcloselimit : :shortcloselimit
+    end
+    amountcol = action in [:long_open, :long_close] ? :longamount : :shortamount
+    leveragecol = action in [:long_open, :long_close] ? :longleverage : :shortleverage
+    idcol = action in [:long_open, :long_close] ? :longid : :shortid
+    stcol = action in [:long_open, :long_close] ? :longstatus : :shortstatus
+    unfilledcol = action in [:long_open, :long_close] ? :longunfilled : :shortunfilled
+    avgcol = action in [:long_open, :long_close] ? :longpriceavg : :shortpriceavg
+
+    requested_limit = _hascol(tradesdf, limitcol) ? tradesdf[ix, limitcol] : missing
+    limitprice = (ismissing(requested_limit) || isnothing(requested_limit)) ? nothing : Float32(requested_limit)
+    requested_amount = _hascol(tradesdf, amountcol) ? tradesdf[ix, amountcol] : missing
+    leverage = (_hascol(tradesdf, leveragecol) && !ismissing(tradesdf[ix, leveragecol])) ? Int(tradesdf[ix, leveragecol]) : 0
+
+    balancesdf = acct.balances
+    freebase = 0.0
+    borrowedbase = 0.0
+    if _hascol(balancesdf, :coin)
+        bix = findfirst(==(base), uppercase.(String.(balancesdf[!, :coin])))
+        if !isnothing(bix)
+            freebase = _hascol(balancesdf, :free) ? Float64(balancesdf[bix, :free]) : 0.0
+            borrowedbase = _hascol(balancesdf, :borrowed) ? Float64(balancesdf[bix, :borrowed]) : 0.0
+        end
+    end
+
+    amount = if ismissing(requested_amount) || isnothing(requested_amount)
+        if action == :long_close
+            Float32(max(0.0, freebase))
+        elseif action == :short_close
+            Float32(max(0.0, borrowedbase))
+        else
+            0f0
+        end
+    else
+        Float32(requested_amount)
+    end
+
+    if !(amount > 0f0)
+        _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(amount) is not tradable for action=$(action) pair=$(base)-$(quotecoin)")
+        return (accepted=false, action=action, reason="amount_not_positive")
+    end
+
+    refprice = !isnothing(limitprice) ? Float32(limitprice) : (base in keys(xc.bases) ? Float32(currentprice(ohlcv(xc, base))) : 0f0)
+    minqty = isnothing(refprice) || (refprice <= 0f0) ? nothing : minimumbasequantity(xc, base, refprice)
+    if isnothing(minqty) || (amount < Float32(minqty))
+        _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(amount) below minimum qty $(minqty) for pair=$(base)-$(quotecoin)")
+        return (accepted=false, action=action, reason="below_minimum_qty")
+    end
+
+    if action == :long_open
+        quote_need = Float64(amount) * Float64(refprice)
+        if quote_need > acct.free_quote
+            _rejectedrequest!(xc, tradesdf, ix, action, "long open quote need $(quote_need) exceeds free quote $(acct.free_quote) for pair=$(base)-$(quotecoin)")
+            return (accepted=false, action=action, reason="insufficient_free_quote")
+        end
+    elseif action == :short_open
+        quote_need = Float64(amount) * Float64(refprice)
+        margin_need = leverage > 0 ? quote_need / max(1, leverage) : quote_need
+        if margin_need > acct.free_margin_quote
+            _rejectedrequest!(xc, tradesdf, ix, action, "short open margin need $(margin_need) exceeds free margin $(acct.free_margin_quote) for pair=$(base)-$(quotecoin)")
+            return (accepted=false, action=action, reason="insufficient_free_margin")
+        end
+    end
+
+    side = _ordersidefromaction(action)
+    oid = nothing
+    try
+        if action in [:long_open, :short_open]
+            existing = _matchingopenorder(xc, base, side)
+            if !isnothing(existing)
+                remaining = _openorderremaining(existing)
+                oid = changeorder(xc, String(existing.orderid); basequantity=Float32(remaining + Float64(amount)), limitprice=limitprice)
+            else
+                if action == :long_open
+                    oid = createbuyorder(xc, base; limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage))
+                else
+                    oid = createsellorder(xc, base; limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage))
+                end
+            end
+        elseif action == :long_close
+            oid = closeorder(xc, base; positionside=:long, limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage), reduceonly=true)
+        elseif action == :short_close
+            oid = closeorder(xc, base; positionside=:short, limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage), reduceonly=true)
+        end
+    catch err
+        entry = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
+        if action in [:long_open, :long_close]
+            tradesdf[ix, :longmsgid] = entry.id
+            tradesdf[ix, :longstatus] = "Error"
+        else
+            tradesdf[ix, :shortmsgid] = entry.id
+            tradesdf[ix, :shortstatus] = "Error"
+        end
+        return (accepted=false, action=action, reason="exchange_error", error=sprint(showerror, err))
+    end
+
+    if isnothing(oid)
+        _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for action=$(action) pair=$(base)-$(quotecoin)")
+        return (accepted=false, action=action, reason="missing_orderid")
+    end
+
+    tradesdf[ix, idcol] = String(oid)
+    tradesdf[ix, stcol] = "Submitted"
+    tradesdf[ix, unfilledcol] = amount
+    tradesdf[ix, avgcol] = missing
+    tradesdf[ix, :postype] = action in [:long_open, :long_close] ? "long" : "short"
+    tradesdf[ix, :posamount] = amount
+    tradesdf[ix, :posleverage] = leverage > 0 ? Float32(leverage) : missing
+    _apply_accountsnapshot!(tradesdf, ix, acct, refprice)
+    return (accepted=true, action=action, orderid=String(oid))
+end
+
 "Returns a DataFrame[:coin, :locked, :free, :borrowed, :accruedinterest] of wallet/portfolio balances"
 function balances(xc::XchCache; ignoresmallvolume=true)
     bdf = _exchangebalances(xc)
     if !isnothing(bdf)
-        select = [!(coin in baseignore) || (coin == EnvConfig.cryptoquote) for coin in bdf[!, :coin]]
+        select = [!(coin in baseignore) || (coin == EnvConfig.pairquote) for coin in bdf[!, :coin]]
         bdf = bdf[select, :]
     end
     if !isnothing(bdf) && (size(bdf, 1) > 0) && ignoresmallvolume
         delrows = []
         for ix in eachindex(bdf[!, :coin])
-            if bdf[ix, :coin] != EnvConfig.cryptoquote
+            if bdf[ix, :coin] != EnvConfig.pairquote
                 sym = symboltoken(bdf[ix, :coin])
                 syminfo = minimumqty(xc, sym)
                 if !validsymbol(xc, sym) || ((abs(bdf[ix, :free]) + abs(bdf[ix, :locked]) + abs(bdf[ix, :borrowed])) < 1.01 * syminfo.minbaseqty) # 1% more to avoid issues by rounding errors
@@ -2084,7 +2748,7 @@ Appends a balances DataFrame with the USDT value of the coin asset using usdtdf[
 function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=false), usdtdf=nothing; ignoresmallvolume=true)
     if isnothing(xc.currentdt)
         if isnothing(usdtdf)
-            quotetoken = uppercase(String(EnvConfig.cryptoquote))
+            quotetoken = uppercase(String(EnvConfig.pairquote))
             requestedbases = [uppercase(String(c)) for c in balancesdf[!, :coin] if uppercase(String(c)) != quotetoken]
             usdtdf = valuationUSDTmarket(xc, requestedbases)
         end
@@ -2095,7 +2759,7 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
         usdtprice = Float32[]
         portfoliodf = balancesdf[:, :]
         for bix in eachindex(portfoliodf[!, :coin])
-            if portfoliodf[bix, :coin] == EnvConfig.cryptoquote
+            if portfoliodf[bix, :coin] == EnvConfig.pairquote
                 push!(usdtprice, 1f0)
             else
                 if !validbase(xc, portfoliodf[bix, :coin])
@@ -2128,7 +2792,7 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
         for ix in eachindex(portfoliodf[!, :coin])
             coin = String(portfoliodf[ix, :coin])
             minbasequant = minimumbasequantity(xc, coin, portfoliodf[ix, :usdtprice])
-            is_quotecoin = (uppercase(coin) == uppercase(EnvConfig.cryptoquote)) || (coin in quotecoins)
+            is_quotecoin = (uppercase(coin) == uppercase(EnvConfig.pairquote)) || (coin in quotecoins)
             if !is_quotecoin && (isnothing(minbasequant) || ((abs(portfoliodf[ix, :free]) + abs(portfoliodf[ix, :locked]) + abs(portfoliodf[ix, :borrowed])) < minbasequant))
                 push!(delrows, ix)
             end
@@ -2199,7 +2863,7 @@ function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_labe
         settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     unregisteradaptiveorder!(xc, orderid)
-    cancelsymbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
+    cancelsymbol = symboltoken(xc, base, EnvConfig.pairquote; role=trade_exchange_spot)
     cancelled = _exchangecancelorder(xc, cancelsymbol, orderid)
     if !isnothing(cancelled)
         # Assume exchange-side cancel success when Kraken confirms CancelOrder.
@@ -2239,7 +2903,7 @@ Returns `nothing` in case order execution fails.
 function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0, reduceonly::Bool=false, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
     _asserttradeallowed(xc)
-    symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
+    symbol = symboltoken(xc, base, EnvConfig.pairquote; role=trade_exchange_spot)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
         settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
@@ -2281,7 +2945,7 @@ Returns `nothing` in case order execution fails.
 function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0, reduceonly::Bool=false, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
     _asserttradeallowed(xc)
-    symbol = symboltoken(xc, base, EnvConfig.cryptoquote; role=trade_exchange_spot)
+    symbol = symboltoken(xc, base, EnvConfig.pairquote; role=trade_exchange_spot)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
         settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
@@ -2555,7 +3219,7 @@ end
 
 _emptyassets()::DataFrame = DataFrame(coin=String31[], free=Float32[], locked=Float32[], marginfree=Float32[], marginlocked=Float32[], assetborrowed=Float32[], orderborrowed=Float32[], accruedinterest=Float32[])
 
-"Return an empty order dataframe with CryptoXch bookkeeping columns added."
+"Return an empty order dataframe with Xch bookkeeping columns added."
 function _emptyorders(exchange::AbstractString=EXCHANGE_BYBIT)::DataFrame
     df = _exchangeemptyorders(exchange)
     if !hasproperty(df, :marginleverage)

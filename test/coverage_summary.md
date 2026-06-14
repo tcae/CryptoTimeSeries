@@ -10,7 +10,7 @@ Overall executable lines covered: 4770 / 6513 (73.24%)
 |---|---:|---:|---:|
 | Bybit | 229 | 452 | 50.66% |
 | Classify | 511 | 554 | 92.24% |
-| CryptoXch | 646 | 907 | 71.22% |
+| Xch | 646 | 907 | 71.22% |
 | EnvConfig | 350 | 418 | 83.73% |
 | Features | 435 | 638 | 68.18% |
 | KrakenFutures | 134 | 367 | 36.51% |
@@ -30,9 +30,9 @@ Overall executable lines covered: 4770 / 6513 (73.24%)
 | Classify/src/Classify.jl | 365 | 391 | 93.35% |
 | Classify/test/lstm_phase2_training_test.jl | 1 | 1 | 100.00% |
 | Classify/test/setpartitions_test.jl | 5 | 5 | 100.00% |
-| CryptoXch/src/CryptoXch.jl | 612 | 873 | 70.10% |
-| CryptoXch/test/log_integration_test.jl | 16 | 16 | 100.00% |
-| CryptoXch/test/multileg_order_test.jl | 18 | 18 | 100.00% |
+| Xch/src/Xch.jl | 612 | 873 | 70.10% |
+| Xch/test/log_integration_test.jl | 16 | 16 | 100.00% |
+| Xch/test/multileg_order_test.jl | 18 | 18 | 100.00% |
 | EnvConfig/src/EnvConfig.jl | 243 | 311 | 78.14% |
 | EnvConfig/test/runtests.jl | 107 | 107 | 100.00% |
 | Features/src/Features.jl | 416 | 523 | 79.54% |

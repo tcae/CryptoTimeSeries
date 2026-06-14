@@ -37,7 +37,7 @@ const WORKSPACE_PACKAGES = [
 	"Bybit",
 	"KrakenSpot",
 	"KrakenFutures",
-	"CryptoXch",
+	"Xch",
 	"TradeLog",
 	"TradingStrategy",
 	"Trade",
@@ -67,10 +67,8 @@ end
 # Root test runner for complete workspace coverage across package suites.
 Pkg.test(PKGTEST_PACKAGES; coverage=COVERAGE_ARG)
 
-if "TradingStrategy" in TESTABLE_PACKAGES
-	@info "Testing TradingStrategy via local include fallback to avoid package sandbox path-resolution drift"
-	include(joinpath(@__DIR__, "..", "TradingStrategy", "test", "runtests.jl"))
-end
+@info "Testing TradingStrategy via local include fallback to avoid package sandbox path-resolution drift"
+include(joinpath(@__DIR__, "..", "TradingStrategy", "test", "runtests.jl"))
 
 include(joinpath(@__DIR__, "bounds_estimator_test.jl"))
 include(joinpath(@__DIR__, "trend_detector_cache_test.jl"))

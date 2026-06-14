@@ -1,7 +1,7 @@
 using Test
 using Dates
 using DataFrames
-using EnvConfig, Trade, TradingStrategy, Classify, CryptoXch, Targets
+using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
 "Test runtime used to validate Trade's mandatory strategy-runtime integration path."
 Base.@kwdef mutable struct FakeRuntime <: TradingStrategy.AbstractStrategyRuntime
@@ -23,7 +23,7 @@ end
 "Return injected snapshots and capture reconciliation inputs passed by Trade."
 function TradingStrategy.getsnapshots!(
     rt::FakeRuntime,
-    xc::CryptoXch.XchCache,
+    xc::Xch.XchCache,
     bases::AbstractVector{<:AbstractString},
     datetime::DateTime;
     reconciliation_by_base::AbstractDict{String, TradingStrategy.StrategyReconciliationInput}=Dict{String, TradingStrategy.StrategyReconciliationInput}(),
@@ -38,7 +38,7 @@ end
 @testset "Restricted base removal delegates to runtime" begin
     EnvConfig.init(EnvConfig.test)
 
-    tc = Trade.TradeCache(xc=CryptoXch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     fake = FakeRuntime()
@@ -51,8 +51,8 @@ end
 @testset "Runtime API advice path" begin
     EnvConfig.init(EnvConfig.test)
 
-    xc = CryptoXch.XchCache()
-    xc.mc[:simmode] = CryptoXch.nosimulation
+    xc = Xch.XchCache()
+    xc.mc[:simmode] = Xch.nosimulation
     tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
 
     @test !isnothing(Trade._strategyruntime(tc))
@@ -65,7 +65,7 @@ end
             TradingStrategy.StrategySnapshot(
                 base="BTC",
                 datetime=tc.xc.currentdt,
-                label=Targets.longbuy,
+                label=Targets.longopen,
                 long_openprice=100f0,
                 long_closeprice=110f0,
                 probability=0.75f0,
@@ -78,7 +78,7 @@ end
     tc.mc[:strategy_runtime] = fake
 
     assets = DataFrame(
-        coin=["BTC", EnvConfig.cryptoquote],
+        coin=["BTC", EnvConfig.pairquote],
         free=Float32[0.5f0, 1000f0],
         locked=Float32[0f0, 0f0],
         borrowed=Float32[0.2f0, 0f0],
@@ -91,11 +91,11 @@ end
     advice_by_label = Dict(ta.tradelabel => ta for ta in advices)
 
     @test length(advices) == 2
-    @test Targets.longbuy in labels
+    @test Targets.longopen in labels
     @test Targets.longclose in labels
-    @test advice_by_label[Targets.longbuy].source == :tradingstrategy
-    @test advice_by_label[Targets.longbuy].relativeamount == 1f0
-    @test advice_by_label[Targets.longbuy].price == 100f0
+    @test advice_by_label[Targets.longopen].source == :tradingstrategy
+    @test advice_by_label[Targets.longopen].relativeamount == 1f0
+    @test advice_by_label[Targets.longopen].price == 100f0
     @test advice_by_label[Targets.longclose].relativeamount == 1f0
     @test advice_by_label[Targets.longclose].price == 110f0
 

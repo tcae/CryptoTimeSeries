@@ -1,11 +1,11 @@
 
-module CryptoXchTest
+module XchTest
 using Dates, DataFrames
 
-using Ohlcv, EnvConfig, CryptoXch, Bybit
+using Ohlcv, EnvConfig, Xch, Bybit
 
 function balances_test()
-    result = CryptoXch.balances(xc)
+    result = Xch.balances(xc)
     display(result)
     display(EnvConfig.bases)
     display(EnvConfig.trainingbases)
@@ -14,7 +14,7 @@ end
 
 # EnvConfig.init(test)
 EnvConfig.init(production)
-xc = CryptoXch.XchCache()
+xc = Xch.XchCache()
 # balances_test()
 
 userdataChannel = Channel(10)
@@ -33,7 +33,7 @@ enddt = DateTime("2020-09-11T22:49:00")
 function initialbtcdownload(xc)
     startdt = DateTime("2022-01-02T22:45:03")
     enddt = DateTime("2022-01-02T22:49:35")
-    ohlcv = CryptoXch.cryptodownload(xc, "btc", "1m", startdt, enddt)
+    ohlcv = Xch.cryptodownload(xc, "btc", "1m", startdt, enddt)
     return ohlcv
 end
 
@@ -42,7 +42,7 @@ end
 function testorder(xc, price, basevol)
     oo = nothing
     try
-        oo = CryptoXch.createbuyorder("btc", limitprice=price, basequantity=basevol, maker=false)
+        oo = Xch.createbuyorder("btc", limitprice=price, basequantity=basevol, maker=false)
     catch err
         @error err
     end
@@ -57,18 +57,18 @@ allbb = Bybit.get24h(xc.bc)
 println(describe(allbb, :all))
 # println(allbb)
 
-allusdt = CryptoXch.getUSDTmarket(xc)
+allusdt = Xch.getUSDTmarket(xc)
 println(describe(allusdt, :all))
 # println(allusdt)
 
-bdf = CryptoXch.balances(xc)
+bdf = Xch.balances(xc)
 println("balances():")
 println(bdf)
-bdf = CryptoXch.portfolio!(xc, bdf, allusdt)
+bdf = Xch.portfolio!(xc, bdf, allusdt)
 println("portfolio():")
 println(bdf)
 
-bdf = CryptoXch.portfolio!(xc)
+bdf = Xch.portfolio!(xc)
 println("portfolio():")
 println(bdf)
 

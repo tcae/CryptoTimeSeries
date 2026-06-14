@@ -34,7 +34,7 @@ EnvConfig.init(production)  # test production
     # BybitSim: TestOhlcv symbols must provide klines and support simulated trading.
     bc_sim = Bybit.BybitCache()
     Bybit._init_simulation!(bc_sim)
-    Bybit.seedportfolio!(bc_sim, EnvConfig.cryptoquote, 1_000f0)
+    Bybit.seedportfolio!(bc_sim, EnvConfig.pairquote, 1_000f0)
 
     sdt = DateTime("2025-01-05T00:00:00")
     edt = DateTime("2025-01-05T01:00:00")

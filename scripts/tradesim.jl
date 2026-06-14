@@ -1,5 +1,5 @@
 """
-tradesim.jl — Backtest simulation script using GainSegment config 046,
+tradesim.jl — Backtest simulation script using a selected TrendDetector config,
 followed by a performance report.
 
 Configuration is defined in the CONFIG block below. Adjust the parameters
@@ -14,7 +14,7 @@ Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using Dates, Statistics, Printf, Logging
 using DataFrames
-using EnvConfig, TradingStrategy, Trade, Classify, CryptoXch, Bybit, Ohlcv, Features, Targets
+using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, Targets
 
 include(joinpath(@__DIR__, "optimizationconfigs.jl"))
 
@@ -24,13 +24,13 @@ include(joinpath(@__DIR__, "optimizationconfigs.jl"))
 
 # Exchange used for the simulation exchange backend. BybitSim keeps the exchange
 # explicit while still allowing the common trading code path to run.
-const EXCHANGE = CryptoXch.EXCHANGE_BYBITSIM
+const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 
 # Backtest time range (UTC).
 const BACKTEST_STARTDT = DateTime("2025-01-01T00:00:00")
 const BACKTEST_ENDDT   = DateTime("2025-08-01T00:00:00")
 
-# Trade mode during backtest: Trade.buysell, Trade.sellonly, Trade.notrade.
+# Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
 const TRADE_MODE = Trade.buysell
 
 # Whitelist of base coins to consider for trading during the simulation.
@@ -56,13 +56,26 @@ const MAX_ASSET_FRACTION = 0.1f0
 const BUY_OPEN_THRESHOLD = 0.4f0
 
 # GainSegment strategy parameters used by the backtest.
-const CONFIG046_STRATEGY = tradingstrategy03()  # GainSegment(maxwindow=240, algorithm=gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-CONFIG046_STRATEGY.openthreshold = BUY_OPEN_THRESHOLD
-const CONFIG046_NAME = "046"
-const MODEL046_FOLDER = "Trend-046-training"
+const CONFIG_REF = get(ENV, "TRADESIM_CONFIG_REF", "046")
+const CONFIG = trenddetectorconfig(CONFIG_REF)
+const CONFIG_NAME = String(CONFIG.configname)
+const CONFIG_STRATEGY = TradingStrategy.GainSegment(
+    maxwindow=CONFIG.tradingstrategy.maxwindow,
+    openthreshold=BUY_OPEN_THRESHOLD,
+    closethreshold=CONFIG.tradingstrategy.closethreshold,
+    algorithm=CONFIG.tradingstrategy.algorithm,
+    makerfee=CONFIG.tradingstrategy.makerfee,
+    takerfee=CONFIG.tradingstrategy.takerfee,
+    buygain=CONFIG.tradingstrategy.buygain,
+    sellgain=CONFIG.tradingstrategy.sellgain,
+    limitreduction=CONFIG.tradingstrategy.limitreduction,
+    minpricedelta=CONFIG.tradingstrategy.minpricedelta,
+    max_classify_staleness_minutes=CONFIG.tradingstrategy.max_classify_staleness_minutes,
+)
+const MODEL_FOLDER = trendconfigfolder(CONFIG, "training")
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = "tradesim-" * CONFIG046_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
+const LOG_SUBFOLDER = "tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
 
 function backtest_bounds_from_env(default_start::DateTime, default_end::DateTime)
@@ -97,7 +110,7 @@ function normalize_whitelist(entries, quote_coin::AbstractString)
 end
 
 "Seed the simulation quote-currency balance in the exchange backend cache."
-function seed_quote_balance!(xc::CryptoXch.XchCache, quote_coin::AbstractString, amount::Real)
+function seed_quote_balance!(xc::Xch.XchCache, quote_coin::AbstractString, amount::Real)
     isnothing(xc.bc) && error("cannot seed quote balance: exchange cache is not initialized")
     if applicable(Bybit.seedportfolio!, xc.bc, quote_coin, amount)
         Bybit.seedportfolio!(xc.bc, quote_coin, amount)
@@ -107,14 +120,14 @@ function seed_quote_balance!(xc::CryptoXch.XchCache, quote_coin::AbstractString,
 end
 
 "Ensure the simulation starts with at least `minimum_free` quote balance."
-function ensure_quote_budget!(xc::CryptoXch.XchCache, quote_coin::AbstractString, minimum_free::Real)
+function ensure_quote_budget!(xc::Xch.XchCache, quote_coin::AbstractString, minimum_free::Real)
     q = uppercase(String(quote_coin))
-    balancesdf = CryptoXch.balances(xc, ignoresmallvolume=false)
+    balancesdf = Xch.balances(xc, ignoresmallvolume=false)
     qix = size(balancesdf, 1) > 0 ? findfirst(==(q), uppercase.(String.(balancesdf[!, :coin]))) : nothing
     current_free = isnothing(qix) ? 0.0 : Float64(balancesdf[qix, :free])
     if current_free + 1e-6 < Float64(minimum_free)
         seed_quote_balance!(xc, q, minimum_free)
-        balancesdf = CryptoXch.balances(xc, ignoresmallvolume=false)
+        balancesdf = Xch.balances(xc, ignoresmallvolume=false)
         qix = size(balancesdf, 1) > 0 ? findfirst(==(q), uppercase.(String.(balancesdf[!, :coin]))) : nothing
         reseeded_free = isnothing(qix) ? 0.0 : Float64(balancesdf[qix, :free])
         @assert reseeded_free + 1e-6 >= Float64(minimum_free) "totalusdt seed $(q) budget is insufficient after reseed; expected >= $(minimum_free), got $(reseeded_free)"
@@ -124,34 +137,35 @@ function ensure_quote_budget!(xc::CryptoXch.XchCache, quote_coin::AbstractString
     end
 end
 
-"Runtime classifier wrapper for Trend 046 inference inside tradesim."
-mutable struct Trend046RuntimeClassifier <: Classify.AbstractClassifier
+"Runtime classifier wrapper for the selected TrendDetector config inside tradesim."
+mutable struct TrendConfigRuntimeClassifier <: Classify.AbstractClassifier
+    cfg::NamedTuple
     bc::Dict{AbstractString, NamedTuple}
     nn::Classify.NN
     cfgid::Int
-    function Trend046RuntimeClassifier(nn::Classify.NN)
-        new(Dict{AbstractString, NamedTuple}(), nn, 1)
+    function TrendConfigRuntimeClassifier(cfg::NamedTuple, nn::Classify.NN)
+        new(cfg, Dict{AbstractString, NamedTuple}(), nn, 1)
     end
 end
 
 "Register one base in the runtime classifier and initialize its feature config."
-function Classify.addbase!(cl::Trend046RuntimeClassifier, ohlcv::Ohlcv.OhlcvData)
-    f6 = trendf6config09()
+function Classify.addbase!(cl::TrendConfigRuntimeClassifier, ohlcv::Ohlcv.OhlcvData)
+    f6 = deepcopy(cl.cfg.featconfig)
     Features.setbase!(f6, ohlcv, usecache=true)
     cl.bc[ohlcv.base] = (ohlcv=ohlcv, f6=f6)
 end
 
 "Update all runtime feature states before requesting advice."
-function Classify.supplement!(cl::Trend046RuntimeClassifier)
+function Classify.supplement!(cl::TrendConfigRuntimeClassifier)
     for basecfg in values(cl.bc)
         Features.supplement!(basecfg.f6)
     end
 end
 
-Classify.requiredminutes(::Trend046RuntimeClassifier)::Integer = max(Features.requiredminutes(trendf6config09()), 2)
+Classify.requiredminutes(cl::TrendConfigRuntimeClassifier)::Integer = max(Features.requiredminutes(cl.cfg.featconfig), 2)
 
 "Return one trade advice at dt, or nothing when data/features are insufficient."
-function Classify.advice(cl::Trend046RuntimeClassifier, base::AbstractString, dt::DateTime; investment::Union{Nothing, Classify.TradeAdvice}=nothing)::Union{Nothing, Classify.TradeAdvice}
+function Classify.advice(cl::TrendConfigRuntimeClassifier, base::AbstractString, dt::DateTime; investment::Union{Nothing, Classify.TradeAdvice}=nothing)::Union{Nothing, Classify.TradeAdvice}
     haskey(cl.bc, base) || return nothing
     basecfg = cl.bc[base]
     fdf = Features.features(basecfg.f6, dt, dt)
@@ -165,24 +179,23 @@ function Classify.advice(cl::Trend046RuntimeClassifier, base::AbstractString, dt
     return Classify.TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
 end
 
-"Load Trend 046 classifier artifacts and return a runtime classifier instance."
-function loadtrend046classifier(model_folder::AbstractString)::Trend046RuntimeClassifier
-    cfg046 = mk046config()
-    nnstub = cfg046.classifiermodel(Features.featurecount(cfg046.featconfig), Targets.uniquelabels(cfg046.targetconfig), "mix")
-    for folder in unique([String(model_folder), "Trend-046-training"])
+"Load the selected TrendDetector classifier artifacts and return a runtime classifier instance."
+function loadtrendclassifier(cfg::NamedTuple; model_folder::AbstractString=trendconfigfolder(cfg, "training"), training_folder::AbstractString=trendconfigfolder(cfg, "training"))::TrendConfigRuntimeClassifier
+    nnstub = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), "mix")
+    for folder in unique([String(model_folder), String(training_folder)])
         EnvConfig.setlogpath(folder)
         nnpath = Classify.nnfilename(nnstub.fileprefix)
         if isfile(nnpath)
             try
                 nn = Classify.loadnn(nnstub.fileprefix)
-                return Trend046RuntimeClassifier(nn)
+                return TrendConfigRuntimeClassifier(cfg, nn)
             catch err
                 shorterr = sprint(showerror, err)
-                error("TrendDetector 046 classifier exists but could not be loaded: nnpath=$nnpath. Cause=$shorterr. Likely classifier artifact compatibility mismatch (Flux/Optimisers/BSON versions).")
+                error("TrendDetector classifier exists but could not be loaded: nnpath=$nnpath. Cause=$shorterr. Likely classifier artifact compatibility mismatch (Flux/Optimisers/BSON versions).")
             end
         end
     end
-    error("TrendDetector 046 classifier file not found for fileprefix=$(nnstub.fileprefix), checked folders=[$(model_folder), Trend-046-training]")
+    error("TrendDetector classifier file not found for fileprefix=$(nnstub.fileprefix), checked folders=[$(model_folder), $(training_folder)]")
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +220,7 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
     co = cache.xc.closedorders
     println()
     println("=" ^ 60)
-    println("  BACKTEST PERFORMANCE REPORT — config $CONFIG046_NAME")
+    println("  BACKTEST PERFORMANCE REPORT — config $CONFIG_NAME")
     println("  Period : $(Dates.format(startdt, "yyyy-mm-dd")) → $(Dates.format(enddt, "yyyy-mm-dd"))")
     println("=" ^ 60)
 
@@ -403,9 +416,9 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 
 EnvConfig.init(test)  # test mode → cryptoxchsim, no live credentials needed
-EnvConfig.cryptoquote = QUOTE_COIN
+EnvConfig.setpairquote!(QUOTE_COIN)
 classifier = try
-    loadtrend046classifier(MODEL046_FOLDER)
+    loadtrendclassifier(CONFIG; model_folder=MODEL_FOLDER)
 catch err
     println(stderr, "$(EnvConfig.now()): ERROR failed to load configured classifier: $(sprint(showerror, err))")
     println(stderr, "$(EnvConfig.now()): tradesim aborted")
@@ -413,11 +426,11 @@ catch err
 end
 EnvConfig.setdebugpath(LOG_SUBFOLDER)
 
-CryptoXch.verbosity = 1
+Xch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 3
 
-println("$(EnvConfig.now()): starting tradesim with config=$CONFIG046_NAME")
+println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME")
 println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
@@ -429,7 +442,7 @@ run_startdt, run_enddt = effective_startdt, effective_enddt
 # BUILD TRADE CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
-xc = CryptoXch.XchCache(;
+xc = Xch.XchCache(;
     startdt  = run_startdt,
     enddt    = run_enddt,
     exchange = EXCHANGE,
@@ -439,10 +452,10 @@ cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
-# Apply config 046 strategy parameters.
-Trade.apply_tradingstrategy!(cache, CONFIG046_STRATEGY;
+# Apply the selected TrendDetector strategy parameters.
+Trade.apply_tradingstrategy!(cache, CONFIG_STRATEGY;
     strategy_engine=:getgainsalgo,
-    source="tradesim:$CONFIG046_NAME")
+    source="tradesim:$CONFIG_NAME")
 
 # Override whitelist and risk parameters.
 cache.mc[:whitelistcoins]   = whitelist
@@ -451,20 +464,17 @@ cache.mc[:usenewtrade]      = false
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG046_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
+println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
 println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")
 println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
 
-preloaded = Trade.read!(cache, run_startdt)
-isnothing(preloaded) && error("failed to preload trade cache at start datetime=$run_startdt")
-
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-Trade.run_backtest!(cache; skip_init=true)
+Trade.run_backtest!(cache)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PERFORMANCE REPORT
@@ -474,5 +484,5 @@ backtest_report(cache, run_startdt, run_enddt)
 
 # Persist order log separately from other simulation artifacts.
 EnvConfig.setdebugpath(ORDERS_SUBFOLDER)
-CryptoXch.writeorders(cache.xc)
+Xch.writeorders(cache.xc)
 println("$(EnvConfig.now()): saved simulation orders to $(EnvConfig.logfolder())")

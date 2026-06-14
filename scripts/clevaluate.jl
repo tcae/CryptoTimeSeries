@@ -11,7 +11,7 @@ Evaluates Classifers of subtype AbstractClassifier
 module ClEvaluate
 
 using Test, Dates, Logging, CSV, DataFrames, Statistics
-using EnvConfig, Classify, CryptoXch, Ohlcv, Trade
+using EnvConfig, Classify, Xch, Ohlcv, Trade
 
 
 EnvConfig.init(training)
@@ -21,7 +21,7 @@ Ohlcv.verbosity = 1
 EnvConfig.verbosity = 2
 Classify.verbosity = 3
 
-xc = CryptoXch.XchCache()
+xc = Xch.XchCache()
 tcdf, assets = Trade.assetsconfig!(Trade.TradeCache(xc=xc))
 
 # classifiertypes = [Classify.Classifier011, Classify.Classifier014]
@@ -38,7 +38,7 @@ classifierstring = join([split(string(cls), ".")[end] for cls in classifiertypes
 EnvConfig.setlogpath("$(Dates.format(Dates.now(), "yymmdd"))-$(classifierstring)_24x60_$(Dates.format(startdt, "yymmddTHHMM"))_$(Dates.format(enddt, "yymmddTHHMM"))")
 # coins = ["BTC", "ETH", "XRP", "ADA", "GOAT", "DOGE", "SOL", "APEX", "MNT", "ONDO", "LINK", "POPCAT", "PEPE", "STETH", "FTM", "VIRTUAL", "HBAR"]
 println(tcdf)
-coins = tcdf[tcdf[!, :buyenabled] .== true, :basecoin]
+coins = tcdf[tcdf[!, :openenabled] .== true, :basecoin]
 coins = sort(coins)
 # coins = ["ADA"]
 for cl in classifiertypes

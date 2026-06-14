@@ -15,7 +15,7 @@ applyTo: '*.jl'
 - organize code into modules and packages for better maintainability
 - the following workspace local packages should be maintained and build the architecture of CryptoTimeSeries:
     - EnvConfig - for environment configuration management and utilities (e.g., loading environment variables, managing configuration files). It is not dependent from other packages of the workspace
-    - CryptoXch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project and provides also a simulation mode that uses historic OHLCV (open, close high, low, volume) data. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
+    - Xch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project and provides also a simulation mode that uses historic OHLCV (open, close high, low, volume) data. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
     - Ohlcv - for handling OHLCV data structures and related utilities 
     - Features - for features calculation used to train tading signals 
     - Targets - for target calculation used to train trading signals 
@@ -31,6 +31,7 @@ applyTo: '*.jl'
 - within a package place the module in the src subfolder of the package and test files in the test subfolder of the package 
 - write performance-critical code in a way that is easy to optimize later
 - follow the conventions for error handling using `try`, `catch`, and `throw`
+- use asserts instead of if then else guards for consistency checks. It is preferable to identify a logic implementation issues early via failure than to hide them via compensation or fallback mechanisms.
 - use the Test module with `@test` and `@testset` macros for writing unit tests
 - in the layered architecture use results of lower level tests as the basis for higher level tests, e.g.
   - test the Ohlcv package first and use the results of these tests to test the Features package, 

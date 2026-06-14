@@ -150,6 +150,17 @@ function testtableio()
     end
 end
 
+function testpairquote()
+    oldpairquote = EnvConfig.pairquote
+    try
+        @test EnvConfig.setpairquote!("usd") == "USD"
+        @test EnvConfig.pairquote == "USD"
+    finally
+        EnvConfig.setpairquote!(oldpairquote)
+        @test EnvConfig.pairquote == oldpairquote
+    end
+end
+
 @testset "Config tests" begin
 
 EnvConfig.verbosity = 3
@@ -158,8 +169,10 @@ testauthentication()
 testauthexchangehelpers()
 testconfig()
 testtableio()
+testpairquote()
 
 @test EnvConfig.datetimeformat == "yymmdd HH:MM"
+@test basename(EnvConfig.tradingfolder) == "crypto"
 # @test EnvConfig.datafile("btc_OHLCV", "_df.csv") == "/home/tor/crypto/Features/btc_OHLCV_df.csv"
 
 

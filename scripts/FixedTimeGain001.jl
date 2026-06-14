@@ -17,7 +17,7 @@ classes: binary longbuy yes vs no (=longclose) with hysteresis using likelihood 
 """
 module FixedTimeGain001
 using Test, Dates, Logging, CSV, DataFrames, Statistics, MLUtils
-using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets
+using EnvConfig, Classify, Xch, Ohlcv, Features, Targets
 
 allregressionfeatures() = [join(["rw", rw, rp], "_") for rw in [5, 15, 60, 4*60] for rp in ["grad", "regry"]] # see Features.regressionwindows005 and Features.savedregressionproperties for all options
 popularminmaxfeatures() = [join(["mm", mmw, rp], "_") for mmw in [4*60] for rp in Features.minmaxproperties] # see Features.regressionwindows005 and Features.savedregressionproperties for all options
@@ -25,8 +25,8 @@ popularvolumefeatures() = [join(["rv", sw, lw], "_") for (sw, lw) in [(5, 24*60)
 
 function calcfeatures(base::AbstractString, startdt::DateTime, enddt::DateTime, f5::Features.AbstractFeatures)
     println("$(EnvConfig.now()) loading $base") 
-    xc = CryptoXch.XchCache()
-    ohlcv = CryptoXch.cryptodownload(xc, base, "1m", startdt, enddt)
+    xc = Xch.XchCache()
+    ohlcv = Xch.cryptodownload(xc, base, "1m", startdt, enddt)
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
 
     println("$(EnvConfig.now()) feature calculation")
@@ -50,7 +50,7 @@ function calctargets(f5::Features.AbstractFeatures, fdg::Targets.AbstractTargets
     println("$(EnvConfig.now()) target calculation fromm $(fot[begin]) until $(fot[end])")
     Targets.setbase!(fdg, ohlcv)
     # targets = Targets.labels(fdg, fot[begin], fot[end])
-    targets = Targets.longbuybinarytargets(fdg, fot[begin], fot[end])
+    targets = Targets.longopenbinarytargets(fdg, fot[begin], fot[end])
     @assert size(features, 1) == length(targets) "size(features, 1)=$(size(features, 1)) != length(targets)=$(length(targets))"
     print("Total ")
     Targets.labeldistribution(targets)
@@ -76,7 +76,7 @@ function sinetest()
     enddt = startdt + Day(100) - Minute(1)
     requestedfeatures = vcat(allregressionfeatures(), popularminmaxfeatures(), popularvolumefeatures())
     f5 = Features.Features005(requestedfeatures)
-    fdg = Targets.FixedDistanceGain(30, Targets.thresholds((longbuy=0.1, longhold=0.005, shorthold=-0.005, shortbuy=-0.1)))
+    fdg = Targets.FixedDistanceGain(30, Targets.thresholds((longopen=0.1, longhold=0.005, shorthold=-0.005, shortopen=-0.1)))
     features = calcfeatures("SINE", startdt, enddt, f5)
     targets = calctargets(f5, fdg)
     # println("targets=$(fdg.df[1:300, :])")
@@ -116,7 +116,7 @@ function BTCtest()
     f5 = Features.Features005(requestedfeatures)
     features = calcfeatures("BTC", startdt, enddt, f5)
     for (window, lb) in [(60, 0.005), (60, 0.01), (60, 0.02), (4*60, 0.01), (4*60, 0.02), (4*60, 0.05)]
-        fdg = Targets.FixedDistanceGain(window, Targets.thresholds((longbuy=lb, longhold=0.0005, shorthold=-0.0005, shortbuy=-0.01)))
+        fdg = Targets.FixedDistanceGain(window, Targets.thresholds((longopen=lb, longhold=0.0005, shorthold=-0.0005, shortopen=-0.01)))
         targets = calctargets(f5, fdg)
         # println("targets=$(fdg.df[1:300, :])")
 
@@ -184,7 +184,7 @@ EnvConfig.init(production)
 # EnvConfig.init(test)
 # EnvConfig.init(training)
 Ohlcv.verbosity = 3
-CryptoXch.verbosity = 3
+Xch.verbosity = 3
 Features.verbosity = 3
 Targets.verbosity = 2
 EnvConfig.verbosity = 3

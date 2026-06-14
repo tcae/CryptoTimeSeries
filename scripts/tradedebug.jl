@@ -23,7 +23,7 @@ Pkg.activate(joinpath(@__DIR__), io=devnull)
 using Dates
 using DataFrames
 using CSV
-using CryptoXch
+using Xch
 using EnvConfig
 
 function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing, AbstractString}=nothing)
@@ -63,26 +63,26 @@ function _argint(args::Vector{String}, key::AbstractString, default::Int)::Int
 end
 
 function _resolve_exchange(raw::Union{Nothing, AbstractString})::String
-    isnothing(raw) && return CryptoXch.EXCHANGE_KRAKENSPOT
+    isnothing(raw) && return Xch.EXCHANGE_KRAKENSPOT
     key = lowercase(strip(String(raw)))
     aliases = Dict(
-        "krakenspot" => CryptoXch.EXCHANGE_KRAKENSPOT,
-        "krakenfutures" => CryptoXch.EXCHANGE_KRAKENFUTURES,
-        "bybit" => CryptoXch.EXCHANGE_BYBIT,
+        "krakenspot" => Xch.EXCHANGE_KRAKENSPOT,
+        "krakenfutures" => Xch.EXCHANGE_KRAKENFUTURES,
+        "bybit" => Xch.EXCHANGE_BYBIT,
     )
     haskey(aliases, key) || error("unsupported xch=$(raw). Expected krakenspot|krakenfutures|bybit")
     return aliases[key]
 end
 
 function _invalidate_openorders_cache!(exchange::String)
-    if exchange == CryptoXch.EXCHANGE_KRAKENSPOT
+    if exchange == Xch.EXCHANGE_KRAKENSPOT
         try
-            CryptoXch.KrakenSpot._invalidate_openorders_cache!()
+            Xch.KrakenSpot._invalidate_openorders_cache!()
         catch
         end
-    elseif exchange == CryptoXch.EXCHANGE_KRAKENFUTURES
+    elseif exchange == Xch.EXCHANGE_KRAKENFUTURES
         try
-            CryptoXch.KrakenFutures._invalidate_openorders_cache!()
+            Xch.KrakenFutures._invalidate_openorders_cache!()
         catch
         end
     end
@@ -109,7 +109,7 @@ function _covered_qty(oo::AbstractDataFrame, symbol::AbstractString, side::Abstr
     wanted_side = uppercase(String(side))
     total = 0f0
     for orow in eachrow(oo)
-        CryptoXch.openstatus(String(orow.status)) || continue
+        Xch.openstatus(String(orow.status)) || continue
         String(orow.symbol) == String(symbol) || continue
         uppercase(String(orow.side)) == wanted_side || continue
         if !isnothing(require_leverage)
@@ -120,12 +120,12 @@ function _covered_qty(oo::AbstractDataFrame, symbol::AbstractString, side::Abstr
     return total
 end
 
-function _safe_min_qty(xc::CryptoXch.XchCache, base::AbstractString, usdtprice::Real)::Float32
+function _safe_min_qty(xc::Xch.XchCache, base::AbstractString, usdtprice::Real)::Float32
     if !(usdtprice > 0)
         return 0f0
     end
     try
-        q = CryptoXch.minimumbasequantity(xc, base, Float32(usdtprice))
+        q = Xch.minimumbasequantity(xc, base, Float32(usdtprice))
         return isnothing(q) ? 0f0 : Float32(q)
     catch
         return 0f0
@@ -150,33 +150,33 @@ function main(args::Vector{String})
     refresh = _argbool(args, "refresh", true)
 
     EnvConfig.init(EnvConfig.production)
-    EnvConfig.cryptoquote = quote_coin
-    CryptoXch.verbosity = 1
+    EnvConfig.setpairquote!(quote_coin)
+    Xch.verbosity = 1
 
     println("$(EnvConfig.now()): tradedebug start (READ-ONLY)")
     println("$(EnvConfig.now()): exchange=$(exchange) quote=$(quote_coin) maxassetfraction=$(maxassetfraction) refresh=$(refresh)")
 
-    xc = CryptoXch.XchCache(exchange=exchange)
+    xc = Xch.XchCache(exchange=exchange)
 
     if refresh
         _invalidate_openorders_cache!(exchange)
     end
 
     balances = try
-        CryptoXch.balances(xc; ignoresmallvolume=false)
+        Xch.balances(xc; ignoresmallvolume=false)
     catch err
         println(stderr, "$(EnvConfig.now()): failed to fetch balances (credentials/private access issue): $(sprint(showerror, err))")
         rethrow(err)
     end
 
-    assets = CryptoXch.portfolio!(xc, balances; ignoresmallvolume=false)
-    oo = CryptoXch.getopenorders(xc)
+    assets = Xch.portfolio!(xc, balances; ignoresmallvolume=false)
+    oo = Xch.getopenorders(xc)
 
     if !(:isLeverage in names(oo))
         oo.isLeverage = [_orderisleverage(r) for r in eachrow(oo)]
     end
 
-    q = uppercase(String(EnvConfig.cryptoquote))
+    q = uppercase(String(EnvConfig.pairquote))
     total_usdt = size(assets, 1) == 0 ? 0f0 : Float32(sum(Float32.(assets[!, :usdtvalue])))
 
     rows = NamedTuple[]
@@ -190,7 +190,7 @@ function main(args::Vector{String})
         usdtprice = Float32(row.usdtprice)
         usdtvalue = Float32(row.usdtvalue)
         sellablelong = max(0f0, freebase - borrowedbase)
-        symbol = CryptoXch.symboltoken(xc, base, EnvConfig.cryptoquote; role=CryptoXch.trade_exchange_spot)
+        symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote; role=Xch.trade_exchange_spot)
 
         minqty = _safe_min_qty(xc, base, usdtprice)
         sell_cov = _covered_qty(oo, symbol, "Sell"; require_leverage=false)

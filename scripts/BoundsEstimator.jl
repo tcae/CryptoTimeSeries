@@ -1,7 +1,7 @@
 module BoundsEstimator
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils, StatisticalMeasures
 using CategoricalArrays, CategoricalDistributions, Distributions
-using EnvConfig, Classify, CryptoXch, Ohlcv, Features, Targets, TradingStrategy
+using EnvConfig, Classify, Xch, Ohlcv, Features, Targets, TradingStrategy
 
 """
 verbosity =
@@ -86,7 +86,7 @@ mutable struct BoundsEstimatorConfig
     featconfig::Features.AbstractFeatures
     targetconfig::Targets.AbstractTargets
     regressormodel
-    tradingstrategy::TradingStrategy.GainSegment
+    tradingstrategy::TradingStrategy.StrategySpec
     startdt::DateTime
     enddt::DateTime
     opmode::BoundsEstimatorMode
@@ -745,7 +745,7 @@ end
 function introspection(cfg::BoundsEstimatorConfig)
     BoundsEstimator.verbosity = 2
     Ohlcv.verbosity = 1
-    CryptoXch.verbosity = 1
+    Xch.verbosity = 1
     Features.verbosity = 1
     Targets.verbosity = 1
     EnvConfig.verbosity = 1
@@ -923,7 +923,7 @@ function main(args::Vector{String}=ARGS)
     if testmode
         global verbosity = 2
         Ohlcv.verbosity = 1 # 3
-        CryptoXch.verbosity = 1 # 3
+        Xch.verbosity = 1 # 3
         Features.verbosity = 1 # 3
         Targets.verbosity = 1 # 3
         EnvConfig.verbosity = 1
@@ -935,7 +935,7 @@ function main(args::Vector{String}=ARGS)
     else # training or production
         global verbosity = 2
         Ohlcv.verbosity = 1
-        CryptoXch.verbosity = 1
+        Xch.verbosity = 1
         Features.verbosity = 1
         Targets.verbosity = 1
         EnvConfig.verbosity = 1
@@ -946,7 +946,7 @@ function main(args::Vector{String}=ARGS)
 
     if specialonly
         Ohlcv.verbosity = 3
-        CryptoXch.verbosity = 3
+        Xch.verbosity = 3
         Features.verbosity = 1
         Targets.verbosity = 1
         EnvConfig.verbosity = 1

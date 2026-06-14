@@ -1,5 +1,5 @@
 using Test, Dates, Logging, LoggingExtras, DataFrames
-using EnvConfig, Trade, Classify, Features, Ohlcv, CryptoXch
+using EnvConfig, Trade, Classify, Features, Ohlcv, Xch
 
 println("$(EnvConfig.now()): started")
 
@@ -9,9 +9,9 @@ Features.verbosity = 1
 Trade.verbosity = 3
 # EnvConfig.init(training)
 EnvConfig.init(production)
-xc = CryptoXch.XchCache()
+xc = Xch.XchCache()
 
-assets = CryptoXch.portfolio!(xc)
+assets = Xch.portfolio!(xc)
 # tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=Dates.now(UTC), updatecache=true) # revised config is saved
 
 assetsconfig, assets = Trade.assetsconfig!(Trade.TradeCache(xc=xc)) # read latest from file merged with assets in correct format

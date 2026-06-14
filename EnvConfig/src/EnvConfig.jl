@@ -10,7 +10,7 @@ Provides
 module EnvConfig
 using Logging, Dates, Pkg, JSON3, DataFrames, JDF, Arrow
 using CategoricalArrays
-export authorization, setauthorization!, test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, setcoinspath!, coinfolderpath, coinfile, setdebugpath
+export test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, setcoinspath!, coinfolderpath, coinfile, setdebugpath, tradingfolder, pairquote, setpairquote!
 
 """
 verbosity =
@@ -22,12 +22,17 @@ verbosity =
 verbosity = 1
 
 @enum Mode test production training
-cryptoquote = "USDT"
+pairquote = "USDT"
 datetimeformat = "yymmdd HH:MM"
 timezone = "Europe/Amsterdam"
 symbolseperator = "_"  # symbol seperator
 bases = String[]
 trainingbases = String[]
+
+function setpairquote!(quotecoin::AbstractString)
+    global pairquote = uppercase(String(quotecoin))
+    return pairquote
+end
 
 
 function checkfolders(doverbose, dodebug)
@@ -138,18 +143,18 @@ function checkfolders(doverbose, dodebug)
     return root
 end
 
-# cryptopath = normpath(joinpath(checkfolders(verbosity > 1, verbosity > 2), "crypto")) # OneDrive folder
-cryptopath = normpath(joinpath(homedir(), "crypto")) # local folder
-if !isdir(cryptopath)
-    @error "missing crypto folder $cryptopath"
+# tradingfolder = normpath(joinpath(checkfolders(verbosity > 1, verbosity > 2), "crypto")) # OneDrive folder
+tradingfolder = normpath(joinpath(homedir(), "crypto")) # local folder
+if !isdir(tradingfolder)
+    @error "missing crypto folder $tradingfolder"
 end
-if !isdir(cryptopath)
-    @warn "cryptopath=$cryptopath is not an existing folder - now creating it"
-    mkpath(cryptopath)
-    @assert isdir(cryptopath)  "cannot create $cryptopath"
+if !isdir(tradingfolder)
+    @warn "tradingfolder=$tradingfolder is not an existing folder - now creating it"
+    mkpath(tradingfolder)
+    @assert isdir(tradingfolder)  "cannot create $tradingfolder"
 end
-authpath = joinpath(cryptopath, "exchanges")  # ".catalyst/data/exchanges/bybit/"
-if !isdir(cryptopath)
+authpath = joinpath(tradingfolder, "exchanges")  # ".catalyst/data/exchanges/bybit/"
+if !isdir(tradingfolder)
     @error "missing auth folder $authpath"
 end
 datafolder = "EnvConfig is not initialized"
@@ -329,7 +334,7 @@ runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`gi
 logfilesfolder = "logs"
 debugfilesfolder = "debug"
 coinsfolder = "coins"
-# defaultlogfilespath = normpath(joinpath(cryptopath, logfilesfolder))
+# defaultlogfilespath = normpath(joinpath(tradingfolder, logfilesfolder))
 defaultlogfilespath = normpath(joinpath(homedir(), "crypto", logfilesfolder))
 defaultdebugfilespath = normpath(joinpath(homedir(), "crypto", debugfilesfolder))
 defaultcoinspath = normpath(joinpath(dirname(defaultlogfilespath), coinsfolder))
@@ -356,7 +361,7 @@ function setdebugpath(folder=nothing)
     return _setbasepath!(defaultdebugfilespath, folder)
 end
 
-"Set the shared per-coin data root folder under ~/crypto (e.g. coins_bybit)."
+"Set the shared per-coin data root folder under ~/crypto (e.g. Bybit)."
 function setcoinspath!(folder::AbstractString=coinsfolder)
     global activecoinspath
     cleaned = strip(String(folder))
@@ -681,7 +686,7 @@ function setprojectdir()
     return pwd()
 end
 
-datafolderpath(subfolder=nothing) = isnothing(subfolder) ? normpath(joinpath(cryptopath, datafolder)) : normpath(joinpath(cryptopath, datafolder, subfolder))
+datafolderpath(subfolder=nothing) = isnothing(subfolder) ? normpath(joinpath(tradingfolder, datafolder)) : normpath(joinpath(tradingfolder, datafolder, subfolder))
 
 function datafile(mnemonic::String, subfolder=nothing, extension=".jdf")
     p = datafolderpath(subfolder)
@@ -690,7 +695,7 @@ function datafile(mnemonic::String, subfolder=nothing, extension=".jdf")
         mkpath(p)
     end
     # no file existence checks here because it may be new file
-    return isnothing(subfolder) ? normpath(joinpath(cryptopath, datafolder, mnemonic * extension)) : normpath(joinpath(cryptopath, datafolder, subfolder, mnemonic * extension))
+    return isnothing(subfolder) ? normpath(joinpath(tradingfolder, datafolder, mnemonic * extension)) : normpath(joinpath(tradingfolder, datafolder, subfolder, mnemonic * extension))
 end
 
 """Return the local root folder for shared per-coin Arrow artifacts created during Phase 2, colocated with `logs/` under `~/crypto/coins`."""
@@ -700,13 +705,13 @@ function coinspath()
 end
 
 """
-    coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=cryptoquote, subfolder=nothing)
+    coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=pairquote, subfolder=nothing)
 
 Return the folder for a shared coin-pair artifact under `coins/`, creating it on
 first use. Examples include `coins/BTC-USDT/ohlcv.arrow` and
 `coins/BTC-USDT/f4.arrow`.
 """
-function coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=cryptoquote, subfolder=nothing)
+function coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=pairquote, subfolder=nothing)
     pairfolder = uppercase(basecoin) * "-" * uppercase(quotecoin)
     folderpath = isnothing(subfolder) ? normpath(joinpath(coinspath(), pairfolder)) : normpath(joinpath(coinspath(), pairfolder, subfolder))
     if !isdir(folderpath)
@@ -730,7 +735,7 @@ end
 
 function getdatafolder(folder, newfolder=false)
     folder = newfolder ? folder * runid() : folder
-    p = normpath(joinpath(cryptopath, folder))
+    p = normpath(joinpath(tradingfolder, folder))
     if !isdir(p)
         println("EnvConfig $(now()): creating folder $p")
         mkpath(p)
@@ -738,12 +743,12 @@ function getdatafolder(folder, newfolder=false)
     return folder
 end
 
-function init(mode::Mode; newdatafolder=false, authname::Union{Nothing, AbstractString}=nothing)
+function init(mode::Mode; newdatafolder=false)
     global configmode = mode
     global bases, trainingbases, datafolder
     global authorization
 
-    authorization = Authentication(authname)
+    authorization = Authentication()
     if configmode == production
         bases = [
             "btc"]

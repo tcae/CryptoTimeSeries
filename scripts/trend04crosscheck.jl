@@ -133,7 +133,7 @@ function issue_category(msg::AbstractString)::String
         return "hold-threshold"
     elseif occursin("violates buy exclusion", msg)
         return "buy-exclusion"
-    elseif occursin("lacks longbuy confirmation", msg) || occursin("lacks shortbuy confirmation", msg)
+    elseif occursin("lacks longopen confirmation", msg) || occursin("lacks shortopen confirmation", msg)
         return "maxwindow-buy-confirmation"
     elseif occursin("violates maxwindow continuation", msg)
         return "maxwindow-continuation"

@@ -1,10 +1,10 @@
 using Test
 using Dates
 using DataFrames
-using EnvConfig, CryptoXch, Trade, TradeLog, Ohlcv, Targets
+using EnvConfig, Xch, Trade, TradeLog, Ohlcv, Targets
 
 """Write one synthetic spot fill audit event for ownership reconstruction tests."""
-function _write_spot_fill!(xc::CryptoXch.XchCache, event_root::AbstractString;
+function _write_spot_fill!(xc::Xch.XchCache, event_root::AbstractString;
     exchange_name::AbstractString,
     baseasset::AbstractString,
     side::AbstractString,
@@ -16,8 +16,8 @@ function _write_spot_fill!(xc::CryptoXch.XchCache, event_root::AbstractString;
         created_at_utc=Dates.now(Dates.UTC),
         source_module="TradeTest",
         environment=string(Symbol(EnvConfig.configmode)),
-        run_mode=CryptoXch.auditrunmode(xc),
-        run_id=CryptoXch.auditrunid(xc),
+        run_mode=Xch.auditrunmode(xc),
+        run_id=Xch.auditrunid(xc),
         exchange=String(exchange_name),
         account_alias=String(exchange_name),
         routing_role=TradeLog.routing_trade_exchange_spot,
@@ -25,10 +25,10 @@ function _write_spot_fill!(xc::CryptoXch.XchCache, event_root::AbstractString;
         asset_class=TradeLog.crypto,
         instrument_type=TradeLog.spot_pair,
         venue_instrument_type="spot",
-        symbol=String(baseasset) * EnvConfig.cryptoquote,
+        symbol=String(baseasset) * EnvConfig.pairquote,
         baseasset=String(baseasset),
-        quoteasset=EnvConfig.cryptoquote,
-        settlement_asset=EnvConfig.cryptoquote,
+        quoteasset=EnvConfig.pairquote,
+        settlement_asset=EnvConfig.pairquote,
         side=String(side),
         fill_base_qty=Float64(fill_base_qty),
         leverage=leverage,
@@ -45,13 +45,13 @@ end
         EnvConfig.init(test)
 
         startdt = DateTime("2026-05-25T12:00:00")
-        xc = CryptoXch.XchCache(startdt=startdt, enddt=startdt + Minute(1), exchange=CryptoXch.EXCHANGE_BYBIT)
+        xc = Xch.XchCache(startdt=startdt, enddt=startdt + Minute(1), exchange=Xch.EXCHANGE_BYBIT)
         tc = Trade.TradeCache(xc=xc, trademode=Trade.closeonly)
 
-        _write_spot_fill!(xc, tmpdir; exchange_name=CryptoXch.EXCHANGE_BYBIT, baseasset="BTC", side="Buy", fill_base_qty=1.2)
-        _write_spot_fill!(xc, tmpdir; exchange_name=CryptoXch.EXCHANGE_BYBIT, baseasset="BTC", side="Sell", fill_base_qty=0.4)
-        _write_spot_fill!(xc, tmpdir; exchange_name=CryptoXch.EXCHANGE_BYBIT, baseasset="ETH", side="Sell", fill_base_qty=0.7, leverage=2)
-        _write_spot_fill!(xc, tmpdir; exchange_name=CryptoXch.EXCHANGE_KRAKENSPOT, baseasset="BTC", side="Buy", fill_base_qty=5.0)
+        _write_spot_fill!(xc, tmpdir; exchange_name=Xch.EXCHANGE_BYBIT, baseasset="BTC", side="Buy", fill_base_qty=1.2)
+        _write_spot_fill!(xc, tmpdir; exchange_name=Xch.EXCHANGE_BYBIT, baseasset="BTC", side="Sell", fill_base_qty=0.4)
+        _write_spot_fill!(xc, tmpdir; exchange_name=Xch.EXCHANGE_BYBIT, baseasset="ETH", side="Sell", fill_base_qty=0.7, leverage=2)
+        _write_spot_fill!(xc, tmpdir; exchange_name=Xch.EXCHANGE_KRAKENSPOT, baseasset="BTC", side="Buy", fill_base_qty=5.0)
 
         owned = Trade._robotownedqtymap(tc, ["BTC", "ETH"])
         @test isapprox(owned["BTC"].longqty, 0.8f0; atol=1f-5)
@@ -66,16 +66,16 @@ end
             classifieraccepted=Bool[true, true, false],
             whitelisted=Bool[true, false, true],
             inportfolio=Bool[false, true, false],
-            buyenabled=Bool[false, false, false],
-            sellenabled=Bool[false, false, false],
+            openenabled=Bool[false, false, false],
+            closeenabled=Bool[false, false, false],
         )
         Trade._annotate_robotownership!(tc)
         Trade._sync_tradeflags!(tc)
-        @test tc.cfg[tc.cfg.basecoin .== "BTC", :buyenabled][1]
-        @test tc.cfg[tc.cfg.basecoin .== "BTC", :sellenabled][1]
-        @test !tc.cfg[tc.cfg.basecoin .== "ETH", :buyenabled][1]
-        @test tc.cfg[tc.cfg.basecoin .== "ETH", :sellenabled][1]
-        @test !tc.cfg[tc.cfg.basecoin .== "XRP", :sellenabled][1]
+        @test tc.cfg[tc.cfg.basecoin .== "BTC", :openenabled][1]
+        @test tc.cfg[tc.cfg.basecoin .== "BTC", :closeenabled][1]
+        @test !tc.cfg[tc.cfg.basecoin .== "ETH", :openenabled][1]
+        @test tc.cfg[tc.cfg.basecoin .== "ETH", :closeenabled][1]
+        @test !tc.cfg[tc.cfg.basecoin .== "XRP", :closeenabled][1]
 
         ohlcv = Ohlcv.OhlcvData(
             DataFrame(
@@ -88,23 +88,23 @@ end
                 pivot=Float32[100, 100],
             ),
             "BTC",
-            uppercase(EnvConfig.cryptoquote),
+            uppercase(EnvConfig.pairquote),
             "1m",
             2,
             nothing,
         )
-        CryptoXch.addbase!(xc, ohlcv)
+        Xch.addbase!(xc, ohlcv)
         xc.currentdt = startdt + Minute(1)
 
         basecfgdf = DataFrame(
             basecoin=["BTC"],
-            buyenabled=[false],
-            sellenabled=[true],
+            openenabled=[false],
+            closeenabled=[true],
             robotownedlongqty=Float32[0.8],
             robotownedshortqty=Float32[0.0],
         )
         assets = DataFrame(
-            coin=[EnvConfig.cryptoquote, "BTC"],
+            coin=[EnvConfig.pairquote, "BTC"],
             locked=Float32[0, 0],
             free=Float32[1000, 2.0],
             borrowed=Float32[0, 0],

@@ -11,7 +11,7 @@ Evaluates Classifers of subtype AbstractClassifier
 module ClEvaluate
 
 using Test, Dates, Logging, CSV, DataFrames, Statistics
-using EnvConfig, Classify, CryptoXch, Ohlcv
+using EnvConfig, Classify, Xch, Ohlcv
 
 
 EnvConfig.init(training)

@@ -1,17 +1,17 @@
-module CryptoXchUsdtMarketIntentTest
+module XchUsdtMarketIntentTest
 
 using Test
 using Dates
 using DataFrames
-using EnvConfig, CryptoXch, Bybit
+using EnvConfig, Xch, Bybit
 
 EnvConfig.init(EnvConfig.test)
-EnvConfig.cryptoquote = "USDT"
+EnvConfig.setpairquote!("USDT")
 
-@testset "CryptoXch USDT market intent APIs" begin
+@testset "Xch USDT market intent APIs" begin
     dt = DateTime("2025-05-01T12:00:00")
-    xc = CryptoXch.XchCache(startdt=dt, enddt=dt, exchange=CryptoXch.EXCHANGE_BYBITSIM)
-    CryptoXch.setcurrenttime!(xc, dt)
+    xc = Xch.XchCache(startdt=dt, enddt=dt, exchange=Xch.EXCHANGE_BYBITSIM)
+    Xch.setcurrenttime!(xc, dt)
 
     if isnothing(findfirst(==("AAPLXUSDT"), xc.bc.syminfodf[!, :symbol]))
         push!(xc.bc.syminfodf, (
@@ -31,15 +31,15 @@ EnvConfig.cryptoquote = "USDT"
     Bybit.seedportfolio!(xc.bc, "USDT", 100000.0)
     Bybit.seedportfolio!(xc.bc, "BTC", 0.5)
 
-    balancesdf = CryptoXch.balances(xc; ignoresmallvolume=false)
-    requestedbases = [String(c) for c in balancesdf[!, :coin] if c != EnvConfig.cryptoquote]
+    balancesdf = Xch.balances(xc; ignoresmallvolume=false)
+    requestedbases = [String(c) for c in balancesdf[!, :coin] if c != EnvConfig.pairquote]
 
-    screeningdf = CryptoXch.screeningUSDTmarket(xc; dt=dt)
+    screeningdf = Xch.screeningUSDTmarket(xc; dt=dt)
     @test nrow(screeningdf) > 0
     @test !("AAPLX" in Set(String.(screeningdf[!, :basecoin])))
 
-    valuationdf = CryptoXch.valuationUSDTmarket(xc, requestedbases; dt=dt)
-    compatvaluation = CryptoXch.getUSDTmarket(xc; dt=dt, requestedbases=requestedbases)
+    valuationdf = Xch.valuationUSDTmarket(xc, requestedbases; dt=dt)
+    compatvaluation = Xch.getUSDTmarket(xc; dt=dt, requestedbases=requestedbases)
 
     @test nrow(valuationdf) > 0
 
@@ -48,7 +48,7 @@ EnvConfig.cryptoquote = "USDT"
     @test !("AAPLX" in valuationcoins)
     @test Set(String.(compatvaluation[!, :basecoin])) == valuationcoins
 
-    portfolio = CryptoXch.portfolio!(xc, balancesdf, nothing; ignoresmallvolume=false)
+    portfolio = Xch.portfolio!(xc, balancesdf, nothing; ignoresmallvolume=false)
     @test "BTC" in Set(String.(portfolio[!, :coin]))
     @test all(ismissing.(portfolio[!, :usdtprice]) .== false)
 end

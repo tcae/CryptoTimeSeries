@@ -19,14 +19,14 @@ targetissuesfilename() = joinpath("results", "targetissues")
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
 default_closethresholds() = Float32[0.1f0]
 
-tradingstrategy01() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_open_close!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
-tradingstrategy02() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy03() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy04() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
-tradingstrategy05() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
-tradingstrategy06() = TradingStrategy.GainSegment(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
+tradingstrategy01() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_open_close!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
+tradingstrategy02() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy03() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy04() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
+tradingstrategy05() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
+tradingstrategy06() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
 # Trend01/Trend02 were replaced by Trend04.
-trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longbuy=buy, longhold=hold, shorthold=-hold, shortbuy=-buy)), holdbehaviormode=holdbehaviormode)
+trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longopen=buy, longhold=hold, shorthold=-hold, shortopen=-buy)), holdbehaviormode=holdbehaviormode)
 
 targetconfig01() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=beyond_maxwindow)
 targetconfig02() = trend04targetconfig(10, 4*60, 0.05, 0.03)
@@ -509,7 +509,7 @@ function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mo
     spec = (
         config_ref=trendconfigref(cfg),
         nn_fileprefix=nnstub.fileprefix,
-        featconfig_factory=trendconfigfeaturefactory(cfg),
+        featconfig=trendconfigfeaturefactory(cfg),
         required_minutes=required_minutes,
     )
     return Classify.load(Classify.TrendClassifier001, spec; mode=mode)

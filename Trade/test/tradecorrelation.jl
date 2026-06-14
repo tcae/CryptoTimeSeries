@@ -1,11 +1,11 @@
 module TradeCorrelation
 
 using Test, Dates, Logging, LoggingExtras, DataFrames
-using EnvConfig, Trade, Classify, Ohlcv, CryptoXch
+using EnvConfig, Trade, Classify, Ohlcv, Xch
 
 println("$(EnvConfig.now()): TradeCorrelation started")
 
-CryptoXch.verbosity = 1
+Xch.verbosity = 1
 Classify.verbosity = 2
 Ohlcv.verbosity = 1
 EnvConfig.init(training)
@@ -39,7 +39,7 @@ startdt = DateTime("2024-03-19T00:00:00")  # cl.ohlcv.df[begin, :opentime]
 enddt = DateTime("2024-03-29T10:00:00")  # cl.ohlcv.df[end, :opentime]
 base = "BTC"
 
-xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt)
+xc=Xch.XchCache( startdt=startdt, enddt=enddt)
 cl = Classify.Classifier001()
 cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, cl=cl), [base], assetonly=true)
 Classify.basetrain!(cache.cl.bd["BTC"]; regrwindows=[Classify.STDREGRWINDOW], gainthresholds=[Classify.STDGAINTHRSHLD], startdt, enddt)
@@ -47,14 +47,14 @@ println(cache.cl.bd["BTC"].cfg)
 
 # @info "backtest trademode=$(cache.trademode) trading config: $(cache.cfg)"
 # Classify.addreplaceconfig!(cl, base, Classify.STDREGRWINDOW, Classify.STDGAINTHRSHLD, 0, 0)
-CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
-CryptoXch.writeassets(cache.xc, cache.xc.startdt)
+Xch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
+Xch.writeassets(cache.xc, cache.xc.startdt)
 Trade.tradeloop(cache)
-assets = CryptoXch.portfolio!(cache.xc)
+assets = Xch.portfolio!(cache.xc)
 totalusdt = sum(assets.usdtvalue)
 println("finish total USDT = $totalusdt")
-CryptoXch.writeorders(cache.xc)
-CryptoXch.writeassets(cache.xc, cache.xc.enddt)
+Xch.writeorders(cache.xc)
+Xch.writeassets(cache.xc, cache.xc.enddt)
 
 
 endbudget = sum(assets[!, :usdtvalue])
@@ -73,8 +73,8 @@ println("describe(df)=$(describe(df, :all))")
 simtpcheck = coalesce.(df[!, :simtp], ignore)
 sidecheck = coalesce.(df[!, :side], "ignore")
 filtedf = DataFrame()
-filtedf[:, :simsellcheck] = simtpcheck .== longclose
-filtedf[:, :simbuycheck] = simtpcheck .== longbuy
+filtedf[:, :simsellcheck] = simtpcheck .== Targets.longclose
+filtedf[:, :simbuycheck] = simtpcheck .== Targets.longopen
 filtedf[:, :sidesellcheck] = sidecheck .== "Sell"
 filtedf[:, :sidebuycheck] = sidecheck .== "Buy"
 cnt = (simsellcount = sum(filtedf[!, :simsellcheck]), simbuycount = sum(filtedf[!, :simbuycheck]), sidesellcount = sum(filtedf[!, :sidesellcheck]), sidebuycount = sum(filtedf[!, :sidebuycheck]))

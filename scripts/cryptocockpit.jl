@@ -19,7 +19,7 @@ import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Classify, CryptoXch, Trade, TradingStrategy
+using EnvConfig, Ohlcv, Features, Targets, Classify, Xch, Trade, TradingStrategy
 
 include("optimizationconfigs.jl")
 
@@ -28,31 +28,31 @@ const COCKPIT_BOUNDS_REF = "001"
 const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target"]
 const DIAGNOSTIC_LABEL_CODE = Dict{Any, Int}(
     missing => 0,
-    Targets.shortbuy => 1,
+    Targets.shortopen => 1,
     Targets.shorthold => 2,
     Targets.shortclose => 3,
     Targets.allclose => 4,
-    Targets.longbuy => 5,
+    Targets.longopen => 5,
     Targets.longhold => 6,
     Targets.longclose => 7,
 )
 const DIAGNOSTIC_LABEL_COLOR = Dict{Any, String}(
     missing => "#808080",
-    Targets.shortbuy => "#99000d",
+    Targets.shortopen => "#99000d",
     Targets.shorthold => "#ef3b2c",
     Targets.shortclose => "#fcbba1",
     Targets.allclose => "#dbeafe",
-    Targets.longbuy => "#006d2c",
+    Targets.longopen => "#006d2c",
     Targets.longhold => "#31a354",
     Targets.longclose => "#a1d99b",
 )
 const DIAGNOSTIC_LABEL_TICKS = [
     "missing",
-    "shortbuy",
+    "shortopen",
     "shorthold",
     "shortclose",
     "allclose",
-    "longbuy",
+    "longopen",
     "longhold",
     "longclose",
 ]
@@ -225,7 +225,7 @@ end
 
 function loadohlcv!(cp, base, interval)
     if !(base in keys(cp.coin))
-        ohlcv = CryptoXch.ohlcv(cp.tc.xc, base)
+        ohlcv = Xch.ohlcv(cp.tc.xc, base)
         cp.coin[base] = CoinData(Dict(), nothing)
         cp.coin[base].ohlcv["1m"] = ohlcv
         cp.coin[base].f4 = _load_cockpit_f4(ohlcv)
@@ -256,20 +256,20 @@ function updateassets!(cp, download=false)
         return dts
     end
 
-    assets = DataFrame((coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], usdtprice=Float32[], usdtvalue=Float32[])) # CryptoXch.portfolio!(cp.tc.xc)
+    assets = DataFrame((coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], usdtprice=Float32[], usdtvalue=Float32[])) # Xch.portfolio!(cp.tc.xc)
     cp.coin = Dict()
     if download || (size(cp.tc.cfg, 1) == 0)
         selecteddt = nothing
-        simmode = get(cp.tc.xc.mc, :simmode, CryptoXch.nosimulation)
+        simmode = get(cp.tc.xc.mc, :simmode, Xch.nosimulation)
         for dt in _selection_datetimes(Dates.now(UTC))
             Trade.tradeselection!(cp.tc, assets[!, :coin]; datetime=dt, updatecache=true)
             if size(cp.tc.cfg, 1) > 0
                 selecteddt = dt
                 break
             end
-            simmode == CryptoXch.nosimulation && break
+            simmode == Xch.nosimulation && break
         end
-        if isnothing(selecteddt) && (simmode != CryptoXch.nosimulation)
+        if isnothing(selecteddt) && (simmode != Xch.nosimulation)
             @warn "no tradable coins found for simulated market snapshots in tested datetime probe window" probe_datetimes=_selection_datetimes(Dates.now(UTC))
         elseif !isnothing(selecteddt)
             println("$(EnvConfig.now()) cockpit tradeselection datetime=$(selecteddt)")
@@ -285,7 +285,7 @@ function updateassets!(cp, download=false)
         println("config + assets: $(cp.tc.cfg)")
         # println("updating table data of size: $(size(adf))")
         rows = size(cp.tc.cfg, 1)
-        xcbases = CryptoXch.bases(cp.tc.xc)
+        xcbases = Xch.bases(cp.tc.xc)
 
         # # initial delay but quick switching between coins
         # for (ix, base) in enumerate(cp.tc.cfg[!, :basecoin])
@@ -327,7 +327,7 @@ mutable struct CockpitData
         global cp
         dtf = "yyyy-mm-dd HH:MM"
         cssdir = EnvConfig.setprojectdir()  * "/scripts/"
-        xc = CryptoXch.XchCache()
+        xc = Xch.XchCache()
         cp = new(Trade.TradeCache(xc=xc), nothing, nothing, true, dtf, cssdir)
         updateassets!(cp, false)
         return cp
@@ -634,7 +634,7 @@ function _diagnostic_slice(ohlcv, period, enddt, history_minutes::Int)
 end
 
 function _discrete_colorscale()
-    ordered = [missing, Targets.shortbuy, Targets.shorthold, Targets.shortclose, Targets.allclose, Targets.longbuy, Targets.longhold, Targets.longclose]
+    ordered = [missing, Targets.shortopen, Targets.shorthold, Targets.shortclose, Targets.allclose, Targets.longopen, Targets.longhold, Targets.longclose]
     boundaries = collect(range(0.0, 1.0; length=length(ordered) + 1))
     scale = Any[]
     for (ix, key) in enumerate(ordered)

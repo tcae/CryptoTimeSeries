@@ -1,16 +1,16 @@
-module CryptoXchTest
+module XchTest
 using Dates, DataFrames
 
-using Ohlcv, EnvConfig, CryptoXch, Bybit
+using Ohlcv, EnvConfig, Xch, Bybit
 
 EnvConfig.init(training)
-xc = CryptoXch.XchCache()
+xc = Xch.XchCache()
 
 EnvConfig.init(test)
-usdtdf = CryptoXch.getUSDTmarket(xc)
+usdtdf = Xch.getUSDTmarket(xc)
 println("\n$(EnvConfig.configmode) getUSDTmarket: $usdtdf")
 
 EnvConfig.init(training)
-usdtdf = CryptoXch.getUSDTmarket(xc)
+usdtdf = Xch.getUSDTmarket(xc)
 println("\n$(EnvConfig.configmode) getUSDTmarket: $usdtdf")
 end

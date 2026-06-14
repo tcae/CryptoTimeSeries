@@ -496,7 +496,7 @@ function Base.iterate(f4f::Features004Files, state=1)
     end
     pairparts = split(f4f.filenames[state], "-")
     basecoin = pairparts[1]
-    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.cryptoquote
+    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.pairquote
     f4 = Features.Features004(String(basecoin), String(quotecoin))
     read!(f4, nothing, nothing)
     return f4, state+1

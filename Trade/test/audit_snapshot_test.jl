@@ -1,5 +1,5 @@
 using Test, DataFrames
-using EnvConfig, CryptoXch, Trade, TradeLog
+using EnvConfig, Xch, Trade, TradeLog
 
 @testset "Trade portfolio audit snapshots" begin
     oldauditroot = get(ENV, "CTS_TRADELOG_ROOT", nothing)
@@ -8,7 +8,7 @@ using EnvConfig, CryptoXch, Trade, TradeLog
         ENV["CTS_TRADELOG_ROOT"] = tmpdir
         EnvConfig.init(test)
 
-        xc = CryptoXch.XchCache()
+        xc = Xch.XchCache()
         tc = Trade.TradeCache(xc=xc)
         assets = DataFrame(
             coin=["USDT", "BTC"],
@@ -25,9 +25,9 @@ using EnvConfig, CryptoXch, Trade, TradeLog
         snapshot = TradeLog.AuditEventRow(
             event_type=TradeLog.PORTFOLIO_SNAPSHOT,
             environment=string(Symbol(EnvConfig.configmode)),
-            run_mode=CryptoXch.auditrunmode(xc),
-            exchange=CryptoXch.exchange(xc),
-            account_alias=CryptoXch.exchange(xc),
+            run_mode=Xch.auditrunmode(xc),
+            exchange=Xch.exchange(xc),
+            account_alias=Xch.exchange(xc),
             asset_class=TradeLog.crypto,
             instrument_type=TradeLog.spot_pair,
         )

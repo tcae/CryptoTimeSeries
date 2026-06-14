@@ -1,10 +1,10 @@
-using Features, Ohlcv, CryptoXch, EnvConfig, Dates
+using Features, Ohlcv, Xch, EnvConfig, Dates
 Features.verbosity = 1
 Ohlcv.verbosity = 1
 verbosity = 1
 
 EnvConfig.init(production)
-xc=CryptoXch.XchCache()
+xc=Xch.XchCache()
 
 """
 Implementation of regression features was changed to enable starting with the first ohlcv sample and acepting history impact but enabling less complex logic due to differences in feature vector length.
@@ -15,7 +15,7 @@ function addearlysamples()
     for f4 in Features.Features004Files()
         # ohlcv = Ohlcv.read(f4.basecoin)
         datetime = first(values(f4.rw))[end, :opentime] + Minute(1)
-        ohlcv = CryptoXch.cryptodownload(xc, f4.basecoin, "1m", datetime - Year(20), datetime)
+        ohlcv = Xch.cryptodownload(xc, f4.basecoin, "1m", datetime - Year(20), datetime)
         if size(Ohlcv.dataframe(ohlcv), 1) < size(first(values(f4.rw)), 1)
             (verbosity >= 1) && println("deleting f4: ohlcv=$ohlcv, f4:$f4")
             Features.delete(f4)

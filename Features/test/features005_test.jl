@@ -1,7 +1,7 @@
 using Dates, DataFrames
 using Test
 
-using EnvConfig, Ohlcv, Features, CryptoXch, TestOhlcv
+using EnvConfig, Ohlcv, Features, Xch, TestOhlcv
 
 Features.verbosity = 1 # 3
 
@@ -10,8 +10,8 @@ EnvConfig.init(test)
     startdt = DateTime("2023-02-17T13:30:00")
     enddt = startdt + Day(22) -Minute(1) # DateTime("2023-02-28T13:29:00")
     EnvConfig.init(production)
-    xc = CryptoXch.XchCache()
-    ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
+    xc = Xch.XchCache()
+    ohlcv = Xch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
     Ohlcv.timerangecut!(ohlcv, startdt, enddt)
     # println("ohlcvdf=$(ohlcv)")
     requestedfeatures = ["rw_15_regry", "rw_15_std", "mm_60_mindist", "mm_60_maxdist", "rv_5_60"]
@@ -23,7 +23,7 @@ EnvConfig.init(test)
     @test size(Features.features(f5), 2) == length(requestedfeatures)
     # println(names(Features.features(f5)))
 
-    ohlcvshort = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt-Hour(6))
+    ohlcvshort = Xch.cryptodownload(xc, "SINE", "1m", startdt, enddt-Hour(6))
     Ohlcv.timerangecut!(ohlcvshort, startdt, enddt-Hour(6))
     # println("short ohlcvdf=$(ohlcvshort)")
     f5short = Features.Features005(requestedfeatures)
@@ -41,7 +41,7 @@ EnvConfig.init(test)
     # println("read/calc check long fdf: $f5checklong")
     @test all(Matrix(f5.fdf) .== Matrix(f5checklong.fdf))
 
-    ohlcv_3 = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt+Day(25), enddt+Day(25)) # later than stored cache
+    ohlcv_3 = Xch.cryptodownload(xc, "SINE", "1m", startdt+Day(25), enddt+Day(25)) # later than stored cache
     Ohlcv.timerangecut!(ohlcv_3, startdt+Day(25), enddt+Day(25))
     f5_3 = Features.Features005(requestedfeatures)
     Features.setbase!(f5_3, ohlcv_3, usecache=true)

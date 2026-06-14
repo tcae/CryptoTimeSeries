@@ -126,7 +126,7 @@ end
 "Return the canonical tradelog root folder under the shared crypto root."
 function auditroot(root::Union{Nothing, AbstractString}=nothing)::String
     basepath = if isnothing(root)
-        normpath(get(ENV, "CTS_TRADELOG_ROOT", joinpath(EnvConfig.cryptopath, "tradelog")))
+        normpath(get(ENV, "CTS_TRADELOG_ROOT", joinpath(EnvConfig.tradingfolder, "tradelog")))
     else
         normpath(String(root))
     end

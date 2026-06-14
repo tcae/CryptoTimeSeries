@@ -369,7 +369,7 @@ function _capped_retry_jump(base::Int, retry_ix::Int, cap::Int)::Int
 end
 
 function _nonce_state_dir()::String
-	dir = normpath(joinpath(EnvConfig.cryptopath, "debug", "krakenfutures"))
+	dir = normpath(joinpath(EnvConfig.tradingfolder, "debug", "krakenfutures"))
 	isdir(dir) || mkpath(dir)
 	return dir
 end
@@ -466,7 +466,7 @@ function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::String=K
 			syminfo = _emptyexchangeinfo()
 		end
 		if size(syminfo, 1) > 0
-			targetquote = uppercase(EnvConfig.cryptoquote)
+			targetquote = uppercase(EnvConfig.pairquote)
 			filtered = syminfo[uppercase.(syminfo.quotecoin) .== targetquote, :]
 			syminfo = size(filtered, 1) > 0 ? filtered : syminfo
 			sort!(syminfo, :basecoin)
@@ -1025,7 +1025,7 @@ _normalizepairsymbol(pair::AbstractString)::String = _ws2symbol(pair)
 """
 Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
 """
-function symboltoken(bc::KrakenFuturesCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String
+function symboltoken(bc::KrakenFuturesCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)::String
 	base = _normalizeasset(basecoin)
 	qtoken = uppercase(quotecoin)
 	if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
@@ -1419,7 +1419,7 @@ function validsymbol(bc::KrakenFuturesCache, sym::Union{Nothing, DataFrameRow}):
 	if isnothing(sym)
 		return false
 	end
-	return uppercase(sym.quotecoin) == uppercase(EnvConfig.cryptoquote) && _istradablestatus(sym.status)
+	return uppercase(sym.quotecoin) == uppercase(EnvConfig.pairquote) && _istradablestatus(sym.status)
 end
 
 """
@@ -1644,7 +1644,7 @@ function accountcapacity(bc::KrakenFuturesCache)
 			cash = Dict(accounts["cash"])
 			balmap = _tryget(cash, ["balances"], Dict())
 			if balmap isa AbstractDict
-				quotecoin = uppercase(String(EnvConfig.cryptoquote))
+				quotecoin = uppercase(String(EnvConfig.pairquote))
 				for (coin, val) in balmap
 					if uppercase(_normalizeasset(String(coin))) == quotecoin
 						available_quote += max(0.0, Float64(_float32(val, 0f0)))

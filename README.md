@@ -39,7 +39,7 @@ Each module is located in the src folder and has a corresponding '_test' unti te
 - [Targets](Targets/src/Targets.jl) provides target labels to train, evaluate and test machine learning approaches.
 - [Features](Features/src/Features.jl) provides OHLCV derived features as input for machine learning and trading.
 - [Ohlcv](Ohlcv/src/Ohlcv.jl) provides means to get locally stored historic Open High Low Close Volume data.
-- [CryptoXch](CryptoXch/src/CryptoXch.jl) is the abstract layer to [Bybit](Bybit/src/Bybit.jl)
+- [Xch](Xch/src/Xch.jl) is the abstract layer to [Bybit](Bybit/src/Bybit.jl)
 - [Assets](Assets/src/Assets.jl) is selecting those assets from the exchange that are compliant to certain criteria that makes them a trading candidate.
 - [EnvConfig](EnvConfig/src/EnvConfig.jl) provides common configuratioin items, like the set of cryptos to use or common folders
 - [TestOhlcv](TestOhlcv/src/TestOhlcv.jl) provides periodic OHLCV patterns to test implementations.
@@ -56,7 +56,7 @@ In order to achieve a seperation of concerns and a self documenting code, the ap
 - the features derived from OHLCV data [Features](Features/src/Features.jl)
 - the machine learning targets [Targets](Targets/src/Targets.jl)
 - the classification training and test [Classify](Classify/src/Classify.jl)
-- the management of assets through an exchage broker [CryptoXch](CryptoXch/src/CryptoXch.jl), [Assets](Assets/src/Assets.jl)
+- the management of assets through an exchage broker [Xch](Xch/src/Xch.jl), [Assets](Assets/src/Assets.jl)
 - the trading loop [Trade](Trade/src/Trade.jl) and [trade_test](Trade/test/trade_test.jl)
 
 In case of variants, e.g. features or classification algorithms, the same function name is implemented by different modules residing in the same , e.g. Features or Classify, package and have to imported via the package name `using Features.Feature100`.

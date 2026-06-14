@@ -13,7 +13,7 @@
 			"ALL_MODULES_EXCEPT_MAIN",
 			"-Bybit.",
 			"-Classify.",
-			"-CryptoXch.",
+			"-Xch.",
 			"-EnvConfig.",
        		"-Features.",
 			"-Ohlcv.",

@@ -1,7 +1,7 @@
 module Cls001Evaluate
 
 using Test, Dates, Logging, CSV
-using EnvConfig, Classify, CryptoXch
+using EnvConfig, Classify, Xch
 
 
 EnvConfig.init(production)
@@ -17,7 +17,7 @@ println("$(EnvConfig.now()): started")
 test=false
 
 cls = Classify.ClassifierSet001()
-xc= CryptoXch.XchCache()
+xc= Xch.XchCache()
 if test
     enddt = DateTime("2022-01-12T10:00:00")
     startdt = enddt - Day(30)

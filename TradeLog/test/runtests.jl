@@ -36,7 +36,7 @@ function sampleevent()::TradeLog.AuditEventRow
         requested_notional=50000.0,
         strategy_engine="getgainsalgo",
         strategy_config_ref="cfg-001",
-        signal_label="longbuy",
+        signal_label="longopen",
         signal_score=0.75,
         algorithm_version="v1",
     )
@@ -73,7 +73,7 @@ end
         @test path == joinpath(folder, "events.jsonl")
         @test isfile(path)
 
-        TradeLog.writeevent(TradeLog.AuditEventRow(event_id="evt-002", event_type=TradeLog.ORDER_ACK, event_time_utc=event.event_time_utc, created_at_utc=event.created_at_utc, source_module="CryptoXch", environment="production", run_mode="live", exchange="KrakenSpot", account_alias="krakenspot-tcae1", routing_role=TradeLog.routing_trade_exchange_spot, market_type=TradeLog.market_spot, asset_class=TradeLog.crypto, instrument_type=TradeLog.spot_pair, symbol="BTCUSDT"); root=root)
+        TradeLog.writeevent(TradeLog.AuditEventRow(event_id="evt-002", event_type=TradeLog.ORDER_ACK, event_time_utc=event.event_time_utc, created_at_utc=event.created_at_utc, source_module="Xch", environment="production", run_mode="live", exchange="KrakenSpot", account_alias="krakenspot-tcae1", routing_role=TradeLog.routing_trade_exchange_spot, market_type=TradeLog.market_spot, asset_class=TradeLog.crypto, instrument_type=TradeLog.spot_pair, symbol="BTCUSDT"); root=root)
 
         lines = readlines(path)
         @test length(lines) == 2

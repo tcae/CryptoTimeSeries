@@ -3,7 +3,7 @@ using Dates
 using DataFrames
 using Targets
 using EnvConfig
-using CryptoXch
+using Xch
 using Classify
 using Ohlcv
 using TestOhlcv
@@ -28,7 +28,7 @@ function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::Dat
     _ = investment
     cl.advice_calls += 1
     return (
-        tradelabel=Targets.longbuy,
+        tradelabel=Targets.longopen,
         probability=0.75f0,
         configid=42,
         datetime=datetime,
@@ -40,7 +40,7 @@ end
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 11)
     enddt = startdt + Minute(240)
-    xc = CryptoXch.XchCache(startdt=startdt)
+    xc = Xch.XchCache(startdt=startdt)
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     # Legacy algorithm keeps current behavior and classifies each snapshot call.
@@ -70,7 +70,7 @@ end
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 11)
     enddt = startdt + Minute(240)
-    xc = CryptoXch.XchCache(startdt=startdt)
+    xc = Xch.XchCache(startdt=startdt)
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     cl = MockClassifier()
@@ -96,7 +96,7 @@ end
         close=Float32[100f0, 100.02f0, 100.5f0],
     )
     scores = Float32[0.7f0, 0.2f0, 0.9f0]
-    labels = Targets.TradeLabel[Targets.longbuy, Targets.shortbuy, Targets.shortbuy]
+    labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen, Targets.shortopen]
 
     gs = TradingStrategy.GainSegment(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
@@ -119,7 +119,7 @@ end
         close=Float32[100f0, 100.02f0, 100.03f0],
     )
     scores = Float32[0.7f0, 0.2f0, 0.9f0]
-    labels = Targets.TradeLabel[Targets.longbuy, Targets.shortbuy, Targets.shortbuy]
+    labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen, Targets.shortopen]
 
     gs = TradingStrategy.GainSegment(
         algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
@@ -142,7 +142,8 @@ end
 end
 
 @testset "Runtime API compatibility adapter" begin
-    rt = TradingStrategy.GainSegmentRuntime()
+    @test_throws ArgumentError TradingStrategy.GainSegmentRuntime()
+    rt = TradingStrategy.GainSegmentRuntime(classifier=MockClassifier())
 
     @test TradingStrategy.requiredhistoryminutes(rt) >= 0
     @test isempty(TradingStrategy.acceptedbases(rt))
@@ -150,12 +151,12 @@ end
     snap = TradingStrategy.StrategySnapshot(
         base="BTC",
         datetime=DateTime(2026, 1, 1),
-        label=Targets.longbuy,
+        label=Targets.longopen,
         long_openprice=100f0,
         long_closeprice=101f0,
         long_openix=1,
     )
-    @test snap.label == Targets.longbuy
+    @test snap.label == Targets.longopen
     @test snap.long_openix == 1
 
     gs = TradingStrategy.GainSegment(maxwindow=12)
@@ -175,10 +176,94 @@ end
     @test recon.long_open_ix == 7
 end
 
+@testset "TsCache pair-state scaffolding syncs Xch trades" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 1)
+    evaldt = startdt + Minute(10)
+    xc = Xch.XchCache(startdt=startdt)
+
+    seed = DataFrame(opentime=[startdt], lastopentrade=Union{Missing, DateTime}[missing])
+    Xch.settrades!(xc, "btc", "usdt", seed)
+
+    @test_throws ArgumentError TradingStrategy.TsCache(source="test")
+    cfg = Dict{Symbol, Any}(:classifier_factory => () -> MockClassifier())
+    ts = TradingStrategy.TsCache(configuration=cfg, source="test")
+    @test TradingStrategy.pairkeys(ts) == String[]
+    @test TradingStrategy.tspairkey("btc", "usdt") == "BTCUSDT"
+
+    tp = TradingStrategy.syncpairtrades!(ts, xc, "btc", "usdt"; datetime=evaldt)
+    @test tp.pair == "BTCUSDT"
+    @test tp.last_update_dt == evaldt
+    @test TradingStrategy.haspairstate(ts, "btcusdt")
+    @test tp.tradesdf === Xch.trades(xc, "BTCUSDT")
+
+    push!(tp.tradesdf, (opentime=startdt + Minute(1), lastopentrade=missing))
+    @test nrow(Xch.trades(xc, "BTCUSDT")) == 2
+
+    tp2 = TradingStrategy.getpairstate!(ts, "eth", "usdt")
+    @test tp2.pair == "ETHUSDT"
+    @test TradingStrategy.pairkeys(ts) == ["BTCUSDT", "ETHUSDT"]
+
+    TradingStrategy.droppair!(ts, "ethusdt")
+    @test !TradingStrategy.haspairstate(ts, "ETHUSDT")
+    @test TradingStrategy.pairkeys(ts) == ["BTCUSDT"]
+end
+
+@testset "TsCache getgains writes pair trades" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 1)
+    xc = Xch.XchCache(startdt=startdt)
+
+    cfg = Dict{Symbol, Any}(
+        :classifier_factory => () -> MockClassifier(),
+        :strategy_template => TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!),
+    )
+    ts = TradingStrategy.TsCache(configuration=cfg, source="test")
+
+    df = DataFrame(
+        opentime=[startdt + Minute(i) for i in 0:4],
+        high=Float32[101f0, 102f0, 103f0, 104f0, 105f0],
+        low=Float32[99f0, 100f0, 101f0, 102f0, 103f0],
+        close=Float32[100f0, 101f0, 102f0, 103f0, 104f0],
+    )
+    scores = Float32[0.8f0, 0.7f0, 0.9f0, 0.4f0, 0.3f0]
+    labels = Targets.TradeLabel[Targets.longopen, Targets.longopen, Targets.longopen, Targets.longclose, Targets.longclose]
+
+    gdf = TradingStrategy.getgains(
+        ts,
+        xc,
+        "sine",
+        df,
+        scores,
+        labels,
+        true;
+        openthreshold=0.6f0,
+        closethreshold=0.1f0,
+        metadata=Dict{Symbol, Any}(:predicted => true, :rangeid => 1),
+    )
+
+    @test Xch.hastrades(xc, "SINEUSDT")
+    tdf = Xch.trades(xc, "SINEUSDT")
+    @test nrow(tdf) == nrow(df)
+    @test "score" in names(tdf)
+    @test "label" in names(tdf)
+    @test "predicted" in names(tdf)
+    @test "rangeid" in names(tdf)
+    @test "longopenlimit" in names(tdf)
+    @test "longcloselimit" in names(tdf)
+    @test "shortopenlimit" in names(tdf)
+    @test "shortcloselimit" in names(tdf)
+    @test "tradelabel" in names(tdf)
+    @test "labelscore" in names(tdf)
+    @test "lastopentrade" in names(tdf)
+    @test tdf[1, :pair] == "SINEUSDT"
+    @test size(gdf, 1) >= 0
+end
+
 @testset "Runtime API mandatory abstract methods fail fast" begin
     EnvConfig.init(EnvConfig.test)
     rt = IncompleteRuntime()
-    xc = CryptoXch.XchCache()
+    xc = Xch.XchCache()
     dt = DateTime(2026, 1, 1)
 
     @test_throws ArgumentError TradingStrategy.preparebases!(rt, xc, ["BTC"]; history_startdt=dt - Minute(120), datetime=dt, updatecache=false)
@@ -190,7 +275,7 @@ end
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 1)
     enddt = startdt + Minute(240)
-    xc = CryptoXch.XchCache(startdt=startdt)
+    xc = Xch.XchCache(startdt=startdt)
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
     xc.bases["DOUBLESINE"] = TestOhlcv.testohlcv("DOUBLESINE", startdt, enddt)
 
@@ -221,7 +306,7 @@ end
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 10)
     enddt = startdt + Minute(240)
-    xc = CryptoXch.XchCache(startdt=startdt)
+    xc = Xch.XchCache(startdt=startdt)
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     rt = TradingStrategy.GainSegmentRuntime(classifier=MockClassifier(), strategy=TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!), source="test")

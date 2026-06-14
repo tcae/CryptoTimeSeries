@@ -1,7 +1,7 @@
 module TradeTest
 
 using Test, Dates, Logging, LoggingExtras
-using EnvConfig, Trade, Classify, Ohlcv, CryptoXch, Features
+using EnvConfig, Trade, Classify, Ohlcv, Xch, Features
 
 println("TradeTest trade_test")
 println("$(EnvConfig.now()): started")
@@ -11,7 +11,7 @@ demux_logger = TeeLogger(
 )
 defaultlogger = global_logger(demux_logger)
 
-CryptoXch.verbosity = 1
+Xch.verbosity = 1
 Classify.verbosity = 2
 Ohlcv.verbosity = 2
 Features.verbosity = 2
@@ -19,8 +19,8 @@ EnvConfig.init(training)
 # EnvConfig.init(production)
 startdt = DateTime("2024-03-19T00:00:00")
 enddt = DateTime("2024-03-29T10:00:00")
-cache = Trade.TradeCache(xc=CryptoXch.XchCache( startdt=startdt, enddt=enddt))
-CryptoXch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
+cache = Trade.TradeCache(xc=Xch.XchCache( startdt=startdt, enddt=enddt))
+Xch.updateasset!(cache.xc, "USDT", 0f0, 10000f0)
 
 # startdt = Dates.now(UTC)
 # enddt = nothing

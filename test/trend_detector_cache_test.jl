@@ -71,7 +71,7 @@ end
         @test size(resultsdf, 1) == 2
         @test size(featuresdf, 1) == 2
         @test resultsdf[!, :coin] == cached_results[!, :coin]
-        @test resultsdf[!, :target] == [Targets.allclose, Targets.longbuy]
+        @test resultsdf[!, :target] == [Targets.allclose, Targets.longopen]
         @test featuresdf[!, :dummy] == cached_features[!, :dummy]
     finally
         EnvConfig.setdfformat!(oldformat)

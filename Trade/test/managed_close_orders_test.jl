@@ -1,7 +1,7 @@
 using Test
 using Dates
 using DataFrames
-using EnvConfig, Trade, TradingStrategy, Classify, CryptoXch, Targets
+using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
 Base.@kwdef mutable struct ClosePriceRuntime <: TradingStrategy.AbstractStrategyRuntime
     snap::Union{Nothing, TradingStrategy.StrategySnapshot} = nothing
@@ -9,7 +9,7 @@ end
 
 function TradingStrategy.getsnapshot!(
     rt::ClosePriceRuntime,
-    xc::CryptoXch.XchCache,
+    xc::Xch.XchCache,
     base::AbstractString,
     datetime::DateTime;
     reconciliation::TradingStrategy.StrategyReconciliationInput=TradingStrategy.StrategyReconciliationInput(),
@@ -24,12 +24,12 @@ end
 @testset "Managed close order state" begin
     EnvConfig.init(EnvConfig.test)
 
-    xc = CryptoXch.XchCache()
+    xc = Xch.XchCache()
     tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
     tc.cfg = DataFrame(
         basecoin=["BTC"],
-        buyenabled=[true],
-        sellenabled=[true],
+        openenabled=[true],
+        closeenabled=[true],
         classifieraccepted=[true],
         minquotevol=[true],
         continuousminvol=[true],
@@ -40,7 +40,7 @@ end
     )
 
     assets = DataFrame(
-        coin=["BTC", EnvConfig.cryptoquote],
+        coin=["BTC", EnvConfig.pairquote],
         free=Float32[1.0f0, 1000.0f0],
         locked=Float32[0.0f0, 0.0f0],
         borrowed=Float32[0.0f0, 0.0f0],
@@ -48,7 +48,7 @@ end
         usdtvalue=Float32[100.0f0, 1000.0f0],
     )
 
-    symbol = CryptoXch.symboltoken(tc.xc, "BTC", EnvConfig.cryptoquote; role=CryptoXch.trade_exchange_spot)
+    symbol = Xch.symboltoken(tc.xc, "BTC", EnvConfig.pairquote; role=Xch.trade_exchange_spot)
     oo = DataFrame(
         orderid=["oid-close", "oid-entry"],
         symbol=[symbol, symbol],
@@ -96,11 +96,11 @@ end
 @testset "Missing close-order check includes managed state" begin
     EnvConfig.init(EnvConfig.test)
 
-    xc = CryptoXch.XchCache()
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.openclose)
+    xc = Xch.XchCache()
+    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
 
     assets = DataFrame(
-        coin=["BTC", EnvConfig.cryptoquote],
+        coin=["BTC", EnvConfig.pairquote],
         free=Float32[0.0f0, 2000.0f0],
         locked=Float32[0.0f0, 0.0f0],
         borrowed=Float32[1.0f0, 0.0f0],
@@ -114,7 +114,7 @@ end
 end
 
 @testset "Order amend threshold default and material change boundary" begin
-    tc = Trade.TradeCache(xc=CryptoXch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
     @test isapprox(Trade._order_amend_price_rel_threshold(tc), 1f-3; atol=1f-8)
 
     oldp = 100f0

@@ -71,15 +71,15 @@ end
     merged_df = DataFrame(
         rangeid=Int32[10, 10, 10, 11, 11, 11],
         set=["train", "train", "train", "eval", "eval", "eval"],
-        target=["longbuy", "longclose", "longclose", "shortbuy", "shortclose", "shortclose"],
+        target=["longopen", "longclose", "longclose", "shortopen", "shortclose", "shortclose"],
         centerpred=Float32[100, 101, 102, 200, 201, 202],
         widthpred=Float32[4, 6, 8, 10, 6, 2],
-        longbuy=Float32[0.7, 0.4, 0.2, 0.1, 0.1, 0.1],
-        shortbuy=Float32[0.1, 0.2, 0.3, 0.6, 0.4, 0.2],
+        longopen=Float32[0.7, 0.4, 0.2, 0.1, 0.1, 0.1],
+        shortopen=Float32[0.1, 0.2, 0.3, 0.6, 0.4, 0.2],
         allclose=Float32[0.2, 0.4, 0.5, 0.3, 0.5, 0.7],
     )
 
-    contract = BoundsEstimator.build_lstm_contract(merged_df; trendprobcols=[:longbuy, :shortbuy, :allclose])
+    contract = BoundsEstimator.build_lstm_contract(merged_df; trendprobcols=[:longopen, :shortopen, :allclose])
     windows = Classify.lstm_tensor_windows(contract; seqlen=2)
 
     @test size(contract.features) == (7, 6)

@@ -60,6 +60,8 @@ const _known_quotes = ["USDT", "USD", "USDC", "EUR", "BTC", "ETH"]
 
 const _nonce_lock = ReentrantLock()
 const _last_nonce = Ref{Int}(0)
+const _last_nonce_ms = Ref{Int}(0)
+const _nonce_ms_counter = Ref{Int}(0)
 const _openpositions_state_lock = ReentrantLock()
 const _openpositions_nonce_failures = Ref{Int}(0)
 const _openpositions_disabled_until = Ref{Union{Nothing, DateTime}}(nothing)
@@ -418,7 +420,7 @@ function KrakenSpotCache(; autoloadexchangeinfo::Bool=true, apirest::String=KRAK
 	keys = _resolve_credentials(publickey, secretkey)
 	syminfo = autoloadexchangeinfo ? _exchangeinfo(apirest) : _emptyexchangeinfo()
 	if autoloadexchangeinfo && (size(syminfo, 1) > 0)
-		targetquote = uppercase(EnvConfig.cryptoquote)
+		targetquote = uppercase(EnvConfig.pairquote)
 		filtered = syminfo[uppercase.(syminfo.quotecoin) .== targetquote, :]
 		syminfo = size(filtered, 1) > 0 ? filtered : syminfo
 		sort!(syminfo, :basecoin)
@@ -578,12 +580,19 @@ function _downloadsrequest(method::AbstractString, url::AbstractString; headers=
 	error("unreachable")
 end
 
-"Return a strictly increasing Kraken nonce (nanoseconds since epoch)."
+"Return a strictly increasing Kraken nonce (UTC milliseconds with in-ms counter)."
 function _nextnonce()::String
 	lock(_nonce_lock)
 	try
-		# Use unix-nanoseconds scale to stay above prior ms/us-based nonces used by other clients.
-		candidate = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
+		current_ms = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000))
+		if current_ms == _last_nonce_ms[]
+			_nonce_ms_counter[] += 1
+		else
+			_last_nonce_ms[] = current_ms
+			_nonce_ms_counter[] = 0
+		end
+
+		candidate = _last_nonce_ms[] * 1_000 + _nonce_ms_counter[]
 		if candidate <= _last_nonce[]
 			candidate = _last_nonce[] + 1
 		end
@@ -614,6 +623,18 @@ function _float32(value, default::Float32=0f0)::Float32
 		return isempty(value) ? default : _float32(first(value), default)
 	end
 	return default
+end
+
+"""
+Read one `Float32` from a vector-like field using 1-based `index`.
+Falls back to `default` when the index is unavailable or parsing fails.
+"""
+function _float32at(value, index::Integer, default::Float32=0f0)::Float32
+	if value isa AbstractVector
+		ix = Int(index)
+		return (1 <= ix <= length(value)) ? _float32(value[ix], default) : default
+	end
+	return _float32(value, default)
 end
 
 "Parse Kraken leverage values (e.g. \"2\", \"2:1\", \"none\") into a positive ratio or 0."
@@ -930,7 +951,7 @@ end
 """
 Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
 """
-function symboltoken(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String
+function symboltoken(bc::KrakenSpotCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)::String
 	base = _normalizeasset(basecoin)
 	qtoken = uppercase(quotecoin)
 	if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
@@ -1083,13 +1104,19 @@ function HttpPrivateRequest(bc::KrakenSpotCache, method::AbstractString, endPoin
 				retry_ix = 8 - attempts
 				wait_s = min(0.5, 0.05 * retry_ix)
 				nonce_floor = let
-					jump_ns = retry_ix >= 3 ? 2_000_000_000_000_000_000 : 5_000_000_000
 					lock(_nonce_lock)
 					try
-						now_ns = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000_000_000))
-						base = max(now_ns, _last_nonce[])
-						limit = typemax(Int) - 1_000_000
-						candidate = base >= (limit - jump_ns) ? limit : (base + jump_ns)
+						now_ms = Int(round(Dates.datetime2unix(Dates.now(Dates.UTC)) * 1_000))
+						if now_ms <= _last_nonce_ms[]
+							_last_nonce_ms[] += 1
+						else
+							_last_nonce_ms[] = now_ms
+						end
+						_nonce_ms_counter[] = 0
+						candidate = _last_nonce_ms[] * 1_000
+						if candidate <= _last_nonce[]
+							candidate = _last_nonce[] + 1
+						end
 						_last_nonce[] = candidate
 						_last_nonce[]
 					finally
@@ -1126,8 +1153,8 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 		if occursin("/", wsname)
 			splitpair = split(wsname, "/")
 			if length(splitpair) == 2
-				basecoin = uppercase(splitpair[1])
-				quotecoin = uppercase(splitpair[2])
+				basecoin = _normalizeasset(String(splitpair[1]))
+				quotecoin = _normalizeasset(String(splitpair[2]))
 			end
 		end
 		if (basecoin == "") || (quotecoin == "")
@@ -1220,7 +1247,7 @@ function validsymbol(bc::KrakenSpotCache, sym::Union{Nothing, DataFrameRow})::Bo
 	if isnothing(sym)
 		return false
 	end
-	return uppercase(sym.quotecoin) == uppercase(EnvConfig.cryptoquote) && _istradablestatus(sym.status)
+	return uppercase(sym.quotecoin) == uppercase(EnvConfig.pairquote) && _istradablestatus(sym.status)
 end
 
 """
@@ -1252,7 +1279,8 @@ function _tickerrow(bc::KrakenSpotCache, key::AbstractString, ticker::Dict)
 	bid = _float32(get(ticker, "b", Any[]), 0f0)
 	lastprice = _float32(get(ticker, "c", Any[]), 0f0)
 	openprice = _float32(get(ticker, "o", "0"), 0f0)
-	basevolume = _float32(get(ticker, "v", Any[]), 0f0)
+	# Kraken ticker volume array `v` is [today, last_24h]; selection uses rolling 24h.
+	basevolume = _float32at(get(ticker, "v", Any[]), 2, 0f0)
 	quotevolume = basevolume * lastprice
 	pricechangepercent = openprice == 0f0 ? 0f0 : Float32((lastprice - openprice) / openprice)
 	symbol = _resultkey2symbol(bc, key)
@@ -1396,7 +1424,7 @@ function accountcapacity(bc::KrakenSpotCache)
 
 	# Long lane capacity is wallet quote available for spot buys.
 	available_long_quote = 0.0
-	quotecoin = uppercase(String(EnvConfig.cryptoquote))
+	quotecoin = uppercase(String(EnvConfig.pairquote))
 	try
 		bdf = balances(bc)
 		if (:coin in names(bdf)) && (:free in names(bdf))

@@ -1,7 +1,7 @@
 using Test
 using Dates
 using DataFrames
-using EnvConfig, Trade, CryptoXch, Ohlcv
+using EnvConfig, Trade, Xch, Ohlcv
 
 @testset "simulated marketview" begin
     EnvConfig.init(EnvConfig.test)
@@ -20,14 +20,14 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
             pivot=Float32[100, 110],
         ),
         "BTC",
-        uppercase(EnvConfig.cryptoquote),
+        uppercase(EnvConfig.pairquote),
         "1m",
         2,
         nothing,
     )
 
-    xc = CryptoXch.XchCache(startdt=startdt, enddt=dt)
-    CryptoXch.addbase!(xc, ohlcv)
+    xc = Xch.XchCache(startdt=startdt, enddt=dt)
+    Xch.addbase!(xc, ohlcv)
     tc = Trade.TradeCache(xc=xc, trademode=Trade.notrade)
 
     mdf = Trade._simulated_usdtmarketview(tc, dt, Set(["BTC"]), startdt)
@@ -39,8 +39,8 @@ using EnvConfig, Trade, CryptoXch, Ohlcv
 
     @test Trade._uses_simulated_marketview(tc)
 
-    xc_live = CryptoXch.XchCache(startdt=startdt, enddt=nothing)
-    xc_live.mc[:simmode] = CryptoXch.nosimulation
+    xc_live = Xch.XchCache(startdt=startdt, enddt=nothing)
+    xc_live.mc[:simmode] = Xch.nosimulation
     tc_live = Trade.TradeCache(xc=xc_live, trademode=Trade.notrade)
     @test !Trade._uses_simulated_marketview(tc_live)
 end

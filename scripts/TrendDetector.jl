@@ -1,7 +1,7 @@
 module TrendDetector
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils, StatisticalMeasures
 using CategoricalArrays, CategoricalDistributions, Distributions
-using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy
+using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Xch
 
 #TODO regression from last trend pivot as feature 
 """
@@ -27,7 +27,7 @@ mutable struct TrendDetectorConfig
     featconfig::Features.AbstractFeatures
     targetconfig::Targets.AbstractTargets
     classifiermodel
-    tradingstrategy::TradingStrategy.GainSegment
+    tradingstrategy::TradingStrategy.StrategySpec
     startdt::DateTime
     enddt::DateTime
     opmode::TrendDetectorMode
@@ -201,10 +201,8 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
     end
 
     if isnothing(resultsdf)
+        cl = _trendclassifierseed(cfg)
         rangeid = UInt16(1) # shall be unique across coins
-        samplesets = cfg.partitionconfig.samplesets
-        levels = unique(samplesets)
-        samplesets = CategoricalArray(samplesets, levels=levels)
         skippedcoins = String[]
         processedcoins = String[]
         targetissuesdf = DataFrame()
@@ -239,16 +237,16 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
                     (verbosity >= 2) && print("$(EnvConfig.now()) calculating features and targets for $coin ($coinix/$(length(cfg.coins))) range ($rngix/$(length(rv))) $rng from $(ot[rng[begin]]) until $(ot[rng[end]]) with $(rng[end] - rng[begin]) samples                \r")
                     (verbosity >= 3) && println()
                     rngohlcv = Ohlcv.ohlcvview(ohlcv, rng)
-                    Features.setbase!(cfg.featconfig, rngohlcv, usecache=true)
-                    rngfeatures = Features.features(cfg.featconfig)
-                    rngresults = DataFrame(target=calctargets!(cfg.targetconfig, cfg.featconfig))
-                    @assert size(rngresults, 1) == size(rngfeatures, 1) == size(Ohlcv.dataframe(rngohlcv), 1) "unexpected mismatch of targets length $(size(rngresults, 1)), features size $(size(rngfeatures, 1)) and ohlcv size $(size(Ohlcv.dataframe(rngohlcv), 1)) for $(ohlcv.base) range $rng"
-                    rngpricedf = select(Ohlcv.dataframe(rngohlcv), [otcol, :high, :low, :close, :pivot])
-                    if otcol != :opentime
-                        rename!(rngpricedf, otcol => :opentime)
-                    end
-                    rngresults = hcat(rngresults, rngpricedf)
-                    issues = Targets.crosscheck(cfg.targetconfig, rngresults[!, :target], rngresults[!, :pivot])
+                    trgcfg = deepcopy(cfg.targetconfig)
+                    rngresults, rngfeatures = Classify.featurestargetsdf(
+                        cl,
+                        rngohlcv,
+                        trgcfg;
+                        partitionconfig=cfg.partitionconfig,
+                        coin=coin,
+                        rangeid_start=rangeid,
+                    )
+                    issues = Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
                     if !isnothing(issues) && (length(issues) > 0)
                         if size(targetissuesdf, 1) > 0
                             targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
@@ -256,21 +254,9 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
                             targetissuesdf = DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues)))
                         end
                     end
-                    rngresults[:, :rangeid] .= 0
-                    rngresults[:, :set] = CategoricalVector(fill(samplesets[1], size(rngfeatures, 1)), levels=levels) # arbitrary value to initialize the column with correct type
-                    allowmissing!(rngresults, :set)
-                    rngresults[:, :set] .= missing # initialize with missing to be able to check later if all rows were assigned to a set
-                    rngresults[:, :coin] = CategoricalVector(fill(coin, size(rngfeatures, 1)), levels=cfg.coins)
-                    psets = Classify.setpartitions(1:size(rngresults, 1), samplesets, partitionsize=cfg.partitionconfig.partitionsize, gapsize=cfg.partitionconfig.gapsize, minpartitionsize=cfg.partitionconfig.minpartitionsize, maxpartitionsize=cfg.partitionconfig.maxpartitionsize)
-
-                    for (pssettype, psrng) in psets # psrng (partition set ranges) is a vector of row ranges with indices that are related to rngresults rows (not to ohlcv dataframe rows)
-                        rngresults[psrng, :rangeid] .= rangeid
-                        rngresults[psrng, :set] .= pssettype
-                        rangeid += 1
+                    if size(rngresults, 1) > 0
+                        rangeid = UInt16(maximum(rngresults[!, :rangeid]) + 1)
                     end
-                    usesamplesmask = .!ismissing.(rngresults[!, :set])
-                    rngresults = rngresults[usesamplesmask, :]
-                    rngfeatures = rngfeatures[usesamplesmask, :]
                     coinresultsdf = isnothing(coinresultsdf) ? rngresults : vcat(coinresultsdf, rngresults)
                     coinfeaturesdf = isnothing(coinfeaturesdf) ? rngfeatures : vcat(coinfeaturesdf, rngfeatures)
                 else
@@ -312,24 +298,63 @@ end
 
 classifiermenmonic(coins=nothing, coinix=nothing) = "mix"
 
-function getlatestclassifier(cfg::TrendDetectorConfig)
-    nn = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), classifiermenmonic()) # to get correct filename
-    (verbosity >= 3) && println("getlatestclassifier classifier file: $(Classify.nnfilename(nn.fileprefix)), isfile=$(isfile(Classify.nnfilename(nn.fileprefix)))")
-    if isfile(Classify.nnfilename(nn.fileprefix))
-        spec = (
-            config_ref=cfg.configname,
-            nn_fileprefix=nn.fileprefix,
-            featconfig_factory=() -> deepcopy(cfg.featconfig),
-            required_minutes=max(Features.requiredminutes(cfg.featconfig), 2),
+function _trendclassifierspec(cfg::TrendDetectorConfig)
+    return (
+        config_ref=cfg.configname,
+        featconfig=() -> deepcopy(cfg.featconfig),
+        targetconfig=() -> deepcopy(cfg.targetconfig),
+        folder=cfg.folder,
+    )
+end
+
+function _trendclassifierseed(cfg::TrendDetectorConfig)::Classify.TrendClassifier001
+    featurecount = Features.featurecount(cfg.featconfig)
+    labels = Targets.uniquelabels(cfg.targetconfig)
+    mnemonic = classifiermenmonic()
+    spec = _trendclassifierspec(cfg)
+    return Classify.loadorbuild(
+        Classify.TrendClassifier001,
+        spec,
+        featurecount,
+        labels,
+        mnemonic,
+        cfg.classifiermodel;
+        mode=EnvConfig.configmode,
+        folder=cfg.folder,
+    )
+end
+
+function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.TrendClassifier001
+    cl = _trendclassifierseed(cfg)
+    nn = cl.nn
+
+    if !Classify.isadapted(nn) || (!Classify.nnconverged(nn) && retrain)
+        println("$(EnvConfig.now()) adapting one mix classifier for all coins")
+        resultsdf, featuresdf = getfeaturestargetsdf(cfg)
+        if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
+            return cl
+        end
+        Classify.adapt!(
+            cl,
+            resultsdf,
+            featuresdf;
+            settype="train",
+            classbalancing=cfg.classbalancing,
+            retrain=retrain,
+            save_after=true,
+            mode=EnvConfig.configmode,
             folder=cfg.folder,
         )
-        nn = Classify.load(Classify.TrendClassifier001, spec; mode=EnvConfig.configmode).nn
-        (verbosity >= 3) && println("getlatestclassifier loaded: nn=$(nn.fileprefix), labels=$(nn.labels) - classifier $(Classify.nnconverged(nn) ? "did" : "did not") converge")
-    else
-        (verbosity >= 3) && println("getlatestclassifier new: nn=$(nn.fileprefix), labels=$(nn.labels)")
+        (verbosity >= 3) && showlosses(nn)
+        println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(nn) ? "did" : "did not") converge")
     end
-    @assert !isnothing(nn)
-    return nn
+
+    return cl
+end
+
+function getlatestclassifier(cfg::TrendDetectorConfig)
+    cl = getruntimeclassifier(cfg)
+    return cl.nn
 end
 
 # getlatestclassifier(coins, coinix, featureconfig, targetconfig) = getlatestclassifier((isnothing(coinix) ? coins : coins[coinix]), featureconfig, targetconfig)
@@ -356,47 +381,7 @@ end
 
 
 function getclassifier(cfg::TrendDetectorConfig)
-    nn = getlatestclassifier(cfg)
-    if !Classify.isadapted(nn) || (!Classify.nnconverged(nn) && retrain)
-        println("$(EnvConfig.now()) adapting one mix classifier for all coins")
-        # if classifier file does not exist then create one
-        resultsdf, featuresdf = getfeaturestargetsdf(cfg) 
-        featuresdf = @view featuresdf[(resultsdf[!, :set] .== "train"), :]
-        resultsdf = @view resultsdf[(resultsdf[!, :set] .== "train"), :]
-        if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
-            return nothing
-        end
-        features = df2features(featuresdf, cfg)
-        targets = resultsdf[!, :target]
-        (verbosity >= 3) && println("$(EnvConfig.now()) size(featuresdf)=$(size(featuresdf)), size(features)=$(size(features)), size(targets)=$(size(targets)) for training mix classifier"  )
-        resultsdf = featuresdf = nothing # free memory
-        weightinfo = Classify.classweighting(targets, nn.labels)
-        (verbosity >= 2) && println("$(EnvConfig.now()) training class distribution: $(weightinfo.dist)")
-        sampleweights = nothing
-        if cfg.classbalancing
-            sampleweights = weightinfo.sampleweights
-            weightsummary = [(string(label), round(weight, digits=3)) for (label, weight) in zip(weightinfo.labels, weightinfo.classweights) if weight > 0f0]
-            (verbosity >= 2) && println("$(EnvConfig.now()) applying class-weighted loss for class balancing: $(weightsummary)")
-        else
-            (verbosity >= 2) && println("$(EnvConfig.now()) class weighting disabled; using uniform loss")
-        end
-        Classify.adaptnn!(nn, features, targets; sampleweights=sampleweights)
-        (verbosity >= 3) && showlosses(nn)
-        if isnothing(nn)
-            # no adaptation took place
-            return nothing
-        else
-            # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
-            cl = Classify.TrendClassifier001(
-                nn;
-                featconfig_factory=() -> deepcopy(cfg.featconfig),
-                required_minutes=max(Features.requiredminutes(cfg.featconfig), 2),
-            )
-            Classify.save(cl; mode=EnvConfig.configmode, folder=cfg.folder)
-        end
-        println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(nn) ? "did" : "did not") converge")
-    end
-    return nn
+    return getruntimeclassifier(cfg).nn
 end
 
 """
@@ -417,12 +402,11 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
     end
     # predictions are stored in a predictionsdf to avoid loading every time also features bu eventually you want the whole resultdf with predictions
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
-        nn = getclassifier(cfg)
+        cl = getruntimeclassifier(cfg)
         resultsdf, featuresdf = getfeaturestargetsdf(cfg) 
         (verbosity >= 2) && print("$(EnvConfig.now()) get maximum predictions                             \r")
         (verbosity >= 3) && println()
-        features = df2features(featuresdf, cfg)
-        predictionsdf = Classify.maxpredictdf(nn, features)
+        predictionsdf = Classify.maxpredictdf(cl, featuresdf)
         @assert size(predictionsdf, 1) == size(featuresdf, 1) == size(resultsdf, 1) "size(predictionsdf, 1)=$(size(predictionsdf, 1)) != size(featuresdf, 1)=$(size(featuresdf, 1)) != size(resultsdf, 1)=$(size(resultsdf, 1)) for mix"
         if (size(resultsdf, 1) > 0)
             EnvConfig.savedf(predictionsdf, predictionsfilename())
@@ -487,9 +471,88 @@ function getgainsdf(cfg::TrendDetectorConfig)
         return nothing
     end
 
+    ts = TradingStrategy.TsCache(
+        configuration=Dict{Symbol, Any}(
+            :classifier_factory => () -> getruntimeclassifier(cfg),
+            :strategy_template => deepcopy(cfg.tradingstrategy),
+        ),
+        source="trenddetector:$(cfg.configname)",
+    )
+    xc = Xch.XchCache(startdt=cfg.startdt, enddt=cfg.enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+
     rangegroups = groupby(resultsdf, :rangeid)
     gainparts = DataFrame[]
     sizehint!(gainparts, (length(GAIN_THRESHOLDS) + 1) * length(rangegroups))
+
+    # Diagnostics for understanding gain materialization differences per coin/range/threshold.
+    diag_coin = String[]
+    diag_set = String[]
+    diag_rangeid = Int[]
+    diag_predicted = Bool[]
+    diag_openthreshold = Float32[]
+    diag_closethreshold = Float32[]
+    diag_input_rows = Int[]
+    diag_open_signal_rows = Int[]
+    diag_close_signal_rows = Int[]
+    diag_gain_rows = Int[]
+    diag_long_guidance_rows = Int[]
+    diag_short_guidance_rows = Int[]
+    diag_long_open_touch_rows = Int[]
+    diag_long_close_touch_rows = Int[]
+    diag_short_open_touch_rows = Int[]
+    diag_short_close_touch_rows = Int[]
+
+    _hasguidance_local(o, c) = (!ismissing(o) && !ismissing(c) && (Float32(o) > 0f0) && (Float32(c) > 0f0))
+    _inbar_local(price, low, high) = (!ismissing(price) && !ismissing(low) && !ismissing(high) && (Float32(low) <= Float32(price) <= Float32(high)))
+
+    function _filltouchdiag(tradesdf::AbstractDataFrame)
+        long_guidance_rows = long_open_touch_rows = long_close_touch_rows = 0
+        short_guidance_rows = short_open_touch_rows = short_close_touch_rows = 0
+        required = (:longopenlimit in names(tradesdf)) && (:longcloselimit in names(tradesdf)) && (:shortopenlimit in names(tradesdf)) && (:shortcloselimit in names(tradesdf)) && (:high in names(tradesdf)) && (:low in names(tradesdf))
+        if !required
+            return (0, 0, 0, 0, 0, 0)
+        end
+        for ix in 1:nrow(tradesdf)
+            lo = tradesdf[ix, :longopenlimit]
+            lc = tradesdf[ix, :longcloselimit]
+            so = tradesdf[ix, :shortopenlimit]
+            sc = tradesdf[ix, :shortcloselimit]
+            high = tradesdf[ix, :high]
+            low = tradesdf[ix, :low]
+
+            if _hasguidance_local(lo, lc)
+                long_guidance_rows += 1
+                _inbar_local(lo, low, high) && (long_open_touch_rows += 1)
+                _inbar_local(lc, low, high) && (long_close_touch_rows += 1)
+            end
+            if _hasguidance_local(so, sc)
+                short_guidance_rows += 1
+                _inbar_local(so, low, high) && (short_open_touch_rows += 1)
+                _inbar_local(sc, low, high) && (short_close_touch_rows += 1)
+            end
+        end
+        return (long_guidance_rows, short_guidance_rows, long_open_touch_rows, long_close_touch_rows, short_open_touch_rows, short_close_touch_rows)
+    end
+
+    function _push_gain_diag!(coin, sampleset, rangeid, predicted, openthreshold, closethreshold, input_rows, open_signal_rows, close_signal_rows, gain_rows,
+        long_guidance_rows, short_guidance_rows, long_open_touch_rows, long_close_touch_rows, short_open_touch_rows, short_close_touch_rows)
+        push!(diag_coin, String(coin))
+        push!(diag_set, string(sampleset))
+        push!(diag_rangeid, Int(rangeid))
+        push!(diag_predicted, Bool(predicted))
+        push!(diag_openthreshold, Float32(openthreshold))
+        push!(diag_closethreshold, Float32(closethreshold))
+        push!(diag_input_rows, Int(input_rows))
+        push!(diag_open_signal_rows, Int(open_signal_rows))
+        push!(diag_close_signal_rows, Int(close_signal_rows))
+        push!(diag_gain_rows, Int(gain_rows))
+        push!(diag_long_guidance_rows, Int(long_guidance_rows))
+        push!(diag_short_guidance_rows, Int(short_guidance_rows))
+        push!(diag_long_open_touch_rows, Int(long_open_touch_rows))
+        push!(diag_long_close_touch_rows, Int(long_close_touch_rows))
+        push!(diag_short_open_touch_rows, Int(short_open_touch_rows))
+        push!(diag_short_close_touch_rows, Int(short_close_touch_rows))
+    end
 
     for (rngix, resultsview) in enumerate(rangegroups)
         rng = resultsview[begin, :rangeid]
@@ -501,25 +564,104 @@ function getgainsdf(cfg::TrendDetectorConfig)
         sampleset = resultsview[begin, :set]
         scores = resultsview[!, :score]
         labels = resultsview[!, :label]
-        replayscores, replaylabels = TradingStrategy.replay_classification_gating(cfg.tradingstrategy, resultsview, scores, labels)
+        replayscores = Float32.(scores)
+        replaylabels = Targets.TradeLabel[labels[i] for i in eachindex(labels)]
         targets = resultsview[!, :target]
         truescores = fill(1f0, size(resultsview, 1))
+        evaldt = resultsview[end, :opentime]
+        input_rows = size(resultsview, 1)
+
+        replay_open_rows = count(l -> (l in (longopen, longstrongopen, shortopen, shortstrongopen)), replaylabels)
+        replay_close_rows = count(l -> (l in (longclose, longstrongclose, shortclose, shortstrongclose, allclose)), replaylabels)
+
+        truelabels = Targets.TradeLabel[targets[i] for i in eachindex(targets)]
+        true_open_rows = count(l -> (l in (longopen, longstrongopen, shortopen, shortstrongopen)), truelabels)
+        true_close_rows = count(l -> (l in (longclose, longstrongclose, shortclose, shortstrongclose, allclose)), truelabels)
 
         for (openthreshold, closethreshold) in GAIN_THRESHOLDS
-            TradingStrategy.reset!(cfg.tradingstrategy)
-            gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, replayscores, replaylabels, true, openthreshold=openthreshold, closethreshold=closethreshold)
+            TradingStrategy.resetstrategy!(cfg.tradingstrategy)
+            gdf = TradingStrategy.getgains(
+                ts,
+                xc,
+                String(coin),
+                resultsview,
+                replayscores,
+                replaylabels,
+                true;
+                strategy=cfg.tradingstrategy,
+                openthreshold=openthreshold,
+                closethreshold=closethreshold,
+                metadata=Dict{Symbol, Any}(:set => String(sampleset), :predicted => true, :rangeid => Int(rng), :openthreshold => Float32(openthreshold), :closethreshold => Float32(closethreshold)),
+                datetime=evaldt,
+            )
+            pair = TradingStrategy.tspairkey(String(coin), EnvConfig.pairquote)
+            tdf = Xch.trades(xc, pair)
+            lgr, sgr, lot, lct, sot, sct = _filltouchdiag(tdf)
+            _push_gain_diag!(coin, sampleset, rng, true, openthreshold, closethreshold, input_rows, replay_open_rows, replay_close_rows, size(gdf, 1), lgr, sgr, lot, lct, sot, sct)
             if size(gdf, 1) > 0
                 addgainadmin!(gdf, coin, sampleset, true, rng, openthreshold, closethreshold)
                 push!(gainparts, gdf)
             end
         end
 
-        TradingStrategy.reset!(cfg.tradingstrategy)
+        TradingStrategy.resetstrategy!(cfg.tradingstrategy)
         true_open, true_close = TRUE_GAIN_THRESHOLD
-        gdf = TradingStrategy.getgains(cfg.tradingstrategy, resultsview, truescores, targets, true, openthreshold=true_open, closethreshold=true_close)
+        gdf = TradingStrategy.getgains(
+            ts,
+            xc,
+            String(coin),
+            resultsview,
+            truescores,
+            targets,
+            true;
+            strategy=cfg.tradingstrategy,
+            openthreshold=true_open,
+            closethreshold=true_close,
+            metadata=Dict{Symbol, Any}(:set => String(sampleset), :predicted => false, :rangeid => Int(rng), :openthreshold => Float32(true_open), :closethreshold => Float32(true_close)),
+            datetime=evaldt,
+        )
+        pair = TradingStrategy.tspairkey(String(coin), EnvConfig.pairquote)
+        tdf = Xch.trades(xc, pair)
+        lgr, sgr, lot, lct, sot, sct = _filltouchdiag(tdf)
+        _push_gain_diag!(coin, sampleset, rng, false, true_open, true_close, input_rows, true_open_rows, true_close_rows, size(gdf, 1), lgr, sgr, lot, lct, sot, sct)
         if size(gdf, 1) > 0
             addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close)
             push!(gainparts, gdf)
+        end
+    end
+
+    gaindiagdf = DataFrame(
+        coin=diag_coin,
+        set=diag_set,
+        rangeid=diag_rangeid,
+        predicted=diag_predicted,
+        openthreshold=diag_openthreshold,
+        closethreshold=diag_closethreshold,
+        input_rows=diag_input_rows,
+        open_signal_rows=diag_open_signal_rows,
+        close_signal_rows=diag_close_signal_rows,
+        gain_rows=diag_gain_rows,
+        long_guidance_rows=diag_long_guidance_rows,
+        short_guidance_rows=diag_short_guidance_rows,
+        long_open_touch_rows=diag_long_open_touch_rows,
+        long_close_touch_rows=diag_long_close_touch_rows,
+        short_open_touch_rows=diag_short_open_touch_rows,
+        short_close_touch_rows=diag_short_close_touch_rows,
+    )
+    if size(gaindiagdf, 1) > 0
+        sort!(gaindiagdf, [:coin, :predicted, :rangeid, :openthreshold, :closethreshold])
+        EnvConfig.savedf(gaindiagdf, "gains_diagnostics")
+
+        if verbosity >= 2
+            diagsummary = combine(
+                groupby(gaindiagdf, [:coin, :predicted]),
+                :gain_rows => sum => :gain_rows_sum,
+                :gain_rows => (v -> count(==(0), v)) => :zero_gain_ranges,
+                :rangeid => (v -> length(unique(v))) => :ranges,
+            )
+            println("$(EnvConfig.now()) gain diagnostics summary:")
+            show(diagsummary, allrows=true, allcols=true)
+            println()
         end
     end
 
@@ -529,8 +671,34 @@ function getgainsdf(cfg::TrendDetectorConfig)
         if size(gaindf, 1) > 0
             sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt, :trend])
             TradingStrategy.savetrades(gaindf; stem="gains")
+
+            present = Set(String.(unique(gaindf[!, :coin])))
+            missing_coins = [coin for coin in cfg.coins if !(String(coin) in present)]
+            if !isempty(missing_coins)
+                @warn "missing coins in gains output" missing_coins present_coins=collect(present)
+            end
         end
     end
+
+    pairkeys = Xch.tradingpairs(xc)
+    if !isempty(pairkeys)
+        tradeparts = DataFrame[]
+        for pair in pairkeys
+            tdf = Xch.trades(xc, pair)
+            size(tdf, 1) > 0 || continue
+            push!(tradeparts, DataFrame(tdf; copycols=true))
+        end
+        if !isempty(tradeparts)
+            tradesv1 = reduce(vcat, tradeparts; cols=:union)
+            sortcols = Symbol[]
+            for c in [:coin, :predicted, :openthreshold, :closethreshold, :rangeid, :opentime]
+                (c in names(tradesv1)) && push!(sortcols, c)
+            end
+            !isempty(sortcols) && sort!(tradesv1, sortcols)
+            TradingStrategy.savetrades(tradesv1; stem="tradesV1")
+        end
+    end
+
     (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")
     return gaindf
 end
@@ -745,11 +913,11 @@ function averageconfusionmatrix(cfg::TrendDetectorConfig)
         cmdf = @view cmdf[.!ismissing.(cmdf[!, :set]), :] # exclude gaps between set partitions
         cmdfgrp = groupby(cmdf, [:set, :prediction])
         ccmdf = combine(cmdfgrp, 
-                        [:truth_longbuy, :truth_longhold, :truth_allclose, :truth_shorthold, :truth_shortbuy] => ((lb, lh, ac, sh, sb) -> sum(lb) / (sum(lb) + sum(lh) + sum(sum(ac)) + sum(sh) + sum(sb)) * 100) => "longbuy_ppv%",
-                        [:truth_longhold, :truth_longbuy, :truth_allclose, :truth_shorthold, :truth_shortbuy] => ((lh, lb, ac, sh, sb) -> sum(lh) / (sum(lh) + sum(lb) + sum(sum(ac)) + sum(sh) + sum(sb)) * 100) => "longhold_ppv%",
-                        [:truth_allclose, :truth_longbuy, :truth_longhold, :truth_shorthold, :truth_shortbuy] => ((ac, lb, lh, sh, sb) -> sum(ac) / (sum(ac) + sum(lb) + sum(lh) + sum(sh) + sum(sb)) * 100) => "allclose_ppv%",
-                        [:truth_shorthold, :truth_longbuy, :truth_longhold, :truth_allclose, :truth_shortbuy] => ((sh, lb, lh, ac, sb) -> sum(sh) / (sum(sh) + sum(lb) + sum(lh) + sum(ac) + sum(sb)) * 100) => "shorthold_ppv%",
-                        [:truth_shortbuy, :truth_longbuy, :truth_longhold, :truth_allclose, :truth_shorthold] => ((sb, lb, lh, ac, sh) -> sum(sb) / (sum(sb) + sum(lb) + sum(lh) + sum(ac) + sum(sh)) * 100) => "shortbuy_ppv%")
+                        [:truth_longopen, :truth_longhold, :truth_allclose, :truth_shorthold, :truth_shortopen] => ((lb, lh, ac, sh, sb) -> sum(lb) / (sum(lb) + sum(lh) + sum(sum(ac)) + sum(sh) + sum(sb)) * 100) => "longopen_ppv%",
+                        [:truth_longhold, :truth_longopen, :truth_allclose, :truth_shorthold, :truth_shortopen] => ((lh, lb, ac, sh, sb) -> sum(lh) / (sum(lh) + sum(lb) + sum(sum(ac)) + sum(sh) + sum(sb)) * 100) => "longhold_ppv%",
+                        [:truth_allclose, :truth_longopen, :truth_longhold, :truth_shorthold, :truth_shortopen] => ((ac, lb, lh, sh, sb) -> sum(ac) / (sum(ac) + sum(lb) + sum(lh) + sum(sh) + sum(sb)) * 100) => "allclose_ppv%",
+                        [:truth_shorthold, :truth_longopen, :truth_longhold, :truth_allclose, :truth_shortopen] => ((sh, lb, lh, ac, sb) -> sum(sh) / (sum(sh) + sum(lb) + sum(lh) + sum(ac) + sum(sb)) * 100) => "shorthold_ppv%",
+                        [:truth_shortopen, :truth_longopen, :truth_longhold, :truth_allclose, :truth_shorthold] => ((sb, lb, lh, ac, sh) -> sum(sb) / (sum(sb) + sum(lb) + sum(lh) + sum(ac) + sum(sh)) * 100) => "shortopen_ppv%")
     else
         (verbosity >= 2) && println("cannot get confusion matrices")
         ccmdf = DataFrame()
@@ -1011,7 +1179,7 @@ function main(args::Vector{String}=ARGS)
         Classify.verbosity = 1
     end
 
-    EnvConfig.setcoinspath!("coins_bybit")
+    EnvConfig.setcoinspath!("Bybit")
     (verbosity >= 2) && println("coinspath: $(EnvConfig.coinspath())")
 
     global cfg = buildcfg(args, allowedcoins, startdt, enddt)

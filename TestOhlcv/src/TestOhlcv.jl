@@ -158,7 +158,7 @@ dispatch = Dict(
 
 testbasecoin() = keys(dispatch)
 
-function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
+function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", quotecoin=EnvConfig.pairquote)
     testbase = base
     if base in keys(dispatch)
         df = dispatch[testbase](startdt, enddt, interval)
@@ -177,9 +177,9 @@ function testdataframe(base::String, startdt::DateTime, enddt::DateTime=Dates.no
     end
 end
 
-function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", cryptoquote=EnvConfig.cryptoquote)
+function testohlcv(base::String, startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m", quotecoin=EnvConfig.pairquote)
     ohlcv = Ohlcv.defaultohlcv(base)
-    df = testdataframe(base, startdt, enddt, interval, cryptoquote)
+    df = testdataframe(base, startdt, enddt, interval, quotecoin)
     ohlcv = Ohlcv.setdataframe!(ohlcv, df)
     return ohlcv
 end

@@ -12,6 +12,8 @@ else
 end
 include("routingtests.jl")
 include("openstatus_test.jl")
+include("order_request_status_test.jl")
+include("messagecatalogtests.jl")
 include("log_integration_test.jl")
 include("multileg_order_test.jl")
 include("usdtmarket_intent_test.jl")

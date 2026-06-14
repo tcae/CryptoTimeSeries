@@ -22,7 +22,7 @@ function _run_sine_scenario(name::String, th::Targets.LabelThresholds)
 
     println("Scenario: $name")
     println("  crosscheck_valid=$(isempty(checks)) issues=$(length(checks))")
-    println("  labels: LB=$(count(==(longbuy), labels)) LH=$(count(==(longhold), labels)) SB=$(count(==(shortbuy), labels)) SH=$(count(==(shorthold), labels)) AC=$(count(==(allclose), labels))")
+    println("  labels: LB=$(count(==(longopen), labels)) LH=$(count(==(longhold), labels)) SB=$(count(==(shortopen), labels)) SH=$(count(==(shorthold), labels)) AC=$(count(==(allclose), labels))")
     _print_hold_diag(diag)
     println()
 end
@@ -44,14 +44,14 @@ function _run_btc_slice(name::String, th::Targets.LabelThresholds, startix::Int,
 
     println("Scenario: $name")
     println("  slice=$startix:$endix crosscheck_valid=$(isempty(checks)) issues=$(length(checks))")
-    println("  labels: LB=$(count(==(longbuy), labels)) LH=$(count(==(longhold), labels)) SB=$(count(==(shortbuy), labels)) SH=$(count(==(shorthold), labels)) AC=$(count(==(allclose), labels))")
+    println("  labels: LB=$(count(==(longopen), labels)) LH=$(count(==(longhold), labels)) SB=$(count(==(shortopen), labels)) SH=$(count(==(shorthold), labels)) AC=$(count(==(allclose), labels))")
     _print_hold_diag(diag)
     println()
 end
 
 function _print_hold_diag(diag::Dict{String, Int})
-    cand_long = get(diag, "cand.longhold.reversal", 0) + get(diag, "cand.longhold.from_longhold", 0) + get(diag, "cand.longhold.from_longbuy", 0)
-    acc_long = get(diag, "acc.longhold.reversal", 0) + get(diag, "acc.longhold.from_longhold", 0) + get(diag, "acc.longhold.from_longbuy", 0) + get(diag, "acc.longhold.from_micro_shortpeak", 0)
+    cand_long = get(diag, "cand.longhold.reversal", 0) + get(diag, "cand.longhold.from_longhold", 0) + get(diag, "cand.longhold.from_longopen", 0)
+    acc_long = get(diag, "acc.longhold.reversal", 0) + get(diag, "acc.longhold.from_longhold", 0) + get(diag, "acc.longhold.from_longopen", 0) + get(diag, "acc.longhold.from_micro_shortpeak", 0)
     cand_short = get(diag, "cand.shorthold.reversal", 0) + get(diag, "cand.shorthold.from_shorthold", 0) + get(diag, "cand.shorthold.from_shortbuy", 0)
     acc_short = get(diag, "acc.shorthold.reversal", 0) + get(diag, "acc.shorthold.from_shorthold", 0) + get(diag, "acc.shorthold.from_shortbuy", 0) + get(diag, "acc.shorthold.from_micro_longpeak", 0)
 

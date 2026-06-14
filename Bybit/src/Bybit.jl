@@ -79,7 +79,7 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
     end
     bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing)
     xchinfo = _exchangeinfo(bc)
-    xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.cryptoquote, :], :basecoin)
+    xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
     return BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
 end
@@ -99,14 +99,14 @@ end
 function _ensure_sim_symboluniverse!(bc::BybitCache)
     isnothing(bc.syminfodf) && return bc
     for base in _bybitsim_test_basecoins
-        symbol = uppercase(string(base, EnvConfig.cryptoquote))
+        symbol = uppercase(string(base, EnvConfig.pairquote))
         ix = findfirst(==(symbol), bc.syminfodf[!, :symbol])
         if isnothing(ix)
             push!(bc.syminfodf, (
                 symbol=symbol,
                 status="Trading",
                 basecoin=String(base),
-                quotecoin=String(EnvConfig.cryptoquote),
+                quotecoin=String(EnvConfig.pairquote),
                 ticksize=1f-6,
                 baseprecision=1f-5,
                 quoteprecision=1f-6,
@@ -477,7 +477,7 @@ function _dictstring2values!(bybitdict::T) where T <: AbstractDict
         elseif entry in boolkeys
             bybitdict[entry] = bybitdict[entry] == "" ? nothing : parse(Bool, bybitdict[entry])
         elseif entry == "s"
-            bybitdict["base"] = uppercase(replace(bybitdict["s"], uppercase(EnvConfig.cryptoquote) => ""))
+            bybitdict["base"] = uppercase(replace(bybitdict["s"], uppercase(EnvConfig.pairquote) => ""))
             #TODO assumption that only USDT quotecoin is traded is containment - requires a more general approach
         elseif (typeof(bybitdict[entry]) <: AbstractDict) || (typeof(bybitdict[entry]) <: AbstractVector)
             bybitdict[entry] = _dictstring2values!(bybitdict[entry])
@@ -537,7 +537,7 @@ function _sim_lastprice(bc::BybitCache, symbol::AbstractString; atdt::Union{Noth
     refdt = _simreferencedt(bc, atdt)
 
     if base in _bybitsim_test_basecoins
-        testdf = TestOhlcv.testdataframe(base, refdt - Minute(32), refdt, "1m", EnvConfig.cryptoquote)
+        testdf = TestOhlcv.testdataframe(base, refdt - Minute(32), refdt, "1m", EnvConfig.pairquote)
         size(testdf, 1) > 0 || error("BybitSim missing test OHLCV for base=$(base) at refdt=$(refdt).")
         ix = Ohlcv.rowix(testdf[!, :opentime], refdt, Minute(1))
         ix > 0 || error("BybitSim test OHLCV row lookup failed for base=$(base) at refdt=$(refdt).")
@@ -558,7 +558,7 @@ function _sim_get24h(bc::BybitCache, symbol=nothing)
         return isnothing(symbol) ? isempty : nothing
     end
 
-    quotecoin = uppercase(String(EnvConfig.cryptoquote))
+    quotecoin = uppercase(String(EnvConfig.pairquote))
     rowok(row) = (uppercase(String(row.quotecoin)) == quotecoin) && (String(row.status) == "Trading") && (Int(row.innovation) == 0)
 
     if !isnothing(symbol) && (symbol != "")
@@ -703,7 +703,7 @@ end
 """
 Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
 """
-function symboltoken(bc::BybitCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.cryptoquote)::String
+function symboltoken(bc::BybitCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)::String
     base = uppercase(basecoin)
     qtoken = uppercase(quotecoin)
     if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
@@ -715,7 +715,7 @@ function symboltoken(bc::BybitCache, basecoin::AbstractString, quotecoin::Abstra
     return uppercase(base * qtoken)
 end
 
-validsymbol(bc::BybitCache, sym::Union{Nothing, DataFrameRow}) = !isnothing(sym) && (sym.quotecoin == EnvConfig.cryptoquote) && (sym.innovation == 0) && (sym.status == "Trading") # no Bybit innovation coins
+validsymbol(bc::BybitCache, sym::Union{Nothing, DataFrameRow}) = !isnothing(sym) && (sym.quotecoin == EnvConfig.pairquote) && (sym.innovation == 0) && (sym.status == "Trading") # no Bybit innovation coins
 validsymbol(bc::BybitCache, symbol::AbstractString) = validsymbol(bc, symbolinfo(bc, symbol))
 function validsymbol(bc::BybitCache, basecoin::AbstractString, quotecoin::AbstractString)
     sym = symbolinfo(bc, symboltoken(bc, basecoin, quotecoin))
@@ -760,7 +760,7 @@ function _sim_klines(symbol::AbstractString; startDateTime=nothing, endDateTime=
 
     base = _basefromsymbol(symbol)
     if base in _bybitsim_test_basecoins
-        tdf = TestOhlcv.testdataframe(base, startdt, enddt, interval, EnvConfig.cryptoquote)
+        tdf = TestOhlcv.testdataframe(base, startdt, enddt, interval, EnvConfig.pairquote)
         if size(tdf, 1) == 0
             error("BybitSim missing test OHLCV for base=$(base), interval=$(interval), range=$(startdt) to $(enddt).")
         end
@@ -981,7 +981,7 @@ end
 "Helper function to apply order fill to simulation balances"
 function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, price::Real, marginleverage::Signed=0)
     base = _basefromsymbol(symbol)
-    quote_coin = uppercase(EnvConfig.cryptoquote)
+    quote_coin = uppercase(EnvConfig.pairquote)
     bix = findfirst(==(base), bc.assets[!, :coin])
     qix = findfirst(==(quote_coin), bc.assets[!, :coin])
     if isnothing(bix)
@@ -1352,7 +1352,7 @@ end
 """
 Return account capacity in quote currency for Bybit and BybitSim.
 
-The returned tuple aligns with `CryptoXch.accountcapacity` fields and reports
+The returned tuple aligns with `Xch.accountcapacity` fields and reports
 quote-currency-conservative opening capacity while exposing full account equity:
 - `available_opening_quote`, `available_long_quote`, `available_short_quote`
   are based on free quote balance.
@@ -1365,7 +1365,7 @@ OHLCV files for symbols not in the portfolio.
 """
 function accountcapacity(bc::BybitCache)
     bdf = balances(bc)
-    quotecoin = uppercase(String(EnvConfig.cryptoquote))
+    quotecoin = uppercase(String(EnvConfig.pairquote))
     cols = propertynames(bdf)
     quotefree = 0.0
     equity_quote = 0.0
@@ -1414,7 +1414,7 @@ end
 "Helper function to extract base coin from symbol (e.g., 'BTCUSDT' -> 'BTC')"
 function _basefromsymbol(symbol::AbstractString)
     # Try to extract base from symbol using quote coin
-    quote_up = uppercase(EnvConfig.cryptoquote)
+    quote_up = uppercase(EnvConfig.pairquote)
     sym = uppercase(String(symbol))
     if endswith(sym, quote_up)
         return sym[1:(end-length(quote_up))]

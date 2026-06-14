@@ -25,8 +25,8 @@ function testsupplement(;period, firstix, lastix)
     startdt = enddt - period
     EnvConfig.init(production)
     EnvConfig.setlogpath("F4StorageTest")
-    xc = CryptoXch.XchCache()
-    ohlcv = CryptoXch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
+    xc = Xch.XchCache()
+    ohlcv = Xch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
     (verbosity >= 3) && println("ohlcv=$ohlcv")
     # f4 is larger reference
     f4a = Features.Features004(ohlcv; firstix=firstix, lastix=lastix, regrwindows=[15, 60], usecache=false)

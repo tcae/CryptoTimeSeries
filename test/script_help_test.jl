@@ -45,10 +45,10 @@ end
 end
 
 @testset "class weighting uses inverse class frequency" begin
-    targets = [Targets.longbuy, Targets.longbuy, Targets.allclose]
-    info = Classify.classweighting(targets, [Targets.longbuy, Targets.allclose, Targets.shortbuy])
+    targets = [Targets.longopen, Targets.longopen, Targets.allclose]
+    info = Classify.classweighting(targets, [Targets.longopen, Targets.allclose, Targets.shortopen])
 
-    @test isapprox(pdf(info.dist, "longbuy"), 2 / 3; atol=1e-6)
+    @test isapprox(pdf(info.dist, "longopen"), 2 / 3; atol=1e-6)
     @test isapprox(pdf(info.dist, "allclose"), 1 / 3; atol=1e-6)
     @test info.classweights[1] < info.classweights[2]
     @test info.classweights[3] == 0f0
@@ -58,8 +58,8 @@ end
 @testset "weighted classifier adaptation accepts sample weights" begin
     EnvConfig.init(test)
     features = Float32[0 0 0 1; 0 1 2 3]
-    targets = [Targets.longbuy, Targets.longbuy, Targets.longbuy, Targets.allclose]
-    nn = Classify.model006(size(features, 1), [Targets.longbuy, Targets.allclose], "ut_weighted_trend")
+    targets = [Targets.longopen, Targets.longopen, Targets.longopen, Targets.allclose]
+    nn = Classify.model006(size(features, 1), [Targets.longopen, Targets.allclose], "ut_weighted_trend")
     info = Classify.classweighting(targets, nn.labels)
     adapted = Classify.adaptnn!(nn, features, targets; sampleweights=info.sampleweights)
 

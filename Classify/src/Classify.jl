@@ -96,7 +96,7 @@ ohlcv(cl::AbstractClassifier, base::AbstractString) = hasproperty(cl, :bc) ? (ha
 
 """ Supplements all with Ohlcv and feature/target data of bases to match with base ohlcv data.
 In a trade loop ohlcv data is updated first and then feature/target data is supplement with this function.
-This to avoid a Classifier dependency to CryptoXch. """
+This to avoid a Classifier dependency to Xch. """
 function supplement!(cl::AbstractClassifier) end
 
 """
@@ -224,7 +224,7 @@ function logsim!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.Ohl
         Ohlcv.setix!(ohlcv, ix)
         ta = advice(cl, ohlcv, investment=(isnothing(openorder) ? nothing : openorder.ta))
         if !isnothing(ta)
-            if  (ta.tradelabel in [longbuy, longstrongbuy]) && isnothing(openorder)
+            if  (ta.tradelabel in [longopen, longstrongopen]) && isnothing(openorder)
                 openorder = (buydt=otime[ix], buyprice=piv[ix], trade="long", ta=ta)
             end
             if (ta.tradelabel in [longclose, longstrongclose]) && !isnothing(openorder) && (openorder.trade == "long")
@@ -232,7 +232,7 @@ function logsim!(df::AbstractDataFrame, cl::AbstractClassifier, ohlcv::Ohlcv.Ohl
                 openorder = nothing
             end
 
-            if (ta.tradelabel in [shortbuy, shortstrongbuy]) && isnothing(openorder)
+            if (ta.tradelabel in [shortopen, shortstrongopen]) && isnothing(openorder)
                 openorder = (buydt=otime[ix], buyprice=piv[ix], trade="short", ta=ta)
             end
             if (ta.tradelabel in [shortclose, shortstrongclose]) && !isnothing(openorder) && (openorder.trade == "short")
@@ -1357,31 +1357,31 @@ function predictionmatrix(df, labels)
     return pred
 end
 
-"Target consistency check that a longhold or close signal can only follow a longbuy or longclose signal"
+"Target consistency check that a longhold or close signal can only follow a longopen or longclose signal"
 function checktargetsequence(targets::CategoricalArray)
     labels = levels(targets)
-    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.uniquelabels())
+    ignoreix, longopenix, longholdix, allcloseix, shortholdix, shortopenix = (findfirst(x -> x == l, labels) for l in Targets.uniquelabels())
     # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    longbuy = levelcode(first(targets)) in [longholdix, allcloseix] ? longbuyix : (levelcode(first(targets)) == shortholdix ? shortbuyix : ignoreix)
+    longopen = levelcode(first(targets)) in [longholdix, allcloseix] ? longopenix : (levelcode(first(targets)) == shortholdix ? shortopenix : ignoreix)
     for (ix, tl) in enumerate(targets)
-        if levelcode(tl) == longbuyix
-            longbuy = longbuyix
+        if levelcode(tl) == longopenix
+            longopen = longopenix
         elseif (levelcode(tl) == longholdix)
-            if (longbuy != longbuyix)
-                @error "$ix: missed $longbuyix ($(labels[longbuyix])) before $longholdix ($(labels[longholdix]))"
+            if (longopen != longopenix)
+                @error "$ix: missed $longopenix ($(labels[longopenix])) before $longholdix ($(labels[longholdix]))"
             end
-        elseif levelcode(tl) == shortbuyix
-            longbuy = shortbuyix
+        elseif levelcode(tl) == shortopenix
+            longopen = shortopenix
         elseif (levelcode(tl) == shortholdix)
-            if (longbuy != shortbuyix)
-                @error "$ix: missed $shortbuyix ($(labels[shortbuyix])) before $shortholdix ($(labels[shortholdix]))"
+            if (longopen != shortopenix)
+                @error "$ix: missed $shortopenix ($(labels[shortopenix])) before $shortholdix ($(labels[shortholdix]))"
             end
         elseif (levelcode(tl) == allcloseix)
-            if (longbuy == ignoreix)
-                @error "$ix: missed either $shortbuyix ($(labels[shortbuyix])) or $longbuyix ($(labels[longbuyix])) before $allcloseix ($(labels[allcloseix]))"
+            if (longopen == ignoreix)
+                @error "$ix: missed either $shortopenix ($(labels[shortopenix])) or $longopenix ($(labels[longopenix])) before $allcloseix ($(labels[allcloseix]))"
             end
         elseif (levelcode(tl) == ignoreix)
-            longbuy = ignoreix
+            longopen = ignoreix
         else
             @error "$ix: unexpected $(levelcode(tl)) ($(labels[allcloseix]))"
         end
@@ -2065,19 +2065,19 @@ function trades(predictions::AbstractDataFrame, thresholds::Vector)
     predonly = predictions[!, predictioncolumns(predictions)]
     scores, maxindex = maxpredictions(Matrix(predonly), 2)
     labels = levels(predictions.targets)
-    ignoreix, longbuyix, longholdix, allcloseix, shortholdix, shortbuyix = (findfirst(x -> x == l, labels) for l in Targets.uniquelabels())
+    ignoreix, longopenix, longholdix, allcloseix, shortholdix, shortopenix = (findfirst(x -> x == l, labels) for l in Targets.uniquelabels())
     buytrade = (tradeix=allcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
     holdtrade = (tradeix=allcloseix, predix=0, set=predictions[begin, :set])  # tradesignal, predictions index
 
     function closetrade!(tradetuple, closetrade, ix)
         gain = (predictions.pivot[ix] - predictions.pivot[tradetuple.predix]) / predictions.pivot[tradetuple.predix] * 100
-        gain = tradetuple.tradeix in [longbuyix, longholdix] ? gain : -gain
+        gain = tradetuple.tradeix in [longopenix, longholdix] ? gain : -gain
         push!(df, (tradetuple.set, tradetuple.tradeix, tradetuple.predix, closetrade, ix, gain))
         return (tradeix=allcloseix, predix=ix, set=predictions.set[ix])
     end
 
     function closeifneeded!(buychecktrades, holdchecktrades, closetrade, ix)
-        buytrade = (buytrade.tradeix == buychecktrades) || ((buytrade.set != predictions.set[ix]) && (buytrade.tradeix in [longbuyix, shortbuyix])) ? closetrade!(buytrade, closetrade, ix) : buytrade
+        buytrade = (buytrade.tradeix == buychecktrades) || ((buytrade.set != predictions.set[ix]) && (buytrade.tradeix in [longopenix, shortopenix])) ? closetrade!(buytrade, closetrade, ix) : buytrade
         holdtrade = (holdtrade.tradeix == holdchecktrades) || ((buytrade.set != predictions.set[ix]) && (buytrade.tradeix in [longholdix, shortholdix])) ? closetrade!(holdtrade, closetrade, ix) : holdtrade
         return buytrade, holdtrade
     end
@@ -2085,21 +2085,21 @@ function trades(predictions::AbstractDataFrame, thresholds::Vector)
     for ix in eachindex(maxindex)
         labelix = maxindex[ix]
         score = scores[ix]
-        if (labelix == longbuyix) && (thresholds[longbuyix] <= score)
-            buytrade, holdtrade = closeifneeded!(shortbuyix, shortholdix, longbuyix, ix)
-            buytrade = buytrade.tradeix == allcloseix ? (tradeix=longbuyix, predix=ix, set=predictions.set[ix]) : buytrade
+        if (labelix == longopenix) && (thresholds[longopenix] <= score)
+            buytrade, holdtrade = closeifneeded!(shortopenix, shortholdix, longopenix, ix)
+            buytrade = buytrade.tradeix == allcloseix ? (tradeix=longopenix, predix=ix, set=predictions.set[ix]) : buytrade
         elseif (labelix == longholdix) && (thresholds[longholdix] <= score)
-            buytrade, holdtrade = closeifneeded!(shortbuyix, shortholdix, longholdix, ix)
+            buytrade, holdtrade = closeifneeded!(shortopenix, shortholdix, longholdix, ix)
             holdtrade = holdtrade.tradeix == allcloseix ? (tradeix=longholdix, predix=ix, set=predictions.set[ix]) : holdtrade
         elseif ((labelix == allcloseix) && (thresholds[allcloseix] <= score)) || ((labelix == ignoreix) && (thresholds[ignoreix] <= score))
             buytrade = buytrade.tradeix != allcloseix ? closetrade!(buytrade, allcloseix, ix) : buytrade
             holdtrade = holdtrade.tradeix != allcloseix ? closetrade!(holdtrade, allcloseix, ix) : holdtrade
         elseif (labelix == shortholdix) && (thresholds[shortholdix] <= score)
-            buytrade, holdtrade = closeifneeded!(longbuyix, longholdix, shortholdix, ix)
+            buytrade, holdtrade = closeifneeded!(longopenix, longholdix, shortholdix, ix)
             holdtrade = holdtrade.tradeix == allcloseix ? (tradeix=shortholdix, predix=ix, set=predictions.set[ix]) : holdtrade
-        elseif (labelix == shortbuyix) && (thresholds[shortbuyix] <= score)
-            buytrade, holdtrade = closeifneeded!(longbuyix, longholdix, shortbuyix, ix)
-            buytrade = buytrade.tradeix == allcloseix ? (tradeix=shortbuyix, predix=ix, set=predictions.set[ix]) : buytrade
+        elseif (labelix == shortopenix) && (thresholds[shortopenix] <= score)
+            buytrade, holdtrade = closeifneeded!(longopenix, longholdix, shortopenix, ix)
+            buytrade = buytrade.tradeix == allcloseix ? (tradeix=shortopenix, predix=ix, set=predictions.set[ix]) : buytrade
         end
     end
     return df
@@ -2494,7 +2494,7 @@ function confusionmatrix(pred, targets, alllabels)
 end
 
 function _sumperf(tpdf, setname)
-    selectedtrades = filter(row -> (row.set == setname) && ((row.trade == "longbuy") || (row.trade == "shortbuy")), tpdf, view=true)
+    selectedtrades = filter(row -> (row.set == setname) && ((row.trade == "longopen") || (row.trade == "shortopen")), tpdf, view=true)
     if length(selectedtrades.gainpct) > 0
         tcount = sum(selectedtrades.cnt)
         tsum = sum(selectedtrades.gainpct)

@@ -2,7 +2,7 @@ module MultilegOrderTest
 using Test
 using Dates, DataFrames
 
-using EnvConfig, Ohlcv, CryptoXch, TradeLog
+using EnvConfig, Ohlcv, Xch, TradeLog
 
 # Unit tests for createocoorder — verifies that the three bracket legs are emitted with:
 # - a shared leg_group_id written into the notes of every leg
@@ -28,14 +28,14 @@ function _syntheticohlcv(base::String, close::Float32)
     return ohlcv
 end
 
-"Return a minimal symbol-info NamedTuple for seeding the CryptoXch symbol info cache."
+"Return a minimal symbol-info NamedTuple for seeding the Xch symbol info cache."
 function _synthsyminfo(base::String, close::Float32)
-    symbol = uppercase(base * EnvConfig.cryptoquote)
+    symbol = uppercase(base * EnvConfig.pairquote)
     return (
         symbol=symbol,
         status="Trading",
         basecoin=uppercase(base),
-        quotecoin=uppercase(EnvConfig.cryptoquote),
+        quotecoin=uppercase(EnvConfig.pairquote),
         ticksize=Float32(0.01),
         baseprecision=Float32(0.00001),
         quoteprecision=Float32(0.01),
@@ -51,7 +51,7 @@ end
         ENV["CTS_TRADELOG_ROOT"] = tmpdir
         EnvConfig.init(test)
 
-        xc = CryptoXch.XchCache()
+        xc = Xch.XchCache()
 
         # Populate synthetic OHLCV data and symbol-info cache so simulation works
         # without a live exchange connection.
@@ -59,16 +59,16 @@ end
         eth_close = 3_000.0f0
         xc.bases["BTC"] = _syntheticohlcv("BTC", btc_close)
         xc.bases["ETH"] = _syntheticohlcv("ETH", eth_close)
-        CryptoXch.setsymbolinfocache!(xc, "BTCUSDT", _synthsyminfo("BTC", btc_close))
-        CryptoXch.setsymbolinfocache!(xc, "ETHUSDT", _synthsyminfo("ETH", eth_close))
+        Xch.setsymbolinfocache!(xc, "BTCUSDT", _synthsyminfo("BTC", btc_close))
+        Xch.setsymbolinfocache!(xc, "ETHUSDT", _synthsyminfo("ETH", eth_close))
 
-        result = CryptoXch.createocoorder(xc, "BTC";
+        result = Xch.createocoorder(xc, "BTC";
             entry_side=:buy,
             entry_price=btc_close,
             take_profit_price=btc_close * 1.05f0,
             stop_loss_price=btc_close * 0.95f0,
             basequantity=0.01,
-            signal_label="longbuy",
+            signal_label="longopen",
             signal_score=0.85,
             strategy_engine="test_engine",
             strategy_config_ref="trenddetector:unit",
@@ -86,9 +86,9 @@ end
         submitted = TradeLog.AuditEventRow(
             event_type=TradeLog.ORDER_SUBMITTED,
             environment=string(Symbol(EnvConfig.configmode)),
-            run_mode=CryptoXch.tradelogrunmode(xc),
-            exchange=CryptoXch.exchange(xc),
-            account_alias=CryptoXch.exchange(xc),
+            run_mode=Xch.tradelogrunmode(xc),
+            exchange=Xch.exchange(xc),
+            account_alias=Xch.exchange(xc),
             asset_class=TradeLog.crypto,
             instrument_type=TradeLog.spot_pair,
         )
@@ -109,7 +109,7 @@ end
             @test any(e ->
                 occursin("leg_label=$(lbl)", e) &&
                 occursin("\"strategy_engine\":\"test_engine\"", e) &&
-                occursin("\"signal_label\":\"longbuy\"", e),
+                occursin("\"signal_label\":\"longopen\"", e),
                 events)
         end
 
@@ -126,7 +126,7 @@ end
         @test !isempty(entry_events)
         @test any(e -> occursin("\"correlation_id\":\"$(entry_id)\"", e), entry_events)
 
-        result2 = CryptoXch.createocoorder(xc, "ETH";
+        result2 = Xch.createocoorder(xc, "ETH";
             entry_side=:sell,
             entry_price=eth_close * 1.05f0,
             take_profit_price=eth_close * 0.95f0,

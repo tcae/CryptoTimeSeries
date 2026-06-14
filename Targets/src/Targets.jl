@@ -13,7 +13,7 @@ module Targets
 
 using EnvConfig, Ohlcv, TestOhlcv, Features
 using DataFrames, Dates, Logging, CategoricalArrays
-export TradeLabel, shortstrongbuy, shortbuy, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longbuy, longstrongbuy, ignore
+export TradeLabel, shortstrongopen, shortopen, shorthold, shortclose, shortstrongclose, allclose, longstrongclose, longclose, longhold, longopen, longstrongopen, ignore
 export TrendPhase, down, flat, up
 export HoldAnchorMode, entry_anchor, last_buy_anchor
 export HoldBehaviorMode, within_maxwindow, beyond_maxwindow, no_hold
@@ -34,12 +34,17 @@ verbosity = 1
 """
 returns all possible labels. "allclose" is default.
 """
-@enum TradeLabel shortstrongbuy=-5 shortbuy=-4 shorthold=-3 shortclose=-2 shortstrongclose=-1 allclose=0 longstrongclose=1 longclose=2 longhold=3 longbuy=4 longstrongbuy=5 ignore=9
+@enum TradeLabel shortstrongopen=-5 shortopen=-4 shorthold=-3 shortclose=-2 shortstrongclose=-1 allclose=0 longstrongclose=1 longclose=2 longhold=3 longopen=4 longstrongopen=5 ignore=9
+
 uniquelabels() = [lbl for lbl in instances(TradeLabel)]
 tradelabelstrings(labels::AbstractVector{TradeLabel}=uniquelabels()) = string.(labels)
-tradelabel(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabels()) = labels[findfirst(x -> string(x) == str, labels)]
+function tradelabel(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabels())
+    lowered = lowercase(String(str))
+    ix = findfirst(lbl -> lowercase(string(lbl)) == lowered, labels)
+    return isnothing(ix) ? allclose : labels[ix]
+end
 tradelabelix(tl::TradeLabel, labels::AbstractVector{TradeLabel}=uniquelabels()) = findfirst(x -> x == tl, labels)
-tradelabelix(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabels()) = findfirst(x -> string(x) == str, labels)
+tradelabelix(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabels()) = tradelabelix(tradelabel(str, labels), labels)
 tradelabelcode(tl::TradeLabel) = Int8(tl)
 
 @enum TrendPhase down=-1 flat=0 up=1 choppy=2
@@ -152,36 +157,36 @@ end
 
 """
 - defines the relative transaction thresholds
-    - buy long at more than *longbuy* gain potential from current price
+    - buy long at more than *longopen* gain potential from current price
     - hold long above *longhold* gain potential from current price
     - close long position below *longhold* gain potential from current price
-    - buy short at or lower than *shortbuy* loss potential from current price
+    - buy short at or lower than *shortopen* loss potential from current price
     - hold short below *shorthold* loss potential from current price
     - close short position above *shorthold* loss potential from current price
 - Targets.defaultlabelthresholds provides default thresholds
 """
 struct LabelThresholds
-    longbuy::Float32
+    longopen::Float32
     longhold::Float32
     shorthold::Float32
-    shortbuy::Float32
+    shortopen::Float32
 end
-LabelThresholds(;longbuy, longhold, shorthold, shortbuy) = LabelThresholds(longbuy, longhold, shorthold, shortbuy)
-thresholds(lt::LabelThresholds)::NamedTuple = (longbuy=lt.longbuy, longhold=lt.longhold, shorthold=lt.shorthold, shortbuy=lt.shortbuy)
-thresholds(lt::NamedTuple)::LabelThresholds = LabelThresholds(lt.longbuy, lt.longhold, lt.shorthold, lt.shortbuy)
+LabelThresholds(;longopen, longhold, shorthold, shortopen) = LabelThresholds(longopen, longhold, shorthold, shortopen)
+thresholds(lt::LabelThresholds)::NamedTuple = (longopen=lt.longopen, longhold=lt.longhold, shorthold=lt.shorthold, shortopen=lt.shortopen)
+thresholds(lt::NamedTuple)::LabelThresholds = LabelThresholds(lt.longopen, lt.longhold, lt.shorthold, lt.shortopen)
 
 defaultlabelthresholds = LabelThresholds(0.03, 0.005, -0.005, -0.03)
 
 """
 Because the trade signals are not independent classes but an ordered set of actions, this function returns the labels that correspond to specific thresholds:
 
-- The folllowing invariant is assumed: `longbuy > longhold >= 0 >= shorthold > shortbuy`
-- a long gain shall be above `longbuy` threshold for a longbuy signal
+- The folllowing invariant is assumed: `longopen > longhold >= 0 >= shorthold > shortopen`
+- a long gain shall be above `longopen` threshold for a longopen signal
 - bought assets shall be held (but not bought) if the remaining gain is above `longhold` threshold
 - bought assets shall be closed if the remaining gain is below `longhold` threshold
-- a short gain shall be below `shortbuy` for a shortbuy signal
-- borrowed (shortbuy) assets shall be held if the remaining loss is below `shorthold`
-- borrowed (shortbuy) assets shall be closed if the remaining loss is above `shorthold`
+- a short gain shall be below `shortopen` for a shortopen signal
+- borrowed (shortopen) assets shall be held if the remaining loss is below `shorthold`
+- borrowed (shortopen) assets shall be closed if the remaining loss is above `shorthold`
 - all thresholds are relative gain values: if backward relative then the relative gain is calculated with the target price otherwise with the current price
 
 """
@@ -192,25 +197,25 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
 
     function settradestate(newstate)
         if newstate == "longhold"
-            if lastbuy != "longbuy"
+            if lastbuy != "longopen"
                 lastbuy = "nobuy"
                 newstate = "ignore"
             end
-        elseif newstate == "longbuy"
-            lastbuy = "longbuy"
-        elseif newstate == "shortbuy"
-            lastbuy = "shortbuy"
+        elseif newstate == "longopen"
+            lastbuy = "longopen"
+        elseif newstate == "shortopen"
+            lastbuy = "shortopen"
         elseif newstate == "shorthold"
-            if lastbuy != "shortbuy"
+            if lastbuy != "shortopen"
                 lastbuy = "nobuy"
                 newstate = "ignore"
             end
         elseif newstate == "allclose"
-            if !(lastbuy in ["shortbuy", "longbuy"])
+            if !(lastbuy in ["shortopen", "longopen"])
                 newstate = "ignore"
-            elseif lastbuy == "longbuy"
+            elseif lastbuy == "longopen"
                 newstate = "longclose"
-            elseif lastbuy == "shortbuy"
+            elseif lastbuy == "shortopen"
                 newstate = "shortclose"
             end
         else
@@ -219,9 +224,9 @@ function getlabels(relativedist, labelthresholds::LabelThresholds)
         return newstate
     end
 
-    labels = [(rd >= lt.longbuy ? settradestate("longbuy") :
+    labels = [(rd >= lt.longopen ? settradestate("longopen") :
                 (rd >= lt.longhold ? settradestate("longhold") :
-                    (rd <= lt.shortbuy ? settradestate("shortbuy") :
+                    (rd <= lt.shortopen ? settradestate("shortopen") :
                         (rd <= lt.shorthold ? settradestate("shorthold") :
                             settradestate("allclose"))))) for rd in relativedist]
     return labels
@@ -236,7 +241,7 @@ function relativedistances(prices::Vector{T}, pricediffs, priceix, backwardrelat
 end
 
 function continuousdistancelabels(prices::Vector{T}, labelthresholds::LabelThresholds) where T<:AbstractFloat
-    pricediffs, priceix = Features.nextpeakindices(prices, labelthresholds.longbuy, labelthresholds.shortbuy)
+    pricediffs, priceix = Features.nextpeakindices(prices, labelthresholds.longopen, labelthresholds.shortopen)
     relativedist = relativedistances(prices, pricediffs, priceix, false)
     labels = getlabels(relativedist, labelthresholds)
     return labels, relativedist, pricediffs, priceix
@@ -286,9 +291,9 @@ end
 function gain(prices::Vector{T}, ix1::K, ix2::K, labelthresholds::LabelThresholds) where {T<:AbstractFloat, K<:Integer}
     g = Features.relativegain(prices, abs(ix1), abs(ix2))
     if g > 0
-        g = g >= labelthresholds.longbuy ? g : 0.0
+        g = g >= labelthresholds.longopen ? g : 0.0
     else
-        g = g <= labelthresholds.shortbuy ? abs(g) : 0.0
+        g = g <= labelthresholds.shortopen ? abs(g) : 0.0
     end
     return g
 end
@@ -502,14 +507,14 @@ function loaddata(ohlcv, labelthresholds)
 end
 
 #region FixedDistanceGain
-emptyfdgdf() = DataFrame(Dict(:opentime=>DateTime[], :pivot=>Float32[], :label=>String[], :longbuy=>Bool[], :longhold=>Bool[], :shortbuy=>Bool[], :shorthold=>Bool[], :minix=>UInt32[], :maxix=>UInt32[], :minreldiff=>Float32[], :maxreldiff=>Float32[]))
+emptyfdgdf() = DataFrame(Dict(:opentime=>DateTime[], :pivot=>Float32[], :label=>String[], :longopen=>Bool[], :longhold=>Bool[], :shortopen=>Bool[], :shorthold=>Bool[], :minix=>UInt32[], :maxix=>UInt32[], :minreldiff=>Float32[], :maxreldiff=>Float32[]))
 
 """
 Provides 4 independent binary targets
-- longbuy if label threshold `thres.longbuy` is exceeded within the next `window` minutes
+- longopen if label threshold `thres.longopen` is exceeded within the next `window` minutes
 - longhold if label threshold `thres.longhold` is not undercut within the next `window` minutes
 - shorthold if label threshold `thres.shorthold` is not exceeded within the next `window` minutes
-- shortbuy if label threshold `thres.shortbuy` is undercut within the next `window` minutes
+- shortopen if label threshold `thres.shortopen` is undercut within the next `window` minutes
 """
 mutable struct FixedDistanceGain <: AbstractTargets
     window::Int # in minutes
@@ -564,23 +569,23 @@ function supplement!(fdg::FixedDistanceGain)
             end
             dfnew[!, :minreldiff] = minreldiff
             dfnew[!, :maxreldiff] = maxreldiff
-            dfnew[!, :longbuy] = dfnew[!, :maxreldiff] .>= fdg.thres.longbuy
+            dfnew[!, :longopen] = dfnew[!, :maxreldiff] .>= fdg.thres.longopen
             dfnew[!, :longhold] = dfnew[!, :minreldiff] .>= fdg.thres.longhold
-            dfnew[!, :shortbuy] = dfnew[!, :minreldiff] .<= fdg.thres.shortbuy
+            dfnew[!, :shortopen] = dfnew[!, :minreldiff] .<= fdg.thres.shortopen
             dfnew[!, :shorthold] = dfnew[!, :maxreldiff] .<= fdg.thres.shorthold
             dfnew[!, :label] .= "ignore"
             for ix in eachindex(pivnew)
                 if (maxix[ix] < minix[ix]) || (dfnew[ix, :maxreldiff] > 0f0)
-                    if dfnew[ix, :longbuy]
-                        dfnew[ix, :label] = "longbuy"
-                    elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["longbuy", "longhold"])  # longhold can only follow longbuy or longhold
+                    if dfnew[ix, :longopen]
+                        dfnew[ix, :label] = "longopen"
+                    elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["longopen", "longhold"])  # longhold can only follow longopen or longhold
                         dfnew[ix, :label] = dfnew[ix, :longhold] ? "longhold" : "longclose"
                     end
                 end
                 if (maxix[ix] > minix[ix]) || (dfnew[ix, :minreldiff] < 0f0)
-                    if dfnew[ix, :shortbuy]
-                        dfnew[ix, :label] = "shortbuy"
-                    elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["shortbuy", "shorthold"])  # shorthold can only follow shortbuy or shorthold
+                    if dfnew[ix, :shortopen]
+                        dfnew[ix, :label] = "shortopen"
+                    elseif (ix > firstindex(pivnew)) && (dfnew[ix-1, :label] in ["shortopen", "shorthold"])  # shorthold can only follow shortopen or shorthold
                         dfnew[ix, :label] = dfnew[ix, :shorthold] ? "shorthold" : "shortclose"
                     end
                 end
@@ -614,17 +619,17 @@ function timerangecut!(fdg::FixedDistanceGain)
     supplement!(fdg)
 end
 
-describe(fdg::FixedDistanceGain) = "$(typeof(fdg))_$(fdg.window)_label-thresholds=(longbuy=$(fdg.thres.longbuy),longhold=$(fdg.thres.longhold),shorthold=$(fdg.thres.shorthold),shortbuy=$(fdg.thres.shortbuy))"
+describe(fdg::FixedDistanceGain) = "$(typeof(fdg))_$(fdg.window)_label-thresholds=(longopen=$(fdg.thres.longopen),longhold=$(fdg.thres.longhold),shorthold=$(fdg.thres.shorthold),shortopen=$(fdg.thres.shortopen))"
 firstrowix(fdg::FixedDistanceGain)::Int = isnothing(fdg.df) ? 1 : (size(fdg.df, 1) > 0 ? firstindex(fdg.df[!, 1]) : 1)
 lastrowix(fdg::FixedDistanceGain)::Int = isnothing(fdg.df) ? 0 : (size(fdg.df, 1) > 0 ? lastindex(fdg.df[!, 1]) : 0)
 
-"returns a dataframe with binary volume columns :longbuy, :longhold, :shorthold, :shortbuy"
+"returns a dataframe with binary volume columns :longopen, :longhold, :shorthold, :shortopen"
 function df(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractDataFrame
     return isnothing(fdg.df) ? emptyfdgdf() : view(fdg.df, firstix:lastix, :)
 end
 
 df(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = df(fdg, Ohlcv.rowix(fdg.df[!, :opentime], startdt), Ohlcv.rowix(fdg.df[!, :opentime], enddt))
-longbuybinarytargets(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "longclose" for lb in df(fdg, startdt, enddt)[!, :longbuy]]
+longopenbinarytargets(fdg::FixedDistanceGain, startdt::DateTime, enddt::DateTime) = [lb ? "longopen" : "longclose" for lb in df(fdg, startdt, enddt)[!, :longopen]]
 
 function labels(fdg::FixedDistanceGain, firstix::Integer=firstrowix(fdg), lastix::Integer=lastrowix(fdg))::AbstractVector
     return isnothing(fdg.df) ? [] : fdg.df[firstix:lastix, :label]
@@ -677,8 +682,8 @@ Approach:
 - The backing no-offset regression columns must already exist in `Features.f6all(f6)` for both `_grad(window, 0)` and `_regry(window, 0)`.
 - For the most recent samples where the forward row shift `window - 1` would exceed the available `fdfno` rows, TrendRegression reuses the most recent available cached grad/regry row.
 - Assign 
-    - `longbuy` if the relative gain is above `longthreshold`, 
-    - `shortbuy` if the relative gain is below `shortthreshold`, and 
+    - `longopen` if the relative gain is above `longthreshold`, 
+    - `shortopen` if the relative gain is below `shortthreshold`, and 
   - `allclose` otherwise.
 
 """
@@ -778,8 +783,8 @@ function supplement!(trd::TrendRegression)
             relgains[currentix - recalcstartix + 1] = Float32(Features.relativegain(endregry, grad, trd.window))
         end
         currentrelgain = relgains[currentix - recalcstartix + 1]
-        targetlabels[currentix - recalcstartix + 1] = currentrelgain >= trd.longthreshold ? longbuy :
-                                 currentrelgain <= trd.shortthreshold ? shortbuy :
+        targetlabels[currentix - recalcstartix + 1] = currentrelgain >= trd.longthreshold ? longopen :
+                     currentrelgain <= trd.shortthreshold ? shortopen :
                                                   allclose
     end
 
@@ -787,7 +792,7 @@ function supplement!(trd::TrendRegression)
     trd.df = size(prefixdf, 1) > 0 ? vcat(prefixdf, deltadf) : deltadf
 end
 
-uniquelabels(trd::TrendRegression) = [longbuy, shortbuy, allclose]
+uniquelabels(trd::TrendRegression) = [longopen, shortopen, allclose]
 
 function _trendregression_base(trd::TrendRegression)::String
     if isnothing(trd.f6) || isnothing(Features.ohlcv(trd.f6))
@@ -872,15 +877,15 @@ end
 """
 Provides mutually exclusive trend labels and their relative gains.
 
-`Trend04` assigns `longbuy`, `longhold`, `shortbuy`, `shorthold`, or `allclose`
+`Trend04` assigns `longopen`, `longhold`, `shortopen`, `shorthold`, or `allclose`
 to each sample using forward-looking price behavior within `maxwindow`.
 
 Rules:
 - `0 <= minwindow < maxwindow`
-- `thres.shortbuy <= thres.shorthold <= thres.longhold <= thres.longbuy`
+- `thres.shortopen <= thres.shorthold <= thres.longhold <= thres.longopen`
 
 Buy labels:
-- A `longbuy` / `shortbuy` segment starts from a local directional extreme and
+- A `longopen` / `shortopen` segment starts from a local directional extreme and
   must reach the corresponding buy threshold within `maxwindow`.
 - A buy segment must span at least `minwindow` samples.
 - Brief opposite excursions are tolerated for buy segments as long as they stay
@@ -924,7 +929,7 @@ mutable struct Trend04 <: AbstractTargets
         holdanchormode_parsed = _parse_holdanchormode(holdanchormode)
         holdbehaviormode_parsed = _parse_holdbehaviormode(holdbehaviormode)
         @assert 0 <= minwindow < maxwindow "condition violated: 0 <= minwindow=$(minwindow) < maxwindow=$(maxwindow)"
-        @assert thres.shortbuy <= thres.shorthold <= thres.longhold <= thres.longbuy "condition violated: thres.shortbuy=$(thres.shortbuy) <= thres.shorthold=$(thres.shorthold) <= thres.longhold=$(thres.longhold) <= fdg.thres.longbuy=$(thres.longbuy)"
+        @assert thres.shortopen <= thres.shorthold <= thres.longhold <= thres.longopen "condition violated: thres.shortopen=$(thres.shortopen) <= thres.shorthold=$(thres.shorthold) <= thres.longhold=$(thres.longhold) <= fdg.thres.longopen=$(thres.longopen)"
         @assert (holdanchormode_parsed == last_buy_anchor) || (holdbehaviormode_parsed == within_maxwindow) "holdbehaviormode=$(holdbehaviormode_parsed) is only supported with holdanchormode=last_buy_anchor"
         trd = new(minwindow, maxwindow, holdanchormode_parsed, holdbehaviormode_parsed, thres, nothing, nothing)
         return trd
@@ -994,17 +999,17 @@ end
 "forward looking relative difference from ix to endix"
 _reldiff(piv, ix, endix) = (piv[endix] - piv[ix]) / piv[ix]
 
-@inline _trendside(label::TradeLabel)::Symbol = (label in (longbuy, longhold)) ? :long : ((label in (shortbuy, shorthold)) ? :short : :close)
-@inline _buylabel(side::Symbol)::TradeLabel = side == :long ? longbuy : shortbuy
+@inline _trendside(label::TradeLabel)::Symbol = (label in (longopen, longhold)) ? :long : ((label in (shortopen, shorthold)) ? :short : :close)
+@inline _buylabel(side::Symbol)::TradeLabel = side == :long ? longopen : shortopen
 @inline _holdlabel(side::Symbol)::TradeLabel = side == :long ? longhold : shorthold
-@inline _oppositebuylabel(side::Symbol)::TradeLabel = side == :long ? shortbuy : longbuy
+@inline _oppositebuylabel(side::Symbol)::TradeLabel = side == :long ? shortopen : longopen
 @inline _holdname(side::Symbol)::String = side == :long ? "longhold" : "shorthold"
-@inline _buyname(side::Symbol)::String = side == :long ? "longbuy" : "shortbuy"
+@inline _buyname(side::Symbol)::String = side == :long ? "longopen" : "shortopen"
 
 @inline _is_reversal(rd::Real, side::Symbol)::Bool = side == :long ? (rd < 0) : (rd > 0)
 @inline _hold_reached(rd::Real, trd::Trend04, side::Symbol)::Bool = side == :long ? (rd >= trd.thres.longhold) : (rd <= trd.thres.shorthold)
 @inline _opposite_hold_break(rd::Real, trd::Trend04, side::Symbol)::Bool = side == :long ? (rd <= trd.thres.shorthold) : (rd >= trd.thres.longhold)
-@inline _buy_threshold_met(rd::Real, trd::Trend04, side::Symbol)::Bool = side == :long ? (rd >= trd.thres.longbuy) : (rd <= trd.thres.shortbuy)
+@inline _buy_threshold_met(rd::Real, trd::Trend04, side::Symbol)::Bool = side == :long ? (rd >= trd.thres.longopen) : (rd <= trd.thres.shortopen)
 @inline _preserves_hold_across_micro_peak(rd::Real, trd::Trend04, side::Symbol)::Bool = side == :long ? (rd >= trd.thres.shorthold) : (rd <= trd.thres.longhold)
 @inline _is_further_extreme(endval::Real, refval::Real, side::Symbol; strict::Bool=false)::Bool = side == :long ? (strict ? (endval > refval) : (endval >= refval)) : (strict ? (endval < refval) : (endval <= refval))
 @inline _is_local_start_extreme(piv, ix::Int, endix::Int, side::Symbol)::Bool = side == :long ? (piv[ix] == minimum(view(piv, ix:endix))) : (piv[ix] == maximum(view(piv, ix:endix)))
@@ -1143,7 +1148,7 @@ function _trim_buy_tail!(piv, labels, relix, anchorix::Int, tailend::Int, trd::T
     trimstart = isnothing(lastvalidix) ? anchorix : (lastvalidix + 1)
     trimstart > tailend && return nothing
 
-    samelabels = side == :long ? (longbuy, longhold) : (shortbuy, shorthold)
+    samelabels = side == :long ? (longopen, longhold) : (shortopen, shorthold)
     fillrelix = isnothing(lastvalidix) ? anchorix : lastvalidix
     for ix in trimstart:tailend
         if labels[ix] in samelabels
@@ -1241,7 +1246,7 @@ function _handle_trend_continuation!(piv, labels, relix, trd::Trend04, ix::Int, 
     else
         anchorix = relix[ix]
         # A buy segment may only continue on a genuinely new directional extreme.
-        # Using a strict comparison avoids flat plateaus keeping longbuy/shortbuy alive
+        # Using a strict comparison avoids flat plateaus keeping longopen/shortopen alive
         # for too long on real BTC data.
         cancontinuebuy = _segment_threshold_met(piv, anchorix, endix, trd, side, :buy)
         cancontinuehold = _hold_continuation_allowed(piv, anchorix, endix, trd, side)
@@ -1316,16 +1321,16 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
         if (bestlongix < endix) || (bestshortix < endix) # it is ensured that (endix - bestix +1) >= minwindow for bestix because it is only updated if it is the case
             longgain = bestlongix < endix ? _reldiff(piv, bestlongix, endix) : -Inf
             shortgain = bestshortix < endix ? _reldiff(piv, bestshortix, endix) : Inf
-            longcandidate = (longgain >= trd.thres.longbuy) &&
+            longcandidate = (longgain >= trd.thres.longopen) &&
                             ((endix - bestlongix + 1) <= trd.maxwindow) &&
                             (piv[bestlongix] == minimum(view(piv, bestlongix:endix)))
-            shortcandidate = (shortgain <= trd.thres.shortbuy) &&
+            shortcandidate = (shortgain <= trd.thres.shortopen) &&
                              ((endix - bestshortix + 1) <= trd.maxwindow) &&
                              (piv[bestshortix] == maximum(view(piv, bestshortix:endix)))
 
             if longcandidate && (!shortcandidate || (longgain >= abs(shortgain)))
                 if piv[endix] == maximum(view(piv, bestlongix:endix))
-                    labels[endix] = longbuy
+                    labels[endix] = longopen
                     relix[endix] = bestlongix 
                     _fillsegment!(labels, relix, endix)
                 else
@@ -1334,7 +1339,7 @@ function _filltrendanchor!(trd::Trend04, maxbackix, endix)
                 end
             elseif shortcandidate
                 if piv[endix] == minimum(view(piv, bestshortix:endix))
-                    labels[endix] = shortbuy
+                    labels[endix] = shortopen
                     relix[endix] = bestshortix 
                     _fillsegment!(labels, relix, endix)
                 else
@@ -1378,12 +1383,12 @@ function supplement!(trd::Trend04)
                 _filltrendanchor!(trd, maxbackix, ix)
             end
             (verbosity >= 3) && println()
-            @assert all(in.(trd.df[!, :label], Ref([longbuy, longhold, shortbuy, shorthold, allclose]))) "unique(labels)=$(unique(trd.df[!, :label]))"
+            @assert all(in.(trd.df[!, :label], Ref([longopen, longhold, shortopen, shorthold, allclose]))) "unique(labels)=$(unique(trd.df[!, :label]))"
         end
     end
 end
 
-uniquelabels(trd::Trend04) = [longbuy, longhold, shortbuy, shorthold, allclose]
+uniquelabels(trd::Trend04) = [longopen, longhold, shortopen, shorthold, allclose]
 
 function timerangecut!(trd::Trend04)
     if isnothing(trd.ohlcv)
@@ -1405,13 +1410,13 @@ function timerangecut!(trd::Trend04)
     supplement!(trd)
 end
 
-describe(trd::Trend04) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_holdanchormode=$(trd.holdanchormode)_holdbehaviormode=$(trd.holdbehaviormode)_thresholds=(longbuy=$(trd.thres.longbuy)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortbuy=$(trd.thres.shortbuy))"
+describe(trd::Trend04) = "$(typeof(trd))_$(isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base)_maxwindow=$(trd.maxwindow)_minwindow=$(trd.minwindow)_holdanchormode=$(trd.holdanchormode)_holdbehaviormode=$(trd.holdbehaviormode)_thresholds=(longopen=$(trd.thres.longopen)_longhold=$(trd.thres.longhold)_shorthold=$(trd.thres.shorthold)_shortopen=$(trd.thres.shortopen))"
 firstrowix(trd::Trend04)::Int = isnothing(trd.df) ? 1 : (size(trd.df, 1) > 0 ? firstindex(trd.df[!, 1]) : 1)
 lastrowix(trd::Trend04)::Int = isnothing(trd.df) ? 0 : (size(trd.df, 1) > 0 ? lastindex(trd.df[!, 1]) : 0)
 
 # df(trd::Trend04, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-# longbuybinarytargets(trd::Trend04, startdt::DateTime, enddt::DateTime) = [lb ? "longbuy" : "longclose" for lb in df(trd, startdt, enddt)[!, :longbuy]]
-# shortbuybinarytargets(trd::Trend04, startdt::DateTime, enddt::DateTime) = [lb ? "shortbuy" : "shortclose" for lb in df(trd, startdt, enddt)[!, :longbuy]]
+# longopenbinarytargets(trd::Trend04, startdt::DateTime, enddt::DateTime) = [lb ? "longopen" : "longclose" for lb in df(trd, startdt, enddt)[!, :longopen]]
+# shortopenbinarytargets(trd::Trend04, startdt::DateTime, enddt::DateTime) = [lb ? "shortopen" : "shortclose" for lb in df(trd, startdt, enddt)[!, :longopen]]
 
 labelbinarytargets(trd::Trend04, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labels(trd, firstix, lastix) .== label
 labelbinarytargets(trd::Trend04, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
@@ -1489,15 +1494,15 @@ function crosscheck(trd::Trend04, labels::AbstractVector{<:TradeLabel}, pivots::
     end
 
     allowed = Set(uniquelabels(trd))
-    longlabels = Set((longbuy, longhold))
-    shortlabels = Set((shortbuy, shorthold))
-    longbuylabels = Set((longbuy,))
-    shortbuylabels = Set((shortbuy,))
+    longlabels = Set((longopen, longhold))
+    shortlabels = Set((shortopen, shorthold))
+    longopenlabels = Set((longopen,))
+    shortopenlabels = Set((shortopen,))
 
     # Hold labels are intentionally excluded from :long/:short direction for extreme checks:
     # hold represents a declining/flat continuation phase, not a new directional entry,
     # so start/end extreme invariants do not apply to hold sub-segments.
-    _direction(lbl::TradeLabel) = lbl in longbuylabels ? :long : (lbl in shortbuylabels ? :short : :close)
+    _direction(lbl::TradeLabel) = lbl in longopenlabels ? :long : (lbl in shortopenlabels ? :short : :close)
 
     for ix in eachindex(labels)
         if !(labels[ix] in allowed)
@@ -1541,14 +1546,14 @@ function crosscheck(trd::Trend04, labels::AbstractVector{<:TradeLabel}, pivots::
     for segix in eachindex(labelsegments)
         lss, lse, lbl = labelsegments[segix]
         if lbl == longhold
-            anchored_longbuy = !isnothing(relix_arr) && (firstindex(labels) <= relix_arr[lss] <= lastindex(labels)) && (labels[relix_arr[lss]] == longbuy)
-            if !anchored_longbuy && ((segix == firstindex(labelsegments)) || (labelsegments[segix - 1][3] != longbuy))
-                push!(issues, "long hold segment at $(lss):$(lse) must be preceded by a longbuy segment")
+            anchored_longopen = !isnothing(relix_arr) && (firstindex(labels) <= relix_arr[lss] <= lastindex(labels)) && (labels[relix_arr[lss]] == longopen)
+            if !anchored_longopen && ((segix == firstindex(labelsegments)) || (labelsegments[segix - 1][3] != longopen))
+                push!(issues, "long hold segment at $(lss):$(lse) must be preceded by a longopen segment")
             end
         elseif lbl == shorthold
-            anchored_shortbuy = !isnothing(relix_arr) && (firstindex(labels) <= relix_arr[lss] <= lastindex(labels)) && (labels[relix_arr[lss]] == shortbuy)
-            if !anchored_shortbuy && ((segix == firstindex(labelsegments)) || (labelsegments[segix - 1][3] != shortbuy))
-                push!(issues, "short hold segment at $(lss):$(lse) must be preceded by a shortbuy segment")
+            anchored_shortopen = !isnothing(relix_arr) && (firstindex(labels) <= relix_arr[lss] <= lastindex(labels)) && (labels[relix_arr[lss]] == shortopen)
+            if !anchored_shortopen && ((segix == firstindex(labelsegments)) || (labelsegments[segix - 1][3] != shortopen))
+                push!(issues, "short hold segment at $(lss):$(lse) must be preceded by a shortopen segment")
             end
         end
     end
@@ -1567,69 +1572,69 @@ function crosscheck(trd::Trend04, labels::AbstractVector{<:TradeLabel}, pivots::
         end
         
         validation_endix = lse
-        if (lbl in (longbuy, shortbuy)) && (lse < lastindex(labels))
-            side = lbl == longbuy ? :long : :short
+        if (lbl in (longopen, shortopen)) && (lse < lastindex(labels))
+            side = lbl == longopen ? :long : :short
             if _is_further_extreme(pivots[lse + 1], pivots[lse], side; strict=true)
                 validation_endix = lse + 1
             end
         end
 
-        prev_same_side_hold = (lss > firstindex(labels)) && ((lbl == longbuy && labels[lss - 1] == longhold) || (lbl == shortbuy && labels[lss - 1] == shorthold))
+        prev_same_side_hold = (lss > firstindex(labels)) && ((lbl == longopen && labels[lss - 1] == longhold) || (lbl == shortopen && labels[lss - 1] == shorthold))
         validation_startix = prev_same_side_hold ? (lss - 1) : lss
 
         withinsegmentoffset = ss < lss ? 1 : 0 # use last sample of previous labelsegment if this is in the same segment
         reldiff = _reldiff(pivots, lss-withinsegmentoffset, validation_endix)
         span = validation_endix - validation_startix + 1
 
-        if lbl == longbuy
+        if lbl == longopen
             # For the first sub-segment of a coarse buy segment, use the actual entry anchor
             # (relix[lss] = the valley/bestlongix) for both span and threshold checks.
             # If the segment starts immediately after a `longhold` bar, reconstruct the same
-            # effective entry anchor that the state machine uses for a promoted longbuy.
+            # effective entry anchor that the state machine uses for a promoted longopen.
             if ss == lss && !isnothing(relix_arr)
                 buy_anchor = _crosscheck_buy_anchor(labels, relix_arr, lss, prev_same_side_hold)
                 anchor_span = validation_endix - buy_anchor + 1
                 anchor_reldiff = _reldiff(pivots, buy_anchor, validation_endix)
                 if anchor_span < trd.minwindow
-                    push!(issues, "longbuy segment $(lss):$(lse) violates minwindow: span=$(anchor_span) < minwindow=$(trd.minwindow)")
+                    push!(issues, "longopen segment $(lss):$(lse) violates minwindow: span=$(anchor_span) < minwindow=$(trd.minwindow)")
                 end
-                if anchor_reldiff < trd.thres.longbuy
-                    push!(issues, "longbuy segment $(lss):$(lse) violates threshold: reldiff=$(anchor_reldiff) < longbuy=$(trd.thres.longbuy)")
+                if anchor_reldiff < trd.thres.longopen
+                    push!(issues, "longopen segment $(lss):$(lse) violates threshold: reldiff=$(anchor_reldiff) < longopen=$(trd.thres.longopen)")
                 end
             else
                 if (ss == lss) && (span < trd.minwindow)
-                    push!(issues, "longbuy segment $(lss):$(lse) violates minwindow: span=$(span) < minwindow=$(trd.minwindow)")
+                    push!(issues, "longopen segment $(lss):$(lse) violates minwindow: span=$(span) < minwindow=$(trd.minwindow)")
                 end
-                if reldiff < trd.thres.longbuy
-                    push!(issues, "longbuy segment $(lss):$(lse) violates threshold: reldiff=$(reldiff) < longbuy=$(trd.thres.longbuy)")
+                if reldiff < trd.thres.longopen
+                    push!(issues, "longopen segment $(lss):$(lse) violates threshold: reldiff=$(reldiff) < longopen=$(trd.thres.longopen)")
                 end
             end
-        elseif lbl == shortbuy
-            # Symmetric to longbuy: use actual entry anchor for first sub-segment checks.
+        elseif lbl == shortopen
+            # Symmetric to longopen: use actual entry anchor for first sub-segment checks.
             # If the segment starts immediately after a `shorthold` bar, reconstruct the same
-            # effective entry anchor that the state machine uses for a promoted shortbuy.
+            # effective entry anchor that the state machine uses for a promoted shortopen.
             if ss == lss && !isnothing(relix_arr)
                 buy_anchor = _crosscheck_buy_anchor(labels, relix_arr, lss, prev_same_side_hold)
                 anchor_span = validation_endix - buy_anchor + 1
                 anchor_reldiff = _reldiff(pivots, buy_anchor, validation_endix)
                 if anchor_span < trd.minwindow
-                    push!(issues, "shortbuy segment $(lss):$(lse) violates minwindow: span=$(anchor_span) < minwindow=$(trd.minwindow)")
+                    push!(issues, "shortopen segment $(lss):$(lse) violates minwindow: span=$(anchor_span) < minwindow=$(trd.minwindow)")
                 end
-                if anchor_reldiff > trd.thres.shortbuy
-                    push!(issues, "shortbuy segment $(lss):$(lse) violates threshold: reldiff=$(anchor_reldiff) > shortbuy=$(trd.thres.shortbuy)")
+                if anchor_reldiff > trd.thres.shortopen
+                    push!(issues, "shortopen segment $(lss):$(lse) violates threshold: reldiff=$(anchor_reldiff) > shortopen=$(trd.thres.shortopen)")
                 end
             else
                 if (ss == lss) && (span < trd.minwindow)
-                    push!(issues, "shortbuy segment $(lss):$(lse) violates minwindow: span=$(span) < minwindow=$(trd.minwindow)")
+                    push!(issues, "shortopen segment $(lss):$(lse) violates minwindow: span=$(span) < minwindow=$(trd.minwindow)")
                 end
-                if reldiff > trd.thres.shortbuy
-                    push!(issues, "shortbuy segment $(lss):$(lse) violates threshold: reldiff=$(reldiff) > shortbuy=$(trd.thres.shortbuy)")
+                if reldiff > trd.thres.shortopen
+                    push!(issues, "shortopen segment $(lss):$(lse) violates threshold: reldiff=$(reldiff) > shortopen=$(trd.thres.shortopen)")
                 end
             end
         elseif lbl == longhold
             invalidix = nothing
             for ix in lss:lse
-                anchorix = !isnothing(relix_arr) ? _hold_anchorix(labels, relix_arr, ix, trd, longbuy) : lss - 1
+                anchorix = !isnothing(relix_arr) ? _hold_anchorix(labels, relix_arr, ix, trd, longopen) : lss - 1
                 if !_hold_continuation_allowed(pivots, anchorix, ix, trd, :long)
                     invalidix = ix
                     break
@@ -1641,7 +1646,7 @@ function crosscheck(trd::Trend04, labels::AbstractVector{<:TradeLabel}, pivots::
         elseif lbl == shorthold
             invalidix = nothing
             for ix in lss:lse
-                anchorix = !isnothing(relix_arr) ? _hold_anchorix(labels, relix_arr, ix, trd, shortbuy) : lss - 1
+                anchorix = !isnothing(relix_arr) ? _hold_anchorix(labels, relix_arr, ix, trd, shortopen) : lss - 1
                 if !_hold_continuation_allowed(pivots, anchorix, ix, trd, :short)
                     invalidix = ix
                     break
@@ -1715,8 +1720,8 @@ end
 
 #region TradePairs
 
-@inline _islongtradepairlabel(label::TradeLabel) = (label == longbuy) || (label == longhold)
-@inline _isshorttradepairlabel(label::TradeLabel) = (label == shortbuy) || (label == shorthold)
+@inline _islongtradepairlabel(label::TradeLabel) = (label == longopen) || (label == longhold)
+@inline _isshorttradepairlabel(label::TradeLabel) = (label == shortopen) || (label == shorthold)
 
 """
 Trend-phase targets derived from `Trend04` labels.

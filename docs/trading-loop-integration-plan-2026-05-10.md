@@ -47,7 +47,7 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 ### First implementation slice
 - Add audit-derived directional ownership helpers in `Trade` that read only the current routed spot trading audit partition.
 - Store `robotownedlongqty` and `robotownedshortqty` in `TradeCache.cfg`.
-- Set `sellenabled` from `(robotownedlongqty > 0 || robotownedshortqty > 0) && classifieraccepted`.
+- Set `closeenabled` from `(robotownedlongqty > 0 || robotownedshortqty > 0) && classifieraccepted`.
 - Cap long-close sizing by `min(freebase, robotownedlongqty)` and short-close sizing by `min(borrowedbase, robotownedshortqty)` so external inventory is ignored.
 - Remove the redundant `noinvest` column from trade selection output.
 
@@ -62,7 +62,7 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 - [x] Removed startup probe auto-cancellation scheduling from `scripts/tradereal.jl` for both KrakenSpot and KrakenFutures probes.
 - [x] Kept startup capability probes placing long/short validation orders, but now leaves cancellation ownership to the regular trade loop.
 - [x] Hardened `_tradestep!` open-order cancellation in `Trade/src/Trade.jl` so one failing cancel/amend does not abort cancellation of remaining open orders.
-- [x] Improved cancel symbol resolution in `CryptoXch.cancelorder` to prefer the actual order symbol (from `getorder`) before fallback symbol construction.
+- [x] Improved cancel symbol resolution in `Xch.cancelorder` to prefer the actual order symbol (from `getorder`) before fallback symbol construction.
 
 ### Root-cause notes captured
 - A single cancellation exception during `_tradestep!` previously interrupted the loop and left subsequent open orders untouched.
@@ -74,7 +74,7 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 
 ### Follow-up tasks
 - [ ] Add a focused `Trade` test that injects one failing cancel and asserts the loop still attempts cancellation for remaining open orders.
-- [ ] Add a `CryptoXch` test that verifies cancel path uses order-native symbol when available.
+- [ ] Add a `Xch` test that verifies cancel path uses order-native symbol when available.
 - [ ] Re-run full workspace tests once project/task package resolution is corrected.
 
 ## 2026-05-28 Progress Update: Managed Close Orders for `tradingstrategy03`
@@ -149,7 +149,7 @@ This harness is intended to replace the TrendDetector-comparison scaffolding tha
 ## 2026-05-13 Proposal: Separate Simulation Data from Paper Bookkeeping
 
 ### Proposal summary
-Use a dedicated simulation exchange `BybitSim` for realistic Bybit-backed market data, symbol metadata, and virtual portfolio bookkeeping. Introduce a dedicated `TestXch` for synthetic OHLCV patterns such as `SINE` and `DOUBLESINE` via `TestOhlcv`. Both simulation exchanges should receive their virtual portfolio when instantiated from the corresponding script, so the simulation bookkeeping lives in the exchange instance rather than in `CryptoXch`.
+Use a dedicated simulation exchange `BybitSim` for realistic Bybit-backed market data, symbol metadata, and virtual portfolio bookkeeping. Introduce a dedicated `TestXch` for synthetic OHLCV patterns such as `SINE` and `DOUBLESINE` via `TestOhlcv`. Both simulation exchanges should receive their virtual portfolio when instantiated from the corresponding script, so the simulation bookkeeping lives in the exchange instance rather than in `Xch`.
 
 ### Why this matters
 - Real simulation needs realistic symbol metadata for `minimumqty`, `validsymbol`, and downstream sizing logic.
@@ -158,8 +158,8 @@ Use a dedicated simulation exchange `BybitSim` for realistic Bybit-backed market
 - Exchange choice must become explicit in scripts so the same codebase can target Bybit, Kraken Spot, Kraken Futures, and future venues like IBKR.
 
 ### Impact review
-- `CryptoXch`: split market-data provider concerns from trade/bookkeeping concerns; keep symbol metadata resolution working in simulation without requiring a real exchange account.
-- `CryptoXch`: keep the shared exchange abstraction and routing logic, but move simulation bookkeeping into the simulation exchange implementations instead of `CryptoXch`.
+- `Xch`: split market-data provider concerns from trade/bookkeeping concerns; keep symbol metadata resolution working in simulation without requiring a real exchange account.
+- `Xch`: keep the shared exchange abstraction and routing logic, but move simulation bookkeeping into the simulation exchange implementations instead of `Xch`.
 - `Trade`: trade selection and order handling should use the configured exchange identity explicitly, but the virtual portfolio should come from the instantiated simulation exchange.
 - Scripts: `tradereal.jl`, `tradesim.jl`, and future entrypoints must pass the exchange explicitly instead of assuming Bybit.
 - `TestOhlcv`: remains the provider for explicit synthetic bases only; it should not be implied by `EnvConfig.test`.
@@ -176,10 +176,10 @@ Use a dedicated simulation exchange `BybitSim` for realistic Bybit-backed market
 - Risk: `minimumqty` and symbol validation may still query live metadata in the wrong mode.
 	- Mitigation: route symbol metadata through the configured data exchange and add simulation-safe fallbacks.
 - Risk: paper bookkeeping accidentally touching venue account state.
-	- Mitigation: keep simulation ledger state in `Trade` / `CryptoXch` cache objects only, and block account-dependent paths in `TestXch`.
+	- Mitigation: keep simulation ledger state in `Trade` / `Xch` cache objects only, and block account-dependent paths in `TestXch`.
 
 ### Staged plan
-1. Split exchange identity from simulation identity in `CryptoXch` so data exchange and trade exchange can be configured independently.
+1. Split exchange identity from simulation identity in `Xch` so data exchange and trade exchange can be configured independently.
 2. Rename the simulation Bybit path to `BybitSim` and add a dedicated `TestXch` adapter for synthetic OHLCV only.
 3. Move virtual portfolio/bookkeeping state into the simulation exchange instances and instantiate it from the scripts.
 4. Make `minimumqty` and symbol validation simulation-safe while still using real symbol metadata when available.
@@ -196,12 +196,12 @@ This plan is intentionally incremental and ordered exactly by the requested prio
 ## Current Code Baseline (Relevant Touchpoints)
 - `algorithm03!` exists in `TradingStrategy/src/TradingStrategy.jl` and is currently used for gain-segment simulation/evaluation logic.
 - Main live/backtest loop exists in `Trade/src/Trade.jl` in `tradeloop(cache::TradeCache)`.
-- Exchange abstraction exists in `CryptoXch/src/CryptoXch.jl` with adapters for Bybit, KrakenSpot, KrakenFutures.
+- Exchange abstraction exists in `Xch/src/Xch.jl` with adapters for Bybit, KrakenSpot, KrakenFutures.
 - Trend configuration exists in `scripts/TrendDetector.jl` (`TrendDetectorConfig` with `tradingstrategy::TradingStrategy.GainSegment`).
 - Existing dashboard foundation exists in `scripts/cryptocockpit.jl`.
 
 ## Execution Rules
-1. Preserve package boundaries (`Trade` orchestrates, `CryptoXch` abstracts exchanges, `TradingStrategy` evaluates strategy behavior).
+1. Preserve package boundaries (`Trade` orchestrates, `Xch` abstracts exchanges, `TradingStrategy` evaluates strategy behavior).
 2. Keep backward-compatible entry points during migration (feature flags).
 3. Every phase produces tests and a resumable artifact (documented below).
 4. Bybit is retained for OHLCV updates only after objective 2 is completed.
@@ -259,7 +259,7 @@ Turn `algorithm03!` from an offline gain-segment algorithm into a strategy engin
 
 ---
 
-## Objective 2 (Second): KrakenSpot + KrakenFutures as active trading exchanges through `CryptoXch`; Bybit only for OHLCV updates
+## Objective 2 (Second): KrakenSpot + KrakenFutures as active trading exchanges through `Xch`; Bybit only for OHLCV updates
 
 ### Design intent
 Switch active order routing to Kraken via the abstraction layer while preserving Bybit market data ingestion for continuity.
@@ -267,7 +267,7 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 ### Progress as of 2026-05-26
 - Completed: startup probe order flow in `scripts/tradereal.jl` no longer performs independent delayed cancellation; open-order cleanup ownership is now centered in the trade loop path.
 - Completed: cancellation reliability hardened in `Trade._tradestep!` by isolating per-order cancellation/amend exceptions so one failure does not stop cancellation of remaining open orders.
-- Completed: `CryptoXch.cancelorder` now prefers the order-native symbol (from `getorder`) before fallback symbol construction to reduce symbol-mapping cancellation misses.
+- Completed: `Xch.cancelorder` now prefers the order-native symbol (from `getorder`) before fallback symbol construction to reduce symbol-mapping cancellation misses.
 - Pending: add focused Objective 2 regression tests for "one cancel fails, remaining cancels continue" and rerun full workspace tests once task environment/package resolution is fixed.
 
 ### Increment 2.1: Explicit trading/data exchange roles
@@ -275,7 +275,7 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 	- `data_exchange` (OHLCV source)
 	- `trade_exchange_spot`
 	- `trade_exchange_futures`
-- Add policy function in `CryptoXch` deciding adapter per operation (`getklines`, `createorder`, `openorders`, `balances`, etc.).
+- Add policy function in `Xch` deciding adapter per operation (`getklines`, `createorder`, `openorders`, `balances`, etc.).
 
 ### Increment 2.2: Kraken-first execution path
 - Ensure all order APIs in `Trade` call through KrakenSpot/KrakenFutures routing.
@@ -287,37 +287,37 @@ Switch active order routing to Kraken via the abstraction layer while preserving
 - Add docs and config examples for mixed mode: Bybit data + Kraken trading.
 - Example routing setup:
 	```julia
-	xc = CryptoXch.XchCache()
-	setrole!(xc, CryptoXch.data_exchange, CryptoXch.EXCHANGE_BYBIT)
-	setrole!(xc, CryptoXch.trade_exchange_spot, CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
-	setrole!(xc, CryptoXch.trade_exchange_futures, CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+	xc = Xch.XchCache()
+	setrole!(xc, Xch.data_exchange, Xch.EXCHANGE_BYBIT)
+	setrole!(xc, Xch.trade_exchange_spot, Xch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
+	setrole!(xc, Xch.trade_exchange_futures, Xch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
 	```
 - `cryptodownload`, `_gethistoryohlcv`, and `downloadupdate!` keep resolving OHLCV via the `data_exchange` role so mixed-mode continuity stays intact.
 
 ### Increment 2.4: Base/quote coin pair abstraction
-- Introduce explicit `basecoin` and `quotecoin` fields everywhere a trading pair is specified, replacing the concatenated `symbol` string as the primary key in CryptoXch routing.
+- Introduce explicit `basecoin` and `quotecoin` fields everywhere a trading pair is specified, replacing the concatenated `symbol` string as the primary key in Xch routing.
 - The exchange-specific adapter is solely responsible for mapping `(basecoin, quotecoin)` → exchange pair name (e.g. `"BTC"+"USD"` → `"PF_XBTUSD"` for KrakenFutures, `"BTCUSDT"` for KrakenSpot/Bybit).
 - This enables:
   1. Trading with non-USDT quote currencies (USD, EUR, USDC) without callers knowing the exact exchange symbol.
   2. Routing the same `(basecoin, quotecoin)` to different exchanges, each applying their own symbol mapping.
 - Concrete changes:
   - Add `validsymbol(bc, basecoin, quotecoin)` overloads to KrakenSpot, KrakenFutures, Bybit adapters.
-  - Update `CryptoXch` routing helpers to accept `(basecoin, quotecoin)` and resolve to adapter-specific pair names.
+  - Update `Xch` routing helpers to accept `(basecoin, quotecoin)` and resolve to adapter-specific pair names.
   - Update `Trade` callers (portfolio, orders, advice) to pass `basecoin`/`quotecoin` explicitly where it affects routing.
   - Add symbol-mapping unit tests covering at least: BTC/USDT→KrakenSpot, BTC/USD→KrakenFutures, BTC/USDT→Bybit.
 
 ### Increment 2.5: Tests
-- Adapter routing tests in `CryptoXch/test/`.
+- Adapter routing tests in `Xch/test/`.
 - End-to-end simulation test in `Trade/test/` verifying Bybit no-trade enforcement.
 
 ### Exit criteria
-- Spot and futures orders are Kraken-routed via `CryptoXch`.
+- Spot and futures orders are Kraken-routed via `Xch`.
 - Any Bybit trade attempt is rejected by policy.
 - OHLCV update jobs can still use Bybit.
 - `(basecoin, quotecoin)` is the canonical pair representation; adapters own the symbol mapping.
 
 ### Deliverables
-- Updated `CryptoXch/src/CryptoXch.jl`
+- Updated `Xch/src/Xch.jl`
 - Potential updates in `Trade/src/Trade.jl`
 - New routing/policy tests
 
@@ -404,7 +404,7 @@ Create immutable, complete, and queryable records sufficient for audit and tax w
 	- Replay readers should consume JSONL as the authoritative source and prefer Arrow only as an acceleration layer.
 
 ### Increment 3.3: Logging integration points
-- Instrument `Trade` and `CryptoXch` around all order lifecycle calls and polling updates.
+- Instrument `Trade` and `Xch` around all order lifecycle calls and polling updates.
 - Ensure failed/rejected/cancelled paths are logged with reason codes.
 - Add periodic snapshot events for portfolio state.
 
@@ -534,7 +534,7 @@ Build on existing cockpit script and feed it with live state and audit logs with
 
 ---
 
-## Objective 6 (Sixth): Add Interactive Brokers interface via `CryptoXch`
+## Objective 6 (Sixth): Add Interactive Brokers interface via `Xch`
 
 ### Design intent
 Introduce IB as another adapter under the same abstraction/routing model.
@@ -548,7 +548,7 @@ Introduce IB as another adapter under the same abstraction/routing model.
 	- create/cancel/amend order
 	- market data retrieval where applicable
 
-### Increment 6.2: `CryptoXch` integration
+### Increment 6.2: `Xch` integration
 - Register IB exchange constants and adapter routing.
 - Add config/auth mapping and capability flags (spot, derivatives, shorting policy).
 
@@ -561,12 +561,12 @@ Introduce IB as another adapter under the same abstraction/routing model.
 - Routing tests with mixed exchange deployment.
 
 ### Exit criteria
-- IB can be selected via `CryptoXch` without changing `Trade` logic.
+- IB can be selected via `Xch` without changing `Trade` logic.
 - Paper trading path is validated before live enablement.
 
 ### Deliverables
 - New `InteractiveBrokers` package
-- `CryptoXch` routing updates and tests
+- `Xch` routing updates and tests
 
 ---
 
@@ -589,7 +589,7 @@ Update this section after each work session.
 - Objective 1: IN PROGRESS (Increment 1.1 started)
 - Objective 2: COMPLETED (Increments 2.1-2.5 done and validated) + MAINTENANCE UPDATES (BybitSim timestamp-aware `get24h` pricing, adapter review, and explicit screening vs valuation USDT market intents)
 - Objective 3: IN PROGRESS (3.1 schema + integration slice + audit chain linkage + OCO bracket helper + symbol-info cache done; performance metrics and drawdown tracking remain)
-- Objective 4: IN PROGRESS (adaptive-maker steady-loop repricing slice implemented in Trade/CryptoXch)
+- Objective 4: IN PROGRESS (adaptive-maker steady-loop repricing slice implemented in Trade/Xch)
 - Objective 5: NOT STARTED
 - Objective 6: NOT STARTED
 
@@ -607,17 +607,17 @@ Update this section after each work session.
 - Objective/Increment: Objective 2 maintenance / BybitSim screening with timestamp-aware cached OHLCV symbols
 - Completed:
 	- Added selective symbol filtering in BybitSim `_sim_get24h(symbol=nothing)` to iterate `syminfodf` but skip symbols lacking cached OHLCV at simulation reference time; aborts per-symbol failure instead of aborting entire snapshot.
-	- Updated `CryptoXch.screeningUSDTmarket` and `CryptoXch.valuationUSDTmarket` to call `setcurrenttime!(xc, dt)` before fetching pricing to align ticker snapshot with trade-selection timestamp.
+	- Updated `Xch.screeningUSDTmarket` and `Xch.valuationUSDTmarket` to call `setcurrenttime!(xc, dt)` before fetching pricing to align ticker snapshot with trade-selection timestamp.
 	- Result: trade-selection screening in simulation uses only viable cached-data-backed symbols and remains deterministic at the requested simulation time.
-	- Added focused CryptoXch test coverage for selective symbol filtering and timestamp-aware pricing queries.
+	- Added focused Xch test coverage for selective symbol filtering and timestamp-aware pricing queries.
 - Files changed:
 	- `Bybit/src/Bybit.jl`
-	- `CryptoXch/src/CryptoXch.jl`
-	- `CryptoXch/test/runtests.jl`
+	- `Xch/src/Xch.jl`
+	- `Xch/test/runtests.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
 	- `Bybit/test/runtests.jl` passed (17/17)
-	- `CryptoXch/test/runtests.jl` passed (26/26)
+	- `Xch/test/runtests.jl` passed (26/26)
 	- Trade backtest integration: BybitSim selective symbol filtering confirmed with reduced universe filtered by OHLCV availability
 - Open issues/blockers:
 	- Selective symbol filtering works for broad screening; valuationUSDTmarket with specific requested bases still queries only requested symbols (correct path, no issue).
@@ -628,16 +628,16 @@ Update this section after each work session.
 - Date: 2026-05-18
 - Objective/Increment: Objective 2 maintenance / explicit screening vs valuation USDT market intents
 - Completed:
-	- Added explicit `CryptoXch.screeningUSDTmarket` (broad universe) and `CryptoXch.valuationUSDTmarket` (coin-scoped) APIs.
-	- Kept `CryptoXch.getUSDTmarket` backward-compatible and routed internal ticker fetch through a shared helper.
-	- Updated `CryptoXch.portfolio!` default valuation path to use `valuationUSDTmarket` with balance-derived requested base coins.
+	- Added explicit `Xch.screeningUSDTmarket` (broad universe) and `Xch.valuationUSDTmarket` (coin-scoped) APIs.
+	- Kept `Xch.getUSDTmarket` backward-compatible and routed internal ticker fetch through a shared helper.
+	- Updated `Xch.portfolio!` default valuation path to use `valuationUSDTmarket` with balance-derived requested base coins.
 	- Updated Trade selection/live wait paths to call `screeningUSDTmarket` explicitly.
-	- Added focused CryptoXch tests for intent separation and unrelated-symbol safety (`AAPLXUSDT` present in symbol universe but excluded from valuation when not held).
+	- Added focused Xch tests for intent separation and unrelated-symbol safety (`AAPLXUSDT` present in symbol universe but excluded from valuation when not held).
 - Files changed:
-	- `CryptoXch/src/CryptoXch.jl`
+	- `Xch/src/Xch.jl`
 	- `Trade/src/Trade.jl`
-	- `CryptoXch/test/usdtmarket_intent_test.jl`
-	- `CryptoXch/test/runtests.jl`
+	- `Xch/test/usdtmarket_intent_test.jl`
+	- `Xch/test/runtests.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
 	- Root-project include: `Trade/test/backtest_integration_test.jl` passed (21/21)
@@ -650,13 +650,13 @@ Update this section after each work session.
 - Date: 2026-05-17
 - Objective/Increment: Objective 4 / adaptive maker steady-loop repricing slice
 - Completed:
-	- Added adaptive maker order intent registry in `CryptoXch` (`registeradaptiveorder!`, `unregisteradaptiveorder!`, `isadaptiveorder`, `pruneadaptiveorders!`).
+	- Added adaptive maker order intent registry in `Xch` (`registeradaptiveorder!`, `unregisteradaptiveorder!`, `isadaptiveorder`, `pruneadaptiveorders!`).
 	- Wired registry lifecycle to order create/cancel/amend/getopenorders so adaptive intent survives order-id replacements and is cleaned when orders close.
 	- Updated `Trade._tradestep!` to amend adaptive maker orders with `limitprice=nothing` instead of cancelling all open orders.
 	- Added no-op short-circuit in KrakenSpot/KrakenFutures `amendorder` when neither effective price nor quantity changed.
 	- Added focused Trade test coverage for adaptive order registry behavior.
 - Files changed:
-	- `CryptoXch/src/CryptoXch.jl`
+	- `Xch/src/Xch.jl`
 	- `Trade/src/Trade.jl`
 	- `KrakenSpot/src/KrakenSpot.jl`
 	- `KrakenFutures/src/KrakenFutures.jl`
@@ -676,17 +676,17 @@ Update this section after each work session.
 - Completed:
 	- Added `simtime` field to `Bybit.BybitCache`.
 	- Updated BybitSim `_sim_lastprice` to derive from OHLCV at `floor(simtime, 1m) - 1m` (previous-minute close semantics), including test-base and cached-base paths.
-	- Updated `CryptoXch.setcurrenttime!` to propagate `currentdt` into adapters exposing `simtime`.
+	- Updated `Xch.setcurrenttime!` to propagate `currentdt` into adapters exposing `simtime`.
 	- Updated routing test fixture for `BybitCache` constructor shape change.
 	- Verified omitted-limit maker order fill price now matches previous-minute close at simulation timestamp.
 - Files changed:
 	- `Bybit/src/Bybit.jl`
-	- `CryptoXch/src/CryptoXch.jl`
-	- `CryptoXch/test/routingtests.jl`
+	- `Xch/src/Xch.jl`
+	- `Xch/test/routingtests.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
 	- `Bybit/test/runtests.jl` passed (17/17)
-	- `CryptoXch/test/routingtests.jl` passed (26/26)
+	- `Xch/test/routingtests.jl` passed (26/26)
 	- Manual timestamped BTC repro: `get24h_last == previous-minute close` confirmed
 - Open issues/blockers:
 	- Price correctness still depends on quality of persisted OHLCV cache data.
@@ -711,21 +711,21 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / OCO bracket helper + local symbol-info cache for simulation
 - Completed:
-	- Implemented `createocoorder` in `CryptoXch` as a high-level bracket helper that creates three linked orders (entry, take-profit, stop-loss) in a single call.
+	- Implemented `createocoorder` in `Xch` as a high-level bracket helper that creates three linked orders (entry, take-profit, stop-loss) in a single call.
 	- Shared `leg_group_id` (UUID) is generated for all three legs; each leg carries its `leg_label` (`entry`, `take_profit`, `stop_loss`) and the TP/SL legs carry `parent_order_id = entry_order_id` to wire the causal audit chain.
 	- Signal metadata (`signal_label`, `signal_score`, `strategy_engine`, `strategy_config_ref`) is forwarded to all three legs through the `xc.mc[:audit_event_context]` mechanism using an internal `_setlegctx!` helper; context is cleaned up in `try/finally` to ensure no leakage.
 	- Implemented a local symbol-info cache (`xc.mc[:syminfo_cache]` as `Dict{String, NamedTuple}`) to fix the `symbolinfo(::Nothing, ::String)` crash that occurred in simulation mode when `_routedbc` returns `nothing` (no live exchange connection).
 	- Added `_syminfocache(xc)`, `setsymbolinfocache!(xc, symbol, info)` for test injection, and updated `_exchangesymbolinfo` to populate the cache from live exchange responses and fall back to it in sim mode.
 	- When a live exchange connection is available, the cache is populated transparently; when in `cryptoxchsim` mode the cache must be pre-seeded (via `setsymbolinfocache!`) or previously populated in a live session.
-	- Added `CryptoXch/test/multileg_order_test.jl` with 28 assertions covering long bracket (buy entry → sell TP + sell SL) and short bracket (sell entry → buy TP + buy SL): leg_group_id consistency, leg_label values, parent_order_id chaining, signal context forwarding, correlation_id chain semantics.
+	- Added `Xch/test/multileg_order_test.jl` with 28 assertions covering long bracket (buy entry → sell TP + sell SL) and short bracket (sell entry → buy TP + buy SL): leg_group_id consistency, leg_label values, parent_order_id chaining, signal context forwarding, correlation_id chain semantics.
 	- Root order `correlation_id` defaults to its own order id (self-referencing root); child legs point to the root id. Test was updated to assert this expected semantic rather than the incorrect inverse.
 - Files changed:
-	- `CryptoXch/src/CryptoXch.jl` (symbol-info cache helpers + `createocoorder`)
-	- `CryptoXch/test/multileg_order_test.jl` (new file)
-	- `CryptoXch/test/runtests.jl` (added multileg include)
+	- `Xch/src/Xch.jl` (symbol-info cache helpers + `createocoorder`)
+	- `Xch/test/multileg_order_test.jl` (new file)
+	- `Xch/test/runtests.jl` (added multileg include)
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'include("test/audit_integration_test.jl"); include("test/multileg_order_test.jl")'` → 18/18 + 28/28 passed
+	- `cd Xch && julia --project=. -e 'include("test/audit_integration_test.jl"); include("test/multileg_order_test.jl")'` → 18/18 + 28/28 passed
 - Open issues/blockers:
 	- `_exchangevalidsymbol` still calls `validsymbol(nothing, sym)` in sim mode; not exercised by current tests and not triggered by `createocoorder`. Pre-existing gap.
 	- Performance metrics (Sharpe/Sortino) and drawdown/recovery tracking are not yet implemented.
@@ -735,17 +735,17 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / causal order-chain linkage + fee/commission logging
 - Completed:
-	- Added audit chain state in `CryptoXch` to persist `correlation_id` and `parent_event_id` for order lifecycle events.
+	- Added audit chain state in `Xch` to persist `correlation_id` and `parent_event_id` for order lifecycle events.
 	- Added parent linkage helper for amended/replaced orders so child-order events can point to prior chain events.
 	- Extended `changeorder` and `cancelorder` audit behavior to emit lifecycle transitions with causal context.
 	- Added fee and commission capture in order audit rows (`fee_amount`, `fee_currency`) with fallback fee estimation for fill events when exchanges do not expose explicit fee fields.
-	- Extended focused `CryptoXch` audit tests to validate filled-event fee capture and parent/correlation linkage fields.
+	- Extended focused `Xch` audit tests to validate filled-event fee capture and parent/correlation linkage fields.
 - Files changed:
-	- `CryptoXch/src/CryptoXch.jl`
-	- `CryptoXch/test/audit_integration_test.jl`
+	- `Xch/src/Xch.jl`
+	- `Xch/test/audit_integration_test.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'include("test/audit_integration_test.jl")'` → passed
+	- `cd Xch && julia --project=. -e 'include("test/audit_integration_test.jl")'` → passed
 	- `cd Trade && julia --project=. -e 'include("test/audit_snapshot_test.jl")'` → passed
 - Open issues/blockers:
 	- Exchange adapters still differ in whether they expose native execution-level fee fields; current logic uses canonical extraction plus deterministic fallback for fills.
@@ -756,19 +756,19 @@ Update this section after each work session.
 - Date: 2026-05-10
 - Objective/Increment: Objective 3 / getorder-getopenorders lifecycle reconciliation + per-asset snapshots
 - Completed:
-	- Added transition-aware audit reconciliation in `CryptoXch` so `getorder`/`getopenorders` persist status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
+	- Added transition-aware audit reconciliation in `Xch` so `getorder`/`getopenorders` persist status changes as `ORDER_ACK`, `ORDER_PARTIAL_FILL`, `ORDER_FILLED`, `ORDER_CANCELED`, or `ORDER_REJECTED`.
 	- Added lightweight in-memory order audit state cache keyed by order id to emit events only on status/fill deltas.
 	- Extended `getorder` with `auditevent` control to avoid duplicate events for internal lookup usage during order creation.
 	- Upgraded `Trade` portfolio snapshots from one aggregate row to per-asset snapshot rows with asset symbol, position quantity, and portfolio totals for replay-grade holdings history.
 	- Extended focused tests to validate transition event persistence and per-asset snapshot output.
 - Files changed:
-	- `CryptoXch/src/CryptoXch.jl`
-	- `CryptoXch/test/audit_integration_test.jl`
+	- `Xch/src/Xch.jl`
+	- `Xch/test/audit_integration_test.jl`
 	- `Trade/src/Trade.jl`
 	- `Trade/test/audit_snapshot_test.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'include("test/audit_integration_test.jl")'` → passed
+	- `cd Xch && julia --project=. -e 'include("test/audit_integration_test.jl")'` → passed
 	- `cd Trade && julia --project=. -e 'include("test/audit_snapshot_test.jl")'` → passed
 - Open issues/blockers:
 	- Event reconciliation currently uses order snapshots from polling APIs and does not yet persist exchange-native trade ids when not present on order payloads.
@@ -777,23 +777,23 @@ Update this section after each work session.
 	- Add cancel/amend lifecycle correlation (`parent_event_id`/`correlation_id`) and trade-id enrichment where adapters expose execution-level identifiers.
 
 - Date: 2026-05-10
-- Objective/Increment: Objective 3 / Integration slice across CryptoXch and Trade
+- Objective/Increment: Objective 3 / Integration slice across Xch and Trade
 - Completed:
-	- Added `TradeAudit` as a dependency of `CryptoXch` and `Trade`.
-	- Integrated `CryptoXch` order audit emission for submitted and rejected order events at the public create-order boundary.
+	- Added `TradeAudit` as a dependency of `Xch` and `Trade`.
+	- Integrated `Xch` order audit emission for submitted and rejected order events at the public create-order boundary.
 	- Added explicit `run_mode` and `run_id` stamping on emitted order and portfolio audit rows.
 	- Added per-run-mode partitioning (`run_mode=<live|simulation>`) in the audit folder layout to prevent simulation/live mixing.
 	- Added an environment override for the audit root to support deterministic package-local tests without writing into the shared `\$HOME/crypto/audit` tree.
 	- Integrated `Trade` portfolio snapshot emission once per trading tick.
-	- Added focused tests for CryptoXch order audit persistence and Trade portfolio snapshot persistence.
+	- Added focused tests for Xch order audit persistence and Trade portfolio snapshot persistence.
 - Files changed:
 	- `TradeAudit/src/TradeAudit.jl`
 	- `TradeAudit/test/runtests.jl`
-	- `CryptoXch/Project.toml`
-	- `CryptoXch/Manifest.toml`
-	- `CryptoXch/src/CryptoXch.jl`
-	- `CryptoXch/test/runtests.jl`
-	- `CryptoXch/test/audit_integration_test.jl`
+	- `Xch/Project.toml`
+	- `Xch/Manifest.toml`
+	- `Xch/src/Xch.jl`
+	- `Xch/test/runtests.jl`
+	- `Xch/test/audit_integration_test.jl`
 	- `Trade/Project.toml`
 	- `Trade/Manifest.toml`
 	- `Trade/src/Trade.jl`
@@ -801,7 +801,7 @@ Update this section after each work session.
 	- `Trade/test/audit_snapshot_test.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
+	- `cd Xch && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_integration_test.jl")'` → passed
 	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.develop(path="../TradeAudit"); Pkg.resolve(); include("test/audit_snapshot_test.jl")'` → passed
 - Open issues/blockers:
 	- Order status polling, fills, and cancel/amend lifecycle events are not emitted yet.
@@ -829,26 +829,26 @@ Update this section after each work session.
 - Tests run and result:
 	- `cd TradeAudit && julia --project=. -e 'using Pkg; Pkg.develop(path="../EnvConfig"); Pkg.resolve(); Pkg.test()'` → passed
 - Open issues/blockers:
-	- `TradeAudit` is not integrated into `Trade` or `CryptoXch` yet.
+	- `TradeAudit` is not integrated into `Trade` or `Xch` yet.
 	- No lifecycle events are emitted yet; only schema and writer infrastructure exist.
 	- Hash-chain manifest generation and Arrow companion output remain for later Objective 3 increments.
 - Next immediate step:
-	- Wire `TradeAudit` into the first order lifecycle boundary, starting with order submission and rejection events in `CryptoXch`.
+	- Wire `TradeAudit` into the first order lifecycle boundary, starting with order submission and rejection events in `Xch`.
 
 - Date: 2026-05-10
 - Objective/Increment: Objective 2 / Increments 2.1-2.5
 - Completed:
-	- Added explicit exchange-role routing in `CryptoXch` for `data_exchange`, `trade_exchange_spot`, and `trade_exchange_futures`.
+	- Added explicit exchange-role routing in `Xch` for `data_exchange`, `trade_exchange_spot`, and `trade_exchange_futures`.
 	- Routed market-data operations through the data role and trading operations through spot/futures trade roles.
 	- Added Bybit data-only guardrails that block order placement when Bybit is configured only as the market-data source.
 	- Preserved Bybit OHLCV continuity for `cryptodownload`, `_gethistoryohlcv`, and `downloadupdate!` in mixed-mode routing.
-	- Added pair-aware `(basecoin, quotecoin)` symbol resolution and validation across `CryptoXch`, `KrakenSpot`, `KrakenFutures`, and `Bybit`.
+	- Added pair-aware `(basecoin, quotecoin)` symbol resolution and validation across `Xch`, `KrakenSpot`, `KrakenFutures`, and `Bybit`.
 	- Added deterministic routing and symbol-mapping tests covering BTC/USDT on KrakenSpot and Bybit, plus BTC/USD on KrakenFutures.
 	- Added Trade-level guardrail regression coverage and revalidated the Trade package suite.
 - Files changed:
-	- `CryptoXch/src/CryptoXch.jl`
-	- `CryptoXch/test/routingtests.jl`
-	- `CryptoXch/test/simruntests.jl`
+	- `Xch/src/Xch.jl`
+	- `Xch/test/routingtests.jl`
+	- `Xch/test/simruntests.jl`
 	- `Trade/test/bybit_guardrail_test.jl`
 	- `Trade/test/runtests.jl`
 	- `KrakenSpot/src/KrakenSpot.jl`
@@ -856,12 +856,12 @@ Update this section after each work session.
 	- `Bybit/src/Bybit.jl`
 	- `docs/trading-loop-integration-plan-2026-05-10.md`
 - Tests run and result:
-	- `cd CryptoXch && julia --project=. -e 'include("test/routingtests.jl")'` → passed
+	- `cd Xch && julia --project=. -e 'include("test/routingtests.jl")'` → passed
 	- `cd Trade && julia --project=. -e 'include("test/bybit_guardrail_test.jl")'` → passed
 	- `cd Trade && julia --project=. -e 'using Pkg; Pkg.test()'` → passed
 - Open issues/blockers:
 	- Objective 3 audit logging design not started yet.
-	- Pair-aware public APIs in `Trade` still primarily default to `EnvConfig.cryptoquote`; later work may widen caller-side quote selection further.
+	- Pair-aware public APIs in `Trade` now primarily default to `EnvConfig.pairquote`; later work may widen caller-side quote selection further.
 - Next immediate step:
 	- Start Objective 3 by defining the canonical audit event schema and storage layout, including exchange/account and asset-type classification fields.
 
@@ -944,7 +944,7 @@ Reduce REST API rate-limit pressure and improve latency by migrating kline (OHLC
 ### Increments
 - 4.1: Audit current exchange adapters for WebSocket support and identify gaps (Bybit, KrakenSpot, KrakenFutures).
 - 4.2: Implement or enable WebSocket clients for klines and trades in each adapter.
-- 4.3: Refactor polling logic in CryptoXch and Trade to consume and cache data from WebSocket streams instead of periodic HTTP fetches.
+- 4.3: Refactor polling logic in Xch and Trade to consume and cache data from WebSocket streams instead of periodic HTTP fetches.
 - 4.4: Add fallback to HTTP polling if WebSocket is unavailable or unreliable for a given symbol/exchange.
 - 4.5: Add diagnostics and tests to verify data freshness, latency, and rate-limit impact.
 

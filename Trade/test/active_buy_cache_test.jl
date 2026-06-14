@@ -1,11 +1,11 @@
 using Test
 using DataFrames
-using EnvConfig, Trade, CryptoXch
+using EnvConfig, Trade, Xch
 
 @testset "Active buy cache" begin
     EnvConfig.init(test)
 
-    cache = Trade.TradeCache(xc=CryptoXch.XchCache())
+    cache = Trade.TradeCache(xc=Xch.XchCache())
     oo = DataFrame(
         orderid=["oid-btc-buy", "oid-eth-sell", "oid-btc-leverage-buy"],
         symbol=["BTCUSDT", "ETHUSDT", "BTCUSDT"],

@@ -15,12 +15,12 @@ using TradingStrategy
             close=Float32[100f0],
         )
 
-        TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0], TradeLabel[longbuy], false; lastix=1)
+        TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0], TradeLabel[Targets.longopen], false; lastix=1)
 
-        @test gs.longta.label == longbuy
+        @test gs.longta.label == Targets.longopen
         @test isapprox(gs.longta.openprice, 99.9f0; atol=1f-4)
         @test isapprox(gs.longta.closeprice, 101f0; atol=1f-4)
-        @test gs.shortta.label == ignore
+        @test gs.shortta.label == Targets.ignore
     end
 
     @testset "close guidance stays in long lane" begin
@@ -40,11 +40,11 @@ using TradingStrategy
 
     @testset "short open intent stays in short lane" begin
         gs = TradingStrategy.GainSegment()
-        gs.shortta = TradingStrategy.TradeAction(shortbuy, 99f0, 101f0, 0)
+        gs.shortta = TradingStrategy.TradeAction(shortopen, 99f0, 101f0, 0)
 
         TradingStrategy.synclanes!(gs)
 
-        @test gs.shortta.label == shortbuy
+        @test gs.shortta.label == Targets.shortopen
         @test gs.shortta.openprice == 101f0
         @test gs.longta.label == ignore
     end
@@ -60,9 +60,9 @@ end
         close=Float32[100f0, 100f0],
     )
 
-    TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0, 0.9f0], TradeLabel[longbuy, longbuy], false; lastix=2)
+    TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0, 0.9f0], TradeLabel[Targets.longopen, Targets.longopen], false; lastix=2)
 
-    @test gs.longta.label == longbuy
+    @test gs.longta.label == Targets.longopen
     @test gs.longta.openix == 0
     @test gs.longta.closeprice > 0f0
 end
@@ -104,7 +104,7 @@ end
             close=Float32[100f0, 100f0],
         )
 
-        TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0, 0.9f0], TradeLabel[longbuy, longbuy], false; lastix=2)
+        TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0, 0.9f0], TradeLabel[Targets.longopen, Targets.longopen], false; lastix=2)
 
         @test nrow(gs.gaindf) >= 1
         @test gs.gaindf[end, :trend] == up
@@ -121,7 +121,7 @@ end
             close=Float32[100f0, 100f0],
         )
 
-        TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0, 0.9f0], TradeLabel[shortbuy, shortbuy], false; lastix=2)
+        TradingStrategy.getgains(gs, predictionsdf, Float32[0.9f0, 0.9f0], TradeLabel[Targets.shortopen, Targets.shortopen], false; lastix=2)
 
         @test nrow(gs.gaindf) >= 1
         @test gs.gaindf[end, :trend] == down
@@ -171,8 +171,8 @@ end
 @testset "Objective 7 overlapping lanes partial-fill and cancel keep rules" begin
     @testset "one tick can keep overlapping lane entries without forced cancellation" begin
         gs = TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!)
-        gs.longta = TradingStrategy.TradeAction(longbuy, 120f0, 100f0, 0)
-        gs.shortta = TradingStrategy.TradeAction(shortbuy, 80f0, 100f0, 0)
+        gs.longta = TradingStrategy.TradeAction(longopen, 120f0, 100f0, 0)
+        gs.shortta = TradingStrategy.TradeAction(shortopen, 80f0, 100f0, 0)
 
         dt = DateTime(2026, 1, 6)
         predictionsdf = DataFrame(
@@ -191,8 +191,8 @@ end
 
     @testset "lane-specific close hit realizes one lane and keeps the other" begin
         gs = TradingStrategy.GainSegment(algorithm=TradingStrategy.gain_limit_reversal!)
-        gs.longta = TradingStrategy.TradeAction(longbuy, 101f0, 100f0, 1)
-        gs.shortta = TradingStrategy.TradeAction(shortbuy, 97f0, 100f0, 1)
+        gs.longta = TradingStrategy.TradeAction(longopen, 101f0, 100f0, 1)
+        gs.shortta = TradingStrategy.TradeAction(shortopen, 97f0, 100f0, 1)
 
         dt = DateTime(2026, 1, 7)
         predictionsdf = DataFrame(

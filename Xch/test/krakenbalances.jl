@@ -1,5 +1,5 @@
 using Dates, DataFrames
-using EnvConfig, CryptoXch
+using EnvConfig, Xch
 
 """
 Read and print balances for one exchange/auth tuple pair.
@@ -7,8 +7,8 @@ Read and print balances for one exchange/auth tuple pair.
 function print_balances(exchange_name::String, auth_tuple::String)
     println("\n=== $(exchange_name) ($(auth_tuple)) ===")
     try
-        xc = CryptoXch.XchCache(exchange=exchange_name, authname=auth_tuple)
-        bdf = CryptoXch.balances(xc)
+        xc = Xch.XchCache(exchange=exchange_name)
+        bdf = Xch.balances(xc)
         println("rows=$(size(bdf, 1)) cols=$(size(bdf, 2))")
         println(bdf)
         return bdf
@@ -24,8 +24,8 @@ Entry point for printing Kraken spot and futures balances.
 function main()
     EnvConfig.init(EnvConfig.production)
 
-    spot = print_balances(CryptoXch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
-    futures = print_balances(CryptoXch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+    spot = print_balances(Xch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
+    futures = print_balances(Xch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
 
     println("\nDone at $(Dates.now(Dates.UTC))")
     return (spot=spot, futures=futures)

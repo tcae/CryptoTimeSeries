@@ -14,31 +14,31 @@ include("optimizationconfigs.jl")
 const LABEL_ROWS_DEFAULT = ["trend target", "trend pred", "tradepairs target"]
 const LABEL_CODE = Dict{Any, Int}(
     missing => 0,
-    Targets.shortbuy => 1,
+    Targets.shortopen => 1,
     Targets.shorthold => 2,
     Targets.shortclose => 3,
     Targets.allclose => 4,
-    Targets.longbuy => 5,
+    Targets.longopen => 5,
     Targets.longhold => 6,
     Targets.longclose => 7,
 )
 const LABEL_COLOR = Dict{Any, String}(
     missing => "#808080",
-    Targets.shortbuy => "#99000d",
+    Targets.shortopen => "#99000d",
     Targets.shorthold => "#ef3b2c",
     Targets.shortclose => "#fcbba1",
     Targets.allclose => "#ffffff",
-    Targets.longbuy => "#006d2c",
+    Targets.longopen => "#006d2c",
     Targets.longhold => "#31a354",
     Targets.longclose => "#a1d99b",
 )
 const LABEL_TICK_TEXT = [
     "missing",
-    "shortbuy",
+    "shortopen",
     "shorthold",
     "shortclose",
     "allclose",
-    "longbuy",
+    "longopen",
     "longhold",
     "longclose",
 ]
@@ -234,7 +234,7 @@ end
 Create a Plotly discrete colorscale matching the `TradeLabel` color mapping.
 """
 function _discrete_colorscale()
-    ordered = [missing, Targets.shortbuy, Targets.shorthold, Targets.shortclose, Targets.allclose, Targets.longbuy, Targets.longhold, Targets.longclose]
+    ordered = [missing, Targets.shortopen, Targets.shorthold, Targets.shortclose, Targets.allclose, Targets.longopen, Targets.longhold, Targets.longclose]
     boundaries = collect(range(0.0, 1.0; length=length(ordered) + 1))
     scale = Vector{Any}()
     for (ix, key) in enumerate(ordered)

@@ -1,16 +1,16 @@
-using EnvConfig, Ohlcv, Features, CryptoXch
+using EnvConfig, Ohlcv, Features, Xch
 using Dates, Ohlcv.DataFrames
 
 function deleteoutdateohlcv()
     EnvConfig.init(production)
     Ohlcv.verbosity = 1
 
-    xc = CryptoXch.XchCache()
+    xc = Xch.XchCache()
     outdated = invalid = valid = 0
     latest = oldest = nothing
     deadline = DateTime("2024-01-01T01:00:00")
     for ohlcv in Ohlcv.OhlcvFiles()
-        if CryptoXch.validbase(xc, ohlcv.base)
+        if Xch.validbase(xc, ohlcv.base)
             valid += 1
             if length(ohlcv.df[!, :opentime]) == 0
                 println("empty ohlcv: $(Ohlcv.file(ohlcv))")

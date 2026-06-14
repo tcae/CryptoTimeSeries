@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "d7eb581e13983cafe34289c195bcbbe7f9d6d3ae"
+project_hash = "d6669b7a658df173ce1cdd41d65279b09a3a5130"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -183,12 +183,6 @@ version = "2.5.1"
 git-tree-sha1 = "249fe38abf76d48563e2f4556bebd215aa317e15"
 uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 version = "4.1.1"
-
-[[deps.CryptoXch]]
-deps = ["Arrow", "Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv", "TradeLog", "UUIDs"]
-path = "."
-uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.1"
 
 [[deps.DataAPI]]
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
@@ -901,6 +895,12 @@ version = "0.6.7"
 [[deps.WorkerUtilities]]
 git-tree-sha1 = "cd1659ba0d57b71a464a29e64dbc67cfe83d54e7"
 uuid = "76eceee3-57b5-4d4a-8e66-0e911cebbf60"
+version = "1.6.1"
+
+[[deps.Xch]]
+deps = ["Arrow", "Bybit", "CSV", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Test", "TestOhlcv", "TradeLog", "UUIDs"]
+path = "."
+uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 version = "1.6.1"
 
 [[deps.Zlib_jll]]

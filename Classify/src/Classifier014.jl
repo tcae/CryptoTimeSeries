@@ -54,7 +54,7 @@ const OPTPARAMS014 = Dict(
 
 """
 Classifier014 idea
-- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longbuy
+- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longopen
 - longclose if gain is decreased to gain threshold / x or pivot crosses regression line 
 - longclose criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then longclose otherwise follow longclose criteria above
 
@@ -171,11 +171,11 @@ function advice(cl::Classifier014, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
     ta = TradeAdvice(cl, bc.cfgid, allclose, 1f0, base, piv[ohlcvix], Ohlcv.dataframe(ohlcv)[ohlcvix, :opentime], Features.relativegain(regry, grad, 60, forward=false), 1f0, nothing)
 
     if ((piv[ohlcvix] < volatilitydownprice) && (ra >= cfg.volatilitylongthreshold)) || (ra >= cfg.longtrendthreshold)
-        ta.tradelabel = longbuy
+        ta.tradelabel = longopen
     elseif (piv[ohlcvix-1] >= volatilityupprice) && (ra < cfg.longtrendthreshold)
         ta.tradelabel = longclose
     elseif ((piv[ohlcvix] > volatilityupprice) && (ra <= cfg.volatilityshortthreshold)) || (ra <= cfg.shorttrendthreshold)
-        ta.tradelabel = shortbuy
+        ta.tradelabel = shortopen
     elseif (piv[ohlcvix-1] <= volatilitydownprice) && (ra > cfg.shorttrendthreshold)
         ta.tradelabel = shortclose
     else

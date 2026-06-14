@@ -1,12 +1,12 @@
-using EnvConfig, Dates, DataFrames, CryptoXch, Features, Ohlcv
+using EnvConfig, Dates, DataFrames, Xch, Features, Ohlcv
 # startdt = DateTime("2022-05-15T22:54:00")
 enddt = DateTime("2023-02-18T13:29:00")
 period = Day(1)
 startdt = enddt - period
 EnvConfig.init(production)
 EnvConfig.setlogpath("F4StorageTest")
-xc = CryptoXch.XchCache()
-ohlcv = CryptoXch.cryptodownload(xc, "SINEUSDT", "1m", startdt, enddt)
+xc = Xch.XchCache()
+ohlcv = Xch.cryptodownload(xc, "SINEUSDT", "1m", startdt, enddt)
 println(ohlcv)
 println(describe(ohlcv.df))
 f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=false)

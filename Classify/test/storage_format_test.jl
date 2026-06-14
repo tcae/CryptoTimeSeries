@@ -22,9 +22,9 @@ using EnvConfig
         predf = DataFrame(
             opentime=[DateTime(2024, 1, 1), DateTime(2024, 1, 1, 0, 1)],
             pivot=Float32[1.0f0, 2.0f0],
-            longbuy=Float32[0.7f0, 0.2f0],
+            longopen=Float32[0.7f0, 0.2f0],
             allclose=Float32[0.3f0, 0.8f0],
-            targets=categorical(["longbuy", "allclose"]),
+            targets=categorical(["longopen", "allclose"]),
         )
         Classify.savepredictions(predf, "TEST_predictions")
         predpath = EnvConfig.tablepath("TEST_predictions"; folderpath=EnvConfig.logfolder(), format=:arrow)

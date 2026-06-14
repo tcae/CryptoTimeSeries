@@ -40,7 +40,7 @@ const OPTPARAMS013 = Dict(
 
 """
 Classifier013 idea
-- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longbuy
+- focus regression line is the one that exceeds a gain threshold over its regression line length and the gain of the next smaller (over focus length) is higher than focus gain ==> longopen
 - longclose if gain is decreased to gain threshold / x or pivot crosses regression line 
 - longclose criteria in case of portfolio assets and new start (i.e. no known focus regression): calc focus regression -> if none then longclose otherwise follow longclose criteria above
 
@@ -120,13 +120,13 @@ function advice(cl::Classifier013, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
         grad = Features.grad(bc.f5, regrwindow)[fix]
         gain = Features.relativegain(regry, grad, regrwindow, forward=false)
         ta.hourlygain = Features.relativegain(regry, grad, 60, forward=false)
-        if investment.tradelabel in [longhold, longbuy, longstrongbuy]
+        if investment.tradelabel in [longhold, longopen, longstrongopen]
             if (gain < cfg.longgainthreshold * cfg.sellthresholdfactor) && (piv[ohlcvix] >= regry * (1 + cfg.longsellthreshold))
                 ta.tradelabel = longclose
             else
                 ta.tradelabel = longhold
             end
-        elseif investment.tradelabel in [shortstrongbuy, shortbuy, shorthold]
+        elseif investment.tradelabel in [shortstrongopen, shortopen, shorthold]
             if (gain > cfg.shortgainthreshold * cfg.sellthresholdfactor) && (piv[ohlcvix] <= regry * (1 + cfg.shortsellthreshold))
                 ta.tradelabel = shortclose
             else
@@ -134,34 +134,34 @@ function advice(cl::Classifier013, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix; inv
             end
         end
     end
-    longbuyenabled = shortbuyenabled = true
+    longopenenabled = shortopenenabled = true
     for rw in Features.regressionwindows005
         regry = Features.regry(bc.f5, rw)[fix]
         grad = Features.grad(bc.f5, rw)[fix]
         gain = Features.relativegain(regry, grad, rw, forward=false)
         if gain < 0f0
-            longbuyenabled = false  # no long buy if a smaller regression window has negative gradient
+            longopenenabled = false  # no long open if a smaller regression window has negative gradient
         elseif gain > 0f0
-            shortbuyenabled = false  # no short buy if a smaller regression window has positive gradient
+            shortopenenabled = false  # no short open if a smaller regression window has positive gradient
         end
         if !isnothing(regrwindow) && (rw > regrwindow) # no focus on longer term windows
             break
         elseif gain >= cfg.longgainthreshold
-            # if longbuyenabled && (isnothing(lastgrad) || (lastgrad >= grad))  # check that trend is still there and not a short term peak that is flatten out
-                # longbuy condition in place - ay be with shorter rw as established regrwindow
+            # if longopenenabled && (isnothing(lastgrad) || (lastgrad >= grad))  # check that trend is still there and not a short term peak that is flatten out
+                # longopen condition in place - may be with shorter rw as established regrwindow
                 bc.cfgid = configurationid(cl, (cfg..., regrwindow=rw))
                 regrwindow = rw
                 ta.hourlygain = Features.relativegain(regry, grad, 60, forward=false)
-                ta.tradelabel = longbuy
+                ta.tradelabel = longopen
                 break
             # end
         elseif gain <= cfg.shortgainthreshold
-            # if shortbuyenabled && (isnothing(lastgrad) || (lastgrad <= grad))  # check that trend is still there and not a short term peak that is flatten out
-                # shortbuy condition in place - may be with shorter rw as established regrwindow
+            # if shortopenenabled && (isnothing(lastgrad) || (lastgrad <= grad))  # check that trend is still there and not a short term peak that is flatten out
+                # shortopen condition in place - may be with shorter rw as established regrwindow
                 bc.cfgid = configurationid(cl, (cfg..., regrwindow=rw))
                 regrwindow = rw
                 ta.hourlygain = Features.relativegain(regry, grad, 60, forward=false)
-                ta.tradelabel = shortbuy
+                ta.tradelabel = shortopen
                 break
             # end
         end
