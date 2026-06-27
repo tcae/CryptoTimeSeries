@@ -3,13 +3,8 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
-Base.@kwdef mutable struct ClosePriceRuntime <: TradingStrategy.AbstractStrategyRuntime
-    long_closeprice::Float32 = 0f0
-    short_closeprice::Float32 = 0f0
-end
-
 function TradingStrategy.gettradesrow!(
-    rt::ClosePriceRuntime,
+    rt::TradingStrategy.TsCache,
     xc::Xch.XchCache,
     base::AbstractString,
     datetime::DateTime;
@@ -25,8 +20,8 @@ function TradingStrategy.gettradesrow!(
         rowix = nrow(tdf)
     end
     tdf[rowix, :tradelabel] = Targets.ignore
-    tdf[rowix, :longcloselimit] = rt.long_closeprice
-    tdf[rowix, :shortcloselimit] = rt.short_closeprice
+    tdf[rowix, :longcloselimit] = Float32(get(rt.configuration, :test_long_closeprice, 0f0))
+    tdf[rowix, :shortcloselimit] = Float32(get(rt.configuration, :test_short_closeprice, 0f0))
     return (base=basekey, datetime=datetime, tradesdf=tdf, rowix=rowix, probability=0f0, configid=0, source=:test)
 end
 
@@ -34,6 +29,14 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
+    Xch.ensuretradesschema(
+        xc,
+        vcat(
+            Xch.tradesdf_contributors(),
+            TradingStrategy.tradesdf_contributors(),
+            Trade.tradesdf_contributors(),
+        ),
+    )
     tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
     tc.cfg = DataFrame(
         basecoin=["BTC"],
@@ -80,12 +83,15 @@ end
     @test managed[longkey][:orderid] == "oid-close"
     @test managed[longkey][:tradelabel] == Targets.longclose
 
-    tc.mc[:strategy_runtime] = ClosePriceRuntime(long_closeprice=111.0f0, short_closeprice=0.0f0)
+    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    rt.configuration[:test_long_closeprice] = 111.0f0
+    rt.configuration[:test_short_closeprice] = 0.0f0
+    tc.mc[:strategy_runtime] = rt
 
-    @test Trade._strategy_sell_limitprice(tc, "BTC", Targets.longclose; assets=assets) == 111.0f0
-    @test isnothing(Trade._strategy_sell_limitprice(tc, "BTC", Targets.shortclose; assets=assets))
+    @test Trade._strategy_sell_limitprice(tc, "BTC", Targets.longclose) == 111.0f0
+    @test isnothing(Trade._strategy_sell_limitprice(tc, "BTC", Targets.shortclose))
 
-    gs = TradingStrategy.makestrategy(; algorithm=TradingStrategy.gain_limit_reversal!)
+    gs = TradingStrategy.StrategyConfig(; algorithm=TradingStrategy.gain_limit_reversal!)
 
     Trade._managedcloseset!(tc, "BTC", "oid-x", Targets.longclose; limitprice=111.0f0, baseqty=0.5f0)
     @test haskey(tc.mc[:managed_close_orders], longkey)

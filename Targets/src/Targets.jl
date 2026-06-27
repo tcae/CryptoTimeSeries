@@ -38,8 +38,25 @@ returns all possible labels. "allclose" is default.
 
 uniquelabels() = [lbl for lbl in instances(TradeLabel)]
 tradelabelstrings(labels::AbstractVector{TradeLabel}=uniquelabels()) = string.(labels)
+
+@inline function _legacytradelabelalias(lowered::AbstractString)::Union{Nothing, String}
+    lowered == "longbuy" && return "longopen"
+    lowered == "shortbuy" && return "shortopen"
+    lowered == "longstrongbuy" && return "longstrongopen"
+    lowered == "shortstrongbuy" && return "shortstrongopen"
+    lowered == "longsell" && return "longclose"
+    lowered == "shortsell" && return "shortclose"
+    lowered == "longstrongsell" && return "longstrongclose"
+    lowered == "shortstrongsell" && return "shortstrongclose"
+    return nothing
+end
+
 function tradelabel(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabels())
     lowered = lowercase(String(str))
+    alias = _legacytradelabelalias(lowered)
+    if !isnothing(alias)
+        lowered = alias
+    end
     ix = findfirst(lbl -> lowercase(string(lbl)) == lowered, labels)
     return isnothing(ix) ? allclose : labels[ix]
 end

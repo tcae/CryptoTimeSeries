@@ -4,6 +4,13 @@ using DataFrames
 using TradingStrategy
 using Targets
 
+function init_strategy_columns!(tdf::DataFrame)
+    for contributor in TradingStrategy.tradesdf_contributors()
+        contributor(tdf)
+    end
+    return tdf
+end
+
 @testset "TradesDF limit-reversal variants" begin
     dt = DateTime(2026, 1, 8)
     tradesdf = DataFrame(
@@ -11,13 +18,17 @@ using Targets
         high=Float32[101f0, 102f0, 103f0],
         low=Float32[99f0, 100f0, 101f0],
         close=Float32[100f0, 101f0, 101f0],
-        score=Float32[0.9f0, 0.1f0, 0.9f0],
-        label=Targets.TradeLabel[Targets.longopen, Targets.allclose, Targets.shortopen],
+        labelscore=Float32[0.9f0, 0.1f0, 0.9f0],
+        tradelabel=Targets.TradeLabel[Targets.longopen, Targets.allclose, Targets.shortopen],
     )
+    init_strategy_columns!(tradesdf)
 
-    TradingStrategy.gain_limit_reversal!(
-        tradesdf,
-        3;
+    tpdf = TradingStrategy.TsTp(
+        pair="BTCUSDT",
+        tradesdf=tradesdf,
+    )
+    TradingStrategy.simulate_gains!(tpdf, 3;
+        algorithm=TradingStrategy.gain_limit_reversal!,
         openthreshold=0.6f0,
         buygain=0.001f0,
         sellgain=0.01f0,
@@ -47,7 +58,20 @@ using Targets
     @test isapprox(tradesdf[3, :shortcloselimit], 99.99f0; atol=1f-3)
     @test ismissing(tradesdf[3, :lastopentrade])
 
-    gaindf = TradingStrategy.materialize_gains_from_trades(tradesdf, tradesdf)
+    tp = TradingStrategy.TsTp(
+        pair="BTCUSDT",
+        tradesdf=DataFrame(
+            opentime=tradesdf[!, :opentime],
+            high=tradesdf[!, :high],
+            low=tradesdf[!, :low],
+            close=tradesdf[!, :close],
+            labelscore=tradesdf[!, :labelscore],
+            tradelabel=Targets.TradeLabel[tradesdf[ix, :tradelabel] for ix in 1:nrow(tradesdf)],
+        ),
+    )
+    init_strategy_columns!(tp.tradesdf)
+    gaindf = TradingStrategy.emptygaindf()
+    TradingStrategy.simulate_gains!(tp, nrow(tp.tradesdf); algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0, limitreduction=1f0, gaindf=gaindf)
     @test nrow(gaindf) >= 1
     @test gaindf[1, :trend] == Targets.up
     @test gaindf[1, :startix] == 1
@@ -67,12 +91,13 @@ end
             high=Float32[101f0, 101f0],
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100f0],
-            score=Float32[0.8f0, 0.2f0],
-            label=Targets.TradeLabel[longopen, allclose],
+            labelscore=Float32[0.8f0, 0.2f0],
+            tradelabel=Targets.TradeLabel[longopen, allclose],
         ),
     )
+    init_strategy_columns!(tp.tradesdf)
 
-    TradingStrategy.gain_limit_reversal!(tp, 2; openthreshold=0.6f0)
+    TradingStrategy.simulate_gains!(tp, 2; algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6f0)
     @test tp.last_update_dt == dt + Minute(1)
     @test tp.tradesdf[1, :tradelabel] == longopen
 end

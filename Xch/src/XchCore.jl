@@ -6,6 +6,7 @@
 module Xch
 
 using Dates, DataFrames, DataAPI, JDF, CSV, JSON3, Logging, InlineStrings, UUIDs
+using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeLog
 import Ohlcv: intervalperiod
 
@@ -479,54 +480,205 @@ function hastrades(xc::XchCache, base::AbstractString, quotecoin::AbstractString
     return hastrades(xc, tradingpairkey(base, quotecoin))
 end
 
-"""
-    _emptytradesv1df()
+"""Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`."""
+function tradesdf_opentime(df::DataFrame)::DataFrame
+    if :opentime ∉ propertynames(df)
+        df[!, :opentime] = DateTime[]
+    end
+    return df
+end
 
-Return an empty Trades DataFrame that follows the current v1 minimum
-identity/time contract.
-"""
-function _emptytradesv1df()::DataFrame
-    return DataFrame(
-        opentime=DateTime[],
-        lastopentrade=Vector{Union{Missing, DateTime}}(),
-        pair=Vector{Union{Missing, String}}(),
-        coin=Vector{Union{Missing, String}}(),
-        tradelabel=Vector{Union{Missing, Any}}(),
-        labelscore=Vector{Union{Missing, Float32}}(),
-        longleverage=Vector{Union{Missing, UInt8}}(),
-        longamount=Vector{Union{Missing, Float32}}(),
-        shortleverage=Vector{Union{Missing, UInt8}}(),
-        shortamount=Vector{Union{Missing, Float32}}(),
-        longopenlimit=Vector{Union{Missing, Float32}}(),
-        longcloselimit=Vector{Union{Missing, Float32}}(),
-        shortopenlimit=Vector{Union{Missing, Float32}}(),
-        shortcloselimit=Vector{Union{Missing, Float32}}(),
-        longid=Vector{Union{Missing, String}}(),
-        longstatus=String[],
-        longunfilled=Vector{Union{Missing, Float32}}(),
-        longpriceavg=Vector{Union{Missing, Float32}}(),
-        longmsgid=Vector{Union{Missing, UInt8}}(),
-        shortid=Vector{Union{Missing, String}}(),
-        shortstatus=String[],
-        shortunfilled=Vector{Union{Missing, Float32}}(),
-        shortpriceavg=Vector{Union{Missing, Float32}}(),
-        shortmsgid=Vector{Union{Missing, UInt8}}(),
-        postype=String[],
-        posleverage=Vector{Union{Missing, Float32}}(),
-        posamount=Vector{Union{Missing, Float32}}(),
-        quoteprice=Vector{Union{Missing, Float32}}(),
-        maintmargin=Vector{Union{Missing, Float32}}(),
-        equity=Vector{Union{Missing, Float32}}(),
-        balance=Vector{Union{Missing, Float32}}(),
-        freemargin=Vector{Union{Missing, Float32}}(),
-        freequote=Vector{Union{Missing, Float32}}(),
-    )
+"""Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{Union{Missing,String}}`."""
+function tradesdf_pair(df::DataFrame)::DataFrame
+    if :pair ∉ propertynames(df)
+        df[!, :pair] = CategoricalVector(Vector{Union{Missing, String}}(missing, nrow(df)))
+    elseif !(df[!, :pair] isa CategoricalVector)
+        df[!, :pair] = CategoricalVector(Union{Missing, String}[ismissing(v) ? missing : String(v) for v in df[!, :pair]])
+    end
+    return df
+end
+
+"""Ensure Trades column `longid` exists. Owner: Xch. Eltype: `Union{Missing,String}`."""
+function tradesdf_longid(df::DataFrame)::DataFrame
+    if :longid ∉ propertynames(df)
+        df[!, :longid] = Vector{Union{Missing, String}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `longstatus` exists. Owner: Xch. Eltype: `String`."""
+function tradesdf_longstatus(df::DataFrame)::DataFrame
+    if :longstatus ∉ propertynames(df)
+        df[!, :longstatus] = fill("none", nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `longunfilled` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_longunfilled(df::DataFrame)::DataFrame
+    if :longunfilled ∉ propertynames(df)
+        df[!, :longunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `longpriceavg` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_longpriceavg(df::DataFrame)::DataFrame
+    if :longpriceavg ∉ propertynames(df)
+        df[!, :longpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `longmsgid` exists. Owner: Xch. Eltype: `Union{Missing,UInt8}`."""
+function tradesdf_longmsgid(df::DataFrame)::DataFrame
+    if :longmsgid ∉ propertynames(df)
+        df[!, :longmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `shortid` exists. Owner: Xch. Eltype: `Union{Missing,String}`."""
+function tradesdf_shortid(df::DataFrame)::DataFrame
+    if :shortid ∉ propertynames(df)
+        df[!, :shortid] = Vector{Union{Missing, String}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `shortstatus` exists. Owner: Xch. Eltype: `String`."""
+function tradesdf_shortstatus(df::DataFrame)::DataFrame
+    if :shortstatus ∉ propertynames(df)
+        df[!, :shortstatus] = fill("none", nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `shortunfilled` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_shortunfilled(df::DataFrame)::DataFrame
+    if :shortunfilled ∉ propertynames(df)
+        df[!, :shortunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `shortpriceavg` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_shortpriceavg(df::DataFrame)::DataFrame
+    if :shortpriceavg ∉ propertynames(df)
+        df[!, :shortpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `shortmsgid` exists. Owner: Xch. Eltype: `Union{Missing,UInt8}`."""
+function tradesdf_shortmsgid(df::DataFrame)::DataFrame
+    if :shortmsgid ∉ propertynames(df)
+        df[!, :shortmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `postype` exists. Owner: Xch. Eltype: `String`."""
+function tradesdf_postype(df::DataFrame)::DataFrame
+    if :postype ∉ propertynames(df)
+        df[!, :postype] = fill("flat", nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `posleverage` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_posleverage(df::DataFrame)::DataFrame
+    if :posleverage ∉ propertynames(df)
+        df[!, :posleverage] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `posamount` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_posamount(df::DataFrame)::DataFrame
+    if :posamount ∉ propertynames(df)
+        df[!, :posamount] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `quoteprice` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_quoteprice(df::DataFrame)::DataFrame
+    if :quoteprice ∉ propertynames(df)
+        df[!, :quoteprice] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `maintmargin` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_maintmargin(df::DataFrame)::DataFrame
+    if :maintmargin ∉ propertynames(df)
+        df[!, :maintmargin] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `equity` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_equity(df::DataFrame)::DataFrame
+    if :equity ∉ propertynames(df)
+        df[!, :equity] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `balance` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_balance(df::DataFrame)::DataFrame
+    if :balance ∉ propertynames(df)
+        df[!, :balance] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `freemargin` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_freemargin(df::DataFrame)::DataFrame
+    if :freemargin ∉ propertynames(df)
+        df[!, :freemargin] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `freequote` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+function tradesdf_freequote(df::DataFrame)::DataFrame
+    if :freequote ∉ propertynames(df)
+        df[!, :freequote] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Return Xch-owned Trades column contributor functions."""
+function tradesdf_contributors()::Vector{Function}
+    return Function[
+        tradesdf_opentime,
+        tradesdf_pair,
+        tradesdf_longid,
+        tradesdf_longstatus,
+        tradesdf_longunfilled,
+        tradesdf_longpriceavg,
+        tradesdf_longmsgid,
+        tradesdf_shortid,
+        tradesdf_shortstatus,
+        tradesdf_shortunfilled,
+        tradesdf_shortpriceavg,
+        tradesdf_shortmsgid,
+        tradesdf_postype,
+        tradesdf_posleverage,
+        tradesdf_posamount,
+        tradesdf_quoteprice,
+        tradesdf_maintmargin,
+        tradesdf_equity,
+        tradesdf_balance,
+        tradesdf_freemargin,
+        tradesdf_freequote,
+    ]
 end
 
 const TRADES_V1_REQUIRED_COLUMNS = (
-    :opentime, :lastopentrade, :pair, :coin, :tradelabel, :labelscore,
-    :longleverage, :longamount, :shortleverage, :shortamount,
-    :longopenlimit, :longcloselimit, :shortopenlimit, :shortcloselimit,
+    :opentime, :pair,
     :longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid,
     :shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsgid,
     :postype, :posleverage, :posamount, :quoteprice, :maintmargin,
@@ -540,10 +692,38 @@ function _asserttradesv1schema(df::DataFrame)::Nothing
     return nothing
 end
 
+function _tradescontributors(xc::XchCache)::Vector{Function}
+    if !haskey(xc.mc, :trades_schema_contributors)
+        xc.mc[:trades_schema_contributors] = copy(tradesdf_contributors())
+    end
+    return xc.mc[:trades_schema_contributors]
+end
+
+function _applytradescontributors!(xc::XchCache, df::DataFrame)::DataFrame
+    for contributor in _tradescontributors(xc)
+        contributor(df)
+    end
+    return df
+end
+
+"""
+    ensuretradesschema(xc, contributors)
+
+Register contributor column-initializer functions used to materialize Trades
+columns at dataframe creation/ingestion time.
+"""
+function ensuretradesschema(xc::XchCache, contributors)::XchCache
+    xc.mc[:trades_schema_contributors] = Function[contributors...]
+    for pair in keys(xc.pairstates)
+        _applytradescontributors!(xc, xc.pairstates[pair])
+    end
+    return xc
+end
+
 """
     _ensuretradesv1schema(df)
 
-Backfill required Trades v1 identity/time columns when missing.
+Backfill required Trades v1 identity/time columns when missing, which is only :opentime
 """
 function _ensuretradesv1schema(df::DataFrame)::DataFrame
     cols = Set(Symbol.(names(df)))
@@ -554,68 +734,21 @@ function _ensuretradesv1schema(df::DataFrame)::DataFrame
             throw(ArgumentError("settrades! requires :opentime for non-empty trades dataframes; names=$(names(df))"))
         end
     end
-    if !(:lastopentrade in cols)
-        df[!, :lastopentrade] = Vector{Union{Missing, DateTime}}(missing, nrow(df))
-    end
-    if !(:pair in cols)
-        df[!, :pair] = Vector{Union{Missing, String}}(missing, nrow(df))
-    end
-    if !(:coin in cols)
-        df[!, :coin] = Vector{Union{Missing, String}}(missing, nrow(df))
-    end
-    if !(:tradelabel in cols)
-        df[!, :tradelabel] = Vector{Union{Missing, Any}}(missing, nrow(df))
-    end
-    if !(:labelscore in cols)
-        df[!, :labelscore] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-    end
-    for col in (:longamount, :shortamount, :longopenlimit, :longcloselimit, :shortopenlimit, :shortcloselimit)
-        if !(col in cols)
-            df[!, col] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-        end
-    end
-    for col in (:longleverage, :shortleverage)
-        if !(col in cols)
-            df[!, col] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
-        end
-    end
-    if !(:longid in cols)
-        df[!, :longid] = Vector{Union{Missing, String}}(missing, nrow(df))
-    end
-    if !(:longstatus in cols)
-        df[!, :longstatus] = fill("none", nrow(df))
-    end
-    if !(:longunfilled in cols)
-        df[!, :longunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-    end
-    if !(:longpriceavg in cols)
-        df[!, :longpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-    end
-    if !(:longmsgid in cols)
-        df[!, :longmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
-    end
-    if !(:shortid in cols)
-        df[!, :shortid] = Vector{Union{Missing, String}}(missing, nrow(df))
-    end
-    if !(:shortstatus in cols)
-        df[!, :shortstatus] = fill("none", nrow(df))
-    end
-    if !(:shortunfilled in cols)
-        df[!, :shortunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-    end
-    if !(:shortpriceavg in cols)
-        df[!, :shortpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-    end
-    if !(:shortmsgid in cols)
-        df[!, :shortmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
-    end
-    if !(:postype in cols)
-        df[!, :postype] = fill("flat", nrow(df))
-    end
-    for col in (:posleverage, :posamount, :quoteprice, :maintmargin, :equity, :balance, :freemargin, :freequote)
-        if !(col in cols)
-            df[!, col] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-        end
+    tradesdf_opentime(df)
+    return df
+end
+
+"""
+    _emptytradesv1df()
+
+Return an empty Trades DataFrame initialized with Xch-owned columns.
+Contributor columns from higher-level modules are materialized via
+`ensuretradesschema` when attached to an `XchCache`.
+"""
+function _emptytradesv1df()::DataFrame
+    df = DataFrame(opentime=DateTime[])
+    for contributor in tradesdf_contributors()
+        contributor(df)
     end
     return df
 end
@@ -629,7 +762,7 @@ The returned dataframe is the cache-owned object so callers can mutate it in pla
 function trades(xc::XchCache, pair::AbstractString)::DataFrame
     key = uppercase(String(pair))
     return get!(xc.pairstates, key) do
-        _emptytradesv1df()
+        _applytradescontributors!(xc, _emptytradesv1df())
     end
 end
 
@@ -648,7 +781,17 @@ end
 Store `df` as the Phase 2 Trades DataFrame for `pair` and return the cache.
 """
 function settrades!(xc::XchCache, pair::AbstractString, df::AbstractDataFrame)
-    xc.pairstates[uppercase(String(pair))] = _ensuretradesv1schema(DataFrame(df))
+    normalized = _ensuretradesv1schema(DataFrame(df))
+    _applytradescontributors!(xc, normalized)
+    pairkey = uppercase(String(pair))
+    basekey = try
+        bq = basequote(pairkey)
+        isnothing(bq) ? nothing : uppercase(String(bq.basecoin))
+    catch
+        nothing
+    end
+    _ensuretradesidentity!(normalized, pairkey; basekey=basekey)
+    xc.pairstates[pairkey] = normalized
     return xc
 end
 
@@ -658,7 +801,62 @@ end
 Store `df` as the Phase 2 Trades DataFrame for one `(base, quotecoin)` pair.
 """
 function settrades!(xc::XchCache, base::AbstractString, quotecoin::AbstractString, df::AbstractDataFrame)
-    return settrades!(xc, tradingpairkey(base, quotecoin), df)
+    pairkey = tradingpairkey(base, quotecoin)
+    basekey = uppercase(String(base))
+    normalized = _ensuretradesv1schema(DataFrame(df))
+    _applytradescontributors!(xc, normalized)
+    _ensuretradesidentity!(normalized, pairkey; basekey=basekey)
+    xc.pairstates[pairkey] = normalized
+    return xc
+end
+
+"""Ensure per-row Trades identity metadata (`pair`) is populated."""
+function _ensuretradesidentity!(df::DataFrame, pairkey::AbstractString; basekey::Union{Nothing, AbstractString}=nothing)::DataFrame
+    pkey = uppercase(String(pairkey))
+
+    if :pair ∉ propertynames(df)
+        df[!, :pair] = fill(pkey, nrow(df))
+    else
+        df[!, :pair] = [ismissing(v) || isempty(strip(String(v))) ? pkey : String(v) for v in df[!, :pair]]
+    end
+
+    return df
+end
+
+"""
+    ensuretradesrow!(xc, base, quotecoin, opentime)
+
+Return a writable `(tradesdf, rowix)` for one sample row, creating the row when
+missing and materializing Xch-owned identity metadata.
+"""
+function ensuretradesrow!(xc::XchCache, base::AbstractString, quotecoin::AbstractString, opentime::DateTime)
+    basekey = uppercase(String(base))
+    pairkey = tradingpairkey(basekey, quotecoin)
+    tdf = trades(xc, pairkey)
+
+    rowix = nothing
+    n = nrow(tdf)
+    if n > 0
+        last_open = tdf[n, :opentime]
+        if last_open == opentime
+            rowix = n
+        elseif last_open < opentime
+            push!(tdf, (opentime=opentime,); cols=:subset)
+            rowix = n + 1
+        end
+    end
+
+    if isnothing(rowix)
+        rowix = findlast(==(opentime), tdf[!, :opentime])
+    end
+    if isnothing(rowix)
+        push!(tdf, (opentime=opentime,); cols=:subset)
+        rowix = nrow(tdf)
+    end
+
+    tdf[rowix, :opentime] = opentime
+    tdf[rowix, :pair] = pairkey
+    return (tradesdf=tdf, rowix=Int(rowix))
 end
 
 """
@@ -2552,7 +2750,6 @@ end
 "Synchronize one trades row's exchange feedback columns from current order ids."
 function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent::Bool=true)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-        _asserttradesv1schema(tradesdf)
 
     for (idcol, stcol, unfilledcol, avgcol, msgcol) in [
         (:longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid),
@@ -2587,7 +2784,6 @@ end
 "Evaluate and execute one row-level order request from the Trades DataFrame."
 function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-    _ensuretradesv1schema(tradesdf)
     acct = account_status(xc)
 
     pair = _pairfromtradesrow(tradesdf, ix)

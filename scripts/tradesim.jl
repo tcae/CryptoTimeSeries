@@ -16,8 +16,6 @@ using Dates, Statistics, Printf, Logging
 using DataFrames
 using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, Targets
 
-include(joinpath(@__DIR__, "optimizationconfigs.jl"))
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — adjust these values before running
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,9 +55,9 @@ const BUY_OPEN_THRESHOLD = 0.4f0
 
 # Strategy parameters used by the backtest.
 const CONFIG_REF = get(ENV, "TRADESIM_CONFIG_REF", "046")
-const CONFIG = trenddetectorconfig(CONFIG_REF)
+const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
-const CONFIG_STRATEGY = TradingStrategy.makestrategy(
+const CONFIG_STRATEGY = TradingStrategy.StrategyConfig(
     maxwindow=CONFIG.tradingstrategy.maxwindow,
     openthreshold=BUY_OPEN_THRESHOLD,
     closethreshold=CONFIG.tradingstrategy.closethreshold,
@@ -72,7 +70,7 @@ const CONFIG_STRATEGY = TradingStrategy.makestrategy(
     minpricedelta=CONFIG.tradingstrategy.minpricedelta,
     max_classify_staleness_minutes=CONFIG.tradingstrategy.max_classify_staleness_minutes,
 )
-const MODEL_FOLDER = trendconfigfolder(CONFIG, "training")
+const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "training")
 
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
@@ -187,7 +185,7 @@ function Classify.advice(cl::TrendConfigRuntimeClassifier, base::AbstractString,
 end
 
 "Load the selected TrendDetector classifier artifacts and return a runtime classifier instance."
-function loadtrendclassifier(cfg::NamedTuple; model_folder::AbstractString=trendconfigfolder(cfg, "training"), training_folder::AbstractString=trendconfigfolder(cfg, "training"))::TrendConfigRuntimeClassifier
+function loadtrendclassifier(cfg::NamedTuple; model_folder::AbstractString=TradingStrategy.trendconfigfolder(cfg, "training"), training_folder::AbstractString=TradingStrategy.trendconfigfolder(cfg, "training"))::TrendConfigRuntimeClassifier
     nnstub = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), "mix")
     for folder in unique([String(model_folder), String(training_folder)])
         EnvConfig.setlogpath(folder)
@@ -454,6 +452,7 @@ xc = Xch.XchCache(;
     enddt    = run_enddt,
     exchange = EXCHANGE,
 )
+Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), Trade.tradesdf_contributors()))
 
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
@@ -461,7 +460,6 @@ ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
 # Apply the selected TrendDetector strategy parameters.
 Trade.apply_tradingstrategy!(cache, CONFIG_STRATEGY;
-    strategy_engine=:getgainsalgo,
     source="tradesim:$CONFIG_NAME")
 
 # Override whitelist and risk parameters.
@@ -471,7 +469,7 @@ cache.mc[:usenewtrade]      = env_bool("TRADESIM_USE_NEW_TRADE", true)
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=getgainsalgo, openthreshold=$BUY_OPEN_THRESHOLD")
+println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy, openthreshold=$BUY_OPEN_THRESHOLD")
 println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")

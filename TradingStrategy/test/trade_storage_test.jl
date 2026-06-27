@@ -14,7 +14,7 @@ using TradingStrategy
         EnvConfig.setdfformat!(:arrow)
 
         tradedf = DataFrame(
-            coin=["BTC", "BTC", "ETH"],
+            pair=["BTC$(EnvConfig.pairquote)", "BTC$(EnvConfig.pairquote)", "ETH$(EnvConfig.pairquote)"],
             set=["eval", "test", "eval"],
             trend=["up", "down", "up"],
             gain=Float32[0.1f0, -0.05f0, 0.2f0],
@@ -30,11 +30,12 @@ using TradingStrategy
 
         loadedall = TradingStrategy.loadtrades(; stem="gains")
         @test nrow(loadedall) == nrow(tradedf)
-        @test sort(loadedall, [:coin, :startdt])[!, :gain] == sort(tradedf, [:coin, :startdt])[!, :gain]
+        @test sort(loadedall, [:pair, :startdt])[!, :gain] == sort(tradedf, [:pair, :startdt])[!, :gain]
 
         loadedbtc = TradingStrategy.loadtrades("BTC"; stem="gains")
         @test nrow(loadedbtc) == 2
-        @test all(==("BTC"), loadedbtc[!, :coin])
+        @test !(:coin in propertynames(loadedbtc))
+        @test all(==("BTC$(EnvConfig.pairquote)"), loadedbtc[!, :pair])
     finally
         EnvConfig.setdfformat!(oldformat)
         EnvConfig.setlogpath(oldfolder)

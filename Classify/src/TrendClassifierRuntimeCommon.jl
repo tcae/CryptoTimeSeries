@@ -33,18 +33,16 @@ function trend_runtime_folder_from_spec(spec::NamedTuple, mode)::String
 end
 
 """
-    trend_runtime_loadclassifier(build_classifier, nn_fileprefix, featconfig, required_minutes; search_folders, cfgid=1)
+    runtime_loadclassifier(build_classifier, nn_fileprefix, build_args...; search_folders)
 
 Search `search_folders` for `nn_fileprefix`, load the NN, and build a runtime
-classifier via `build_classifier(nn, featconfig, required_minutes, cfgid)`.
+classifier via `build_classifier(nn, build_args...)`.
 """
-function trend_runtime_loadclassifier(
+function runtime_loadclassifier(
     build_classifier::Function,
     nn_fileprefix::AbstractString,
-    featconfig::Function,
-    required_minutes::Integer;
+    build_args...;
     search_folders::AbstractVector{<:AbstractString},
-    cfgid::Integer=1,
 )
     for folder in unique(String.(search_folders))
         EnvConfig.setlogpath(folder)
@@ -52,7 +50,7 @@ function trend_runtime_loadclassifier(
         if isfile(nnpath)
             try
                 nn = loadnn(nn_fileprefix)
-                return build_classifier(nn, featconfig, required_minutes, cfgid)
+                return build_classifier(nn, build_args...)
             catch err
                 shorterr = sprint(showerror, err)
                 error("classifier file found but could not be loaded: nnpath=$nnpath. Cause=$shorterr. Likely artifact compatibility mismatch (Flux/Optimisers/BSON versions).")

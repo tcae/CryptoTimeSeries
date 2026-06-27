@@ -3,35 +3,19 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
-"Test runtime used to validate Trade's mandatory strategy-runtime integration path."
-Base.@kwdef mutable struct FakeRuntime <: TradingStrategy.AbstractStrategyRuntime
-    rows::Vector{NamedTuple} = NamedTuple[]
-    mins::Int = 0
-    reconciliation_by_base::Dict{String, NamedTuple} = Dict{String, NamedTuple}()
-    dropped::Vector{String} = String[]
-end
-
-"Expose deterministic history requirement for Trade runtime-history delegation tests."
-TradingStrategy.requiredhistoryminutes(rt::FakeRuntime)::Int = rt.mins
-
-"Record bases dropped by Trade via the mandatory runtime API path."
-function TradingStrategy.dropbase!(rt::FakeRuntime, base::AbstractString)::Nothing
-    push!(rt.dropped, uppercase(String(base)))
-    return nothing
-end
-
 "Return injected tradesdf row metadata and capture reconciliation inputs passed by Trade."
 function TradingStrategy.gettradesrows!(
-    rt::FakeRuntime,
+    rt::TradingStrategy.TsCache,
     xc::Xch.XchCache,
     bases::AbstractVector{<:AbstractString},
     datetime::DateTime;
     reconciliation_by_base::AbstractDict=Dict{String, Any}(),
 )::Vector{NamedTuple}
     _ = bases
-    rt.reconciliation_by_base = Dict{String, NamedTuple}(reconciliation_by_base)
+    rt.configuration[:test_reconciliation_by_base] = Dict{String, NamedTuple}(reconciliation_by_base)
+    rows = get(rt.configuration, :test_rows, NamedTuple[])
     out = NamedTuple[]
-    for row in rt.rows
+    for row in rows
         base = uppercase(String(row.base))
         tdf = Xch.trades(xc, base, EnvConfig.pairquote)
         rowix = findlast(==(datetime), tdf[!, :opentime])
@@ -57,17 +41,27 @@ function TradingStrategy.gettradesrows!(
     return out
 end
 
+function TradingStrategy.requiredhistoryminutes(rt::TradingStrategy.TsCache)::Int
+    return Int(get(rt.configuration, :test_history_minutes, 0))
+end
+
+function TradingStrategy.dropbase!(rt::TradingStrategy.TsCache, base::AbstractString)::Nothing
+    dropped = get!(rt.configuration, :test_dropped, String[])
+    push!(dropped, uppercase(String(base)))
+    return nothing
+end
+
 @testset "Restricted base removal delegates to runtime" begin
     EnvConfig.init(EnvConfig.test)
 
     tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
-    fake = FakeRuntime()
-    tc.mc[:strategy_runtime] = fake
+    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    tc.mc[:strategy_runtime] = rt
 
     Trade._disablerestrictedbase!(tc, "BTC", "test")
-    @test "BTC" in fake.dropped
+    @test "BTC" in rt.configuration[:test_dropped]
 end
 
 @testset "Runtime API advice path" begin
@@ -82,8 +76,8 @@ end
     tc.cfg = DataFrame(basecoin=["BTC"])
     tc.xc.currentdt = DateTime("2026-05-30T12:00:00")
 
-    fake = FakeRuntime(
-        rows=[
+    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    rt.configuration[:test_rows] = [
             (
                 base="BTC",
                 tradelabel=Targets.longopen,
@@ -94,11 +88,10 @@ end
                 probability=0.75f0,
                 configid=42,
             ),
-        ],
-        mins=2000,
-    )
+        ]
+    rt.configuration[:test_history_minutes] = 2000
 
-    tc.mc[:strategy_runtime] = fake
+    tc.mc[:strategy_runtime] = rt
 
     assets = DataFrame(
         coin=["BTC", EnvConfig.pairquote],
@@ -122,7 +115,7 @@ end
     @test advice_by_label[Targets.longclose].relativeamount == 1f0
     @test advice_by_label[Targets.longclose].price == 110f0
 
-    recon = fake.reconciliation_by_base["BTC"]
+    recon = rt.configuration[:test_reconciliation_by_base]["BTC"]
     @test recon.has_long_open
     @test recon.has_short_open
     @test recon.long_avg_entry == 100f0
@@ -138,7 +131,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     mc = Dict{Symbol, Any}()
-    gs = TradingStrategy.makestrategy(
+    gs = TradingStrategy.StrategyConfig(
         ;
         algorithm=TradingStrategy.gain_limit_reversal!,
         openthreshold=0.25f0,

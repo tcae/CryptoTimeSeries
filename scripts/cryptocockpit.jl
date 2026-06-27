@@ -21,8 +21,6 @@ import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, 
 using Dates, DataFrames, Logging
 using EnvConfig, Ohlcv, Features, Targets, Classify, Xch, Trade, TradingStrategy
 
-include("optimizationconfigs.jl")
-
 const COCKPIT_TREND_REF = "025"
 const COCKPIT_BOUNDS_REF = "001"
 const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target"]
@@ -85,8 +83,8 @@ end
 
 _cached_artifact(key::AbstractString, loader::Function) = _cached_artifact(loader, key)
 
-_resolve_trendconfig(ref::AbstractString) = trenddetectorconfig(ref)
-_resolve_boundsconfig(ref::AbstractString) = boundsestimatorconfig(ref)
+_resolve_trendconfig(ref::AbstractString) = TradingStrategy.trenddetectorconfig(ref)
+_resolve_boundsconfig(ref::AbstractString) = TradingStrategy.boundsestimatorconfig(ref)
 
 function _config_subfolder(prefix::AbstractString, cfg, mode::EnvConfig.Mode)
     folder = _cfgget(cfg, :folder, nothing)

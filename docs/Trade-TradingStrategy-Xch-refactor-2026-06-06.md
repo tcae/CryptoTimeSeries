@@ -330,7 +330,6 @@ Goal: lock interfaces before implementation work in phases 1-5.
 - [x] focused TrendDetector path `include("test/trend_detector_cache_test.jl")` re-run passed.
 - [x] `KrakenSpot` package tests passed (`Pkg.test("KrakenSpot")`, offline suite green).
 - [~] `KrakenSpot` online tests remain opt-in and were skipped by default (`KRAKEN_ONLINE_TESTS=true` required).
-- [x] `TradingStrategy.reset!(::StrategyConfig)` runtime crash mitigated by using `resetstrategy!` in TrendDetector.
 - [x] `Pkg.test("TradingStrategy")` re-run passed after `StrategyConfig` rename.
 - [x] `Pkg.test("Trade")` re-run passed after `StrategyConfig` rename.
 
@@ -518,9 +517,33 @@ Progress note:
 ### Phase 5: cleanup and hard cutover `[in progress]`
 
 - [x] Remove deprecated GainSegment/GainSegmentRuntime call paths after all entrypoints are migrated.
-- [ ] Remove temporary compatibility aliases introduced in phase 1.
+- [ ] Remove temporary compatibility aliases introduced in phase 1 (note: new backward-compatibility layer for legacy TradeLabel aliases added in 2026-06-15 is NOT temporary and should be retained for long-term cache interoperability).
 - Exit gate:
-  - [~] tradereal, tradesim, TrendDetector pass and no deprecated symbol is referenced in call graph checks.
+  - [~] tradereal, tradesim, TrendDetector pass and no deprecated symbol is referenced in call graph checks (legacy label alias support now enables stable TrendDetector operation with pre-cutover cached data).
+
+#### Bug fix: legacy TradeLabel aliases normalization (2026-06-15)
+
+**Issue**: TrendDetector gain diagnostics showed all-zero gain rows after switching from legacy labels (`longbuy`/`shortbuy`) to current names (`longopen`/`shortopen`). Investigation revealed that legacy labels in cached data were normalizing to `allclose`, which eliminated all open signals and thus materialized zero gains.
+
+**Root cause**: The `Targets.tradelabel(str)` function lacked backward-compatible alias mapping for the buy→open and sell→close terminology shift, causing old cached predictions/targets to silently collapse to the default fallback.
+
+**Resolution**:
+1. Added `_legacytradelabelalias()` helper in `Targets.jl` to map legacy names to current equivalents:
+   - `longbuy` → `longopen`, `shortbuy` → `shortopen`
+   - `longstrongbuy` → `longstrongopen`, `shortstrongbuy` → `shortstrongopen`
+   - `longsell` → `longclose`, `shortsell` → `shortclose`
+   - `longstrongsell` → `longstrongclose`, `shortstrongsell` → `shortstrongclose`
+2. Updated `Targets.tradelabel()` to consult alias map before enum lookup.
+3. Added `@testset "TradeLabel legacy aliases"` in `Targets/test/runtests.jl` to prevent regression.
+4. Hardened `TrendDetector.getmaxpredictionsdf()` to normalize labels in freshly computed predictions and assembled results (both cached and fresh paths).
+
+**Validation**: 
+- Confirmed `Targets.tradelabel("longbuy")` now returns `longopen` (not `allclose`).
+- Verified legacy cached targets normalize to active open labels (224,357 / 224,362 non-allclose rows in reference cache).
+- Ran `Pkg.test("Targets")` with new regression testset; all tests pass.
+
+**Impact**: This fix restores TrendDetector's gain materialization for all datasets that were built with pre-cutover terminology, eliminating the source of zero-gain diagnostics and enabling backward-compatible use of cached prediction/training data.
 
 Progress note:
 - Deprecated symbol cleanup is complete in active Julia code paths; remaining work is compatibility alias retirement plus final end-to-end pass/soak confirmation.
+- **Update (2026-06-16)**: legacy label alias backward-compatibility layer is now implemented and validated, unblocking TrendDetector workflow with legacy cached data.

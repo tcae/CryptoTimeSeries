@@ -14,8 +14,6 @@ Pkg.activate(joinpath(@__DIR__), io=devnull)
 using Dates, Logging, LoggingExtras
 using EnvConfig, TradingStrategy, Trade, Classify, Xch, Features, Ohlcv, Targets
 
-include(joinpath(@__DIR__, "optimizationconfigs.jl"))
-
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — adjust these values before running
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,10 +44,10 @@ const WHITELIST_INPUT = [
 const MAX_ASSET_FRACTION = 0.1f0
 
 const CONFIG_REF = get(ENV, "TRADEREAL_CONFIG_REF", "046")
-const CONFIG = trenddetectorconfig(CONFIG_REF)
+const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
 const CONFIG_STRATEGY = CONFIG.tradingstrategy
-const MODEL_FOLDER = trendconfigfolder(CONFIG, "production")
+const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "production")
 
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradereal-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
@@ -131,7 +129,7 @@ function Classify.advice(cl::TrendConfigRuntimeClassifier, base::AbstractString,
     return Classify.TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
 end
 
-function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", model_folder::AbstractString=trendconfigfolder(cfg, "production"), training_folder::AbstractString=trendconfigfolder(cfg, "training"))::TrendConfigRuntimeClassifier
+function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", model_folder::AbstractString=TradingStrategy.trendconfigfolder(cfg, "production"), training_folder::AbstractString=TradingStrategy.trendconfigfolder(cfg, "training"))::TrendConfigRuntimeClassifier
     nnstub = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), mnemonic)
     for folder in unique([String(model_folder), String(training_folder)])
         EnvConfig.setlogpath(folder)
@@ -187,12 +185,12 @@ Trade.verbosity     = 2
 
 xc = Xch.XchCache(; enddt=nothing, exchange=EXCHANGE, defaultquote=QUOTE_COIN)
 Xch.setstartdt(xc, Xch.tradetime(xc))
+Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), Trade.tradesdf_contributors()))
 
 cache = Trade.TradeCache(xc=xc, cl=classifier, trademode=TRADE_MODE)
 
 # Apply the selected TrendDetector strategy parameters.
 Trade.apply_tradingstrategy!(cache, CONFIG_STRATEGY;
-    strategy_engine=:getgainsalgo,
     source="trenddetector:$CONFIG_NAME")
 
 # Override whitelist and risk parameters.
@@ -203,7 +201,7 @@ cache.mc[:usenewtrade]       = env_bool("TRADEREAL_USE_NEW_TRADE", true)
 cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=getgainsalgo")
+println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy")
 println("$(EnvConfig.now()): usenewtrade=$(cache.mc[:usenewtrade])")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): whitelist ($(length(whitelist)) bases): $whitelist")

@@ -2,20 +2,21 @@ module XchTradesSchemaContractTest
 using Test
 using Dates
 using DataFrames
+using CategoricalArrays
 
-using EnvConfig, Xch
+using EnvConfig, Xch, TradingStrategy
 
 @testset "Xch trades schema contract" begin
     EnvConfig.init(test)
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(1)
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors()))
 
     tdf = Xch.trades(xc, "BTC", EnvConfig.pairquote)
 
-    expected = Set([
-        :opentime, :lastopentrade, :pair, :coin, :tradelabel, :labelscore,
-        :longleverage, :longamount, :shortleverage, :shortamount,
+    required = Set([
+        :opentime, :lastopentrade, :pair, :tradelabel, :labelscore,
         :longopenlimit, :longcloselimit, :shortopenlimit, :shortcloselimit,
         :longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid,
         :shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsgid,
@@ -24,15 +25,18 @@ using EnvConfig, Xch
     ])
 
     got = Set(Symbol.(names(tdf)))
-    @test expected == got
-    @test !(:label in got)
+    @test required ⊆ got
+    @test !(:coin in got)
+    @test tdf[!, :pair] isa CategoricalVector
+    @test eltype(tdf[!, :tradelabel]) == Union{Missing, typeof(TradingStrategy.longopen)}
 
     push!(tdf, (opentime=startdt, lastopentrade=missing); cols=:subset)
     @test nrow(tdf) == 1
     @test ismissing(tdf[1, :tradelabel])
+    @test ismissing(tdf[1, :pair])
 
-    tdf[1, :tradelabel] = "longopen"
-    @test tdf[1, :tradelabel] == "longopen"
+    tdf[1, :tradelabel] = TradingStrategy.longopen
+    @test tdf[1, :tradelabel] == TradingStrategy.longopen
 end
 
 end

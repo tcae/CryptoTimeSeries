@@ -35,6 +35,17 @@ include("bounds01_test.jl")
     @test Targets.defaultlabelthresholds == lt
 end
 
+@testset "TradeLabel legacy aliases" begin
+    @test Targets.tradelabel("longbuy") == Targets.longopen
+    @test Targets.tradelabel("shortbuy") == Targets.shortopen
+    @test Targets.tradelabel("longstrongbuy") == Targets.longstrongopen
+    @test Targets.tradelabel("shortstrongbuy") == Targets.shortstrongopen
+    @test Targets.tradelabel("longsell") == Targets.longclose
+    @test Targets.tradelabel("shortsell") == Targets.shortclose
+    @test Targets.tradelabel("longstrongsell") == Targets.longstrongclose
+    @test Targets.tradelabel("shortstrongsell") == Targets.shortstrongclose
+end
+
 @testset "Targets tests" begin
 
     with_logger(logger) do

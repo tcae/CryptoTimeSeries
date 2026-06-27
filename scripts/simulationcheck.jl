@@ -9,8 +9,6 @@ import PlotlyJS
 import PlotlyJS: Plot, Layout, attr, scatter, candlestick, bar, heatmap, savefig
 using EnvConfig, Ohlcv, TestOhlcv, Features, Targets, Classify, TradingStrategy
 
-include("optimizationconfigs.jl")
-
 const LABEL_ROWS_DEFAULT = ["trend target", "trend pred", "tradepairs target"]
 const LABEL_CODE = Dict{Any, Int}(
     missing => 0,
@@ -124,16 +122,16 @@ _parsedatetime(raw::AbstractString) = DateTime(strip(raw))
     _resolve_trendconfig(ref)
 
 Resolve a trend config reference like `"025"` or `"mk025"` to the corresponding
-configuration NamedTuple from `optimizationconfigs.jl`.
+configuration NamedTuple from `TradingStrategy/src/tradingstrategyconfig.jl`.
 """
-_resolve_trendconfig(ref::AbstractString) = trenddetectorconfig(ref)
+_resolve_trendconfig(ref::AbstractString) = TradingStrategy.trenddetectorconfig(ref)
 
 """
     _resolve_boundsconfig(ref)
 
 Resolve a bounds config reference like `"001"` or `"boundsmk001"`.
 """
-_resolve_boundsconfig(ref::AbstractString) = boundsestimatorconfig(ref)
+_resolve_boundsconfig(ref::AbstractString) = TradingStrategy.boundsestimatorconfig(ref)
 
 """
     parse_args(args) -> NamedTuple

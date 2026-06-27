@@ -19,12 +19,12 @@ targetissuesfilename() = joinpath("results", "targetissues")
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
 default_closethresholds() = Float32[0.1f0]
 
-tradingstrategy01() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
-tradingstrategy02() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy03() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy04() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
-tradingstrategy05() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
-tradingstrategy06() = TradingStrategy.makestrategy(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal_pricedelta!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
+tradingstrategy01() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
+tradingstrategy02() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy03() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy04() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
+tradingstrategy05() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
+tradingstrategy06() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longopen=buy, longhold=hold, shorthold=-hold, shortopen=-buy)), holdbehaviormode=holdbehaviormode)
 
@@ -267,52 +267,65 @@ end
 
 #region TrendConfig
 
+"""Return a one-step TrendDetector config payload."""
+function trendmkconfig(configname::AbstractString, featconfig, targetconfig, classifiermodel, tradingstrategy; classifiertype::Type{<:Classify.AbstractClassifier}=Classify.TrendClassifier001, classbalancing::Bool=true)
+    return (
+        configname=String(configname),
+        featconfig=featconfig,
+        targetconfig=targetconfig,
+        classifiermodel=classifiermodel,
+        classifiertype=classifiertype,
+        tradingstrategy=tradingstrategy,
+        classbalancing=classbalancing,
+    )
+end
+
 """
 mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
 """
-mk001config() = (configname="001", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk001config() = trendmkconfig("001", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
 
 """
 mk2 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk002config() = (configname="002", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk002config() = trendmkconfig("002", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
 
 """
 mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config targetconfig02() with **poor results**: ppv(longbuy) = 26%
 """
-mk003config() = (configname="003", featconfig = trendf6config01(), targetconfig = targetconfig02(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk003config() = trendmkconfig("003", trendf6config01(), targetconfig02(), Classify.model001, tradingstrategy02())
 
 """
 mk4 = targetconfig03() with one merged set (allclose=>0.726, longbuy=>0.274)
 """
-mk004config() = (configname="004", featconfig = trendf6config01(), targetconfig = targetconfig03(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk004config() = trendmkconfig("004", trendf6config01(), targetconfig03(), Classify.model001, tradingstrategy02())
 
 """
 mk5 = targetconfig04() with one merged set (allclose=>?, longbuy=>?)
 """
-mk005config() = (configname="005", featconfig = trendf6config01(), targetconfig = targetconfig04(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk005config() = trendmkconfig("005", trendf6config01(), targetconfig04(), Classify.model001, tradingstrategy02())
 
 """
 mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk006config() = (configname="006", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk006config() = trendmkconfig("006", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
 
 """
 same as mk6 butwith copied mix classifier from mk2
 mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
 """
-mk007config() = (configname="007", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model001, tradingstrategy=tradingstrategy02())
+mk007config() = trendmkconfig("007", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
 
 """
 mk8 = mix adapted with all coin features/targets in one set, features are clipped, normalized, shifted, and in addition batch norm layer after initial layer with relu activation in model001
 equal mean, q25, q75, min, max does not look like healthy feature values - longbuy ppv classification performance is with close to 70% also worse
 """
-# mk008config() = (configname="008", featconfig = trendf6config02(), targetconfig = targetconfig01(), classifiermodel=Classify.model001)
+# mk008config() = trendmkconfig("008", trendf6config02(), targetconfig01(), Classify.model001, tradingstrategy02())
 
 """ **my favorite**  
 mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
 """
-mk009config() = (configname="009", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk009config() = trendmkconfig("009", trendf6config01(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=true)
 
 """
 mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
@@ -322,128 +335,128 @@ mk10 = mix adapted with all coin features/targets in one set, features are clipp
 """
 mk11 = mix adapted with all coin features/targets in one set, no clipping, initial batch norm layer but no further internal batch norm layers
 """
-mk011config() = (configname="011", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model003, tradingstrategy=tradingstrategy02())
+mk011config() = trendmkconfig("011", trendf6config01(), targetconfig01(), Classify.model003, tradingstrategy02())
 
 """
 mk12 = like mk9 but with an additional layer
 """
-mk012config() = (configname="012", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model004, tradingstrategy=tradingstrategy02())
+mk012config() = trendmkconfig("012", trendf6config01(), targetconfig01(), Classify.model004, tradingstrategy02())
 
 """
 mk13 = like mk9 but with 4/3 broader layers
 """
-mk013config() = (configname="013", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model005, tradingstrategy=tradingstrategy02())
+mk013config() = trendmkconfig("013", trendf6config01(), targetconfig01(), Classify.model005, tradingstrategy02())
 
 """
 mk14 = like mk11 but removed layer 3
 """
-mk014config() = (configname="014", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model006, tradingstrategy=tradingstrategy02())
+mk014config() = trendmkconfig("014", trendf6config01(), targetconfig01(), Classify.model006, tradingstrategy02())
 
 """
 mk15 = like mk11 but reduced number of nodes of layers by reducing factor of layer 1 from 3 to 2
 """
-mk015config() = (configname="015", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model007, tradingstrategy=tradingstrategy02())
+mk015config() = trendmkconfig("015", trendf6config01(), targetconfig01(), Classify.model007, tradingstrategy02())
 
 """
 mk16 = no tolerance against target disturbances (minwindow=0), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
 """
-mk016config() = (configname="016", featconfig = trendf6config01(), targetconfig = targetconfig05(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk016config() = trendmkconfig("016", trendf6config01(), targetconfig05(), Classify.model002, tradingstrategy02())
 
 """
 mk17 = short tolerance against target disturbances (minwindow=2), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
 """
-mk017config() = (configname="017", featconfig = trendf6config01(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk017config() = trendmkconfig("017", trendf6config01(), targetconfig06(), Classify.model002, tradingstrategy02())
 
 """  
 mk18 = mk9 but with simplified features
 """
-mk018config() = (configname="018", featconfig = trendf6config03(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk018config() = trendmkconfig("018", trendf6config03(), targetconfig01(), Classify.model002, tradingstrategy02())
 
 """  
 mk19 = mk9 but with simplified features
 """
-mk019config() = (configname="019", featconfig = trendf6config04(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk019config() = trendmkconfig("019", trendf6config04(), targetconfig01(), Classify.model002, tradingstrategy02())
 
 """  
 mk20 = mk17 but feature grads without offset
 """
-mk020config() = (configname="020", featconfig = trendf6config05(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk020config() = trendmkconfig("020", trendf6config05(), targetconfig06(), Classify.model002, tradingstrategy02())
 
 """  
 mk21 = mk17 but feature grads without offset and 12h regr grad added
 """
-mk021config() = (configname="021", featconfig = trendf6config06(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk021config() = trendmkconfig("021", trendf6config06(), targetconfig06(), Classify.model002, tradingstrategy02())
 
 """  
 mk22 = mk21 but with 3*24h regr grad added
 """
-mk022config() = (configname="022", featconfig = trendf6config07(), targetconfig = targetconfig06(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk022config() = trendmkconfig("022", trendf6config07(), targetconfig06(), Classify.model002, tradingstrategy02())
 #* from mk23 onwards partitionconfig02() shall be used with a fixed partition gap of 8h to get the same targets gains for the same targetconfig but different requiredminutes(features)
 
 """  
 mk023 = equal to mk9 with the only difference that hold thresholds are lowered to 0.5% instead of being equal to the buy threshold of 1%
 """
-mk023config() = (configname="023", featconfig = trendf6config01(), targetconfig = targetconfig07(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk023config() = trendmkconfig("023", trendf6config01(), targetconfig07(), Classify.model002, tradingstrategy02())
 
 """  
 mk024 = equal to mk23 but Trend01/Trend02 were replaced by Trend04 targets
 """
-mk024config() = (configname="024", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk024config() = trendmkconfig("024", trendf6config01(), targetconfig08(), Classify.model002, tradingstrategy02())
 
 """
 mk9 = mk9 with short term target, i.e. maxwindow 2h
 """
-mk025config() = (configname="025", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
-mk025bconfig() = (configname="025b", featconfig = trendf6config01(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
-mk025Cconfig() = (configname="025C", featconfig = trendf6config01(), targetconfig = targetconfig08(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
-mk025Dconfig() = (configname="025D", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk025config() = trendmkconfig("025", trendf6config01(), targetconfig09(), Classify.model002, tradingstrategy02())
+mk025bconfig() = trendmkconfig("025b", trendf6config01(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=false)
+mk025Cconfig() = trendmkconfig("025C", trendf6config01(), targetconfig08(), Classify.model002, tradingstrategy02(); classbalancing=false)
+mk025Dconfig() = trendmkconfig("025D", trendf6config01(), targetconfig11(), Classify.model002, tradingstrategy02(); classbalancing=false)
 # mk25D and mk25E are the same config but in teh meanwhile the missing hold was fixed
-mk025Econfig() = (configname="025E", featconfig = trendf6config01(), targetconfig = targetconfig11(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk025Econfig() = trendmkconfig("025E", trendf6config01(), targetconfig11(), Classify.model002, tradingstrategy02(); classbalancing=false)
 
 """
 mk026 = mk9 with short term target, i.e. maxwindow 1h
 """
-mk026config() = (configname="026", featconfig = trendf6config01(), targetconfig = targetconfig10(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
+mk026config() = trendmkconfig("026", trendf6config01(), targetconfig10(), Classify.model002, tradingstrategy02())
 
 """
 mk27 = long term trend with long term window and 5% ambition
 """
-mk027config() = (configname="027", featconfig = trendf6config08(), targetconfig = targetconfig12(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02())
-mk039config() = (configname="039", featconfig = trendf6config12(), targetconfig = targetconfig17(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk027config() = trendmkconfig("027", trendf6config08(), targetconfig12(), Classify.model002, tradingstrategy02())
+mk039config() = trendmkconfig("039", trendf6config12(), targetconfig17(), Classify.model002, tradingstrategy02(); classbalancing=true)
 
 """   
 mk028 = mk009 without class balancing
 """
-mk028config() = (configname="028", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk028config() = trendmkconfig("028", trendf6config01(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=false)
 
 """   
 mk029 = mk009 without class balancing but implementation for hold equally strict than for buy (no config change)
 """
-mk029config() = (configname="029", featconfig = trendf6config01(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
+mk029config() = trendmkconfig("029", trendf6config01(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=false)
 
 """   
 relies on grad without offset and 2h target, i.e. maxwindow 2h, hold threshold equal to buy threshold, no class balancing
 """
-mk030config() = (configname="030", featconfig = trendf6config09(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=false)
-mk031config() = (configname="031", featconfig = trendf6config09(), targetconfig = targetconfig09(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk032config() = (configname="032", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk046config() = (configname="046", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy03(), classbalancing=true)
-mk047config() = (configname="047", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy04(), classbalancing=true)
-mk048config() = (configname="048", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy05(), classbalancing=true)
-mk049config() = (configname="049", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy06(), classbalancing=true)
-mk033config() = (configname="033", featconfig = trendf6config09(), targetconfig = targetconfig01(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk034config() = (configname="034", featconfig = trendf6config09(), targetconfig = targetconfig07(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk035config() = (configname="035", featconfig = trendf6config10(), targetconfig = targetconfig14(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk037config() = (configname="037", featconfig = trendf6config09(), targetconfig = targetconfig13(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk038config() = (configname="038", featconfig = trendf6config09(), targetconfig = targetconfig16(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk030config() = trendmkconfig("030", trendf6config09(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=false)
+mk031config() = trendmkconfig("031", trendf6config09(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk032config() = trendmkconfig("032", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk046config() = trendmkconfig("046", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy03(); classbalancing=true)
+mk047config() = trendmkconfig("047", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy04(); classbalancing=true)
+mk048config() = trendmkconfig("048", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy05(); classbalancing=true)
+mk049config() = trendmkconfig("049", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy06(); classbalancing=true)
+mk033config() = trendmkconfig("033", trendf6config09(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk034config() = trendmkconfig("034", trendf6config09(), targetconfig07(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk035config() = trendmkconfig("035", trendf6config10(), targetconfig14(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk037config() = trendmkconfig("037", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk038config() = trendmkconfig("038", trendf6config09(), targetconfig16(), Classify.model002, tradingstrategy02(); classbalancing=true)
 
-mk036config() = (configname="036", featconfig = trendf6config11(), targetconfig = targetconfig15(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk040config() = (configname="040", featconfig = trendf6config12(), targetconfig = targetconfig18(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk041config() = (configname="041", featconfig = trendf6config13(), targetconfig = targetconfig19(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk042config() = (configname="042", featconfig = trendf6config14(), targetconfig = targetconfig20(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk043config() = (configname="043", featconfig = trendf6config15(), targetconfig = targetconfig21(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk044config() = (configname="044", featconfig = trendf6config14(), targetconfig = targetconfig22(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
-mk045config() = (configname="045", featconfig = trendf6config14(), targetconfig = targetconfig23(), classifiermodel=Classify.model002, tradingstrategy=tradingstrategy02(), classbalancing=true)
+mk036config() = trendmkconfig("036", trendf6config11(), targetconfig15(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk040config() = trendmkconfig("040", trendf6config12(), targetconfig18(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk041config() = trendmkconfig("041", trendf6config13(), targetconfig19(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk042config() = trendmkconfig("042", trendf6config14(), targetconfig20(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk043config() = trendmkconfig("043", trendf6config15(), targetconfig21(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk044config() = trendmkconfig("044", trendf6config14(), targetconfig22(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk045config() = trendmkconfig("045", trendf6config14(), targetconfig23(), Classify.model002, tradingstrategy02(); classbalancing=true)
 
 #endregion TrendConfig
 
@@ -470,7 +483,7 @@ function _config_from_dict(configs::Dict{String, NamedTuple}, ref::AbstractStrin
 
     matches = [key for key in keys(configs) if lowercase(key) == lowerraw]
     @assert length(matches) == 1 "unknown $(label) config ref=$(ref); available confignames=$(join(sort!(collect(keys(configs)); by=lowercase), ", "))"
-    return deepcopy(configs[only(matches)])
+    return configs[only(matches)]
 end
 
 const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
@@ -499,8 +512,8 @@ trendconfigfolder(cfg::NamedTuple, phase::AbstractString)::String = "Trend-$(tre
 "Return the source tag used when wiring a TrendDetector config into Trade."
 trendconfigsource(cfg::NamedTuple; prefix::AbstractString="trenddetector")::String = "$(String(prefix)):$(trendconfigref(cfg))"
 
-"Return a fresh feature-config factory for a TrendDetector config payload."
-trendconfigfeaturefactory(cfg::NamedTuple)::Function = () -> deepcopy(cfg.featconfig)
+"Return the feature-config factory for a TrendDetector config payload."
+trendconfigfeaturefactory(cfg::NamedTuple)::Function = () -> cfg.featconfig
 
 "Load a runtime classifier for a TrendDetector config payload."
 function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::Classify.TrendClassifier001

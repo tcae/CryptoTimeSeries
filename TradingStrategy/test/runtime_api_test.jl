@@ -9,12 +9,16 @@ using Ohlcv
 using TestOhlcv
 using TradingStrategy
 
-Base.@kwdef mutable struct IncompleteRuntime <: TradingStrategy.AbstractStrategyRuntime
-end
-
 Base.@kwdef mutable struct MockClassifier <: Classify.AbstractClassifier
     bc::Dict{String, NamedTuple{(:ohlcv,), Tuple{Ohlcv.OhlcvData}}} = Dict{String, NamedTuple{(:ohlcv,), Tuple{Ohlcv.OhlcvData}}}()
     advice_calls::Int = 0
+end
+
+function init_runtime_columns!(tdf::DataFrame)
+    for contributor in TradingStrategy.tradesdf_contributors()
+        contributor(tdf)
+    end
+    return tdf
 end
 
 function Classify.addbase!(cl::MockClassifier, ohlcv::Ohlcv.OhlcvData)
@@ -23,6 +27,7 @@ function Classify.addbase!(cl::MockClassifier, ohlcv::Ohlcv.OhlcvData)
 end
 
 Classify.supplement!(cl::MockClassifier) = cl
+Classify.requiredminutes(::MockClassifier) = 0
 
 function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::DateTime; investment=nothing)
     _ = investment
@@ -45,8 +50,9 @@ end
 
     # Legacy algorithm keeps current behavior and classifies each snapshot call.
     cl_plain = MockClassifier()
-    rt_plain = TradingStrategy.TsCache(classifier=cl_plain, strategy=TradingStrategy.makestrategy(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
+    rt_plain = TradingStrategy.TsCache(classifier=cl_plain, strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
     evaldt = enddt
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
@@ -54,15 +60,17 @@ end
 
     # New variant gates classifier calls by price delta and minimum interval.
     cl_gated = MockClassifier()
-    gs_gated = TradingStrategy.makestrategy(
-        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+    gs_gated = TradingStrategy.StrategyConfig(
+        algorithm=TradingStrategy.gain_limit_reversal!,
         minpricedelta=0.001f0,
         max_classify_staleness_minutes=1,
     )
     rt_gated = TradingStrategy.TsCache(classifier=cl_gated, strategy=gs_gated, source="test")
     TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
-    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt)
-    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt)
+    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+    recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=1))
+    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
+    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
     @test cl_gated.advice_calls == 1
 end
 
@@ -74,13 +82,14 @@ end
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     cl = MockClassifier()
-    gs = TradingStrategy.makestrategy(
-        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
+    gs = TradingStrategy.StrategyConfig(
+        algorithm=TradingStrategy.gain_limit_reversal!,
         minpricedelta=0.5f0,
         max_classify_staleness_minutes=1,
     )
     rt = TradingStrategy.TsCache(classifier=cl, strategy=gs, source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
     _ = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt)
@@ -88,54 +97,8 @@ end
     @test cl.advice_calls == 2
 end
 
-@testset "replay classification gating carries forward skipped predictions" begin
-    df = DataFrame(
-        opentime=[DateTime(2026, 1, 1, 0, 0), DateTime(2026, 1, 1, 0, 1), DateTime(2026, 1, 1, 0, 2)],
-        high=Float32[101f0, 101f0, 101f0],
-        low=Float32[99f0, 99f0, 99f0],
-        close=Float32[100f0, 100.02f0, 100.5f0],
-    )
-    scores = Float32[0.7f0, 0.2f0, 0.9f0]
-    labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen, Targets.shortopen]
-
-    gs = TradingStrategy.makestrategy(
-        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        minpricedelta=0.001f0,
-        max_classify_staleness_minutes=5,
-    )
-
-    rs, rl = TradingStrategy.replay_classification_gating(gs, df, scores, labels)
-    @test rs[2] == rs[1]
-    @test rl[2] == rl[1]
-    @test rs[3] == scores[3]
-    @test rl[3] == labels[3]
-end
-
-@testset "replay classification gating keeps bars when interval OR price delta is satisfied" begin
-    df = DataFrame(
-        opentime=[DateTime(2026, 1, 1, 0, 0), DateTime(2026, 1, 1, 0, 1), DateTime(2026, 1, 1, 0, 2)],
-        high=Float32[101f0, 101f0, 101f0],
-        low=Float32[99f0, 99f0, 99f0],
-        close=Float32[100f0, 100.02f0, 100.03f0],
-    )
-    scores = Float32[0.7f0, 0.2f0, 0.9f0]
-    labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen, Targets.shortopen]
-
-    gs = TradingStrategy.makestrategy(
-        algorithm=TradingStrategy.gain_limit_reversal_pricedelta!,
-        minpricedelta=0.5f0,
-        max_classify_staleness_minutes=1,
-    )
-
-    rs, rl = TradingStrategy.replay_classification_gating(gs, df, scores, labels)
-    @test rs[2] == scores[2]
-    @test rl[2] == labels[2]
-    @test rs[3] == scores[3]
-    @test rl[3] == labels[3]
-end
-
 @testset "StrategyConfig max staleness naming" begin
-    gs_new = TradingStrategy.makestrategy(max_classify_staleness_minutes=3)
+    gs_new = TradingStrategy.StrategyConfig(max_classify_staleness_minutes=3)
 
     @test gs_new.max_classify_staleness_minutes == 3
     @test TradingStrategy.max_classify_staleness_minutes(gs_new) == 3
@@ -148,7 +111,7 @@ end
     @test TradingStrategy.requiredhistoryminutes(rt) >= 0
     @test isempty(TradingStrategy.acceptedbases(rt))
 
-    gs = TradingStrategy.makestrategy(maxwindow=12)
+    gs = TradingStrategy.StrategyConfig(maxwindow=12)
     push!(rt.accepted, "BTC")
     TradingStrategy.apply_strategy!(rt, gs; source="test")
     @test isempty(rt.pairs)
@@ -170,6 +133,7 @@ end
     Xch.addbase!(xc, "BTC", startdt, startdt + Minute(120))
     xc.currentdt = evaldt
     TradingStrategy.preparebases!(rt, xc, ["BTC"]; history_startdt=startdt, datetime=evaldt, updatecache=false)
+    init_runtime_columns!(Xch.trades(xc, "BTC", EnvConfig.pairquote))
     rowmeta = TradingStrategy.gettradesrow!(rt, xc, "BTC", evaldt; reconciliation=recon)
     @test !isnothing(rowmeta)
     @test rowmeta.base == "BTC"
@@ -217,7 +181,7 @@ end
 
     cfg = Dict{Symbol, Any}(
         :classifier_factory => () -> MockClassifier(),
-        :strategy_template => TradingStrategy.makestrategy(algorithm=TradingStrategy.gain_limit_reversal!),
+        :strategy_template => TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!),
     )
     ts = TradingStrategy.TsCache(configuration=cfg, source="test")
 
@@ -227,6 +191,7 @@ end
         low=Float32[99f0, 100f0, 101f0, 102f0, 103f0],
         close=Float32[100f0, 101f0, 102f0, 103f0, 104f0],
     )
+    init_runtime_columns!(df)
     scores = Float32[0.8f0, 0.7f0, 0.9f0, 0.4f0, 0.3f0]
     labels = Targets.TradeLabel[Targets.longopen, Targets.longopen, Targets.longopen, Targets.longclose, Targets.longclose]
 
@@ -238,6 +203,7 @@ end
         scores,
         labels,
         true;
+        strategy=ts.strategy_template,
         openthreshold=0.6f0,
         closethreshold=0.1f0,
         metadata=Dict{Symbol, Any}(:predicted => true, :rangeid => 1),
@@ -246,8 +212,6 @@ end
     @test Xch.hastrades(xc, "SINEUSDT")
     tdf = Xch.trades(xc, "SINEUSDT")
     @test nrow(tdf) == nrow(df)
-    @test "score" in names(tdf)
-    @test "label" in names(tdf)
     @test "predicted" in names(tdf)
     @test "rangeid" in names(tdf)
     @test "longopenlimit" in names(tdf)
@@ -261,17 +225,6 @@ end
     @test size(gdf, 1) >= 0
 end
 
-@testset "Runtime API mandatory abstract methods fail fast" begin
-    EnvConfig.init(EnvConfig.test)
-    rt = IncompleteRuntime()
-    xc = Xch.XchCache()
-    dt = DateTime(2026, 1, 1)
-
-    @test_throws ArgumentError TradingStrategy.preparebases!(rt, xc, ["BTC"]; history_startdt=dt - Minute(120), datetime=dt, updatecache=false)
-    @test_throws ArgumentError TradingStrategy.gettradesrow!(rt, xc, "BTC", dt)
-    @test_throws ArgumentError TradingStrategy.gettradesrows!(rt, xc, ["BTC"], dt)
-end
-
 @testset "TsCache multi-base lifecycle is deterministic" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 1)
@@ -280,7 +233,7 @@ end
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
     xc.bases["DOUBLESINE"] = TestOhlcv.testohlcv("DOUBLESINE", startdt, enddt)
 
-    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.makestrategy(), source="test")
+    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
 
     TradingStrategy.preparebases!(rt, xc, ["SINE", "DOUBLESINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["SINE", "DOUBLESINE"])
@@ -294,7 +247,7 @@ end
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
     @test Set(String.(Classify.bases(rt.classifier))) == Set(["DOUBLESINE"])
 
-    TradingStrategy.apply_strategy!(rt, TradingStrategy.makestrategy(maxwindow=60); source="reconfigured")
+    TradingStrategy.apply_strategy!(rt, TradingStrategy.StrategyConfig(maxwindow=60); source="reconfigured")
     @test isempty(TradingStrategy.acceptedbases(rt))
     @test isempty(Set(String.(Classify.bases(rt.classifier))))
 
@@ -310,8 +263,9 @@ end
     xc = Xch.XchCache(startdt=startdt)
     Xch.addbase!(xc, "SINE", startdt, enddt)
 
-    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.makestrategy(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
+    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
     xc.currentdt = evaldt

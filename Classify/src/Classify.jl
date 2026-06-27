@@ -141,6 +141,92 @@ function load(::Type{T}, spec; kwargs...) where {T<:AbstractClassifier}
     error("missing load implementation for classifier type $(T)")
 end
 
+"Load persisted classifier artifacts when available, otherwise build a fresh classifier instance."
+function loadorbuild(::Type{T}, spec, featurecount::Integer, labels, mnemonic::AbstractString, classifiermodel::Function; kwargs...) where {T<:AbstractClassifier}
+    _ = spec
+    _ = featurecount
+    _ = labels
+    _ = mnemonic
+    _ = classifiermodel
+    _ = kwargs
+    error("missing loadorbuild implementation for classifier type $(T)")
+end
+
+"Create aligned feature and target tables for one OHLCV sequence."
+function featurestargetsdf(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, targetconfig::Targets.AbstractTargets; kwargs...)
+    _ = ohlcv
+    _ = targetconfig
+    _ = kwargs
+    error("missing featurestargetsdf implementation for classifier type $(typeof(cl))")
+end
+
+"Adapt or retrain one classifier instance from prepared results/features tables."
+function adapt!(cl::AbstractClassifier, resultsdf::AbstractDataFrame, featuresdf::AbstractDataFrame; kwargs...)
+    _ = resultsdf
+    _ = featuresdf
+    _ = kwargs
+    error("missing adapt! implementation for classifier type $(typeof(cl))")
+end
+
+"Return whether classifier training/adaptation has been executed already."
+function isadapted(cl::AbstractClassifier)::Bool
+    error("missing isadapted implementation for classifier type $(typeof(cl))")
+end
+
+"Return whether classifier has converged according to its own training criterion."
+function nnconverged(cl::AbstractClassifier)::Bool
+    error("missing nnconverged implementation for classifier type $(typeof(cl))")
+end
+
+"Return the underlying model payload used by one classifier implementation."
+function model(cl::AbstractClassifier)
+    error("missing model implementation for classifier type $(typeof(cl))")
+end
+
+"Resolve a classifier type token to a concrete `AbstractClassifier` subtype."
+function resolveclassifiertype(token)::Type{<:AbstractClassifier}
+    if token isa Type
+        token <: AbstractClassifier || throw(ArgumentError("classifier_type must subtype Classify.AbstractClassifier, got $(token)"))
+        return token
+    end
+    name = String(token)
+    isdefined(Classify, Symbol(name)) || throw(ArgumentError("unknown classifier_type=$(name); expected one exported by Classify"))
+    typ = getproperty(Classify, Symbol(name))
+    (typ isa Type) && (typ <: AbstractClassifier) || throw(ArgumentError("classifier_type=$(name) is not a Classify.AbstractClassifier subtype"))
+    return typ
+end
+
+"Resolve one classifier from explicit constructor options."
+function resolveclassifier(;
+    classifier::Union{Nothing, AbstractClassifier}=nothing,
+    classifier_factory::Union{Nothing, Function}=nothing,
+    classifier_type=nothing,
+    classifier_spec=nothing,
+    mode=EnvConfig.configmode,
+)::AbstractClassifier
+    if !isnothing(classifier)
+        return classifier
+    end
+
+    if !isnothing(classifier_factory)
+        cl = classifier_factory()
+        cl isa AbstractClassifier || throw(ArgumentError("classifier_factory must return Classify.AbstractClassifier, got $(typeof(cl))"))
+        return cl
+    end
+
+    has_type = !isnothing(classifier_type)
+    has_spec = !isnothing(classifier_spec)
+    if has_type && has_spec
+        typ = resolveclassifiertype(classifier_type)
+        return load(typ, classifier_spec; mode=mode)
+    elseif has_type
+        typ = resolveclassifiertype(classifier_type)
+        return typ()
+    end
+
+    throw(ArgumentError("classifier configuration missing: provide one of classifier, classifier_factory, classifier_type, or classifier_type + classifier_spec"))
+end
+
 "Persist a classifier instance to storage."
 function save(cl::AbstractClassifier; kwargs...)
     _ = kwargs

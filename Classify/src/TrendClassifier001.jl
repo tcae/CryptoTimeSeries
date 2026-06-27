@@ -324,13 +324,13 @@ function loadclassifier(
     cfgid::Integer=1,
 )::TrendClassifier001
     build = (nn, fcfg, reqmin, id) -> TrendClassifier001(nn; featconfig=fcfg, required_minutes=reqmin, cfgid=id)
-    return trend_runtime_loadclassifier(
+    return runtime_loadclassifier(
         build,
         nn_fileprefix,
         featconfig,
-        required_minutes;
+        required_minutes,
+        cfgid;
         search_folders=search_folders,
-        cfgid=cfgid,
     )::TrendClassifier001
 end
 
@@ -398,3 +398,7 @@ function save(cl::TrendClassifier001; mode=EnvConfig.configmode, folder::Union{N
     savenn(cl.nn)
     return cl
 end
+
+Classify.isadapted(cl::TrendClassifier001)::Bool = Classify.isadapted(cl.nn)
+Classify.nnconverged(cl::TrendClassifier001)::Bool = Classify.nnconverged(cl.nn)
+Classify.model(cl::TrendClassifier001) = cl.nn
