@@ -69,7 +69,6 @@ TradingStrategy = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
 Transducers = "28d57a85-8fef-5791-bfe6-a80928e7c999"
 WebSockets = "104b5d7c-a370-577a-8038-80a2059c5097"
 Xch = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 
 [sources]
 Bybit = {path = "Bybit"}

@@ -79,17 +79,22 @@ EnvConfig.init(test)
     btcusdt = Xch.trades(xc, "btc", "usdt")
     @test btcusdt isa DataFrame
     @test nrow(btcusdt) == 0
-    @test names(btcusdt) == ["opentime", "lastopentrade"]
+    @test "opentime" in names(btcusdt)
+    @test "pair" in names(btcusdt)
+    @test !("lastopentrade" in names(btcusdt))
     @test eltype(btcusdt[!, :opentime]) == DateTime
-    @test eltype(btcusdt[!, :lastopentrade]) == Union{Missing, DateTime}
     @test Xch.hastrades(xc, "BTCUSDT")
 
     seeded = DataFrame(opentime=[DateTime("2025-01-01T00:00:00")], action=["open"], qty=[1.0f0])
     Xch.settrades!(xc, "eth", "usdt", seeded)
     @test Xch.tradingpairs(xc) == ["BTCUSDT", "ETHUSDT"]
     @test nrow(Xch.trades(xc, "ETHUSDT")) == 1
-    @test names(Xch.trades(xc, "ETHUSDT")) == ["opentime", "action", "qty", "lastopentrade"]
-    @test ismissing(Xch.trades(xc, "ETHUSDT")[1, :lastopentrade])
+    @test "opentime" in names(Xch.trades(xc, "ETHUSDT"))
+    @test "action" in names(Xch.trades(xc, "ETHUSDT"))
+    @test "qty" in names(Xch.trades(xc, "ETHUSDT"))
+    @test "pair" in names(Xch.trades(xc, "ETHUSDT"))
+    @test !("lastopentrade" in names(Xch.trades(xc, "ETHUSDT")))
+    @test Xch.trades(xc, "ETHUSDT")[1, :pair] == "ETHUSDT"
 end
 
 end

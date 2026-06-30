@@ -13,6 +13,14 @@ verbosity =
 """
 verbosity = 3
 
+# Compatibility wrappers used by tests and scripts that still access these
+# helper symbols via the TrendDetector module.
+resultsfilename(coin=nothing) = TradingStrategy.resultsfilename(coin)
+featuresfilename(coin=nothing) = TradingStrategy.featuresfilename(coin)
+trendf6config01() = TradingStrategy.trendf6config01()
+targetconfig01() = TradingStrategy.targetconfig01()
+tradingstrategy02() = TradingStrategy.tradingstrategy02()
+
 
 """
 inspect = provide a look into files and data structures 
@@ -35,7 +43,7 @@ mutable struct TrendDetectorConfig
     partitionconfig::NamedTuple
     coins::Vector{String}
     classbalancing::Bool
-    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, classifiertype::Type{<:Classify.AbstractClassifier}, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=TradingStrategy.partitionconfig02(), coins, classbalancing=true)
+    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, classifiertype::Type{<:Classify.AbstractClassifier}=Classify.TrendClassifier001, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=TradingStrategy.partitionconfig02(), coins, classbalancing=true)
         EnvConfig.setlogpath(folder)
         EnvConfig.setdfformat!(:arrow)
         (verbosity >= 2) && println("verbosity: $verbosity")
@@ -634,19 +642,22 @@ function getgainsdf(cfg::TrendDetectorConfig)
         true_close_rows = count(l -> (l in (longclose, longstrongclose, shortclose, shortstrongclose, allclose)), truelabels)
 
         for (openthreshold, closethreshold) in GAIN_THRESHOLDS
-            gdf = TradingStrategy.getgains(
+            tp = TradingStrategy.preparereplaytrades!(
                 ts,
                 xc,
                 String(coin),
                 resultsview,
                 replayscores,
                 replaylabels,
-                true;
-                strategy=cfg.tradingstrategy,
-                openthreshold=openthreshold,
-                closethreshold=closethreshold,
                 metadata=Dict{Symbol, Any}(:set => String(sampleset), :predicted => true, :rangeid => Int(rng), :openthreshold => Float32(openthreshold), :closethreshold => Float32(closethreshold)),
                 datetime=evaldt,
+            )
+            gdf = TradingStrategy.processreplaygains!(
+                tp;
+                strategy=cfg.tradingstrategy,
+                forcegain=true,
+                openthreshold=openthreshold,
+                closethreshold=closethreshold,
             )
             pair = TradingStrategy.tspairkey(String(coin), EnvConfig.pairquote)
             tdf = Xch.trades(xc, pair)
@@ -659,19 +670,22 @@ function getgainsdf(cfg::TrendDetectorConfig)
         end
 
         true_open, true_close = TRUE_GAIN_THRESHOLD
-        gdf = TradingStrategy.getgains(
+        tp = TradingStrategy.preparereplaytrades!(
             ts,
             xc,
             String(coin),
             resultsview,
             truescores,
             targets,
-            true;
-            strategy=cfg.tradingstrategy,
-            openthreshold=true_open,
-            closethreshold=true_close,
             metadata=Dict{Symbol, Any}(:set => String(sampleset), :predicted => false, :rangeid => Int(rng), :openthreshold => Float32(true_open), :closethreshold => Float32(true_close)),
             datetime=evaldt,
+        )
+        gdf = TradingStrategy.processreplaygains!(
+            tp;
+            strategy=cfg.tradingstrategy,
+            forcegain=true,
+            openthreshold=true_open,
+            closethreshold=true_close,
         )
         pair = TradingStrategy.tspairkey(String(coin), EnvConfig.pairquote)
         tdf = Xch.trades(xc, pair)

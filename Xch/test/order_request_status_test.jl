@@ -31,12 +31,16 @@ using EnvConfig, Xch
 
     # Accepted long-open request should create an order id and synchronize status columns.
     accepted = DataFrame(
+        opentime=[startdt],
         pair=["BTCUSDT"],
         tradelabel=["longopen"],
         longopenlimit=[price * 0.98f0],
         longamount=[max(minqty * 1.5f0, 0.001f0)],
         longleverage=[UInt8(0)],
     )
+    for contributor in Xch.tradesdf_contributors()
+        contributor(accepted)
+    end
     result = Xch.process_order_request(xc, accepted, 1)
     @test result.action == :long_open
     if result.accepted
@@ -55,12 +59,16 @@ using EnvConfig, Xch
 
     # Too-small quantity should be rejected and assigned a Trading catalog id.
     rejected = DataFrame(
+        opentime=[startdt],
         pair=["BTCUSDT"],
         tradelabel=["longopen"],
         longopenlimit=[price],
         longamount=[max(minqty * 0.1f0, 1.0f-8)],
         longleverage=[UInt8(0)],
     )
+    for contributor in Xch.tradesdf_contributors()
+        contributor(rejected)
+    end
     reject_result = Xch.process_order_request(xc, rejected, 1)
     @test !reject_result.accepted
     @test reject_result.reason == "below_minimum_qty"

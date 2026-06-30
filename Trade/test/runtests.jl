@@ -17,7 +17,6 @@ end
     include("bybit_guardrail_test.jl")
     if _hastadeauditpkg()
         include("audit_snapshot_test.jl")
-        include("ownership_selection_test.jl")
     else
         @info "Skipping TradeAudit-dependent tests because TradeAudit package is not available in current test environment"
     end

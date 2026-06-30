@@ -51,7 +51,7 @@ end
     # Legacy algorithm keeps current behavior and classifies each snapshot call.
     cl_plain = MockClassifier()
     rt_plain = TradingStrategy.TsCache(classifier=cl_plain, strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
-    TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; datetime=enddt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
     evaldt = enddt
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
@@ -66,7 +66,7 @@ end
         max_classify_staleness_minutes=1,
     )
     rt_gated = TradingStrategy.TsCache(classifier=cl_gated, strategy=gs_gated, source="test")
-    TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; datetime=enddt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
     recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=1))
     _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
@@ -88,7 +88,7 @@ end
         max_classify_staleness_minutes=1,
     )
     rt = TradingStrategy.TsCache(classifier=cl, strategy=gs, source="test")
-    TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
@@ -132,7 +132,7 @@ end
     xc = Xch.XchCache(startdt=startdt)
     Xch.addbase!(xc, "BTC", startdt, startdt + Minute(120))
     xc.currentdt = evaldt
-    TradingStrategy.preparebases!(rt, xc, ["BTC"]; history_startdt=startdt, datetime=evaldt, updatecache=false)
+    TradingStrategy.preparebases!(rt, xc, ["BTC"]; datetime=evaldt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "BTC", EnvConfig.pairquote))
     rowmeta = TradingStrategy.gettradesrow!(rt, xc, "BTC", evaldt; reconciliation=recon)
     @test !isnothing(rowmeta)
@@ -203,7 +203,7 @@ end
         scores,
         labels,
         true;
-        strategy=ts.strategy_template,
+        strategy=ts.strategy_config,
         openthreshold=0.6f0,
         closethreshold=0.1f0,
         metadata=Dict{Symbol, Any}(:predicted => true, :rangeid => 1),
@@ -225,6 +225,95 @@ end
     @test size(gdf, 1) >= 0
 end
 
+@testset "Explicit replay prepare and process path matches wrapper" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 2)
+    xc = Xch.XchCache(startdt=startdt)
+
+    cfg = Dict{Symbol, Any}(
+        :classifier_factory => () -> MockClassifier(),
+        :strategy_template => TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!),
+    )
+    ts = TradingStrategy.TsCache(configuration=cfg, source="test")
+
+    df = DataFrame(
+        opentime=[startdt + Minute(i) for i in 0:4],
+        high=Float32[101f0, 102f0, 103f0, 104f0, 105f0],
+        low=Float32[99f0, 100f0, 101f0, 102f0, 103f0],
+        close=Float32[100f0, 101f0, 102f0, 103f0, 104f0],
+    )
+    init_runtime_columns!(df)
+    scores = Float32[0.8f0, 0.7f0, 0.9f0, 0.4f0, 0.3f0]
+    labels = Targets.TradeLabel[Targets.longopen, Targets.longopen, Targets.longopen, Targets.longclose, Targets.longclose]
+    metadata = Dict{Symbol, Any}(:predicted => true, :rangeid => 2)
+
+    wrapper_gdf = TradingStrategy.getgains(
+        ts,
+        xc,
+        "sine",
+        df,
+        scores,
+        labels,
+        true;
+        strategy=ts.strategy_config,
+        openthreshold=0.6f0,
+        closethreshold=0.1f0,
+        metadata=metadata,
+    )
+
+    tp = TradingStrategy.preparereplaytrades!(
+        ts,
+        xc,
+        "sine",
+        df,
+        scores,
+        labels;
+        metadata=metadata,
+    )
+    explicit_gdf = TradingStrategy.processreplaygains!(
+        tp;
+        strategy=ts.strategy_config,
+        forcegain=true,
+        openthreshold=0.6f0,
+        closethreshold=0.1f0,
+    )
+
+    @test isequal(wrapper_gdf, explicit_gdf)
+    @test nrow(tp.tradesdf) == nrow(df)
+    @test tp.last_update_dt == df[end, :opentime]
+end
+
+@testset "Explicit replay processing fails fast on malformed state" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 3)
+
+    badcols_tp = TradingStrategy.TsTp(
+        pair="SINEUSDT",
+        tradesdf=DataFrame(opentime=[startdt], high=Float32[101f0], low=Float32[99f0]),
+    )
+    @test_throws AssertionError TradingStrategy.processreplaygains!(
+        badcols_tp;
+        strategy=TradingStrategy.StrategyConfig(),
+        lastix=1,
+    )
+
+    tdf = DataFrame(
+        opentime=[startdt],
+        high=Float32[101f0],
+        low=Float32[99f0],
+        pair=["SINEUSDT"],
+    )
+    init_runtime_columns!(tdf)
+    tdf[!, :labelscore] = Float32[0.8f0]
+    tdf[!, :tradelabel] = Union{Missing, Targets.TradeLabel}[Targets.longopen]
+    noclose_tp = TradingStrategy.TsTp(pair="SINEUSDT", tradesdf=tdf)
+    @test_throws AssertionError TradingStrategy.processreplaygains!(
+        noclose_tp;
+        strategy=TradingStrategy.StrategyConfig(),
+        lastix=1,
+    )
+end
+
 @testset "TsCache multi-base lifecycle is deterministic" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 1)
@@ -235,7 +324,7 @@ end
 
     rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
 
-    TradingStrategy.preparebases!(rt, xc, ["SINE", "DOUBLESINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    TradingStrategy.preparebases!(rt, xc, ["SINE", "DOUBLESINE"]; datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["SINE", "DOUBLESINE"])
     @test Set(String.(Classify.bases(rt.classifier))) == Set(["SINE", "DOUBLESINE"])
 
@@ -243,7 +332,7 @@ end
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
     @test Set(String.(Classify.bases(rt.classifier))) == Set(["DOUBLESINE"])
 
-    TradingStrategy.preparebases!(rt, xc, ["DOUBLESINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    TradingStrategy.preparebases!(rt, xc, ["DOUBLESINE"]; datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
     @test Set(String.(Classify.bases(rt.classifier))) == Set(["DOUBLESINE"])
 
@@ -264,7 +353,7 @@ end
     Xch.addbase!(xc, "SINE", startdt, enddt)
 
     rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
-    TradingStrategy.preparebases!(rt, xc, ["SINE"]; history_startdt=startdt, datetime=enddt, updatecache=false)
+    TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
@@ -284,4 +373,32 @@ end
     @test isequal(snap1.tradesdf[snap1.rowix, :shortopenlimit], snap2.tradesdf[snap2.rowix, :shortopenlimit])
     @test isequal(snap1.tradesdf[snap1.rowix, :shortcloselimit], snap2.tradesdf[snap2.rowix, :shortcloselimit])
     @test snap1.configid == snap2.configid
+end
+
+@testset "TsCache advice phase composes with row application phase" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime(2026, 1, 12)
+    enddt = startdt + Minute(240)
+    xc = Xch.XchCache(startdt=startdt)
+    Xch.addbase!(xc, "SINE", startdt, enddt)
+
+    rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
+    TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
+    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+
+    evaldt = enddt
+    recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=9))
+
+    advicectx = TradingStrategy._classify_base_advice!(rt, xc, "SINE", evaldt)
+    @test !isnothing(advicectx)
+    @test advicectx.base == "SINE"
+    @test advicectx.datetime == evaldt
+    @test advicectx.closeprice > 0f0
+
+    rowmeta = TradingStrategy._apply_base_advice_row!(rt, xc, advicectx; reconciliation=recon)
+    @test rowmeta.base == "SINE"
+    @test rowmeta.datetime == evaldt
+    @test rowmeta.rowix >= 1
+    @test rowmeta.tradesdf[rowmeta.rowix, :tradelabel] == Targets.longopen
+    @test Float32(rowmeta.tradesdf[rowmeta.rowix, :longopenlimit]) > 0f0
 end

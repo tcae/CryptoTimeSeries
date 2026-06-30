@@ -43,7 +43,7 @@ const WORKSPACE_PACKAGES = [
 	"Trade",
 ]
 
-const RUN_COVERAGE = _env_bool("CTS_TEST_COVERAGE", true)
+const RUN_COVERAGE = _env_bool("CTS_TEST_COVERAGE", false ) # true)
 const COVERAGE_DIR = joinpath(@__DIR__, "coverage", "latest")
 const COVERAGE_TRACEFILE = _env_string("CTS_TEST_COVERAGE_TRACEFILE", joinpath(COVERAGE_DIR, "lcov.info"))
 const COVERAGE_ARG = RUN_COVERAGE ? COVERAGE_TRACEFILE : false
@@ -51,7 +51,7 @@ const COVERAGE_ARG = RUN_COVERAGE ? COVERAGE_TRACEFILE : false
 const ROOT_DEPENDENCIES = Set(String.(collect(keys(Pkg.project().dependencies))))
 const TESTABLE_PACKAGES = [pkg for pkg in WORKSPACE_PACKAGES if pkg in ROOT_DEPENDENCIES]
 const SKIPPED_PACKAGES = [pkg for pkg in WORKSPACE_PACKAGES if !(pkg in ROOT_DEPENDENCIES)]
-const PKGTEST_PACKAGES = [pkg for pkg in TESTABLE_PACKAGES if pkg != "TradingStrategy"]
+const PKGTEST_PACKAGES = copy(TESTABLE_PACKAGES)
 
 if !isempty(SKIPPED_PACKAGES)
 	@warn "Skipping workspace packages that are not dependencies of root Project.toml" skipped=SKIPPED_PACKAGES
@@ -66,9 +66,6 @@ end
 
 # Root test runner for complete workspace coverage across package suites.
 Pkg.test(PKGTEST_PACKAGES; coverage=COVERAGE_ARG)
-
-@info "Testing TradingStrategy via local include fallback to avoid package sandbox path-resolution drift"
-include(joinpath(@__DIR__, "..", "TradingStrategy", "test", "runtests.jl"))
 
 include(joinpath(@__DIR__, "bounds_estimator_test.jl"))
 include(joinpath(@__DIR__, "trend_detector_cache_test.jl"))

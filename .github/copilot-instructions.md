@@ -44,4 +44,4 @@ applyTo: '*.jl'
   - Reusable data that is shared by various experiments is stored per coin in the "coins" subfolder and each coin has a "base-quote" subfolder
   - Experiment specific data is stored in the "logs" folder within "crypto"
   - test and debug data shall be stored in the "debug" folder within "crypto" including any unit test data of Github Copilot
-- Minimize fallbacks. Preference is instead to have a clear error that will be fixed than implicit fallbacks.
+- Minimize fallbacks. No backward compatibility layer without clear need identified. Preference is instead to fail fast and have a clear error that will be fixed rather than implicit fallbacks.

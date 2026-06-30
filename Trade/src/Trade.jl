@@ -91,12 +91,6 @@ end
 # and small OHLCV gaps without underfetching the required continuity check horizon.
 const LIQUIDITY_LOOKBACK_MARGIN_MINUTES = 5
 
-function _setstrategyruntimefromconfig!(mc::AbstractDict, spec::TradingStrategy.StrategyConfig, source::AbstractString)
-    mc[:strategy_template] = deepcopy(spec)
-    mc[:strategy_source] = String(source)
-    return mc
-end
-
 function _portfoliototal(assets::AbstractDataFrame)::Float64
     return size(assets, 1) == 0 ? 0.0 : Float64(sum(assets[!, :usdtvalue]))
 end
@@ -260,7 +254,7 @@ mutable struct TradeCache
         cache.mc[:usenewtrade] = false # implementation switch between old and new trade! method
         cache.mc[:managed_close_orders] = Dict{String, Dict{Symbol, Any}}()  # per-base reconstructed/managed close orders
         cache.mc[:openorders_snapshot] = DataFrame()
-        _setstrategyruntimefromconfig!(cache.mc, TradingStrategy.StrategyConfig(), "default")
+        cache.mc[:strategy_runtime] = TradingStrategy.TsCache(classifier=cl, strategy=TradingStrategy.StrategyConfig(), source="default")
         cache.mc[:tradelog_portfolio_snapshot_mode] = :all  # :all, :session_start, :none
         cache.mc[:tradelog_portfolio_snapshot_written] = false
         cache.mc[:loop_state] = loop_idle
@@ -526,146 +520,8 @@ function _simulated_usdtmarketview(tc::TradeCache, datetime::DateTime, bases::Se
     return DataFrame(basecoin=basecoins, quotevolume24h=quotevolumes, pricechangepercent=pricechanges, lastprice=lastprices)
 end
 
-"""
-Return the canonical tradelog partition root for the currently routed spot-trading venue.
-
-The returned folder is scoped to the current environment, run mode, exchange,
-account alias, asset class, and instrument type so ownership reconstruction does
-not mix fills from different exchanges or market types.
-"""
-function _spot_tradelog_partition_root(cache::TradeCache)::String
-    exchange_name = Xch._routeexchange(cache.xc.routing, Xch.trade_exchange_spot, Xch.exchange(cache.xc))
-    account_alias = exchange_name
-    return joinpath(
-        TradeLog.auditroot(),
-        "environment=$(string(Symbol(EnvConfig.configmode)))",
-        "run_mode=$(Xch.tradelogrunmode(cache.xc))",
-        "exchange=$(exchange_name)",
-        "account=$(account_alias)",
-        "asset_class=$(String(Symbol(TradeLog.crypto)))",
-        "instrument_type=$(String(Symbol(TradeLog.spot_pair)))",
-    )
-end
-
-"""Return one tradelog payload field as a normalized string."""
-function _tradelogstring(event::AbstractDict, key::AbstractString)::String
-    value = get(event, key, "")
-    return (ismissing(value) || isnothing(value)) ? "" : String(value)
-end
-
-"""Return one tradelog payload field as `Float64`, defaulting to `0.0` when absent."""
-function _tradelogfloat(event::AbstractDict, key::AbstractString)::Float64
-    value = get(event, key, 0.0)
-    if ismissing(value) || isnothing(value)
-        return 0.0
-    elseif value isa Real
-        return Float64(value)
-    end
-    try
-        return parse(Float64, String(value))
-    catch
-        return 0.0
-    end
-end
-
-"""
-Accumulate one filled tradelog event into directional robot-owned exposure.
-
-- non-leveraged `Buy` increases long ownership and `Sell` decreases it
-- leveraged `Sell` increases short ownership and leveraged `Buy` decreases it
-"""
-function _apply_robotowned_fill!(owned::Dict{String, NamedTuple{(:longqty, :shortqty), Tuple{Float32, Float32}}}, base::AbstractString, side::AbstractString, leverage::Real, fillqty::Real)
-    fillqty <= 0 && return owned
-    current = get(owned, uppercase(String(base)), (longqty=0f0, shortqty=0f0))
-    longqty = Float32(current.longqty)
-    shortqty = Float32(current.shortqty)
-    qty = Float32(fillqty)
-    sidekey = lowercase(String(side))
-    if leverage > 0
-        if sidekey == "sell"
-            shortqty += qty
-        elseif sidekey == "buy"
-            shortqty = max(0f0, shortqty - qty)
-        end
-    else
-        if sidekey == "buy"
-            longqty += qty
-        elseif sidekey == "sell"
-            longqty = max(0f0, longqty - qty)
-        end
-    end
-    owned[uppercase(String(base))] = (longqty=longqty, shortqty=shortqty)
-    return owned
-end
-
-"""
-Reconstruct directional robot-owned quantities per base from tradelog fills.
-
-Only fills from the currently routed spot-trading tradelog partition are considered,
-which keeps ownership separated by exchange/account scope and prevents cross-venue
-mixing. Long and short quantities are tracked independently.
-"""
-function _robotownedqtymap(cache::TradeCache, bases)::Dict{String, NamedTuple{(:longqty, :shortqty), Tuple{Float32, Float32}}}
-    wanted = Set(uppercase.(String.(bases)))
-    owned = Dict{String, NamedTuple{(:longqty, :shortqty), Tuple{Float32, Float32}}}()
-    isempty(wanted) && return owned
-
-    partition_root = _spot_tradelog_partition_root(cache)
-    isdir(partition_root) || return owned
-
-    for (root, _, files) in walkdir(partition_root)
-        "events.jsonl" in files || continue
-        for event in TradeLog.readjsonlauditevents(joinpath(root, "events.jsonl"))
-            event_type = uppercase(_tradelogstring(event, "event_type"))
-            event_type in ["ORDER_PARTIAL_FILL", "ORDER_FILLED"] || continue
-            _tradelogstring(event, "routing_role") == String(Symbol(TradeLog.routing_trade_exchange_spot)) || continue
-
-            base = uppercase(_tradelogstring(event, "baseasset"))
-            if isempty(base)
-                pair = Xch.basequote(_tradelogstring(event, "symbol"))
-                base = isnothing(pair) ? "" : uppercase(String(pair.basecoin))
-            end
-            isempty(base) && continue
-            base in wanted || continue
-
-            side = _tradelogstring(event, "side")
-            fillqty = _tradelogfloat(event, "fill_base_qty")
-            leverage = _tradelogfloat(event, "leverage")
-            _apply_robotowned_fill!(owned, base, side, leverage, fillqty)
-        end
-    end
-    return owned
-end
-
-"""Ensure directional ownership columns exist in the current trade-selection DataFrame."""
-function _ensure_robotownership_columns!(tc::TradeCache)
-    if !hasproperty(tc.cfg, :robotownedlongqty)
-        tc.cfg[:, :robotownedlongqty] = fill(0f0, size(tc.cfg, 1))
-    end
-    if !hasproperty(tc.cfg, :robotownedshortqty)
-        tc.cfg[:, :robotownedshortqty] = fill(0f0, size(tc.cfg, 1))
-    end
-    return tc
-end
-
-"""Populate directional robot-owned quantities for the bases currently present in `tc.cfg`."""
-function _annotate_robotownership!(tc::TradeCache)
-    _ensure_robotownership_columns!(tc)
-    bases = String.(tc.cfg[!, :basecoin])
-    owned = _robotownedqtymap(tc, bases)
-    tc.cfg[:, :robotownedlongqty] = [get(owned, uppercase(String(base)), (longqty=0f0, shortqty=0f0)).longqty for base in bases]
-    tc.cfg[:, :robotownedshortqty] = [get(owned, uppercase(String(base)), (longqty=0f0, shortqty=0f0)).shortqty for base in bases]
-    return tc
-end
-
-"""Return a mask indicating which trade-selection rows have robot-owned exposure."""
-function _robotownedmask(cfg::AbstractDataFrame)
-    return (cfg[!, :robotownedlongqty] .> 0f0) .|| (cfg[!, :robotownedshortqty] .> 0f0)
-end
-
 """Synchronize `buyenabled` and `sellenabled` flags from the currently computed criteria columns."""
 function _sync_tradeflags!(tc::TradeCache; assetonly::Bool=false)
-    _ensure_robotownership_columns!(tc)
     if assetonly
         tc.cfg[:, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
         tc.cfg[:, :sellenabled] .= tc.cfg[!, :inportfolio]
@@ -674,15 +530,6 @@ function _sync_tradeflags!(tc::TradeCache; assetonly::Bool=false)
         tc.cfg[:, :sellenabled] .= tc.cfg[:, :buyenabled] .|| tc.cfg[!, :inportfolio]
     end
     return tc
-end
-
-"""Return one optional numeric trade-selection field from a `DataFrameRow`."""
-function _cfgfloat(row::DataFrameRow, field::Symbol, default::Float32=0f0)::Float32
-    if !hasproperty(row, field)
-        return default
-    end
-    value = getproperty(row, field)
-    return (ismissing(value) || isnothing(value)) ? default : Float32(value)
 end
 
 "Return one optional boolean trade-selection field from a `DataFrameRow`."
@@ -750,11 +597,6 @@ function _disablerestrictedbase!(cache::TradeCache, base::AbstractString, reason
     catch err
         (verbosity >= 1) && @warn "failed removing restricted base from exchange cache" base=base_upper error=sprint(showerror, err)
     end
-    try
-        TradingStrategy.dropbase!(_strategyruntime!(cache), base_upper)
-    catch err
-        (verbosity >= 1) && @warn "failed removing restricted base from TradingStrategy runtime" base=base_upper error=sprint(showerror, err)
-    end
     (verbosity >= 1) && @warn "removed restricted base from trading universe" base=base_upper reason=String(reason)
     return nothing
 end
@@ -792,7 +634,7 @@ end
 """
 Loads all USDT coins, checks liquidity volume criteria, removes risk coins.
 If isnothing(datetime) or datetime > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
-The resulting DataFrame table of tradable coins is stored.
+The resulting DataFrame table of tradable coins is stored, consisting of the union of buyenabled and sellenabled pairs.
 `assetonly` is an input parameter to limit coins for backtesting.
 """
 function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, assetonly=false, updatecache=false)
@@ -884,8 +726,6 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         tc.cfg[:, :continuousminvol] = Bool[]
         tc.cfg[:, :inportfolio] = Bool[]
         tc.cfg[:, :classifieraccepted] = Bool[]
-        tc.cfg[:, :robotownedlongqty] = Float32[]
-        tc.cfg[:, :robotownedshortqty] = Float32[]
         tc.cfg[:, :buyenabled] = Bool[]
         tc.cfg[:, :sellenabled] = Bool[]
         tc.cfg[:, :whitelisted] = Bool[]
@@ -899,12 +739,9 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in portfolioassetbaseset for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
-    tc.cfg[:, :robotownedlongqty] = fill(0f0, size(tc.cfg, 1))
-    tc.cfg[:, :robotownedshortqty] = fill(0f0, size(tc.cfg, 1))
     tc.cfg[:, :buyenabled] .= false
     tc.cfg[:, :sellenabled] .= false
     tc.cfg[:, :whitelisted] = [base in whitelistset for base in tc.cfg[!, :basecoin]]
-    _annotate_robotownership!(tc)
 
     # download latest OHLCV and classifier features
     tc.cfg = tc.cfg[tc.cfg[:, :minquotevol] .|| tc.cfg[:, :inportfolio], :]
@@ -986,29 +823,6 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 end
 
 "Adds usdtprice and usdtvalue added as well as the portfolio dataframe to trade config and returns trade config and portfolio as tuple"
-function addassetsconfig!(tc::TradeCache, assets=Xch.portfolio!(tc.xc))
-    sort!(assets, [:coin])  # for readability only
-
-    prev_inportfolio = hasproperty(tc.cfg, :inportfolio) ? Vector{Bool}(tc.cfg[!, :inportfolio]) : fill(false, size(tc.cfg, 1))
-    tc.cfg = leftjoin(tc.cfg, assets, on = :basecoin => :coin)
-    tc.cfg = tc.cfg[!, Not([:borrowed, :accruedinterest, :locked, :free])]
-    joined_inportfolio = .!ismissing.(tc.cfg[:, :usdtvalue])
-    tc.cfg[:, :inportfolio] = prev_inportfolio .|| joined_inportfolio
-    _annotate_robotownership!(tc)
-    _sync_tradeflags!(tc)
-    sort!(tc.cfg, [:basecoin])  # for readability only
-    sort!(tc.cfg, rev=true, [:buyenabled])  # for readability only
-    return tc.cfg, assets
-end
-
-"Returns the current TradeConfig dataframe with usdtprice and usdtvalue added as well as the portfolio dataframe as a tuple."
-function assetsconfig!(tc::TradeCache, datetime=nothing)
-    dt = isnothing(datetime) ? Dates.now(UTC) : floor(datetime, Minute(1))
-    assets = Xch.portfolio!(tc.xc)
-    tradeselection!(tc, assets[!, :coin]; datetime=dt)
-    return addassetsconfig!(tc)
-end
-
 significantsellpricechange(tc, orderprice) = abs(tc.sellprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.2
 significantbuypricechange(tc, orderprice) = abs(tc.buyprice - orderprice) / abs(tc.sellprice - tc.buyprice) > 0.2
 
@@ -1026,110 +840,9 @@ mutable struct Investment  #TODO bookkeeping for consistency checks
     configid
 end
 
-function dbgrow(cache::TradeCache, ta)
-    return (
-        taconfigid = ta.configid,
-        tatradelabel = ta.tradelabel,
-        tabase = ta.base,
-        tahourlygain = ta.hourlygain,
-        baseqty = missing,
-        minimumbasequantity = missing,
-        freebase = missing,
-        totalborrowedusdt = missing,
-        freeusdt = missing,
-        quoteqty = missing,
-    )
-end
-
-"Adds a dataframe trade advice row "
-function _traderow!(df, cache; basecoin="XXX", tradelabel=allclose, hourlygain=0f0, probability=1f0, relativeamount=1f0, investmentid="XXX", price=0f0, datetime=cache.xc.currentdt, classifier=cache.cl, configid=0, oid="", enforced="n/a")
-    hourlygain = min(hourlygain, cache.mc[:hourlygainlimit])
-    push!(df, (basecoin=basecoin, tradelabel=tradelabel, hourlygain=hourlygain, probability=probability, relativeamount=relativeamount, investmentid=investmentid, price=price, datetime=datetime, classifier=classifier, configid=configid, oid=oid, enforced=enforced))
-    return last(df)
-end
-
-"Adds a dataframe trade advice row based ona trade advice input"
-_tradeadvice2df!(df, cache::TradeCache, ta) = _traderow!(df, cache, basecoin=ta.base, tradelabel=ta.tradelabel, hourlygain=ta.hourlygain, probability=ta.probability, relativeamount=ta.relativeamount, investmentid=ta.investmentid, price=ta.price, datetime=ta.datetime, classifier=ta.classifier, configid=ta.configid)
-
-"Adds enforced trade advics according to black lists and enforced trades constraints"
-function _forcetradelabel!(df::DataFrame, cache::TradeCache, coins, tradelabel, hourlygain, enforced)
-    for base in coins
-        rowix = findfirst(x -> x == base, df[!, :basecoin])
-        if isnothing(rowix)
-            if base in Xch.bases(cache.xc)
-                _traderow!(df, cache, basecoin=base, tradelabel=tradelabel, probability=1f0, relativeamount=1f0, hourlygain=hourlygain, enforced=enforced)
-            end
-        else
-            df[rowix, :tradelabel] = tradelabel
-            df[rowix, :investmentid] = trade_enforced
-        end
-    end
-end
-
 _isclosetrade(tl) = tl in [shortclose, shortstrongclose, allclose, longstrongclose, longclose]
 _isopentrade(tl) = tl in [shortstrongopen, shortopen, longopen, longstrongopen]
 _isopenshorttrade(tl) = tl in [shortstrongopen, shortopen]
-
-"""
-Creates dataframe from trade advice vector plus corresponding asset info and adds/changes rows to enforce trades,  
-i.e. add trades for enforced long open and short open and long/short exits, removes black listed coins
-"""
-function policyenforcement(cache::TradeCache, tavec::Vector{Classify.TradeAdvice}, assets::AbstractDataFrame)
-    df = DataFrame()
-    _traderow!(df, cache)  # create columns
-    pop!(df)  # remove dummy row
-    if cache.mc[:trademode] == quickexit
-        for base in assets[!, :coin]
-            uppercase(String(base)) == uppercase(EnvConfig.pairquote) && continue
-            _traderow!(df, cache, basecoin=base, tradelabel=allclose, enforced="quickexit")
-        end
-    else # no quick exit
-        # don't check against other trade modes to enable debugging of tradeamount()
-        for ta in tavec
-            if !(ta.base in Xch.baseignore)
-                #TODO baseignore -> invalid symbol
-                #TODO noinvest => buyenabled = false
-                rowix = findfirst(row -> row.basecoin == ta.base, cache.cfg)
-                if !isnothing(rowix) 
-                    if cache.cfg[rowix, :sellenabled] && _isclosetrade(ta.tradelabel)
-                        _tradeadvice2df!(df, cache, ta)
-                    elseif cache.cfg[rowix, :buyenabled] && _isopentrade(ta.tradelabel)
-                        _tradeadvice2df!(df, cache, ta)
-                    # else allhold tradeadvices are skipped
-                    end
-                end
-            end
-        end
-        _forcetradelabel!(df, cache, cache.mc[:longopencoins], longstrongopen, 1f0, "longopen")
-        _forcetradelabel!(df, cache, cache.mc[:shortopencoins], shortstrongopen, -1f0, "shortopen")
-        _forcetradelabel!(df, cache, cache.mc[:exitcoins], allclose, 0f0, "exit")
-    end
-    if size(df, 1) > 0
-        leftjoin!(df, assets, on = :basecoin => :coin)
-    end
-    return df
-end
-
-"Distributes the available quote assets across all open trades and returns result in quoteamount"
-function _tradeamounts!(tadf)
-    tadf.quoteamount[_isclosetrade(tadf.tradelabel)] .= abs.(tadf.free .* tadf.usdtprice) # add close amounts (which are not constrained by free quote)
-
-    freequote = sum(tadf[tadf[!, :basecoin] .== EnvConfig.pairquote, :free])
-    maxassetquote = sum(tadf[!, :usdtvalue]) * cache.mc[:maxassetfraction]
-    opentradeweights = abs(tadf[!, :hourlygain] .* tadf[!, :probability] .* tadf[!, :relativeamount])
-    opentradeweights = opentradeweights ./ sum(opentradeweights)  # normalize weights that they add up to 1
-    tadf.quoteamount[_isopentrade(tadf.tradelabel)] .= opentradeweights .* freequote   # open trades have positive (long) or negative (short) amount, close and hold trades have zero amount
-    tadf.quoteamount[_isopentrade(tadf.tradelabel)] .= min.(tadf[!, :quoteamount], maxassetquote)  # limit max amount of trade
-    tadf.quoteamount[_isopentrade(tadf.tradelabel)] .= tadf[!, :quoteamount] .- abs.(tadf[!, :free]) .* tadf[!, :usdtprice]  # deduct already opened amount
-    reduceamount = _isopentrade(tadf.tradelabel) .&& tadf[!, :quoteamount] .< (-0.1 .* abs.(tadf[!, :free]) .* tadf[!, :usdtprice])  # reduce if current open position is >10% larger than target
-    if any(reduceamount)  # instead of open -> change to close with the amount that is above target volume
-        tadf.tradelabel[reduceamount] .= allclose
-        tadf.quoteamount[reduceamount] .= abs.(trade.quoteamount)
-    end
-    tadf.quoteamount[_isopentrade(tadf.tradelabel) .&& (tadf[!, :quoteamount] .< 0f0)] .= 0f0  # those who have a reduce amount less than 10% will be ignored
-
-    subset!(tadf, [:quoteamount, :minquoteqty] => (amt, minq) -> abs.(amt) .> minq) # remove alltrades below level threshold
-end
 
 _traderank(tl) = _isclosetrade(tl) ? 1 : _isopentrade(tl) ? 2 : 3
 
@@ -1143,7 +856,7 @@ function _withtradelogcontext(f::Function, cache::TradeCache, ta)
     catch
         missing
     end
-    strategy_ref = string(get(cache.mc, :strategy_source, "default"))
+    strategy_ref = _strategyruntime(cache).source
     Xch.settradelogcontext!(
         cache.xc;
         strategy_engine="tradingstrategy",
@@ -1158,103 +871,8 @@ function _withtradelogcontext(f::Function, cache::TradeCache, ta)
     end
 end
 
-"""
-Provides the amount that should be used for the tradeadvice including all considerations in a dataframe.
-
-  - take out all not tradable coins from the trade advice set
-    - quotecoins
-    - black listed coins
-  - calculate the overall amount that can be spend now based on free available portfolio budget
-  - sort remaining trade advices according to expected hourly gain
-  - determine overall investment for that basecoin 
-    - it should not dominate due to risk and hold back a head room part (e.g. 5%) of free usdt
-    - consider the hourly gain when calculating the basecoin specific amount
-    - reduce investments according to overall investment amount if delta is more than 10% (hysteresis) if advice is buy or hold
-  - close investments if 
-    - hourly gain of current investments are x% (e.g. 50%) less gain than best investments and those invested coins above that limit are not at dominating limit
-    - coin is above dominating investment limit
-    - quickexit for specific or all coins
-  - split investment in chunks of reasoable size
-  - if one chunk is smaller that minimum limits of exchange then merge them if possible
-  - too small amounts cannot be traded if they are below exchange limits
-  - insuffient free coins will also prevent trading
-  - margin trades should only be done if borrowed amount is covered by free quotecoin
-  - same amounts are applicable for margin and spot trading, i.e. buy amount also applies to a margin sell without basecoin assets (short buy)
-
-  Returned dataframe should include (all amounts in usdt to better compare magnitudes)
-
-  - basecoin, currentcloseprice, totalwallet, totalbasecoin, minquoteqty, minbaseqty, maxtotalbasecoin, maxbuyamount, maxsellamount, targetchunksize, buyamount, sellamount
-
-  ## Short trades:
-
-  - marginfree and marginlocked can be negative
-  - the total absolute value is sum(abs.(marginfree, marginlocked), free, locked, - borrowed per coin)
-  - there should be no case of free / locked positive and marginfree / marginlocked negative because there are balanced with each other -> save to add all absolute amounts by abs.(df)
-"""
-function tradeamount(cache::TradeCache, tavec::Vector{Classify.TradeAdvice}, assets::AbstractDataFrame) #TODO consider negative short amounts
-    tadf = policyenforcement(cache, tavec, assets) # returns a dataframe with tradeadvice per line plus corresponding asset info
-    if sze(tadf, 1) > 0
-        tadf.minquoteqty = [minimumquotequantity(xc, base) for base in tadf[!, :basecoin]]
-        _tradeamounts!(tadf)
-        sort!(tadf, [order(:tradelabel, by=_traderank), order(:hourlygain, rev=true)])  # order such that close before open and high before low hourlygain
-        ta.basetradeqty .=0f0
-        ta.vol1hmedian .= 0f0
-        ta.baseamount .= 0f0
-        for tarow in tadf
-            ohlcv = Xch.ohlcv(cache.xc, base)
-            price = currentprice(ohlcv)
-            tarow.baseamount = tarow.quoteamount / price
-        
-            tarow.basevol1hmedian = Ohlcv.dataframe(ohlcv)[Ohlcv.rowix(ohlcv, cache.xc.currentdt-Hour(1)):Ohlcv.rowix(ohlcv, cache.xc.currentdt), :basevolume]
-            tarow.basetradeqty = max(tarow.baseamount, median(tarow.basevol1hmedian)/2) # don't trade more than 50% of the houry minute median
-        end
-    end
-    return tadf
-end
-
-
-"Iterate through all orders and adjust or create new order. All open orders should be cancelled before."
-function trade!(cache::TradeCache, tadf::DataFrameRow)
-    for ta in eachrow(tadf)
-        if (ta.tradelabel in [longopen, longstrongopen]) && (cache.mc[:trademode] == buysell)
-            oid = (cache.mc[:trademode] == notrade) ? "BuySpotSim" : Xch.createbuyorder(cache.xc, ta.basecoin; limitprice=nothing, basequantity=ta.basetradeqty, maker=true, marginleverage=0)
-            if !isnothing(oid)
-                ta.oid = oid
-            else
-                ta.oid = "failed"
-            end
-        elseif (ta.tradelabel in [longstrongclose, longclose]) && (cache.mc[:trademode] in [buysell, closeonly, quickexit])
-            oid = (cache.mc[:trademode] == notrade) ? "SellSpotSim" : Xch.createsellorder(cache.xc, ta.basecoin; limitprice=nothing, basequantity=basequta.basetradeqtyantity, maker=true, marginleverage=0)
-            if !isnothing(oid)
-                ta.oid = oid
-            else
-                ta.oid = "failed"
-            end
-        elseif (ta.tradelabel in [shortclose, shortstrongclose]) && (cache.mc[:trademode] in [buysell, closeonly, quickexit]) && basecfg.sellenabled
-            oid = (cache.mc[:trademode] == notrade) ? "BuyMarginSim" : Xch.createbuyorder(cache.xc, ta.basecoin; limitprice=nothing, basequantity=ta.basetradeqty, maker=true, marginleverage=2, reduceonly=true)
-            if !isnothing(oid)
-                ta.oid = oid
-            else
-                ta.oid = "failed"
-            end
-        elseif (ta.tradelabel in [shortstrongopen, shortopen]) && (cache.mc[:trademode] == buysell)
-            oid = (cache.mc[:trademode] == notrade) ? "SellMarginSim" : Xch.createsellorder(cache.xc, ta.basecoin; limitprice=nothing, basequantity=ta.basetradeqty, maker=true, marginleverage=2)
-            if !isnothing(oid)
-                ta.oid = oid
-            else
-                ta.oid = "failed"
-            end
-        end
-        push!(cache.dbgdf, ta, promote=true)
-    end
-end
-
 function _requested_limitprice(cache::TradeCache, ta, fallback_price::Real)
     return isnothing(ta.price) ? _orderlimitprice(cache, fallback_price) : Float32(ta.price)
-end
-
-function _order_amend_price_rel_threshold(cache::TradeCache)::Float32
-    return Float32(get(cache.mc, :order_amend_price_rel_threshold, 1f-3))
 end
 
 function _material_order_change(old_price, new_price, old_qty::Real, new_qty::Real; price_reltol::Real=1f-3, qty_reltol::Real=1f-3)::Bool
@@ -1603,11 +1221,7 @@ end
 
 # ── Strategy config ─────────────────────────────────────────────────────────
 
-function _validatestrategyconfig!(mc::AbstractDict)
-    @assert haskey(mc, :strategy_template) "strategy_template is missing in TradeCache.mc"
-    spec = mc[:strategy_template]
-    @assert spec isa TradingStrategy.StrategyConfig "strategy_template must be TradingStrategy.StrategyConfig, got $(typeof(spec))"
-
+function _validatestrategyconfig!(spec::TradingStrategy.StrategyConfig)
     openthreshold = Float32(spec.openthreshold)
     closethreshold = Float32(spec.closethreshold)
     buygain = Float32(spec.buygain)
@@ -1621,18 +1235,18 @@ function _validatestrategyconfig!(mc::AbstractDict)
     @assert 0f0 <= sellgain <= 1f0 "strategy_sellgain must be in [0, 1], got $(sellgain)"
     @assert 0f0 <= limitreduction <= 1f0 "strategy_limitreduction must be in [0, 1], got $(limitreduction)"
     @assert maxwindow > 0 "strategy_maxwindow must be > 0, got $(maxwindow)"
-    return mc
+    return spec
 end
 
-"Validate strategy runtime parameters stored in `TradeCache.mc`."
+"Validate strategy runtime parameters stored in `TradeCache.mc[:strategy_runtime]`."
 function _validatestrategyconfig!(cache::TradeCache)
-    _validatestrategyconfig!(cache.mc)
+    _validatestrategyconfig!(_strategyruntime(cache).strategy_config)
     return cache
 end
 
 "Apply strategy runtime settings from a `TradingStrategy.StrategyConfig` and reset derived per-base state."
 function apply_tradingstrategy!(mc::AbstractDict, spec::TradingStrategy.StrategyConfig; source::AbstractString="manual")
-    _setstrategyruntimefromconfig!(mc, spec, source)
+    _validatestrategyconfig!(spec)
 
     managed_close_orders = get!(mc, :managed_close_orders, Dict{String, Dict{Symbol, Any}}())
     empty!(managed_close_orders)
@@ -1640,8 +1254,10 @@ function apply_tradingstrategy!(mc::AbstractDict, spec::TradingStrategy.Strategy
     if haskey(mc, :strategy_runtime) && (mc[:strategy_runtime] isa TradingStrategy.TsCache)
         rt = mc[:strategy_runtime]
         TradingStrategy.apply_strategy!(rt, spec; source=source)
+    else
+        mc[:strategy_runtime] = TradingStrategy.TsCache(strategy=spec, source=source)
     end
-    return _validatestrategyconfig!(mc)
+    return mc
 end
 
 function apply_tradingstrategy!(cache::TradeCache, spec::TradingStrategy.StrategyConfig; source::AbstractString="manual")
@@ -1649,31 +1265,27 @@ function apply_tradingstrategy!(cache::TradeCache, spec::TradingStrategy.Strateg
     return cache
 end
 
-function _assets_base_mask(assets::AbstractDataFrame, base::AbstractString)
-    hasproperty(assets, :coin) || return falses(size(assets, 1))
-    basekey = uppercase(String(base))
-    return uppercase.(String.(assets[!, :coin])) .== basekey
-end
-
-function _asset_price_hint(assets::AbstractDataFrame, mask)::Float32
-    if !hasproperty(assets, :usdtprice)
-        return 0f0
-    end
-    vals = Float32.(assets[mask, :usdtprice])
-    vals = vals[vals .> 0f0]
-    return isempty(vals) ? 0f0 : vals[1]
-end
-
-function _strategyruntime!(cache::TradeCache)::TradingStrategy.TsCache
-    if !haskey(cache.mc, :strategy_runtime)
-        spec = get(cache.mc, :strategy_template, TradingStrategy.StrategyConfig())
+function _strategyruntime(cache::TradeCache)::TradingStrategy.TsCache
+    if !haskey(cache.mc, :strategy_runtime) || !(cache.mc[:strategy_runtime] isa TradingStrategy.TsCache)
         cache.mc[:strategy_runtime] = TradingStrategy.TsCache(
             classifier=cache.cl,
-            strategy=spec,
-            source=string(get(cache.mc, :strategy_source, "default")),
+            strategy=TradingStrategy.StrategyConfig(),
+            source="default",
         )
     end
     return cache.mc[:strategy_runtime]
+end
+
+function _prepare_strategy_runtime_for_cfg!(cache::TradeCache, datetime::DateTime; updatecache::Bool=false)::Nothing
+    hasproperty(cache.cfg, :basecoin) || return nothing
+    size(cache.cfg, 1) == 0 && return nothing
+
+    rt = _strategyruntime(cache)
+    bases = String.(cache.cfg[!, :basecoin])
+    isempty(bases) && return nothing
+
+    TradingStrategy.preparebases!(rt, cache.xc, bases; datetime=datetime, updatecache=updatecache)
+    return nothing
 end
 
 function _managedclosestate(cache::TradeCache)::Dict{String, Dict{Symbol, Any}}
@@ -1762,8 +1374,6 @@ function _basecfg_for_close(cache::TradeCache, base::AbstractString, sellenabled
         minquotevol=[false],
         continuousminvol=[false],
         whitelisted=[false],
-        robotownedlongqty=[0f0],
-        robotownedshortqty=[0f0],
         datetime=[isnothing(cache.xc.currentdt) ? Dates.now() : cache.xc.currentdt],
     )
     return fallback[1, :]
@@ -1850,29 +1460,6 @@ function _reconstruct_managed_close_orders!(cache::TradeCache, assets::AbstractD
         )
     end
     return nothing
-end
-
-function _strategy_sell_limitprice(cache::TradeCache, base::AbstractString, tradelabel::Targets.TradeLabel)
-    rt = _strategyruntime!(cache)
-    dt = isnothing(cache.xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : cache.xc.currentdt
-    rowmeta = TradingStrategy.gettradesrow!(rt, cache.xc, base, dt)
-    isnothing(rowmeta) && return nothing
-
-    tdf = rowmeta.tradesdf
-    rowix = Int(rowmeta.rowix)
-    col = if tradelabel in [longclose, longstrongclose]
-        :longcloselimit
-    elseif tradelabel in [shortclose, shortstrongclose]
-        :shortcloselimit
-    else
-        return nothing
-    end
-    value = tdf[rowix, col]
-    if ismissing(value) || isnothing(value)
-        return nothing
-    end
-    valuef = Float32(value)
-    return valuef > 0f0 ? valuef : nothing
 end
 
 function _cancel_unmanaged_open_orders!(cache::TradeCache, oo::AbstractDataFrame)
@@ -1978,25 +1565,17 @@ function _advice_price_from_row(tdf::AbstractDataFrame, rowix::Integer, label::T
     return nothing
 end
 
-function _collect_strategy_advices(cache::TradeCache, assets::AbstractDataFrame)
-    _ = assets
+"Collects the TradingStrategy advice for all bases in the current TradeCache configuration and returns a vector of trade advice tuples."
+function _collect_strategy_advices(cache::TradeCache)
     dt = cache.xc.currentdt
     isnothing(dt) && return Any[]
 
     bases = hasproperty(cache.cfg, :basecoin) ? String.(cache.cfg[!, :basecoin]) : String[]
     isempty(bases) && return Any[]
 
-    rt = _strategyruntime!(cache)
-    spec = get(cache.mc, :strategy_template, TradingStrategy.StrategyConfig())
-    source = string(get(cache.mc, :strategy_source, "default"))
-    if !isequal(rt.strategy_template, spec) || (rt.source != source)
-        TradingStrategy.apply_strategy!(rt, spec; source=source)
-    end
+    rt = _strategyruntime(cache)
 
-    history_startdt = dt - Minute(max(1, TradingStrategy.requiredhistoryminutes(rt)))
-    TradingStrategy.preparebases!(rt, cache.xc, bases; history_startdt=history_startdt, datetime=dt, updatecache=false)
-
-    rows = TradingStrategy.gettradesrows!(rt, cache.xc, bases, dt)
+    rows = TradingStrategy.gettradesrows!(rt, cache.xc, bases, dt) # get advoices for all bases in the current cfg of teh current sample time
     tradeadvices = Any[]
     for rowmeta in rows
         tdf = rowmeta.tradesdf
@@ -2051,6 +1630,7 @@ function _maybe_refresh_tradeselection!(cache::TradeCache; assets::Union{Nothing
     (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
     tradeselection!(cache, assets_df[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
     cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
+    _prepare_strategy_runtime_for_cfg!(cache, cache.xc.currentdt; updatecache=true)
     _mark_tradeselection_refreshed!(cache)
     (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
     return true
@@ -2197,7 +1777,7 @@ function _tradestep!(cache::TradeCache)
     _reconstruct_managed_close_orders!(cache, assets, oo)
     _cancel_unmanaged_open_orders!(cache, oo)
     _maybe_writeportfoliosnapshot!(cache, assets)
-    tradeadvices = _collect_strategy_advices(cache, assets)
+    tradeadvices = _collect_strategy_advices(cache) # advice from TradingStrategy for all bases in runtime cfg
     _ensure_managed_close_orders!(cache, assets, tradeadvices)
     if cache.mc[:usenewtrade]
     else # legacy trade!()
@@ -2266,6 +1846,7 @@ function _ensure_tradeloop_initialized!(cache::TradeCache)
         (verbosity >= 2) && print("\r$(tradetime(cache)): start calculating trading strategy on the fly")
         tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
         cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
+        _prepare_strategy_runtime_for_cfg!(cache, cache.xc.startdt; updatecache=false)
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
 end

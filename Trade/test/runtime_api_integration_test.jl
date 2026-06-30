@@ -1,3 +1,5 @@
+    @test !isnothing(Trade._strategyruntime(tc))
+    @test mc[:strategy_runtime].strategy_config == gs
 using Test
 using Dates
 using DataFrames
@@ -41,27 +43,37 @@ function TradingStrategy.gettradesrows!(
     return out
 end
 
-function TradingStrategy.requiredhistoryminutes(rt::TradingStrategy.TsCache)::Int
-    return Int(get(rt.configuration, :test_history_minutes, 0))
-end
-
-function TradingStrategy.dropbase!(rt::TradingStrategy.TsCache, base::AbstractString)::Nothing
-    dropped = get!(rt.configuration, :test_dropped, String[])
-    push!(dropped, uppercase(String(base)))
+function TradingStrategy.preparebases!(
+    rt::TradingStrategy.TsCache,
+    xc::Xch.XchCache,
+    bases::AbstractVector{<:AbstractString};
+    datetime::DateTime,
+    updatecache::Bool=false,
+)::Nothing
+    _ = xc
+    calls = get!(rt.configuration, :test_prepare_calls, NamedTuple[])
+    push!(calls, (
+        bases=String[uppercase(String(base)) for base in bases],
+        datetime=datetime,
+        updatecache=Bool(updatecache),
+    ))
     return nothing
 end
 
-@testset "Restricted base removal delegates to runtime" begin
+@testset "Restricted base removal stays outside runtime until prepare" begin
     EnvConfig.init(EnvConfig.test)
 
     tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    rt.accepted = Set(["BTC", "ETH"])
     tc.mc[:strategy_runtime] = rt
 
     Trade._disablerestrictedbase!(tc, "BTC", "test")
-    @test "BTC" in rt.configuration[:test_dropped]
+    @test tc.mc[:restrictedcoins] == ["BTC"]
+    @test tc.cfg[!, :basecoin] == ["ETH"]
+    @test "BTC" in TradingStrategy.acceptedbases(rt)
 end
 
 @testset "Runtime API advice path" begin
@@ -89,20 +101,9 @@ end
                 configid=42,
             ),
         ]
-    rt.configuration[:test_history_minutes] = 2000
-
     tc.mc[:strategy_runtime] = rt
 
-    assets = DataFrame(
-        coin=["BTC", EnvConfig.pairquote],
-        free=Float32[0.5f0, 1000f0],
-        locked=Float32[0f0, 0f0],
-        borrowed=Float32[0.2f0, 0f0],
-        usdtprice=Float32[100f0, 1f0],
-        usdtvalue=Float32[50f0, 1000f0],
-    )
-
-    advices = Trade._collect_strategy_advices(tc, assets)
+    advices = Trade._collect_strategy_advices(tc)
     labels = Set(ta.tradelabel for ta in advices)
     advice_by_label = Dict(ta.tradelabel => ta for ta in advices)
 
@@ -115,19 +116,36 @@ end
     @test advice_by_label[Targets.longclose].relativeamount == 1f0
     @test advice_by_label[Targets.longclose].price == 110f0
 
-    recon = rt.configuration[:test_reconciliation_by_base]["BTC"]
-    @test recon.has_long_open
-    @test recon.has_short_open
-    @test recon.long_avg_entry == 100f0
-    @test recon.short_avg_entry == 100f0
-    @test recon.long_open_ix == 0
-    @test recon.short_open_ix == 0
+    @test isempty(rt.configuration[:test_reconciliation_by_base])
+    @test !haskey(rt.configuration, :test_prepare_calls)
 
     histmins = Trade._tradeselection_history_minutes(tc)
     @test histmins >= 2001
 end
 
-@testset "Apply trading strategy stores only canonical template" begin
+@testset "Runtime preparation follows selected cfg lifecycle" begin
+    EnvConfig.init(EnvConfig.test)
+
+    xc = Xch.XchCache()
+    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
+
+    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    tc.mc[:strategy_runtime] = rt
+
+    dt = DateTime("2026-05-30T12:34:00")
+    Trade._prepare_strategy_runtime_for_cfg!(tc, dt; updatecache=true)
+
+    @test haskey(rt.configuration, :test_prepare_calls)
+    @test length(rt.configuration[:test_prepare_calls]) == 1
+
+    preparecall = only(rt.configuration[:test_prepare_calls])
+    @test preparecall.bases == ["BTC", "ETH"]
+    @test preparecall.datetime == dt
+    @test preparecall.updatecache == true
+end
+
+@testset "Apply trading strategy stores runtime only" begin
     EnvConfig.init(EnvConfig.test)
 
     mc = Dict{Symbol, Any}()
@@ -144,9 +162,11 @@ end
 
     Trade.apply_tradingstrategy!(mc, gs; source="test")
 
-    @test mc[:strategy_template] isa TradingStrategy.StrategyConfig
-    @test mc[:strategy_algorithm] == TradingStrategy.gain_limit_reversal!
-    @test mc[:strategy_source] == "test"
+    @test mc[:strategy_runtime] isa TradingStrategy.TsCache
+    @test mc[:strategy_runtime].strategy_config == gs
+    @test mc[:strategy_runtime].source == "test"
+    @test !haskey(mc, :strategy_template)
+    @test !haskey(mc, :strategy_source)
     @test !haskey(mc, :strategy_openthreshold)
     @test !haskey(mc, :strategy_closethreshold)
     @test !haskey(mc, :strategy_buygain)

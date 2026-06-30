@@ -287,7 +287,7 @@ mutable struct TsCache
     pairs::Dict{String, TsTp}
     classifier_gate_state::Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}
     accepted::Set{String}
-    strategy_template::Any
+    strategy_config::Any
     source::String
 end
 
@@ -311,7 +311,7 @@ function TsCache(; configuration::Dict{Symbol, Any}=Dict{Symbol, Any}(), classif
     else
         StrategyConfig()
     end
-    resolved_template = raw_template isa StrategyConfig ? deepcopy(raw_template) : throw(ArgumentError("strategy template must be TradingStrategy.StrategyConfig, got $(typeof(raw_template))"))
+    resolved_template = raw_template isa StrategyConfig ? raw_template : throw(ArgumentError("strategy template must be TradingStrategy.StrategyConfig, got $(typeof(raw_template))"))
     return TsCache(configuration, resolved_classifier, Dict{String, TsTp}(), Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}(), Set{String}(), resolved_template, String(source))
 end
 
@@ -411,15 +411,6 @@ function _normalizereconciliationinput(reconciliation)
     )
 end
 
-"Return the minimum history window required by the TsCache classifier."
-function requiredhistoryminutes(rt::TsCache)::Int
-    try
-        return max(0, Int(Classify.requiredminutes(rt.classifier)))
-    catch
-        return 0
-    end
-end
-
 acceptedbases(rt::TsCache)::Set{String} = copy(rt.accepted)
 
 "Drop one base from TsCache, including classifier and cached pair state."
@@ -449,7 +440,7 @@ end
 
 "Apply a strategy-spec template to TsCache and clear derived cached state."
 function apply_strategy!(rt::TsCache, strategy::StrategyConfig; source::AbstractString="manual")::Nothing
-    rt.strategy_template = deepcopy(strategy)
+    rt.strategy_config = strategy
     rt.source = String(source)
     empty!(rt.pairs)
     empty!(rt.classifier_gate_state)
@@ -514,8 +505,7 @@ function _lastopentrade_dt(tradesdf::AbstractDataFrame)::Union{Nothing, DateTime
 end
 
 "Prepare TsCache for requested bases using available OHLCV data and update accepted set."
-function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:AbstractString}; history_startdt::DateTime, datetime::DateTime, updatecache::Bool=false)::Nothing
-    _ = history_startdt
+function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:AbstractString}; datetime::DateTime, updatecache::Bool=false)::Nothing
     _ = datetime
     wanted = Set{String}(uppercase.(String.(bases)))
 
@@ -553,8 +543,14 @@ function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:Ab
     return nothing
 end
 
-"Update one base row in the Xch-owned trades dataframe using TsCache runtime state."
-function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, datetime::DateTime; reconciliation=nothing)::Union{Nothing, NamedTuple}
+"""
+Return cached or freshly computed classifier advice together with the current bar context.
+
+This is the read-oriented phase of live runtime processing. It resolves the
+current OHLCV row, applies classifier gating, and returns the advice payload
+needed by the row-application phase.
+"""
+function _classify_base_advice!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, datetime::DateTime)::Union{Nothing, NamedTuple}
     basekey = uppercase(String(base))
     if !haskey(xc.bases, basekey)
         (EnvConfig.verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping gettradesrow!" base=basekey
@@ -562,7 +558,7 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
     end
 
     ohlcv = Xch.ohlcv(xc, basekey)
-    spec = rt.strategy_template
+    spec = rt.strategy_config
     gate = _runtimegatestate!(rt, basekey)
     tdf = Xch.trades(xc, basekey, EnvConfig.pairquote)
     last_open_dt = _lastopentrade_dt(tdf)
@@ -572,19 +568,45 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
     @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
     closeprice = Float32(odf[rowix, :close])
 
-    advice = nothing
-    if _should_skip_classifier(spec, gate, datetime, closeprice, last_open_dt)
-        advice = gate.last_advice
+    advice = if _should_skip_classifier(spec, gate, datetime, closeprice, last_open_dt)
+        gate.last_advice
     else
-        advice = Classify.advice(rt.classifier, basekey, datetime, investment=nothing)
-        if !isnothing(advice)
-            _set_runtimegatestate!(rt, basekey; last_advice=advice, last_classify_close=closeprice)
+        fresh = Classify.advice(rt.classifier, basekey, datetime, investment=nothing)
+        if !isnothing(fresh)
+            _set_runtimegatestate!(rt, basekey; last_advice=fresh, last_classify_close=closeprice)
         end
+        fresh
     end
 
     isnothing(advice) && return nothing
+    return (
+        base=basekey,
+        datetime=datetime,
+        ohlcv=ohlcv,
+        closeprice=closeprice,
+        advice=advice,
+        spec=spec,
+    )
+end
+
+"""
+Apply one classifier advice payload to the Xch-owned trades row and return row metadata.
+
+This is the write-oriented phase of live runtime processing. It mutates the
+pair Trades DataFrame through the configured strategy algorithm and enriches the
+current row with reconciliation state when present.
+"""
+function _apply_base_advice_row!(rt::TsCache, xc::Xch.XchCache, advicectx::NamedTuple; reconciliation=nothing)::NamedTuple
+    basekey = String(advicectx.base)
+    datetime = advicectx.datetime
+    ohlcv = advicectx.ohlcv
+    closeprice = Float32(advicectx.closeprice)
+    advice = advicectx.advice
+    spec = advicectx.spec
 
     syncpairtrades!(rt, xc, basekey, EnvConfig.pairquote; datetime=datetime)
+    odf = Ohlcv.dataframe(ohlcv)
+    rowix = ohlcv.ix
     opentime = odf[rowix, :opentime]
     row = Xch.ensuretradesrow!(xc, basekey, EnvConfig.pairquote, opentime)
     tdf = row.tradesdf
@@ -638,6 +660,13 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
         configid=cfgid,
         source=:tradingstrategy,
     )
+end
+
+"Update one base row in the Xch-owned trades dataframe using TsCache runtime state."
+function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, datetime::DateTime; reconciliation=nothing)::Union{Nothing, NamedTuple}
+    advicectx = _classify_base_advice!(rt, xc, base, datetime)
+    isnothing(advicectx) && return nothing
+    return _apply_base_advice_row!(rt, xc, advicectx; reconciliation=reconciliation)
 end
 
 "Update requested bases in Xch-owned trades dataframes using TsCache runtime state."
@@ -963,28 +992,59 @@ function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, 
     return tp
 end
 
-"""
-Phase 2 gain evaluation path using `TsCache` and Xch pair-scoped Trades DataFrames.
-
-This keeps `Xch` as owner of mutable pair tables and materializes gains directly
-from the Trades DataFrame row-state (tradelabel and limit prices) without fallback
-to legacy lane-state computation.
-"""
-function getgains(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector, forcegain::Bool;
-    strategy::StrategyConfig,
-    lastix::Integer=lastindex(scores),
-    openthreshold=0.6f0,
-    closethreshold=0.1f0,
+"""Prepare one replay pair-scoped Trades DataFrame from prediction inputs."""
+function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector;
     quotecoin::AbstractString=EnvConfig.pairquote,
     metadata::AbstractDict{Symbol, Any}=Dict{Symbol, Any}(),
     datetime::Union{Nothing, DateTime}=nothing,
-)
-    tp = _synctradesframe!(ts, xc, base, predictionsdf, scores, labels;
+)::TsTp
+    return _synctradesframe!(ts, xc, base, predictionsdf, scores, labels;
         quotecoin=quotecoin,
         metadata=metadata,
         datetime=datetime,
     )
+end
+
+function _validatereplayprepared!(tp::TsTp, lastix::Integer)::Nothing
+    @assert !isempty(tp.pair) "Replay pair identifier must be non-empty"
+
+    required_cols = (
+        :opentime,
+        :high,
+        :low,
+        :tradelabel,
+        :labelscore,
+        :lastopentrade,
+        :longopenlimit,
+        :longcloselimit,
+        :shortopenlimit,
+        :shortcloselimit,
+    )
+    missing_cols = Symbol[col for col in required_cols if !(col in propertynames(tp.tradesdf))]
+    @assert isempty(missing_cols) "Replay state for pair=$(tp.pair) is not prepared; missing columns=$(missing_cols)"
+
+    if lastix > 0
+        @assert length(tp.closeprices) >= lastix "Replay state for pair=$(tp.pair) is not prepared with closeprices covering lastix=$(lastix); closeprices length=$(length(tp.closeprices))"
+        if :pair in propertynames(tp.tradesdf)
+            rowpair = uppercase(String(tp.tradesdf[1, :pair]))
+            @assert rowpair == uppercase(tp.pair) "Replay state pair mismatch for pair=$(tp.pair): tradesdf pair=$(rowpair)"
+        end
+    end
+    return nothing
+end
+
+"""Process gains for one replay pair after its Trades DataFrame has been prepared explicitly."""
+function processreplaygains!(tp::TsTp;
+    strategy::StrategyConfig,
+    lastix::Integer=nrow(tp.tradesdf),
+    forcegain::Bool=true,
+    openthreshold=0.6f0,
+    closethreshold=0.1f0,
+)::DataFrame
+    _ = forcegain
+    _ = closethreshold
     _validate_lastix(lastix, nrow(tp.tradesdf))
+    _validatereplayprepared!(tp, lastix)
     gaindf = emptygaindf()
 
     if lastix > 0
@@ -1003,7 +1063,7 @@ function getgains(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictio
             )
         catch err
             if err isa MethodError
-                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in getgains. Expected call shape: algorithm(tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real; openthreshold, buygain, sellgain, limitreduction, minpricedelta)."))
+                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real; openthreshold, buygain, sellgain, limitreduction, minpricedelta)."))
             end
             rethrow(err)
         end

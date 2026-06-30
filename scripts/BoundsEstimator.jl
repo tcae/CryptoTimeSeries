@@ -15,6 +15,16 @@ const BOUNDS_LABELS = ["center", "width"]
 const BOUNDS_RATIO_FORMAT = "relative_v1"
 softplus(x::Real) = log1p(exp(-abs(x))) + max(x, 0)
 
+# Compatibility wrappers used by tests and scripts that reference BoundsEstimator-local
+# cache filename helpers.
+resultsfilename(coin=nothing) = TradingStrategy.resultsfilename(coin)
+featuresfilename(coin=nothing) = TradingStrategy.featuresfilename(coin)
+predictionsfilename() = TradingStrategy.predictionsfilename()
+
+# Compatibility wrappers for legacy configuration helper access via BoundsEstimator.
+boundsf6config01(window) = TradingStrategy.boundsf6config01(window)
+tradingstrategy02() = TradingStrategy.tradingstrategy02()
+
 function has_current_target_format(df::AbstractDataFrame)
     reqcols = (:centertarget, :widthtarget)
     all(c -> c in propertynames(df), reqcols) || return false

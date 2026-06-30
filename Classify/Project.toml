@@ -1,7 +1,7 @@
 name = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.27.8"
+version = "0.27.9"
 
 [deps]
 BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
@@ -36,4 +36,3 @@ Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
-cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"

@@ -274,7 +274,6 @@ function updateassets!(cp, download=false)
         end
     end
     Trade.filtertradeconfig!(cp.tc; mode=:tradeloop)
-    Trade.addassetsconfig!(cp.tc, assets)
     # cp.update = Dates.now(UTC)
     # select!(cp.tc.cfg, Not(:update))
     if !isnothing(cp.tc.cfg) && (size(cp.tc.cfg, 1) > 0)

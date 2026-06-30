@@ -3,28 +3,6 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
-function TradingStrategy.gettradesrow!(
-    rt::TradingStrategy.TsCache,
-    xc::Xch.XchCache,
-    base::AbstractString,
-    datetime::DateTime;
-    reconciliation=nothing,
-)::Union{Nothing, NamedTuple}
-    _ = xc
-    _ = reconciliation
-    basekey = uppercase(String(base))
-    tdf = Xch.trades(xc, basekey, EnvConfig.pairquote)
-    rowix = findlast(==(datetime), tdf[!, :opentime])
-    if isnothing(rowix)
-        push!(tdf, (opentime=datetime, lastopentrade=missing, pair=Xch.tradingpairkey(basekey, EnvConfig.pairquote), coin=basekey); cols=:subset)
-        rowix = nrow(tdf)
-    end
-    tdf[rowix, :tradelabel] = Targets.ignore
-    tdf[rowix, :longcloselimit] = Float32(get(rt.configuration, :test_long_closeprice, 0f0))
-    tdf[rowix, :shortcloselimit] = Float32(get(rt.configuration, :test_short_closeprice, 0f0))
-    return (base=basekey, datetime=datetime, tradesdf=tdf, rowix=rowix, probability=0f0, configid=0, source=:test)
-end
-
 @testset "Managed close order state" begin
     EnvConfig.init(EnvConfig.test)
 
@@ -46,8 +24,6 @@ end
         minquotevol=[true],
         continuousminvol=[true],
         whitelisted=[true],
-        robotownedlongqty=[1.0f0],
-        robotownedshortqty=[0.0f0],
         datetime=[DateTime("2025-01-01T00:00:00")],
     )
 
@@ -82,14 +58,6 @@ end
     @test haskey(managed, longkey)
     @test managed[longkey][:orderid] == "oid-close"
     @test managed[longkey][:tradelabel] == Targets.longclose
-
-    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
-    rt.configuration[:test_long_closeprice] = 111.0f0
-    rt.configuration[:test_short_closeprice] = 0.0f0
-    tc.mc[:strategy_runtime] = rt
-
-    @test Trade._strategy_sell_limitprice(tc, "BTC", Targets.longclose) == 111.0f0
-    @test isnothing(Trade._strategy_sell_limitprice(tc, "BTC", Targets.shortclose))
 
     gs = TradingStrategy.StrategyConfig(; algorithm=TradingStrategy.gain_limit_reversal!)
 

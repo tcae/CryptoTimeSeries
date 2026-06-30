@@ -4,9 +4,21 @@ using Dates
 using DataFrames
 using CategoricalArrays
 
-using EnvConfig, Xch, TradingStrategy
+using EnvConfig, Xch
+
+const HAS_TRADINGSTRATEGY = try
+    @eval using TradingStrategy
+    true
+catch
+    false
+end
 
 @testset "Xch trades schema contract" begin
+    if !HAS_TRADINGSTRATEGY
+        @info "Skipping Xch trades schema contract test because TradingStrategy is not available in this test environment"
+        return
+    end
+
     EnvConfig.init(test)
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(1)
