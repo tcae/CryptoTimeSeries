@@ -82,7 +82,7 @@ Targets = {path = "Targets"}
 TestOhlcv = {path = "TestOhlcv"}
 Trade = {path = "Trade"}
 TradingStrategy = {path = "TradingStrategy"}
-Xch = {path = "Xch"}
+Xch = {path = "/Users/torsten/github/CryptoTimeSeries/Xch"}
 
 [compat]
 Arrow = "2.8.1"

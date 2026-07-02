@@ -15,6 +15,7 @@ Base.@kwdef mutable struct MockClassifier <: Classify.AbstractClassifier
 end
 
 function init_runtime_columns!(tdf::DataFrame)
+    Xch.tradesdf_lastopentrade(tdf)
     for contributor in TradingStrategy.tradesdf_contributors()
         contributor(tdf)
     end
@@ -69,7 +70,8 @@ end
     TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; datetime=enddt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
     recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=1))
-    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
+    rowmeta = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
+    rowmeta.tradesdf[rowmeta.rowix, :lastopentrade] = evaldt
     _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
     @test cl_gated.advice_calls == 1
 end
@@ -305,7 +307,7 @@ end
     )
     init_runtime_columns!(tdf)
     tdf[!, :labelscore] = Float32[0.8f0]
-    tdf[!, :tradelabel] = Union{Missing, Targets.TradeLabel}[Targets.longopen]
+    tdf[!, :tradelabel] = Targets.TradeLabel[Targets.longopen]
     noclose_tp = TradingStrategy.TsTp(pair="SINEUSDT", tradesdf=tdf)
     @test_throws AssertionError TradingStrategy.processreplaygains!(
         noclose_tp;

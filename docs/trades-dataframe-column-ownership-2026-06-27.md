@@ -21,7 +21,7 @@ Primary references in code:
 - Runtime execution entry points assert schema via `_asserttradesv1schema`.
 
 2. Xch owns row creation and identity metadata
-- Xch is the authoritative producer for row identity columns (`opentime`, `pair`, `coin`) because it owns market-sample ingestion from exchange/ohlcv sources.
+- Xch is the authoritative producer for row identity columns (`opentime`, `pair`) because it owns market-sample ingestion from exchange/ohlcv sources.
 - TradingStrategy must consume existing rows and write advice columns only.
 
 3. TradingStrategy owns strategy advice state
@@ -41,22 +41,24 @@ Primary references in code:
 
 ## Column ownership matrix (Trades v1 contract)
 
-| Column(s) | Primary owner | Secondary writer(s) | Main readers | Notes |
-|---|---|---|---|---|
-| `opentime` | Xch | None | TradingStrategy, Xch, TrendDetector | Required identity column derived from sample data. |
-| `lastopentrade` | TradingStrategy | None | TradingStrategy, TrendDetector | Updated during strategy/gain materialization state tracking. |
-| `pair`, `coin` | Xch | None | Xch, TrendDetector, TradingStrategy | Identity/routing columns used by Xch to derive request pair. |
-| `tradelabel`, `labelscore` | TradingStrategy | Trade (reserved override only if explicitly designed) | Xch, TrendDetector | `tradelabel` drives open/close action mapping in Xch. |
-| `longopenlimit`, `longcloselimit`, `shortopenlimit`, `shortcloselimit` | TradingStrategy | Trade (reserved override before request processing) | Xch, TrendDetector | Strategy guidance; also consumed by Xch as requested limit per action. |
-| `longamount`, `shortamount` | Trade | None | Xch | Request sizing columns consumed by Xch order processing. |
-| `longleverage`, `shortleverage` | Trade | None | Xch | Request leverage columns consumed by Xch order processing. I don't find them back and they are also not required.|
-| `longid`, `shortid` | Xch | None | Trade, Xch | Exchange order ids written after submit/amend/close request. |
-| `longstatus`, `shortstatus` | Xch | None | Trade, Xch | Status transitions (`Submitted`, `Rejected`, `Missing`, `Error`, exchange statuses). |
-| `longunfilled`, `shortunfilled` | Xch | None | Trade, Xch | Remaining base quantity from order status reconciliation. |
-| `longpriceavg`, `shortpriceavg` | Xch | None | Trade, Xch | Average fill price from exchange order status. |
-| `longmsgid`, `shortmsgid` | Xch | None | Trade, diagnostics | Message catalog id for rejection/errors. |
-| `postype`, `posleverage`, `posamount` | Xch | None | Trade, diagnostics | Position-side/accounting snapshot for current action row. |
-| `quoteprice`, `maintmargin`, `equity`, `balance`, `freemargin`, `freequote` | Xch | None | Trade, diagnostics | Account snapshot fields applied during request processing/status refresh. |
+| Column(s) | Primary owner | Secondary writer(s) | eltype | default | Main readers | Docstring |
+|---|---|---|---|---|---|---|
+| `opentime` | Xch | None | `DateTime` | `DateTime[]` for an empty trades frame | TradingStrategy, Xch, TrendDetector | Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required identity column derived from sample data. |
+| `lastopentrade` | Xch | TradingStrategy (replay/simulation path only) | `Union{Missing, DateTime}` | `missing` | TradingStrategy, TrendDetector | Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: DateTime when the last open trade was executed (filled with executedqty > 0), not when an order was submitted. Carry forward only while position amount is open (`abs(longamount)>0` or `abs(shortamount)>0`); reset to `missing` when no position is open. |
+| `pair` | Xch | None | `CategoricalVector{String}` | `"none"` | Xch, TrendDetector, TradingStrategy | Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Identity/routing column used by Xch to derive the request pair; materialized rows must always fill it. |
+| `tradelabel` | TradingStrategy | Trade (reserved override only if explicitly designed) | `TradeLabel` | `ignore` | Xch, TrendDetector | Ensure Trades column `tradelabel` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions. |
+| `labelscore` | TradingStrategy | None | `Float32` | `0f0` | Xch, TrendDetector | Ensure Trades column `labelscore` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score for the active label. |
+| `longopenlimit`, `longcloselimit`, `shortopenlimit`, `shortcloselimit` | TradingStrategy | Trade (reserved override before request processing) | `Float32` | `0f0` | Xch, TrendDetector | Ensure Trades column `longopenlimit`/`longcloselimit`/`shortopenlimit`/`shortcloselimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action. |
+| `longamount`, `shortamount` | Trade | None | `Float32` | `0f0` | Xch | Ensure Trades column `longamount`/`shortamount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request sizing column consumed by Xch order processing. |
+| `longleverage`, `shortleverage` | Trade | None | `UInt8` | `1` | Xch | Ensure Trades column `longleverage`/`shortleverage` exists. Owner: Trade. Eltype: `UInt8` with `1` as the default. Note: Request leverage column consumed by Xch order processing. |
+| `longid`, `shortid` | Xch | None | `CategoricalVector{String}` | `"none"` | Trade, Xch | Ensure Trades column `longid`/`shortid` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order ids written after submit/amend/close request. |
+| `longstatus`, `shortstatus` | Xch | None | `CategoricalVector{String}` | `"none"` | Trade, Xch | Ensure Trades column `longstatus`/`shortstatus` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Status transitions (`Submitted`, `Rejected`, `Missing`, `Error`, exchange statuses). |
+| `longunfilled`, `shortunfilled` | Xch | None | `Float32` | `0f0` | Trade, Xch | Ensure Trades column `longunfilled`/`shortunfilled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation. |
+| `longpriceavg`, `shortpriceavg` | Xch | None | `Float32` | `0f0` | Trade, Xch | Ensure Trades column `longpriceavg`/`shortpriceavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. |
+| `longmsg`, `shortmsg` | Xch | None | `CategoricalVector{String}` | `"none"` | Trade, diagnostics | Ensure Trades column `longmsg`/`shortmsg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical). |
+| `postype` | Xch | None | `Targets.TrendPhase` | `Targets.flat` | Trade, diagnostics | Ensure Trades column `postype` exists. Owner: Xch. Eltype: `Targets.TrendPhase`. Note: Position-side/accounting snapshot for the current action row. |
+| `posamount` | Xch | None | `Float32` | `0f0` | Trade, diagnostics | Ensure Trades column `posamount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Position-side/accounting snapshot values for the current action row. |
+| `quoteprice`, `maintmargin`, `equity`, `balance`, `freemargin`, `freequote` | Xch | None | `Float32` | `0f0` | Trade, diagnostics | Ensure Trades column `quoteprice`/`maintmargin`/`equity`/`balance`/`freemargin`/`freequote` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account snapshot field applied during request processing/status refresh. |
 
 ## Runtime helper columns (non-v1 contract)
 
@@ -77,7 +79,7 @@ Ownership:
 
 ### TradingStrategy
 - May mutate only strategy advice/state columns.
-- Must not mutate execution feedback columns (`*id`, `*status`, `*unfilled`, `*priceavg`, `*msgid`) or account snapshot columns.
+- Must not mutate Xch-owned execution feedback columns (`*id`, `*status`, `*unfilled`, `*priceavg`, `*msg`), position snapshot columns (`postype`, `posamount`), or account snapshot columns (`quoteprice`, `maintmargin`, `equity`, `balance`, `freemargin`, `freequote`).
 
 ## Implementation status note
 

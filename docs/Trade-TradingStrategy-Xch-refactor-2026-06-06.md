@@ -47,21 +47,12 @@ It became clear that we run into a situation with more and more omplex code alth
 - provides per exchange layer an implementation for available exposure and initial margin for a trading pair with leverage
 - strongbuy or strongclose orders without limit are post-only makers orders that are periodicly amended to stay 1 tick next to the ask price
 - trading issues shall be logged by a Xch.log_trading_issue(issuer, message) function
-  - when Xch.XchCache is initialized existing general and exchange specific messages shall be loaded by a Xch.load_messages function
-    - if the exchange specific folder contains an _errors.json file that contains an exchange object with a table of objects with at least a code and a message element and an optional id in it
-    - if the top data folder contains an _errors.json file that contains a "Trading" object with a table of objects each containing a UNIT8 id a code string and a message string
-    - This info will be loaded into a XchCache.messages Dict(issuer, named tuple vector) and a running id shall be added to each tuple, if it is not already part it.
-    - The id shall be a running UINT8 that starts for Trading messages from 1, for Bybit from 50, for KrakenSpot from 100, and for KrakenFutures from 150
-    - Xch.log_trading_issue(issuer, message) shall use that XchCache.messages Dict(issuer, tuple table) to compare whether the message of any of the tuple.message strings is equal or a substring of the given message. 
-      - If so, then the corresponding id is used as the message id. 
-      - If not, then a new tuple is added with an empty code, the next available id, and the provided message. 
-        - If the new id exceeds the foreseen id range this shall result in a fatal error with a qualified message. It is considered unliekly that this happens considering the maturity of the exchanges and overseeable number of messages collected.
-      - If a new message is added the corresponding _errors.json file shall be updaed.
-      - The message shall be send as warning to terminal output and logged as "Xch.ttstr(xc::XchCache) $id $(issuer): $message"
-      - The message id shall be captured in the pair specific Trades DataFrame that is currently processed
-      - The purpose of this approach is to store the ultimate reason an issue with a trading pair in a compact form together with all other relevant sample trading data
-        - The issuer "Trading" is a message from the tradereal program and may be issued in TradingStrategy, Trade or Crypto before any exchaneg interaction takes place
-        - The issuer KrakenSport, Bybit, KrakenFutures is a message response from the exchange that signals a failing interaction, which should not crash the program  
+  - issues are logged directly as text and captured in Trades columns `longmsg` / `shortmsg`
+  - `longstatus`, `shortstatus`, `longmsg`, and `shortmsg` are stored as `CategoricalVector`
+  - this replaces the previous `XchCache.messages` and `_errors.json` id-catalog concept
+  - the purpose is to store the ultimate reason of an issue with a trading pair together with all other relevant sample trading data without indirection through message ids
+    - The issuer "Trading" is a message from the tradereal program and may be issued in TradingStrategy, Trade or Crypto before any exchange interaction takes place
+    - The issuer KrakenSpot, Bybit, KrakenFutures is a message response from the exchange that signals a failing interaction, which should not crash the program
 
 ### TradingStrategy
 
@@ -120,7 +111,7 @@ It became clear that we run into a situation with more and more omplex code alth
 
 ### Phase 3: adapt Trade and Xch to use the Trading DataFrame 
 
-- add Xch functions log_trading_issue(issuer, message) and load_messages(exchange), integrate load_messages to XchCache initialization and implement unit tests
+- add Xch function `log_trading_issue(issuer, message)` and integrate direct message capture into Trades (`longmsg`, `shortmsg`) with unit tests
 - add functions to Xch to be called by Trade in the trade loop
   - account_status to update equity, balance, free margin, free quote
   - order_status to update the order status of a specific trading pair in the Trades DataFrame
@@ -249,8 +240,7 @@ Goal: lock interfaces before implementation work in phases 1-5.
 
 - Required structs/types
   - [ ] `Xch.TradesSchemaV1` constant contract (column names, eltypes, nullability).
-  - [ ] `Xch.ErrorCatalogEntry` with fields: `id::UInt8`, `code::String`, `message::String`, `issuer::String`.
-  - [ ] `Xch.XchCache` additions: `pairstates::Dict{String,DataFrame}`, `messages::Dict{String,Vector{ErrorCatalogEntry}}`, `defaultquote::Union{Nothing,String}`.
+  - [ ] `Xch.XchCache` additions: `pairstates::Dict{String,DataFrame}`, `defaultquote::Union{Nothing,String}`.
 - Required Trades DataFrame v1 columns (must be created by Xch helper)
   - [x] Canonical naming contract: `tradelabel` is the only supported label column in Trades v1 (`label` is not part of the contract).
   - [x] Identity/time: `opentime::DateTime`, `lastopentrade::Union{Missing,DateTime}`.
@@ -258,13 +248,12 @@ Goal: lock interfaces before implementation work in phases 1-5.
   - [x] Strategy advice: `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`, `tradelabel::TradeLabel`, `labelscore::Float32`.
   - [x] Trade request long: `longleverage::Union{Missing,UINT8}`, `longamount::Union{Missing,Float32}`, `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`.
   - [x] Trade request short: `shortleverage::Union{Missing,UINT8}`, `shortamount::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`.
-  - [x] Exchange feedback long: `longid::Union{Missing,String}`, `longstatus::String`, `longunfilled::Union{Missing,Float32}`, `longpriceavg::Union{Missing,Float32}`, `longmsgid::Union{Missing,UInt8}`.
-  - [x] Exchange feedback short: `shortid::Union{Missing,String}`, `shortstatus::String`, `shortunfilled::Union{Missing,Float32}`, `shortpriceavg::Union{Missing,Float32}`, `shortmsgid::Union{Missing,UInt8}`.
+  - [x] Exchange feedback long: `longid::Union{Missing,String}`, `longstatus::CategoricalVector{String}`, `longunfilled::Union{Missing,Float32}`, `longpriceavg::Union{Missing,Float32}`, `longmsg::CategoricalVector{Union{Missing,String}}`.
+  - [x] Exchange feedback short: `shortid::Union{Missing,String}`, `shortstatus::CategoricalVector{String}`, `shortunfilled::Union{Missing,Float32}`, `shortpriceavg::Union{Missing,Float32}`, `shortmsg::CategoricalVector{Union{Missing,String}}`.
   - [x] Position/account snapshot: `postype::String`, `posleverage::Union{Missing,Float32}`, `posamount::Union{Missing,Float32}`, `quoteprice::Union{Missing,Float32}`, `maintmargin::Union{Missing,Float32}`, `equity::Union{Missing,Float32}`, `balance::Union{Missing,Float32}`, `freemargin::Union{Missing,Float32}`, `freequote::Union{Missing,Float32}`.
 - Required tests (Xch/test)
   - [x] schema test: a newly created trades table contains exactly all v1 columns with expected eltypes.
-  - [ ] error-catalog test: `load_messages` reads Trading + exchange catalogs and preserves ids.
-  - [ ] error-id bounds test: adding a message beyond issuer range throws fatal error with qualified message.
+  - [x] issue logging test: `log_trading_issue` returns the normalized message string for direct Trades storage.
   - [ ] close order for open position followed by open order in opposite direction for the same trading pair in the same minute: close is fully completed before open request for opposite direction in async web socket service 
     - [ ] connection errors are handled gracefully such that rate limit overrun does not occur and that connections are reestablished after a connection break
     - [ ] all exchange site errors are handled such that they don't result in a fatal errors but they are reported, the situation is mitigated and trading can continue as soon as teh exchange is available again
@@ -485,7 +474,7 @@ Progress note:
   - [~] no duplicate open orders under reversal stress is covered by integration tests for close-then-open blocking; extended long-run stress soak remains operational follow-up.
 
 Progress note:
-- Xch-side helpers (`account_status`, `order_status`, `process_order_request`, message catalog/id logging) are implemented with tests.
+- Xch-side helpers (`account_status`, `order_status`, `process_order_request`, direct message logging into Trades msg columns) are implemented with tests.
 - Trade now has a default-on (`cache.mc[:usenewtrade]=true`) per-tick delegation path that writes Trades DataFrame request/advice rows and calls Xch request/status APIs.
 - Legacy Trade path remains available as fallback for runtime safety; Trade package tests pass after this integration slice.
 - Reservation-ledger semantics are now integrated in the new path (`_tick_opening_reservations`, `_reserve_opening_budget!`, account projection helpers).

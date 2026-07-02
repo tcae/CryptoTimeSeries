@@ -81,7 +81,7 @@ EnvConfig.init(test)
     @test nrow(btcusdt) == 0
     @test "opentime" in names(btcusdt)
     @test "pair" in names(btcusdt)
-    @test !("lastopentrade" in names(btcusdt))
+    @test "lastopentrade" in names(btcusdt)
     @test eltype(btcusdt[!, :opentime]) == DateTime
     @test Xch.hastrades(xc, "BTCUSDT")
 
@@ -93,8 +93,8 @@ EnvConfig.init(test)
     @test "action" in names(Xch.trades(xc, "ETHUSDT"))
     @test "qty" in names(Xch.trades(xc, "ETHUSDT"))
     @test "pair" in names(Xch.trades(xc, "ETHUSDT"))
-    @test !("lastopentrade" in names(Xch.trades(xc, "ETHUSDT")))
-    @test Xch.trades(xc, "ETHUSDT")[1, :pair] == "ETHUSDT"
+    @test "lastopentrade" in names(Xch.trades(xc, "ETHUSDT"))
+    @test Xch.trades(xc, "ETHUSDT")[1, :pair] == "none"
 end
 
 end

@@ -45,34 +45,38 @@ verbosity =
 """
 verbosity = 2
 
-"""Ensure Trades column `longamount` exists. Owner: Trade. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `longamount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size consumed by Xch order processing."""
 function tradesdf_longamount(tradesdf::DataFrame)::DataFrame
     if :longamount ∉ propertynames(tradesdf)
-        tradesdf[!, :longamount] = Vector{Union{Missing, Float32}}(missing, nrow(tradesdf))
+        tradesdf[!, :longamount] = fill(0f0, nrow(tradesdf))
+    else
+        tradesdf[!, :longamount] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :longamount]]
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortamount` exists. Owner: Trade. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `shortamount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size consumed by Xch order processing."""
 function tradesdf_shortamount(tradesdf::DataFrame)::DataFrame
     if :shortamount ∉ propertynames(tradesdf)
-        tradesdf[!, :shortamount] = Vector{Union{Missing, Float32}}(missing, nrow(tradesdf))
+        tradesdf[!, :shortamount] = fill(0f0, nrow(tradesdf))
+    else
+        tradesdf[!, :shortamount] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :shortamount]]
     end
     return tradesdf
 end
 
-"""Ensure Trades column `longleverage` exists. Owner: Trade. Eltype: `Union{Missing,UInt8}`."""
+"""Ensure Trades column `longleverage` exists. Owner: Trade. Eltype: `UInt8` with `1` as the default. Note: Request order leverage consumed by Xch order processing."""
 function tradesdf_longleverage(tradesdf::DataFrame)::DataFrame
     if :longleverage ∉ propertynames(tradesdf)
-        tradesdf[!, :longleverage] = Vector{Union{Missing, UInt8}}(missing, nrow(tradesdf))
+        tradesdf[!, :longleverage] = fill(UInt8(1), nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortleverage` exists. Owner: Trade. Eltype: `Union{Missing,UInt8}`."""
+"""Ensure Trades column `shortleverage` exists. Owner: Trade. Eltype: `UInt8` with `1` as the default. Note: Request order leverage consumed by Xch order processing."""
 function tradesdf_shortleverage(tradesdf::DataFrame)::DataFrame
     if :shortleverage ∉ propertynames(tradesdf)
-        tradesdf[!, :shortleverage] = Vector{Union{Missing, UInt8}}(missing, nrow(tradesdf))
+        tradesdf[!, :shortleverage] = fill(UInt8(1), nrow(tradesdf))
     end
     return tradesdf
 end
@@ -242,7 +246,7 @@ mutable struct TradeCache
         cache.mc[:exitcoins] = [] # exit specific coins
         cache.mc[:longopencoins] = []  # force open long
         cache.mc[:shortopencoins] = [] # force open short
-        cache.mc[:restrictedcoins] = String[] # coins excluded from the robot universe (e.g. account-region restrictions)
+        cache.mc[:restrictedcoins] = String[] # coins excluded from the universe (e.g. account-region restrictions)
         cache.mc[:whitelistcoins] = ["ADA", "AI16Z", "APEX", "AAVE", "BNB", "BTC", "CAKE", "DOGE", "ELX", "ENA", "ETH", "HBAR", "HFT", "JUP", "LINK", "LTC", "MNT", "ONDO", "PEPE", "POPCAT", "S", "SOL", "SUI", "TON", "TRX", "VIRTUAL", "W", "WAL", "WIF", "WLD", "X", "XLM", "XRP"] 
         # not whitelisted: "ANIME", "B3", "BERA", "CMETH", "LDO", "PLUME", "SOSO", "TRUMP"
         cache.mc[:hourlygainlimit] = 0.1f0 # limit hourly gain to a realistic 10% max
@@ -1748,7 +1752,7 @@ end
 
 """
 Execute one trading tick: reconstruct managed close-order state from live open orders,
-cancel unmanaged orders, keep one close order active per open robot-owned position,
+cancel unmanaged orders, keep one close order active per open position,
 execute open/reversal entries, and handle daily trade-selection reload.
 Called by the loop runners once per iterate step.
 """

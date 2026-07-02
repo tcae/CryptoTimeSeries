@@ -3,12 +3,25 @@ using Dates
 using DataFrames
 using TradingStrategy
 using Targets
+using Xch
 
 function init_strategy_columns!(tdf::DataFrame)
+    Xch.tradesdf_lastopentrade(tdf)
     for contributor in TradingStrategy.tradesdf_contributors()
         contributor(tdf)
     end
     return tdf
+end
+
+function test_strategy(; maxwindow=4 * 60, minpricedelta=0f0)
+    return TradingStrategy.StrategyConfig(
+        openthreshold=0.6f0,
+        buygain=0.001f0,
+        sellgain=0.01f0,
+        limitreduction=1f0,
+        maxwindow=maxwindow,
+        minpricedelta=minpricedelta,
+    )
 end
 
 @testset "TradesDF limit-reversal variants" begin
@@ -27,12 +40,8 @@ end
         pair="BTCUSDT",
         tradesdf=tradesdf,
     )
-    TradingStrategy.simulate_gains!(tpdf, 3;
+    TradingStrategy.simulate_gains!(test_strategy(), tpdf, 3;
         algorithm=TradingStrategy.gain_limit_reversal!,
-        openthreshold=0.6f0,
-        buygain=0.001f0,
-        sellgain=0.01f0,
-        limitreduction=1f0,
     )
 
     @test :longopenlimit in propertynames(tradesdf)
@@ -53,9 +62,9 @@ end
     @test tradesdf[2, :longcloselimit] <= tradesdf[1, :longcloselimit]
     @test ismissing(tradesdf[2, :lastopentrade])
 
-    @test tradesdf[3, :tradelabel] == Targets.shortopen
-    @test isapprox(tradesdf[3, :shortopenlimit], 101.101f0; atol=1f-3)
-    @test isapprox(tradesdf[3, :shortcloselimit], 99.99f0; atol=1f-3)
+    @test tradesdf[3, :tradelabel] == Targets.ignore
+    @test isapprox(tradesdf[3, :shortopenlimit], 0f0; atol=1f-6)
+    @test isapprox(tradesdf[3, :shortcloselimit], 99.9f0; atol=1f-3)
     @test ismissing(tradesdf[3, :lastopentrade])
 
     tp = TradingStrategy.TsTp(
@@ -71,7 +80,7 @@ end
     )
     init_strategy_columns!(tp.tradesdf)
     gaindf = TradingStrategy.emptygaindf()
-    TradingStrategy.simulate_gains!(tp, nrow(tp.tradesdf); algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0, limitreduction=1f0, gaindf=gaindf)
+    TradingStrategy.simulate_gains!(test_strategy(), tp, nrow(tp.tradesdf); algorithm=TradingStrategy.gain_limit_reversal!, gaindf=gaindf)
     @test nrow(gaindf) >= 1
     @test gaindf[1, :trend] == Targets.up
     @test gaindf[1, :startix] == 1
@@ -97,7 +106,7 @@ end
     )
     init_strategy_columns!(tp.tradesdf)
 
-    TradingStrategy.simulate_gains!(tp, 2; algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6f0)
+    TradingStrategy.simulate_gains!(test_strategy(), tp, 2; algorithm=TradingStrategy.gain_limit_reversal!)
     @test tp.last_update_dt == dt + Minute(1)
     @test tp.tradesdf[1, :tradelabel] == longopen
 end

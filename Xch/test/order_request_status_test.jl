@@ -3,7 +3,7 @@ using Test
 using Dates
 using DataFrames
 
-using EnvConfig, Xch
+using EnvConfig, Xch, Targets
 
 @testset "Xch process_order_request and order_status" begin
     EnvConfig.init(test)
@@ -33,7 +33,7 @@ using EnvConfig, Xch
     accepted = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        tradelabel=["longopen"],
+        tradelabel=[Targets.longopen],
         longopenlimit=[price * 0.98f0],
         longamount=[max(minqty * 1.5f0, 0.001f0)],
         longleverage=[UInt8(0)],
@@ -43,8 +43,10 @@ using EnvConfig, Xch
     end
     result = Xch.process_order_request(xc, accepted, 1)
     @test result.action == :long_open
+    @test ismissing(accepted[1, :lastopentrade])
     if result.accepted
-        @test !ismissing(accepted[1, :longid])
+        @test String(accepted[1, :longid]) != "none"
+        @test String(accepted[1, :longid]) != ""
         @test accepted[1, :longstatus] == "Submitted"
 
         Xch.order_status(xc, accepted, 1)
@@ -54,14 +56,15 @@ using EnvConfig, Xch
     else
         @test result.reason == "insufficient_free_quote"
         @test accepted[1, :longstatus] == "Rejected"
-        @test !ismissing(accepted[1, :longmsgid])
+        @test String(accepted[1, :longid]) == "none"
+        @test !ismissing(accepted[1, :longmsg])
     end
 
     # Too-small quantity should be rejected and assigned a Trading catalog id.
     rejected = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        tradelabel=["longopen"],
+        tradelabel=[Targets.longopen],
         longopenlimit=[price],
         longamount=[max(minqty * 0.1f0, 1.0f-8)],
         longleverage=[UInt8(0)],
@@ -72,8 +75,9 @@ using EnvConfig, Xch
     reject_result = Xch.process_order_request(xc, rejected, 1)
     @test !reject_result.accepted
     @test reject_result.reason == "below_minimum_qty"
+    @test ismissing(rejected[1, :lastopentrade])
     @test rejected[1, :longstatus] == "Rejected"
-    @test !ismissing(rejected[1, :longmsgid])
+    @test !ismissing(rejected[1, :longmsg])
 end
 
 end

@@ -4,6 +4,7 @@ using Dates, DataFrames
 using Test
 
 using Ohlcv, EnvConfig, Xch, TestOhlcv
+using Targets
 
 const RUN_PRODUCTION_TESTS = lowercase(get(ENV, "CTS_RUN_PRODUCTION_TESTS", "false")) in ("1", "true", "yes")
 const RUN_KRAKEN_ORDER_TESTS = lowercase(get(ENV, "CTS_RUN_KRAKEN_ORDER_TESTS", "false")) in ("1", "true", "yes")
@@ -24,7 +25,7 @@ function _run_kraken_order_lifecycle!(exchange::String)
 
     req = DataFrame(
         pair=[string(base, quotecoin)],
-        tradelabel=["longopen"],
+        tradelabel=[Targets.longopen],
         longopenlimit=[limit],
         longamount=[amount],
         longleverage=[UInt8(0)],
@@ -33,7 +34,8 @@ function _run_kraken_order_lifecycle!(exchange::String)
     first_result = Xch.process_order_request(xc, req, 1)
     @test first_result.accepted
     @test first_result.action == :long_open
-    @test !ismissing(req[1, :longid])
+    @test String(req[1, :longid]) != "none"
+    @test String(req[1, :longid]) != ""
     oid = String(req[1, :longid])
 
     Xch.order_status(xc, req, 1)
@@ -44,7 +46,8 @@ function _run_kraken_order_lifecycle!(exchange::String)
     second_result = Xch.process_order_request(xc, req, 1)
     @test second_result.accepted
     @test second_result.action == :long_open
-    @test !ismissing(req[1, :longid])
+    @test String(req[1, :longid]) != "none"
+    @test String(req[1, :longid]) != ""
 
     oid2 = Xch.cancelorder(xc, base, oid)
     @test oid2 == oid

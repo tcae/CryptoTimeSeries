@@ -12,28 +12,20 @@ module TradingStrategy
 using DataFrames, Dates
 using EnvConfig, Features, Targets, Classify, Xch, Ohlcv
 
-"""Ensure Trades column `lastopentrade` exists. Owner: TradingStrategy. Eltype: `Union{Missing,DateTime}`."""
-function tradesdf_lastopentrade(tradesdf::DataFrame)::DataFrame
-    if :lastopentrade ∉ propertynames(tradesdf)
-        tradesdf[!, :lastopentrade] = Vector{Union{Missing, DateTime}}(missing, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `tradelabel` exists. Owner: TradingStrategy. Eltype: `TradeLabel` semantics."""
+"""Ensure Trades column `tradelabel` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions."""
 function tradesdf_tradelabel(tradesdf::DataFrame)::DataFrame
     if :tradelabel ∉ propertynames(tradesdf)
-        tradesdf[!, :tradelabel] = Vector{Union{Missing, TradeLabel}}(missing, nrow(tradesdf))
+        tradesdf[!, :tradelabel] = fill(ignore, nrow(tradesdf))
     else
-        tradesdf[!, :tradelabel] = Union{Missing, TradeLabel}[
-            ismissing(v) ? missing : (v isa TradeLabel ? v : Targets.tradelabel(String(v)))
+        tradesdf[!, :tradelabel] = TradeLabel[
+            ismissing(v) ? ignore : (v isa TradeLabel ? v : Targets.tradelabel(String(v)))
             for v in tradesdf[!, :tradelabel]
         ]
     end
     return tradesdf
 end
 
-"""Ensure Trades column `labelscore` exists. Owner: TradingStrategy. Eltype: `Float32`."""
+"""Ensure Trades column `labelscore` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score of trade label."""
 function tradesdf_labelscore(tradesdf::DataFrame)::DataFrame
     if :labelscore ∉ propertynames(tradesdf)
         tradesdf[!, :labelscore] = zeros(Float32, nrow(tradesdf))
@@ -42,34 +34,42 @@ function tradesdf_labelscore(tradesdf::DataFrame)::DataFrame
 end
 
 
-"""Ensure Trades column `longopenlimit` exists. Owner: TradingStrategy. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `longopenlimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
 function tradesdf_longopenlimit(tradesdf::DataFrame)::DataFrame
     if :longopenlimit ∉ propertynames(tradesdf)
-        tradesdf[!, :longopenlimit] = Vector{Union{Missing, Float32}}(missing, nrow(tradesdf))
+        tradesdf[!, :longopenlimit] = fill(0f0, nrow(tradesdf))
+    else
+        tradesdf[!, :longopenlimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :longopenlimit]]
     end
     return tradesdf
 end
 
-"""Ensure Trades column `longcloselimit` exists. Owner: TradingStrategy. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `longcloselimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
 function tradesdf_longcloselimit(tradesdf::DataFrame)::DataFrame
     if :longcloselimit ∉ propertynames(tradesdf)
-        tradesdf[!, :longcloselimit] = Vector{Union{Missing, Float32}}(missing, nrow(tradesdf))
+        tradesdf[!, :longcloselimit] = fill(0f0, nrow(tradesdf))
+    else
+        tradesdf[!, :longcloselimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :longcloselimit]]
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortopenlimit` exists. Owner: TradingStrategy. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `shortopenlimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
 function tradesdf_shortopenlimit(tradesdf::DataFrame)::DataFrame
     if :shortopenlimit ∉ propertynames(tradesdf)
-        tradesdf[!, :shortopenlimit] = Vector{Union{Missing, Float32}}(missing, nrow(tradesdf))
+        tradesdf[!, :shortopenlimit] = fill(0f0, nrow(tradesdf))
+    else
+        tradesdf[!, :shortopenlimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :shortopenlimit]]
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortcloselimit` exists. Owner: TradingStrategy. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `shortcloselimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
 function tradesdf_shortcloselimit(tradesdf::DataFrame)::DataFrame
     if :shortcloselimit ∉ propertynames(tradesdf)
-        tradesdf[!, :shortcloselimit] = Vector{Union{Missing, Float32}}(missing, nrow(tradesdf))
+        tradesdf[!, :shortcloselimit] = fill(0f0, nrow(tradesdf))
+    else
+        tradesdf[!, :shortcloselimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :shortcloselimit]]
     end
     return tradesdf
 end
@@ -77,7 +77,6 @@ end
 """Return TradingStrategy/Trade-contributed Trades schema initializer functions."""
 function tradesdf_contributors()::Vector{Function}
     return Function[
-        tradesdf_lastopentrade,
         tradesdf_tradelabel,
         tradesdf_labelscore,
         tradesdf_longopenlimit,
@@ -100,22 +99,11 @@ tradesaggregate(stem::AbstractString="gains") = joinpath("trades", splitext(base
 tradefilename(coin::AbstractString; stem::AbstractString="gains") = joinpath(tradesfolder(stem), uppercase(strip(String(coin))))
 
 function _tradebasekey(tradedf::AbstractDataFrame, ix::Integer)::Union{Nothing, String}
-    if :coin in propertynames(tradedf)
-        coin = tradedf[ix, :coin]
-        if !ismissing(coin)
-            normalized = uppercase(strip(String(coin)))
-            isempty(normalized) || return normalized
-        end
-    end
     if :pair in propertynames(tradedf)
         pair = tradedf[ix, :pair]
         if !ismissing(pair)
-            bq = try
-                Xch.basequote(String(pair))
-            catch
-                nothing
-            end
-            isnothing(bq) || return uppercase(String(bq.basecoin))
+            bq = Xch.basequote(String(pair))
+            return uppercase(String(bq.basecoin))
         end
     end
     return nothing
@@ -126,11 +114,11 @@ function savetrades(tradedf::AbstractDataFrame; stem::AbstractString="gains", in
     if size(tradedf, 1) == 0
         return String[]
     end
-    @assert (:coin in propertynames(tradedf)) || (:pair in propertynames(tradedf)) "tradedf must contain a :coin or :pair column; names=$(names(tradedf))"
+    @assert :pair in propertynames(tradedf) "tradedf must contain a :pair column; names=$(names(tradedf))"
 
     paths = String[]
     basekeys = [_tradebasekey(tradedf, ix) for ix in 1:nrow(tradedf)]
-    @assert all(!isnothing, basekeys) "tradedf must provide a resolvable base via :coin or :pair for every row; names=$(names(tradedf))"
+    @assert all(!isnothing, basekeys) "tradedf must provide a resolvable base via :pair for every row; names=$(names(tradedf))"
     coins = unique(String[key for key in basekeys if !isnothing(key)])
     for coin in coins
         selectrows = [!isnothing(key) && (key == coin) for key in basekeys]
@@ -247,7 +235,7 @@ end
     if currentf <= 0f0 || minpricedelta <= 0f0
         return true
     end
-    return _relpricedelta(candidatef, currentf) >= minpricedelta
+    return _relpricedelta(candidatef, currentf) > minpricedelta
 end
 
 """
@@ -613,16 +601,12 @@ function _apply_base_advice_row!(rt::TsCache, xc::Xch.XchCache, advicectx::Named
     trow = row.rowix
 
     spec.algorithm(
+        spec,
         tdf,
         trow,
         advice.tradelabel,
         Float32(advice.probability),
         closeprice;
-        openthreshold=spec.openthreshold,
-        buygain=spec.buygain,
-        sellgain=spec.sellgain,
-        limitreduction=spec.limitreduction,
-        minpricedelta=spec.minpricedelta,
     )
 
     recon = _normalizereconciliationinput(reconciliation)
@@ -633,7 +617,6 @@ function _apply_base_advice_row!(rt::TsCache, xc::Xch.XchCache, advicectx::Named
         if ismissing(tdf[trow, :longcloselimit]) || (Float32(tdf[trow, :longcloselimit]) <= 0f0)
             tdf[trow, :longcloselimit] = recon.long_avg_entry * (1f0 + spec.sellgain)
         end
-        tdf[trow, :lastopentrade] = tdf[trow, :opentime]
     end
     if recon.has_short_open
         if ismissing(tdf[trow, :shortopenlimit]) || (Float32(tdf[trow, :shortopenlimit]) <= 0f0)
@@ -642,7 +625,6 @@ function _apply_base_advice_row!(rt::TsCache, xc::Xch.XchCache, advicectx::Named
         if ismissing(tdf[trow, :shortcloselimit]) || (Float32(tdf[trow, :shortcloselimit]) <= 0f0)
             tdf[trow, :shortcloselimit] = recon.short_avg_entry * (1f0 - spec.sellgain)
         end
-        tdf[trow, :lastopentrade] = tdf[trow, :opentime]
     end
 
     cfgid = try
@@ -686,37 +668,26 @@ end
 @inline _openlimitactive(openlimit) = (!ismissing(openlimit)) && (Float32(openlimit) > 0f0)
 @inline _normalizedtradelabel(x) = ismissing(x) ? ignore : (x isa TradeLabel ? x : Targets.tradelabel(String(x)))
 
-@inline function _setlastopentrade!(tradesdf::DataFrame, ix::Integer, dt)
-    tradesdf[ix, :lastopentrade] = dt
-    return nothing
-end
-
 """
-    gain_limit_reversal!(tradesdf, ix, label, score, close; ...)
+    gain_limit_reversal!(strategy, tradesdf, ix, label, score, close)
 
 DataFrame-based limit-reversal lane update that writes one sample row state
 (`longopenlimit`, `longcloselimit`, `shortopenlimit`, `shortcloselimit`,
 `tradelabel`, `labelscore`) derived from previous row state and the
 current classifier label/score input.
 """
-function gain_limit_reversal!(tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real;
-    openthreshold::Real=0.6f0,
-    buygain::Real=0.001f0,
-    sellgain::Real=0.01f0,
-    limitreduction::Real=0f0,
-    minpricedelta::Real=0f0,
-)
+function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
 
     scoref = Float32(score)
     closef = Float32(close)
-    minpd = Float32(minpricedelta)
+    minpd = Float32(cfg.minpricedelta)
 
     previx = ix - 1
-    prev_longopen = previx >= 1 ? tradesdf[previx, :longopenlimit] : missing
-    prev_longclose = previx >= 1 ? tradesdf[previx, :longcloselimit] : missing
-    prev_shortopen = previx >= 1 ? tradesdf[previx, :shortopenlimit] : missing
-    prev_shortclose = previx >= 1 ? tradesdf[previx, :shortcloselimit] : missing
+    prev_longopen = previx >= 1 ? _missingf32(tradesdf[previx, :longopenlimit]) : 0f0
+    prev_longclose = previx >= 1 ? _missingf32(tradesdf[previx, :longcloselimit]) : 0f0
+    prev_shortopen = previx >= 1 ? _missingf32(tradesdf[previx, :shortopenlimit]) : 0f0
+    prev_shortclose = previx >= 1 ? _missingf32(tradesdf[previx, :shortcloselimit]) : 0f0
 
     tradesdf[ix, :longopenlimit] = prev_longopen
     tradesdf[ix, :longcloselimit] = prev_longclose
@@ -725,15 +696,47 @@ function gain_limit_reversal!(tradesdf::DataFrame, ix::Integer, label::TradeLabe
     tradesdf[ix, :tradelabel] = ignore
     tradesdf[ix, :labelscore] = scoref
 
-    branch = "none"
-    longsignal = (label in (longopen, longstrongopen)) && (scoref >= Float32(openthreshold))
-    shortsignal = (label in (shortopen, shortstrongopen)) && (scoref >= Float32(openthreshold))
+    longsignal = (label in (longopen, longstrongopen)) && (scoref >= Float32(cfg.openthreshold))
+    shortsignal = (label in (shortopen, shortstrongopen)) && (scoref >= Float32(cfg.openthreshold))
+
+    cols = propertynames(tradesdf)
+    _prevcell(col::Symbol) = (previx >= 1 && (col in cols)) ? tradesdf[previx, col] : missing
+
+    prev_longunfilled = _prevcell(:longunfilled)
+    prev_shortunfilled = _prevcell(:shortunfilled)
+    prev_longamount = _prevcell(:longamount)
+    prev_shortamount = _prevcell(:shortamount)
+    prev_posamount = _prevcell(:posamount)
+    prev_lastopentrade = _prevcell(:lastopentrade)
+    curr_opentime = (:opentime in cols) ? tradesdf[ix, :opentime] : missing
+
+    long_unfilled_active = !ismissing(prev_longunfilled) && (Float32(prev_longunfilled) > 0f0)
+    short_unfilled_active = !ismissing(prev_shortunfilled) && (Float32(prev_shortunfilled) > 0f0)
+    long_unfilled_zero = !ismissing(prev_longunfilled) && (Float32(prev_longunfilled) <= 0f0)
+    short_unfilled_zero = !ismissing(prev_shortunfilled) && (Float32(prev_shortunfilled) <= 0f0)
+
+    long_amount_open = ((!ismissing(prev_longamount) && (Float32(prev_longamount) > 0f0)) || (!ismissing(prev_posamount) && (Float32(prev_posamount) > 0f0)))
+    short_amount_open = ((!ismissing(prev_shortamount) && (Float32(prev_shortamount) < 0f0)) || (!ismissing(prev_posamount) && (Float32(prev_posamount) < 0f0)))
+
+    limitreduction_active = false
+    if !ismissing(prev_lastopentrade) && !ismissing(curr_opentime)
+        elapsed_minutes = Int(div(Dates.value(DateTime(curr_opentime) - DateTime(prev_lastopentrade)), 60000)) # DateTime difference is in milliseconds
+        limitreduction_active = elapsed_minutes >= Int(cfg.maxwindow)
+    end
+
+    # Prevent double-open signaling while a segment is already active. Keep one
+    # active open/close lane at a time so runtime and replay share identical behavior.
+    long_active = _hasguidance(prev_longopen, prev_longclose) && (Float32(prev_longclose) > Float32(prev_longopen))
+    short_active = _hasguidance(prev_shortopen, prev_shortclose) && (Float32(prev_shortclose) < Float32(prev_shortopen))
+    if (longsignal || shortsignal) && (long_active || short_active)
+        longsignal = false
+        shortsignal = false
+    end
 
     if longsignal
-        branch = "long_signal"
-        short_candidate = closef * (1f0 - Float32(buygain))
-        long_open_candidate = closef * (1f0 - Float32(buygain))
-        long_close_candidate = closef * (1f0 + Float32(sellgain))
+        short_candidate = closef * (1f0 - Float32(cfg.buygain))
+        long_open_candidate = closef * (1f0 - Float32(cfg.buygain))
+        long_close_candidate = closef * (1f0 + Float32(cfg.sellgain))
 
         if _should_update_price(_missingf32(prev_shortclose), short_candidate, minpd)
             tradesdf[ix, :shortcloselimit] = short_candidate
@@ -747,11 +750,15 @@ function gain_limit_reversal!(tradesdf::DataFrame, ix::Integer, label::TradeLabe
         # Long-direction rows are encoded by a zero short open limit.
         tradesdf[ix, :shortopenlimit] = 0f0
         tradesdf[ix, :tradelabel] = label
+        if long_amount_open && long_unfilled_zero
+            # Open already filled: convert repeated open signal to long hold.
+            tradesdf[ix, :tradelabel] = longhold
+            return
+        end
     elseif shortsignal
-        branch = "short_signal"
-        long_candidate = closef * (1f0 + Float32(buygain))
-        short_open_candidate = closef * (1f0 + Float32(buygain))
-        short_close_candidate = closef * (1f0 - Float32(sellgain))
+        long_candidate = closef * (1f0 + Float32(cfg.buygain))
+        short_open_candidate = closef * (1f0 + Float32(cfg.buygain))
+        short_close_candidate = closef * (1f0 - Float32(cfg.sellgain))
 
         if _should_update_price(_missingf32(prev_longclose), long_candidate, minpd)
             tradesdf[ix, :longcloselimit] = long_candidate
@@ -765,23 +772,27 @@ function gain_limit_reversal!(tradesdf::DataFrame, ix::Integer, label::TradeLabe
         # Short-direction rows are encoded by a zero long open limit.
         tradesdf[ix, :longopenlimit] = 0f0
         tradesdf[ix, :tradelabel] = label
+        if short_amount_open && short_unfilled_zero
+            # Open already filled: convert repeated open signal to short hold.
+            tradesdf[ix, :tradelabel] = shorthold
+            return
+        end
     else
-        branch = "reduce_limit"
-        if _hasguidance(prev_longopen, prev_longclose) && (Float32(prev_longclose) > Float32(prev_longopen))
-            long_candidate = max(closef, Float32(prev_longclose) * (1f0 - Float32(sellgain) * Float32(limitreduction)))
+        if limitreduction_active && _hasguidance(prev_longopen, prev_longclose) && (Float32(prev_longclose) > Float32(prev_longopen))
+            long_candidate = max(closef, Float32(prev_longclose) * (1f0 - Float32(cfg.sellgain) * Float32(cfg.limitreduction)))
             if _should_update_price(_missingf32(prev_longclose), long_candidate, minpd)
                 tradesdf[ix, :longcloselimit] = long_candidate
             end
         end
-        if _hasguidance(prev_shortopen, prev_shortclose) && (Float32(prev_shortclose) < Float32(prev_shortopen))
-            short_candidate = min(closef, Float32(prev_shortclose) * (1f0 + Float32(sellgain) * Float32(limitreduction)))
+        if limitreduction_active && _hasguidance(prev_shortopen, prev_shortclose) && (Float32(prev_shortclose) < Float32(prev_shortopen))
+            short_candidate = min(closef, Float32(prev_shortclose) * (1f0 + Float32(cfg.sellgain) * Float32(cfg.limitreduction)))
             if _should_update_price(_missingf32(prev_shortclose), short_candidate, minpd)
                 tradesdf[ix, :shortcloselimit] = short_candidate
             end
         end
     end
 
-    return branch
+    return
 end
 
 @inline function _validate_lastix(lastix::Integer, nrows::Integer)::Nothing
@@ -792,14 +803,45 @@ end
 
 function gain_limit_reversal! end
 
+function _executed_open_hit_dt(tradesdf::DataFrame, predictionsdf::AbstractDataFrame, ix::Integer)
+    label = _normalizedtradelabel(tradesdf[ix, :tradelabel])
+    lo = tradesdf[ix, :longopenlimit]
+    so = tradesdf[ix, :shortopenlimit]
+    low = predictionsdf[ix, :low]
+    high = predictionsdf[ix, :high]
+    long_open_hit = islongopenlabel(label) && _openlimitactive(lo) && _price_in_bar(Float32(lo), low, high, :low)
+    short_open_hit = isshortopenlabel(label) && _openlimitactive(so) && _price_in_bar(Float32(so), low, high, :high)
+    @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo), so=$(so), low=$(low), high=$(high)"
+    return (long_open_hit || short_open_hit) ? tradesdf[ix, :opentime] : missing
+end
+
+function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
+    has_long = (:longamount in propertynames(tradesdf)) && !ismissing(tradesdf[ix, :longamount]) && (abs(Float32(tradesdf[ix, :longamount])) > 0f0)
+    has_short = (:shortamount in propertynames(tradesdf)) && !ismissing(tradesdf[ix, :shortamount]) && (abs(Float32(tradesdf[ix, :shortamount])) > 0f0)
+    return has_long || has_short
+end
+
+function _carry_lastopentrade!(tradesdf::DataFrame, ix::Integer)::Nothing
+    if !_row_has_position_amount(tradesdf, ix)
+        tradesdf[ix, :lastopentrade] = missing
+        return nothing
+    end
+    if !ismissing(tradesdf[ix, :lastopentrade])
+        return nothing
+    end
+    for j in (ix - 1):-1:1
+        prev = tradesdf[j, :lastopentrade]
+        if !ismissing(prev)
+            tradesdf[ix, :lastopentrade] = prev
+            break
+        end
+    end
+    return nothing
+end
+
 """Execute per-sample strategy updates and optional gain materialization outside the algorithm implementation."""
-function simulate_gains!(tp::TsTp, lastix::Integer;
+function simulate_gains!(strategy::StrategyConfig, tp::TsTp, lastix::Integer;
     algorithm::Function=gain_limit_reversal!,
-    openthreshold::Real=0.6f0,
-    buygain::Real=0.001f0,
-    sellgain::Real=0.01f0,
-    limitreduction::Real=0f0,
-    minpricedelta::Real=0f0,
     gaindf::Union{Nothing, DataFrame}=nothing,
     makerfee::Real=0f0,
     takerfee::Real=0f0,
@@ -825,21 +867,15 @@ function simulate_gains!(tp::TsTp, lastix::Integer;
     rawlabels = TradeLabel[_normalizedtradelabel(tp.tradesdf[ix, :tradelabel]) for ix in 1:lastix]
     rawscores = Float32[Float32(tp.tradesdf[ix, :labelscore]) for ix in 1:lastix]
 
-    local_minpd = Float32(minpricedelta)
     last_openix = 0
     for ix in 1:lastix
-        algorithm(
-            tp.tradesdf,
-            ix,
-            rawlabels[ix],
-            rawscores[ix],
-            closes[ix];
-            openthreshold=Float32(openthreshold),
-            buygain=buygain,
-            sellgain=sellgain,
-            limitreduction=limitreduction,
-            minpricedelta=local_minpd,
-        )
+        algorithm(strategy, tp.tradesdf, ix, rawlabels[ix], rawscores[ix], closes[ix])
+        exec_open_dt = _executed_open_hit_dt(tp.tradesdf, tp.tradesdf, ix)
+        if !ismissing(exec_open_dt) && _row_has_position_amount(tp.tradesdf, ix)
+            tp.tradesdf[ix, :lastopentrade] = exec_open_dt
+        else
+            _carry_lastopentrade!(tp.tradesdf, ix)
+        end
         if !isnothing(gaindf)
             last_openix = _materialize_gains_sample_from_trades!(gaindf, tp.tradesdf, tp.tradesdf, ix, last_openix; makerfee=makerfee)
         end
@@ -850,7 +886,7 @@ function simulate_gains!(tp::TsTp, lastix::Integer;
     return tp
 end
 
-function _materialize_gains_sample_from_trades!(result::DataFrame, tradesdf::DataFrame, predictionsdf::AbstractDataFrame, ix::Integer, last_openix::Int; makerfee::Real=0f0)::Int
+function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, tradesdf::DataFrame, predictionsdf::AbstractDataFrame, ix::Integer, last_openix::Int; makerfee::Real=0f0)::Int
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
     @assert 1 <= ix <= nrow(predictionsdf) "ix=$(ix) out of bounds for predictions rows=$(nrow(predictionsdf))"
 
@@ -878,15 +914,17 @@ function _materialize_gains_sample_from_trades!(result::DataFrame, tradesdf::Dat
     if last_openix == 0
         #* last_openix is only set the first time a gain segment hits the open bar and not any later hits even with an open signal
         #* that shall be changed if a multi open approach is considered at different entry levels
-        long_open_hit = _openlimitactive(lo) && _price_in_bar(Float32(lo), low, high, :high)
-        short_open_hit = _openlimitactive(so) && _price_in_bar(Float32(so), low, high, :low)
+        long_open_hit = _openlimitactive(lo) && _price_in_bar(Float32(lo), low, high, :low)
+        short_open_hit = _openlimitactive(so) && _price_in_bar(Float32(so), low, high, :high)
         @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo), so=$(so), low=$(low), high=$(high)"
         if long_open_hit || short_open_hit
             last_openix = ix
         end
     end
 
+    open_exec_dt = missing
     if last_openix > 0
+        open_exec_dt = tradesdf[last_openix, :opentime]
         start_lo = tradesdf[last_openix, :longopenlimit]
         start_so = tradesdf[last_openix, :shortopenlimit]
         start_is_long = _openlimitactive(start_lo)
@@ -902,7 +940,9 @@ function _materialize_gains_sample_from_trades!(result::DataFrame, tradesdf::Dat
                 @assert openprice > 0f0 "Invalid long openprice at startix=$(startix): openprice=$(openprice)"
                 minutes = Int(div(Dates.value(time - starttime), 60000)) + 1
                 gain = (Float32(lc) - openprice) / openprice
-                push!(result, (up, (ix - startix + 1), minutes, gain, (gain - 2f0 * Float32(makerfee)), starttime, time, startix, ix))
+                if !isnothing(result)
+                    push!(result, (up, (ix - startix + 1), minutes, gain, (gain - 2f0 * Float32(makerfee)), starttime, time, startix, ix))
+                end
                 last_openix = 0
             end
         else
@@ -914,16 +954,12 @@ function _materialize_gains_sample_from_trades!(result::DataFrame, tradesdf::Dat
                 @assert openprice > 0f0 "Invalid short openprice at startix=$(startix): openprice=$(openprice)"
                 minutes = Int(div(Dates.value(time - starttime), 60000)) + 1
                 gain = -(Float32(sc) - openprice) / openprice
-                push!(result, (down, (ix - startix + 1), minutes, gain, (gain - 2f0 * Float32(makerfee)), starttime, time, startix, ix))
+                if !isnothing(result)
+                    push!(result, (down, (ix - startix + 1), minutes, gain, (gain - 2f0 * Float32(makerfee)), starttime, time, startix, ix))
+                end
                 last_openix = 0
             end
         end
-    end
-
-    if last_openix > 0
-        _setlastopentrade!(tradesdf, ix, tradesdf[last_openix, :opentime])
-    else
-        _setlastopentrade!(tradesdf, ix, missing)
     end
 
     return last_openix
@@ -936,9 +972,9 @@ Synchronize one pair-scoped Trades DataFrame from prediction inputs and metadata
 - Drops close and adds labelscore and tradelabel as copies of the already present columns score and labelto produce a Trades DataFrame.
 - adds from metadata set, predicted, rangeid, openthreshold, closethreshold
 - adds via Xch.settrade->Xch.tradesdf_contributors all Xch columns: (opentime which is already in), pair, 
-    - longid, longstatus, longunfilled, longpriceavg, longmsgid, 
-    - shortid, shortstatus, shortunfilled, shortpriceavg, shortmsgid
-    - postype, posleverage, posamount, quoteprice, maintmargin, equity, balance, freemargin, freequota 
+    - longid, longstatus, longunfilled, longpriceavg, longmsg,
+    - shortid, shortstatus, shortunfilled, shortpriceavg, shortmsg
+    - postype, posamount, quoteprice, maintmargin, equity, balance, freemargin, freequota
 - adds close to TpTs as separate vector  
 """
 function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector;
@@ -976,11 +1012,10 @@ function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, 
     end
 
     if n > 0
-        fill!(tp.tradesdf[!, :lastopentrade], missing)
-        fill!(tp.tradesdf[!, :longopenlimit], missing)
-        fill!(tp.tradesdf[!, :longcloselimit], missing)
-        fill!(tp.tradesdf[!, :shortopenlimit], missing)
-        fill!(tp.tradesdf[!, :shortcloselimit], missing)
+        fill!(tp.tradesdf[!, :longopenlimit], 0f0)
+        fill!(tp.tradesdf[!, :longcloselimit], 0f0)
+        fill!(tp.tradesdf[!, :shortopenlimit], 0f0)
+        fill!(tp.tradesdf[!, :shortcloselimit], 0f0)
     end
 
     tp.tradesdf[!, :labelscore] = Float32.(scores)
@@ -1048,22 +1083,16 @@ function processreplaygains!(tp::TsTp;
     gaindf = emptygaindf()
 
     if lastix > 0
-        minpd = strategy.minpricedelta
         try
-            simulate_gains!(tp, lastix;
+            simulate_gains!(strategy, tp, lastix;
                 algorithm=strategy.algorithm,
-                openthreshold=Float32(openthreshold),
-                buygain=strategy.buygain,
-                sellgain=strategy.sellgain,
-                limitreduction=strategy.limitreduction,
-                minpricedelta=minpd,
                 gaindf=gaindf,
                 makerfee=strategy.makerfee,
                 takerfee=strategy.takerfee,
             )
         catch err
             if err isa MethodError
-                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real; openthreshold, buygain, sellgain, limitreduction, minpricedelta)."))
+                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real)."))
             end
             rethrow(err)
         end

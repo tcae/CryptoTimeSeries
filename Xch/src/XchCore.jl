@@ -5,9 +5,9 @@
 
 module Xch
 
-using Dates, DataFrames, DataAPI, JDF, CSV, JSON3, Logging, InlineStrings, UUIDs
+using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
-using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeLog
+using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeLog, Targets
 import Ohlcv: intervalperiod
 
 const authorization = Ref{Any}(nothing)
@@ -70,14 +70,6 @@ const EXCHANGE_BYBIT::String = "Bybit"
 const EXCHANGE_BYBITSIM::String = "BybitSim"
 const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
 const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
-
-"Canonical error-catalog entry loaded from an `_errors.json` file."
-struct ErrorCatalogEntry
-    id::UInt8
-    code::String
-    message::String
-    issuer::String
-end
 
 function _normalizeexchange(exchange::AbstractString)::String
     ex = lowercase(strip(exchange))
@@ -216,7 +208,6 @@ mutable struct XchCache
     assets  # :: DataFrame
     bases  # ::Dict{String, Ohlcv.OhlcvData}
     pairstates::Dict{String, DataFrame}  # keyed by canonical trading pair, stores phase-2 Trades DataFrames
-    messages::Dict{String, Vector{ErrorCatalogEntry}}  # keyed by issuer, stores loaded and observed issue catalog entries
     bc  # exchange specific cache, e.g. Bybit.BybitCache or KrakenSpot.KrakenSpotCache
     exchange::String
     defaultquote::String
@@ -235,16 +226,14 @@ mutable struct XchCache
         # simmode = nosimulation # uses production mode of Bybit without any exchange simulation
         exchange = _normalizeexchange(exchange)
         dq = isnothing(defaultquote) ? _defaultquote(exchange) : uppercase(String(defaultquote))
-        messages = load_messages(exchange; root=EnvConfig.coinspath())
         simmode = if EnvConfig.configmode == production
             nosimulation
         else
             bybitsim
         end
-        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), Dict{String, DataFrame}(), messages, _exchangecache(exchange, simmode), exchange, dq, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
+        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), Dict{String, DataFrame}(), _exchangecache(exchange, simmode), exchange, dq, 0.001, startdt, nothing, enddt, mnemonic, Dict(), ExchangeRouting(), Dict{String, Any}())
         EnvConfig.setpairquote!(dq)
         xc.mc[:simmode] = simmode
-        xc.mc[:message_catalog_root] = EnvConfig.coinspath()
         xc.mc[:trades_v1_required_columns] = TRADES_V1_REQUIRED_COLUMNS
         _setexchangepath!(xc)
         if hasproperty(xc.bc, :syminfodf) && !isnothing(xc.bc.syminfodf)
@@ -300,163 +289,12 @@ function tradingpairkey(base::AbstractString, quotecoin::AbstractString)::String
     return uppercase(String(base)) * uppercase(String(quotecoin))
 end
 
-function _messagecatalogroot(root::AbstractString, issuer::AbstractString)::String
-    if issuer == "Trading"
-        return normpath(joinpath(root, "Trading"))
-    end
-    return normpath(joinpath(root, _coinsfoldertoken(issuer)))
-end
-
-function _messagecatalogpath(root::AbstractString, issuer::AbstractString)::String
-    return normpath(joinpath(_messagecatalogroot(root, issuer), "_errors.json"))
-end
-
-function _issueridrange(issuer::AbstractString)
-    if issuer == "Trading"
-        return 1:49
-    elseif issuer == EXCHANGE_BYBIT
-        return 50:99
-    elseif issuer == EXCHANGE_KRAKENSPOT
-        return 100:149
-    elseif issuer == EXCHANGE_KRAKENFUTURES
-        return 150:255
-    end
-    return 1:255
-end
-
-function _catalogentrydict(entry::ErrorCatalogEntry)
-    return Dict(
-        "id" => Int(entry.id),
-        "code" => entry.code,
-        "message" => entry.message,
-        "issuer" => entry.issuer,
-    )
-end
-
-function _jsonproperty(value, field::AbstractString, default=nothing)
-    key = Symbol(field)
-    if hasproperty(value, key)
-        return getproperty(value, key)
-    end
-    if value isa AbstractDict
-        return get(value, field, default)
-    end
-    return default
-end
-
-function _loadcatalogentries(issuer::AbstractString, raw)
-    entries = ErrorCatalogEntry[]
-    idrange = _issueridrange(issuer)
-    nextid = first(idrange)
-    usedids = Set{UInt8}()
-    rows = if raw isa AbstractVector
-        raw
-    elseif raw isa AbstractDict
-        if haskey(raw, issuer)
-            raw[issuer]
-        elseif haskey(raw, "messages")
-            raw["messages"]
-        else
-            collect(values(raw))
-        end
-    else
-        Any[]
-    end
-
-    for row in rows
-        code = String(_jsonproperty(row, "code", ""))
-        message = String(_jsonproperty(row, "message", ""))
-        rawid = _jsonproperty(row, "id", nothing)
-        if isnothing(rawid) || ismissing(rawid) || (rawid isa AbstractString && isempty(strip(String(rawid))))
-            while (UInt8(nextid) in usedids) && (nextid <= last(idrange))
-                nextid += 1
-            end
-            nextid > last(idrange) && error("error catalog id overflow for issuer=$(issuer): next id $(nextid) exceeds range $(first(idrange)):$(last(idrange))")
-            id = UInt8(nextid)
-            push!(entries, ErrorCatalogEntry(id, code, message, String(issuer)))
-            push!(usedids, id)
-            nextid += 1
-        else
-            idvalue = rawid isa Integer ? Int(rawid) : parse(Int, String(rawid))
-            id = UInt8(idvalue)
-            (id in usedids) && error("duplicate error catalog id $(id) for issuer=$(issuer)")
-            (Int(id) < first(idrange) || Int(id) > last(idrange)) && error("error catalog id $(id) for issuer=$(issuer) is outside the allowed range $(first(idrange)):$(last(idrange))")
-            push!(entries, ErrorCatalogEntry(id, code, message, String(issuer)))
-            push!(usedids, id)
-            nextid = max(nextid, Int(id) + 1)
-        end
-    end
-    return entries
-end
-
-function _readcatalogfile(path::AbstractString)
-    if !isfile(path)
-        return nothing
-    end
-    text = read(path, String)
-    isempty(strip(text)) && return nothing
-    return JSON3.read(text)
-end
-
-"Load general and exchange specific issue catalog entries from the shared coin root."
-function load_messages(exchange::AbstractString; root::AbstractString=EnvConfig.coinspath())::Dict{String, Vector{ErrorCatalogEntry}}
-    exchange = _normalizeexchange(exchange)
-    messages = Dict{String, Vector{ErrorCatalogEntry}}(
-        "Trading" => ErrorCatalogEntry[],
-        exchange => ErrorCatalogEntry[],
-    )
-    for issuer in ("Trading", exchange)
-        path = _messagecatalogpath(root, issuer)
-        raw = _readcatalogfile(path)
-        if !isnothing(raw)
-            messages[issuer] = _loadcatalogentries(issuer, raw)
-        end
-    end
-    return messages
-end
-
-"Reload issue catalogs into the cache using the cache's configured root."
-load_messages(xc::XchCache) = load_messages(exchange(xc); root=get(xc.mc, :message_catalog_root, EnvConfig.coinspath()))
-
-function _persist_messages!(xc::XchCache, issuer::AbstractString)
-    root = get(xc.mc, :message_catalog_root, EnvConfig.coinspath())
-    path = _messagecatalogpath(root, issuer)
-    mkpath(dirname(path))
-    entries = sort(get!(xc.messages, String(issuer), ErrorCatalogEntry[]), by = e -> e.id)
-    payload = Dict(String(issuer) => [_catalogentrydict(entry) for entry in entries])
-    open(path, "w") do io
-        JSON3.write(io, payload)
-    end
-    return path
-end
-
-"Log a trading issue, record it in the per-issuer catalog, and persist new catalog entries."
-function log_trading_issue(xc::XchCache, issuer::AbstractString, message::AbstractString)
-    issuer = String(issuer)
-    message = String(message)
-    haskey(xc.messages, issuer) || (xc.messages[issuer] = ErrorCatalogEntry[])
-    entries = xc.messages[issuer]
-    entry = nothing
-    for candidate in entries
-        if occursin(candidate.message, message)
-            entry = candidate
-            break
-        end
-    end
-    if isnothing(entry)
-        idrange = _issueridrange(issuer)
-        usedids = Set(entry.id for entry in entries)
-        nextid = first(idrange)
-        while (UInt8(nextid) in usedids) && (nextid <= last(idrange))
-            nextid += 1
-        end
-        nextid > last(idrange) && error("error catalog id overflow for issuer=$(issuer): next id $(nextid) exceeds range $(first(idrange)):$(last(idrange))")
-        entry = ErrorCatalogEntry(UInt8(nextid), "", message, issuer)
-        push!(entries, entry)
-        _persist_messages!(xc, issuer)
-    end
-    @warn "Xch.$(ttstr(xc)) $(Int(entry.id)) $(issuer): $(message)"
-    return entry
+"Log a trading issue and return the normalized message text for direct storage in Trades columns."
+function log_trading_issue(xc::XchCache, issuer::AbstractString, message::AbstractString)::String
+    issuerstr = String(issuer)
+    messagestr = String(message)
+    @warn "Xch.$(ttstr(xc)) $(issuerstr): $(messagestr)"
+    return _normalized_order_msg(messagestr)
 end
 
 log_trading_issue(issuer::AbstractString, message::AbstractString) = error("log_trading_issue requires an XchCache; call log_trading_issue(xc, issuer, message)")
@@ -480,7 +318,7 @@ function hastrades(xc::XchCache, base::AbstractString, quotecoin::AbstractString
     return hastrades(xc, tradingpairkey(base, quotecoin))
 end
 
-"""Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`."""
+"""Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestampderived from sample data."""
 function tradesdf_opentime(df::DataFrame)::DataFrame
     if :opentime ∉ propertynames(df)
         df[!, :opentime] = DateTime[]
@@ -488,164 +326,206 @@ function tradesdf_opentime(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{Union{Missing,String}}`."""
+"""Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: DateTime of the last open trade event for the pair if position amount > 0, otherwise `missing`."""
+function tradesdf_lastopentrade(df::DataFrame)::DataFrame
+    if :lastopentrade ∉ propertynames(df)
+        df[!, :lastopentrade] = Vector{Union{Missing, DateTime}}(missing, nrow(df))
+    end
+    return df
+end
+
+"""Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Required identity/routing column of the trading pair used by Xch."""
 function tradesdf_pair(df::DataFrame)::DataFrame
     if :pair ∉ propertynames(df)
-        df[!, :pair] = CategoricalVector(Vector{Union{Missing, String}}(missing, nrow(df)))
+        df[!, :pair] = CategoricalVector(fill("none", nrow(df)))
     elseif !(df[!, :pair] isa CategoricalVector)
-        df[!, :pair] = CategoricalVector(Union{Missing, String}[ismissing(v) ? missing : String(v) for v in df[!, :pair]])
+        df[!, :pair] = CategoricalVector(String[(ismissing(v) || isempty(strip(String(v)))) ? "none" : String(v) for v in df[!, :pair]])
+    else
+        df[!, :pair] = CategoricalVector(String[(ismissing(v) || isempty(strip(String(v)))) ? "none" : String(v) for v in df[!, :pair]])
     end
     return df
 end
 
-"""Ensure Trades column `longid` exists. Owner: Xch. Eltype: `Union{Missing,String}`."""
+const NO_ORDER_ID = "none"
+const NO_ORDER_MSG = "none"
+
+@inline _normalized_order_msg(v)::String = begin
+    s = ismissing(v) ? "" : strip(String(v))
+    return (isempty(s) || lowercase(s) == "none") ? NO_ORDER_MSG : s
+end
+
+"""Ensure Trades column `longid` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
 function tradesdf_longid(df::DataFrame)::DataFrame
     if :longid ∉ propertynames(df)
-        df[!, :longid] = Vector{Union{Missing, String}}(missing, nrow(df))
+        df[!, :longid] = CategoricalVector(fill(NO_ORDER_ID, nrow(df)))
+    elseif !(df[!, :longid] isa CategoricalVector)
+        df[!, :longid] = CategoricalVector(String[
+            (ismissing(v) || isempty(strip(String(v)))) ? NO_ORDER_ID : String(v)
+            for v in df[!, :longid]
+        ])
+    else
+        df[!, :longid] = CategoricalVector(String[
+            (ismissing(v) || isempty(strip(String(v)))) ? NO_ORDER_ID : String(v)
+            for v in df[!, :longid]
+        ])
     end
     return df
 end
 
-"""Ensure Trades column `longstatus` exists. Owner: Xch. Eltype: `String`."""
+"""Ensure Trades column `longstatus` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: order status: `none`, `Submitted`, `Rejected`, `Missing`, `Error`."""
 function tradesdf_longstatus(df::DataFrame)::DataFrame
     if :longstatus ∉ propertynames(df)
-        df[!, :longstatus] = fill("none", nrow(df))
+        df[!, :longstatus] = CategoricalVector(fill("none", nrow(df)))
+    elseif !(df[!, :longstatus] isa CategoricalVector)
+        df[!, :longstatus] = CategoricalVector(String[ismissing(v) ? "none" : String(v) for v in df[!, :longstatus]])
     end
     return df
 end
 
-"""Ensure Trades column `longunfilled` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `longunfilled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation."""
 function tradesdf_longunfilled(df::DataFrame)::DataFrame
     if :longunfilled ∉ propertynames(df)
-        df[!, :longunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :longunfilled] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `longpriceavg` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `longpriceavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status."""
 function tradesdf_longpriceavg(df::DataFrame)::DataFrame
     if :longpriceavg ∉ propertynames(df)
-        df[!, :longpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :longpriceavg] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `longmsgid` exists. Owner: Xch. Eltype: `Union{Missing,UInt8}`."""
-function tradesdf_longmsgid(df::DataFrame)::DataFrame
-    if :longmsgid ∉ propertynames(df)
-        df[!, :longmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+"""Ensure Trades column `longmsg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
+function tradesdf_longmsg(df::DataFrame)::DataFrame
+    if :longmsg ∉ propertynames(df)
+        df[!, :longmsg] = CategoricalVector(fill(NO_ORDER_MSG, nrow(df)))
+    elseif !(df[!, :longmsg] isa CategoricalVector)
+        df[!, :longmsg] = CategoricalVector(String[_normalized_order_msg(v) for v in df[!, :longmsg]])
+    else
+        df[!, :longmsg] = CategoricalVector(String[_normalized_order_msg(v) for v in df[!, :longmsg]])
     end
     return df
 end
 
-"""Ensure Trades column `shortid` exists. Owner: Xch. Eltype: `Union{Missing,String}`."""
+"""Ensure Trades column `shortid` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
 function tradesdf_shortid(df::DataFrame)::DataFrame
     if :shortid ∉ propertynames(df)
-        df[!, :shortid] = Vector{Union{Missing, String}}(missing, nrow(df))
+        df[!, :shortid] = CategoricalVector(fill(NO_ORDER_ID, nrow(df)))
+    elseif !(df[!, :shortid] isa CategoricalVector)
+        df[!, :shortid] = CategoricalVector(String[
+            (ismissing(v) || isempty(strip(String(v)))) ? NO_ORDER_ID : String(v)
+            for v in df[!, :shortid]
+        ])
+    else
+        df[!, :shortid] = CategoricalVector(String[
+            (ismissing(v) || isempty(strip(String(v)))) ? NO_ORDER_ID : String(v)
+            for v in df[!, :shortid]
+        ])
     end
     return df
 end
 
-"""Ensure Trades column `shortstatus` exists. Owner: Xch. Eltype: `String`."""
+"""Ensure Trades column `shortstatus` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: order status: `none`, `Submitted`, `Rejected`, `Missing`, `Error`."""
 function tradesdf_shortstatus(df::DataFrame)::DataFrame
     if :shortstatus ∉ propertynames(df)
-        df[!, :shortstatus] = fill("none", nrow(df))
+        df[!, :shortstatus] = CategoricalVector(fill("none", nrow(df)))
+    elseif !(df[!, :shortstatus] isa CategoricalVector)
+        df[!, :shortstatus] = CategoricalVector(String[ismissing(v) ? "none" : String(v) for v in df[!, :shortstatus]])
     end
     return df
 end
 
-"""Ensure Trades column `shortunfilled` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `shortunfilled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation."""
 function tradesdf_shortunfilled(df::DataFrame)::DataFrame
     if :shortunfilled ∉ propertynames(df)
-        df[!, :shortunfilled] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :shortunfilled] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `shortpriceavg` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `shortpriceavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status."""
 function tradesdf_shortpriceavg(df::DataFrame)::DataFrame
     if :shortpriceavg ∉ propertynames(df)
-        df[!, :shortpriceavg] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :shortpriceavg] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `shortmsgid` exists. Owner: Xch. Eltype: `Union{Missing,UInt8}`."""
-function tradesdf_shortmsgid(df::DataFrame)::DataFrame
-    if :shortmsgid ∉ propertynames(df)
-        df[!, :shortmsgid] = Vector{Union{Missing, UInt8}}(missing, nrow(df))
+"""Ensure Trades column `shortmsg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
+function tradesdf_shortmsg(df::DataFrame)::DataFrame
+    if :shortmsg ∉ propertynames(df)
+        df[!, :shortmsg] = CategoricalVector(fill(NO_ORDER_MSG, nrow(df)))
+    elseif !(df[!, :shortmsg] isa CategoricalVector)
+        df[!, :shortmsg] = CategoricalVector(String[_normalized_order_msg(v) for v in df[!, :shortmsg]])
+    else
+        df[!, :shortmsg] = CategoricalVector(String[_normalized_order_msg(v) for v in df[!, :shortmsg]])
     end
     return df
 end
 
-"""Ensure Trades column `postype` exists. Owner: Xch. Eltype: `String`."""
+"""Ensure Trades column `postype` exists. Owner: Xch. Eltype: `Targets.TrendPhase`. Note: position direction."""
 function tradesdf_postype(df::DataFrame)::DataFrame
     if :postype ∉ propertynames(df)
-        df[!, :postype] = fill("flat", nrow(df))
+        df[!, :postype] = fill(Targets.flat, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `posleverage` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
-function tradesdf_posleverage(df::DataFrame)::DataFrame
-    if :posleverage ∉ propertynames(df)
-        df[!, :posleverage] = Vector{Union{Missing, Float32}}(missing, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `posamount` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `posamount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Position amount of trading pair."""
 function tradesdf_posamount(df::DataFrame)::DataFrame
     if :posamount ∉ propertynames(df)
-        df[!, :posamount] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :posamount] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `quoteprice` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `quoteprice` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Quote price of trading pair."""
 function tradesdf_quoteprice(df::DataFrame)::DataFrame
     if :quoteprice ∉ propertynames(df)
-        df[!, :quoteprice] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :quoteprice] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `maintmargin` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `maintmargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Maintenance margin of position."""
 function tradesdf_maintmargin(df::DataFrame)::DataFrame
     if :maintmargin ∉ propertynames(df)
-        df[!, :maintmargin] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :maintmargin] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `equity` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `equity` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account equity amount of trading pair base."""
 function tradesdf_equity(df::DataFrame)::DataFrame
     if :equity ∉ propertynames(df)
-        df[!, :equity] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :equity] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `balance` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `balance` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account balance amount of trading pair base."""
 function tradesdf_balance(df::DataFrame)::DataFrame
     if :balance ∉ propertynames(df)
-        df[!, :balance] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :balance] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `freemargin` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `freemargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free margin amount of trading pair base."""
 function tradesdf_freemargin(df::DataFrame)::DataFrame
     if :freemargin ∉ propertynames(df)
-        df[!, :freemargin] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :freemargin] = fill(0f0, nrow(df))
     end
     return df
 end
 
-"""Ensure Trades column `freequote` exists. Owner: Xch. Eltype: `Union{Missing,Float32}`."""
+"""Ensure Trades column `freequote` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free quote amount of trading pair base."""
 function tradesdf_freequote(df::DataFrame)::DataFrame
     if :freequote ∉ propertynames(df)
-        df[!, :freequote] = Vector{Union{Missing, Float32}}(missing, nrow(df))
+        df[!, :freequote] = fill(0f0, nrow(df))
     end
     return df
 end
@@ -654,19 +534,19 @@ end
 function tradesdf_contributors()::Vector{Function}
     return Function[
         tradesdf_opentime,
+        tradesdf_lastopentrade,
         tradesdf_pair,
         tradesdf_longid,
         tradesdf_longstatus,
         tradesdf_longunfilled,
         tradesdf_longpriceavg,
-        tradesdf_longmsgid,
+        tradesdf_longmsg,
         tradesdf_shortid,
         tradesdf_shortstatus,
         tradesdf_shortunfilled,
         tradesdf_shortpriceavg,
-        tradesdf_shortmsgid,
+        tradesdf_shortmsg,
         tradesdf_postype,
-        tradesdf_posleverage,
         tradesdf_posamount,
         tradesdf_quoteprice,
         tradesdf_maintmargin,
@@ -678,10 +558,10 @@ function tradesdf_contributors()::Vector{Function}
 end
 
 const TRADES_V1_REQUIRED_COLUMNS = (
-    :opentime, :pair,
-    :longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid,
-    :shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsgid,
-    :postype, :posleverage, :posamount, :quoteprice, :maintmargin,
+    :opentime, :lastopentrade, :pair,
+    :longid, :longstatus, :longunfilled, :longpriceavg, :longmsg,
+    :shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsg,
+    :postype, :posamount, :quoteprice, :maintmargin,
     :equity, :balance, :freemargin, :freequote,
 )
 
@@ -817,7 +697,10 @@ function _ensuretradesidentity!(df::DataFrame, pairkey::AbstractString; basekey:
     if :pair ∉ propertynames(df)
         df[!, :pair] = fill(pkey, nrow(df))
     else
-        df[!, :pair] = [ismissing(v) || isempty(strip(String(v))) ? pkey : String(v) for v in df[!, :pair]]
+        df[!, :pair] = [
+            (ismissing(v) || isempty(strip(String(v))) || (uppercase(strip(String(v))) == "NONE")) ? pkey : String(v)
+            for v in df[!, :pair]
+        ]
     end
 
     return df
@@ -2691,11 +2574,9 @@ function _pairfromtradesrow(tradesdf::DataFrame, ix::Integer)
         pair = String(tradesdf[ix, :pair])
         bq = basequote(pair)
         !isnothing(bq) && return bq
+        error("trades row pair=$(pair) is not a valid base-quote symbol")
     end
-    if _hascol(tradesdf, :coin)
-        return (basecoin=uppercase(String(tradesdf[ix, :coin])), quotecoin=uppercase(String(EnvConfig.pairquote)))
-    end
-    error("trades row must provide :pair or :coin for request processing")
+    error("trades row must provide :pair for request processing")
 end
 
 function _ordersidefromaction(action::Symbol)::String
@@ -2729,34 +2610,64 @@ function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct, quotepr
     tradesdf[ix, :balance] = Float32(acct.free_quote)
     tradesdf[ix, :freemargin] = Float32(acct.free_margin_quote)
     tradesdf[ix, :freequote] = Float32(acct.free_quote)
-    if !isnothing(quoteprice) && !ismissing(quoteprice)
-        tradesdf[ix, :quoteprice] = Float32(quoteprice)
-    end
+    tradesdf[ix, :quoteprice] = (!isnothing(quoteprice) && !ismissing(quoteprice)) ? Float32(quoteprice) : 0f0
     return nothing
 end
 
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
-    entry = log_trading_issue(xc, "Trading", message)
+    logged = log_trading_issue(xc, "Trading", message)
     if action in [:long_open, :long_close]
         tradesdf[ix, :longstatus] = "Rejected"
-        tradesdf[ix, :longmsgid] = entry.id
+        tradesdf[ix, :longmsg] = logged
     else
         tradesdf[ix, :shortstatus] = "Rejected"
-        tradesdf[ix, :shortmsgid] = entry.id
+        tradesdf[ix, :shortmsg] = logged
     end
-    return entry
+    return logged
+end
+
+@inline function _is_open_label(label)::Bool
+    return label in (Targets.longopen, Targets.longstrongopen, Targets.shortopen, Targets.shortstrongopen)
+end
+
+function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
+    has_long = _hascol(tradesdf, :longamount) && !ismissing(tradesdf[ix, :longamount]) && (abs(Float32(tradesdf[ix, :longamount])) > 0f0)
+    has_short = _hascol(tradesdf, :shortamount) && !ismissing(tradesdf[ix, :shortamount]) && (abs(Float32(tradesdf[ix, :shortamount])) > 0f0)
+    return has_long || has_short
+end
+
+function _carry_lastopentrade_from_previous!(tradesdf::DataFrame, ix::Integer)
+    if !_row_has_position_amount(tradesdf, ix)
+        tradesdf[ix, :lastopentrade] = missing
+        return nothing
+    end
+    if !ismissing(tradesdf[ix, :lastopentrade])
+        return nothing
+    end
+    for j in (ix - 1):-1:1
+        prev = tradesdf[j, :lastopentrade]
+        if !ismissing(prev)
+            tradesdf[ix, :lastopentrade] = prev
+            break
+        end
+    end
+    return nothing
 end
 
 "Synchronize one trades row's exchange feedback columns from current order ids."
 function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent::Bool=true)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
 
+    _carry_lastopentrade_from_previous!(tradesdf, ix)
+    row_is_open_intent = _is_open_label(tradesdf[ix, :tradelabel])
+
     for (idcol, stcol, unfilledcol, avgcol, msgcol) in [
-        (:longid, :longstatus, :longunfilled, :longpriceavg, :longmsgid),
-        (:shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsgid),
+        (:longid, :longstatus, :longunfilled, :longpriceavg, :longmsg),
+        (:shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsg),
     ]
         oid = tradesdf[ix, idcol]
-        (ismissing(oid) || isnothing(oid)) && continue
+        oids = String(oid)
+        (lowercase(strip(oids)) == NO_ORDER_ID || isempty(strip(oids))) && continue
         info = getorder(xc, String(oid); auditevent=auditevent)
         if isnothing(info)
             tradesdf[ix, stcol] = "Missing"
@@ -2765,7 +2676,11 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         status = hasproperty(info, :status) ? String(info.status) : "Unknown"
         tradesdf[ix, stcol] = status
         if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
-            tradesdf[ix, unfilledcol] = Float32(max(0.0, Float64(info.baseqty) - Float64(info.executedqty)))
+            executed = Float64(info.executedqty)
+            tradesdf[ix, unfilledcol] = Float32(max(0.0, Float64(info.baseqty) - executed))
+            if row_is_open_intent && (executed > 0.0)
+                tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
+            end
         end
         if hasproperty(info, :avgprice) && !ismissing(info.avgprice)
             tradesdf[ix, avgcol] = Float32(info.avgprice)
@@ -2773,8 +2688,7 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         if hasproperty(info, :rejectreason)
             rr = String(info.rejectreason)
             if !isempty(strip(rr)) && (uppercase(rr) != "NO ERROR")
-                entry = log_trading_issue(xc, exchange(xc), rr)
-                tradesdf[ix, msgcol] = entry.id
+                tradesdf[ix, msgcol] = log_trading_issue(xc, exchange(xc), rr)
             end
         end
     end
@@ -2790,7 +2704,8 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     base = pair.basecoin
     quotecoin = pair.quotecoin
     labelval = tradesdf[ix, :tradelabel]
-    labelstr = ismissing(labelval) ? "ignore" : lowercase(String(Symbol(labelval)))
+    @assert labelval isa Targets.TradeLabel "tradelabel must be Targets.TradeLabel; got labelval=$(labelval) of type $(typeof(labelval))"
+    labelstr = lowercase(string(labelval))
     action = if labelstr in ["longopen", "longstrongopen"]
         :long_open
     elseif labelstr in ["longclose", "longstrongclose"]
@@ -2891,12 +2806,12 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             oid = closeorder(xc, base; positionside=:short, limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage), reduceonly=true)
         end
     catch err
-        entry = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
+        logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
         if action in [:long_open, :long_close]
-            tradesdf[ix, :longmsgid] = entry.id
+            tradesdf[ix, :longmsg] = logged
             tradesdf[ix, :longstatus] = "Error"
         else
-            tradesdf[ix, :shortmsgid] = entry.id
+            tradesdf[ix, :shortmsg] = logged
             tradesdf[ix, :shortstatus] = "Error"
         end
         return (accepted=false, action=action, reason="exchange_error", error=sprint(showerror, err))
@@ -2911,9 +2826,9 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     tradesdf[ix, stcol] = "Submitted"
     tradesdf[ix, unfilledcol] = amount
     tradesdf[ix, avgcol] = missing
-    tradesdf[ix, :postype] = action in [:long_open, :long_close] ? "long" : "short"
+    _carry_lastopentrade_from_previous!(tradesdf, ix)
+    tradesdf[ix, :postype] = action in [:long_open, :long_close] ? Targets.up : Targets.down
     tradesdf[ix, :posamount] = amount
-    tradesdf[ix, :posleverage] = leverage > 0 ? Float32(leverage) : missing
     _apply_accountsnapshot!(tradesdf, ix, acct, refprice)
     return (accepted=true, action=action, orderid=String(oid))
 end

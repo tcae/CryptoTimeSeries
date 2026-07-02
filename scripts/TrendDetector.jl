@@ -489,8 +489,11 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
     return resultsdf
 end
 
-function addgainadmin!(gdf, coin, sampleset, predicted, rangeid, openthreshold, closethreshold)
-    gdf[!, :coin] = CategoricalVector(fill(coin, size(gdf, 1)))
+function addgainadmin!(gdf, coin, sampleset, predicted, rangeid, openthreshold, closethreshold; pair=nothing)
+    coinstr = String(coin)
+    pairstr = isnothing(pair) ? Xch.tradingpairkey(coinstr, EnvConfig.pairquote) : String(pair)
+    gdf[!, :coin] = CategoricalVector(fill(coinstr, size(gdf, 1)))
+    gdf[!, :pair] = fill(pairstr, size(gdf, 1))
     gdf[!, :set] = fill(sampleset, size(gdf, 1))
     gdf[!, :predicted] = fill(predicted, size(gdf, 1))
     gdf[!, :rangeid] = fill(rangeid, size(gdf, 1))
@@ -541,81 +544,11 @@ function getgainsdf(cfg::TrendDetectorConfig)
     xc = Xch.XchCache(startdt=cfg.startdt, enddt=cfg.enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), tradesdf_contributors()))
 
-    rangegroups = groupby(resultsdf, :rangeid)
+    # Range ids can collide across independently cached coins/runs. Replay must
+    # stay scoped to coin+set+rangeid to avoid mixing samples across ranges.
+    rangegroups = groupby(resultsdf, [:coin, :set, :rangeid])
     gainparts = DataFrame[]
     sizehint!(gainparts, (length(GAIN_THRESHOLDS) + 1) * length(rangegroups))
-
-    # Diagnostics for understanding gain materialization differences per coin/range/threshold.
-    diag_coin = String[]
-    diag_set = String[]
-    diag_rangeid = Int[]
-    diag_predicted = Bool[]
-    diag_openthreshold = Float32[]
-    diag_closethreshold = Float32[]
-    diag_input_rows = Int[]
-    diag_open_signal_rows = Int[]
-    diag_close_signal_rows = Int[]
-    diag_gain_rows = Int[]
-    diag_long_guidance_rows = Int[]
-    diag_short_guidance_rows = Int[]
-    diag_long_open_touch_rows = Int[]
-    diag_long_close_touch_rows = Int[]
-    diag_short_open_touch_rows = Int[]
-    diag_short_close_touch_rows = Int[]
-
-    _hasguidance_local(o, c) = (!ismissing(o) && !ismissing(c) && (Float32(o) > 0f0) && (Float32(c) > 0f0))
-    _touch_high_local(price, high) = (!ismissing(price) && !ismissing(high) && (Float32(high) >= Float32(price)))
-    _touch_low_local(price, low) = (!ismissing(price) && !ismissing(low) && (Float32(low) <= Float32(price)))
-
-    function _filltouchdiag(tradesdf::AbstractDataFrame, barsdf::AbstractDataFrame)
-        long_guidance_rows = long_open_touch_rows = long_close_touch_rows = 0
-        short_guidance_rows = short_open_touch_rows = short_close_touch_rows = 0
-        required = (:longopenlimit in names(tradesdf)) && (:longcloselimit in names(tradesdf)) && (:shortopenlimit in names(tradesdf)) && (:shortcloselimit in names(tradesdf)) && (:high in names(barsdf)) && (:low in names(barsdf))
-        if !required
-            return (0, 0, 0, 0, 0, 0)
-        end
-        upto = min(nrow(tradesdf), nrow(barsdf))
-        for ix in 1:upto
-            lo = tradesdf[ix, :longopenlimit]
-            lc = tradesdf[ix, :longcloselimit]
-            so = tradesdf[ix, :shortopenlimit]
-            sc = tradesdf[ix, :shortcloselimit]
-            high = barsdf[ix, :high]
-            low = barsdf[ix, :low]
-
-            if _hasguidance_local(lo, lc)
-                long_guidance_rows += 1
-                _touch_low_local(lo, low) && (long_open_touch_rows += 1)
-                _touch_high_local(lc, high) && (long_close_touch_rows += 1)
-            end
-            if _hasguidance_local(so, sc)
-                short_guidance_rows += 1
-                _touch_high_local(so, high) && (short_open_touch_rows += 1)
-                _touch_low_local(sc, low) && (short_close_touch_rows += 1)
-            end
-        end
-        return (long_guidance_rows, short_guidance_rows, long_open_touch_rows, long_close_touch_rows, short_open_touch_rows, short_close_touch_rows)
-    end
-
-    function _push_gain_diag!(coin, sampleset, rangeid, predicted, openthreshold, closethreshold, input_rows, open_signal_rows, close_signal_rows, gain_rows,
-        long_guidance_rows, short_guidance_rows, long_open_touch_rows, long_close_touch_rows, short_open_touch_rows, short_close_touch_rows)
-        push!(diag_coin, String(coin))
-        push!(diag_set, string(sampleset))
-        push!(diag_rangeid, Int(rangeid))
-        push!(diag_predicted, Bool(predicted))
-        push!(diag_openthreshold, Float32(openthreshold))
-        push!(diag_closethreshold, Float32(closethreshold))
-        push!(diag_input_rows, Int(input_rows))
-        push!(diag_open_signal_rows, Int(open_signal_rows))
-        push!(diag_close_signal_rows, Int(close_signal_rows))
-        push!(diag_gain_rows, Int(gain_rows))
-        push!(diag_long_guidance_rows, Int(long_guidance_rows))
-        push!(diag_short_guidance_rows, Int(short_guidance_rows))
-        push!(diag_long_open_touch_rows, Int(long_open_touch_rows))
-        push!(diag_long_close_touch_rows, Int(long_close_touch_rows))
-        push!(diag_short_open_touch_rows, Int(short_open_touch_rows))
-        push!(diag_short_close_touch_rows, Int(short_close_touch_rows))
-    end
 
     for (rngix, resultsview) in enumerate(rangegroups)
         rng = resultsview[begin, :rangeid]
@@ -632,14 +565,6 @@ function getgainsdf(cfg::TrendDetectorConfig)
         targets = resultsview[!, :target]
         truescores = fill(1f0, size(resultsview, 1))
         evaldt = resultsview[end, :opentime]
-        input_rows = size(resultsview, 1)
-
-        replay_open_rows = count(l -> (l in (longopen, longstrongopen, shortopen, shortstrongopen)), replaylabels)
-        replay_close_rows = count(l -> (l in (longclose, longstrongclose, shortclose, shortstrongclose, allclose)), replaylabels)
-
-        truelabels = Targets.TradeLabel[targets[i] for i in eachindex(targets)]
-        true_open_rows = count(l -> (l in (longopen, longstrongopen, shortopen, shortstrongopen)), truelabels)
-        true_close_rows = count(l -> (l in (longclose, longstrongclose, shortclose, shortstrongclose, allclose)), truelabels)
 
         for (openthreshold, closethreshold) in GAIN_THRESHOLDS
             tp = TradingStrategy.preparereplaytrades!(
@@ -659,12 +584,8 @@ function getgainsdf(cfg::TrendDetectorConfig)
                 openthreshold=openthreshold,
                 closethreshold=closethreshold,
             )
-            pair = TradingStrategy.tspairkey(String(coin), EnvConfig.pairquote)
-            tdf = Xch.trades(xc, pair)
-            lgr, sgr, lot, lct, sot, sct = _filltouchdiag(tdf, resultsview)
-            _push_gain_diag!(coin, sampleset, rng, true, openthreshold, closethreshold, input_rows, replay_open_rows, replay_close_rows, size(gdf, 1), lgr, sgr, lot, lct, sot, sct)
             if size(gdf, 1) > 0
-                addgainadmin!(gdf, coin, sampleset, true, rng, openthreshold, closethreshold)
+                addgainadmin!(gdf, coin, sampleset, true, rng, openthreshold, closethreshold; pair=tp.pair)
                 push!(gainparts, gdf)
             end
         end
@@ -687,48 +608,9 @@ function getgainsdf(cfg::TrendDetectorConfig)
             openthreshold=true_open,
             closethreshold=true_close,
         )
-        pair = TradingStrategy.tspairkey(String(coin), EnvConfig.pairquote)
-        tdf = Xch.trades(xc, pair)
-        lgr, sgr, lot, lct, sot, sct = _filltouchdiag(tdf, resultsview)
-        _push_gain_diag!(coin, sampleset, rng, false, true_open, true_close, input_rows, true_open_rows, true_close_rows, size(gdf, 1), lgr, sgr, lot, lct, sot, sct)
         if size(gdf, 1) > 0
-            addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close)
+            addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close; pair=tp.pair)
             push!(gainparts, gdf)
-        end
-    end
-
-    gaindiagdf = DataFrame(
-        coin=diag_coin,
-        set=diag_set,
-        rangeid=diag_rangeid,
-        predicted=diag_predicted,
-        openthreshold=diag_openthreshold,
-        closethreshold=diag_closethreshold,
-        input_rows=diag_input_rows,
-        open_signal_rows=diag_open_signal_rows,
-        close_signal_rows=diag_close_signal_rows,
-        gain_rows=diag_gain_rows,
-        long_guidance_rows=diag_long_guidance_rows,
-        short_guidance_rows=diag_short_guidance_rows,
-        long_open_touch_rows=diag_long_open_touch_rows,
-        long_close_touch_rows=diag_long_close_touch_rows,
-        short_open_touch_rows=diag_short_open_touch_rows,
-        short_close_touch_rows=diag_short_close_touch_rows,
-    )
-    if size(gaindiagdf, 1) > 0
-        sort!(gaindiagdf, [:coin, :predicted, :rangeid, :openthreshold, :closethreshold])
-        EnvConfig.savedf(gaindiagdf, "gains_diagnostics")
-
-        if verbosity >= 2
-            diagsummary = combine(
-                groupby(gaindiagdf, [:coin, :predicted]),
-                :gain_rows => sum => :gain_rows_sum,
-                :gain_rows => (v -> count(==(0), v)) => :zero_gain_ranges,
-                :rangeid => (v -> length(unique(v))) => :ranges,
-            )
-            println("$(EnvConfig.now()) gain diagnostics summary:")
-            show(diagsummary, allrows=true, allcols=true)
-            println()
         end
     end
 
@@ -736,6 +618,12 @@ function getgainsdf(cfg::TrendDetectorConfig)
     if !isnothing(gaindf) && (size(gaindf, 1) > 0)
         gaindf = gaindf[.!ismissing.(gaindf[!, :set]), :] # exclude gaps between set partitions
         if size(gaindf, 1) > 0
+            keycols = Symbol[:coin, :set, :predicted, :rangeid, :openthreshold, :closethreshold, :trend, :startdt, :enddt]
+            if all(col -> col in names(gaindf), keycols)
+                keycounts = combine(groupby(gaindf, keycols), nrow => :rows)
+                dupmask = keycounts[!, :rows] .> 1
+                @assert !any(dupmask) "duplicate gain segments detected per key $(keycols); duplicates=$(sum(dupmask))"
+            end
             sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt, :trend])
             TradingStrategy.savetrades(gaindf; stem="gains")
 
@@ -1278,7 +1166,7 @@ function main(args::Vector{String}=ARGS)
         if !isnothing(gaindf) && (size(gaindf, 1) > 0)
             # println(describe(gaindf))
             # println(gaindf[1:2,:])
-            gaindfgroup = groupby(gaindf, [:set, :trend, :predicted, :openthreshold, :closethreshold])
+            gaindfgroup = groupby(gaindf, [:coin, :set, :trend, :predicted, :openthreshold, :closethreshold])
             # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
             cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum, :gainfee => sum)
             println("$(EnvConfig.now()) cgaindf=$cgaindf")

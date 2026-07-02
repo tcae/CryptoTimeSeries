@@ -376,7 +376,13 @@ function loadorbuild(
     EnvConfig.setlogpath(target_folder)
     if isfile(nnfilename(nntmp.fileprefix))
         loadspec = merge(spec, (nn_fileprefix=nntmp.fileprefix,))
-        return load(TrendClassifier001, loadspec; mode=mode, folder=target_folder, cfgid=cfgid)
+        try
+            return load(TrendClassifier001, loadspec; mode=mode, folder=target_folder, cfgid=cfgid)
+        catch err
+            # Legacy BSON artifacts may fail to deserialize after package/model schema changes.
+            # Fall back to building a fresh runtime classifier so callers can retrain and resave.
+            @warn "failed to load persisted TrendClassifier001 artifact; rebuilding classifier" folder=target_folder fileprefix=nntmp.fileprefix exception=(err, catch_backtrace())
+        end
     end
 
     return TrendClassifier001(

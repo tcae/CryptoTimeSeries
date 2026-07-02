@@ -238,12 +238,13 @@ end
     @test tdf[rowix, :pair] == "BTC$(EnvConfig.pairquote)"
     @test tdf[rowix, :tradelabel] == Targets.longopen
     if req.accepted
-        @test !ismissing(tdf[rowix, :longid])
+        @test String(tdf[rowix, :longid]) != "none"
+        @test String(tdf[rowix, :longid]) != ""
         @test tdf[rowix, :longstatus] != "none"
     else
         @test req.reason == "insufficient_free_quote"
         @test tdf[rowix, :longstatus] == "Rejected"
-        @test !ismissing(tdf[rowix, :longmsgid])
+        @test !ismissing(tdf[rowix, :longmsg])
     end
 end
 

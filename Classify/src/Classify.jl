@@ -2125,7 +2125,11 @@ end
 function loadnn(filename)
     (verbosity >= 2) && println("loading classifier $filename from $(nnfilename(filename))")
     nn = model001(1, ["dummy1", "dummy2"], "dummy menmonic")  # dummy data struct
-    BSON.@load nnfilename(filename) nn
+    try
+        BSON.@load nnfilename(filename) nn
+    catch err
+        nn = _loadnn_with_legacy_enum_compat(filename)
+    end
     # loadlosses!(nn)
     return nn
     # @error "load machine to be implemented for pure flux" filename
@@ -2748,6 +2752,7 @@ include("Classifier011.jl")
 include("Classifier013.jl")
 include("Classifier014.jl")
 include("Classifier015.jl")
+include("BsonLegacyMigration.jl")
 include("TrendClassifierRuntimeCommon.jl")
 include("TrendClassifier001.jl")
 

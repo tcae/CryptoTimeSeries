@@ -34,7 +34,7 @@ verbosity = 1
 """
 returns all possible labels. "allclose" is default.
 """
-@enum TradeLabel shortstrongopen=-5 shortopen=-4 shorthold=-3 shortclose=-2 shortstrongclose=-1 allclose=0 longstrongclose=1 longclose=2 longhold=3 longopen=4 longstrongopen=5 ignore=9
+@enum TradeLabel::Int8 shortstrongopen=-5 shortopen=-4 shorthold=-3 shortclose=-2 shortstrongclose=-1 allclose=0 longstrongclose=1 longclose=2 longhold=3 longopen=4 longstrongopen=5 ignore=9
 
 uniquelabels() = [lbl for lbl in instances(TradeLabel)]
 tradelabelstrings(labels::AbstractVector{TradeLabel}=uniquelabels()) = string.(labels)
@@ -64,7 +64,7 @@ tradelabelix(tl::TradeLabel, labels::AbstractVector{TradeLabel}=uniquelabels()) 
 tradelabelix(str::AbstractString, labels::AbstractVector{TradeLabel}=uniquelabels()) = tradelabelix(tradelabel(str, labels), labels)
 tradelabelcode(tl::TradeLabel) = Int8(tl)
 
-@enum TrendPhase down=-1 flat=0 up=1 choppy=2
+@enum TrendPhase::Int8 down=-1 flat=0 up=1 choppy=2
 
 @enum HoldAnchorMode entry_anchor=1 last_buy_anchor=2
 @enum HoldBehaviorMode within_maxwindow=1 beyond_maxwindow=2 no_hold=3

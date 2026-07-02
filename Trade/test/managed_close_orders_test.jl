@@ -3,6 +3,18 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
+@testset "Trade leverage defaults" begin
+    df = DataFrame(opentime=[DateTime("2025-01-01T00:00:00")], pair=["BTCUSDT"])
+    for contributor in Trade.tradesdf_contributors()
+        contributor(df)
+    end
+
+    @test eltype(df[!, :longleverage]) == UInt8
+    @test eltype(df[!, :shortleverage]) == UInt8
+    @test df[1, :longleverage] == UInt8(1)
+    @test df[1, :shortleverage] == UInt8(1)
+end
+
 @testset "Managed close order state" begin
     EnvConfig.init(EnvConfig.test)
 
@@ -108,12 +120,12 @@ end
 
 @testset "Order amend threshold default and material change boundary" begin
     tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
-    @test isapprox(Trade._order_amend_price_rel_threshold(tc), 1f-3; atol=1f-8)
+    amend_price_reltol = 1f-3
 
     oldp = 100f0
     newp_small = 100.05f0   # 0.05%
     newp_large = 100.2f0    # 0.2%
 
-    @test !Trade._material_order_change(oldp, newp_small, 1f0, 1f0; price_reltol=Trade._order_amend_price_rel_threshold(tc))
-    @test Trade._material_order_change(oldp, newp_large, 1f0, 1f0; price_reltol=Trade._order_amend_price_rel_threshold(tc))
+    @test !Trade._material_order_change(oldp, newp_small, 1f0, 1f0; price_reltol=amend_price_reltol)
+    @test Trade._material_order_change(oldp, newp_large, 1f0, 1f0; price_reltol=amend_price_reltol)
 end
