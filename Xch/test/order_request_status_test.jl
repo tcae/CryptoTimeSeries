@@ -33,9 +33,9 @@ using EnvConfig, Xch, Targets
     accepted = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        tradelabel=[Targets.longopen],
-        longopenlimit=[price * 0.98f0],
-        longamount=[max(minqty * 1.5f0, 0.001f0)],
+        label=[Targets.longopen],
+        lo_limit=[price * 0.98f0],
+        lo_amount=[max(minqty * 1.5f0, 0.001f0)],
         longleverage=[UInt8(0)],
     )
     for contributor in Xch.tradesdf_contributors()
@@ -45,28 +45,28 @@ using EnvConfig, Xch, Targets
     @test result.action == :long_open
     @test ismissing(accepted[1, :lastopentrade])
     if result.accepted
-        @test String(accepted[1, :longid]) != "none"
-        @test String(accepted[1, :longid]) != ""
-        @test accepted[1, :longstatus] == "Submitted"
+        @test String(accepted[1, :lo_id]) != "none"
+        @test String(accepted[1, :lo_id]) != ""
+        @test accepted[1, :lo_status] == "Submitted"
 
         Xch.order_status(xc, accepted, 1)
-        @test accepted[1, :longstatus] != "none"
+        @test accepted[1, :lo_status] != "none"
         @test !ismissing(accepted[1, :equity])
         @test !ismissing(accepted[1, :freequote])
     else
         @test result.reason == "insufficient_free_quote"
-        @test accepted[1, :longstatus] == "Rejected"
-        @test String(accepted[1, :longid]) == "none"
-        @test !ismissing(accepted[1, :longmsg])
+        @test accepted[1, :lo_status] == "Rejected"
+        @test String(accepted[1, :lo_id]) == "none"
+        @test !ismissing(accepted[1, :lo_msg])
     end
 
     # Too-small quantity should be rejected and assigned a Trading catalog id.
     rejected = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        tradelabel=[Targets.longopen],
-        longopenlimit=[price],
-        longamount=[max(minqty * 0.1f0, 1.0f-8)],
+        label=[Targets.longopen],
+        lo_limit=[price],
+        lo_amount=[max(minqty * 0.1f0, 1.0f-8)],
         longleverage=[UInt8(0)],
     )
     for contributor in Xch.tradesdf_contributors()
@@ -76,8 +76,8 @@ using EnvConfig, Xch, Targets
     @test !reject_result.accepted
     @test reject_result.reason == "below_minimum_qty"
     @test ismissing(rejected[1, :lastopentrade])
-    @test rejected[1, :longstatus] == "Rejected"
-    @test !ismissing(rejected[1, :longmsg])
+    @test rejected[1, :lo_status] == "Rejected"
+    @test !ismissing(rejected[1, :lo_msg])
 end
 
 end

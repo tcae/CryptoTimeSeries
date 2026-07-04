@@ -59,7 +59,7 @@ end
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
     @test cl_plain.advice_calls == 2
 
-    # New variant gates classifier calls by price delta and minimum interval.
+    # Threshold settings do not gate runtime calls when classification happens in algorithm.
     cl_gated = MockClassifier()
     gs_gated = TradingStrategy.StrategyConfig(
         algorithm=TradingStrategy.gain_limit_reversal!,
@@ -73,7 +73,7 @@ end
     rowmeta = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
     rowmeta.tradesdf[rowmeta.rowix, :lastopentrade] = evaldt
     _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
-    @test cl_gated.advice_calls == 1
+    @test cl_gated.advice_calls == 2
 end
 
 @testset "TsCache classifier-call gating reclassifies on interval OR price delta" begin
@@ -153,8 +153,7 @@ end
     Xch.settrades!(xc, "btc", "usdt", seed)
 
     @test_throws ArgumentError TradingStrategy.TsCache(source="test")
-    cfg = Dict{Symbol, Any}(:classifier_factory => () -> MockClassifier())
-    ts = TradingStrategy.TsCache(configuration=cfg, source="test")
+    ts = TradingStrategy.TsCache(strategy=TradingStrategy.StrategyConfig(classifier=MockClassifier()), source="test")
     @test TradingStrategy.pairkeys(ts) == String[]
     @test TradingStrategy.tspairkey("btc", "usdt") == "BTCUSDT"
 
@@ -174,115 +173,6 @@ end
     TradingStrategy.droppair!(ts, "ethusdt")
     @test !TradingStrategy.haspairstate(ts, "ETHUSDT")
     @test TradingStrategy.pairkeys(ts) == ["BTCUSDT"]
-end
-
-@testset "TsCache getgains writes pair trades" begin
-    EnvConfig.init(EnvConfig.test)
-    startdt = DateTime(2026, 1, 1)
-    xc = Xch.XchCache(startdt=startdt)
-
-    cfg = Dict{Symbol, Any}(
-        :classifier_factory => () -> MockClassifier(),
-        :strategy_template => TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!),
-    )
-    ts = TradingStrategy.TsCache(configuration=cfg, source="test")
-
-    df = DataFrame(
-        opentime=[startdt + Minute(i) for i in 0:4],
-        high=Float32[101f0, 102f0, 103f0, 104f0, 105f0],
-        low=Float32[99f0, 100f0, 101f0, 102f0, 103f0],
-        close=Float32[100f0, 101f0, 102f0, 103f0, 104f0],
-    )
-    init_runtime_columns!(df)
-    scores = Float32[0.8f0, 0.7f0, 0.9f0, 0.4f0, 0.3f0]
-    labels = Targets.TradeLabel[Targets.longopen, Targets.longopen, Targets.longopen, Targets.longclose, Targets.longclose]
-
-    gdf = TradingStrategy.getgains(
-        ts,
-        xc,
-        "sine",
-        df,
-        scores,
-        labels,
-        true;
-        strategy=ts.strategy_config,
-        openthreshold=0.6f0,
-        closethreshold=0.1f0,
-        metadata=Dict{Symbol, Any}(:predicted => true, :rangeid => 1),
-    )
-
-    @test Xch.hastrades(xc, "SINEUSDT")
-    tdf = Xch.trades(xc, "SINEUSDT")
-    @test nrow(tdf) == nrow(df)
-    @test "predicted" in names(tdf)
-    @test "rangeid" in names(tdf)
-    @test "longopenlimit" in names(tdf)
-    @test "longcloselimit" in names(tdf)
-    @test "shortopenlimit" in names(tdf)
-    @test "shortcloselimit" in names(tdf)
-    @test "tradelabel" in names(tdf)
-    @test "labelscore" in names(tdf)
-    @test "lastopentrade" in names(tdf)
-    @test tdf[1, :pair] == "SINEUSDT"
-    @test size(gdf, 1) >= 0
-end
-
-@testset "Explicit replay prepare and process path matches wrapper" begin
-    EnvConfig.init(EnvConfig.test)
-    startdt = DateTime(2026, 1, 2)
-    xc = Xch.XchCache(startdt=startdt)
-
-    cfg = Dict{Symbol, Any}(
-        :classifier_factory => () -> MockClassifier(),
-        :strategy_template => TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!),
-    )
-    ts = TradingStrategy.TsCache(configuration=cfg, source="test")
-
-    df = DataFrame(
-        opentime=[startdt + Minute(i) for i in 0:4],
-        high=Float32[101f0, 102f0, 103f0, 104f0, 105f0],
-        low=Float32[99f0, 100f0, 101f0, 102f0, 103f0],
-        close=Float32[100f0, 101f0, 102f0, 103f0, 104f0],
-    )
-    init_runtime_columns!(df)
-    scores = Float32[0.8f0, 0.7f0, 0.9f0, 0.4f0, 0.3f0]
-    labels = Targets.TradeLabel[Targets.longopen, Targets.longopen, Targets.longopen, Targets.longclose, Targets.longclose]
-    metadata = Dict{Symbol, Any}(:predicted => true, :rangeid => 2)
-
-    wrapper_gdf = TradingStrategy.getgains(
-        ts,
-        xc,
-        "sine",
-        df,
-        scores,
-        labels,
-        true;
-        strategy=ts.strategy_config,
-        openthreshold=0.6f0,
-        closethreshold=0.1f0,
-        metadata=metadata,
-    )
-
-    tp = TradingStrategy.preparereplaytrades!(
-        ts,
-        xc,
-        "sine",
-        df,
-        scores,
-        labels;
-        metadata=metadata,
-    )
-    explicit_gdf = TradingStrategy.processreplaygains!(
-        tp;
-        strategy=ts.strategy_config,
-        forcegain=true,
-        openthreshold=0.6f0,
-        closethreshold=0.1f0,
-    )
-
-    @test isequal(wrapper_gdf, explicit_gdf)
-    @test nrow(tp.tradesdf) == nrow(df)
-    @test tp.last_update_dt == df[end, :opentime]
 end
 
 @testset "Explicit replay processing fails fast on malformed state" begin
@@ -306,8 +196,8 @@ end
         pair=["SINEUSDT"],
     )
     init_runtime_columns!(tdf)
-    tdf[!, :labelscore] = Float32[0.8f0]
-    tdf[!, :tradelabel] = Targets.TradeLabel[Targets.longopen]
+    tdf[!, :score] = Float32[0.8f0]
+    tdf[!, :label] = Targets.TradeLabel[Targets.longopen]
     noclose_tp = TradingStrategy.TsTp(pair="SINEUSDT", tradesdf=tdf)
     @test_throws AssertionError TradingStrategy.processreplaygains!(
         noclose_tp;
@@ -328,23 +218,23 @@ end
 
     TradingStrategy.preparebases!(rt, xc, ["SINE", "DOUBLESINE"]; datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["SINE", "DOUBLESINE"])
-    @test Set(String.(Classify.bases(rt.classifier))) == Set(["SINE", "DOUBLESINE"])
+    @test Set(String.(Classify.bases(rt.strategy_config.classifier))) == Set(["SINE", "DOUBLESINE"])
 
     TradingStrategy.dropbase!(rt, "SINE")
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
-    @test Set(String.(Classify.bases(rt.classifier))) == Set(["DOUBLESINE"])
+    @test Set(String.(Classify.bases(rt.strategy_config.classifier))) == Set(["DOUBLESINE"])
 
     TradingStrategy.preparebases!(rt, xc, ["DOUBLESINE"]; datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
-    @test Set(String.(Classify.bases(rt.classifier))) == Set(["DOUBLESINE"])
+    @test Set(String.(Classify.bases(rt.strategy_config.classifier))) == Set(["DOUBLESINE"])
 
     TradingStrategy.apply_strategy!(rt, TradingStrategy.StrategyConfig(maxwindow=60); source="reconfigured")
     @test isempty(TradingStrategy.acceptedbases(rt))
-    @test isempty(Set(String.(Classify.bases(rt.classifier))))
+    @test isempty(Set(String.(Classify.bases(rt.strategy_config.classifier))))
 
     TradingStrategy.reset!(rt)
     @test isempty(TradingStrategy.acceptedbases(rt))
-    @test isempty(Set(String.(Classify.bases(rt.classifier))))
+    @test isempty(Set(String.(Classify.bases(rt.strategy_config.classifier))))
 end
 
 @testset "TsCache row production is deterministic" begin
@@ -369,11 +259,11 @@ end
     @test !isnothing(snap2)
     @test snap1.base == snap2.base
     @test snap1.datetime == snap2.datetime
-    @test snap1.tradesdf[snap1.rowix, :tradelabel] == snap2.tradesdf[snap2.rowix, :tradelabel]
-    @test isequal(snap1.tradesdf[snap1.rowix, :longopenlimit], snap2.tradesdf[snap2.rowix, :longopenlimit])
-    @test isequal(snap1.tradesdf[snap1.rowix, :longcloselimit], snap2.tradesdf[snap2.rowix, :longcloselimit])
-    @test isequal(snap1.tradesdf[snap1.rowix, :shortopenlimit], snap2.tradesdf[snap2.rowix, :shortopenlimit])
-    @test isequal(snap1.tradesdf[snap1.rowix, :shortcloselimit], snap2.tradesdf[snap2.rowix, :shortcloselimit])
+    @test snap1.tradesdf[snap1.rowix, :label] == snap2.tradesdf[snap2.rowix, :label]
+    @test isequal(snap1.tradesdf[snap1.rowix, :lo_limit], snap2.tradesdf[snap2.rowix, :lo_limit])
+    @test isequal(snap1.tradesdf[snap1.rowix, :lc_limit], snap2.tradesdf[snap2.rowix, :lc_limit])
+    @test isequal(snap1.tradesdf[snap1.rowix, :so_limit], snap2.tradesdf[snap2.rowix, :so_limit])
+    @test isequal(snap1.tradesdf[snap1.rowix, :sc_limit], snap2.tradesdf[snap2.rowix, :sc_limit])
     @test snap1.configid == snap2.configid
 end
 
@@ -391,16 +281,11 @@ end
     evaldt = enddt
     recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=9))
 
-    advicectx = TradingStrategy._classify_base_advice!(rt, xc, "SINE", evaldt)
-    @test !isnothing(advicectx)
-    @test advicectx.base == "SINE"
-    @test advicectx.datetime == evaldt
-    @test advicectx.closeprice > 0f0
-
-    rowmeta = TradingStrategy._apply_base_advice_row!(rt, xc, advicectx; reconciliation=recon)
+    rowmeta = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt; reconciliation=recon)
+    @test !isnothing(rowmeta)
     @test rowmeta.base == "SINE"
     @test rowmeta.datetime == evaldt
     @test rowmeta.rowix >= 1
-    @test rowmeta.tradesdf[rowmeta.rowix, :tradelabel] == Targets.longopen
-    @test Float32(rowmeta.tradesdf[rowmeta.rowix, :longopenlimit]) > 0f0
+    @test Float32(rowmeta.tradesdf[rowmeta.rowix, :close]) > 0f0
+    @test Float32(rowmeta.tradesdf[rowmeta.rowix, :lo_limit]) > 0f0
 end

@@ -5,23 +5,29 @@ using TradingStrategy
 using Targets
 
 function init_strategy_columns!(tdf::DataFrame)
-    if :longopenlimit ∉ propertynames(tdf)
-        tdf[!, :longopenlimit] = fill(0f0, nrow(tdf))
+    if :lo_limit ∉ propertynames(tdf)
+        tdf[!, :lo_limit] = fill(0f0, nrow(tdf))
     end
-    if :longcloselimit ∉ propertynames(tdf)
-        tdf[!, :longcloselimit] = fill(0f0, nrow(tdf))
+    if :lc_limit ∉ propertynames(tdf)
+        tdf[!, :lc_limit] = fill(0f0, nrow(tdf))
     end
-    if :shortopenlimit ∉ propertynames(tdf)
-        tdf[!, :shortopenlimit] = fill(0f0, nrow(tdf))
+    if :so_limit ∉ propertynames(tdf)
+        tdf[!, :so_limit] = fill(0f0, nrow(tdf))
     end
-    if :shortcloselimit ∉ propertynames(tdf)
-        tdf[!, :shortcloselimit] = fill(0f0, nrow(tdf))
+    if :sc_limit ∉ propertynames(tdf)
+        tdf[!, :sc_limit] = fill(0f0, nrow(tdf))
     end
-    if :tradelabel ∉ propertynames(tdf)
-        tdf[!, :tradelabel] = fill(Targets.ignore, nrow(tdf))
+    if :label ∉ propertynames(tdf)
+        tdf[!, :label] = fill(Targets.ignore, nrow(tdf))
     end
-    if :labelscore ∉ propertynames(tdf)
-        tdf[!, :labelscore] = zeros(Float32, nrow(tdf))
+    if :score ∉ propertynames(tdf)
+        tdf[!, :score] = zeros(Float32, nrow(tdf))
+    end
+    if :lo_pavg ∉ propertynames(tdf)
+        tdf[!, :lo_pavg] = zeros(Float32, nrow(tdf))
+    end
+    if :so_pavg ∉ propertynames(tdf)
+        tdf[!, :so_pavg] = zeros(Float32, nrow(tdf))
     end
     return tdf
 end
@@ -44,22 +50,19 @@ end
             high=Float32[101f0],
             low=Float32[99f0],
             close=Float32[100f0],
-            tradelabel=Targets.TradeLabel[Targets.longopen],
-            labelscore=Float32[0.9f0],
+            label=Targets.TradeLabel[Targets.longopen],
+            score=Float32[0.9f0],
         )
         init_strategy_columns!(tdf)
         TradingStrategy.gain_limit_reversal!(
             test_strategy(),
             tdf,
             1,
-            tdf[1, :tradelabel],
-            tdf[1, :labelscore],
-            tdf[1, :close],
         )
-        @test tdf[1, :tradelabel] == Targets.longopen
-        @test isapprox(tdf[1, :longopenlimit], 99.9f0; atol=1f-4)
-        @test isapprox(tdf[1, :longcloselimit], 101f0; atol=1f-4)
-        @test tdf[1, :shortopenlimit] == 0f0
+        @test tdf[1, :label] == Targets.longopen
+        @test isapprox(tdf[1, :lo_limit], 99.9f0; atol=1f-4)
+        @test isapprox(tdf[1, :lc_limit], 101f0; atol=1f-4)
+        @test tdf[1, :so_limit] == 0f0
     end
 
     @testset "short signal encodes short guidance" begin
@@ -68,22 +71,19 @@ end
             high=Float32[101f0],
             low=Float32[99f0],
             close=Float32[100f0],
-            tradelabel=Targets.TradeLabel[Targets.shortopen],
-            labelscore=Float32[0.9f0],
+            label=Targets.TradeLabel[Targets.shortopen],
+            score=Float32[0.9f0],
         )
         init_strategy_columns!(tdf)
         TradingStrategy.gain_limit_reversal!(
             test_strategy(),
             tdf,
             1,
-            tdf[1, :tradelabel],
-            tdf[1, :labelscore],
-            tdf[1, :close],
         )
-        @test tdf[1, :tradelabel] == Targets.shortopen
-        @test isapprox(tdf[1, :shortopenlimit], 100.1f0; atol=1f-4)
-        @test isapprox(tdf[1, :shortcloselimit], 99f0; atol=1f-4)
-        @test tdf[1, :longopenlimit] == 0f0
+        @test tdf[1, :label] == Targets.shortopen
+        @test isapprox(tdf[1, :so_limit], 100.1f0; atol=1f-4)
+        @test isapprox(tdf[1, :sc_limit], 99f0; atol=1f-4)
+        @test tdf[1, :lo_limit] == 0f0
     end
 
     @testset "pricedelta gating keeps limits unchanged below threshold" begin
@@ -92,27 +92,21 @@ end
             high=Float32[101f0, 101f0],
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100.02f0],
-            tradelabel=Targets.TradeLabel[Targets.longopen, Targets.longopen],
-            labelscore=Float32[0.9f0, 0.9f0],
+            label=Targets.TradeLabel[Targets.longopen, Targets.longopen],
+            score=Float32[0.9f0, 0.9f0],
         )
         init_strategy_columns!(tdf)
         TradingStrategy.gain_limit_reversal!(
             test_strategy(minpricedelta=0.01f0),
             tdf,
             1,
-            tdf[1, :tradelabel],
-            tdf[1, :labelscore],
-            tdf[1, :close],
         )
         TradingStrategy.gain_limit_reversal!(
             test_strategy(minpricedelta=0.01f0),
             tdf,
             2,
-            tdf[2, :tradelabel],
-            tdf[2, :labelscore],
-            tdf[2, :close],
         )
-        @test isapprox(tdf[2, :longopenlimit], tdf[1, :longopenlimit]; atol=1f-6)
-        @test isapprox(tdf[2, :longcloselimit], tdf[1, :longcloselimit]; atol=1f-6)
+        @test isapprox(tdf[2, :lo_limit], tdf[1, :lo_limit]; atol=1f-6)
+        @test isapprox(tdf[2, :lc_limit], tdf[1, :lc_limit]; atol=1f-6)
     end
 end

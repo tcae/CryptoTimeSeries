@@ -69,7 +69,7 @@ end
     longkey = Trade._managedclosekey("BTC", Targets.longclose)
     @test haskey(managed, longkey)
     @test managed[longkey][:orderid] == "oid-close"
-    @test managed[longkey][:tradelabel] == Targets.longclose
+    @test managed[longkey][:label] == Targets.longclose
 
     gs = TradingStrategy.StrategyConfig(; algorithm=TradingStrategy.gain_limit_reversal!)
 

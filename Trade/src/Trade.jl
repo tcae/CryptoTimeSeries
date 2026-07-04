@@ -45,22 +45,34 @@ verbosity =
 """
 verbosity = 2
 
-"""Ensure Trades column `longamount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size consumed by Xch order processing."""
-function tradesdf_longamount(tradesdf::DataFrame)::DataFrame
-    if :longamount ∉ propertynames(tradesdf)
-        tradesdf[!, :longamount] = fill(0f0, nrow(tradesdf))
-    else
-        tradesdf[!, :longamount] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :longamount]]
+"""Ensure Trades column `lo_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for long-open consumed by Xch order processing."""
+function tradesdf_lo_amount(tradesdf::DataFrame)::DataFrame
+    if :lo_amount ∉ propertynames(tradesdf)
+        tradesdf[!, :lo_amount] = fill(0f0, nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortamount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size consumed by Xch order processing."""
-function tradesdf_shortamount(tradesdf::DataFrame)::DataFrame
-    if :shortamount ∉ propertynames(tradesdf)
-        tradesdf[!, :shortamount] = fill(0f0, nrow(tradesdf))
-    else
-        tradesdf[!, :shortamount] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :shortamount]]
+"""Ensure Trades column `lc_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for long-close consumed by Xch order processing."""
+function tradesdf_lc_amount(tradesdf::DataFrame)::DataFrame
+    if :lc_amount ∉ propertynames(tradesdf)
+        tradesdf[!, :lc_amount] = fill(0f0, nrow(tradesdf))
+    end
+    return tradesdf
+end
+
+"""Ensure Trades column `so_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for short-open consumed by Xch order processing."""
+function tradesdf_so_amount(tradesdf::DataFrame)::DataFrame
+    if :so_amount ∉ propertynames(tradesdf)
+        tradesdf[!, :so_amount] = fill(0f0, nrow(tradesdf))
+    end
+    return tradesdf
+end
+
+"""Ensure Trades column `sc_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for short-close consumed by Xch order processing."""
+function tradesdf_sc_amount(tradesdf::DataFrame)::DataFrame
+    if :sc_amount ∉ propertynames(tradesdf)
+        tradesdf[!, :sc_amount] = fill(0f0, nrow(tradesdf))
     end
     return tradesdf
 end
@@ -84,8 +96,10 @@ end
 """Return Trade-contributed Trades schema initializer functions."""
 function tradesdf_contributors()::Vector{Function}
     return Function[
-        tradesdf_longamount,
-        tradesdf_shortamount,
+        tradesdf_lo_amount,
+        tradesdf_lc_amount,
+        tradesdf_so_amount,
+        tradesdf_sc_amount,
         tradesdf_longleverage,
         tradesdf_shortleverage,
     ]
@@ -258,7 +272,7 @@ mutable struct TradeCache
         cache.mc[:usenewtrade] = false # implementation switch between old and new trade! method
         cache.mc[:managed_close_orders] = Dict{String, Dict{Symbol, Any}}()  # per-base reconstructed/managed close orders
         cache.mc[:openorders_snapshot] = DataFrame()
-        cache.mc[:strategy_runtime] = TradingStrategy.TsCache(classifier=cl, strategy=TradingStrategy.StrategyConfig(), source="default")
+        cache.mc[:strategy_runtime] = TradingStrategy.TsCache(strategy=TradingStrategy.StrategyConfig(classifier=cl), source="default")
         cache.mc[:tradelog_portfolio_snapshot_mode] = :all  # :all, :session_start, :none
         cache.mc[:tradelog_portfolio_snapshot_written] = false
         cache.mc[:loop_state] = loop_idle
@@ -272,15 +286,15 @@ function _openorderssnapshot(cache::TradeCache)::DataFrame
     return oo isa DataFrame ? oo : DataFrame()
 end
 
-function _activeopenbuysymbols!(cache::TradeCache)::Set{String}
-    if !haskey(cache.mc, :active_open_buy_symbols)
-        cache.mc[:active_open_buy_symbols] = Set{String}()
+function _activeopenlongsymbols!(cache::TradeCache)::Set{String}
+    if !haskey(cache.mc, :active_open_long_symbols)
+        cache.mc[:active_open_long_symbols] = Set{String}()
     end
-    return cache.mc[:active_open_buy_symbols]
+    return cache.mc[:active_open_long_symbols]
 end
 
-function _refreshactiveopenbuysymbols!(cache::TradeCache, oo::AbstractDataFrame)
-    active = _activeopenbuysymbols!(cache)
+function _refreshactiveopenlongsymbols!(cache::TradeCache, oo::AbstractDataFrame)
+    active = _activeopenlongsymbols!(cache)
     empty!(active)
     for orow in eachrow(oo)
         Xch.openstatus(String(orow.status)) || continue
@@ -293,15 +307,15 @@ function _refreshactiveopenbuysymbols!(cache::TradeCache, oo::AbstractDataFrame)
     return active
 end
 
-function _activeopensellsymbols!(cache::TradeCache)::Set{String}
-    if !haskey(cache.mc, :active_open_sell_symbols)
-        cache.mc[:active_open_sell_symbols] = Set{String}()
+function _activeopenshortsymbols!(cache::TradeCache)::Set{String}
+    if !haskey(cache.mc, :active_open_short_symbols)
+        cache.mc[:active_open_short_symbols] = Set{String}()
     end
-    return cache.mc[:active_open_sell_symbols]
+    return cache.mc[:active_open_short_symbols]
 end
 
-function _refreshactiveopensellsymbols!(cache::TradeCache, oo::AbstractDataFrame)
-    active = _activeopensellsymbols!(cache)
+function _refreshactiveopenshortsymbols!(cache::TradeCache, oo::AbstractDataFrame)
+    active = _activeopenshortsymbols!(cache)
     empty!(active)
     for orow in eachrow(oo)
         Xch.openstatus(String(orow.status)) || continue
@@ -314,22 +328,22 @@ function _refreshactiveopensellsymbols!(cache::TradeCache, oo::AbstractDataFrame
     return active
 end
 
-function _rememberactiveopenbuy!(cache::TradeCache, symbol::AbstractString)
-    push!(_activeopenbuysymbols!(cache), uppercase(String(symbol)))
+function _rememberactiveopenlong!(cache::TradeCache, symbol::AbstractString)
+    push!(_activeopenlongsymbols!(cache), uppercase(String(symbol)))
     return cache
 end
 
-function _rememberactiveopensell!(cache::TradeCache, symbol::AbstractString)
-    push!(_activeopensellsymbols!(cache), uppercase(String(symbol)))
+function _rememberactiveopenshort!(cache::TradeCache, symbol::AbstractString)
+    push!(_activeopenshortsymbols!(cache), uppercase(String(symbol)))
     return cache
 end
 
-function _hasactiveopenbuy(cache::TradeCache, symbol::AbstractString)::Bool
-    return uppercase(String(symbol)) in _activeopenbuysymbols!(cache)
+function _hasactiveopenlong(cache::TradeCache, symbol::AbstractString)::Bool
+    return uppercase(String(symbol)) in _activeopenlongsymbols!(cache)
 end
 
-function _hasactiveopensell(cache::TradeCache, symbol::AbstractString)::Bool
-    return uppercase(String(symbol)) in _activeopensellsymbols!(cache)
+function _hasactiveopenshort(cache::TradeCache, symbol::AbstractString)::Bool
+    return uppercase(String(symbol)) in _activeopenshortsymbols!(cache)
 end
 
 function _tradeselection_history_minutes(tc::TradeCache)::Int
@@ -1033,7 +1047,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta, assets::AbstractDa
     
         if basefraction > cache.mc[:maxassetfraction] # base dominates assets
             (verbosity > 3) && println("$(tradetime(cache)) skip $base longbuy: base dominates assets due to basefraction=$(basefraction) > maxassetfraction=$(cache.mc[:maxassetfraction])")
-        elseif !isnothing(existing_longbuy_oid) || _hasactiveopenbuy(cache, symbol)
+        elseif !isnothing(existing_longbuy_oid) || _hasactiveopenlong(cache, symbol)
             (verbosity >= 2) && println("$(tradetime(cache)) skip $base longbuy: existing open longbuy order $(existing_longbuy_oid) is still active")
         elseif sufficientbuybalance && exceedsminimumbasequantity
             requested_limitprice = _requested_limitprice(cache, ta, price)
@@ -1042,7 +1056,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta, assets::AbstractDa
             end
             if !isnothing(oid)
                 result = (trade=longopen, oid=oid)
-                _rememberactiveopenbuy!(cache, symbol)
+                _rememberactiveopenlong!(cache, symbol)
                 (verbosity > 2) && println("$(tradetime(cache)) created $base longbuy order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
             else
                 (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker longbuy order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
@@ -1059,7 +1073,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta, assets::AbstractDa
         marginok = Xch.marginpermitted(cache.xc, symbol, "Sell", short_margin_leverage; role=Xch.trade_exchange_spot)
         if basefraction > cache.mc[:maxassetfraction] # base dominates assets
             (verbosity > 2) && println("$(tradetime(cache)) skip $base shortbuy: base dominates assets due to basefraction=$(basefraction) > maxassetfraction=$(cache.mc[:maxassetfraction])")
-        elseif _hasactiveopensell(cache, symbol)
+        elseif _hasactiveopenshort(cache, symbol)
             (verbosity >= 2) && println("$(tradetime(cache)) skip $base shortbuy: existing open short-entry sell order is still active")
         elseif !marginok
             limits = Xch.marginlimits(cache.xc, symbol; role=Xch.trade_exchange_spot)
@@ -1076,7 +1090,7 @@ function trade!(cache::TradeCache, basecfg::DataFrameRow, ta, assets::AbstractDa
             end
             if !isnothing(oid)
                 result = (trade=shortopen, oid=oid)
-                _rememberactiveopensell!(cache, symbol)
+                _rememberactiveopenshort!(cache, symbol)
                 (verbosity > 2) && println("$(tradetime(cache)) created $base shortbuy order with oid $oid, limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
             else
                 (verbosity > 2) && println("$(tradetime(cache)) failed to create $base maker shortbuy order with limitprice=$requested_limitprice and basequantity=$basequantity (min=$minimumbasequantity) = quotequantity=$(basequantity*price), $(USDTmsg(assets)), ($freeusdtfractionmargin * effectivebudgetquote <= $freeusdt)")
@@ -1265,15 +1279,28 @@ function apply_tradingstrategy!(mc::AbstractDict, spec::TradingStrategy.Strategy
 end
 
 function apply_tradingstrategy!(cache::TradeCache, spec::TradingStrategy.StrategyConfig; source::AbstractString="manual")
-    apply_tradingstrategy!(cache.mc, spec; source=source)
+    configured = spec.classifier === nothing ? TradingStrategy.StrategyConfig(
+        classifier=cache.cl,
+        algorithm=spec.algorithm,
+        maxwindow=spec.maxwindow,
+        openthreshold=spec.openthreshold,
+        closethreshold=spec.closethreshold,
+        makerfee=spec.makerfee,
+        takerfee=spec.takerfee,
+        buygain=spec.buygain,
+        sellgain=spec.sellgain,
+        limitreduction=spec.limitreduction,
+        minpricedelta=spec.minpricedelta,
+        max_classify_staleness_minutes=spec.max_classify_staleness_minutes,
+    ) : spec
+    apply_tradingstrategy!(cache.mc, configured; source=source)
     return cache
 end
 
 function _strategyruntime(cache::TradeCache)::TradingStrategy.TsCache
     if !haskey(cache.mc, :strategy_runtime) || !(cache.mc[:strategy_runtime] isa TradingStrategy.TsCache)
         cache.mc[:strategy_runtime] = TradingStrategy.TsCache(
-            classifier=cache.cl,
-            strategy=TradingStrategy.StrategyConfig(),
+            strategy=TradingStrategy.StrategyConfig(classifier=cache.cl),
             source="default",
         )
     end
@@ -1326,7 +1353,7 @@ function _managedcloseset!(cache::TradeCache, base::AbstractString, orderid, tra
         :base => uppercase(String(base)),
         :symbol => symbol,
         :orderid => String(orderid),
-        :tradelabel => tradelabel,
+        :label => tradelabel,
         :limitprice => isnothing(limitprice) ? nothing : Float32(limitprice),
         :baseqty => Float32(baseqty),
         :updated => Dates.now(Dates.UTC),
@@ -1558,13 +1585,13 @@ end
 
 function _advice_price_from_row(tdf::AbstractDataFrame, rowix::Integer, label::Targets.TradeLabel)
     if label in (longopen, longstrongopen)
-        return tdf[rowix, :longopenlimit]
+        return tdf[rowix, :lo_limit]
     elseif label in (shortopen, shortstrongopen)
-        return tdf[rowix, :shortopenlimit]
+        return tdf[rowix, :so_limit]
     elseif label in (longclose, longstrongclose)
-        return tdf[rowix, :longcloselimit]
+        return tdf[rowix, :lc_limit]
     elseif label in (shortclose, shortstrongclose)
-        return tdf[rowix, :shortcloselimit]
+        return tdf[rowix, :sc_limit]
     end
     return nothing
 end
@@ -1584,7 +1611,7 @@ function _collect_strategy_advices(cache::TradeCache)
     for rowmeta in rows
         tdf = rowmeta.tradesdf
         rowix = Int(rowmeta.rowix)
-        label = tdf[rowix, :tradelabel]
+        label = tdf[rowix, :label]
         label == ignore && continue
         rawprice = _advice_price_from_row(tdf, rowix, label)
         price = (ismissing(rawprice) || isnothing(rawprice)) ? nothing : Float32(rawprice)
@@ -1663,7 +1690,7 @@ function _positions_without_close_orders(cache::TradeCache, assets::AbstractData
                 msymbol = uppercase(String(split(String(mkey), "|"; limit=2)[1]))
             end
             (msymbol == symbolu) || continue
-            mlabel = get(managed, :tradelabel, ignore)
+            mlabel = get(managed, :label, ignore)
             if (sideu == "SELL") && (mlabel in [longclose, longstrongclose])
                 total += Float32(get(managed, :baseqty, 0f0))
             elseif (sideu == "BUY") && (mlabel in [shortclose, shortstrongclose])
@@ -1775,8 +1802,8 @@ function _tradestep!(cache::TradeCache)
         end
     end
     cache.mc[:openorders_snapshot] = oo
-    _refreshactiveopenbuysymbols!(cache, oo)
-    _refreshactiveopensellsymbols!(cache, oo)
+    _refreshactiveopenlongsymbols!(cache, oo)
+    _refreshactiveopenshortsymbols!(cache, oo)
     assets = Xch.portfolio!(cache.xc)
     _reconstruct_managed_close_orders!(cache, assets, oo)
     _cancel_unmanaged_open_orders!(cache, oo)

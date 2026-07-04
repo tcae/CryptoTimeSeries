@@ -46,7 +46,7 @@ const MAX_ASSET_FRACTION = 0.1f0
 const CONFIG_REF = get(ENV, "TRADEREAL_CONFIG_REF", "046")
 const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
-const CONFIG_STRATEGY = CONFIG.tradingstrategy
+const CONFIG_STRATEGY = TradingStrategy.strategyconfig(CONFIG_REF)
 const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "production")
 
 # Log subfolder under EnvConfig.logfolder().
@@ -156,13 +156,7 @@ ccall(:jl_exit_on_sigint, Cvoid, (Cint,), 0)
 
 EnvConfig.init(production)
 EnvConfig.setpairquote!(QUOTE_COIN)
-classifier = try
-    loadtrendclassifier(CONFIG; model_folder=MODEL_FOLDER)
-catch err
-    println(stderr, "$(EnvConfig.now()): ERROR failed to load configured classifier: $(sprint(showerror, err))")
-    println(stderr, "$(EnvConfig.now()): tradereal aborted")
-    exit(1)
-end
+classifier = CONFIG_STRATEGY.classifier
 EnvConfig.setlogpath(LOG_SUBFOLDER)
 
 messagelogfn = EnvConfig.logpath("messagelog_$(safe_runid()).txt")

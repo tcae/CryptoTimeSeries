@@ -9,80 +9,67 @@ This module intentionally keeps only the API surface required by:
 """
 module TradingStrategy
 
-using DataFrames, Dates
+using DataFrames, Dates, CategoricalArrays
 using EnvConfig, Features, Targets, Classify, Xch, Ohlcv
 
-"""Ensure Trades column `tradelabel` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions."""
-function tradesdf_tradelabel(tradesdf::DataFrame)::DataFrame
-    if :tradelabel ∉ propertynames(tradesdf)
-        tradesdf[!, :tradelabel] = fill(ignore, nrow(tradesdf))
-    else
-        tradesdf[!, :tradelabel] = TradeLabel[
-            ismissing(v) ? ignore : (v isa TradeLabel ? v : Targets.tradelabel(String(v)))
-            for v in tradesdf[!, :tradelabel]
-        ]
+"""Ensure Trades column `label` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions."""
+function tradesdf_label(tradesdf::DataFrame)::DataFrame
+    if :label ∉ propertynames(tradesdf)
+        tradesdf[!, :label] = fill(ignore, nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Ensure Trades column `labelscore` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score of trade label."""
-function tradesdf_labelscore(tradesdf::DataFrame)::DataFrame
-    if :labelscore ∉ propertynames(tradesdf)
-        tradesdf[!, :labelscore] = zeros(Float32, nrow(tradesdf))
+"""Ensure Trades column `score` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score of trade label."""
+function tradesdf_score(tradesdf::DataFrame)::DataFrame
+    if :score ∉ propertynames(tradesdf)
+        tradesdf[!, :score] = zeros(Float32, nrow(tradesdf))
     end
     return tradesdf
 end
 
 
-"""Ensure Trades column `longopenlimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
-function tradesdf_longopenlimit(tradesdf::DataFrame)::DataFrame
-    if :longopenlimit ∉ propertynames(tradesdf)
-        tradesdf[!, :longopenlimit] = fill(0f0, nrow(tradesdf))
-    else
-        tradesdf[!, :longopenlimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :longopenlimit]]
+"""Ensure Trades column `lo_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (long-open limit) consumed by Xch as requested limit per action."""
+function tradesdf_lo_limit(tradesdf::DataFrame)::DataFrame
+    if :lo_limit ∉ propertynames(tradesdf)
+        tradesdf[!, :lo_limit] = fill(0f0, nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Ensure Trades column `longcloselimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
-function tradesdf_longcloselimit(tradesdf::DataFrame)::DataFrame
-    if :longcloselimit ∉ propertynames(tradesdf)
-        tradesdf[!, :longcloselimit] = fill(0f0, nrow(tradesdf))
-    else
-        tradesdf[!, :longcloselimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :longcloselimit]]
+"""Ensure Trades column `lc_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (long-close limit) consumed by Xch as requested limit per action."""
+function tradesdf_lc_limit(tradesdf::DataFrame)::DataFrame
+    if :lc_limit ∉ propertynames(tradesdf)
+        tradesdf[!, :lc_limit] = fill(0f0, nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortopenlimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
-function tradesdf_shortopenlimit(tradesdf::DataFrame)::DataFrame
-    if :shortopenlimit ∉ propertynames(tradesdf)
-        tradesdf[!, :shortopenlimit] = fill(0f0, nrow(tradesdf))
-    else
-        tradesdf[!, :shortopenlimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :shortopenlimit]]
+"""Ensure Trades column `so_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (short-open limit) consumed by Xch as requested limit per action."""
+function tradesdf_so_limit(tradesdf::DataFrame)::DataFrame
+    if :so_limit ∉ propertynames(tradesdf)
+        tradesdf[!, :so_limit] = fill(0f0, nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Ensure Trades column `shortcloselimit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action."""
-function tradesdf_shortcloselimit(tradesdf::DataFrame)::DataFrame
-    if :shortcloselimit ∉ propertynames(tradesdf)
-        tradesdf[!, :shortcloselimit] = fill(0f0, nrow(tradesdf))
-    else
-        tradesdf[!, :shortcloselimit] = Float32[ismissing(v) ? 0f0 : Float32(v) for v in tradesdf[!, :shortcloselimit]]
+"""Ensure Trades column `sc_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (short-close limit) consumed by Xch as requested limit per action."""
+function tradesdf_sc_limit(tradesdf::DataFrame)::DataFrame
+    if :sc_limit ∉ propertynames(tradesdf)
+        tradesdf[!, :sc_limit] = fill(0f0, nrow(tradesdf))
     end
     return tradesdf
 end
 
-"""Return TradingStrategy/Trade-contributed Trades schema initializer functions."""
+"""Return TradingStrategy-contributed Trades schema initializer functions. Note: Trade contributes lo_amount/lc_amount/so_amount/sc_amount columns via Trade.tradesdf_contributors()."""
 function tradesdf_contributors()::Vector{Function}
     return Function[
-        tradesdf_tradelabel,
-        tradesdf_labelscore,
-        tradesdf_longopenlimit,
-        tradesdf_longcloselimit,
-        tradesdf_shortopenlimit,
-        tradesdf_shortcloselimit,
+        tradesdf_label,
+        tradesdf_score,
+        tradesdf_lo_limit,
+        tradesdf_lc_limit,
+        tradesdf_so_limit,
+        tradesdf_sc_limit,
     ]
 end
 
@@ -229,19 +216,22 @@ end
 @inline _price_in_bar(price::Float32, low::Real, high::Real, boundary::Symbol) = boundary === :high ? (price <= Float32(high)) : (Float32(low) <= price)
 @inline _relpricedelta(a::Real, b::Real) = abs(Float32(a) - Float32(b)) / max(abs(Float32(b)), 1f-6)
 
+" true if candidate > 0 and either current <= 0 or relative price delta exceeds minpricedelta"
 @inline function _should_update_price(current::Real, candidate::Real, minpricedelta::Float32)
-    currentf = Float32(current)
-    candidatef = Float32(candidate)
-    if currentf <= 0f0 || minpricedelta <= 0f0
+    if candidate <= 0f0
+        return false
+    end
+    if current <= 0f0 || minpricedelta <= 0f0
         return true
     end
-    return _relpricedelta(candidatef, currentf) > minpricedelta
+    return _relpricedelta(candidate, current) > minpricedelta
 end
 
 """
 Immutable strategy configuration payload for runtime strategy execution.
 """
 Base.@kwdef struct StrategyConfig
+    classifier::Union{Nothing, Classify.AbstractClassifier} = nothing
     algorithm::Function = gain_limit_reversal!
     maxwindow::Int = 4 * 60
     openthreshold::Float32 = 0.6f0
@@ -255,11 +245,13 @@ Base.@kwdef struct StrategyConfig
     max_classify_staleness_minutes::Int = 5
 end
 
-"""Per-trading-pair runtime state holder used by `TsCache`."""
+"""Per-trading-pair runtime state holder used by `TsCache`.
+
+OHLCV prices (`close`, `high`, `low`) are stored directly in `tradesdf` as Xch-owned
+columns and are not duplicated here."""
 Base.@kwdef mutable struct TsTp
     pair::String
     tradesdf::DataFrame = DataFrame()
-    closeprices::Vector{Float32} = Float32[]
     last_update_dt::Union{Nothing, DateTime} = nothing
 end
 
@@ -270,37 +262,44 @@ Internal runtime cache for the Phase 2 Trades DataFrame architecture.
 mutable per-pair Trades DataFrames.
 """
 mutable struct TsCache
-    configuration::Dict{Symbol, Any}
-    classifier::Classify.AbstractClassifier
     pairs::Dict{String, TsTp}
     classifier_gate_state::Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}
     accepted::Set{String}
-    strategy_config::Any
+    strategy_config::StrategyConfig
     source::String
 end
 
-"Build TsCache with explicit classifier wiring from argument or configuration."
-function TsCache(; configuration::Dict{Symbol, Any}=Dict{Symbol, Any}(), classifier::Union{Nothing, Classify.AbstractClassifier}=nothing, strategy::Any=nothing, source::AbstractString="manual", mode=EnvConfig.configmode)
-    resolved_classifier = if !isnothing(classifier)
-        classifier
-    else
-        Classify.resolveclassifier(
-            classifier=get(configuration, :classifier, nothing),
-            classifier_factory=get(configuration, :classifier_factory, nothing),
-            classifier_type=get(configuration, :classifier_type, nothing),
-            classifier_spec=get(configuration, :classifier_spec, nothing),
-            mode=mode,
-        )
-    end
-    raw_template = if !isnothing(strategy)
-        strategy
-    elseif haskey(configuration, :strategy_template)
-        configuration[:strategy_template]
-    else
-        StrategyConfig()
-    end
+@inline function _strategy_with_classifier(spec::StrategyConfig, classifier::Classify.AbstractClassifier)::StrategyConfig
+    return StrategyConfig(
+        classifier=classifier,
+        algorithm=spec.algorithm,
+        maxwindow=spec.maxwindow,
+        openthreshold=spec.openthreshold,
+        closethreshold=spec.closethreshold,
+        makerfee=spec.makerfee,
+        takerfee=spec.takerfee,
+        buygain=spec.buygain,
+        sellgain=spec.sellgain,
+        limitreduction=spec.limitreduction,
+        minpricedelta=spec.minpricedelta,
+        max_classify_staleness_minutes=spec.max_classify_staleness_minutes,
+    )
+end
+
+@inline function _strategyclassifier(rt::TsCache)::Classify.AbstractClassifier
+    classifier = rt.strategy_config.classifier
+    @assert !isnothing(classifier) "StrategyConfig.classifier must be configured for TsCache runtime"
+    return classifier
+end
+
+"Build TsCache with explicit classifier wiring from argument or strategy config."
+function TsCache(; classifier::Union{Nothing, Classify.AbstractClassifier}=nothing, strategy::Any=nothing, source::AbstractString="manual")
+    raw_template = isnothing(strategy) ? StrategyConfig() : strategy
     resolved_template = raw_template isa StrategyConfig ? raw_template : throw(ArgumentError("strategy template must be TradingStrategy.StrategyConfig, got $(typeof(raw_template))"))
-    return TsCache(configuration, resolved_classifier, Dict{String, TsTp}(), Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}(), Set{String}(), resolved_template, String(source))
+    resolved_classifier = !isnothing(classifier) ? classifier : resolved_template.classifier
+    !isnothing(resolved_classifier) || throw(ArgumentError("TsCache requires a classifier via classifier keyword or strategy.classifier"))
+    configured_strategy = _strategy_with_classifier(resolved_template, resolved_classifier)
+    return TsCache(Dict{String, TsTp}(), Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}(), Set{String}(), configured_strategy, String(source))
 end
 
 "Return canonical trading-pair key for TsCache pair state lookups."
@@ -336,7 +335,6 @@ end
 function syncpairtrades!(ts::TsCache, xc::Xch.XchCache, pair::AbstractString; datetime::Union{Nothing, DateTime}=nothing)::TsTp
     tp = getpairstate!(ts, pair)
     tp.tradesdf = Xch.trades(xc, pair)
-    isempty(tp.closeprices) || empty!(tp.closeprices)
     tp.last_update_dt = datetime
     return tp
 end
@@ -346,7 +344,6 @@ function syncpairtrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, qu
     pair = tspairkey(base, quotecoin)
     tp = getpairstate!(ts, pair)
     tp.tradesdf = Xch.trades(xc, base, quotecoin)
-    isempty(tp.closeprices) || empty!(tp.closeprices)
     tp.last_update_dt = datetime
     return tp
 end
@@ -401,11 +398,17 @@ end
 
 acceptedbases(rt::TsCache)::Set{String} = copy(rt.accepted)
 
+"Return the classifier history requirement in minutes for runtime compatibility callers."
+function requiredhistoryminutes(rt::TsCache)::Int
+    return Int(max(0, Classify.requiredminutes(_strategyclassifier(rt))))
+end
+
 "Drop one base from TsCache, including classifier and cached pair state."
 function dropbase!(rt::TsCache, base::AbstractString)::Nothing
     basekey = uppercase(String(base))
+    classifier = _strategyclassifier(rt)
     try
-        Classify.removebase!(rt.classifier, basekey)
+        Classify.removebase!(classifier, basekey)
     catch
     end
     droppair!(rt, tspairkey(basekey, EnvConfig.pairquote))
@@ -419,8 +422,9 @@ function reset!(rt::TsCache)::Nothing
     empty!(rt.pairs)
     empty!(rt.classifier_gate_state)
     empty!(rt.accepted)
+    classifier = _strategyclassifier(rt)
     try
-        Classify.removebase!(rt.classifier, nothing)
+        Classify.removebase!(classifier, nothing)
     catch
     end
     return nothing
@@ -428,13 +432,14 @@ end
 
 "Apply a strategy-spec template to TsCache and clear derived cached state."
 function apply_strategy!(rt::TsCache, strategy::StrategyConfig; source::AbstractString="manual")::Nothing
-    rt.strategy_config = strategy
+    classifier = !isnothing(strategy.classifier) ? strategy.classifier : _strategyclassifier(rt)
+    rt.strategy_config = _strategy_with_classifier(strategy, classifier)
     rt.source = String(source)
     empty!(rt.pairs)
     empty!(rt.classifier_gate_state)
     empty!(rt.accepted)
     try
-        Classify.removebase!(rt.classifier, nothing)
+        Classify.removebase!(classifier, nothing)
     catch
     end
     return nothing
@@ -496,19 +501,20 @@ end
 function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:AbstractString}; datetime::DateTime, updatecache::Bool=false)::Nothing
     _ = datetime
     wanted = Set{String}(uppercase.(String.(bases)))
+    classifier = _strategyclassifier(rt)
 
-    loaded = Set{String}(uppercase.(String.(Classify.bases(rt.classifier))))
+    loaded = Set{String}(uppercase.(String.(Classify.bases(classifier))))
     for stale in sort!(collect(setdiff(union(rt.accepted, loaded), wanted)))
         dropbase!(rt, stale)
     end
 
-    loaded = Set{String}(uppercase.(String.(Classify.bases(rt.classifier))))
+    loaded = Set{String}(uppercase.(String.(Classify.bases(classifier))))
     any_loaded = false
     for base in sort!(collect(wanted))
         try
             ohlcv = Xch.ohlcv(xc, base)
             if !(base in loaded)
-                Classify.addbase!(rt.classifier, ohlcv)
+                Classify.addbase!(classifier, ohlcv)
                 push!(loaded, base)
             end
             any_loaded = true
@@ -518,11 +524,11 @@ function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:Ab
     end
 
     if any_loaded
-        Classify.supplement!(rt.classifier)
-        updatecache && Classify.writetargetsfeatures(rt.classifier)
+        Classify.supplement!(classifier)
+        updatecache && Classify.writetargetsfeatures(classifier)
     end
 
-    accepted = Set{String}(uppercase.(String.(Classify.bases(rt.classifier))))
+    accepted = Set{String}(uppercase.(String.(Classify.bases(classifier))))
     intersect!(accepted, wanted)
     rt.accepted = accepted
     for base in sort!(collect(rt.accepted))
@@ -531,14 +537,8 @@ function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:Ab
     return nothing
 end
 
-"""
-Return cached or freshly computed classifier advice together with the current bar context.
-
-This is the read-oriented phase of live runtime processing. It resolves the
-current OHLCV row, applies classifier gating, and returns the advice payload
-needed by the row-application phase.
-"""
-function _classify_base_advice!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, datetime::DateTime)::Union{Nothing, NamedTuple}
+"Update one base row in the Xch-owned trades dataframe using TsCache runtime state."
+function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, datetime::DateTime; reconciliation=nothing)::Union{Nothing, NamedTuple}
     basekey = uppercase(String(base))
     if !haskey(xc.bases, basekey)
         (EnvConfig.verbosity >= 1) && @warn "base OHLCV unavailable in exchange cache; skipping gettradesrow!" base=basekey
@@ -547,108 +547,36 @@ function _classify_base_advice!(rt::TsCache, xc::Xch.XchCache, base::AbstractStr
 
     ohlcv = Xch.ohlcv(xc, basekey)
     spec = rt.strategy_config
-    gate = _runtimegatestate!(rt, basekey)
-    tdf = Xch.trades(xc, basekey, EnvConfig.pairquote)
-    last_open_dt = _lastopentrade_dt(tdf)
 
     rowix = ohlcv.ix
     odf = Ohlcv.dataframe(ohlcv)
     @assert (1 <= rowix <= size(odf, 1)) "rowix=$(rowix) out of bounds for ohlcv rows=$(size(odf, 1))"
-    closeprice = Float32(odf[rowix, :close])
+    closeprice = odf[rowix, :close]
+    opentime = odf[rowix, :opentime]
 
-    advice = if _should_skip_classifier(spec, gate, datetime, closeprice, last_open_dt)
-        gate.last_advice
-    else
-        fresh = Classify.advice(rt.classifier, basekey, datetime, investment=nothing)
-        if !isnothing(fresh)
-            _set_runtimegatestate!(rt, basekey; last_advice=fresh, last_classify_close=closeprice)
-        end
-        fresh
-    end
-
-    isnothing(advice) && return nothing
-    return (
-        base=basekey,
-        datetime=datetime,
-        ohlcv=ohlcv,
-        closeprice=closeprice,
-        advice=advice,
-        spec=spec,
-    )
-end
-
-"""
-Apply one classifier advice payload to the Xch-owned trades row and return row metadata.
-
-This is the write-oriented phase of live runtime processing. It mutates the
-pair Trades DataFrame through the configured strategy algorithm and enriches the
-current row with reconciliation state when present.
-"""
-function _apply_base_advice_row!(rt::TsCache, xc::Xch.XchCache, advicectx::NamedTuple; reconciliation=nothing)::NamedTuple
-    basekey = String(advicectx.base)
-    datetime = advicectx.datetime
-    ohlcv = advicectx.ohlcv
-    closeprice = Float32(advicectx.closeprice)
-    advice = advicectx.advice
-    spec = advicectx.spec
+    _ = reconciliation
 
     syncpairtrades!(rt, xc, basekey, EnvConfig.pairquote; datetime=datetime)
-    odf = Ohlcv.dataframe(ohlcv)
-    rowix = ohlcv.ix
-    opentime = odf[rowix, :opentime]
     row = Xch.ensuretradesrow!(xc, basekey, EnvConfig.pairquote, opentime)
     tdf = row.tradesdf
-    trow = row.rowix
+    trowix = Int(row.rowix)
 
-    spec.algorithm(
-        spec,
-        tdf,
-        trow,
-        advice.tradelabel,
-        Float32(advice.probability),
-        closeprice;
-    )
+    # Classification is performed in gain_limit_reversal! when row score is zero.
+    tdf[trowix, :label] = ignore
+    tdf[trowix, :score] = 0f0
+    tdf[trowix, :close] = closeprice
 
-    recon = _normalizereconciliationinput(reconciliation)
-    if recon.has_long_open
-        if ismissing(tdf[trow, :longopenlimit]) || (Float32(tdf[trow, :longopenlimit]) <= 0f0)
-            tdf[trow, :longopenlimit] = recon.long_avg_entry
-        end
-        if ismissing(tdf[trow, :longcloselimit]) || (Float32(tdf[trow, :longcloselimit]) <= 0f0)
-            tdf[trow, :longcloselimit] = recon.long_avg_entry * (1f0 + spec.sellgain)
-        end
-    end
-    if recon.has_short_open
-        if ismissing(tdf[trow, :shortopenlimit]) || (Float32(tdf[trow, :shortopenlimit]) <= 0f0)
-            tdf[trow, :shortopenlimit] = recon.short_avg_entry
-        end
-        if ismissing(tdf[trow, :shortcloselimit]) || (Float32(tdf[trow, :shortcloselimit]) <= 0f0)
-            tdf[trow, :shortcloselimit] = recon.short_avg_entry * (1f0 - spec.sellgain)
-        end
-    end
-
-    cfgid = try
-        Int(advice.configid)
-    catch
-        0
-    end
+    spec.algorithm(spec, tdf, trowix)
 
     return (
         base=basekey,
         datetime=datetime,
         tradesdf=tdf,
-        rowix=Int(trow),
-        probability=Float32(advice.probability),
-        configid=cfgid,
+        rowix=trowix,
+        probability=Float32(tdf[trowix, :score]),
+        configid=0,
         source=:tradingstrategy,
     )
-end
-
-"Update one base row in the Xch-owned trades dataframe using TsCache runtime state."
-function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, datetime::DateTime; reconciliation=nothing)::Union{Nothing, NamedTuple}
-    advicectx = _classify_base_advice!(rt, xc, base, datetime)
-    isnothing(advicectx) && return nothing
-    return _apply_base_advice_row!(rt, xc, advicectx; reconciliation=reconciliation)
 end
 
 "Update requested bases in Xch-owned trades dataframes using TsCache runtime state."
@@ -663,131 +591,134 @@ function gettradesrows!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:A
     return rows
 end
 
-@inline _missingf32(x) = ismissing(x) ? 0f0 : Float32(x)
-@inline _hasguidance(openlimit, closelimit) = (!ismissing(openlimit)) && (!ismissing(closelimit)) && (Float32(openlimit) > 0f0) && (Float32(closelimit) > 0f0)
-@inline _openlimitactive(openlimit) = (!ismissing(openlimit)) && (Float32(openlimit) > 0f0)
-@inline _normalizedtradelabel(x) = ismissing(x) ? ignore : (x isa TradeLabel ? x : Targets.tradelabel(String(x)))
+@inline _hasguidance(openlimit, closelimit) = (openlimit > 0) && (closelimit > 0)
+@inline _openlimitactive(openlimit) = openlimit > 0
+
+" number of minutes exceeding cfg.maxwindow since lastopentrade; 0 if within maxwindow or no lastopentrade"
+function _limitreductionminutes(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer)
+    if (tradesdf[ix, :label] in (longopen, longstrongopen, shortopen, shortstrongopen)) || ismissing(tradesdf[ix, :lastopentrade])
+        return 0
+    else
+        elapsed_minutes = Int(div(Dates.value(DateTime(tradesdf[ix, :opentime]) - DateTime(tradesdf[ix, :lastopentrade])), 60000)) # DateTime difference is in milliseconds
+        return elapsed_minutes - Int(cfg.maxwindow)
+    end
+end
+
+" closeprice relative to reference price, reduced by limitreductionminutes * cfg.limitreduction"
+function _closeprice(cfg::StrategyConfig, limitreductionminutes::Int, refprice::Float32, updown::Targets.TrendPhase)
+    closelimit = 0f0
+    if updown == up
+        closelimit = refprice * (1f0 + Float32(cfg.sellgain))
+    elseif updown == down
+        closelimit = refprice * (1f0 - Float32(cfg.sellgain))
+    end
+    if limitreductionminutes <= 0
+        return closelimit
+    end
+    reduction_factor = cfg.limitreduction * limitreductionminutes
+    if updown == up
+        return closelimit * (1f0 - reduction_factor)
+    elseif updown == down
+        return closelimit * (1f0 + reduction_factor)
+    else
+        return closelimit
+    end
+end
+
+function _get_classifier_result!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer)
+    classifier = cfg.classifier
+    @assert !isnothing(classifier) "StrategyConfig.classifier must be configured for classifier fallback at ix=$(ix)"
+    @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair for classifier fallback; names=$(names(tradesdf))"
+    @assert :opentime in propertynames(tradesdf) "tradesdf must contain :opentime for classifier fallback; names=$(names(tradesdf))"
+
+    pair = tradesdf[ix, :pair]
+    @assert !ismissing(pair) "tradesdf[ix=$ix, :pair] must be non-missing for classifier fallback"
+    bq = Xch.basequote(String(pair))
+    basekey = uppercase(String(bq.basecoin))
+    datetime = DateTime(tradesdf[ix, :opentime])
+
+    advice = Classify.advice(classifier, basekey, datetime, investment=nothing)
+    if isnothing(advice)
+        tradesdf[ix, :label] = ignore
+        tradesdf[ix, :score] = 0f0
+        return nothing
+    end
+
+    tradesdf[ix, :label] = advice.tradelabel
+    tradesdf[ix, :score] = advice.probability
+    return advice
+end
 
 """
-    gain_limit_reversal!(strategy, tradesdf, ix, label, score, close)
+    gain_limit_reversal!(strategy, tradesdf, ix)
 
-DataFrame-based limit-reversal lane update that writes one sample row state
-(`longopenlimit`, `longcloselimit`, `shortopenlimit`, `shortcloselimit`,
-`tradelabel`, `labelscore`) derived from previous row state and the
-current classifier label/score input.
+DataFrame-based limit-reversal lane update that writes one sample row state.
 """
-function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real)
+function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-
-    scoref = Float32(score)
-    closef = Float32(close)
-    minpd = Float32(cfg.minpricedelta)
-
-    previx = ix - 1
-    prev_longopen = previx >= 1 ? _missingf32(tradesdf[previx, :longopenlimit]) : 0f0
-    prev_longclose = previx >= 1 ? _missingf32(tradesdf[previx, :longcloselimit]) : 0f0
-    prev_shortopen = previx >= 1 ? _missingf32(tradesdf[previx, :shortopenlimit]) : 0f0
-    prev_shortclose = previx >= 1 ? _missingf32(tradesdf[previx, :shortcloselimit]) : 0f0
-
-    tradesdf[ix, :longopenlimit] = prev_longopen
-    tradesdf[ix, :longcloselimit] = prev_longclose
-    tradesdf[ix, :shortopenlimit] = prev_shortopen
-    tradesdf[ix, :shortcloselimit] = prev_shortclose
-    tradesdf[ix, :tradelabel] = ignore
-    tradesdf[ix, :labelscore] = scoref
-
-    longsignal = (label in (longopen, longstrongopen)) && (scoref >= Float32(cfg.openthreshold))
-    shortsignal = (label in (shortopen, shortstrongopen)) && (scoref >= Float32(cfg.openthreshold))
-
-    cols = propertynames(tradesdf)
-    _prevcell(col::Symbol) = (previx >= 1 && (col in cols)) ? tradesdf[previx, col] : missing
-
-    prev_longunfilled = _prevcell(:longunfilled)
-    prev_shortunfilled = _prevcell(:shortunfilled)
-    prev_longamount = _prevcell(:longamount)
-    prev_shortamount = _prevcell(:shortamount)
-    prev_posamount = _prevcell(:posamount)
-    prev_lastopentrade = _prevcell(:lastopentrade)
-    curr_opentime = (:opentime in cols) ? tradesdf[ix, :opentime] : missing
-
-    long_unfilled_active = !ismissing(prev_longunfilled) && (Float32(prev_longunfilled) > 0f0)
-    short_unfilled_active = !ismissing(prev_shortunfilled) && (Float32(prev_shortunfilled) > 0f0)
-    long_unfilled_zero = !ismissing(prev_longunfilled) && (Float32(prev_longunfilled) <= 0f0)
-    short_unfilled_zero = !ismissing(prev_shortunfilled) && (Float32(prev_shortunfilled) <= 0f0)
-
-    long_amount_open = ((!ismissing(prev_longamount) && (Float32(prev_longamount) > 0f0)) || (!ismissing(prev_posamount) && (Float32(prev_posamount) > 0f0)))
-    short_amount_open = ((!ismissing(prev_shortamount) && (Float32(prev_shortamount) < 0f0)) || (!ismissing(prev_posamount) && (Float32(prev_posamount) < 0f0)))
-
-    limitreduction_active = false
-    if !ismissing(prev_lastopentrade) && !ismissing(curr_opentime)
-        elapsed_minutes = Int(div(Dates.value(DateTime(curr_opentime) - DateTime(prev_lastopentrade)), 60000)) # DateTime difference is in milliseconds
-        limitreduction_active = elapsed_minutes >= Int(cfg.maxwindow)
+    if tradesdf[ix, :score] == 0f0
+        _get_classifier_result!(cfg, tradesdf, ix)
     end
 
-    # Prevent double-open signaling while a segment is already active. Keep one
-    # active open/close lane at a time so runtime and replay share identical behavior.
-    long_active = _hasguidance(prev_longopen, prev_longclose) && (Float32(prev_longclose) > Float32(prev_longopen))
-    short_active = _hasguidance(prev_shortopen, prev_shortclose) && (Float32(prev_shortclose) < Float32(prev_shortopen))
-    if (longsignal || shortsignal) && (long_active || short_active)
-        longsignal = false
-        shortsignal = false
-    end
+    tradesdf[ix, :lo_limit] = ix > 1 ? tradesdf[ix-1, :lo_limit] : 0f0
+    tradesdf[ix, :lc_limit] = ix > 1 ? tradesdf[ix-1, :lc_limit] : 0f0
+    tradesdf[ix, :so_limit] = ix > 1 ? tradesdf[ix-1, :so_limit] : 0f0
+    tradesdf[ix, :sc_limit] = ix > 1 ? tradesdf[ix-1, :sc_limit] : 0f0
 
-    if longsignal
-        short_candidate = closef * (1f0 - Float32(cfg.buygain))
-        long_open_candidate = closef * (1f0 - Float32(cfg.buygain))
-        long_close_candidate = closef * (1f0 + Float32(cfg.sellgain))
-
-        if _should_update_price(_missingf32(prev_shortclose), short_candidate, minpd)
-            tradesdf[ix, :shortcloselimit] = short_candidate
+    if (tradesdf[ix, :label] in (longopen, longstrongopen)) 
+        if (tradesdf[ix, :score] >= cfg.openthreshold)
+            if _should_update_price(tradesdf[ix, :lo_limit], tradesdf[ix, :close] * (1f0 - Float32(cfg.buygain)), cfg.minpricedelta)
+                tradesdf[ix, :lo_limit] = tradesdf[ix, :close] * (1f0 - Float32(cfg.buygain))
+                tradesdf[ix, :lc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], up)
+            elseif _should_update_price(tradesdf[ix, :lc_limit], tradesdf[ix, :lo_pavg] * (1f0 + Float32(cfg.sellgain)), cfg.minpricedelta)
+                # refresh lc_limit in case it was reduced
+                tradesdf[ix, :lc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], up)
+            end
+            tradesdf[ix, :so_limit] = 0f0
+            tradesdf[ix, :sc_limit] = tradesdf[ix, :sp_amount] > 0f0 ? tradesdf[ix, :lo_limit] : 0f0
+        else # label below threshold
+            tradesdf[ix, :label] = longhold
         end
-        if _should_update_price(_missingf32(prev_longopen), long_open_candidate, minpd)
-            tradesdf[ix, :longopenlimit] = long_open_candidate
-        end
-        if _should_update_price(_missingf32(prev_longclose), long_close_candidate, minpd)
-            tradesdf[ix, :longcloselimit] = long_close_candidate
-        end
-        # Long-direction rows are encoded by a zero short open limit.
-        tradesdf[ix, :shortopenlimit] = 0f0
-        tradesdf[ix, :tradelabel] = label
-        if long_amount_open && long_unfilled_zero
-            # Open already filled: convert repeated open signal to long hold.
-            tradesdf[ix, :tradelabel] = longhold
-            return
-        end
-    elseif shortsignal
-        long_candidate = closef * (1f0 + Float32(cfg.buygain))
-        short_open_candidate = closef * (1f0 + Float32(cfg.buygain))
-        short_close_candidate = closef * (1f0 - Float32(cfg.sellgain))
-
-        if _should_update_price(_missingf32(prev_longclose), long_candidate, minpd)
-            tradesdf[ix, :longcloselimit] = long_candidate
-        end
-        if _should_update_price(_missingf32(prev_shortopen), short_open_candidate, minpd)
-            tradesdf[ix, :shortopenlimit] = short_open_candidate
-        end
-        if _should_update_price(_missingf32(prev_shortclose), short_close_candidate, minpd)
-            tradesdf[ix, :shortcloselimit] = short_close_candidate
-        end
-        # Short-direction rows are encoded by a zero long open limit.
-        tradesdf[ix, :longopenlimit] = 0f0
-        tradesdf[ix, :tradelabel] = label
-        if short_amount_open && short_unfilled_zero
-            # Open already filled: convert repeated open signal to short hold.
-            tradesdf[ix, :tradelabel] = shorthold
-            return
+    elseif (tradesdf[ix, :label] in (shortopen, shortstrongopen)) 
+        if (tradesdf[ix, :score] >= cfg.openthreshold)
+            if _should_update_price(tradesdf[ix, :so_limit], tradesdf[ix, :close] * (1f0 - Float32(cfg.buygain)), cfg.minpricedelta)
+                tradesdf[ix, :so_limit] = tradesdf[ix, :close] * (1f0 + Float32(cfg.buygain))
+                tradesdf[ix, :sc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], down)
+            elseif _should_update_price(tradesdf[ix, :sc_limit], tradesdf[ix, :so_pavg] * (1f0 - Float32(cfg.sellgain)), cfg.minpricedelta)
+                # refresh sc_limit in case it was reduced
+                tradesdf[ix, :sc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], down)
+            end
+            tradesdf[ix, :lo_limit] = 0f0
+            tradesdf[ix, :lc_limit] = tradesdf[ix, :lp_amount] > 0f0 ? tradesdf[ix, :so_limit] : 0f0
+        else # label below threshold
+            tradesdf[ix, :label] = shorthold
         end
     else
-        if limitreduction_active && _hasguidance(prev_longopen, prev_longclose) && (Float32(prev_longclose) > Float32(prev_longopen))
-            long_candidate = max(closef, Float32(prev_longclose) * (1f0 - Float32(cfg.sellgain) * Float32(cfg.limitreduction)))
-            if _should_update_price(_missingf32(prev_longclose), long_candidate, minpd)
-                tradesdf[ix, :longcloselimit] = long_candidate
+        lrm = _limitreductionminutes(cfg, tradesdf, ix)
+        if lrm > 0
+            if (tradesdf[ix, :lc_limit] > 0f0) && (tradesdf[ix, :lp_amount] > 0f0)
+                lc_candidate = _closeprice(cfg, lrm, tradesdf[ix, :lo_pavg], up)
+                if _should_update_price(tradesdf[ix, :lc_limit], lc_candidate, cfg.minpricedelta)
+                    tradesdf[ix, :lc_limit] = lc_candidate
+                end
+                coupled_short_reversal = (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :so_amount] > 0f0) && (tradesdf[ix, :so_limit] > 0f0)
+                if coupled_short_reversal
+                    # Preserve close-before-open ordering for long->short reversal while still allowing reduction.
+                    tradesdf[ix, :lc_limit] = min(tradesdf[ix, :lc_limit], tradesdf[ix, :so_limit])
+                end
+            # else lc_limit is waiting for lo_limit to fill
             end
-        end
-        if limitreduction_active && _hasguidance(prev_shortopen, prev_shortclose) && (Float32(prev_shortclose) < Float32(prev_shortopen))
-            short_candidate = min(closef, Float32(prev_shortclose) * (1f0 + Float32(cfg.sellgain) * Float32(cfg.limitreduction)))
-            if _should_update_price(_missingf32(prev_shortclose), short_candidate, minpd)
-                tradesdf[ix, :shortcloselimit] = short_candidate
+            if (tradesdf[ix, :sc_limit] > 0f0) && (tradesdf[ix, :sp_amount] > 0f0)
+                sc_candidate = _closeprice(cfg, lrm, tradesdf[ix, :so_pavg], down)
+                if _should_update_price(tradesdf[ix, :sc_limit], sc_candidate, cfg.minpricedelta)
+                    tradesdf[ix, :sc_limit] = sc_candidate
+                end
+                coupled_long_reversal = (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :lo_amount] > 0f0) && (tradesdf[ix, :lo_limit] > 0f0)
+                if coupled_long_reversal
+                    # Symmetric ordering guard for short->long reversal.
+                    tradesdf[ix, :sc_limit] = max(tradesdf[ix, :sc_limit], tradesdf[ix, :lo_limit])
+                end
+            # else sc_limit is waiting for so_limit to fill
             end
         end
     end
@@ -795,189 +726,216 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
     return
 end
 
-@inline function _validate_lastix(lastix::Integer, nrows::Integer)::Nothing
-    @assert lastix >= 0 "lastix must be >= 0, got lastix=$(lastix), nrows=$(nrows)"
-    @assert lastix <= nrows "lastix must be <= nrows, got lastix=$(lastix), nrows=$(nrows)"
-    return nothing
+function _resetorder(tradesdf::DataFrame, ix::Integer, ordertype::String; reset_pavg::Bool)
+    function _ro(tradesdf::DataFrame, ix::Integer, ordertype::String)
+        tradesdf[ix, Symbol(ordertype * "_limit")] = 0f0
+        tradesdf[ix, Symbol(ordertype * "_amount")] = 0f0
+        tradesdf[ix, Symbol(ordertype * "_status")] = "closed"
+        tradesdf[ix, Symbol(ordertype * "_filled")] = 0f0
+        tradesdf[ix, Symbol(ordertype * "_id")] = "none"
+        if reset_pavg
+            tradesdf[ix, Symbol(ordertype * "_pavg")] = 0f0
+        end
+    end
+
+    _ro(tradesdf, ix, ordertype)
 end
 
-function gain_limit_reversal! end
-
-function _executed_open_hit_dt(tradesdf::DataFrame, predictionsdf::AbstractDataFrame, ix::Integer)
-    label = _normalizedtradelabel(tradesdf[ix, :tradelabel])
-    lo = tradesdf[ix, :longopenlimit]
-    so = tradesdf[ix, :shortopenlimit]
-    low = predictionsdf[ix, :low]
-    high = predictionsdf[ix, :high]
-    long_open_hit = islongopenlabel(label) && _openlimitactive(lo) && _price_in_bar(Float32(lo), low, high, :low)
-    short_open_hit = isshortopenlabel(label) && _openlimitactive(so) && _price_in_bar(Float32(so), low, high, :high)
-    @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo), so=$(so), low=$(low), high=$(high)"
+function _executed_open_hit_dt(tradesdf::DataFrame, ix::Integer)
+    label = tradesdf[ix, :label]
+    lo_limit = tradesdf[ix, :lo_limit]
+    lo_amount = tradesdf[ix, :lo_amount]
+    so_limit = tradesdf[ix, :so_limit]
+    so_amount = tradesdf[ix, :so_amount]
+    high = tradesdf[ix, :high]
+    low = tradesdf[ix, :low]
+    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && _openlimitactive(lo_limit) && _price_in_bar(Float32(lo_limit), low, high, :low)
+    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && _openlimitactive(so_limit) && _price_in_bar(Float32(so_limit), low, high, :high)
+    @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo_limit), so=$(so_limit), low=$(low), high=$(high)"
+    if long_open_hit
+        @assert tradesdf[ix, :sp_amount] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(tradesdf[ix, :sp_amount]) is not zero"
+        tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
+        tradesdf[ix, :lp_amount] = tradesdf[ix, :lo_amount]
+        tradesdf[ix, :lo_pavg] = tradesdf[ix, :lo_limit]
+        _resetorder(tradesdf, ix, "lo", reset_pavg=false)
+        tradesdf[ix, :lc_amount] = tradesdf[ix, :lp_amount]
+        tradesdf[ix, :lc_pavg] = 0f0
+        tradesdf[ix, :lc_filled] = 0f0
+        tradesdf[ix, :lc_status] = "submitted"
+    elseif short_open_hit
+        @assert tradesdf[ix, :lp_amount] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(tradesdf[ix, :lp_amount]) is not zero"
+        tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
+        tradesdf[ix, :sp_amount] = tradesdf[ix, :so_amount]
+        tradesdf[ix, :so_pavg] = tradesdf[ix, :so_limit]
+        _resetorder(tradesdf, ix, "so", reset_pavg=false)
+        tradesdf[ix, :sc_amount] = tradesdf[ix, :sp_amount]
+        tradesdf[ix, :sc_pavg] = 0f0
+        tradesdf[ix, :sc_filled] = 0f0
+        tradesdf[ix, :sc_status] = "submitted"
+    end
     return (long_open_hit || short_open_hit) ? tradesdf[ix, :opentime] : missing
 end
 
-function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
-    has_long = (:longamount in propertynames(tradesdf)) && !ismissing(tradesdf[ix, :longamount]) && (abs(Float32(tradesdf[ix, :longamount])) > 0f0)
-    has_short = (:shortamount in propertynames(tradesdf)) && !ismissing(tradesdf[ix, :shortamount]) && (abs(Float32(tradesdf[ix, :shortamount])) > 0f0)
-    return has_long || has_short
-end
+_row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool = (tradesdf[ix, :lp_amount] > 0f0) || (tradesdf[ix, :sp_amount] > 0f0)
 
-function _carry_lastopentrade!(tradesdf::DataFrame, ix::Integer)::Nothing
-    if !_row_has_position_amount(tradesdf, ix)
-        tradesdf[ix, :lastopentrade] = missing
-        return nothing
-    end
-    if !ismissing(tradesdf[ix, :lastopentrade])
-        return nothing
-    end
-    for j in (ix - 1):-1:1
-        prev = tradesdf[j, :lastopentrade]
-        if !ismissing(prev)
-            tradesdf[ix, :lastopentrade] = prev
-            break
+function _rowtakeover!(tdf::DataFrame, ix::Integer)
+    if ix > 1
+        if tdf[ix, :score] == 0f0
+            tdf[ix, :score] = tdf[ix-1, :score]
+            tdf[ix, :label] = tdf[ix-1, :label]
+        end
+        for col in [:lo_limit, :lc_limit, :so_limit, :sc_limit, 
+                    :lo_amount, :lc_amount, :so_amount, :sc_amount, 
+                    :lo_status, :lc_status, :so_status, :sc_status, 
+                    :lo_filled, :lc_filled, :so_filled, :sc_filled, 
+                    :lo_id, :lc_id, :so_id, :sc_id, 
+                    :lo_pavg, :lc_pavg, :so_pavg, :sc_pavg, 
+                    :lastopentrade, :lp_amount, :sp_amount]
+            tdf[ix, col] = tdf[ix-1, col]
         end
     end
-    return nothing
 end
 
-"""Execute per-sample strategy updates and optional gain materialization outside the algorithm implementation."""
-function simulate_gains!(strategy::StrategyConfig, tp::TsTp, lastix::Integer;
-    algorithm::Function=gain_limit_reversal!,
-    gaindf::Union{Nothing, DataFrame}=nothing,
-    makerfee::Real=0f0,
-    takerfee::Real=0f0,
-    closeprices::Union{Nothing, AbstractVector}=nothing,
-)
-    _ = takerfee
-    lastix = Int(lastix)
-    _validate_lastix(lastix, nrow(tp.tradesdf))
+"""Execute per-sample strategy updates and gain materialization outside the algorithm implementation."""
+function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf::DataFrame=emptygaindf())
     lastix <= 0 && return tp
+    @assert !isnothing(gaindf) "expeting gaindf to be a DataFrame when gain materialization is requested"
 
-    closes = if !isnothing(closeprices)
-        @assert length(closeprices) >= lastix "closeprices length=$(length(closeprices)) must cover lastix=$(lastix)"
-        Float32[Float32(closeprices[ix]) for ix in 1:lastix]
-    elseif length(tp.closeprices) >= lastix
-        tp.closeprices[1:lastix]
-    elseif :close in propertynames(tp.tradesdf)
-        Float32[Float32(tp.tradesdf[ix, :close]) for ix in 1:lastix]
-    else
-        throw(ArgumentError("closeprices unavailable for TsTp pair=$(tp.pair); provide closeprices or seed tp.closeprices"))
-    end
-
-    # Keep a stable read view of labels/scores while mutating strategy limits row-by-row.
-    rawlabels = TradeLabel[_normalizedtradelabel(tp.tradesdf[ix, :tradelabel]) for ix in 1:lastix]
-    rawscores = Float32[Float32(tp.tradesdf[ix, :labelscore]) for ix in 1:lastix]
+    # Read-only views of labels/scores — each rawlabels[ix]/rawscores[ix] is read before the algorithm mutates row ix.
+    rawlabels = @view tp.tradesdf[!, :label][1:lastix]
+    rawscores = @view tp.tradesdf[!, :score][1:lastix]
 
     last_openix = 0
     for ix in 1:lastix
-        algorithm(strategy, tp.tradesdf, ix, rawlabels[ix], rawscores[ix], closes[ix])
-        exec_open_dt = _executed_open_hit_dt(tp.tradesdf, tp.tradesdf, ix)
-        if !ismissing(exec_open_dt) && _row_has_position_amount(tp.tradesdf, ix)
-            tp.tradesdf[ix, :lastopentrade] = exec_open_dt
-        else
-            _carry_lastopentrade!(tp.tradesdf, ix)
-        end
-        if !isnothing(gaindf)
-            last_openix = _materialize_gains_sample_from_trades!(gaindf, tp.tradesdf, tp.tradesdf, ix, last_openix; makerfee=makerfee)
+        try
+            _rowtakeover!(tp.tradesdf, ix)
+            last_openix = _materialize_gains_sample_from_trades!(gaindf, tp.tradesdf, ix, last_openix; makerfee=cfg.makerfee, lastix=lastix)
+            # first close (=materialize) then open if both are applicable shall be also enforced in real by Xch
+            last_openix = ismissing(_executed_open_hit_dt(tp.tradesdf, ix)) ? last_openix : ix
+            # algorithm after materialization because label and order limits are set on the basis of the last minute (ix is the last complete minute sample in the past) and prices can hit these limits from the next ix+1 minute
+            cfg.algorithm(cfg, tp.tradesdf, ix)
+            _process_advice_row!(cfg, tp.tradesdf, ix)
+            _validate_row_consistency(tp.tradesdf, ix)
+        catch err
+            if err isa AssertionError
+                lo = max(1, ix - 1)
+                println(stderr, "Assertion in simulate_gains! at ix=$(ix). Last tradesdf rows $(lo):$(ix):")
+                show(stderr, MIME("text/plain"), tp.tradesdf[lo:ix, :]; allrows=true, allcols=true)
+                println(stderr)
+            end
+            rethrow(err)
         end
     end
-    if (lastix > 0) && (:opentime in propertynames(tp.tradesdf))
+
+    if (lastix > 0)
         tp.last_update_dt = tp.tradesdf[lastix, :opentime]
     end
     return tp
 end
 
-function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, tradesdf::DataFrame, predictionsdf::AbstractDataFrame, ix::Integer, last_openix::Int; makerfee::Real=0f0)::Int
-    @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-    @assert 1 <= ix <= nrow(predictionsdf) "ix=$(ix) out of bounds for predictions rows=$(nrow(predictionsdf))"
-
-    time = tradesdf[ix, :opentime]
-    high = predictionsdf[ix, :high]
-    low = predictionsdf[ix, :low]
-    label = _normalizedtradelabel(tradesdf[ix, :tradelabel])
-    lo = tradesdf[ix, :longopenlimit]
-    lc = tradesdf[ix, :longcloselimit]
-    so = tradesdf[ix, :shortopenlimit]
-    sc = tradesdf[ix, :shortcloselimit]
-
-    longsignal = islongopenlabel(label)
-    shortsignal = isshortopenlabel(label)
-
-    if longsignal
-        @assert _hasguidance(lo, lc) "Missing long guidance for long open signal at ix=$(ix): lo=$(lo), lc=$(lc)"
-        @assert !_openlimitactive(so) "long signal requires shortopenlimit == 0f0 at ix=$(ix): shortopenlimit=$(so)"
+"Input is :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit. Output is :lo_status, :so_status, :lo_amount, :so_amount."
+function _process_advice_row!(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer)
+    if islongopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :lp_amount] == 0f0)
+        tradesdf[ix, :lo_status] = "submitted"
+        tradesdf[ix, :lo_amount] = 100f0
+        tradesdf[ix, :lo_pavg] = 0f0
+        tradesdf[ix, :lo_filled] = 0f0
     end
-    if shortsignal
-        @assert _hasguidance(so, sc) "Missing short guidance for short open signal at ix=$(ix): so=$(so), sc=$(sc)"
-        @assert !_openlimitactive(lo) "short signal requires longopenlimit == 0f0 at ix=$(ix): longopenlimit=$(lo)"
+    if isshortopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :sp_amount] == 0f0)
+        tradesdf[ix, :so_status] = "submitted"
+        tradesdf[ix, :so_amount] = 100f0
+        tradesdf[ix, :so_pavg] = 0f0
+        tradesdf[ix, :so_filled] = 0f0
     end
+end
 
+function _validate_row_consistency(tradesdf::DataFrame, ix::Integer)::Nothing
+    @assert !((tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :sp_amount] > 0f0)) "Invalid overlap at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount]). A row cannot hold long and short position amounts at the same time."
+
+    if islongopenlabel(tradesdf[ix, :label])
+        @assert _hasguidance(tradesdf[ix, :lo_limit], tradesdf[ix, :lc_limit]) "Missing long guidance for long open signal at ix=$(ix): lo=$(tradesdf[ix, :lo_limit]), lc=$(tradesdf[ix, :lc_limit])"
+        @assert tradesdf[ix, :so_limit] == 0f0 "Expected zero so_limit for long open orders at ix=$(ix):, so_limit=$(tradesdf[ix, :so_limit])"
+    end
+    if isshortopenlabel(tradesdf[ix, :label])
+        @assert _hasguidance(tradesdf[ix, :so_limit], tradesdf[ix, :sc_limit]) "Missing short guidance for short open signal at ix=$(ix): so=$(tradesdf[ix, :so_limit]), sc=$(tradesdf[ix, :sc_limit])"
+        @assert tradesdf[ix, :lo_limit] == 0f0 "Expected zero lo_limit for short open orders at ix=$(ix):, lo_limit=$(tradesdf[ix, :lo_limit])"
+    end
+    @assert (ismissing(tradesdf[ix, :lastopentrade])  || (tradesdf[1, :opentime] <= tradesdf[ix, :lastopentrade] <= tradesdf[ix, :opentime])) "$(tradesdf[1, :opentime]) <= lastopentrade[ix=$ix]=$(tradesdf[ix, :lastopentrade]) <= $(tradesdf[ix, :opentime])"
+    if (tradesdf[ix, :lp_amount] > 0f0)
+        @assert tradesdf[ix, :sp_amount] == 0f0 "Expected zero sp_amount for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount])"
+        @assert tradesdf[ix, :lo_pavg] > 0f0 "Expected positive lo_pavg for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), lo_pavg=$(tradesdf[ix, :lo_pavg])"
+        @assert tradesdf[ix, :lc_limit] > 0f0 "Expected positive lc_limit for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), lc_limit=$(tradesdf[ix, :lc_limit])"
+        @assert !ismissing(tradesdf[ix, :lastopentrade]) "Expected non-missing lastopentrade for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), lastopentrade=$(tradesdf[ix, :lastopentrade])"
+    elseif (tradesdf[ix, :sp_amount] > 0f0)
+        @assert tradesdf[ix, :lp_amount] == 0f0 "Expected zero lp_amount for short positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount])"
+        @assert tradesdf[ix, :so_pavg] > 0f0 "Expected positive so_pavg for short positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount]), so_pavg=$(tradesdf[ix, :so_pavg])"
+        @assert tradesdf[ix, :sc_limit] > 0f0 "Expected positive sc_limit for short positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount]), sc_limit=$(tradesdf[ix, :sc_limit])"
+        @assert !ismissing(tradesdf[ix, :lastopentrade]) "Expected non-missing lastopentrade for short positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount]), lastopentrade=$(tradesdf[ix, :lastopentrade])"
+    else
+        @assert tradesdf[ix, :lp_amount] == 0f0 "Expected zero lp_amount for flat positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount])"
+        @assert tradesdf[ix, :sp_amount] == 0f0 "Expected zero sp_amount for flat positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount])"
+        @assert tradesdf[ix, :so_pavg] == 0f0 "Expected zero so_pavg for flat positions at ix=$(ix): so_pavg=$(tradesdf[ix, :so_pavg])"
+        @assert tradesdf[ix, :lo_pavg] == 0f0 "Expected zero lo_pavg for flat positions at ix=$(ix): lo_pavg=$(tradesdf[ix, :lo_pavg])"
+        @assert ismissing(tradesdf[ix, :lastopentrade]) "Expected missing lastopentrade for flat positions at ix=$(ix): lastopentrade=$(tradesdf[ix, :lastopentrade])"
+    end
+    return nothing
+end
+
+function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, tradesdf::DataFrame, ix::Integer, last_openix::Int; makerfee::Float32=0f0, lastix::Integer=0)::Int
+
+    if tradesdf[ix, :lp_amount] > 0f0
+        openprice = tradesdf[last_openix, :lo_limit]
+        minutes = Int(div(Dates.value(tradesdf[ix, :opentime] - tradesdf[ix, :lastopentrade]), 60000)) + 1
+        if _price_in_bar(tradesdf[ix, :lc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :high)
+            gain = (tradesdf[ix, :lc_limit] - openprice) / openprice
+            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
+            tradesdf[ix, :lc_pavg] = tradesdf[ix, :lc_limit]
+            _resetorder(tradesdf, ix, "lc", reset_pavg=false)
+            last_openix = 0
+        elseif (ix == lastix) && (last_openix > 0)
+            # Force-close any open gain segment at range boundary using close price at lastix
+            gain = (tradesdf[lastix, :close] - openprice) / openprice
+            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[lastix, :lastopentrade], tradesdf[lastix, :opentime], last_openix, lastix))
+            tradesdf[ix, :lc_pavg] = tradesdf[ix, :close]
+            _resetorder(tradesdf, ix, "lc", reset_pavg=false)
+            last_openix = 0
+        end
+    elseif tradesdf[ix, :sp_amount] > 0f0
+        openprice = tradesdf[last_openix, :so_limit]
+        minutes = Int(div(Dates.value(tradesdf[ix, :opentime] - tradesdf[ix, :lastopentrade]), 60000)) + 1
+        if _price_in_bar(tradesdf[ix, :sc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :low)
+            gain = -(tradesdf[ix, :sc_limit] - openprice) / openprice
+            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
+            tradesdf[ix, :sc_pavg] = tradesdf[ix, :sc_limit]
+            _resetorder(tradesdf, ix, "sc", reset_pavg=false)
+            last_openix = 0
+        elseif (ix == lastix) && (last_openix > 0)
+            # Force-close any open gain segment at range boundary using close price at lastix
+            gain = -(tradesdf[lastix, :close] - openprice) / openprice
+            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[lastix, :lastopentrade], tradesdf[lastix, :opentime], last_openix, lastix))
+            tradesdf[ix, :sc_pavg] = tradesdf[ix, :close]
+            _resetorder(tradesdf, ix, "sc", reset_pavg=false)
+            last_openix = 0
+        end
+    end
     if last_openix == 0
-        #* last_openix is only set the first time a gain segment hits the open bar and not any later hits even with an open signal
-        #* that shall be changed if a multi open approach is considered at different entry levels
-        long_open_hit = _openlimitactive(lo) && _price_in_bar(Float32(lo), low, high, :low)
-        short_open_hit = _openlimitactive(so) && _price_in_bar(Float32(so), low, high, :high)
-        @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo), so=$(so), low=$(low), high=$(high)"
-        if long_open_hit || short_open_hit
-            last_openix = ix
-        end
-    end
-
-    open_exec_dt = missing
-    if last_openix > 0
-        open_exec_dt = tradesdf[last_openix, :opentime]
-        start_lo = tradesdf[last_openix, :longopenlimit]
-        start_so = tradesdf[last_openix, :shortopenlimit]
-        start_is_long = _openlimitactive(start_lo)
-        start_is_short = _openlimitactive(start_so)
-        @assert start_is_long != start_is_short "Open direction cannot be inferred at last_openix=$(last_openix): start_lo=$(start_lo), start_so=$(start_so)"
-
-        if start_is_long
-            @assert !ismissing(lc) && (Float32(lc) > 0f0) "Missing long close guidance while position is open at ix=$(ix), last_openix=$(last_openix), lc=$(lc)"
-            if _price_in_bar(Float32(lc), low, high, :low)
-                startix = last_openix
-                starttime = tradesdf[startix, :opentime]
-                openprice = Float32(tradesdf[startix, :longopenlimit])
-                @assert openprice > 0f0 "Invalid long openprice at startix=$(startix): openprice=$(openprice)"
-                minutes = Int(div(Dates.value(time - starttime), 60000)) + 1
-                gain = (Float32(lc) - openprice) / openprice
-                if !isnothing(result)
-                    push!(result, (up, (ix - startix + 1), minutes, gain, (gain - 2f0 * Float32(makerfee)), starttime, time, startix, ix))
-                end
-                last_openix = 0
-            end
-        else
-            @assert !ismissing(sc) && (Float32(sc) > 0f0) "Missing short close guidance while position is open at ix=$(ix), last_openix=$(last_openix), sc=$(sc)"
-            if _price_in_bar(Float32(sc), low, high, :high)
-                startix = last_openix
-                starttime = tradesdf[startix, :opentime]
-                openprice = Float32(tradesdf[startix, :shortopenlimit])
-                @assert openprice > 0f0 "Invalid short openprice at startix=$(startix): openprice=$(openprice)"
-                minutes = Int(div(Dates.value(time - starttime), 60000)) + 1
-                gain = -(Float32(sc) - openprice) / openprice
-                if !isnothing(result)
-                    push!(result, (down, (ix - startix + 1), minutes, gain, (gain - 2f0 * Float32(makerfee)), starttime, time, startix, ix))
-                end
-                last_openix = 0
-            end
-        end
+        tradesdf[ix, :lastopentrade] = missing
+        tradesdf[ix, :lp_amount] = 0f0
+        tradesdf[ix, :sp_amount] = 0f0
+        tradesdf[ix, :lo_pavg] = 0f0
+        tradesdf[ix, :so_pavg] = 0f0
     end
 
     return last_openix
 end
 
-"""
-Synchronize one pair-scoped Trades DataFrame from prediction inputs and metadata.
+"""Prepare one replay pair-scoped Trades DataFrame from prediction inputs.
 
 - Receives a resultview DataFrame with columns: target, opentime, high, low, close, pivot, coin, rangeid, set, score, label
-- Drops close and adds labelscore and tradelabel as copies of the already present columns score and labelto produce a Trades DataFrame.
-- adds from metadata set, predicted, rangeid, openthreshold, closethreshold
-- adds via Xch.settrade->Xch.tradesdf_contributors all Xch columns: (opentime which is already in), pair, 
-    - longid, longstatus, longunfilled, longpriceavg, longmsg,
-    - shortid, shortstatus, shortunfilled, shortpriceavg, shortmsg
-    - postype, posamount, quoteprice, maintmargin, equity, balance, freemargin, freequota
-- adds close to TpTs as separate vector  
+- Adds via Xch.settrades! all Xch columns: opentime, pair, lo_id/lc_id/so_id/sc_id, lo_status/lc_status/so_status/sc_status, etc.
+- Stores optional metadata columns from the metadata dict.
 """
-function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector;
+function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector;
     quotecoin::AbstractString=EnvConfig.pairquote,
     metadata::AbstractDict{Symbol, Any}=Dict{Symbol, Any}(),
     datetime::Union{Nothing, DateTime}=nothing,
@@ -988,7 +946,7 @@ function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, 
     @assert :close in propertynames(predictionsdf) "predictionsdf must contain :close; names=$(names(predictionsdf))"
 
     pair = tspairkey(base, quotecoin)
-    tp = haspairstate(ts, pair) ? getpairstate!(ts, pair) : TsTp(pair=pair)
+    tp = getpairstate!(ts, pair)
 
     rebuild = true
     if nrow(tp.tradesdf) == n && (:opentime in propertynames(tp.tradesdf))
@@ -1000,26 +958,27 @@ function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, 
     end
 
     if rebuild
-        tradesdf = DataFrame(predictionsdf; copycols=true)
-        closeprices = Float32.(tradesdf[!, :close])
-        select!(tradesdf, Not(:close))
+        tradesdf = DataFrame(predictionsdf; copycols=false)
+        ohlcv_cols = filter(col -> col in propertynames(tradesdf), [:open, :basevolume, :pivot, :coin, :target])
+        !isempty(ohlcv_cols) && select!(tradesdf, Not(ohlcv_cols))
         Xch.settrades!(xc, base, quotecoin, tradesdf)
         tp = syncpairtrades!(ts, xc, base, quotecoin; datetime=datetime)
-        tp.closeprices = closeprices
     else
         tp = syncpairtrades!(ts, xc, base, quotecoin; datetime=datetime)
-        tp.closeprices = Float32.(predictionsdf[!, :close])
+        tp.tradesdf[!, :close] .= predictionsdf[!, :close]
+        tp.tradesdf[!, :high] .= predictionsdf[!, :high]
+        tp.tradesdf[!, :low] .= predictionsdf[!, :low]
     end
 
     if n > 0
-        fill!(tp.tradesdf[!, :longopenlimit], 0f0)
-        fill!(tp.tradesdf[!, :longcloselimit], 0f0)
-        fill!(tp.tradesdf[!, :shortopenlimit], 0f0)
-        fill!(tp.tradesdf[!, :shortcloselimit], 0f0)
+        fill!(@view(tp.tradesdf[:, :lo_limit]), 0f0)
+        fill!(@view(tp.tradesdf[:, :lc_limit]), 0f0)
+        fill!(@view(tp.tradesdf[:, :so_limit]), 0f0)
+        fill!(@view(tp.tradesdf[:, :sc_limit]), 0f0)
     end
 
-    tp.tradesdf[!, :labelscore] = Float32.(scores)
-    tp.tradesdf[!, :tradelabel] = Targets.TradeLabel[labels[ix] for ix in eachindex(labels)]
+    tp.tradesdf[!, :score] = scores
+    tp.tradesdf[!, :label] = labels
 
     for (k, v) in metadata
         tp.tradesdf[!, k] = fill(v, n)
@@ -1027,39 +986,27 @@ function _synctradesframe!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, 
     return tp
 end
 
-"""Prepare one replay pair-scoped Trades DataFrame from prediction inputs."""
-function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector;
-    quotecoin::AbstractString=EnvConfig.pairquote,
-    metadata::AbstractDict{Symbol, Any}=Dict{Symbol, Any}(),
-    datetime::Union{Nothing, DateTime}=nothing,
-)::TsTp
-    return _synctradesframe!(ts, xc, base, predictionsdf, scores, labels;
-        quotecoin=quotecoin,
-        metadata=metadata,
-        datetime=datetime,
-    )
-end
-
 function _validatereplayprepared!(tp::TsTp, lastix::Integer)::Nothing
     @assert !isempty(tp.pair) "Replay pair identifier must be non-empty"
 
     required_cols = (
         :opentime,
+        :label,
+        :score,
+        :lastopentrade,
+        :close,
         :high,
         :low,
-        :tradelabel,
-        :labelscore,
-        :lastopentrade,
-        :longopenlimit,
-        :longcloselimit,
-        :shortopenlimit,
-        :shortcloselimit,
+        :lo_limit,
+        :lc_limit,
+        :so_limit,
+        :sc_limit,
     )
     missing_cols = Symbol[col for col in required_cols if !(col in propertynames(tp.tradesdf))]
     @assert isempty(missing_cols) "Replay state for pair=$(tp.pair) is not prepared; missing columns=$(missing_cols)"
 
     if lastix > 0
-        @assert length(tp.closeprices) >= lastix "Replay state for pair=$(tp.pair) is not prepared with closeprices covering lastix=$(lastix); closeprices length=$(length(tp.closeprices))"
+        @assert nrow(tp.tradesdf) >= lastix "Replay state for pair=$(tp.pair) has fewer rows=$(nrow(tp.tradesdf)) than lastix=$(lastix)"
         if :pair in propertynames(tp.tradesdf)
             rowpair = uppercase(String(tp.tradesdf[1, :pair]))
             @assert rowpair == uppercase(tp.pair) "Replay state pair mismatch for pair=$(tp.pair): tradesdf pair=$(rowpair)"
@@ -1068,31 +1015,25 @@ function _validatereplayprepared!(tp::TsTp, lastix::Integer)::Nothing
     return nothing
 end
 
-"""Process gains for one replay pair after its Trades DataFrame has been prepared explicitly."""
+"""Process gains for one replay pair after its Trades DataFrame has been prepared explicitly.
+
+Thresholds are taken from the strategy config, not from parameters. The strategy.openthreshold
+and strategy.closethreshold determine which trades pass the confidence filter during gain materialization.
+Any open gain segment at lastix is force-closed using the close price at that row.
+"""
 function processreplaygains!(tp::TsTp;
     strategy::StrategyConfig,
     lastix::Integer=nrow(tp.tradesdf),
-    forcegain::Bool=true,
-    openthreshold=0.6f0,
-    closethreshold=0.1f0,
 )::DataFrame
-    _ = forcegain
-    _ = closethreshold
-    _validate_lastix(lastix, nrow(tp.tradesdf))
     _validatereplayprepared!(tp, lastix)
     gaindf = emptygaindf()
 
     if lastix > 0
         try
-            simulate_gains!(strategy, tp, lastix;
-                algorithm=strategy.algorithm,
-                gaindf=gaindf,
-                makerfee=strategy.makerfee,
-                takerfee=strategy.takerfee,
-            )
+            simulate_gains!(strategy, tp, lastix, gaindf)
         catch err
-            if err isa MethodError
-                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer, label::TradeLabel, score::Real, close::Real)."))
+            if (err isa MethodError) && (getfield(err, :f) === strategy.algorithm)
+                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer)."))
             end
             rethrow(err)
         end

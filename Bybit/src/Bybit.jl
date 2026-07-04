@@ -832,7 +832,7 @@ Returns a DataFrame of open **spot** orders with columns:
 - limitprice ::Float32
 - avgprice ::Float32
 - executedqty ::Float32  (to be executed qty = baseqty - executedqty)
-- status ::String      `New`, `PartiallyFilled`, `Untriggered`, `Rejected`, `PartiallyFilledCanceled`, `Filled`, `Cancelled`, `Triggered`, `Deactivated`
+- status ::String      raw exchange status (normalized by Xch.normalize_order_status)
 - created ::DateTime
 - updated ::DateTime
 - rejectreason ::String

@@ -1,7 +1,7 @@
 module TrendDetector
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils, StatisticalMeasures
 using CategoricalArrays, CategoricalDistributions, Distributions
-using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Xch
+using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Trade, Xch
 
 #TODO regression from last trend pivot as feature 
 """
@@ -119,14 +119,6 @@ function tradesdf_set(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `predicted` exists. Owner: TrendDetector. Eltype: `Bool`."""
-function tradesdf_predicted(df::DataFrame)::DataFrame
-    if :predicted ∉ propertynames(df)
-        df[!, :predicted] = fill(false, nrow(df))
-    end
-    return df
-end
-
 """Ensure Trades column `rangeid` exists. Owner: TrendDetector. Eltype: `Int`."""
 function tradesdf_rangeid(df::DataFrame)::DataFrame
     if :rangeid ∉ propertynames(df)
@@ -135,30 +127,11 @@ function tradesdf_rangeid(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `openthreshold` exists. Owner: TrendDetector. Eltype: `Float32`."""
-function tradesdf_openthreshold(df::DataFrame)::DataFrame
-    if :openthreshold ∉ propertynames(df)
-        df[!, :openthreshold] = zeros(Float32, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `closethreshold` exists. Owner: TrendDetector. Eltype: `Float32`."""
-function tradesdf_closethreshold(df::DataFrame)::DataFrame
-    if :closethreshold ∉ propertynames(df)
-        df[!, :closethreshold] = zeros(Float32, nrow(df))
-    end
-    return df
-end
-
 """Return TrendDetector-contributed Trades schema initializer functions."""
 function tradesdf_contributors()::Vector{Function}
     return Function[
         tradesdf_set,
-        tradesdf_predicted,
         tradesdf_rangeid,
-        tradesdf_openthreshold,
-        tradesdf_closethreshold,
     ]
 end
 
@@ -534,15 +507,9 @@ function getgainsdf(cfg::TrendDetectorConfig)
         return nothing
     end
 
-    ts = TradingStrategy.TsCache(
-        configuration=Dict{Symbol, Any}(
-            :classifier_factory => () -> getruntimeclassifier(cfg),
-            :strategy_template => cfg.tradingstrategy,
-        ),
-        source="trenddetector:$(cfg.configname)",
-    )
+    ts = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(cfg.configname), source="trenddetector:$(cfg.configname)")
     xc = Xch.XchCache(startdt=cfg.startdt, enddt=cfg.enddt, exchange=Xch.EXCHANGE_BYBITSIM)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), tradesdf_contributors()))
+    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), Trade.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), tradesdf_contributors()))
 
     # Range ids can collide across independently cached coins/runs. Replay must
     # stay scoped to coin+set+rangeid to avoid mixing samples across ranges.
@@ -560,36 +527,33 @@ function getgainsdf(cfg::TrendDetectorConfig)
         sampleset = resultsview[begin, :set]
         scores = resultsview[!, :score]
         labels = resultsview[!, :label]
-        replayscores = Float32.(scores)
-        replaylabels = Targets.TradeLabel[labels[i] for i in eachindex(labels)]
         targets = resultsview[!, :target]
         truescores = fill(1f0, size(resultsview, 1))
         evaldt = resultsview[end, :opentime]
 
-        for (openthreshold, closethreshold) in GAIN_THRESHOLDS
-            tp = TradingStrategy.preparereplaytrades!(
-                ts,
-                xc,
-                String(coin),
-                resultsview,
-                replayscores,
-                replaylabels,
-                metadata=Dict{Symbol, Any}(:set => String(sampleset), :predicted => true, :rangeid => Int(rng), :openthreshold => Float32(openthreshold), :closethreshold => Float32(closethreshold)),
-                datetime=evaldt,
-            )
-            gdf = TradingStrategy.processreplaygains!(
-                tp;
-                strategy=cfg.tradingstrategy,
-                forcegain=true,
-                openthreshold=openthreshold,
-                closethreshold=closethreshold,
-            )
-            if size(gdf, 1) > 0
-                addgainadmin!(gdf, coin, sampleset, true, rng, openthreshold, closethreshold; pair=tp.pair)
-                push!(gainparts, gdf)
-            end
+        # Process predicted gains using strategy config thresholds
+        open_threshold = cfg.tradingstrategy.openthreshold
+        close_threshold = cfg.tradingstrategy.closethreshold
+        tp = TradingStrategy.preparereplaytrades!(
+            ts,
+            xc,
+            String(coin),
+            resultsview,
+            scores,
+            labels,
+            metadata=Dict{Symbol, Any}(:set => String(sampleset), :rangeid => Int(rng)),
+            datetime=evaldt,
+        )
+        gdf = TradingStrategy.processreplaygains!(
+            tp;
+            strategy=cfg.tradingstrategy,
+        )
+        if size(gdf, 1) > 0
+            addgainadmin!(gdf, coin, sampleset, true, rng, open_threshold, close_threshold; pair=tp.pair)
+            push!(gainparts, gdf)
         end
 
+        # Process labeled truth gains using TRUE_GAIN_THRESHOLD
         true_open, true_close = TRUE_GAIN_THRESHOLD
         tp = TradingStrategy.preparereplaytrades!(
             ts,
@@ -598,15 +562,12 @@ function getgainsdf(cfg::TrendDetectorConfig)
             resultsview,
             truescores,
             targets,
-            metadata=Dict{Symbol, Any}(:set => String(sampleset), :predicted => false, :rangeid => Int(rng), :openthreshold => Float32(true_open), :closethreshold => Float32(true_close)),
+            metadata=Dict{Symbol, Any}(:set => String(sampleset), :rangeid => Int(rng)),
             datetime=evaldt,
         )
         gdf = TradingStrategy.processreplaygains!(
             tp;
             strategy=cfg.tradingstrategy,
-            forcegain=true,
-            openthreshold=true_open,
-            closethreshold=true_close,
         )
         if size(gdf, 1) > 0
             addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close; pair=tp.pair)
@@ -646,7 +607,7 @@ function getgainsdf(cfg::TrendDetectorConfig)
         if !isempty(tradeparts)
             tradesv1 = reduce(vcat, tradeparts; cols=:union)
             sortcols = Symbol[]
-            for c in [:coin, :predicted, :openthreshold, :closethreshold, :rangeid, :opentime]
+            for c in [:coin, :set, :rangeid, :opentime]
                 (c in names(tradesv1)) && push!(sortcols, c)
             end
             !isempty(sortcols) && sort!(tradesv1, sortcols)
@@ -695,7 +656,6 @@ function getdistances(cfg::TrendDetectorConfig)
     closemin = minimum(gaindf[predmask, :closethreshold])
     usemask = (gaindf[!, :predicted] .== false) .|| ((gaindf[!, :predicted] .== true) .&& (gaindf[!, :openthreshold] .== openmin) .&& (gaindf[!, :closethreshold] .== closemin))
     gaindf1 = @view gaindf[usemask, :]
-    gaindfgrp = groupby(gaindf1, [:coin, :predicted, :trend])
     trendlevels = unique(gaindf1[!, :trend])
 
     coinvals = String[]
@@ -715,14 +675,21 @@ function getdistances(cfg::TrendDetectorConfig)
         (verbosity >= 2) && print("$(EnvConfig.now()) calculating distances for $coin ($coinix/$(length(cfg.coins)))                             \r")
         (verbosity >= 3) && println()
 
+        coingaindf = @view gaindf1[gaindf1[!, :coin] .== coin, :]
+        if size(coingaindf, 1) == 0
+            continue
+        end
+        
+        gaindfgrp = groupby(coingaindf, [:predicted, :trend])
         haspredictions = false
+
         for trend in trendlevels
-            cpgaindf = get(gaindfgrp, (coin, true, trend), DataFrame())   # predicted gains of one trend
+            cpgaindf = get(gaindfgrp, (true, trend), DataFrame())   # predicted gains of one trend
             if size(cpgaindf, 1) == 0
                 continue
             end
             haspredictions = true
-            ctgaindf = get(gaindfgrp, (coin, false, trend), DataFrame())  # labeled gains of the same trend
+            ctgaindf = get(gaindfgrp, (false, trend), DataFrame())  # labeled gains of the same trend
 
             if (size(cpgaindf, 1) > 1) && !issorted(cpgaindf[!, :startdt])
                 cpgaindf = sort(cpgaindf, :startdt)
@@ -995,6 +962,11 @@ function _parse_bool(raw::AbstractString)::Bool
     error("classbalancing=$(raw) must be one of true/false, yes/no, on/off, 1/0")
 end
 
+function _clear_test_trade_cache!()
+    EnvConfig.deletefolder("trades")
+    return nothing
+end
+
 function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime)
     configref = _argvalue(args, "config", "029")
     basecfg = TradingStrategy.trenddetectorconfig(configref)
@@ -1138,6 +1110,7 @@ function main(args::Vector{String}=ARGS)
     (verbosity >= 2) && println("coinspath: $(EnvConfig.coinspath())")
 
     global cfg = buildcfg(args, allowedcoins, startdt, enddt)
+    testmode && _clear_test_trade_cache!()
     _set_deterministic_run_id!(args, [
         "mode" => string(Symbol(EnvConfig.configmode)),
         "configname" => cfg.configname,
@@ -1166,9 +1139,10 @@ function main(args::Vector{String}=ARGS)
         if !isnothing(gaindf) && (size(gaindf, 1) > 0)
             # println(describe(gaindf))
             # println(gaindf[1:2,:])
-            gaindfgroup = groupby(gaindf, [:coin, :set, :trend, :predicted, :openthreshold, :closethreshold])
+            gaindfgroup = groupby(gaindf, [:set, :trend, :predicted, :openthreshold, :closethreshold])
             # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
             cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum, :gainfee => sum)
+            sort!(cgaindf, [:set, :trend, :openthreshold, :closethreshold])
             println("$(EnvConfig.now()) cgaindf=$cgaindf")
         end
 

@@ -28,11 +28,13 @@ end
     tdf = Xch.trades(xc, "BTC", EnvConfig.pairquote)
 
     required = Set([
-        :opentime, :lastopentrade, :pair, :tradelabel, :labelscore,
-        :longopenlimit, :longcloselimit, :shortopenlimit, :shortcloselimit,
-        :longid, :longstatus, :longunfilled, :longpriceavg, :longmsg,
-        :shortid, :shortstatus, :shortunfilled, :shortpriceavg, :shortmsg,
-        :postype, :posamount, :quoteprice, :maintmargin,
+        :opentime, :lastopentrade, :pair, :label, :score,
+        :lo_limit, :lc_limit, :so_limit, :sc_limit,
+        :lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg,
+        :lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg,
+        :so_id, :so_status, :so_filled, :so_pavg, :so_msg,
+        :sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg,
+        :lp_amount, :sp_amount, :close, :high, :low, :maintmargin,
         :equity, :balance, :freemargin, :freequote,
     ])
 
@@ -40,47 +42,61 @@ end
     @test required ⊆ got
     @test !(:coin in got)
     @test tdf[!, :pair] isa CategoricalVector
-    @test tdf[!, :longstatus] isa CategoricalVector
-    @test tdf[!, :shortstatus] isa CategoricalVector
-    @test tdf[!, :longmsg] isa CategoricalVector
-    @test tdf[!, :shortmsg] isa CategoricalVector
-    @test !any(ismissing, tdf[!, :longmsg])
-    @test !any(ismissing, tdf[!, :shortmsg])
-    @test all(String(v) == "none" for v in tdf[!, :longmsg])
-    @test all(String(v) == "none" for v in tdf[!, :shortmsg])
-    @test eltype(tdf[!, :tradelabel]) == Targets.TradeLabel
-    @test eltype(tdf[!, :longopenlimit]) == Float32
-    @test eltype(tdf[!, :longcloselimit]) == Float32
-    @test eltype(tdf[!, :shortopenlimit]) == Float32
-    @test eltype(tdf[!, :shortcloselimit]) == Float32
-    @test eltype(tdf[!, :postype]) == Targets.TrendPhase
+    @test tdf[!, :lo_status] isa CategoricalVector
+    @test tdf[!, :lc_status] isa CategoricalVector
+    @test tdf[!, :so_status] isa CategoricalVector
+    @test tdf[!, :sc_status] isa CategoricalVector
+    @test tdf[!, :lo_msg] isa CategoricalVector
+    @test tdf[!, :lc_msg] isa CategoricalVector
+    @test tdf[!, :so_msg] isa CategoricalVector
+    @test tdf[!, :sc_msg] isa CategoricalVector
+    @test !any(ismissing, tdf[!, :lo_msg])
+    @test !any(ismissing, tdf[!, :lc_msg])
+    @test !any(ismissing, tdf[!, :so_msg])
+    @test !any(ismissing, tdf[!, :sc_msg])
+    @test all(String(v) == "none" for v in tdf[!, :lo_msg])
+    @test all(String(v) == "none" for v in tdf[!, :lc_msg])
+    @test all(String(v) == "none" for v in tdf[!, :so_msg])
+    @test all(String(v) == "none" for v in tdf[!, :sc_msg])
+    @test eltype(tdf[!, :label]) == Targets.TradeLabel
+    @test eltype(tdf[!, :lo_limit]) == Float32
+    @test eltype(tdf[!, :lc_limit]) == Float32
+    @test eltype(tdf[!, :so_limit]) == Float32
+    @test eltype(tdf[!, :sc_limit]) == Float32
+    @test eltype(tdf[!, :lp_amount]) == Float32
+    @test eltype(tdf[!, :sp_amount]) == Float32
 
     defaultdf = DataFrame(opentime=[startdt])
-    TradingStrategy.tradesdf_tradelabel(defaultdf)
-    @test defaultdf[1, :tradelabel] == Targets.ignore
+    TradingStrategy.tradesdf_label(defaultdf)
+    @test defaultdf[1, :label] == Targets.ignore
 
     defaultlimitsdf = DataFrame(opentime=[startdt], pair=["BTCUSDT"])
     for contributor in TradingStrategy.tradesdf_contributors()
         contributor(defaultlimitsdf)
     end
-    @test defaultlimitsdf[1, :longopenlimit] == 0f0
-    @test defaultlimitsdf[1, :longcloselimit] == 0f0
-    @test defaultlimitsdf[1, :shortopenlimit] == 0f0
-    @test defaultlimitsdf[1, :shortcloselimit] == 0f0
+    @test defaultlimitsdf[1, :lo_limit] == 0f0
+    @test defaultlimitsdf[1, :lc_limit] == 0f0
+    @test defaultlimitsdf[1, :so_limit] == 0f0
+    @test defaultlimitsdf[1, :sc_limit] == 0f0
 
-    push!(tdf, (opentime=startdt, pair="BTCUSDT", tradelabel=Targets.ignore, lastopentrade=missing, postype=Targets.flat); cols=:subset)
-    Xch.tradesdf_longmsg(tdf)
-    Xch.tradesdf_shortmsg(tdf)
+    push!(tdf, (opentime=startdt, pair="BTCUSDT", label=Targets.ignore, lastopentrade=missing, lp_amount=0f0, sp_amount=0f0); cols=:subset)
+    Xch.tradesdf_lo_msg(tdf)
+    Xch.tradesdf_lc_msg(tdf)
+    Xch.tradesdf_so_msg(tdf)
+    Xch.tradesdf_sc_msg(tdf)
     @test nrow(tdf) == 1
-    @test tdf[1, :tradelabel] == Targets.ignore
+    @test tdf[1, :label] == Targets.ignore
     @test !ismissing(tdf[1, :pair])
     @test String(tdf[1, :pair]) == "BTCUSDT"
-    @test tdf[1, :postype] == Targets.flat
-    @test String(tdf[1, :longmsg]) == "none"
-    @test String(tdf[1, :shortmsg]) == "none"
+    @test tdf[1, :lp_amount] == 0f0
+    @test tdf[1, :sp_amount] == 0f0
+    @test ismissing(tdf[1, :lo_msg]) || String(tdf[1, :lo_msg]) == "none"
+    @test ismissing(tdf[1, :lc_msg]) || String(tdf[1, :lc_msg]) == "none"
+    @test ismissing(tdf[1, :so_msg]) || String(tdf[1, :so_msg]) == "none"
+    @test ismissing(tdf[1, :sc_msg]) || String(tdf[1, :sc_msg]) == "none"
 
-    tdf[1, :tradelabel] = Targets.longopen
-    @test tdf[1, :tradelabel] == Targets.longopen
+    tdf[1, :label] = Targets.longopen
+    @test tdf[1, :label] == Targets.longopen
 end
 
 end

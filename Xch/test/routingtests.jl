@@ -94,7 +94,7 @@ EnvConfig.init(test)
     @test "qty" in names(Xch.trades(xc, "ETHUSDT"))
     @test "pair" in names(Xch.trades(xc, "ETHUSDT"))
     @test "lastopentrade" in names(Xch.trades(xc, "ETHUSDT"))
-    @test Xch.trades(xc, "ETHUSDT")[1, :pair] == "none"
+    @test Xch.trades(xc, "ETHUSDT")[1, :pair] == "ETHUSDT"
 end
 
 end

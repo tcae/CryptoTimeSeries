@@ -86,12 +86,12 @@ Call-path details:
 - TradingStrategy/src/TradingStrategy.jl lines 1005-1015: preparereplaytrades! contract.
 - TradingStrategy/src/TradingStrategy.jl lines 1046-1082: processreplaygains! contract.
 
-#### Why is preparereplaytrades!and and processreplaygains! separated?
+#### Why are preparereplaytrades!and and processreplaygains! separated?
 
 They are separated to enforce a clean two-phase lifecycle and make misuse visible.
 
 1) Different responsibilities
-    - preparereplaytrades! builds and normalizes replay state: syncs the trades frame, sets tradelabel and labelscore, resets replay columns, and injects metadata. See TradingStrategy.jl:1005.
+    - preparereplaytrades! builds and normalizes replay state: syncs the trades frame, sets label and score, resets replay columns, and injects metadata. See TradingStrategy.jl:1005.
     - processreplaygains! assumes that prepared state exists and only runs gain simulation. See TradingStrategy.jl:1046.
 2) Fail-fast contract
     - processreplaygains! explicitly validates that preparation happened (required columns, closeprices coverage, pair consistency) before simulation. See TradingStrategy.jl:1017.
@@ -103,6 +103,29 @@ They are separated to enforce a clean two-phase lifecycle and make misuse visibl
     - You can test preparation and processing independently.
     - You can inspect/diagnose prepared trades state before running gains.
     - The combined convenience wrapper still exists (getgains), but explicit split avoids hidden work and matches the refactor goal. See TradingStrategy.jl:1091.
+
+#### How is in TrendDetector context Xch triggered to create a new row including pair and opentime?
+
+Looking at TrendDetector, here's the flow:
+
+- TrendDetector → TradingStrategy → Xch (row creation)
+- TrendDetector TrendDetector.jl:571-576:
+- Calls TradingStrategy.preparereplaytrades!(ts, xc, coin, resultsview, ...)
+  - resultsview already has :opentime from prediction results
+  - TradingStrategy TradingStrategy.jl:607-625:
+- preparereplaytrades! calls _synctradesframe!(ts, xc, base, predictionsdf, scores, labels, ...)
+  - Creates trades DataFrame from predictionsdf (keeping :opentime)
+  - Calls Xch.settrades!(xc, base, quotecoin, tradesdf)
+- Xch (XchCore.jl):
+  - settrades! calls _ensuretradesidentity!(normalized, pairkey; basekey=basekey)
+  - This function populates the :pair column with the trading pair key
+  - Stores the dataframe in xc.pairstates[pairkey]
+  - Individual rows are created separately:
+
+Xch.ensuretradesrow!(xc, base, quotecoin, opentime) is called from Trade/src during live runtime
+This creates one row at a time for the given opentime if it doesn't exist
+But in TrendDetector's replay mode, all rows are batch-created upfront via settrades!
+So in TrendDetector context: rows with :pair and :opentime are created bulk when preparereplaytrades! calls Xch.settrades!, not one-by-one.
 
 ## B. Per-Sample Loop Differences
 
@@ -223,7 +246,7 @@ This section explains how TradingStrategy decision logic is kept aligned across 
 - Add a parity test that feeds an identical fixed sample window into:
     - execution row update path (`gettradesrow!`/`gettradesrows!`), and
     - replay processing path (`preparereplaytrades!` + `processreplaygains!`).
-- Assert row-level equality (or bounded tolerance) for `tradelabel`, `labelscore`, and limit columns before order-execution side effects.
+- Assert row-level equality (or bounded tolerance) for `label`, `score`, and limit columns before order-execution side effects.
 
 ## F. Classifier Call Sequence Guarantees
 

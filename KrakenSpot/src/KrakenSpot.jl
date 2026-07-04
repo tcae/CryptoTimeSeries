@@ -308,20 +308,7 @@ function _ws_orderrow_from_dict(bc, entry::AbstractDict)
 	executedqty = _float32(_ws_tryget(entry, ["vol_exec", "filled", "filled_qty", "cum_qty", "cumQty"], 0), 0f0)
 	limitprice = _float32(_ws_tryget(entry, ["price", "limit_price", "limitPrice"], 0), 0f0)
 	avgprice = _float32(_ws_tryget(entry, ["avgPrice", "fill_price", "fillPrice", "price"], limitprice), limitprice)
-	rawstatus = lowercase(String(_ws_tryget(entry, ["status", "orderStatus"], "open")))
-	status = if rawstatus in ["open", "new", "untouched"]
-		"New"
-	elseif rawstatus in ["partial", "partiallyfilled", "partially_filled"]
-		"PartiallyFilled"
-	elseif rawstatus in ["filled", "closed"]
-		"Filled"
-	elseif rawstatus in ["cancelled", "canceled"]
-		"Cancelled"
-	elseif rawstatus in ["rejected", "cancel_reject", "error"]
-		"Rejected"
-	else
-		titlecase(rawstatus)
-	end
+	status = lowercase(String(_ws_tryget(entry, ["status", "orderStatus"], "open")))
 	created = _ws_todatetime(_ws_tryget(entry, ["created", "createdTime", "timestamp", "time", "opentm"], Dates.now(Dates.UTC)))
 	updated = _ws_todatetime(_ws_tryget(entry, ["updated", "updatedTime", "lastUpdateTime", "timestamp"], created))
 	orderLinkId = String(_ws_tryget(entry, ["cl_ord_id", "client_order_id", "clientOrderId", "cliOrdId"], ""))

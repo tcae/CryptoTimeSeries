@@ -5,6 +5,10 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
+const TEST_RECONCILIATION_BY_BASE = Dict{String, NamedTuple}()
+const TEST_ROWS = NamedTuple[]
+const TEST_PREPARE_CALLS = NamedTuple[]
+
 "Return injected tradesdf row metadata and capture reconciliation inputs passed by Trade."
 function TradingStrategy.gettradesrows!(
     rt::TradingStrategy.TsCache,
@@ -14,8 +18,11 @@ function TradingStrategy.gettradesrows!(
     reconciliation_by_base::AbstractDict=Dict{String, Any}(),
 )::Vector{NamedTuple}
     _ = bases
-    rt.configuration[:test_reconciliation_by_base] = Dict{String, NamedTuple}(reconciliation_by_base)
-    rows = get(rt.configuration, :test_rows, NamedTuple[])
+    empty!(TEST_RECONCILIATION_BY_BASE)
+    empty!(TEST_ROWS)
+    empty!(TEST_PREPARE_CALLS)
+    merge!(TEST_RECONCILIATION_BY_BASE, Dict{String, NamedTuple}(reconciliation_by_base))
+    rows = TEST_ROWS
     out = NamedTuple[]
     for row in rows
         base = uppercase(String(row.base))
@@ -25,11 +32,11 @@ function TradingStrategy.gettradesrows!(
             push!(tdf, (opentime=datetime, lastopentrade=missing, pair=Xch.tradingpairkey(base, EnvConfig.pairquote), coin=base); cols=:subset)
             rowix = nrow(tdf)
         end
-        tdf[rowix, :tradelabel] = row.tradelabel
-        tdf[rowix, :longopenlimit] = row.longopenlimit
-        tdf[rowix, :longcloselimit] = row.longcloselimit
-        tdf[rowix, :shortopenlimit] = row.shortopenlimit
-        tdf[rowix, :shortcloselimit] = row.shortcloselimit
+        tdf[rowix, :label] = row.tradelabel
+        tdf[rowix, :lo_limit] = get(row, :lo_limit, row.longopenlimit)
+        tdf[rowix, :lc_limit] = get(row, :lc_limit, row.longcloselimit)
+        tdf[rowix, :so_limit] = get(row, :so_limit, row.shortopenlimit)
+        tdf[rowix, :sc_limit] = get(row, :sc_limit, row.shortcloselimit)
         push!(out, (
             base=base,
             datetime=datetime,
@@ -51,8 +58,7 @@ function TradingStrategy.preparebases!(
     updatecache::Bool=false,
 )::Nothing
     _ = xc
-    calls = get!(rt.configuration, :test_prepare_calls, NamedTuple[])
-    push!(calls, (
+    push!(TEST_PREPARE_CALLS, (
         bases=String[uppercase(String(base)) for base in bases],
         datetime=datetime,
         updatecache=Bool(updatecache),
@@ -89,18 +95,19 @@ end
     tc.xc.currentdt = DateTime("2026-05-30T12:00:00")
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
-    rt.configuration[:test_rows] = [
-            (
+    empty!(TEST_ROWS)
+    push!(TEST_ROWS,
+        (
                 base="BTC",
                 tradelabel=Targets.longopen,
-                longopenlimit=100f0,
-                longcloselimit=110f0,
-                shortopenlimit=0f0,
-                shortcloselimit=0f0,
+                lo_limit=100f0,
+                lc_limit=110f0,
+                so_limit=0f0,
+                sc_limit=0f0,
                 probability=0.75f0,
                 configid=42,
             ),
-        ]
+    )
     tc.mc[:strategy_runtime] = rt
 
     advices = Trade._collect_strategy_advices(tc)
@@ -116,8 +123,8 @@ end
     @test advice_by_label[Targets.longclose].relativeamount == 1f0
     @test advice_by_label[Targets.longclose].price == 110f0
 
-    @test isempty(rt.configuration[:test_reconciliation_by_base])
-    @test !haskey(rt.configuration, :test_prepare_calls)
+    @test isempty(TEST_RECONCILIATION_BY_BASE)
+    @test isempty(TEST_PREPARE_CALLS)
 
     histmins = Trade._tradeselection_history_minutes(tc)
     @test histmins >= 2001
@@ -136,10 +143,10 @@ end
     dt = DateTime("2026-05-30T12:34:00")
     Trade._prepare_strategy_runtime_for_cfg!(tc, dt; updatecache=true)
 
-    @test haskey(rt.configuration, :test_prepare_calls)
-    @test length(rt.configuration[:test_prepare_calls]) == 1
+    @test !isempty(TEST_PREPARE_CALLS)
+    @test length(TEST_PREPARE_CALLS) == 1
 
-    preparecall = only(rt.configuration[:test_prepare_calls])
+    preparecall = only(TEST_PREPARE_CALLS)
     @test preparecall.bases == ["BTC", "ETH"]
     @test preparecall.datetime == dt
     @test preparecall.updatecache == true
@@ -236,15 +243,15 @@ end
     @test nrow(tdf) >= 1
     rowix = nrow(tdf)
     @test tdf[rowix, :pair] == "BTC$(EnvConfig.pairquote)"
-    @test tdf[rowix, :tradelabel] == Targets.longopen
+    @test tdf[rowix, :label] == Targets.longopen
     if req.accepted
-        @test String(tdf[rowix, :longid]) != "none"
-        @test String(tdf[rowix, :longid]) != ""
-        @test tdf[rowix, :longstatus] != "none"
+        @test String(tdf[rowix, :lo_id]) != "none"
+        @test String(tdf[rowix, :lo_id]) != ""
+        @test tdf[rowix, :lo_status] != "none"
     else
         @test req.reason == "insufficient_free_quote"
-        @test tdf[rowix, :longstatus] == "Rejected"
-        @test !ismissing(tdf[rowix, :longmsg])
+        @test tdf[rowix, :lo_status] == "Rejected"
+        @test !ismissing(tdf[rowix, :lo_msg])
     end
 end
 

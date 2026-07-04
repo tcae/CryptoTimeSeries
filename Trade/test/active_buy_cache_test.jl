@@ -14,21 +14,21 @@ using EnvConfig, Trade, Xch
         isLeverage=[false, false, true],
     )
 
-    Trade._refreshactiveopenbuysymbols!(cache, oo)
+    Trade._refreshactiveopenlongsymbols!(cache, oo)
 
-    @test Trade._hasactiveopenbuy(cache, "BTCUSDT")
-    @test !Trade._hasactiveopenbuy(cache, "ETHUSDT")
-    @test Trade._hasactiveopensell(cache, "ETHUSDT") == false
+    @test Trade._hasactiveopenlong(cache, "BTCUSDT")
+    @test !Trade._hasactiveopenlong(cache, "ETHUSDT")
+    @test Trade._hasactiveopenshort(cache, "ETHUSDT") == false
 
-    Trade._rememberactiveopenbuy!(cache, "ethusdt")
-    @test Trade._hasactiveopenbuy(cache, "ETHUSDT")
+    Trade._rememberactiveopenlong!(cache, "ethusdt")
+    @test Trade._hasactiveopenlong(cache, "ETHUSDT")
 
-    Trade._rememberactiveopensell!(cache, "ethusdt")
-    @test Trade._hasactiveopensell(cache, "ETHUSDT")
+    Trade._rememberactiveopenshort!(cache, "ethusdt")
+    @test Trade._hasactiveopenshort(cache, "ETHUSDT")
 
-    Trade._refreshactiveopenbuysymbols!(cache, DataFrame(orderid=String[], symbol=String[], side=String[], status=String[]))
-    Trade._refreshactiveopensellsymbols!(cache, DataFrame(orderid=String[], symbol=String[], side=String[], status=String[]))
-    @test !Trade._hasactiveopenbuy(cache, "BTCUSDT")
-    @test !Trade._hasactiveopenbuy(cache, "ETHUSDT")
-    @test !Trade._hasactiveopensell(cache, "ETHUSDT")
+    Trade._refreshactiveopenlongsymbols!(cache, DataFrame(orderid=String[], symbol=String[], side=String[], status=String[]))
+    Trade._refreshactiveopenshortsymbols!(cache, DataFrame(orderid=String[], symbol=String[], side=String[], status=String[]))
+    @test !Trade._hasactiveopenlong(cache, "BTCUSDT")
+    @test !Trade._hasactiveopenlong(cache, "ETHUSDT")
+    @test !Trade._hasactiveopenshort(cache, "ETHUSDT")
 end

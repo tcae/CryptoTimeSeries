@@ -25,34 +25,34 @@ function _run_kraken_order_lifecycle!(exchange::String)
 
     req = DataFrame(
         pair=[string(base, quotecoin)],
-        tradelabel=[Targets.longopen],
-        longopenlimit=[limit],
-        longamount=[amount],
+        label=[Targets.longopen],
+        lo_limit=[limit],
+        lo_amount=[amount],
         longleverage=[UInt8(0)],
     )
 
     first_result = Xch.process_order_request(xc, req, 1)
     @test first_result.accepted
     @test first_result.action == :long_open
-    @test String(req[1, :longid]) != "none"
-    @test String(req[1, :longid]) != ""
-    oid = String(req[1, :longid])
+    @test String(req[1, :lo_id]) != "none"
+    @test String(req[1, :lo_id]) != ""
+    oid = String(req[1, :lo_id])
 
     Xch.order_status(xc, req, 1)
-    @test req[1, :longstatus] != "none"
+    @test req[1, :lo_status] != "none"
 
     # Re-submit longopen for same pair/side to exercise amend path through process_order_request.
-    req[1, :longamount] = amount
+    req[1, :lo_amount] = amount
     second_result = Xch.process_order_request(xc, req, 1)
     @test second_result.accepted
     @test second_result.action == :long_open
-    @test String(req[1, :longid]) != "none"
-    @test String(req[1, :longid]) != ""
+    @test String(req[1, :lo_id]) != "none"
+    @test String(req[1, :lo_id]) != ""
 
     oid2 = Xch.cancelorder(xc, base, oid)
     @test oid2 == oid
     Xch.order_status(xc, req, 1)
-    @test lowercase(String(req[1, :longstatus])) in ["cancelled", "canceled", "pendingcancel", "pending_cancel"]
+    @test lowercase(String(req[1, :lo_status])) in ["cancelled", "canceled", "pendingcancel", "pending_cancel"]
 end
 
 

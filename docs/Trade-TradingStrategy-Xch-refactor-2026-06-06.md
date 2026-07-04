@@ -47,8 +47,8 @@ It became clear that we run into a situation with more and more omplex code alth
 - provides per exchange layer an implementation for available exposure and initial margin for a trading pair with leverage
 - strongbuy or strongclose orders without limit are post-only makers orders that are periodicly amended to stay 1 tick next to the ask price
 - trading issues shall be logged by a Xch.log_trading_issue(issuer, message) function
-  - issues are logged directly as text and captured in Trades columns `longmsg` / `shortmsg`
-  - `longstatus`, `shortstatus`, `longmsg`, and `shortmsg` are stored as `CategoricalVector`
+  - issues are logged directly as text and captured in Trades columns `lo_msg` / `so_msg`
+  - `lo_status`, `so_status`, `lo_msg`, and `so_msg` are stored as `CategoricalVector`
   - this replaces the previous `XchCache.messages` and `_errors.json` id-catalog concept
   - the purpose is to store the ultimate reason of an issue with a trading pair together with all other relevant sample trading data without indirection through message ids
     - The issuer "Trading" is a message from the tradereal program and may be issued in TradingStrategy, Trade or Crypto before any exchange interaction takes place
@@ -111,7 +111,7 @@ It became clear that we run into a situation with more and more omplex code alth
 
 ### Phase 3: adapt Trade and Xch to use the Trading DataFrame 
 
-- add Xch function `log_trading_issue(issuer, message)` and integrate direct message capture into Trades (`longmsg`, `shortmsg`) with unit tests
+- add Xch function `log_trading_issue(issuer, message)` and integrate direct message capture into Trades (`lo_msg`, `lc_msg`, `so_msg`, `sc_msg`) with unit tests
 - add functions to Xch to be called by Trade in the trade loop
   - account_status to update equity, balance, free margin, free quote
   - order_status to update the order status of a specific trading pair in the Trades DataFrame
@@ -242,15 +242,15 @@ Goal: lock interfaces before implementation work in phases 1-5.
   - [ ] `Xch.TradesSchemaV1` constant contract (column names, eltypes, nullability).
   - [ ] `Xch.XchCache` additions: `pairstates::Dict{String,DataFrame}`, `defaultquote::Union{Nothing,String}`.
 - Required Trades DataFrame v1 columns (must be created by Xch helper)
-  - [x] Canonical naming contract: `tradelabel` is the only supported label column in Trades v1 (`label` is not part of the contract).
+  - [x] Canonical naming contract: `label` is the supported label column in Trades v1 (`tradelabel` is not part of the contract).
   - [x] Identity/time: `opentime::DateTime`, `lastopentrade::Union{Missing,DateTime}`.
     - comment: `exchange::String`, `pair::String` notrequired as column because folder structure is used for that info
-  - [x] Strategy advice: `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`, `tradelabel::TradeLabel`, `labelscore::Float32`.
-  - [x] Trade request long: `longleverage::Union{Missing,UINT8}`, `longamount::Union{Missing,Float32}`, `longopenlimit::Union{Missing,Float32}`, `longcloselimit::Union{Missing,Float32}`.
-  - [x] Trade request short: `shortleverage::Union{Missing,UINT8}`, `shortamount::Union{Missing,Float32}`, `shortopenlimit::Union{Missing,Float32}`, `shortcloselimit::Union{Missing,Float32}`.
-  - [x] Exchange feedback long: `longid::Union{Missing,String}`, `longstatus::CategoricalVector{String}`, `longunfilled::Union{Missing,Float32}`, `longpriceavg::Union{Missing,Float32}`, `longmsg::CategoricalVector{Union{Missing,String}}`.
-  - [x] Exchange feedback short: `shortid::Union{Missing,String}`, `shortstatus::CategoricalVector{String}`, `shortunfilled::Union{Missing,Float32}`, `shortpriceavg::Union{Missing,Float32}`, `shortmsg::CategoricalVector{Union{Missing,String}}`.
-  - [x] Position/account snapshot: `postype::String`, `posleverage::Union{Missing,Float32}`, `posamount::Union{Missing,Float32}`, `quoteprice::Union{Missing,Float32}`, `maintmargin::Union{Missing,Float32}`, `equity::Union{Missing,Float32}`, `balance::Union{Missing,Float32}`, `freemargin::Union{Missing,Float32}`, `freequote::Union{Missing,Float32}`.
+  - [x] Strategy advice: `lo_limit::Float32`, `lc_limit::Float32`, `so_limit::Float32`, `sc_limit::Float32`, `label::TradeLabel`, `score::Float32`.
+  - [x] Trade request long: `longleverage::UInt8`, `lo_amount::Float32`, `lo_limit::Float32`, `lc_limit::Float32`.
+  - [x] Trade request short: `shortleverage::UInt8`, `so_amount::Float32`, `so_limit::Float32`, `sc_limit::Float32`.
+  - [x] Exchange feedback long: `lo_id::CategoricalVector{String}`, `lo_status::CategoricalVector{String}`, `lo_filled::Float32`, `lo_pavg::Float32`, `lo_msg::CategoricalVector{String}`.
+  - [x] Exchange feedback short: `so_id::CategoricalVector{String}`, `so_status::CategoricalVector{String}`, `so_filled::Float32`, `so_pavg::Float32`, `so_msg::CategoricalVector{String}`.
+  - [x] Position/account snapshot: `lp_amount::Float32`, `sp_amount::Float32`, `quoteprice::Float32`, `maintmargin::Float32`, `equity::Float32`, `balance::Float32`, `freemargin::Float32`, `freequote::Float32`.
 - Required tests (Xch/test)
   - [x] schema test: a newly created trades table contains exactly all v1 columns with expected eltypes.
   - [x] issue logging test: `log_trading_issue` returns the normalized message string for direct Trades storage.
@@ -266,7 +266,7 @@ Goal: lock interfaces before implementation work in phases 1-5.
   - [ ] `TradingStrategy.TsCache.mc` modules constant keys: `:configname`, `:buygain`, `:sellgain`, `:limitreduction`, `:minpricedelta`, `:maxwindow`.
   - [ ] Classifier call skip optimization is deferred for now; strategy path shall classify each sample and shall not require cached no-classify bookkeeping fields.
 - Required column ownership contract
-  - [ ] TradingStrategy writes only advice columns (`longopenlimit`, `longcloselimit`, `shortopenlimit`, `shortcloselimit`, `tradelabel`, `labelscore`).
+  - [ ] TradingStrategy writes only advice columns (`lo_limit`, `lc_limit`, `so_limit`, `sc_limit`, `label`, `score`).
   - [ ] TradingStrategy does not mutate exchange feedback/account columns.
 - Required tests (TradingStrategy/test)
   - [ ] ownership test: strategy functions modify only the advice columns.

@@ -1685,18 +1685,7 @@ function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
 	baseqty = _float32(_tryget(entry, ["vol", "qty", "size", "orderQty"], executedqty + unfilledqty), executedqty + unfilledqty)
 	limitprice = _float32(_tryget(descr, ["price", "limitPrice"], _tryget(entry, ["price", "limitPrice"], 0)), 0f0)
 	avgprice = _float32(_tryget(entry, ["avgPrice", "fillPrice", "price"], limitprice), limitprice)
-	rawstatus = lowercase(String(_tryget(entry, ["status", "orderStatus"], "open")))
-	status = if rawstatus in ["untouched", "open", "new"]
-		"New"
-	elseif rawstatus in ["partiallyfilled", "partial", "partially_filled"]
-		"PartiallyFilled"
-	elseif rawstatus in ["cancelled", "canceled"]
-		"Cancelled"
-	elseif rawstatus in ["filled", "closed"]
-		"Filled"
-	else
-		titlecase(rawstatus)
-	end
+	status = lowercase(String(_tryget(entry, ["status", "orderStatus"], "open")))
 	created = _todatetime(_tryget(entry, ["opentm", "created", "timestamp", "createdTime"], Dates.now(Dates.UTC)))
 	updated = _todatetime(_tryget(entry, ["updated", "updatedTime", "lastUpdateTime"], created))
 	leverage = _float32(_tryget(descr, ["leverage"], 1), 1f0)

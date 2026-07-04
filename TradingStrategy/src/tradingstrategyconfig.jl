@@ -503,6 +503,17 @@ const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg 
 trenddetectorconfig(ref::AbstractString) = _config_from_dict(TREND_DETECTOR_CONFIGS, ref; label="trend", prefixes=("trenddetector", "trend", "mk"))
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
 
+"Return a TradingStrategy.StrategyConfig with an instantiated classifier for a TrendDetector config payload."
+function strategyconfig(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
+    classifier = loadtrendclassifier(cfg; mnemonic=mnemonic, mode=mode)
+    return _strategy_with_classifier(cfg.tradingstrategy, classifier)
+end
+
+"Return a TradingStrategy.StrategyConfig with an instantiated classifier for a TrendDetector config reference."
+function strategyconfig(ref::AbstractString; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
+    return strategyconfig(trenddetectorconfig(ref); mnemonic=mnemonic, mode=mode)
+end
+
 "Return the canonical config reference string for a TrendDetector config payload."
 trendconfigref(cfg::NamedTuple)::String = String(cfg.configname)
 
