@@ -1,6 +1,6 @@
 name = "TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.8.1"
+version = "0.8.2"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]

@@ -2577,16 +2577,10 @@ version = "0.1.6"
     TracyProfiler_jll = "0c351ed6-8a68-550e-8b79-de6f926da83c"
 
 [[deps.Trade]]
-deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradeLog", "TradingStrategy", "Xch"]
+deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
 path = "../Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.19.0"
-
-[[deps.TradeLog]]
-deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "SHA", "Test", "UUIDs"]
-path = "../TradeLog"
-uuid = "d9e1c896-7df1-4f4f-a5d3-1c9a7c74c4aa"
-version = "0.1.0"
 
 [[deps.TradingStrategy]]
 deps = ["Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Targets", "Test", "TestOhlcv", "Xch"]

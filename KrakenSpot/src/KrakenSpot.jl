@@ -19,6 +19,48 @@ verbosity =
 """
 verbosity = 1
 
+const EXECUTION_CONFIG_PATH = joinpath(@__DIR__, "..", "data", "execution_config.json")
+
+"Load the Kraken Spot execution configuration for side-specific order limits and instruments."
+function executionconfig()
+	isfile(EXECUTION_CONFIG_PATH) || error("missing KrakenSpot execution config: $(EXECUTION_CONFIG_PATH)")
+	return JSON3.read(read(EXECUTION_CONFIG_PATH, String))
+end
+
+function _executionconfigside(configside::Union{Nothing, Symbol}, orderside::AbstractString)::Symbol
+	if isnothing(configside)
+		return lowercase(String(orderside)) == "buy" ? :long : :short
+	end
+	side = Symbol(lowercase(String(configside)))
+	@assert side in (:long, :short) "invalid KrakenSpot configside=$(configside)"
+	return side
+end
+
+function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString, marginleverage::Signed)
+	side = _executionconfigside(configside, orderside)
+	cfg = executionconfig()
+	orders = cfg["orders"]
+	sidecfg = orders[String(side)]
+	instrument = lowercase(String(sidecfg["instrument"]))
+	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : Int(marginleverage)
+	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
+end
+
+"Return side-specific execution config owned by the KrakenSpot adapter."
+function executionorderspec(side::Symbol)
+	side in (:long, :short) || error("KrakenSpot executionorderspec side=$(side) must be :long or :short")
+	cfg = executionconfig()
+	haskey(cfg, "orders") || error("missing KrakenSpot execution config orders section")
+	orders = cfg["orders"]
+	haskey(orders, String(side)) || error("missing KrakenSpot execution config orders.$(side) section")
+	sidecfg = orders[String(side)]
+	instrument = haskey(sidecfg, "instrument") ? lowercase(String(sidecfg["instrument"])) : ""
+	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
+	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
+end
+
 const KRAKEN_APIREST = "https://api.kraken.com"
 const KRAKEN_WS_PUBLIC = "wss://ws.kraken.com/v2"
 const KRAKEN_WS_PRIVATE = "wss://ws-auth.kraken.com/v2"
@@ -874,6 +916,7 @@ function emptyorders()::DataFrame
 		created=DateTime[],
 		updated=DateTime[],
 		rejectreason=String[],
+		reduceonly=Bool[],
 		lastcheck=DateTime[],
 	)
 end
@@ -1452,6 +1495,27 @@ function accountcapacity(bc::KrakenSpotCache)
 end
 
 """
+Return explicit per-base position quantities.
+
+`short_qty` is sourced from Kraken OpenPositions (margin shorts).
+`long_qty` is currently left as `0` so callers can continue deriving spot holdings
+from balance/asset snapshots.
+"""
+function positionsnapshot(bc::KrakenSpotCache)::DataFrame
+	df = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+	if !_hascredentials(bc)
+		return df
+	end
+	borrowed = _borrowedfromopenpositions(bc)
+	for (coin, qty) in borrowed
+		sqty = max(0f0, Float32(qty))
+		sqty <= 0f0 && continue
+		push!(df, (coin=uppercase(String(coin)), long_qty=0f0, short_qty=sqty))
+	end
+	return df
+end
+
+"""
 Convert one raw Kraken order entry into the standardized order row shape.
 """
 function _orderrow(bc::KrakenSpotCache, orderid::AbstractString, entry::Dict)
@@ -1469,6 +1533,8 @@ function _orderrow(bc::KrakenSpotCache, orderid::AbstractString, entry::Dict)
 	updated = created
 	leverage = _leveragevalue(get(descr, "leverage", "0"))
 	orderLinkId = String(get(entry, "cl_ord_id", ""))
+	rawreduceonly = get(entry, "reduce_only", get(descr, "reduce_only", get(entry, "reduceOnly", get(descr, "reduceOnly", false))))
+	reduceonly = rawreduceonly isa Bool ? rawreduceonly : lowercase(String(rawreduceonly)) in ["true", "1", "yes"]
 	return (
 		orderid=String(orderid),
 		orderLinkId=orderLinkId,
@@ -1485,6 +1551,7 @@ function _orderrow(bc::KrakenSpotCache, orderid::AbstractString, entry::Dict)
 		created=created,
 		updated=updated,
 		rejectreason="",
+		reduceonly=reduceonly,
 		lastcheck=Dates.now(Dates.UTC),
 	)
 end
@@ -1609,21 +1676,72 @@ function _makerlimitprice(syminfo::DataFrameRow, snapshot, orderside::AbstractSt
 	return price > 0f0 ? price : nothing
 end
 
+function _icebergdisplayqty(syminfo::DataFrameRow, totalqty::Real, limitprice::Real, max_quote)::Float32
+	qtydigits = _precisiondigits(Float64(syminfo.baseprecision), 0)
+	targetqty = isnothing(max_quote) ? Float64(totalqty) : Float64(max_quote) / Float64(limitprice)
+	minimum_display = max(Float64(syminfo.minbaseqty), Float64(totalqty) / 15.0)
+	displayqty = max(targetqty, minimum_display)
+	displayqty = floor(displayqty, digits=qtydigits)
+	if displayqty < Float64(syminfo.minbaseqty)
+		displayqty = Float64(syminfo.minbaseqty)
+	end
+	return Float32(min(displayqty, Float64(totalqty)))
+end
+
+function _usenativeiceberg(ordertype::AbstractString, totalqty::Real, limitprice, max_quote)::Bool
+	if lowercase(String(ordertype)) != "limit"
+		return false
+	end
+	if isnothing(limitprice) || isnothing(max_quote)
+		return false
+	end
+	return (Float64(totalqty) * Float64(limitprice)) > Float64(max_quote) + 1e-9
+end
+
+"Build Kraken Spot AddOrder parameters, optionally in validate-only mode."
+function _addorderparams(pairname::AbstractString, orderside::AbstractString, ordertype::AbstractString, chosenqty::Real, clientOrderId::AbstractString; effectiveprice::Union{Nothing, Real}=nothing, iceberg_displayqty=nothing, maker::Bool=false, effective_marginleverage::Signed=0, reduceonly::Bool=false, validate::Bool=false)
+	params = Dict{String, Any}(
+		"pair" => String(pairname),
+		"type" => lowercase(String(orderside)),
+		"ordertype" => isnothing(iceberg_displayqty) ? String(ordertype) : "iceberg",
+		"volume" => string(chosenqty),
+		"cl_ord_id" => String(clientOrderId),
+	)
+	if lowercase(String(ordertype)) == "limit"
+		!isnothing(effectiveprice) && (params["price"] = string(effectiveprice))
+	end
+	!isnothing(iceberg_displayqty) && (params["displayvol"] = string(iceberg_displayqty))
+	(maker && (lowercase(String(ordertype)) == "limit")) && (params["oflags"] = "post")
+	(effective_marginleverage > 0) && (params["leverage"] = string(effective_marginleverage))
+	(reduceonly && (effective_marginleverage > 0)) && (params["reduce_only"] = true)
+	validate && (params["validate"] = true)
+	return params
+end
+
 """
 Create one spot order and return an order row compatible named tuple.
 
 If `price` is omitted and `maker=true`, the adapter will choose a limit price
 as close as possible to the current spread while remaining post-only so the
 order can qualify for maker fees.
+
+Set `validate=true` to ask Kraken Spot to validate order parameters without
+executing the order.
 """
-function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false)
+function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=false, validate::Bool=false)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(price) || (price > 0.0) "createorder symbol=$(symbol) price=$(price) must be > 0"
 	@assert lowercase(orderside) in ["buy", "sell"] "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
 	if !_hascredentials(bc)
 		return nothing
 	end
-	_validatemarginleverage(marginleverage)
+	spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside, marginleverage) : execution_spec
+	effective_marginleverage = spec.instrument == "margin" ? spec.leverage : 0
+	if spec.instrument == "margin"
+		_validatemarginleverage(effective_marginleverage)
+	elseif spec.instrument != "spot"
+		error("unsupported KrakenSpot execution instrument $(spec.instrument) for symbol=$(symbol) configside=$(spec.side)")
+	end
 
 	syminfo = symbolinfo(bc, symbol)
 	if isnothing(syminfo)
@@ -1635,10 +1753,10 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 		(verbosity >= 1) && @warn "symbol $(symbol) is not tradable due to status=$(syminfo.status)"
 		return nothing
 	end
-	if marginleverage > 0
+	if effective_marginleverage > 0
 		limits = marginlimits(bc, symbol)
-		if !marginpermitted(bc, symbol, orderside, marginleverage)
-			throw(ErrorException("Kraken spot margin not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
+		if !marginpermitted(bc, symbol, orderside, effective_marginleverage)
+			throw(ErrorException("Kraken spot margin not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(effective_marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
 		end
 	end
 	adaptivepost = maker && isnothing(price)
@@ -1646,6 +1764,7 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 	ordertype = (maker || !isnothing(price)) ? "limit" : "market"
 	chosenqty = Float32(basequantity)
 	effectiveprice = isnothing(price) ? nothing : Float32(price)
+	iceberg_displayqty = nothing
 	clientOrderId = _next_client_order_id()
 	txids = Any[]
 	while attempts > 0
@@ -1661,25 +1780,21 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 			norm = _normalizelimitorderparams(syminfo, chosenqty, effectiveprice)
 			chosenqty = norm.basequantity
 			effectiveprice = norm.limitprice
+			if _usenativeiceberg(ordertype, chosenqty, effectiveprice, spec.max_quote)
+				iceberg_displayqty = _icebergdisplayqty(syminfo, chosenqty, effectiveprice, spec.max_quote)
+			else
+				iceberg_displayqty = nothing
+			end
 		end
 
-		params = Dict{String, Any}(
-			"pair" => pairname,
-			"type" => lowercase(orderside),
-			"ordertype" => ordertype,
-			"volume" => string(chosenqty),
-			"cl_ord_id" => clientOrderId,
+		params = _addorderparams(pairname, orderside, ordertype, chosenqty, clientOrderId;
+			effectiveprice=effectiveprice,
+			iceberg_displayqty=iceberg_displayqty,
+			maker=maker,
+			effective_marginleverage=effective_marginleverage,
+			reduceonly=reduceonly,
+			validate=validate,
 		)
-		if ordertype == "limit"
-			params["price"] = string(effectiveprice)
-		end
-		if maker && (ordertype == "limit")
-			params["oflags"] = "post"
-		end
-		if marginleverage > 0
-			params["leverage"] = string(marginleverage)
-		end
-		(reduceonly && (marginleverage > 0)) && (params["reduce_only"] = true)
 
 		try
 			response = HttpPrivateRequest(bc, "POST", "/0/private/AddOrder", params, "create order")
@@ -1739,7 +1854,7 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 		symbol=_normalizepairsymbol(symbol),
 		side=lowercase(orderside) == "buy" ? "Buy" : "Sell",
 		baseqty=chosenqty,
-		ordertype=titlecase(ordertype),
+		ordertype=isnothing(iceberg_displayqty) ? titlecase(ordertype) : "Iceberg",
 			timeinforce=(maker && !isnothing(effectiveprice)) ? "PostOnly" : "GTC",
 			limitprice=isnothing(effectiveprice) ? 0f0 : Float32(effectiveprice),
 		avgprice=0f0,
@@ -1757,11 +1872,30 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=true)
+function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=true, validate::Bool=false)
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Sell" : "Buy"
-	return createorder(bc, symbol, orderside, basequantity, price, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, marginleverage=marginleverage, reduceonly=reduceonly, validate=validate)
+end
+
+"Execute close then open in strict order, aborting if close fails."
+function _closebeforeopenflip(closefn::Function, openfn::Function)
+	closeoid = closefn()
+	isnothing(closeoid) && return (closeorderid=nothing, openorderid=nothing)
+	openoid = openfn()
+	return (closeorderid=closeoid, openorderid=openoid)
+end
+
+"Sequence a close order before an opening order using the Kraken Spot adapter's own execution path."
+function closebeforeopenflip!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, close_basequantity::Real, close_limitprice::Union{Real, Nothing}, close_maker::Bool=true, open_maker::Bool=true; open_limitprice::Union{Real, Nothing}=nothing, open_basequantity::Union{Nothing, Real}=nothing, close_marginleverage::Signed=0, open_marginleverage::Signed=0, close_reduceonly::Bool=true, open_reduceonly::Bool=false, validate::Bool=false)
+	side = Symbol(lowercase(String(positionside)))
+	@assert side in [:long, :short] "closebeforeopenflip! positionside=$(positionside) must be :long or :short"
+	openqty = isnothing(open_basequantity) ? close_basequantity : open_basequantity
+	return _closebeforeopenflip(
+		() -> closeorder(bc, symbol, side, close_basequantity, close_limitprice, close_maker; marginleverage=close_marginleverage, reduceonly=close_reduceonly, validate=validate),
+		() -> (side == :long ? createorder(bc, symbol, "Sell", openqty, open_limitprice, open_maker; configside=:short, marginleverage=open_marginleverage, reduceonly=open_reduceonly, validate=validate) : createorder(bc, symbol, "Buy", openqty, open_limitprice, open_maker; configside=:long, marginleverage=open_marginleverage, reduceonly=open_reduceonly, validate=validate)),
+	)
 end
 
 """

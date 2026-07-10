@@ -1,7 +1,7 @@
 name = "EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 authors = ["tcae <tcae@posteo.nl>"]
-version = "0.2.14"
+version = "0.2.15"
 
 [deps]
 Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"

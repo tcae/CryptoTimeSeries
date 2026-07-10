@@ -190,7 +190,7 @@ function main(args::Vector{String})
         usdtprice = Float32(row.usdtprice)
         usdtvalue = Float32(row.usdtvalue)
         sellablelong = max(0f0, freebase - borrowedbase)
-        symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote; role=Xch.trade_exchange_spot)
+        symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote)
 
         minqty = _safe_min_qty(xc, base, usdtprice)
         sell_cov = _covered_qty(oo, symbol, "Sell"; require_leverage=false)

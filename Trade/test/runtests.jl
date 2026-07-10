@@ -14,7 +14,8 @@ end
     include("managed_close_orders_test.jl")
     include("active_buy_cache_test.jl")
     include("reload_cadence_test.jl")
-    include("bybit_guardrail_test.jl")
+    # bybit_guardrail_test removed - tests guardrail that prevents trading on data-only exchanges
+    # This concept no longer applies with single-exchange model
     if _hastadeauditpkg()
         include("audit_snapshot_test.jl")
     else

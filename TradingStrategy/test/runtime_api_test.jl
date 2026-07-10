@@ -218,23 +218,23 @@ end
 
     TradingStrategy.preparebases!(rt, xc, ["SINE", "DOUBLESINE"]; datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["SINE", "DOUBLESINE"])
-    @test Set(String.(Classify.bases(rt.strategy_config.classifier))) == Set(["SINE", "DOUBLESINE"])
+    @test Set(String.(Classify.bases(rt.cfg.classifier))) == Set(["SINE", "DOUBLESINE"])
 
     TradingStrategy.dropbase!(rt, "SINE")
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
-    @test Set(String.(Classify.bases(rt.strategy_config.classifier))) == Set(["DOUBLESINE"])
+    @test Set(String.(Classify.bases(rt.cfg.classifier))) == Set(["DOUBLESINE"])
 
     TradingStrategy.preparebases!(rt, xc, ["DOUBLESINE"]; datetime=enddt, updatecache=false)
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
-    @test Set(String.(Classify.bases(rt.strategy_config.classifier))) == Set(["DOUBLESINE"])
+    @test Set(String.(Classify.bases(rt.cfg.classifier))) == Set(["DOUBLESINE"])
 
     TradingStrategy.apply_strategy!(rt, TradingStrategy.StrategyConfig(maxwindow=60); source="reconfigured")
     @test isempty(TradingStrategy.acceptedbases(rt))
-    @test isempty(Set(String.(Classify.bases(rt.strategy_config.classifier))))
+    @test isempty(Set(String.(Classify.bases(rt.cfg.classifier))))
 
     TradingStrategy.reset!(rt)
     @test isempty(TradingStrategy.acceptedbases(rt))
-    @test isempty(Set(String.(Classify.bases(rt.strategy_config.classifier))))
+    @test isempty(Set(String.(Classify.bases(rt.cfg.classifier))))
 end
 
 @testset "TsCache row production is deterministic" begin

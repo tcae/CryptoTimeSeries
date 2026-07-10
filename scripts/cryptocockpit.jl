@@ -223,7 +223,7 @@ end
 
 function loadohlcv!(cp, base, interval)
     if !(base in keys(cp.coin))
-        ohlcv = Xch.ohlcv(cp.tc.xc, base)
+        ohlcv = Xch.getohlcv(cp.tc.xc, base)
         cp.coin[base] = CoinData(Dict(), nothing)
         cp.coin[base].ohlcv["1m"] = ohlcv
         cp.coin[base].f4 = _load_cockpit_f4(ohlcv)

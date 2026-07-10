@@ -1,22 +1,31 @@
-using Test, Dates, Logging, LoggingExtras, DataFrames
-using EnvConfig, Trade, Classify, Targets, Ohlcv, Xch
+using Test, Dates, DataFrames
+using EnvConfig, Trade, Targets
 
 println("$(EnvConfig.now()): started")
 
-Classify.verbosity = 2
-Ohlcv.verbosity = 1
-Features.verbosity = 1
-Trade.verbosity = 3
-# EnvConfig.init(training)
 EnvConfig.init(test)
-xc = Xch.XchCache()
-tc = Trade.TradeCache(xc=xc)
 testdt = DateTime(2026, 1, 1)
-tav = [
-    Trade.StrategyAdvice(configid=0, tradelabel=longopen, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
-    Trade.StrategyAdvice(configid=0, tradelabel=longclose, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.2f0, probability=1f0, investmentid=0)
-    Trade.StrategyAdvice(configid=0, tradelabel=shortopen, relativeamount=1f0, base="BTC", price=123f0, datetime=testdt, hourlygain=1.1f0, probability=1f0, investmentid=0)
+
+function mkrow(base, label, probability)
+    tdf = DataFrame(
+        opentime=[testdt],
+        lo_limit=Float32[100f0],
+        lc_limit=Float32[101f0],
+        so_limit=Float32[99f0],
+        sc_limit=Float32[98f0],
+        label=Targets.TradeLabel[label],
+    )
+    return (base=base, rowix=1, tradesdf=tdf, probability=Float32(probability), configid=0)
+end
+
+rows = [
+    mkrow("BTC", longopen, 0.2f0),
+    mkrow("ETH", longclose, 0.1f0),
+    mkrow("ADA", shortopen, 0.9f0),
 ]
-println("before sort!:\n$tav")
-sort!(tav, lt=Trade.tradeadvicelessthan)
-println("after sort!:\n$tav")
+
+sort!(rows, lt=Trade._strategyrows_lt)
+
+@test rows[1].base == "ETH"
+@test rows[2].base == "ADA"
+@test rows[3].base == "BTC"

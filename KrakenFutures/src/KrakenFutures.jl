@@ -15,6 +15,48 @@ const _private_call_counter = Dict{String, Int}()
 const PRIVATE_READ_COOLDOWN = Dates.Second(45)
 const SERVERTIME_RETRY_SECONDS = 60
 
+const EXECUTION_CONFIG_PATH = joinpath(@__DIR__, "..", "data", "execution_config.json")
+
+"Load the Kraken Futures execution configuration for side-specific order limits and instruments."
+function executionconfig()
+	isfile(EXECUTION_CONFIG_PATH) || error("missing KrakenFutures execution config: $(EXECUTION_CONFIG_PATH)")
+	return JSON3.read(read(EXECUTION_CONFIG_PATH, String))
+end
+
+function _executionconfigside(configside::Union{Nothing, Symbol}, orderside::AbstractString)::Symbol
+	if isnothing(configside)
+		return lowercase(String(orderside)) == "buy" ? :long : :short
+	end
+	side = Symbol(lowercase(String(configside)))
+	@assert side in (:long, :short) "invalid KrakenFutures configside=$(configside)"
+	return side
+end
+
+function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString, marginleverage::Signed)
+	side = _executionconfigside(configside, orderside)
+	cfg = executionconfig()
+	orders = cfg["orders"]
+	sidecfg = orders[String(side)]
+	instrument = lowercase(String(sidecfg["instrument"]))
+	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : Int(marginleverage)
+	return (side=side, instrument=instrument, max_quote=max_quote, leverage=leverage)
+end
+
+"Return side-specific execution config owned by the KrakenFutures adapter."
+function executionorderspec(side::Symbol)
+	side in (:long, :short) || error("KrakenFutures executionorderspec side=$(side) must be :long or :short")
+	cfg = executionconfig()
+	haskey(cfg, "orders") || error("missing KrakenFutures execution config orders section")
+	orders = cfg["orders"]
+	haskey(orders, String(side)) || error("missing KrakenFutures execution config orders.$(side) section")
+	sidecfg = orders[String(side)]
+	instrument = haskey(sidecfg, "instrument") ? lowercase(String(sidecfg["instrument"])) : ""
+	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
+	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
+end
+
 const ROBOT_ORDER_PREFIX = "ROBO-"
 const _order_counter_lock = ReentrantLock()
 const _order_counter = Ref{Int}(0)
@@ -112,6 +154,8 @@ const _ws_private_min_reconnect_interval = Dates.Second(2)
 const _ws_private_backoff_base_seconds = 2.0
 const _ws_private_backoff_cap_seconds = 60.0
 const _ws_private_backoff_jitter_seconds = 0.75
+const _iceberg_sequence_lock = ReentrantLock()
+const _iceberg_sequences = Dict{String, Dict{Symbol, Any}}()
 
 const KRAKEN_SPOT_APIREST = "https://api.kraken.com"
 
@@ -450,17 +494,36 @@ struct KrakenFuturesCache
 	secretkey::String
 end
 
+function _authtargetpurpose()::String
+	return EnvConfig.configmode == EnvConfig.test ? "testing" : "trading"
+end
+
+function _resolve_futures_apirest(apirest::Union{Nothing, AbstractString})::String
+	if !isnothing(apirest) && String(apirest) != ""
+		return String(apirest)
+	end
+	try
+		auth = EnvConfig.Authentication(nothing; exchange="KrakenFutures", purpose=_authtargetpurpose())
+		if !isnothing(auth.derivatives) && String(auth.derivatives) != ""
+			return String(auth.derivatives)
+		end
+	catch
+	end
+	return KRAKEN_FUTURES_APIREST
+end
+
 """
 Build a new `KrakenFuturesCache` and optionally preload symbol metadata.
 """
-function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::String=KRAKEN_FUTURES_APIREST, publickey::Union{Nothing, AbstractString}=nothing, secretkey::Union{Nothing, AbstractString}=nothing)
+function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::Union{Nothing, AbstractString}=nothing, publickey::Union{Nothing, AbstractString}=nothing, secretkey::Union{Nothing, AbstractString}=nothing)
+	resolved_apirest = _resolve_futures_apirest(apirest)
 	keys = _resolve_credentials(publickey, secretkey)
-	bc = KrakenFuturesCache(_emptyexchangeinfo(), apirest, keys.publickey, keys.secretkey)
+	bc = KrakenFuturesCache(_emptyexchangeinfo(), resolved_apirest, keys.publickey, keys.secretkey)
 	_restore_nonce_floor!(bc)
 	syminfo = _emptyexchangeinfo()
 	if autoloadexchangeinfo
 		try
-			syminfo = _exchangeinfo(apirest)
+			syminfo = _exchangeinfo(resolved_apirest)
 		catch err
 			(verbosity >= 1) && @warn "failed to load KrakenFutures exchange info: $(err)"
 			syminfo = _emptyexchangeinfo()
@@ -472,7 +535,7 @@ function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::String=K
 			sort!(syminfo, :basecoin)
 		end
 	end
-	return KrakenFuturesCache(syminfo, apirest, keys.publickey, keys.secretkey)
+	return KrakenFuturesCache(syminfo, resolved_apirest, keys.publickey, keys.secretkey)
 end
 
 """
@@ -486,14 +549,17 @@ function _resolve_credentials(publickey::Union{Nothing, AbstractString}, secretk
 	cfgpublic = ""
 	cfgsecret = ""
 	try
-		auth = EnvConfig.Authentication(nothing; exchange="KrakenFutures")
+		auth = EnvConfig.Authentication(nothing; exchange="KrakenFutures", purpose=_authtargetpurpose())
 		cfgpublic = String(auth.key)
 		cfgsecret = String(auth.secret)
 	catch
 		try
 			if !isnothing(EnvConfig.authorization)
-				cfgpublic = String(EnvConfig.authorization.key)
-				cfgsecret = String(EnvConfig.authorization.secret)
+				auth = EnvConfig.authorization
+				if !isnothing(auth.exchange) && String(auth.exchange) == "KrakenFutures"
+					cfgpublic = String(auth.key)
+					cfgsecret = String(auth.secret)
+				end
 			end
 		catch
 			cfgpublic = ""
@@ -958,6 +1024,7 @@ function emptyorders()::DataFrame
 		created=DateTime[],
 		updated=DateTime[],
 		rejectreason=String[],
+		reduceonly=Bool[],
 		lastcheck=DateTime[],
 	)
 end
@@ -1670,6 +1737,60 @@ function accountcapacity(bc::KrakenFuturesCache)
 end
 
 """
+Return explicit per-base futures position quantities from `/openpositions`.
+"""
+function positionsnapshot(bc::KrakenFuturesCache)::DataFrame
+	df = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+	if !_hascredentials(bc)
+		return df
+	end
+
+	acc = Dict{String, Tuple{Float32, Float32}}()
+	posresp = HttpPrivateRequest(bc, "GET", "/openpositions", nothing, "futures open positions")
+	rawpositions = _tryget(posresp, ["openPositions", "positions", "elements", "open_positions"], Any[])
+	if !(rawpositions isa AbstractVector)
+		return df
+	end
+
+	for raw in rawpositions
+		entry = Dict(raw)
+		rawpair = String(_tryget(entry, ["symbol", "pair", "instrument", "market", "product_id"], ""))
+		symbol = _resultkey2symbol(bc, rawpair)
+		basecoin = ""
+		for q in sort(_known_quotes, by=length, rev=true)
+			if endswith(symbol, q) && (length(symbol) > length(q))
+				basecoin = _normalizeasset(symbol[1:end-length(q)])
+				break
+			end
+		end
+		basecoin == "" && continue
+
+		sizevalue = Float64(_float32(_tryget(entry, ["size", "qty", "positionSize", "amount", "contracts", "vol"], 0), 0f0))
+		side = lowercase(String(_tryget(entry, ["side", "direction"], "")))
+		islong = side in ["buy", "long"]
+		isshort = side in ["sell", "short"]
+		if !islong && !isshort
+			islong = sizevalue > 0.0
+			isshort = sizevalue < 0.0
+		end
+		qty = abs(Float32(sizevalue))
+		qty <= 0f0 && continue
+
+		prev = get(acc, basecoin, (0f0, 0f0))
+		if islong
+			acc[basecoin] = (prev[1] + qty, prev[2])
+		elseif isshort
+			acc[basecoin] = (prev[1], prev[2] + qty)
+		end
+	end
+
+	for (coin, qtys) in acc
+		push!(df, (coin=uppercase(String(coin)), long_qty=qtys[1], short_qty=qtys[2]))
+	end
+	return df
+end
+
+"""
 Convert one raw order entry into standardized row shape.
 """
 function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
@@ -1691,6 +1812,8 @@ function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
 	leverage = _float32(_tryget(descr, ["leverage"], 1), 1f0)
 	tif = String(_tryget(descr, ["timeinforce", "timeInForce"], "GTC"))
 	orderLinkId = String(_tryget(entry, ["cliOrdId", "clientOrderId", "cl_ord_id"], ""))
+	rawreduceonly = _tryget(entry, ["reduceOnly", "reduce_only"], _tryget(descr, ["reduceOnly", "reduce_only"], false))
+	reduceonly = rawreduceonly isa Bool ? rawreduceonly : lowercase(String(rawreduceonly)) in ["true", "1", "yes"]
 	return (
 		orderid=String(orderid),
 		orderLinkId=orderLinkId,
@@ -1707,6 +1830,7 @@ function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
 		created=created,
 		updated=updated,
 		rejectreason="",
+		reduceonly=reduceonly,
 		lastcheck=Dates.now(Dates.UTC),
 	)
 end
@@ -1775,6 +1899,7 @@ function openorders(bc::KrakenFuturesCache; symbol=nothing, orderid=nothing, ord
 			_openorders_cache_time[] = Dates.now(Dates.UTC)
 		end
 	end
+	_advanceicebergsequences!(bc, out)
 	return out
 end
 
@@ -1786,13 +1911,15 @@ function order(bc::KrakenFuturesCache, orderid)
 		return nothing
 	end
 	!_hascredentials(bc) && return nothing
+	rootid, state = _icebergstate(orderid)
+	lookupid = isnothing(state) ? String(orderid) : String(state[:current_order_id])
 
 	try
-		response = HttpPrivateRequest(bc, "POST", "/orders/status", Dict("orderIds" => [String(orderid)]), "futures order status")
+		response = HttpPrivateRequest(bc, "POST", "/orders/status", Dict("orderIds" => [lookupid]), "futures order status")
 		orders = _tryget(response, ["orders", "elements"], Any[])
 		if (orders isa AbstractVector) && !isempty(orders)
 			df = emptyorders()
-			push!(df, _orderrow(bc, String(orderid), Dict(first(orders))))
+			push!(df, _orderrow(bc, lookupid, Dict(first(orders))))
 			return df[1, :]
 		end
 	catch err
@@ -1809,10 +1936,13 @@ function cancelorder(bc::KrakenFuturesCache, symbol, orderid)
 	if isnothing(orderid) || !_hascredentials(bc)
 		return nothing
 	end
+	rootid, state = _icebergstate(orderid)
+	lookupid = isnothing(state) ? String(orderid) : String(state[:current_order_id])
 	try
-		response = HttpPrivateRequest(bc, "POST", "/cancelorder", Dict("order_id" => String(orderid)), "futures cancel order")
+		response = HttpPrivateRequest(bc, "POST", "/cancelorder", Dict("order_id" => lookupid), "futures cancel order")
 		if haskey(response, "result")
 			_invalidate_openorders_cache!()
+			!isnothing(rootid) && _deleteicebergstate!(String(rootid))
 			return String(orderid)
 		end
 	catch err
@@ -1857,6 +1987,48 @@ function _makerlimitprice(syminfo::DataFrameRow, snapshot, orderside::AbstractSt
 	return price > 0f0 ? price : nothing
 end
 
+function _icebergchunkamount(amount::Real, refprice::Real, minqty::Real, max_quote)::Tuple{Float64, Bool}
+	total = Float64(amount)
+	if isnothing(max_quote) || !(Float64(max_quote) > 0.0) || !(Float64(refprice) > 0.0)
+		return (total, false)
+	end
+	if total * Float64(refprice) <= Float64(max_quote) + 1e-9
+		return (total, false)
+	end
+	target = Float64(max_quote) / Float64(refprice)
+	chunk = min(total, max(target, Float64(minqty)))
+	return (chunk, chunk + 1e-9 < total)
+end
+
+function _icebergstate(orderid::AbstractString)
+	oid = String(orderid)
+	lock(_iceberg_sequence_lock) do
+		if haskey(_iceberg_sequences, oid)
+			return (oid, _iceberg_sequences[oid])
+		end
+		for (rootid, state) in _iceberg_sequences
+			if get(state, :current_order_id, nothing) == oid
+				return (rootid, state)
+			end
+		end
+		return (nothing, nothing)
+	end
+end
+
+function _seticebergstate!(rootid::AbstractString, state::Dict{Symbol, Any})
+	lock(_iceberg_sequence_lock) do
+		_iceberg_sequences[String(rootid)] = state
+	end
+	return nothing
+end
+
+function _deleteicebergstate!(rootid::AbstractString)
+	lock(_iceberg_sequence_lock) do
+		haskey(_iceberg_sequences, String(rootid)) && delete!(_iceberg_sequences, String(rootid))
+	end
+	return nothing
+end
+
 """
 Create one order and return a standardized named tuple.
 
@@ -1864,12 +2036,15 @@ If `price` is omitted and `maker=true`, the adapter will choose a limit price
 as close as possible to the current spread while remaining post-only so the
 order can qualify for maker fees.
 """
-function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false)
+function _createorder_single!(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=false, orderLinkId::Union{Nothing, AbstractString}=nothing)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(price) || (price > 0.0) "createorder symbol=$(symbol) price=$(price) must be > 0"
 	@assert lowercase(orderside) in ["buy", "sell"] "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
 	!_hascredentials(bc) && return nothing
-	_validatemarginleverage(marginleverage)
+	spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside, marginleverage) : execution_spec
+	spec.instrument == "futures" || error("unsupported KrakenFutures execution instrument $(spec.instrument) for symbol=$(symbol) configside=$(spec.side)")
+	effective_marginleverage = spec.leverage
+	_validatemarginleverage(effective_marginleverage)
 
 	syminfo = symbolinfo(bc, symbol)
 	if isnothing(syminfo)
@@ -1882,10 +2057,10 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	end
 
 	pairname = _symbol2pairname(bc, symbol)
-	if marginleverage > 0
+	if effective_marginleverage > 0
 		limits = marginlimits(bc, symbol)
-		if !marginpermitted(bc, symbol, orderside, marginleverage)
-			throw(ErrorException("Kraken futures leverage not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
+		if !marginpermitted(bc, symbol, orderside, effective_marginleverage)
+			throw(ErrorException("Kraken futures leverage not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(effective_marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
 		end
 	end
 	adaptivepost = maker && isnothing(price)
@@ -1893,7 +2068,7 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	ordertype = (maker || !isnothing(price)) ? "lmt" : "mkt"
 	chosenqty = Float32(basequantity)
 	effectiveprice = isnothing(price) ? nothing : Float32(price)
-	clientOrderId = _next_client_order_id()
+	clientOrderId = isnothing(orderLinkId) ? _next_client_order_id() : String(orderLinkId)
 	orderid = nothing
 	while attempts > 0
 		if ordertype == "lmt"
@@ -1927,7 +2102,7 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 		)
 		(ordertype == "lmt") && (params["limitPrice"] = string(effectiveprice))
 		(maker && (ordertype == "lmt")) && (params["postOnly"] = "true")
-		marginleverage > 0 && (params["leverage"] = string(marginleverage))
+		effective_marginleverage > 0 && (params["leverage"] = string(effective_marginleverage))
 		reduceonly && (params["reduceOnly"] = true)
 
 		try
@@ -2009,17 +2184,91 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	)
 end
 
+function _advanceicebergsequence!(bc::KrakenFuturesCache, rootid::AbstractString; submitfn::Function=_createorder_single!)::Bool
+	root, state = _icebergstate(rootid)
+	isnothing(state) && return false
+	remaining = Float64(state[:remaining_baseqty])
+	if remaining <= 1e-9
+		_deleteicebergstate!(String(root))
+		return false
+	end
+	chunk, split = _icebergchunkamount(remaining, state[:refprice], state[:minqty], state[:max_quote])
+	next_order = submitfn(bc, state[:symbol], state[:orderside], chunk, state[:price], state[:maker]; configside=state[:configside], execution_spec=state[:execution_spec], marginleverage=state[:marginleverage], reduceonly=state[:reduceonly], orderLinkId=state[:root_order_link_id])
+	isnothing(next_order) && return false
+	state[:current_order_id] = String(next_order.orderid)
+	state[:remaining_baseqty] = max(0.0, remaining - chunk)
+	if !(split && (state[:remaining_baseqty] > 1e-9))
+		_deleteicebergstate!(String(root))
+	else
+		_seticebergstate!(String(root), state)
+	end
+	return true
+end
+
+function _advanceicebergsequences!(bc::KrakenFuturesCache, openordersdf::AbstractDataFrame; submitfn::Function=_createorder_single!)::Bool
+	active = "orderid" in names(openordersdf) ? Set(String.(openordersdf[!, :orderid])) : Set{String}()
+	advanced = false
+	for (rootid, state) in lock(_iceberg_sequence_lock) do
+		collect(_iceberg_sequences)
+	end
+		current = String(state[:current_order_id])
+		current in active && continue
+		advanced = _advanceicebergsequence!(bc, rootid; submitfn=submitfn) || advanced
+	end
+	return advanced
+end
+
+function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=false)
+	spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside, marginleverage) : execution_spec
+	syminfo = symbolinfo(bc, symbol)
+	isnothing(syminfo) && return _createorder_single!(bc, symbol, orderside, basequantity, price, maker; configside=configside, execution_spec=spec, marginleverage=marginleverage, reduceonly=reduceonly)
+	refprice = isnothing(price) ? (maker ? _makerlimitprice(syminfo, get24h(bc, symbol), orderside) : get24h(bc, symbol).lastprice) : price
+	minqty = max(Float64(syminfo.minbaseqty), Float64(syminfo.minquoteqty) / max(Float64(refprice), 1e-9))
+	chunk, split = _icebergchunkamount(basequantity, refprice, minqty, spec.max_quote)
+	first_order = _createorder_single!(bc, symbol, orderside, chunk, price, maker; configside=configside, execution_spec=spec, marginleverage=marginleverage, reduceonly=reduceonly)
+	if !isnothing(first_order) && split
+		_seticebergstate!(String(first_order.orderid), Dict{Symbol, Any}(
+			:current_order_id => String(first_order.orderid),
+			:remaining_baseqty => max(0.0, Float64(basequantity) - Float64(chunk)),
+			:symbol => String(symbol),
+			:orderside => String(orderside),
+			:configside => spec.side,
+			:marginleverage => marginleverage,
+			:reduceonly => reduceonly,
+			:maker => maker,
+			:price => price,
+			:refprice => Float64(refprice),
+			:minqty => Float64(minqty),
+			:max_quote => spec.max_quote,
+			:execution_spec => spec,
+			:root_order_link_id => String(first_order.orderLinkId),
+		))
+	end
+	return first_order
+end
+
 """
 Create one close order for an existing position side.
 
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=true)
+function closeorder(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=true)
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Sell" : "Buy"
-	return createorder(bc, symbol, orderside, basequantity, price, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, marginleverage=marginleverage, reduceonly=reduceonly)
+end
+
+"Sequence a close order before an opening order using the Kraken Futures adapter's own execution path."
+function closebeforeopenflip!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, close_basequantity::Real, close_limitprice::Union{Real, Nothing}, close_maker::Bool=true, open_maker::Bool=true; open_limitprice::Union{Real, Nothing}=nothing, open_basequantity::Union{Nothing, Real}=nothing, close_marginleverage::Signed=0, open_marginleverage::Signed=0, close_reduceonly::Bool=true, open_reduceonly::Bool=false)
+	side = Symbol(lowercase(String(positionside)))
+	@assert side in [:long, :short] "closebeforeopenflip! positionside=$(positionside) must be :long or :short"
+	openqty = isnothing(open_basequantity) ? close_basequantity : open_basequantity
+	closeoid = closeorder(bc, symbol, side, close_basequantity, close_limitprice, close_maker; marginleverage=close_marginleverage, reduceonly=close_reduceonly)
+	isnothing(closeoid) && return (closeorderid=nothing, openorderid=nothing)
+	openoid = side == :long ? createorder(bc, symbol, "Sell", openqty, open_limitprice, open_maker; configside=:short, marginleverage=open_marginleverage, reduceonly=open_reduceonly) : createorder(bc, symbol, "Buy", openqty, open_limitprice, open_maker; configside=:long, marginleverage=open_marginleverage, reduceonly=open_reduceonly)
+	return (closeorderid=closeoid, openorderid=openoid)
 end
 
 """
@@ -2484,6 +2733,7 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 						df = _ws_orders_df_from_payload(bc, rawdata)
 						if size(df, 1) > 0
 							_update_ws_orders_snapshot!(df)
+							_advanceicebergsequences!(bc, df)
 						else
 							_touch_ws_orders_heartbeat!()
 						end
@@ -2518,6 +2768,7 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 					if cooldown_s <= 0
 						oo = openorders(bc)
 						_update_ws_orders_snapshot!(oo)
+						_advanceicebergsequences!(bc, oo)
 						snapshot = string(hash(oo))
 						if snapshot != lastordersnapshot
 							put!(order_channel, Dict("topic" => "order", "source" => "rest", "data" => oo))
@@ -2575,6 +2826,7 @@ function _pollordersfallback!(channel::Channel{Dict}, bc::KrakenFuturesCache)
 	while isopen(channel)
 		oo = openorders(bc)
 		_update_ws_orders_snapshot!(oo)
+		_advanceicebergsequences!(bc, oo)
 		snapshot = string(hash(oo))
 		if snapshot != lastsnapshot
 			put!(channel, Dict("topic" => "order", "source" => "rest", "data" => oo))

@@ -172,17 +172,17 @@ if RUN_PRODUCTION_TESTS
     oo2 = Xch.getorder(xc, "invalid_or_unknown_id")
     @test isnothing(oo2)
 
-    oid = Xch.createbuyorder(xc, "btc", limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false) # limitprice out of allowed range
+    oid = Xch.createopenorder(xc, "btc"; limitprice=btcprice*1.2, basequantity=26.01/btcprice, maker=false, configside=:long) # limitprice out of allowed range
     @test isnothing(oid)
     # println("createbuyorder: $(string(oid)) - error expected")
-    oid = Xch.createbuyorder(xc, "btc", limitprice=btcprice * 1.001, basequantity=26.01/btcprice, maker=false) # PostOnly will cause reject if price < limitprice due to taker order
+    oid = Xch.createopenorder(xc, "btc"; limitprice=btcprice * 1.001, basequantity=26.01/btcprice, maker=false, configside=:long) # PostOnly will cause reject if price < limitprice due to taker order
     @test !isnothing(oid)
     oo2 = Xch.getorder(xc, oid)
     # println("getorder: $oo2")
     @test oo2.orderid == oid
     @test oo2.status == "Filled"  # due to GTC as long as taker fee == maker fee
 
-    oid = Xch.createbuyorder(xc, "btc", limitprice=btcprice * 0.9, basequantity=6.01/btcprice, maker=false)
+    oid = Xch.createopenorder(xc, "btc"; limitprice=btcprice * 0.9, basequantity=6.01/btcprice, maker=false, configside=:long)
     # println("createbuyorder: $(string(oid))")
     oo2 = Xch.getorder(xc, oid)
     # println("getorder: $oo2")

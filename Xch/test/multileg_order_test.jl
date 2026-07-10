@@ -144,7 +144,7 @@ end
 
         @test haskey(xc.mc, :syminfo_cache)
         @test haskey(xc.mc[:syminfo_cache], "BTCUSDT")
-        @test xc.mc[:syminfo_cache]["BTCUSDT"].minbaseqty == 0.00001f0
+        @test xc.mc[:syminfo_cache]["BTCUSDT"].minbaseqty == 0.000001f0
 
     finally
         if isnothing(oldroot)

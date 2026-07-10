@@ -88,6 +88,31 @@ using DataFrames, Dates, KrakenSpot, Test
     @test KrakenSpot._makerlimitprice(info, tickrow, "Buy") == 101.4f0
     @test KrakenSpot._makerlimitprice(info, tickrow, "Sell") == 101.1f0
 
+    displayqty = KrakenSpot._icebergdisplayqty(info, 1.5f0, 100f0, 20.0)
+    @test displayqty >= 0.2f0
+    @test KrakenSpot._usenativeiceberg("limit", 1.5f0, 100f0, 20.0)
+    @test !KrakenSpot._usenativeiceberg("market", 1.5f0, 100f0, 20.0)
+
+    validated_params = KrakenSpot._addorderparams("XBTUSDT", "Buy", "limit", 0.5f0, "ROBO-TEST";
+        effectiveprice=100.0f0,
+        maker=true,
+        effective_marginleverage=3,
+        reduceonly=true,
+        validate=true,
+    )
+    @test validated_params["pair"] == "XBTUSDT"
+    @test validated_params["type"] == "buy"
+    @test validated_params["ordertype"] == "limit"
+    @test validated_params["oflags"] == "post"
+    @test validated_params["leverage"] == "3"
+    @test validated_params["reduce_only"] == true
+    @test validated_params["validate"] == true
+
+    normal_params = KrakenSpot._addorderparams("XBTUSDT", "Sell", "market", 0.5f0, "ROBO-TEST-2";
+        validate=false,
+    )
+    @test !haskey(normal_params, "validate")
+
     klines = Any[
         Any[1700000000, "100", "110", "90", "105", "104", "1.2", "12"],
         Any[1700000060, "105", "120", "100", "118", "117", "2.3", "20"],
@@ -109,4 +134,34 @@ using DataFrames, Dates, KrakenSpot, Test
     ])
     @test length(filtered) == 1
     @test filtered[1]["symbol"] == "BTCUSDT"
+
+    call_order = String[]
+    seq = KrakenSpot._closebeforeopenflip(
+        () -> begin
+            push!(call_order, "close")
+            return (orderid="close-1",)
+        end,
+        () -> begin
+            push!(call_order, "open")
+            return (orderid="open-1",)
+        end,
+    )
+    @test call_order == ["close", "open"]
+    @test !isnothing(seq.closeorderid)
+    @test !isnothing(seq.openorderid)
+
+    call_order_abort = String[]
+    aborted = KrakenSpot._closebeforeopenflip(
+        () -> begin
+            push!(call_order_abort, "close")
+            return nothing
+        end,
+        () -> begin
+            push!(call_order_abort, "open")
+            return (orderid="open-should-not-run",)
+        end,
+    )
+    @test call_order_abort == ["close"]
+    @test isnothing(aborted.closeorderid)
+    @test isnothing(aborted.openorderid)
 end

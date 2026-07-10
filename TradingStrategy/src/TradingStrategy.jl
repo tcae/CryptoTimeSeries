@@ -265,7 +265,7 @@ mutable struct TsCache
     pairs::Dict{String, TsTp}
     classifier_gate_state::Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}
     accepted::Set{String}
-    strategy_config::StrategyConfig
+    cfg::StrategyConfig
     source::String
 end
 
@@ -287,7 +287,7 @@ end
 end
 
 @inline function _strategyclassifier(rt::TsCache)::Classify.AbstractClassifier
-    classifier = rt.strategy_config.classifier
+    classifier = rt.cfg.classifier
     @assert !isnothing(classifier) "StrategyConfig.classifier must be configured for TsCache runtime"
     return classifier
 end
@@ -300,6 +300,12 @@ function TsCache(; classifier::Union{Nothing, Classify.AbstractClassifier}=nothi
     !isnothing(resolved_classifier) || throw(ArgumentError("TsCache requires a classifier via classifier keyword or strategy.classifier"))
     configured_strategy = _strategy_with_classifier(resolved_template, resolved_classifier)
     return TsCache(Dict{String, TsTp}(), Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}(), Set{String}(), configured_strategy, String(source))
+end
+
+"Build TsCache from a TrendDetector config reference, loading and compiling the strategy under the hood."
+function TsCache(configref::AbstractString; mnemonic::AbstractString="mix", mode=EnvConfig.configmode, source::AbstractString="manual")
+    strategy = strategyconfig(configref; mnemonic=mnemonic, mode=mode)
+    return TsCache(strategy=strategy, source=source)
 end
 
 "Return canonical trading-pair key for TsCache pair state lookups."
@@ -433,7 +439,7 @@ end
 "Apply a strategy-spec template to TsCache and clear derived cached state."
 function apply_strategy!(rt::TsCache, strategy::StrategyConfig; source::AbstractString="manual")::Nothing
     classifier = !isnothing(strategy.classifier) ? strategy.classifier : _strategyclassifier(rt)
-    rt.strategy_config = _strategy_with_classifier(strategy, classifier)
+    rt.cfg = _strategy_with_classifier(strategy, classifier)
     rt.source = String(source)
     empty!(rt.pairs)
     empty!(rt.classifier_gate_state)
@@ -497,9 +503,45 @@ function _lastopentrade_dt(tradesdf::AbstractDataFrame)::Union{Nothing, DateTime
     return nothing
 end
 
+"Return the earliest usable start date for one base, or `nothing` when the base is not acceptable for the current runtime."
+function acceptbase!(rt::TsCache, xc::Xch.XchCache, base::AbstractString; datetime::DateTime, updatecache::Bool=false)::Union{Nothing, DateTime}
+    basekey = uppercase(String(base))
+    haskey(xc.bases, basekey) || return nothing
+
+    ohlcv = Xch.getohlcv(xc, basekey)
+    odf = Ohlcv.dataframe(ohlcv)
+    rowcount = size(odf, 1)
+    rowcount > 0 || return nothing
+
+    required_minutes = requiredhistoryminutes(rt)
+    startdt = datetime - Minute(required_minutes)
+    if odf[1, :opentime] > startdt
+        return nothing
+    end
+
+    classifier = _strategyclassifier(rt)
+    loaded = Set{String}(uppercase.(String.(Classify.bases(classifier))))
+    if !(basekey in loaded)
+        Classify.addbase!(classifier, ohlcv)
+        push!(loaded, basekey)
+    end
+
+    Classify.supplement!(classifier)
+    updatecache && Classify.writetargetsfeatures(classifier)
+
+    accepted = Set{String}(uppercase.(String.(Classify.bases(classifier))))
+    if !(basekey in accepted)
+        dropbase!(rt, basekey)
+        return nothing
+    end
+
+    push!(rt.accepted, basekey)
+    syncpairtrades!(rt, xc, basekey, EnvConfig.pairquote; datetime=datetime)
+    return startdt
+end
+
 "Prepare TsCache for requested bases using available OHLCV data and update accepted set."
 function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:AbstractString}; datetime::DateTime, updatecache::Bool=false)::Nothing
-    _ = datetime
     wanted = Set{String}(uppercase.(String.(bases)))
     classifier = _strategyclassifier(rt)
 
@@ -508,28 +550,13 @@ function preparebases!(rt::TsCache, xc::Xch.XchCache, bases::AbstractVector{<:Ab
         dropbase!(rt, stale)
     end
 
-    loaded = Set{String}(uppercase.(String.(Classify.bases(classifier))))
-    any_loaded = false
+    accepted = Set{String}()
     for base in sort!(collect(wanted))
-        try
-            ohlcv = Xch.ohlcv(xc, base)
-            if !(base in loaded)
-                Classify.addbase!(classifier, ohlcv)
-                push!(loaded, base)
-            end
-            any_loaded = true
-        catch
-            continue
-        end
+        startdt = acceptbase!(rt, xc, base; datetime=datetime, updatecache=updatecache)
+        isnothing(startdt) && continue
+        push!(accepted, base)
     end
 
-    if any_loaded
-        Classify.supplement!(classifier)
-        updatecache && Classify.writetargetsfeatures(classifier)
-    end
-
-    accepted = Set{String}(uppercase.(String.(Classify.bases(classifier))))
-    intersect!(accepted, wanted)
     rt.accepted = accepted
     for base in sort!(collect(rt.accepted))
         syncpairtrades!(rt, xc, base, EnvConfig.pairquote; datetime=datetime)
@@ -545,8 +572,11 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
         return nothing
     end
 
-    ohlcv = Xch.ohlcv(xc, basekey)
-    spec = rt.strategy_config
+    startdt = acceptbase!(rt, xc, basekey; datetime=datetime, updatecache=false)
+    isnothing(startdt) && return nothing
+
+    ohlcv = Xch.getohlcv(xc, basekey)
+    spec = rt.cfg
 
     rowix = ohlcv.ix
     odf = Ohlcv.dataframe(ohlcv)
@@ -775,8 +805,6 @@ function _executed_open_hit_dt(tradesdf::DataFrame, ix::Integer)
     end
     return (long_open_hit || short_open_hit) ? tradesdf[ix, :opentime] : missing
 end
-
-_row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool = (tradesdf[ix, :lp_amount] > 0f0) || (tradesdf[ix, :sp_amount] > 0f0)
 
 function _rowtakeover!(tdf::DataFrame, ix::Integer)
     if ix > 1

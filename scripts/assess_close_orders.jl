@@ -91,7 +91,7 @@ function main(args::Vector{String})
 
         freebase = Float32(row.free)
         borrowed = Float32(row.borrowed)
-        symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote; role=Xch.trade_exchange_spot)
+        symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote)
 
         minq = try
             Float32(Xch.minimumbasequantity(xc, base, Float32(row.usdtprice)))

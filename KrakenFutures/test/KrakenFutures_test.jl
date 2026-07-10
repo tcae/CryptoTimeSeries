@@ -1,4 +1,4 @@
-using DataFrames, Dates, KrakenFutures, Test
+using DataFrames, Dates, EnvConfig, KrakenFutures, Test
 
 @testset "KrakenFutures offline interface tests" begin
     emptycache = KrakenFutures.KrakenFuturesCache(autoloadexchangeinfo=false, publickey="", secretkey="")
@@ -61,6 +61,69 @@ using DataFrames, Dates, KrakenFutures, Test
     @test KrakenFutures._makerlimitprice(info, tickrow, "Buy") == 101.4f0
     @test KrakenFutures._makerlimitprice(info, tickrow, "Sell") == 101.1f0
 
+    chunk, split = KrakenFutures._icebergchunkamount(10.0, 100.0, 1.0, 250.0)
+    @test split
+    @test chunk ≈ 2.5 atol = 1e-6
+
+    lock(KrakenFutures._iceberg_sequence_lock) do
+        empty!(KrakenFutures._iceberg_sequences)
+    end
+    rootid = "root-seq"
+    spec = KrakenFutures._executionorderspec(:long, "Buy", 0)
+    KrakenFutures._seticebergstate!(rootid, Dict{Symbol, Any}(
+        :current_order_id => "child-1",
+        :remaining_baseqty => 5.0,
+        :symbol => "BTCUSDT",
+        :orderside => "Buy",
+        :configside => :long,
+        :marginleverage => 0,
+        :reduceonly => false,
+        :maker => true,
+        :price => 100.0,
+        :refprice => 100.0,
+        :minqty => 1.0,
+        :max_quote => 200.0,
+        :execution_spec => spec,
+        :root_order_link_id => "link-root",
+    ))
+
+    submit_calls = Vector{NamedTuple{(:basequantity, :orderLinkId), Tuple{Float64, String}}}()
+    submit_counter = Ref(1)
+    submit_stub = function (_bc, _symbol, _orderside, basequantity, _price, _maker; orderLinkId=nothing, kwargs...)
+        _ = kwargs
+        push!(submit_calls, (basequantity=Float64(basequantity), orderLinkId=String(orderLinkId)))
+        submit_counter[] += 1
+        return (orderid="child-$(submit_counter[])", orderLinkId=String(orderLinkId))
+    end
+
+    active_df = DataFrame(orderid=String["child-1"])
+    @test !KrakenFutures._advanceicebergsequences!(cache, active_df; submitfn=submit_stub)
+    @test length(submit_calls) == 0
+
+    empty_df = DataFrame(orderid=String[])
+    @test KrakenFutures._advanceicebergsequences!(cache, empty_df; submitfn=submit_stub)
+    @test length(submit_calls) == 1
+    @test submit_calls[1].basequantity ≈ 2.0 atol = 1e-9
+    @test submit_calls[1].orderLinkId == "link-root"
+
+    _root, state1 = KrakenFutures._icebergstate(rootid)
+    @test !isnothing(state1)
+    @test state1[:current_order_id] == "child-2"
+    @test state1[:remaining_baseqty] ≈ 3.0 atol = 1e-9
+
+    @test KrakenFutures._advanceicebergsequences!(cache, empty_df; submitfn=submit_stub)
+    _root, state2 = KrakenFutures._icebergstate(rootid)
+    @test !isnothing(state2)
+    @test state2[:current_order_id] == "child-3"
+    @test state2[:remaining_baseqty] ≈ 1.0 atol = 1e-9
+
+    @test KrakenFutures._advanceicebergsequences!(cache, empty_df; submitfn=submit_stub)
+    _root, state3 = KrakenFutures._icebergstate(rootid)
+    @test isnothing(state3)
+    @test length(submit_calls) == 3
+    @test submit_calls[2].basequantity ≈ 2.0 atol = 1e-9
+    @test submit_calls[3].basequantity ≈ 1.0 atol = 1e-9
+
     klines = Any[
         Dict("time" => 1700000000, "open" => "100", "high" => "110", "low" => "90", "close" => "105", "volume" => "1.2"),
         Any[1700000060, "105", "120", "100", "118", "2.3"],
@@ -89,4 +152,35 @@ using DataFrames, Dates, KrakenFutures, Test
     api_secret = "7zxMEF5p/Z8l2p2U7Ghv6x14Af+Fx+92tPgUdVQ748FOIrEoT9bgT+bTRfXc5pz8na+hL/QdrCVG7bh9KpT0eMTm"
     expected_signed = "4JEpF3ix66GA2B+ooK128Ift4XQVtc137N9yeg4Kqsn9PI0Kpzbysl9M1IeCEdjg0zl00wkVqcsnG4bmnlMb3A=="
     @test KrakenFutures._wssignedchallenge(api_secret, challenge) == expected_signed
+end
+
+@testset "KrakenFutures testing environment selection" begin
+    oldmode = EnvConfig.configmode
+    try
+        EnvConfig.init(EnvConfig.test)
+        has_testing_auth = false
+        auth = nothing
+        try
+            auth = EnvConfig.Authentication(nothing; exchange="KrakenFutures", purpose="testing")
+            has_testing_auth = true
+        catch
+            has_testing_auth = false
+        end
+
+        if !has_testing_auth
+            @test_skip "No KrakenFutures testing auth entry available in auth.json"
+        else
+            @test auth.purpose == "testing"
+
+            bc = KrakenFutures.KrakenFuturesCache(autoloadexchangeinfo=false, publickey="", secretkey="")
+            if isnothing(auth.derivatives) || String(auth.derivatives) == ""
+                @test bc.apirest == KrakenFutures.KRAKEN_FUTURES_APIREST
+            else
+                @test occursin("demo-futures.kraken.com", String(auth.derivatives))
+                @test bc.apirest == String(auth.derivatives)
+            end
+        end
+    finally
+        EnvConfig.init(oldmode)
+    end
 end

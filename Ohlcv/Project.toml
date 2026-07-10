@@ -1,6 +1,6 @@
 name = "Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
-version = "1.7.2"
+version = "1.7.3"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]

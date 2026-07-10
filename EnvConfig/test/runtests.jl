@@ -55,7 +55,11 @@ function testauthexchangehelpers()
 
     entry_spot = Dict("name" => "spot-main", "exchange" => "KrakenSpot", "key" => "k", "secret" => "s")
     entry_none = Dict("name" => "legacy", "key" => "k", "secret" => "s")
+    entry_type_spot = Dict("name" => "spot-by-type", "type" => "spot", "key" => "k", "secret" => "s")
+    entry_type_futures = Dict("name" => "fut-by-type", "type" => "futures", "key" => "k", "secret" => "s")
     @test EnvConfig._entryexchange(entry_spot) == "KrakenSpot"
+    @test EnvConfig._entryexchange(entry_type_spot) == "KrakenSpot"
+    @test EnvConfig._entryexchange(entry_type_futures) == "KrakenFutures"
     @test isnothing(EnvConfig._entryexchange(entry_none))
 end
 

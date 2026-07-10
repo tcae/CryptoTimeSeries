@@ -3,32 +3,38 @@ using DataFrames
 using Dates
 using TradingStrategy
 using Targets
+using Xch
+
+function init_trade_columns!(tdf::DataFrame)
+    if :lo_amount ∉ propertynames(tdf)
+        tdf[!, :lo_amount] = fill(0f0, nrow(tdf))
+    end
+    if :lc_amount ∉ propertynames(tdf)
+        tdf[!, :lc_amount] = fill(0f0, nrow(tdf))
+    end
+    if :so_amount ∉ propertynames(tdf)
+        tdf[!, :so_amount] = fill(0f0, nrow(tdf))
+    end
+    if :sc_amount ∉ propertynames(tdf)
+        tdf[!, :sc_amount] = fill(0f0, nrow(tdf))
+    end
+    if :longleverage ∉ propertynames(tdf)
+        tdf[!, :longleverage] = fill(UInt8(1), nrow(tdf))
+    end
+    if :shortleverage ∉ propertynames(tdf)
+        tdf[!, :shortleverage] = fill(UInt8(1), nrow(tdf))
+    end
+    return tdf
+end
 
 function init_strategy_columns!(tdf::DataFrame)
-    if :lo_limit ∉ propertynames(tdf)
-        tdf[!, :lo_limit] = fill(0f0, nrow(tdf))
+    for contributor in Xch.tradesdf_contributors()
+        contributor(tdf)
     end
-    if :lc_limit ∉ propertynames(tdf)
-        tdf[!, :lc_limit] = fill(0f0, nrow(tdf))
+    for contributor in TradingStrategy.tradesdf_contributors()
+        contributor(tdf)
     end
-    if :so_limit ∉ propertynames(tdf)
-        tdf[!, :so_limit] = fill(0f0, nrow(tdf))
-    end
-    if :sc_limit ∉ propertynames(tdf)
-        tdf[!, :sc_limit] = fill(0f0, nrow(tdf))
-    end
-    if :label ∉ propertynames(tdf)
-        tdf[!, :label] = fill(Targets.ignore, nrow(tdf))
-    end
-    if :score ∉ propertynames(tdf)
-        tdf[!, :score] = zeros(Float32, nrow(tdf))
-    end
-    if :lo_pavg ∉ propertynames(tdf)
-        tdf[!, :lo_pavg] = zeros(Float32, nrow(tdf))
-    end
-    if :so_pavg ∉ propertynames(tdf)
-        tdf[!, :so_pavg] = zeros(Float32, nrow(tdf))
-    end
+    init_trade_columns!(tdf)
     return tdf
 end
 

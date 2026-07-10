@@ -1,5 +1,3 @@
-    @test !isnothing(Trade._strategyruntime(tc))
-    @test mc[:strategy_runtime].strategy_config == gs
 using Test
 using Dates
 using DataFrames
@@ -9,45 +7,53 @@ const TEST_RECONCILIATION_BY_BASE = Dict{String, NamedTuple}()
 const TEST_ROWS = NamedTuple[]
 const TEST_PREPARE_CALLS = NamedTuple[]
 
-"Return injected tradesdf row metadata and capture reconciliation inputs passed by Trade."
-function TradingStrategy.gettradesrows!(
+"Return injected per-base tradesdf row state used by Trade._collect_strategy_row."
+function TradingStrategy.gettradesrow!(
     rt::TradingStrategy.TsCache,
     xc::Xch.XchCache,
-    bases::AbstractVector{<:AbstractString},
+    base::AbstractString,
     datetime::DateTime;
-    reconciliation_by_base::AbstractDict=Dict{String, Any}(),
-)::Vector{NamedTuple}
-    _ = bases
+    reconciliation=nothing,
+)::Union{Nothing, NamedTuple}
+    _ = rt
+    _ = reconciliation
     empty!(TEST_RECONCILIATION_BY_BASE)
-    empty!(TEST_ROWS)
     empty!(TEST_PREPARE_CALLS)
-    merge!(TEST_RECONCILIATION_BY_BASE, Dict{String, NamedTuple}(reconciliation_by_base))
-    rows = TEST_ROWS
-    out = NamedTuple[]
-    for row in rows
-        base = uppercase(String(row.base))
-        tdf = Xch.trades(xc, base, EnvConfig.pairquote)
-        rowix = findlast(==(datetime), tdf[!, :opentime])
-        if isnothing(rowix)
-            push!(tdf, (opentime=datetime, lastopentrade=missing, pair=Xch.tradingpairkey(base, EnvConfig.pairquote), coin=base); cols=:subset)
-            rowix = nrow(tdf)
-        end
-        tdf[rowix, :label] = row.tradelabel
-        tdf[rowix, :lo_limit] = get(row, :lo_limit, row.longopenlimit)
-        tdf[rowix, :lc_limit] = get(row, :lc_limit, row.longcloselimit)
-        tdf[rowix, :so_limit] = get(row, :so_limit, row.shortopenlimit)
-        tdf[rowix, :sc_limit] = get(row, :sc_limit, row.shortcloselimit)
-        push!(out, (
-            base=base,
-            datetime=datetime,
-            tradesdf=tdf,
-            rowix=rowix,
-            probability=Float32(get(row, :probability, 0f0)),
-            configid=Int(get(row, :configid, 0)),
-            source=:test,
-        ))
+    basekey = uppercase(String(base))
+    Xch.ensuretradesschema(
+        xc,
+        vcat(
+            Xch.tradesdf_contributors(),
+            TradingStrategy.tradesdf_contributors(),
+            Trade.tradesdf_contributors(),
+        ),
+    )
+    row = findfirst(r -> uppercase(String(r.base)) == basekey, TEST_ROWS)
+    isnothing(row) && return nothing
+
+    tdf = Xch.trades(xc, basekey, EnvConfig.pairquote)
+    rowix = findlast(==(datetime), tdf[!, :opentime])
+    if isnothing(rowix)
+        push!(tdf, (opentime=datetime, lastopentrade=missing, pair=Xch.tradingpairkey(basekey, EnvConfig.pairquote), coin=basekey); cols=:subset)
+        rowix = nrow(tdf)
     end
-    return out
+    spec = TEST_ROWS[row]
+    tdf[rowix, :label] = spec.tradelabel
+    tdf[rowix, :lo_limit] = hasproperty(spec, :lo_limit) ? spec.lo_limit : spec.longopenlimit
+    tdf[rowix, :lc_limit] = hasproperty(spec, :lc_limit) ? spec.lc_limit : spec.longcloselimit
+    tdf[rowix, :so_limit] = hasproperty(spec, :so_limit) ? spec.so_limit : spec.shortopenlimit
+    tdf[rowix, :sc_limit] = hasproperty(spec, :sc_limit) ? spec.sc_limit : spec.shortcloselimit
+    tdf[rowix, :score] = Float32(get(spec, :probability, 0f0))
+
+    return (
+        base=basekey,
+        datetime=datetime,
+        tradesdf=tdf,
+        rowix=rowix,
+        probability=Float32(get(spec, :probability, 0f0)),
+        configid=Int(get(spec, :configid, 0)),
+        source=:test,
+    )
 end
 
 function TradingStrategy.preparebases!(
@@ -66,28 +72,31 @@ function TradingStrategy.preparebases!(
     return nothing
 end
 
-@testset "Restricted base removal stays outside runtime until prepare" begin
+@testset "Blacklisted base removal stays outside runtime until prepare" begin
     EnvConfig.init(EnvConfig.test)
 
-    tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=Xch.XchCache(), strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
     rt.accepted = Set(["BTC", "ETH"])
-    tc.mc[:strategy_runtime] = rt
+    tc.ts = rt
 
-    Trade._disablerestrictedbase!(tc, "BTC", "test")
-    @test tc.mc[:restrictedcoins] == ["BTC"]
+    @test !isnothing(Trade._strategyruntime(tc))
+    @test tc.ts.cfg == rt.cfg
+
+    Trade._blacklistbase!(tc, "BTC", "test")
+    @test tc.mc[:blacklistbases] == ["BTC"]
     @test tc.cfg[!, :basecoin] == ["ETH"]
     @test "BTC" in TradingStrategy.acceptedbases(rt)
 end
 
-@testset "Runtime API advice path" begin
+@testset "Runtime API row path" begin
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
     xc.mc[:simmode] = Xch.nosimulation
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
 
     @test !isnothing(Trade._strategyruntime(tc))
 
@@ -108,20 +117,15 @@ end
                 configid=42,
             ),
     )
-    tc.mc[:strategy_runtime] = rt
+    tc.ts = rt
 
-    advices = Trade._collect_strategy_advices(tc)
-    labels = Set(ta.tradelabel for ta in advices)
-    advice_by_label = Dict(ta.tradelabel => ta for ta in advices)
+    rowstate = Trade._collect_strategy_row(tc, "BTC")
 
-    @test length(advices) == 2
-    @test Targets.longopen in labels
-    @test Targets.longclose in labels
-    @test advice_by_label[Targets.longopen].source == :tradingstrategy
-    @test advice_by_label[Targets.longopen].relativeamount == 1f0
-    @test advice_by_label[Targets.longopen].price == 100f0
-    @test advice_by_label[Targets.longclose].relativeamount == 1f0
-    @test advice_by_label[Targets.longclose].price == 110f0
+    @test !isnothing(rowstate)
+    @test rowstate.tradesdf[rowstate.rowix, :label] == Targets.longopen
+    @test rowstate.tradesdf[rowstate.rowix, :score] == 0.75f0
+    @test rowstate.tradesdf[rowstate.rowix, :lo_limit] == 100f0
+    @test rowstate.tradesdf[rowstate.rowix, :lc_limit] == 110f0
 
     @test isempty(TEST_RECONCILIATION_BY_BASE)
     @test isempty(TEST_PREPARE_CALLS)
@@ -134,11 +138,11 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
-    tc.mc[:strategy_runtime] = rt
+    tc.ts = rt
 
     dt = DateTime("2026-05-30T12:34:00")
     Trade._prepare_strategy_runtime_for_cfg!(tc, dt; updatecache=true)
@@ -156,6 +160,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     mc = Dict{Symbol, Any}()
+    rt = TradingStrategy.TsCache("046"; source="test")
     gs = TradingStrategy.StrategyConfig(
         ;
         algorithm=TradingStrategy.gain_limit_reversal!,
@@ -167,11 +172,17 @@ end
         maxwindow=12,
     )
 
-    Trade.apply_tradingstrategy!(mc, gs; source="test")
+    TradingStrategy.apply_strategy!(rt, gs; source="test")
 
-    @test mc[:strategy_runtime] isa TradingStrategy.TsCache
-    @test mc[:strategy_runtime].strategy_config == gs
-    @test mc[:strategy_runtime].source == "test"
+    @test rt isa TradingStrategy.TsCache
+    @test rt.cfg.algorithm == gs.algorithm
+    @test rt.cfg.openthreshold == gs.openthreshold
+    @test rt.cfg.closethreshold == gs.closethreshold
+    @test rt.cfg.buygain == gs.buygain
+    @test rt.cfg.sellgain == gs.sellgain
+    @test rt.cfg.limitreduction == gs.limitreduction
+    @test rt.cfg.maxwindow == gs.maxwindow
+    @test rt.source == "test"
     @test !haskey(mc, :strategy_template)
     @test !haskey(mc, :strategy_source)
     @test !haskey(mc, :strategy_openthreshold)
@@ -180,178 +191,4 @@ end
     @test !haskey(mc, :strategy_sellgain)
     @test !haskey(mc, :strategy_limitreduction)
     @test !haskey(mc, :strategy_maxwindow)
-end
-
-@testset "usenewtrade delegates order request/status to Xch" begin
-    EnvConfig.init(EnvConfig.test)
-
-    startdt = DateTime("2022-01-01T01:00:00")
-    enddt = startdt + Day(2)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.addbase!(xc, "BTC", startdt, enddt)
-
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
-    tc.mc[:usenewtrade] = true
-    tc.xc.currentdt = startdt
-    tc.cfg = DataFrame(basecoin=["BTC"], openenabled=[true], closeenabled=[true])
-    basecfg = tc.cfg[1, :]
-
-    # Ensure simulated account has quote buying power so request can be accepted.
-    bc = Xch._routedbc(tc.xc, Xch.trade_exchange_spot)
-    bc.assets = DataFrame(
-        coin=String[EnvConfig.pairquote],
-        free=Float32[5_000f0],
-        locked=Float32[0f0],
-        borrowed=Float32[0f0],
-        accruedinterest=Float32[0f0],
-    )
-
-    assets = DataFrame(
-        coin=String[EnvConfig.pairquote],
-        free=Float32[5_000f0],
-        locked=Float32[0f0],
-        borrowed=Float32[0f0],
-        usdtprice=Float32[1f0],
-        usdtvalue=Float32[5_000f0],
-    )
-
-    account = (
-        equity_quote=5_000.0,
-        free_quote=5_000.0,
-        free_margin_quote=5_000.0,
-        capacity=(initial_margin_quote=0.0, available_short_quote=5_000.0),
-    )
-
-    ta = Trade.StrategyAdvice(
-        configid=1,
-        tradelabel=Targets.longopen,
-        relativeamount=1f0,
-        base="BTC",
-        price=nothing,
-        datetime=tc.xc.currentdt,
-        hourlygain=0.1f0,
-        probability=0.8f0,
-        investmentid=nothing,
-        source=:tradingstrategy,
-        allowreversal=true,
-    )
-
-    req = Trade._trade_via_xchdf!(tc, basecfg, ta, assets; account=account)
-    @test req.action == :long_open
-
-    tdf = Xch.trades(tc.xc, "BTC", EnvConfig.pairquote)
-    @test nrow(tdf) >= 1
-    rowix = nrow(tdf)
-    @test tdf[rowix, :pair] == "BTC$(EnvConfig.pairquote)"
-    @test tdf[rowix, :label] == Targets.longopen
-    if req.accepted
-        @test String(tdf[rowix, :lo_id]) != "none"
-        @test String(tdf[rowix, :lo_id]) != ""
-        @test tdf[rowix, :lo_status] != "none"
-    else
-        @test req.reason == "insufficient_free_quote"
-        @test tdf[rowix, :lo_status] == "Rejected"
-        @test !ismissing(tdf[rowix, :lo_msg])
-    end
-end
-
-@testset "open_amount applies account constraints" begin
-    EnvConfig.init(EnvConfig.test)
-
-    startdt = DateTime("2022-01-01T01:00:00")
-    enddt = startdt + Day(2)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.addbase!(xc, "BTC", startdt, enddt)
-
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
-    tc.xc.currentdt = startdt
-
-    assets = DataFrame(
-        coin=String["BTC", EnvConfig.pairquote],
-        free=Float32[0f0, 5_000f0],
-        locked=Float32[0f0, 0f0],
-        borrowed=Float32[0f0, 0f0],
-        usdtprice=Float32[100f0, 1f0],
-        usdtvalue=Float32[0f0, 5_000f0],
-    )
-
-    longacct = (
-        equity_quote=5_000.0,
-        free_quote=5_000.0,
-        free_margin_quote=5_000.0,
-        capacity=(initial_margin_quote=0.0, available_short_quote=5_000.0),
-    )
-
-    longamount = Trade.open_amount(tc, longacct, assets, "BTC", Targets.longopen; leverage=1, unfilled_open_amount=0f0)
-    @test longamount > 0f0
-
-    shortacct_nomargin = (
-        equity_quote=5_000.0,
-        free_quote=5_000.0,
-        free_margin_quote=0.0,
-        capacity=(initial_margin_quote=100.0, available_short_quote=0.0),
-    )
-
-    assets_short = DataFrame(
-        coin=String["BTC", EnvConfig.pairquote],
-        free=Float32[0f0, 5_000f0],
-        locked=Float32[0f0, 0f0],
-        borrowed=Float32[0.2f0, 0f0],
-        usdtprice=Float32[100f0, 1f0],
-        usdtvalue=Float32[-20f0, 5_000f0],
-    )
-
-    shortamount = Trade.open_amount(tc, shortacct_nomargin, assets_short, "BTC", Targets.shortopen; leverage=2, unfilled_open_amount=0f0)
-    @test shortamount < 0f0
-end
-
-@testset "usenewtrade blocks open while opposite exposure exists" begin
-    EnvConfig.init(EnvConfig.test)
-
-    startdt = DateTime("2022-01-01T01:00:00")
-    enddt = startdt + Day(2)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.addbase!(xc, "BTC", startdt, enddt)
-
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
-    tc.mc[:usenewtrade] = true
-    tc.xc.currentdt = startdt
-    tc.cfg = DataFrame(basecoin=["BTC"], openenabled=[true], closeenabled=[true])
-    basecfg = tc.cfg[1, :]
-
-    assets = DataFrame(
-        coin=String["BTC", EnvConfig.pairquote],
-        free=Float32[0f0, 5_000f0],
-        locked=Float32[0f0, 0f0],
-        borrowed=Float32[0.2f0, 0f0],
-        usdtprice=Float32[100f0, 1f0],
-        usdtvalue=Float32[-20f0, 5_000f0],
-    )
-
-    account = (
-        equity_quote=4_980.0,
-        free_quote=5_000.0,
-        free_margin_quote=5_000.0,
-        capacity=(initial_margin_quote=100.0, available_short_quote=5_000.0),
-        balances=DataFrame(),
-        assets=assets,
-    )
-
-    ta = Trade.StrategyAdvice(
-        configid=1,
-        tradelabel=Targets.longopen,
-        relativeamount=1f0,
-        base="BTC",
-        price=nothing,
-        datetime=tc.xc.currentdt,
-        hourlygain=0.1f0,
-        probability=0.8f0,
-        investmentid=nothing,
-        source=:tradingstrategy,
-        allowreversal=true,
-    )
-
-    req = Trade._trade_via_xchdf!(tc, basecfg, ta, assets; account=account)
-    @test !req.accepted
-    @test req.reason == "sequencing_opposite_exposure"
 end

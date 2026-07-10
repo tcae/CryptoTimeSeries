@@ -10,12 +10,13 @@ if run_production_tests
 else
 	@info "Skipping production integration tests. Set CTS_RUN_PRODUCTION_TESTS=true to enable test/productionruntests.jl"
 end
-include("routingtests.jl")
+# Routing tests removed - routing layer has been removed from Xch
 include("openstatus_test.jl")
 include("order_request_status_test.jl")
+include("sync_latest_trades_rows_test.jl")
 include("trades_schema_contract_test.jl")
 include("messagecatalogtests.jl")
-include("log_integration_test.jl")
-include("multileg_order_test.jl")
+# log_integration_test removed - uses TradeLog functions which have been removed
+# multileg_order_test removed - depends on TradeLog module which has been removed
 include("usdtmarket_intent_test.jl")
 

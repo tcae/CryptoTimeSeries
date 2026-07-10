@@ -59,6 +59,29 @@ EnvConfig.init(production)  # test production
     @test sim_capacity.equity_quote > sim_capacity.available_opening_quote
     @test sim_capacity.source == "Bybit:sim_wallet"
 
+    flip = Bybit.closebeforeopenflip!(
+        bc_sim,
+        "SINEUSDT",
+        :long,
+        0.5f0,
+        nothing,
+        false,
+        false;
+        open_basequantity=0.25f0,
+        close_reduceonly=true,
+        open_reduceonly=false,
+    )
+    @test !isnothing(flip.closeorderid)
+    @test !isnothing(flip.openorderid)
+    @test flip.closeorderid.side == "Sell"
+    @test flip.openorderid.side == "Sell"
+
+    spec_long = Bybit._executionorderspec(:long, "Buy", 0)
+    @test spec_long.max_quote > 0
+    @test_throws ArgumentError Bybit._enforce_maxquote_policy(spec_long, "SINEUSDT", 10.0, 100.0, false)
+    @test_throws ArgumentError Bybit._enforce_maxquote_policy(spec_long, "SINEUSDT", 10.0, 100.0, true)
+    @test Bybit._enforce_maxquote_policy(spec_long, "SINEUSDT", 1.0, 100.0, false) === nothing
+
 
     # oocreate = Bybit.createorder(bc, "BTCUSDT", "Buy", 0.00001, btcprice * 0.9, false)
     # oid = isnothing(oocreate) ? nothing : oocreate.orderid

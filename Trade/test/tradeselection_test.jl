@@ -30,13 +30,13 @@ tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), []; datetime=startdt, update
 
 # dummy = DateTime("2000-01-01T00:00:00")
 # df = DataFrame()
-# for ohlcv in Xch.ohlcv(xc)
+# for ohlcv in Xch.getohlcv(xc)
 #     size(ohlcv.df, 1) > 0 ? push!(df, (base=ohlcv.base, len=length(ohlcv.df[!, :opentime]), startdt=ohlcv.df[begin, :opentime], enddt=ohlcv.df[end, :opentime])) : push!(df, (base=ohlcv.base, len=0, startdt=dummy, enddt=dummy))
 # end
 # println("ohlcv data before timecut: $df")
 # TradingStrategy.timerangecut!(tc, startdt, startdt)
 # df = DataFrame()
-# for ohlcv in Xch.ohlcv(xc)
+# for ohlcv in Xch.getohlcv(xc)
 #     size(ohlcv.df, 1) > 0 ? push!(df, (base=ohlcv.base, len=length(ohlcv.df[!, :opentime]), startdt=ohlcv.df[begin, :opentime], enddt=ohlcv.df[end, :opentime])) : push!(df, (base=ohlcv.base, len=0, startdt=dummy, enddt=dummy))
 # end
 # println("ohlcv data after timecut: $df")

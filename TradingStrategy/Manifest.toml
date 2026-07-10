@@ -1799,12 +1799,6 @@ version = "1.22.2"
     [deps.TimeZones.weakdeps]
     RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
 
-[[deps.TradeLog]]
-deps = ["Arrow", "Dates", "EnvConfig", "JSON3", "SHA", "Test", "UUIDs"]
-path = "../TradeLog"
-uuid = "d9e1c896-7df1-4f4f-a5d3-1c9a7c74c4aa"
-version = "0.1.0"
-
 [[deps.TradingStrategy]]
 deps = ["CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "."
@@ -1898,7 +1892,7 @@ uuid = "ffd25f8a-64ca-5728-b0f7-c24cf3aae800"
 version = "5.8.3+0"
 
 [[deps.Xch]]
-deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "TradeLog", "UUIDs"]
+deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs"]
 path = "../Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 version = "1.6.1"

@@ -167,9 +167,18 @@ struct Authentication
     key::String
     secret::String
     exchange::Union{Nothing, String}
+    purpose::Union{Nothing, String}
+    websocket::Union{Nothing, String}
+    resturl::Union{Nothing, String}
+    derivatives::Union{Nothing, String}
+    charts::Union{Nothing, String}
 
-    function Authentication(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing)
-        filename = configmode != test ? normpath(joinpath(authpath, "auth.json")) : normpath(joinpath(authpath, "authtest.json"))
+    function Authentication(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing, purpose::Union{Nothing, AbstractString}=nothing)
+        # Prefer unified auth.json in all modes; keep authtest.json only as legacy fallback.
+        filename = normpath(joinpath(authpath, "auth.json"))
+        if !isfile(filename) && (configmode == test)
+            filename = normpath(joinpath(authpath, "authtest.json"))
+        end
         authroot = open(filename, "r") do f
             JSON3.read(read(f, String), Dict)
         end
@@ -177,6 +186,9 @@ struct Authentication
         @assert length(entries) > 0 "no valid auth entries found in $filename"
 
         requested_exchange = isnothing(exchange) ? default_exchange : _normalizeauthexchange(String(exchange))
+        explicit_requested_purpose = !isnothing(purpose)
+        use_purpose_filter = explicit_requested_purpose || any(haskey(entry, "purpose") for entry in entries)
+        requested_purpose = isnothing(purpose) ? (use_purpose_filter ? _defaultauthpurpose() : nothing) : _normalizeauthpurpose(String(purpose))
 
         selected = nothing
         if !isnothing(name)
@@ -188,18 +200,28 @@ struct Authentication
             end
             selected = entries[selectedix]
         else
-            if isnothing(requested_exchange)
-                selected = entries[1]
-            else
-                candidates = filter(entry -> _entryexchange(entry) == requested_exchange, entries)
+            candidates = copy(entries)
+            if !isnothing(requested_exchange)
+                candidates = filter(entry -> _entryexchange(entry) == requested_exchange, candidates)
                 if isempty(candidates)
                     error("no authentication tuple found for exchange=$(requested_exchange) in $filename. Ensure each auth tuple has exchange set.")
-                elseif length(candidates) > 1
-                    avail = [String(entry["name"]) for entry in candidates]
-                    error("multiple authentication tuples match exchange=$(requested_exchange) in $filename. Exactly one tuple per exchange is required. available=$avail")
                 end
-                selected = candidates[1]
             end
+            if !isnothing(requested_purpose)
+                purposecandidates = filter(entry -> _entrypurpose(entry) == requested_purpose, candidates)
+                if isempty(purposecandidates)
+                    if explicit_requested_purpose
+                        error("no authentication tuple found for purpose=$(requested_purpose)" * (isnothing(requested_exchange) ? "" : " and exchange=$(requested_exchange)") * " in $filename")
+                    end
+                else
+                    candidates = purposecandidates
+                end
+            end
+            if length(candidates) > 1
+                avail = [String(entry["name"]) for entry in candidates]
+                error("multiple authentication tuples match requested filters" * (isnothing(requested_exchange) ? "" : " exchange=$(requested_exchange)") * (isnothing(requested_purpose) ? "" : " purpose=$(requested_purpose)") * " in $filename. available=$avail")
+            end
+            selected = candidates[1]
         end
 
         selectedname = String(selected["name"])
@@ -212,8 +234,21 @@ struct Authentication
                 error("selected auth entry $(selectedname) has exchange=$(selectedexchange), but exchange=$(requested_exchange) was requested")
             end
         end
+        selectedpurpose = _entrypurpose(selected)
+        if explicit_requested_purpose
+            if isnothing(selectedpurpose)
+                error("selected auth entry $(selectedname) is missing required \"purpose\" field in $filename")
+            elseif selectedpurpose != requested_purpose
+                error("selected auth entry $(selectedname) has purpose=$(selectedpurpose), but purpose=$(requested_purpose) was requested")
+            end
+        end
 
-        new(String(selected["name"]), String(selected["key"]), String(selected["secret"]), selectedexchange)
+        selectedwebsocket = haskey(selected, "websocket") ? String(selected["websocket"]) : nothing
+        selectedresturl = haskey(selected, "resturl") ? String(selected["resturl"]) : nothing
+        selectedderivatives = haskey(selected, "derivatives") ? String(selected["derivatives"]) : nothing
+        selectedcharts = haskey(selected, "charts") ? String(selected["charts"]) : nothing
+
+        new(String(selected["name"]), String(selected["key"]), String(selected["secret"]), selectedexchange, selectedpurpose, selectedwebsocket, selectedresturl, selectedderivatives, selectedcharts)
     end
 end
 
@@ -222,13 +257,28 @@ Set global authorization credentials by tuple name from the auth file.
 If `name` is `nothing`, the tuple for the default exchange is selected.
 If `exchange` is provided, selection is restricted to matching auth tuples.
 """
-function setauthorization!(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing)
+function setauthorization!(name::Union{Nothing, AbstractString}=nothing; exchange::Union{Nothing, AbstractString}=nothing, purpose::Union{Nothing, AbstractString}=nothing)
     global authorization
-    authorization = Authentication(name; exchange=exchange)
+    authorization = Authentication(name; exchange=exchange, purpose=purpose)
     return authorization
 end
 
 const _supported_auth_exchanges = Set(["KrakenSpot", "KrakenFutures"])
+const _supported_auth_purposes = Set(["trading", "testing"])
+
+function _defaultauthpurpose()::Union{Nothing, String}
+    return configmode == test ? "testing" : "trading"
+end
+
+function _normalizeauthpurpose(purpose::AbstractString)::String
+    p = lowercase(strip(String(purpose)))
+    for supported in _supported_auth_purposes
+        if p == supported
+            return supported
+        end
+    end
+    error("unsupported auth purpose=$(purpose), supported=[trading, testing]")
+end
 
 function _normalizeauthexchange(exchange::AbstractString)::String
     ex = strip(String(exchange))
@@ -241,8 +291,23 @@ function _normalizeauthexchange(exchange::AbstractString)::String
 end
 
 function _entryexchange(entry::Dict)::Union{Nothing, String}
-    haskey(entry, "exchange") || return nothing
-    return _normalizeauthexchange(String(entry["exchange"]))
+    if haskey(entry, "exchange")
+        return _normalizeauthexchange(String(entry["exchange"]))
+    end
+    if haskey(entry, "type")
+        t = lowercase(strip(String(entry["type"])))
+        if t == "spot"
+            return "KrakenSpot"
+        elseif t == "futures"
+            return "KrakenFutures"
+        end
+    end
+    return nothing
+end
+
+function _entrypurpose(entry::Dict)::Union{Nothing, String}
+    haskey(entry, "purpose") || return nothing
+    return _normalizeauthpurpose(String(entry["purpose"]))
 end
 
 """

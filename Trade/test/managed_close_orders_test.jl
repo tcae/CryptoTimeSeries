@@ -27,7 +27,7 @@ end
             Trade.tradesdf_contributors(),
         ),
     )
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
     tc.cfg = DataFrame(
         basecoin=["BTC"],
         openenabled=[true],
@@ -35,47 +35,40 @@ end
         classifieraccepted=[true],
         minquotevol=[true],
         continuousminvol=[true],
-        whitelisted=[true],
+        blacklisted=[false],
         datetime=[DateTime("2025-01-01T00:00:00")],
     )
 
-    assets = DataFrame(
-        coin=["BTC", EnvConfig.pairquote],
-        free=Float32[1.0f0, 1000.0f0],
-        locked=Float32[0.0f0, 0.0f0],
-        borrowed=Float32[0.0f0, 0.0f0],
-        usdtprice=Float32[100.0f0, 1.0f0],
-        usdtvalue=Float32[100.0f0, 1000.0f0],
+    rowsbybase = Dict{String, Any}(
+        "BTC" => (
+            tradesdf=DataFrame(
+                lc_id=["oid-close"],
+                lc_status=["New"],
+                lc_amount=Float32[1.0f0],
+                lc_limit=Float32[110.0f0],
+                sc_id=[Xch.NO_ORDER_ID],
+                sc_status=["Cancelled"],
+                sc_amount=Float32[0.0f0],
+                sc_limit=Float32[0.0f0],
+            ),
+            rowix=1,
+        ),
     )
 
-    symbol = Xch.symboltoken(tc.xc, "BTC", EnvConfig.pairquote; role=Xch.trade_exchange_spot)
-    oo = DataFrame(
-        orderid=["oid-close", "oid-entry"],
-        symbol=[symbol, symbol],
-        side=["Sell", "Buy"],
-        baseqty=Float32[1.0f0, 0.5f0],
-        ordertype=["Limit", "Limit"],
-        timeinforce=["PostOnly", "PostOnly"],
-        limitprice=Float32[110.0f0, 90.0f0],
-        executedqty=Float32[0.0f0, 0.0f0],
-        status=["New", "New"],
-        created=[DateTime("2025-01-01T00:00:00"), DateTime("2025-01-01T00:00:00")],
-        updated=[DateTime("2025-01-01T00:00:00"), DateTime("2025-01-01T00:00:00")],
-        rejectreason=["", ""],
-    )
-
-    Trade._reconstruct_managed_close_orders!(tc, assets, oo)
+    Trade._reconstruct_managed_close_orders!(tc, rowsbybase)
     managed = tc.mc[:managed_close_orders]
     longkey = Trade._managedclosekey("BTC", Targets.longclose)
     @test haskey(managed, longkey)
     @test managed[longkey][:orderid] == "oid-close"
     @test managed[longkey][:label] == Targets.longclose
+    @test !haskey(managed, Trade._managedclosekey("BTC", Targets.shortclose))
 
     gs = TradingStrategy.StrategyConfig(; algorithm=TradingStrategy.gain_limit_reversal!)
 
     Trade._managedcloseset!(tc, "BTC", "oid-x", Targets.longclose; limitprice=111.0f0, baseqty=0.5f0)
     @test haskey(tc.mc[:managed_close_orders], longkey)
-    Trade.apply_tradingstrategy!(tc, gs; source="test")
+    TradingStrategy.apply_strategy!(tc.ts, gs; source="test")
+    empty!(tc.mc[:managed_close_orders])
     @test isempty(tc.mc[:managed_close_orders])
 end
 
@@ -83,7 +76,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.buysell)
 
     assets = DataFrame(
         coin=["BTC", EnvConfig.pairquote],
@@ -95,15 +88,39 @@ end
     )
 
     Trade._managedcloseset!(tc, "BTC", "oid-pending-shortclose", Targets.shortclose; limitprice=100.0f0, baseqty=1.0f0)
-    missing = Trade._positions_without_close_orders(tc, assets, DataFrame())
+    missing = Trade._positions_without_close_orders(tc, assets, Dict{String, Any}())
     @test isempty(missing)
+
+    rowsbybase = Dict{String, Any}(
+        "BTC" => (
+            tradesdf=DataFrame(
+                lo_status=["New"],
+                lo_amount=Float32[1.0f0],
+                lo_filled=Float32[1.0f0],
+                lc_status=["Cancelled"],
+                lc_amount=Float32[0.0f0],
+                lc_filled=Float32[0.0f0],
+                so_status=["Cancelled"],
+                so_amount=Float32[0.0f0],
+                so_filled=Float32[0.0f0],
+                sc_status=["Cancelled"],
+                sc_amount=Float32[0.0f0],
+                sc_filled=Float32[0.0f0],
+            ),
+            rowix=1,
+        ),
+    )
+    empty!(tc.mc[:managed_close_orders])
+    missing = Trade._positions_without_close_orders(tc, assets, rowsbybase)
+    @test length(missing) == 1
+    @test missing[1].side == "Buy"
 end
 
 @testset "Missing close-order check ignores dust quantities" begin
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, cl=Classify.Classifier011(), trademode=Trade.buysell)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.buysell)
 
     assets = DataFrame(
         coin=["BTC", EnvConfig.pairquote],
@@ -114,12 +131,12 @@ end
         usdtvalue=Float32[0.0f0, 2000.0f0],
     )
 
-    missing = Trade._positions_without_close_orders(tc, assets, DataFrame())
+    missing = Trade._positions_without_close_orders(tc, assets, Dict{String, Any}())
     @test isempty(missing)
 end
 
 @testset "Order amend threshold default and material change boundary" begin
-    tc = Trade.TradeCache(xc=Xch.XchCache(), cl=Classify.Classifier011(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=Xch.XchCache(), strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
     amend_price_reltol = 1f-3
 
     oldp = 100f0

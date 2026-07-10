@@ -7,18 +7,23 @@ using EnvConfig, Trade, Xch
 
     cache = Trade.TradeCache(xc=Xch.XchCache())
     oo = DataFrame(
-        orderid=["oid-btc-buy", "oid-eth-sell", "oid-btc-leverage-buy"],
-        symbol=["BTCUSDT", "ETHUSDT", "BTCUSDT"],
-        side=["Buy", "Sell", "Buy"],
-        status=["New", "New", "New"],
-        isLeverage=[false, false, true],
+        orderid=["oid-btc-buy", "oid-eth-sell", "oid-btc-shortclose", "oid-ada-shortopen"],
+        symbol=["BTCUSDT", "ETHUSDT", "BTCUSDT", "ADAUSDT"],
+        side=["Buy", "Sell", "Buy", "Sell"],
+        status=["New", "New", "New", "New"],
+        isLeverage=[false, false, true, true],
+        reduceonly=[false, false, true, false],
     )
 
     Trade._refreshactiveopenlongsymbols!(cache, oo)
+    Trade._refreshactiveopenshortsymbols!(cache, oo)
 
     @test Trade._hasactiveopenlong(cache, "BTCUSDT")
     @test !Trade._hasactiveopenlong(cache, "ETHUSDT")
+    @test !Trade._hasactiveopenlong(cache, "ADAUSDT")
+    @test Trade._hasactiveopenshort(cache, "ADAUSDT")
     @test Trade._hasactiveopenshort(cache, "ETHUSDT") == false
+    @test Trade._hasactiveopenshort(cache, "BTCUSDT") == false
 
     Trade._rememberactiveopenlong!(cache, "ethusdt")
     @test Trade._hasactiveopenlong(cache, "ETHUSDT")

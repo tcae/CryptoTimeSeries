@@ -7,7 +7,7 @@ module Xch
 
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
-using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, TradeLog, Targets
+using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
 import Ohlcv: intervalperiod
 
 const authorization = Ref{Any}(nothing)
@@ -30,41 +30,6 @@ verbosity = 1
 
 @enum Sidefactor buy=1 sell=-1 invaid = 0
 @enum SimMode nosimulation bybitsim
-
-"""
-Exchange operation roles used for routing.
-- `data_exchange`: source of OHLCV/market data (e.g. Bybit)
-- `trade_exchange_spot`: target for spot order placement (e.g. KrakenSpot)
-- `trade_exchange_futures`: target for futures order placement (e.g. KrakenFutures)
-"""
-@enum ExchangeRole data_exchange trade_exchange_spot trade_exchange_futures
-
-"""
-Holds the exchange name for one exchange role.
-"""
-struct ExchangeRouteEntry
-    exchange::String
-end
-
-"""
-Maps each `ExchangeRole` to an `ExchangeRouteEntry`.
-Roles that are not explicitly configured fall back to the `XchCache.exchange`.
-"""
-struct ExchangeRouting
-    routes::Dict{ExchangeRole, ExchangeRouteEntry}
-    ExchangeRouting() = new(Dict{ExchangeRole, ExchangeRouteEntry}())
-end
-
-"Set a role mapping in an `ExchangeRouting`."
-function setrole!(routing::ExchangeRouting, role::ExchangeRole, exchange::AbstractString)
-    routing.routes[role] = ExchangeRouteEntry(_normalizeexchange(String(exchange)))
-    return routing
-end
-
-"Return the exchange name for a role, falling back to `default_exchange` if not configured."
-function _routeexchange(routing::ExchangeRouting, role::ExchangeRole, default_exchange::AbstractString)::String
-    haskey(routing.routes, role) ? routing.routes[role].exchange : String(default_exchange)
-end
 
 const EXCHANGE_BYBIT::String = "Bybit"
 const EXCHANGE_BYBITSIM::String = "BybitSim"
@@ -177,8 +142,7 @@ end
 
 "Update EnvConfig coin root to the canonical exchange-specific path."
 function _setexchangepath!(xc)::String
-    data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
-    canonical = _exchangefoldertoken(data_ex)
+    canonical = _exchangefoldertoken(xc.exchange)
     return EnvConfig.setcoinspath!(canonical)
 end
 
@@ -222,8 +186,6 @@ Safe to call during shutdown; exchanges without private-call counters are skippe
 function log_private_call_summary!(xc)
     exchanges = Set{String}()
     push!(exchanges, _normalizeexchange(xc.exchange))
-    push!(exchanges, _routeexchange(xc.routing, trade_exchange_spot, xc.exchange))
-    push!(exchanges, _routeexchange(xc.routing, trade_exchange_futures, xc.exchange))
     for ex in exchanges
         if ex == EXCHANGE_KRAKENSPOT
             KrakenSpot.log_private_call_summary!()
@@ -262,23 +224,15 @@ function _exchangecache(exchange::AbstractString, simmode::SimMode)
 end
 
 mutable struct XchCache
-    orders  # ::DataFrame
-    closedorders  # ::DataFrame
-    assets  # :: DataFrame
     bases  # ::Dict{String, Ohlcv.OhlcvData}
     pairstates::Dict{String, DataFrame}  # keyed by canonical trading pair, stores phase-2 Trades DataFrames
     bc  # exchange specific cache, e.g. Bybit.BybitCache or KrakenSpot.KrakenSpotCache
     exchange::String
-    defaultquote::String
-    feerate  # 0.001 = 0.1% maker/taker fee by default  #TODO store exchange info and account fee rate and use it in offline backtest simulation
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
-    mnemonic  # String or nothing
     mc::Dict # MC = module constants
     tradesrowtemplate::DataFrame  # single-row default template used when appending new Trades rows
-    routing::ExchangeRouting   # per-role exchange/auth overrides; empty = all ops go to `exchange`/`bc`
-    routecaches::Dict{String, Any}  # keyed by exchange name; lazily populated adapter caches for routing
     function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, exchange::String=EXCHANGE_BYBIT, defaultquote::Union{Nothing, AbstractString}=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
@@ -291,7 +245,7 @@ mutable struct XchCache
         else
             bybitsim
         end
-        xc = new(_emptyorders(exchange), _emptyorders(exchange), _emptyassets(), Dict(), Dict{String, DataFrame}(), _exchangecache(exchange, simmode), exchange, dq, 0.001, startdt, nothing, enddt, mnemonic, Dict(), DataFrame(), ExchangeRouting(), Dict{String, Any}())
+        xc = new(Dict(), Dict{String, DataFrame}(), _exchangecache(exchange, simmode), exchange, startdt, nothing, enddt, Dict(), DataFrame())
         EnvConfig.setpairquote!(dq)
         xc.mc[:simmode] = simmode
         xc.mc[:trades_v1_required_columns] = TRADES_V1_REQUIRED_COLUMNS
@@ -314,6 +268,19 @@ mutable struct XchCache
         end
         xc.mc[:tradelog_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
         return xc
+    end
+end
+
+"""Get the exchange module corresponding to the adapter in xc.bc"""
+function _adaptermodule(xc::XchCache)
+    if xc.bc isa Bybit.BybitCache
+        return Bybit
+    elseif xc.bc isa KrakenFutures.KrakenFuturesCache
+        return KrakenFutures
+    elseif xc.bc isa KrakenSpot.KrakenSpotCache
+        return KrakenSpot
+    else
+        throw(ArgumentError("Unknown adapter type: $(typeof(xc.bc))"))
     end
 end
 
@@ -379,6 +346,17 @@ function hastrades(xc::XchCache, base::AbstractString, quotecoin::AbstractString
     return hastrades(xc, tradingpairkey(base, quotecoin))
 end
 
+"""Ensure Trades column `label` exists. Owner: Xch. Eltype: `TradeLabel` with `ignore` as the default. Note: Trade direction signal label used by order placement and status reconciliation."""
+function tradesdf_label(df::DataFrame)::DataFrame
+    if :label ∉ propertynames(df)
+        df[!, :label] = fill(Targets.ignore, nrow(df))
+    elseif Missing <: eltype(df[!, :label])
+        # Repair column promoted to Union{Missing,TradeLabel} by push! with cols=:subset
+        df[!, :label] = Targets.TradeLabel[ismissing(v) ? Targets.ignore : v for v in df[!, :label]]
+    end
+    return df
+end
+
 """Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestamp derived from sample data."""
 function tradesdf_opentime(df::DataFrame)::DataFrame
     if :opentime ∉ propertynames(df)
@@ -429,7 +407,7 @@ function tradesdf_lo_status(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `lo_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation."""
+"""Ensure Trades column `lo_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
 function tradesdf_lo_filled(df::DataFrame)::DataFrame
     if :lo_filled ∉ propertynames(df)
         df[!, :lo_filled] = fill(0f0, nrow(df))
@@ -471,7 +449,7 @@ function tradesdf_lc_status(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `lc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation."""
+"""Ensure Trades column `lc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
 function tradesdf_lc_filled(df::DataFrame)::DataFrame
     if :lc_filled ∉ propertynames(df)
         df[!, :lc_filled] = fill(0f0, nrow(df))
@@ -513,7 +491,7 @@ function tradesdf_so_status(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `so_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation."""
+"""Ensure Trades column `so_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
 function tradesdf_so_filled(df::DataFrame)::DataFrame
     if :so_filled ∉ propertynames(df)
         df[!, :so_filled] = fill(0f0, nrow(df))
@@ -555,7 +533,7 @@ function tradesdf_sc_status(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `sc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation."""
+"""Ensure Trades column `sc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
 function tradesdf_sc_filled(df::DataFrame)::DataFrame
     if :sc_filled ∉ propertynames(df)
         df[!, :sc_filled] = fill(0f0, nrow(df))
@@ -619,14 +597,6 @@ function tradesdf_low(df::DataFrame)::DataFrame
     return df
 end
 
-"""Ensure Trades column `quoteprice` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account snapshot helper written by order/status processing; not part of `TRADES_V1_REQUIRED_COLUMNS`."""
-function tradesdf_quoteprice(df::DataFrame)::DataFrame
-    if :quoteprice ∉ propertynames(df)
-        df[!, :quoteprice] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
 """Ensure Trades column `maintmargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Maintenance margin of position."""
 function tradesdf_maintmargin(df::DataFrame)::DataFrame
     if :maintmargin ∉ propertynames(df)
@@ -673,6 +643,7 @@ function tradesdf_contributors()::Vector{Function}
         tradesdf_opentime,
         tradesdf_lastopentrade,
         tradesdf_pair,
+        tradesdf_label,
         tradesdf_lo_id,
         tradesdf_lo_status,
         tradesdf_lo_filled,
@@ -707,7 +678,7 @@ function tradesdf_contributors()::Vector{Function}
 end
 
 const TRADES_V1_REQUIRED_COLUMNS = (
-    :opentime, :lastopentrade, :pair,
+    :opentime, :lastopentrade, :pair, :label,
     :lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg,
     :lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg,
     :so_id, :so_status, :so_filled, :so_pavg, :so_msg,
@@ -960,10 +931,10 @@ function marketdataheartbeats(xc::XchCache)
     end
     localmap = xc.mc[:marketdata_ws_last_update_by_symbol]
 
-    mod = _routedModule(xc, data_exchange)
+    mod = _adaptermodule(xc)
     if isdefined(mod, :marketdataheartbeats)
         moduledict = try
-            getproperty(mod, :marketdataheartbeats)(_routedbc(xc, data_exchange))
+            getproperty(mod, :marketdataheartbeats)(xc.bc)
         catch
             try
                 getproperty(mod, :marketdataheartbeats)()
@@ -990,10 +961,10 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
         localmap = marketdataheartbeats(xc)
         localdt = get(localmap, key, nothing)
         moduledt = nothing
-        mod = _routedModule(xc, data_exchange)
+        mod = _adaptermodule(xc)
         if isdefined(mod, :marketdataheartbeat)
             try
-                moduledt = getproperty(mod, :marketdataheartbeat)(_routedbc(xc, data_exchange), key)
+                moduledt = getproperty(mod, :marketdataheartbeat)(xc.bc, key)
             catch
                 try
                     moduledt = getproperty(mod, :marketdataheartbeat)(key)
@@ -1019,10 +990,10 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
 
     localdt = get(xc.mc, :marketdata_ws_last_update_dt, nothing)
     moduledt = nothing
-    mod = _routedModule(xc, data_exchange)
+    mod = _adaptermodule(xc)
     if isdefined(mod, :marketdataheartbeat)
         try
-            moduledt = getproperty(mod, :marketdataheartbeat)(_routedbc(xc, data_exchange))
+            moduledt = getproperty(mod, :marketdataheartbeat)(xc.bc)
         catch
             try
                 moduledt = getproperty(mod, :marketdataheartbeat)()
@@ -1051,33 +1022,6 @@ function _wsenabled(xc::XchCache, key::Symbol, default::Bool=false)::Bool
     return Bool(get(xc.mc, key, default))
 end
 
-function _ensurewschannel!(xc::XchCache, channel_key::Symbol, role::ExchangeRole, fn_name::Symbol)
-    haskey(xc.mc, channel_key) && return xc.mc[channel_key]
-    mod = _routedModule(xc, role)
-    if !isdefined(mod, fn_name)
-        xc.mc[channel_key] = nothing
-        return nothing
-    end
-    fn = getproperty(mod, fn_name)
-    bc = _routedbc(xc, role)
-    ch = try
-        fn(bc)
-    catch err
-        if (err isa MethodError) && (getproperty(err, :f) === fn)
-            try
-                fn()
-            catch err_fallback
-                (verbosity >= 1) && @warn "failed to start websocket channel" fn=String(fn_name) role=Symbol(role) error=sprint(showerror, err_fallback)
-                nothing
-            end
-        else
-            (verbosity >= 1) && @warn "failed to start websocket channel" fn=String(fn_name) role=Symbol(role) error=sprint(showerror, err)
-            nothing
-        end
-    end
-    xc.mc[channel_key] = ch
-    return ch
-end
 
 function _drainwschannel!(ch; max_items::Int=256)
     isnothing(ch) && return 0
@@ -1089,118 +1033,50 @@ function _drainwschannel!(ch; max_items::Int=256)
     return drained
 end
 
+# Stub implementations for removed routing layer WebSocket functions
+_ensurewschannel!(xc::XchCache, args...; kwargs...) = nothing
+_adapterwsdfsnapshot(xc::XchCache, args...; kwargs...) = DataFrame()
+_adapterwsheartbeat(xc::XchCache, args...; kwargs...) = nothing
+
 function _refreshwsstreams!(xc::XchCache)
-    if _wsenabled(xc, :ws_orders_enabled, false)
-        ch = _ensurewschannel!(xc, :ws_orders_channel, trade_exchange_spot, :ws_orders)
-        _drainwschannel!(ch)
-    end
-    if _wsenabled(xc, :ws_balances_enabled, false)
-        ch = _ensurewschannel!(xc, :ws_balances_channel, trade_exchange_spot, :ws_balances)
-        _drainwschannel!(ch)
-    end
+    # Stub: WebSocket streams no longer managed via routing layer
     return nothing
 end
 
-function _adapterwsdfsnapshot(xc::XchCache, role::ExchangeRole, fn_name::Symbol)
-    _refreshwsstreams!(xc)
-    mod = _routedModule(xc, role)
-    if !isdefined(mod, fn_name)
-        return DataFrame()
-    end
-    return try
-        getproperty(mod, fn_name)(_routedbc(xc, role))
-    catch
-        try
-            getproperty(mod, fn_name)()
-        catch
-            DataFrame()
-        end
-    end
-end
 
-function _adapterwsheartbeat(xc::XchCache, role::ExchangeRole, fn_name::Symbol)
-    _refreshwsstreams!(xc)
-    mod = _routedModule(xc, role)
-    if !isdefined(mod, fn_name)
-        return nothing
-    end
-    return try
-        getproperty(mod, fn_name)(_routedbc(xc, role))
-    catch
-        try
-            getproperty(mod, fn_name)()
-        catch
-            nothing
-        end
-    end
-end
 
 "Return latest adapter websocket order snapshot (canonical normalized open-order rows when available)."
 function wsordersnapshot(xc::XchCache)::DataFrame
-    return _adapterwsdfsnapshot(xc, trade_exchange_spot, :wsordersnapshot)
+    # Deprecated: WebSocket snapshots no longer available via routing layer
+    return DataFrame()
 end
 
 "Return latest adapter websocket balances snapshot (canonical normalized balance rows when available)."
 function wsbalancessnapshot(xc::XchCache)::DataFrame
-    return _adapterwsdfsnapshot(xc, trade_exchange_spot, :wsbalancessnapshot)
+    # Deprecated: WebSocket snapshots no longer available via routing layer
+    return DataFrame()
 end
 
 "Return latest adapter websocket order heartbeat timestamp when available."
 function wsordersheartbeat(xc::XchCache)
-    return _adapterwsheartbeat(xc, trade_exchange_spot, :wsordersheartbeat)
+    # Deprecated: WebSocket heartbeats no longer available via routing layer
+    return nothing
 end
 
 "Return latest adapter websocket balances heartbeat timestamp when available."
 function wsbalancesheartbeat(xc::XchCache)
-    return _adapterwsheartbeat(xc, trade_exchange_spot, :wsbalancesheartbeat)
+    # Deprecated: WebSocket heartbeats no longer available via routing layer
+    return nothing
 end
 
 """
 Return the adapter cache for the given `role`, using the routing config when available.
 Falls back to `xc.bc` (the primary adapter) when no role override is configured.
 """
-function _routedbc(xc::XchCache, role::ExchangeRole)
-    if isempty(xc.routing.routes) || !haskey(xc.routing.routes, role)
-        return xc.bc  # no routing configured for this role — use primary adapter
-    end
-    entry = xc.routing.routes[role]
-    # lazily build and cache the adapter for this exchange
-    if !haskey(xc.routecaches, entry.exchange)
-        xc.routecaches[entry.exchange] = _exchangecache(entry.exchange, xc.mc[:simmode])
-    end
-    return xc.routecaches[entry.exchange]
-end
 
-"Return the exchange module for the given `role`, with routing fallback."
-function _routedModule(xc::XchCache, role::ExchangeRole)
-    if isempty(xc.routing.routes) || !haskey(xc.routing.routes, role)
-        return _exchangeModule(xc.exchange)
-    end
-    return _exchangeModule(xc.routing.routes[role].exchange)
-end
+"Return the exchange module for the given adapter instance."
 
-"""
-Configure exchange role routing on an `XchCache`.
-
-Example — Bybit for data, KrakenSpot for spot trading, KrakenFutures for futures:
-```julia
-setrole!(xc, data_exchange, Xch.EXCHANGE_BYBIT)
-setrole!(xc, trade_exchange_spot, Xch.EXCHANGE_KRAKENSPOT)
-setrole!(xc, trade_exchange_futures, Xch.EXCHANGE_KRAKENFUTURES)
-```
-"""
-function setrole!(xc::XchCache, role::ExchangeRole, exchange::AbstractString)
-    setrole!(xc.routing, role, exchange)
-    # Evict stale cached adapter so it is rebuilt with the new auth on next use.
-    delete!(xc.routecaches, _normalizeexchange(String(exchange)))
-    data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
-    xc.defaultquote = _defaultquote(data_ex)
-    EnvConfig.setpairquote!(xc.defaultquote)
-    _setexchangepath!(xc)
-    return xc
-end
-
-_exchangeservertime(xc::XchCache) = _exchangeModule(xc).servertime(xc.bc)
+_exchangeservertime(xc::XchCache) = _adaptermodule(xc).servertime(xc.bc)
 
 "Return the syminfo cache dict, creating it lazily."
 _syminfocache(xc::XchCache) = get!(xc.mc, :syminfo_cache, Dict{String, NamedTuple}())
@@ -1226,9 +1102,9 @@ Falls back to the local cache when no live connection is available (sim mode).
 """
 function _exchangesymbolinfo(xc::XchCache, symbol)
     symbol = uppercase(string(symbol))
-    bc = _routedbc(xc, data_exchange)
+    bc = xc.bc
     if !isnothing(bc)
-        row = _routedModule(xc, data_exchange).symbolinfo(bc, symbol)
+        row = _adaptermodule(xc).symbolinfo(bc, symbol)
         if !isnothing(row)
             # Populate / refresh local cache from live data
             nt = (
@@ -1251,33 +1127,28 @@ function _exchangesymbolinfo(xc::XchCache, symbol)
     return get(_syminfocache(xc), symbol, nothing)
 end
 
-_exchangevalidsymbol(xc::XchCache, sym) = _routedModule(xc, data_exchange).validsymbol(_routedbc(xc, data_exchange), sym)
-_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _routedModule(xc, data_exchange).getklines(_routedbc(xc, data_exchange), symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
-_exchangeget24h(xc::XchCache) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange))
-_exchangeget24h(xc::XchCache, symbol) = _routedModule(xc, data_exchange).get24h(_routedbc(xc, data_exchange), symbol)
-_exchangebalances(xc::XchCache) = _routedModule(xc, trade_exchange_spot).balances(_routedbc(xc, trade_exchange_spot))
+_exchangevalidsymbol(xc::XchCache, sym) = _adaptermodule(xc).validsymbol(xc.bc, sym)
+_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _adaptermodule(xc).getklines(xc.bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
+_exchangeget24h(xc::XchCache) = _adaptermodule(xc).get24h(xc.bc)
+_exchangeget24h(xc::XchCache, symbol) = _adaptermodule(xc).get24h(xc.bc, symbol)
+_exchangebalances(xc::XchCache) = _adaptermodule(xc).balances(xc.bc)
 function _exchangeaccountcapacity(xc::XchCache)
-    mod = _routedModule(xc, trade_exchange_spot)
+    mod = _adaptermodule(xc)
     if isdefined(mod, :accountcapacity)
-        return getproperty(mod, :accountcapacity)(_routedbc(xc, trade_exchange_spot))
+        return getproperty(mod, :accountcapacity)(xc.bc)
     end
     return nothing
 end
-_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _routedModule(xc, trade_exchange_spot).openorders(_routedbc(xc, trade_exchange_spot); symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
-_exchangeorder(xc::XchCache, orderid) = _routedModule(xc, trade_exchange_spot).order(_routedbc(xc, trade_exchange_spot), orderid)
-_exchangecancelorder(xc::XchCache, symbol, orderid) = _routedModule(xc, trade_exchange_spot).cancelorder(_routedbc(xc, trade_exchange_spot), symbol, orderid)
+_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _adaptermodule(xc).openorders(xc.bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
+_exchangeorder(xc::XchCache, orderid) = _adaptermodule(xc).order(xc.bc, orderid)
+_exchangecancelorder(xc::XchCache, symbol, orderid) = _adaptermodule(xc).cancelorder(xc.bc, symbol, orderid)
 
 """
-Guard: raise an error if the `trade_exchange_spot` role is explicitly configured to a data-only exchange (Bybit)
-while a different exchange is set as the data source.  This prevents accidental live Bybit order placement
-once Kraken routing is active.
+Guard: (deprecated - no longer needed in single-exchange model)
 """
 function _asserttradeallowed(xc::XchCache)
-    spot_exchange = _routeexchange(xc.routing, trade_exchange_spot, xc.exchange)
-    data_ex = _routeexchange(xc.routing, data_exchange, xc.exchange)
-    if spot_exchange == EXCHANGE_BYBIT && data_ex != EXCHANGE_BYBIT && !isempty(xc.routing.routes)
-        error("Order placement blocked: trade_exchange_spot is routed to $(EXCHANGE_BYBIT) which is configured as data-only (data_exchange=$(data_ex)). Use setrole! to configure a Kraken trade exchange.")
-    end
+    # Single-exchange model: trading is allowed on the configured exchange
+    return
 end
 
 _tradelogstring(value) = ismissing(value) || isnothing(value) ? missing : String(value)
@@ -1292,40 +1163,13 @@ function _orderfield(orderinfo, field::Symbol)
     return getproperty(orderinfo, field)
 end
 
-function _tradelogroutingrole(role::ExchangeRole)::TradeLog.AuditRoutingRole
-    if role == data_exchange
-        return TradeLog.routing_data_exchange
-    elseif role == trade_exchange_spot
-        return TradeLog.routing_trade_exchange_spot
-    else
-        return TradeLog.routing_trade_exchange_futures
-    end
-end
-
-function _tradelogmarkettype(role::ExchangeRole)::TradeLog.AuditMarketType
-    if role == trade_exchange_spot
-        return TradeLog.market_spot
-    elseif role == trade_exchange_futures
-        return TradeLog.market_futures
-    end
-    return TradeLog.market_unknown
-end
-
-function _tradeloginstrumenttype(role::ExchangeRole)::TradeLog.AuditInstrumentType
-    if role == trade_exchange_spot
-        return TradeLog.spot_pair
-    elseif role == trade_exchange_futures
-        return TradeLog.perpetual_future
-    end
-    return TradeLog.instrument_unknown
-end
-
-function _tradelogeventcontext!(xc::XchCache)
-    if !haskey(xc.mc, :tradelog_event_context)
-        xc.mc[:tradelog_event_context] = Dict{Symbol, Any}()
-    end
-    return xc.mc[:tradelog_event_context]
-end
+# Stub implementations for removed TradeLog audit functions
+_tradelogeventcontext!(xc::XchCache) = get!(xc.mc, :tradelog_event_context, Dict{Symbol, Any}())
+_tradelogcreatedorder!(xc::XchCache, args...; kwargs...) = nothing
+_tradelogordererror!(xc::XchCache, args...; kwargs...) = nothing
+_tradelogsetorderparent!(xc::XchCache, args...; kwargs...) = nothing
+_tradelogreconcileorderstate!(xc::XchCache, args...; kwargs...) = nothing
+_tradeloglogmissingopenorders!(xc::XchCache, args...; kwargs...) = nothing
 
 "Set temporary TradeLog context fields used for subsequent order events."
 function settradelogcontext!(xc::XchCache; strategy_engine=missing, strategy_config_ref=missing, signal_label=missing, signal_score=missing, notes=missing, leg_group_id=missing, leg_label=missing)
@@ -1358,186 +1202,16 @@ end
 setauditcontext!(xc::XchCache; kwargs...) = settradelogcontext!(xc; kwargs...)
 clearauditcontext!(xc::XchCache) = cleartradelogcontext!(xc)
 
-function _tradelogslippagebps(limitprice, fill_price::Union{Missing, Float64}, orderside::AbstractString, event_type::TradeLog.AuditEventType)
-    if !(event_type in (TradeLog.ORDER_PARTIAL_FILL, TradeLog.ORDER_FILLED))
-        return missing
-    end
-    if isnothing(limitprice) || ismissing(fill_price)
-        return missing
-    end
-    req = Float64(limitprice)
-    req <= 0.0 && return missing
-    fill = Float64(fill_price)
-    side = lowercase(String(orderside))
-    # Positive values mean worse-than-requested execution.
-    if side == "buy"
-        return ((fill - req) / req) * 10000.0
-    elseif side == "sell"
-        return ((req - fill) / req) * 10000.0
-    end
-    return ((fill - req) / req) * 10000.0
-end
 
 "Return TradeLog event timestamp in UTC; use simulated time in sim mode when available."
-function _tradelogeventtimeutc(xc::XchCache)::DateTime
-    if !isnothing(xc.currentdt)
-        return DateTime(xc.currentdt)
-    end
-    return Dates.now(Dates.UTC)
-end
 
-function _tradelogorderevent!(xc::XchCache, event_type::TradeLog.AuditEventType, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed; orderinfo=nothing, status_reason=nothing)
-    !_tradelogenabled(xc) && return nothing
-    pair = basequote(symbol)
-    simmode = String(Symbol(xc.mc[:simmode]))
-    exchange_order_id = _tradelogstring(_orderfield(orderinfo, :orderid))
-    orderid_key = ismissing(exchange_order_id) ? nothing : String(exchange_order_id)
-    chains = _tradelogchaincache!(xc)
-    correlation_id = isnothing(orderid_key) ? missing : get(chains, orderid_key, orderid_key)
-    lastevents = _tradeloglasteventcache!(xc)
-    pendingparents = _tradelogpendingparentcache!(xc)
-    parent_event_id = if isnothing(orderid_key)
-        missing
-    elseif haskey(lastevents, orderid_key)
-        lastevents[orderid_key]
-    elseif haskey(pendingparents, orderid_key)
-        pendingparents[orderid_key]
-    else
-        missing
-    end
-    fill_base_qty = _tradelogfloat(_orderfield(orderinfo, :executedqty))
-    fill_price = _tradelogfloat(_orderfield(orderinfo, :avgprice))
-    slippage_bps = _tradelogslippagebps(limitprice, fill_price, orderside, event_type)
-    fee_amount = _tradelogfeeamount(xc, event_type, orderinfo, fill_base_qty, fill_price)
-    fee_currency = _tradelogfeecurrency(orderinfo, isnothing(pair) ? nothing : pair.quotecoin)
-    ctx = _tradelogeventcontext!(xc)
-    strategy_engine = haskey(ctx, :strategy_engine) ? String(ctx[:strategy_engine]) : missing
-    strategy_config_ref = haskey(ctx, :strategy_config_ref) ? String(ctx[:strategy_config_ref]) : missing
-    signal_label = haskey(ctx, :signal_label) ? String(ctx[:signal_label]) : missing
-    signal_score = haskey(ctx, :signal_score) ? Float64(ctx[:signal_score]) : missing
-    sim_notes = (xc.mc[:simmode] == nosimulation ? missing : "simulation_mode=$(simmode)")
-    ctx_notes = haskey(ctx, :notes) ? String(ctx[:notes]) : missing
-    leg_group_id = haskey(ctx, :leg_group_id) ? String(ctx[:leg_group_id]) : missing
-    leg_label = haskey(ctx, :leg_label) ? String(ctx[:leg_label]) : missing
-    notes_parts = String[]
-    !ismissing(sim_notes) && push!(notes_parts, sim_notes)
-    !ismissing(ctx_notes) && push!(notes_parts, ctx_notes)
-    !ismissing(leg_group_id) && push!(notes_parts, "leg_group_id=$(leg_group_id)")
-    !ismissing(leg_label) && push!(notes_parts, "leg_label=$(leg_label)")
-    notes = isempty(notes_parts) ? missing : join(notes_parts, ";")
-    event_time = _tradelogeventtimeutc(xc)
-    created_at = Dates.now(Dates.UTC)
-    event = TradeLog.AuditEventRow(
-        event_type=event_type,
-        event_time_utc=event_time,
-        created_at_utc=created_at,
-        source_module="Xch",
-        environment=string(Symbol(EnvConfig.configmode)),
-        run_mode=tradelogrunmode(xc),
-        run_id=tradelogrunid(xc),
-        correlation_id=correlation_id,
-        parent_event_id=parent_event_id,
-        exchange=_routeexchange(xc.routing, role, xc.exchange),
-        account_alias=_routeexchange(xc.routing, role, xc.exchange),
-        routing_role=_tradelogroutingrole(role),
-        market_type=_tradelogmarkettype(role),
-        asset_class=TradeLog.crypto,
-        instrument_type=_tradeloginstrumenttype(role),
-        venue_instrument_type=(role == trade_exchange_futures ? "futures" : role == trade_exchange_spot ? "spot" : missing),
-        symbol=String(symbol),
-        baseasset=isnothing(pair) ? missing : pair.basecoin,
-        quoteasset=isnothing(pair) ? missing : pair.quotecoin,
-        settlement_asset=isnothing(pair) ? missing : pair.quotecoin,
-        exchange_order_id=exchange_order_id,
-        side=String(orderside),
-        order_type=isnothing(limitprice) ? "Market" : "Limit",
-        time_in_force=_tradelogstring(_orderfield(orderinfo, :timeinforce)),
-        status=_tradelogstring(_orderfield(orderinfo, :status)),
-        status_reason=ismissing(status_reason) || isnothing(status_reason) ? _tradelogstring(_orderfield(orderinfo, :rejectreason)) : String(status_reason),
-        requested_base_qty=Float64(basequantity),
-        requested_quote_qty=isnothing(limitprice) ? missing : Float64(basequantity) * Float64(limitprice),
-        requested_limit_price=isnothing(limitprice) ? missing : Float64(limitprice),
-        requested_notional=isnothing(limitprice) ? missing : Float64(basequantity) * Float64(limitprice),
-        leverage=marginleverage > 0 ? Float64(marginleverage) : missing,
-        fill_base_qty=fill_base_qty,
-        fill_price=fill_price,
-        fee_amount=fee_amount,
-        fee_currency=fee_currency,
-        slippage_bps=slippage_bps,
-        strategy_engine=strategy_engine,
-        strategy_config_ref=strategy_config_ref,
-        signal_label=signal_label,
-        signal_score=signal_score,
-        notes=notes,
-    )
-    try
-        TradeLog.writeeventwithhash(event)
-        if !isnothing(orderid_key)
-            chains[orderid_key] = get(chains, orderid_key, orderid_key)
-            lastevents[orderid_key] = event.event_id
-            haskey(pendingparents, orderid_key) && delete!(pendingparents, orderid_key)
-        end
-    catch tradelog_error
-        (verbosity >= 1) && @warn "failed to persist tradelog event" event_type symbol exception=(tradelog_error, catch_backtrace())
-    end
-    return event
-end
 
-function _tradelogcreatedorder!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, orderinfo)
-    !_tradelogenabled(xc) && return nothing
-    if isnothing(orderinfo)
-        _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason="createorder returned nothing")
-        return nothing
-    end
-    _tradelogorderevent!(xc, TradeLog.ORDER_SUBMITTED, role, symbol, orderside, basequantity, limitprice, marginleverage; orderinfo=orderinfo)
-    orderstatus = _tradelogstring(_orderfield(orderinfo, :status))
-    rejectreason = _tradelogstring(_orderfield(orderinfo, :rejectreason))
-    if orderstatus == "Rejected" || (!ismissing(rejectreason) && rejectreason != "NO ERROR")
-        _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; orderinfo=orderinfo, status_reason=ismissing(rejectreason) ? orderstatus : rejectreason)
-    end
-    return nothing
-end
 
-function _tradelogordererror!(xc::XchCache, role::ExchangeRole, symbol::AbstractString, orderside::AbstractString, basequantity::Real, limitprice, marginleverage::Signed, err)
-    !_tradelogenabled(xc) && return nothing
-    _tradelogorderevent!(xc, TradeLog.ORDER_REJECTED, role, symbol, orderside, basequantity, limitprice, marginleverage; status_reason=sprint(showerror, err))
-    return nothing
-end
 
-function _tradelogorderstatecache!(xc::XchCache)
-    if !haskey(xc.mc, :tradelog_order_state)
-        xc.mc[:tradelog_order_state] = Dict{String, NamedTuple{(:status, :executedqty), Tuple{String, Float64}}}()
-    end
-    return xc.mc[:tradelog_order_state]
-end
 
-function _tradelogordersnapshotcache!(xc::XchCache)
-    if !haskey(xc.mc, :tradelog_order_snapshot)
-        xc.mc[:tradelog_order_snapshot] = Dict{String, NamedTuple{(:symbol, :side, :baseqty, :limitprice, :marginleverage), Tuple{String, String, Float64, Union{Nothing, Float64}, Int}}}()
-    end
-    return xc.mc[:tradelog_order_snapshot]
-end
 
-function _tradeloglasteventcache!(xc::XchCache)
-    if !haskey(xc.mc, :tradelog_order_last_event)
-        xc.mc[:tradelog_order_last_event] = Dict{String, String}()
-    end
-    return xc.mc[:tradelog_order_last_event]
-end
 
-function _tradelogchaincache!(xc::XchCache)
-    if !haskey(xc.mc, :tradelog_order_chain)
-        xc.mc[:tradelog_order_chain] = Dict{String, String}()
-    end
-    return xc.mc[:tradelog_order_chain]
-end
 
-function _tradelogpendingparentcache!(xc::XchCache)
-    if !haskey(xc.mc, :tradelog_pending_parent_event)
-        xc.mc[:tradelog_pending_parent_event] = Dict{String, String}()
-    end
-    return xc.mc[:tradelog_pending_parent_event]
-end
 
 """
 Return the set of order ids that were created as adaptive maker orders with `limitprice=nothing`.
@@ -1584,17 +1258,6 @@ function pruneadaptiveorders!(xc::XchCache, openorderids)
     return xc
 end
 
-function _tradelogsetorderparent!(xc::XchCache, new_orderid::AbstractString, old_orderid::AbstractString)
-    new_id = String(new_orderid)
-    old_id = String(old_orderid)
-    chains = _tradelogchaincache!(xc)
-    chains[new_id] = get(chains, old_id, old_id)
-    lastevents = _tradeloglasteventcache!(xc)
-    if haskey(lastevents, old_id)
-        _tradelogpendingparentcache!(xc)[new_id] = lastevents[old_id]
-    end
-    return nothing
-end
 
 function _orderfieldfirst(orderinfo, fields::Vector{Symbol})
     for field in fields
@@ -1606,288 +1269,22 @@ function _orderfieldfirst(orderinfo, fields::Vector{Symbol})
     return missing
 end
 
-function _tradelogordernumber(orderinfo, field::Symbol; default::Float64=0.0)
-    value = _orderfield(orderinfo, field)
-    if ismissing(value) || isnothing(value)
-        return default
-    end
-    try
-        return Float64(value)
-    catch
-        return default
-    end
-end
 
-function _tradelogordernumber(orderinfo, fields::Vector{Symbol}; default::Float64=0.0)
-    value = _orderfieldfirst(orderinfo, fields)
-    if ismissing(value) || isnothing(value)
-        return default
-    end
-    try
-        return Float64(value)
-    catch
-        return default
-    end
-end
 
-function _tradelogordermaybeprice(orderinfo)
-    value = _orderfield(orderinfo, :limitprice)
-    if ismissing(value) || isnothing(value)
-        return nothing
-    end
-    try
-        return Float64(value)
-    catch
-        return nothing
-    end
-end
 
-function _tradelogordermaybeprice(orderinfo, fields::Vector{Symbol})
-    value = _orderfieldfirst(orderinfo, fields)
-    if ismissing(value) || isnothing(value)
-        return nothing
-    end
-    try
-        return Float64(value)
-    catch
-        return nothing
-    end
-end
 
-function _tradelogfillsnapshotenabled(xc::XchCache)::Bool
-    return Bool(get(xc.mc, :tradelog_migration_fill_balance_enabled, false))
-end
 
-function _tradelogsnapshotnetbalance(snapshot, asset::AbstractString)::Float64
-    snapshot isa AbstractDataFrame || return 0.0
-    hascoin = "coin" in names(snapshot)
-    hascoin || return 0.0
-    size(snapshot, 1) == 0 && return 0.0
-    target = uppercase(String(asset))
-    hasfree = "free" in names(snapshot)
-    haslocked = "locked" in names(snapshot)
-    hasborrowed = "borrowed" in names(snapshot)
-    hasaccrued = "accruedinterest" in names(snapshot)
-    for row in eachrow(snapshot)
-        uppercase(String(row.coin)) == target || continue
-        freeqty = hasfree ? Float64(row.free) : 0.0
-        lockedqty = haslocked ? Float64(row.locked) : 0.0
-        borrowedqty = hasborrowed ? Float64(row.borrowed) : 0.0
-        accruedqty = hasaccrued ? Float64(row.accruedinterest) : 0.0
-        return freeqty + lockedqty - borrowedqty - accruedqty
-    end
-    return 0.0
-end
 
-function _tradelogfillquoteqty(fill_base_qty::Union{Missing, Float64}, fill_price::Union{Missing, Float64})
-    if ismissing(fill_base_qty) || ismissing(fill_price)
-        return missing
-    end
-    return Float64(fill_base_qty) * Float64(fill_price)
-end
 
-function _tradelogwritefillbalancesnapshot!(xc::XchCache, trigger_event::TradeLog.AuditEventRow, role::ExchangeRole, symbol::AbstractString)
-    _tradelogfillsnapshotenabled(xc) || return nothing
-    trigger_event.event_type == TradeLog.ORDER_FILLED || return nothing
-    pair = basequote(symbol)
-    isnothing(pair) && return nothing
 
-    snapshot_before = if haskey(xc.mc, :exchange_balances_snapshot)
-        deepcopy(xc.mc[:exchange_balances_snapshot])
-    else
-        DataFrame()
-    end
-    snapshot_before_dt = get(xc.mc, :exchange_balances_snapshot_dt, nothing)
 
-    snapshot_after = try
-        balancessnapshot(xc; force_refresh=true, ignoresmallvolume=false)
-    catch err
-        (verbosity >= 1) && @warn "failed to persist fill balance migration snapshot" symbol error=sprint(showerror, err)
-        return nothing
-    end
-
-    base_before = _tradelogsnapshotnetbalance(snapshot_before, pair.basecoin)
-    base_after = _tradelogsnapshotnetbalance(snapshot_after.snapshot, pair.basecoin)
-    quote_before = _tradelogsnapshotnetbalance(snapshot_before, pair.quotecoin)
-    quote_after = _tradelogsnapshotnetbalance(snapshot_after.snapshot, pair.quotecoin)
-    snapshot_notes = [
-        "migration_probe=fill_balance_check_v1",
-        "snapshot_before_dt=$(isnothing(snapshot_before_dt) ? "missing" : snapshot_before_dt)",
-        "snapshot_after_dt=$(snapshot_after.datetime)",
-        "base_delta=$(base_after - base_before)",
-        "quote_delta=$(quote_after - quote_before)",
-    ]
-    event_time = _tradelogeventtimeutc(xc)
-    created_at = Dates.now(Dates.UTC)
-    event = TradeLog.AuditEventRow(
-        event_type=TradeLog.POSITION_SNAPSHOT,
-        event_time_utc=event_time,
-        created_at_utc=created_at,
-        source_module="Xch",
-        environment=string(Symbol(EnvConfig.configmode)),
-        run_mode=tradelogrunmode(xc),
-        run_id=tradelogrunid(xc),
-        correlation_id=trigger_event.correlation_id,
-        parent_event_id=trigger_event.event_id,
-        exchange=_routeexchange(xc.routing, role, xc.exchange),
-        account_alias=_routeexchange(xc.routing, role, xc.exchange),
-        routing_role=_tradelogroutingrole(role),
-        market_type=_tradelogmarkettype(role),
-        asset_class=TradeLog.crypto,
-        instrument_type=_tradeloginstrumenttype(role),
-        venue_instrument_type=(role == trade_exchange_futures ? "futures" : role == trade_exchange_spot ? "spot" : missing),
-        symbol=String(symbol),
-        baseasset=pair.basecoin,
-        quoteasset=pair.quotecoin,
-        settlement_asset=pair.quotecoin,
-        exchange_order_id=trigger_event.exchange_order_id,
-        side=trigger_event.side,
-        order_type=trigger_event.order_type,
-        status="balance_observed_after_fill",
-        status_reason="source=fill_balance_probe",
-        fill_base_qty=trigger_event.fill_base_qty,
-        fill_quote_qty=_tradelogfillquoteqty(trigger_event.fill_base_qty, trigger_event.fill_price),
-        fill_price=trigger_event.fill_price,
-        fee_amount=trigger_event.fee_amount,
-        fee_currency=trigger_event.fee_currency,
-        position_qty_before=base_before,
-        position_qty_after=base_after,
-        cash_before=quote_before,
-        cash_after=quote_after,
-        strategy_engine=trigger_event.strategy_engine,
-        strategy_config_ref=trigger_event.strategy_config_ref,
-        signal_label=trigger_event.signal_label,
-        signal_score=trigger_event.signal_score,
-        notes=join(snapshot_notes, ";"),
-    )
-    try
-        TradeLog.writeeventwithhash(event)
-    catch err
-        (verbosity >= 1) && @warn "failed to persist fill balance migration snapshot event" symbol error=sprint(showerror, err)
-    end
-    return nothing
-end
-
-function _tradelogeventtypeforstatus(status::AbstractString, previous_status::Union{Nothing, String}, executedqty::Float64, previous_executedqty::Union{Nothing, Float64}, baseqty::Float64, source::AbstractString)::TradeLog.AuditEventType
-    st = lowercase(String(status))
-    if st == "rejected"
-        return TradeLog.ORDER_REJECTED
-    elseif st in ["cancelled", "canceled", "partiallyfilledcanceled", "deactivated"]
-        return TradeLog.ORDER_CANCELED
-    elseif st == "replaced" || source == "changeorder"
-        return TradeLog.ORDER_AMENDED
-    elseif (st == "filled") || ((baseqty > 0.0) && (executedqty >= baseqty - 1e-9))
-        return TradeLog.ORDER_FILLED
-    elseif (st == "partiallyfilled") || (!isnothing(previous_executedqty) && (executedqty > previous_executedqty + 1e-9))
-        return TradeLog.ORDER_PARTIAL_FILL
-    elseif isnothing(previous_status)
-        return TradeLog.ORDER_OBSERVED
-    end
-    return TradeLog.ORDER_ACK
-end
-
-function _tradelogreconcileorderstate!(xc::XchCache, orderinfo; role::ExchangeRole=trade_exchange_spot, source::AbstractString="orderpoll")
-    !_tradelogenabled(xc) && return nothing
-    orderid = _tradelogstring(_orderfield(orderinfo, :orderid))
-    symbol = _tradelogstring(_orderfield(orderinfo, :symbol))
-    if ismissing(orderid) || ismissing(symbol)
-        return nothing
-    end
-
-    status_raw = _tradelogstring(_orderfield(orderinfo, :status))
-    status = ismissing(status_raw) ? "Unknown" : String(status_raw)
-    executedqty = _tradelogordernumber(orderinfo, :executedqty; default=0.0)
-    baseqty = _tradelogordernumber(orderinfo, :baseqty; default=executedqty)
-    side_raw = _tradelogstring(_orderfield(orderinfo, :side))
-    side = ismissing(side_raw) ? "Unknown" : String(side_raw)
-    limitprice = _tradelogordermaybeprice(orderinfo)
-    marginleverage = Int(round(_tradelogordernumber(orderinfo, :marginleverage; default=0.0)))
-
-    states = _tradelogorderstatecache!(xc)
-    previous = get(states, String(orderid), nothing)
-    previous_status = isnothing(previous) ? nothing : previous.status
-    previous_executedqty = isnothing(previous) ? nothing : previous.executedqty
-    changed = isnothing(previous) || (status != previous_status) || (isnothing(previous_executedqty) || (abs(executedqty - previous_executedqty) > 1e-9))
-    if !changed
-        return nothing
-    end
-
-    event_type = _tradelogeventtypeforstatus(status, previous_status, executedqty, previous_executedqty, baseqty, source)
-    status_reason = _tradelogstring(_orderfield(orderinfo, :rejectreason))
-    if event_type in (TradeLog.ORDER_ACK, TradeLog.ORDER_OBSERVED, TradeLog.ORDER_AMENDED)
-        status_reason = "source=$(source)"
-    elseif ismissing(status_reason)
-        status_reason = "source=$(source)"
-    end
-    event = _tradelogorderevent!(xc, event_type, role, String(symbol), side, baseqty, limitprice, marginleverage; orderinfo=orderinfo, status_reason=status_reason)
-    _tradelogwritefillbalancesnapshot!(xc, event, role, String(symbol))
-    states[String(orderid)] = (status=status, executedqty=executedqty)
-    _tradelogordersnapshotcache!(xc)[String(orderid)] = (symbol=String(symbol), side=side, baseqty=baseqty, limitprice=limitprice, marginleverage=marginleverage)
-    return nothing
-end
 
 """
 Emit cancellation events for orders that were previously observed as open but are
 missing from the latest full `getopenorders` response.
 """
-function _tradeloglogmissingopenorders!(xc::XchCache, openorderids)
-    !_tradelogenabled(xc) && return nothing
-    active = Set(String.(collect(openorderids)))
-    states = _tradelogorderstatecache!(xc)
-    snapshots = _tradelogordersnapshotcache!(xc)
-    for (orderid, state) in collect(states)
-        openstatus(state.status) || continue
-        orderid in active && continue
-        # Try resolving a terminal order state first. This captures fast fills
-        # that disappear from openorders between polling cycles.
-        resolved = false
-        try
-            order = getorder(xc, orderid; auditevent=true)
-            resolved = !isnothing(order)
-        catch err
-            (verbosity >= 1) && @warn "failed to resolve missing open order via getorder" orderid error=sprint(showerror, err)
-        end
-        resolved && continue
-        if haskey(snapshots, orderid)
-            snap = snapshots[orderid]
-            missingorder = (
-                orderid=orderid,
-                symbol=snap.symbol,
-                side=snap.side,
-                baseqty=Float32(snap.baseqty),
-                executedqty=Float32(state.executedqty),
-                limitprice=isnothing(snap.limitprice) ? missing : Float32(snap.limitprice),
-                marginleverage=snap.marginleverage,
-                status="Cancelled",
-                updated=Dates.now(Dates.UTC),
-                rejectreason="source=getopenorders_missing",
-            )
-            _tradelogreconcileorderstate!(xc, missingorder; source="getopenorders_missing")
-        else
-            states[orderid] = (status="Cancelled", executedqty=state.executedqty)
-        end
-    end
-    return nothing
-end
 
-function _tradelogfeeamount(xc::XchCache, event_type::TradeLog.AuditEventType, orderinfo, fill_base_qty::Union{Missing, Float64}, fill_price::Union{Missing, Float64})
-    explicit_fee = _tradelogordernumber(orderinfo, [:fee_amount, :feeamount, :fee, :commission, :cumexecfee, :execfee, :fees]; default=NaN)
-    if isfinite(explicit_fee)
-        return explicit_fee
-    end
-    if (event_type in (TradeLog.ORDER_PARTIAL_FILL, TradeLog.ORDER_FILLED)) && !ismissing(fill_base_qty) && !ismissing(fill_price)
-        return Float64(fill_base_qty) * Float64(fill_price) * Float64(xc.feerate)
-    end
-    return missing
-end
 
-function _tradelogfeecurrency(orderinfo, quotecoin)
-    fee_currency = _tradelogstring(_orderfieldfirst(orderinfo, [:fee_currency, :feecurrency, :commissionasset]))
-    if !ismissing(fee_currency)
-        return fee_currency
-    end
-    return isnothing(quotecoin) ? missing : quotecoin
-end
 
 "Normalize adapter order-create response into `(orderid, orderinfo)` where possible."
 function _normalizecreatedorder(xc::XchCache, created)
@@ -1923,9 +1320,9 @@ function _normalizeamendedorder(xc::XchCache, amended)
     return (nothing, amended)
 end
 
-_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).createorder(_routedbc(xc, trade_exchange_spot), symbol, orderside, basequantity, price, maker, marginleverage=marginleverage, reduceonly=reduceonly))
-_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).amendorder(_routedbc(xc, trade_exchange_spot), symbol, orderid; basequantity=basequantity, limitprice=limitprice))
-_exchangeamendorder(xc::XchCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _routedModule(xc, trade_exchange_spot).amendorder(_routedbc(xc, trade_exchange_spot), orderid; basequantity=basequantity, limitprice=limitprice))
+_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = (_asserttradeallowed(xc); _adaptermodule(xc).createorder(xc.bc, symbol, orderside, basequantity, price, maker, marginleverage=marginleverage, reduceonly=reduceonly))
+_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _adaptermodule(xc).amendorder(xc.bc, symbol, orderid; basequantity=basequantity, limitprice=limitprice))
+_exchangeamendorder(xc::XchCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _adaptermodule(xc).amendorder(xc.bc, orderid; basequantity=basequantity, limitprice=limitprice))
 
 """
 Create a close order for one existing position side.
@@ -1941,9 +1338,9 @@ function closeorder(xc::XchCache, base::AbstractString; positionside::Symbol, li
     @assert side in (:long, :short) "closeorder positionside=$(positionside) must be :long or :short"
 
     baseup = uppercase(String(base))
-    symbol = symboltoken(xc, baseup, EnvConfig.pairquote; role=trade_exchange_spot)
-    mod = _routedModule(xc, trade_exchange_spot)
-    bc = _routedbc(xc, trade_exchange_spot)
+    symbol = symboltoken(xc, baseup, EnvConfig.pairquote)
+    mod = _adaptermodule(xc)
+    bc = xc.bc
 
     if isdefined(mod, :closeorder)
         fn = getfield(mod, :closeorder)
@@ -1959,14 +1356,14 @@ function closeorder(xc::XchCache, base::AbstractString; positionside::Symbol, li
                 if !isnothing(parent_order_id) && !isnothing(oid)
                     _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
                 end
-                _tradelogcreatedorder!(xc, trade_exchange_spot, symbol, orderside, basequantity, limitprice, marginleverage, oocreate)
+                _tradelogcreatedorder!(xc, symbol, orderside, basequantity, limitprice, marginleverage, oocreate)
                 if isnothing(limitprice) && maker && !isnothing(oid)
                     registeradaptiveorder!(xc, oid)
                 end
                 return oid
             catch err
                 orderside = side == :long ? "Sell" : "Buy"
-                _tradelogordererror!(xc, trade_exchange_spot, symbol, orderside, basequantity, limitprice, marginleverage, err)
+                _tradelogordererror!(xc, symbol, orderside, basequantity, limitprice, marginleverage, err)
                 rethrow()
             finally
                 if !isnothing(leg_group_id) || !isnothing(leg_label)
@@ -1989,6 +1386,12 @@ ohlcv(xc::XchCache) = values(xc.bases)
 ohlcv(xc::XchCache, base::AbstractString) = xc.bases[base]
 baseohlcvdict(xc::XchCache) = xc.bases
 
+"Return the OhlcvData for `base`. Alias for `ohlcv(xc, base)`."
+getohlcv(xc::XchCache, base::AbstractString) = ohlcv(xc, base)
+
+"Return the current close price for an OhlcvData at its current index."
+currentprice(o::Ohlcv.OhlcvData) = Ohlcv.dataframe(o)[o.ix, :close]
+
 basenottradable = ["MATIC", "FTM", "KFEE"]  # KFEE = Kraken proprietary fee credit, never tradeable
 basestablecoin = ["USD", "USD1", "USDT", "TUSD", "BUSD", "USDC", "USDE", "EUR", "DAI"]
 quotecoins = ["USDT"]  # , "USDC"]
@@ -2003,7 +1406,7 @@ _isleveraged(token) = !isnothing(token) && (length(token) > 2) && (token[end] in
 
 validbase(xc::XchCache, base::AbstractString) =
     (uppercase(base) != uppercase(EnvConfig.pairquote)) &&
-    validsymbol(xc, symboltoken(xc, base, EnvConfig.pairquote; role=data_exchange))
+    validsymbol(xc, symboltoken(xc, base, EnvConfig.pairquote))
 
 removebase!(xc::XchCache, base) = delete!(xc.bases, base)
 removeallbases(xc::XchCache) = xc.bases = Dict()
@@ -2034,34 +1437,34 @@ assetbases(xc::XchCache) = filter(!=(uppercase(EnvConfig.pairquote)), uppercase.
 symboltoken(basecoin, quotecoin=EnvConfig.pairquote) = isnothing(basecoin) ? nothing : uppercase(basecoin * quotecoin)
 
 """
-Resolve the exchange-specific symbol token for a pair on the routed exchange.
+Resolve the exchange-specific symbol token for a pair on the primary exchange.
 Falls back to a concatenated symbol if the adapter cannot map the pair yet.
 """
-function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote; role::ExchangeRole=trade_exchange_spot)
-    bc = _routedbc(xc, role)
+function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)
+    bc = xc.bc
     if isnothing(bc)
         return symboltoken(basecoin, quotecoin)
     end
-    return _routedModule(xc, role).symboltoken(bc, basecoin, quotecoin)
+    return _exchangeModule(xc).symboltoken(bc, basecoin, quotecoin)
 end
 
-"Return side-specific margin leverage caps for one symbol when supported by the routed exchange."
-function marginlimits(xc::XchCache, symbol::AbstractString; role::ExchangeRole=trade_exchange_spot)
-    bc = _routedbc(xc, role)
+"Return side-specific margin leverage caps for one symbol when supported by the primary exchange."
+function marginlimits(xc::XchCache, symbol::AbstractString)
+    bc = xc.bc
     isnothing(bc) && return (maxleveragebuy=0, maxleveragesell=0)
-    mod = _routedModule(xc, role)
+    mod = _exchangeModule(xc)
     if isdefined(mod, :marginlimits) && applicable(getfield(mod, :marginlimits), bc, symbol)
         return mod.marginlimits(bc, symbol)
     end
     return (maxleveragebuy=0, maxleveragesell=0)
 end
 
-"Return true when routed exchange metadata permits side/leverage for one symbol."
-function marginpermitted(xc::XchCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed; role::ExchangeRole=trade_exchange_spot)::Bool
+"Return true when primary exchange metadata permits side/leverage for one symbol."
+function marginpermitted(xc::XchCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed)::Bool
     marginleverage <= 0 && return true
-    bc = _routedbc(xc, role)
+    bc = xc.bc
     isnothing(bc) && return false
-    mod = _routedModule(xc, role)
+    mod = _exchangeModule(xc)
     if isdefined(mod, :marginpermitted) && applicable(getfield(mod, :marginpermitted), bc, symbol, orderside, marginleverage)
         return mod.marginpermitted(bc, symbol, orderside, marginleverage)
     end
@@ -2095,14 +1498,14 @@ end
 Return minimum quantities for a `(basecoin, quotecoin)` pair.
 """
 function minimumqty(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
-    return minimumqty(xc, symboltoken(xc, basecoin, quotecoin; role=trade_exchange_spot))
+    return minimumqty(xc, symboltoken(xc, basecoin, quotecoin))
 end
 
 """
 Return precision information for a `(basecoin, quotecoin)` pair.
 """
 function precision(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
-    return precision(xc, symboltoken(xc, basecoin, quotecoin; role=trade_exchange_spot))
+    return precision(xc, symboltoken(xc, basecoin, quotecoin))
 end
 
 #endregion support
@@ -2175,12 +1578,12 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
 end
 
 function _fetchwsclosedkline(xc::XchCache, symbol::AbstractString, interval::AbstractString)
-    mod = _routedModule(xc, data_exchange)
+    mod = _adaptermodule(xc)
     if !isdefined(mod, :wsclosedkline)
         return nothing
     end
     try
-        return getproperty(mod, :wsclosedkline)(_routedbc(xc, data_exchange), symbol, String(interval))
+        return getproperty(mod, :wsclosedkline)(xc.bc, symbol, String(interval))
     catch
         try
             return getproperty(mod, :wsclosedkline)(symbol, String(interval))
@@ -2222,7 +1625,7 @@ function _upsert_closed_wscandle!(ohlcv, candle)
 end
 
 function _applywsclosedcandle!(xc::XchCache, ohlcv, dt::DateTime)
-    sym = symboltoken(xc, ohlcv.base, ohlcv.quotecoin; role=data_exchange)
+    sym = symboltoken(xc, ohlcv.base, ohlcv.quotecoin)
     candle = _fetchwsclosedkline(xc, sym, ohlcv.interval)
     isnothing(candle) && return nothing
     cutoff = dt - intervalperiod(ohlcv.interval)
@@ -2267,9 +1670,6 @@ function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
 
     xc.currentdt = datetime
     _setsimtime!(xc.bc, datetime)
-    for bc in values(xc.routecaches)
-        _setsimtime!(bc, datetime)
-    end
     if !isnothing(datetime)
         for base in keys(xc.bases)
             try
@@ -2478,7 +1878,7 @@ function validsymbol(xc::XchCache, symbol)
 end
 
 function validsymbol(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
-    bc = _routedbc(xc, data_exchange)
+    bc = xc.bc
     return !isnothing(bc) && validsymbol(bc, basecoin, quotecoin)
 end
 
@@ -2530,7 +1930,7 @@ function _usdtmarkettickers(xc::XchCache; requestedbases=nothing)
     quotetoken = uppercase(String(EnvConfig.pairquote))
     wanted = unique([uppercase(String(base)) for base in requestedbases if !isnothing(base) && (uppercase(String(base)) != quotetoken)])
     for base in wanted
-        symbol = symboltoken(xc, base, quotetoken; role=data_exchange)
+        symbol = symboltoken(xc, base, quotetoken)
         row = _tickerrow(_exchangeget24h(xc, symbol))
         isnothing(row) && continue
         push!(rows, row)
@@ -2708,7 +2108,7 @@ function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::I
     snapshot = try
         _exchangeaccountcapacity(xc)
     catch err
-        (verbosity >= 1) && @warn "accountcapacity: exchange snapshot failed, using fallback" exchange=_routeexchange(xc.routing, trade_exchange_spot, xc.exchange) error=sprint(showerror, err)
+        (verbosity >= 1) && @warn "accountcapacity: exchange snapshot failed, using fallback" exchange=xc.exchange error=sprint(showerror, err)
         nothing
     end
     if isnothing(snapshot)
@@ -2741,6 +2141,7 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
         equity_quote=capacity.equity_quote,
         free_quote=free_quote,
         free_margin_quote=capacity.available_opening_quote,
+        maintenance_margin_quote=capacity.maintenance_margin_quote,
     )
 end
 
@@ -2787,12 +2188,11 @@ function _matchingopenorder(xc::XchCache, base::AbstractString, side::AbstractSt
     return nothing
 end
 
-function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct, quoteprice)
+function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
     tradesdf[ix, :equity] = Float32(acct.equity_quote)
     tradesdf[ix, :balance] = Float32(acct.free_quote)
     tradesdf[ix, :freemargin] = Float32(acct.free_margin_quote)
     tradesdf[ix, :freequote] = Float32(acct.free_quote)
-    tradesdf[ix, :quoteprice] = (!isnothing(quoteprice) && !ismissing(quoteprice)) ? Float32(quoteprice) : 0f0
     return nothing
 end
 
@@ -2858,6 +2258,7 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         (:sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg),
     ]
         oid = tradesdf[ix, idcol]
+        ismissing(oid) && continue  # no order id assigned to this lane
         oids = String(oid)
         (lowercase(strip(oids)) == NO_ORDER_ID || isempty(strip(oids))) && continue
         info = getorder(xc, String(oid); auditevent=auditevent)
@@ -2869,7 +2270,7 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         tradesdf[ix, stcol] = status
         if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
             executed = Float64(info.executedqty)
-            tradesdf[ix, filledcol] = Float32(max(0.0, Float64(info.baseqty) - executed))
+            tradesdf[ix, filledcol] = Float32(max(0.0, executed))
             if row_is_open_intent && (executed > 0.0)
                 tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
             end
@@ -2885,6 +2286,113 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         end
     end
     return tradesdf
+end
+
+"""
+    sync_latest_trades_rows!(xc, syncpairs=nothing)
+
+Materialize or advance Trades rows to the current OHLCV timestamp for each active
+base, applying the latest order status, portfolio positions, and account snapshot.
+
+When `syncpairs` is provided (e.g. `["BTCUSDT"]`), only those pairs are synced
+and missing pair entries are created. When `syncpairs` is `nothing`, all bases
+currently in `xc.bases` are synced.
+
+Returns `Dict{String, NamedTuple{(:tradesdf, :rowix)}}` keyed by uppercase base.
+"""
+function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing)
+    quotecoin = uppercase(String(EnvConfig.pairquote))
+    acct = account_status(xc; force_refresh=true, ttl_seconds=0)
+    balancesdf = acct.balances
+
+    bases_to_sync = String[]
+    if isnothing(syncpairs)
+        for base in keys(xc.bases)
+            uppercase(String(base)) == quotecoin && continue
+            push!(bases_to_sync, uppercase(String(base)))
+        end
+    else
+        for pair in syncpairs
+            bq = basequote(String(pair))
+            isnothing(bq) && continue
+            base = uppercase(String(bq.basecoin))
+            base == quotecoin && continue
+            base in bases_to_sync || push!(bases_to_sync, base)
+        end
+    end
+
+    rowsbybase = Dict{String, NamedTuple}()
+
+    for base in bases_to_sync
+        pairkey = tradingpairkey(base, quotecoin)
+        currentdt = if base in keys(xc.bases)
+            o = ohlcv(xc, base)
+            odf = Ohlcv.dataframe(o)
+            size(odf, 1) > 0 ? odf[Ohlcv.ix(o), :opentime] : (isnothing(xc.currentdt) ? xc.startdt : xc.currentdt)
+        else
+            isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
+        end
+
+        tdf_rowix = ensuretradesrow!(xc, base, quotecoin, currentdt)
+        tdf = tdf_rowix.tradesdf
+        rowix = tdf_rowix.rowix
+        tradesdf_label(tdf)  # repair missing→ignore if push! without :label was used
+
+        # OHLCV columns
+        if base in keys(xc.bases)
+            o = ohlcv(xc, base)
+            odf = Ohlcv.dataframe(o)
+            oix = Ohlcv.ix(o)
+            if size(odf, 1) > 0 && 1 <= oix <= size(odf, 1)
+                :close ∈ propertynames(tdf) && (tdf[rowix, :close] = Float32(odf[oix, :close]))
+                :high  ∈ propertynames(tdf) && (tdf[rowix, :high]  = Float32(odf[oix, :high]))
+                :low   ∈ propertynames(tdf) && (tdf[rowix, :low]   = Float32(odf[oix, :low]))
+            end
+        end
+
+        # Sync order statuses for all lanes
+        order_status(xc, tdf, rowix; auditevent=false)
+
+        # Position amounts from portfolio snapshot
+        bix = _hascol(balancesdf, :coin) ? findfirst(==(base), uppercase.(String.(balancesdf[!, :coin]))) : nothing
+        if !isnothing(bix)
+            free_val  = _hascol(balancesdf, :free)     ? Float32(balancesdf[bix, :free])     : 0f0
+            borr_val  = _hascol(balancesdf, :borrowed) ? Float32(balancesdf[bix, :borrowed]) : 0f0
+            :lp_amount ∈ propertynames(tdf) && (tdf[rowix, :lp_amount] = max(0f0, free_val))
+            :sp_amount ∈ propertynames(tdf) && (tdf[rowix, :sp_amount] = max(0f0, borr_val))
+        end
+
+        # lastopentrade: set to current time on open-order fills, else propagate or clear
+        lo_filled = (:lo_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lo_filled])) ? Float32(tdf[rowix, :lo_filled]) : 0f0
+        so_filled = (:so_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :so_filled])) ? Float32(tdf[rowix, :so_filled]) : 0f0
+        lp_amount = (:lp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lp_amount])) ? Float32(tdf[rowix, :lp_amount]) : 0f0
+        sp_amount = (:sp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :sp_amount])) ? Float32(tdf[rowix, :sp_amount]) : 0f0
+        if :lastopentrade ∈ propertynames(tdf)
+            if lo_filled > 0f0 || so_filled > 0f0
+                tdf[rowix, :lastopentrade] = currentdt
+            elseif lp_amount > 0f0 || sp_amount > 0f0
+                if ismissing(tdf[rowix, :lastopentrade])
+                    for j in (rowix - 1):-1:1
+                        prev = tdf[j, :lastopentrade]
+                        if !ismissing(prev)
+                            tdf[rowix, :lastopentrade] = prev
+                            break
+                        end
+                    end
+                end
+            else
+                tdf[rowix, :lastopentrade] = missing
+            end
+        end
+
+        # Account snapshot columns
+        _apply_accountsnapshot!(tdf, rowix, acct)
+        :maintmargin ∈ propertynames(tdf) && (tdf[rowix, :maintmargin] = Float32(acct.capacity.maintenance_margin_quote))
+
+        rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
+    end
+
+    return rowsbybase
 end
 
 "Evaluate and execute one row-level order request from the Trades DataFrame."
@@ -2950,7 +2458,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     else  # :short_close
         :sc_status
     end
-    unfilledcol = if action == :long_open
+    filledcol = if action == :long_open
         :lo_filled
     elseif action == :long_close
         :lc_filled
@@ -3069,8 +2577,8 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
 
     tradesdf[ix, idcol] = String(oid)
     tradesdf[ix, stcol] = "Submitted"
-    tradesdf[ix, unfilledcol] = amount
-    tradesdf[ix, avgcol] = missing
+    tradesdf[ix, filledcol] = 0f0
+    tradesdf[ix, avgcol] = 0f0
     _carry_lastopentrade_from_previous!(tradesdf, ix)
     if action in [:long_open, :long_close]
         tradesdf[ix, :lp_amount] = amount
@@ -3079,7 +2587,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         tradesdf[ix, :lp_amount] = 0f0
         tradesdf[ix, :sp_amount] = amount
     end
-    _apply_accountsnapshot!(tradesdf, ix, acct, refprice)
+    _apply_accountsnapshot!(tradesdf, ix, acct)
     return (accepted=true, action=action, orderid=String(oid))
 end
 
@@ -3267,7 +2775,7 @@ function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_labe
         settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
     unregisteradaptiveorder!(xc, orderid)
-    cancelsymbol = symboltoken(xc, base, EnvConfig.pairquote; role=trade_exchange_spot)
+    cancelsymbol = symboltoken(xc, base, EnvConfig.pairquote)
     cancelled = _exchangecancelorder(xc, cancelsymbol, orderid)
     if !isnothing(cancelled)
         # Assume exchange-side cancel success when Kraken confirms CancelOrder.
@@ -3292,22 +2800,55 @@ function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_labe
     return cancelled
 end
 
-"""
-Places an order: spot order by default or margin order if 2 <= marginleverage <= 10
-Adapts `limitprice` and `basequantity` according to symbol rules and executes order.
 
-Pass `limitprice=nothing` together with `maker=true` to ask the adapter to choose
-a limit price as close as possible to the current spread while remaining post-only,
-so the order can qualify for maker fees.
-
-Order is rejected (but order created) if the resulting price crosses the spread in
-order to secure maker price fees.
-Returns `nothing` in case order execution fails.
 """
+Create an open position order with explicit configside intent.
+- `configside=:long` submits a buy order.
+- `configside=:short` submits a sell order.
+Returns `nothing` when `basequantity` is below the symbol minimum quantity.
+Throws `ArgumentError` for invalid (negative) `basequantity`.
+"""
+
+"""
+    closebeforeopenflip!(close_fn, open_fn) -> NamedTuple
+
+Execute a close-before-open order sequence. Runs `close_fn` first; if it returns
+a non-nothing order id, runs `open_fn` and returns both ids. If `close_fn` returns
+`nothing`, the open leg is skipped and both ids in the result are `nothing`.
+
+Returns `(; closeorderid, openorderid)`.
+"""
+function closebeforeopenflip!(close_fn::Function, open_fn::Function)
+    closeorderid = close_fn()
+    if isnothing(closeorderid)
+        return (; closeorderid=nothing, openorderid=nothing)
+    end
+    openorderid = open_fn()
+    return (; closeorderid=closeorderid, openorderid=openorderid)
+end
+
+function createopenorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, configside::Symbol, marginleverage::Signed=0, reduceonly::Bool=false, kwargs...)
+    basequantity < 0 && throw(ArgumentError("basequantity=$(basequantity) must be non-negative for createopenorder"))
+    @assert configside in (:long, :short) "createopenorder configside=$(configside) must be :long or :short"
+    refprice = isnothing(limitprice) ? nothing : Float32(limitprice)
+    if isnothing(refprice) && uppercase(String(base)) in keys(xc.bases)
+        refprice = Float32(currentprice(ohlcv(xc, uppercase(String(base)))))
+    end
+    minqty = isnothing(refprice) || (refprice <= 0f0) ? nothing : minimumbasequantity(xc, base, refprice)
+    if !isnothing(minqty) && Float32(basequantity) < Float32(minqty)
+        return nothing
+    end
+    if configside == :long
+        return createbuyorder(xc, base; limitprice=limitprice, basequantity=basequantity, maker=maker, marginleverage=marginleverage, reduceonly=reduceonly)
+    else
+        return createsellorder(xc, base; limitprice=limitprice, basequantity=basequantity, maker=maker, marginleverage=marginleverage, reduceonly=reduceonly)
+    end
+end
+
 function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=false, marginleverage::Signed=0, reduceonly::Bool=false, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
     _asserttradeallowed(xc)
-    symbol = symboltoken(xc, base, EnvConfig.pairquote; role=trade_exchange_spot)
+    symbol = symboltoken(xc, base, EnvConfig.pairquote)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
         settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
@@ -3318,14 +2859,14 @@ function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequan
         if !isnothing(parent_order_id) && !isnothing(oid)
             _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
         end
-        _tradelogcreatedorder!(xc, trade_exchange_spot, symbol, "Buy", basequantity, limitprice, marginleverage, oocreate)
+        _tradelogcreatedorder!(xc, symbol, "Buy", basequantity, limitprice, marginleverage, oocreate)
         if isnothing(limitprice) && maker && !isnothing(oid)
             registeradaptiveorder!(xc, oid)
         end
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     catch err
-        _tradelogordererror!(xc, trade_exchange_spot, symbol, "Buy", basequantity, limitprice, marginleverage, err)
+        _tradelogordererror!(xc, symbol, "Buy", basequantity, limitprice, marginleverage, err)
         rethrow()
     finally
         if !isnothing(leg_group_id) || !isnothing(leg_label)
@@ -3349,7 +2890,7 @@ Returns `nothing` in case order execution fails.
 function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, marginleverage::Signed=0, reduceonly::Bool=false, parent_order_id=nothing, leg_group_id=nothing, leg_label=nothing)
     base = uppercase(base)
     _asserttradeallowed(xc)
-    symbol = symboltoken(xc, base, EnvConfig.pairquote; role=trade_exchange_spot)
+    symbol = symboltoken(xc, base, EnvConfig.pairquote)
     if !isnothing(leg_group_id) || !isnothing(leg_label)
         settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
     end
@@ -3360,14 +2901,14 @@ function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequa
         if !isnothing(parent_order_id) && !isnothing(oid)
             _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
         end
-        _tradelogcreatedorder!(xc, trade_exchange_spot, symbol, "Sell", basequantity, limitprice, marginleverage, oocreate)
+        _tradelogcreatedorder!(xc, symbol, "Sell", basequantity, limitprice, marginleverage, oocreate)
         if isnothing(limitprice) && maker && !isnothing(oid)
             registeradaptiveorder!(xc, oid)
         end
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     catch err
-        _tradelogordererror!(xc, trade_exchange_spot, symbol, "Sell", basequantity, limitprice, marginleverage, err)
+        _tradelogordererror!(xc, symbol, "Sell", basequantity, limitprice, marginleverage, err)
         rethrow()
     finally
         if !isnothing(leg_group_id) || !isnothing(leg_label)
@@ -3611,7 +3152,7 @@ end
 
 "Set a fixed asset amount for coin in adapter-backed bookkeeping and return the asset row."
 function _updateasset!(xc::XchCache, coin, amount)
-    bc = _routedbc(xc, trade_exchange_spot)
+    bc = xc.bc
     if !(bc isa Bybit.BybitCache)
         throw(ArgumentError("_updateasset! requires Bybit cache for adapter-backed seeding, got $(typeof(bc))"))
     end
@@ -3635,14 +3176,11 @@ end
 function _ordersfilestem(xc::XchCache)
     ORDERPREFIX = "Orders"
     fnvec = [ORDERPREFIX]
-    if !isnothing(xc.mnemonic)
-        push!(fnvec, xc.mnemonic)
-    end
     push!(fnvec, string(EnvConfig.configmode))
     bases = sort(collect(keys(xc.bases)))
     fnvec = vcat(fnvec, bases)
     push!(fnvec, Dates.format(xc.startdt, "yy-mm-dd"))
-    enddt = isnothing(xc.enddt) ? (size(xc.orders, 1) > 0 ? xc.orders[end, :created] : (size(xc.closedorders, 1) > 0 ? xc.closedorders[end, :created] : xc.startdt)) : xc.enddt
+    enddt = xc.enddt
     push!(fnvec, Dates.format(enddt, "yy-mm-dd"))
     return join(fnvec, "_")
 end
@@ -3650,33 +3188,13 @@ end
 _ordersfilename(xc::XchCache; format::Symbol=:arrow) = EnvConfig.tablepath(_ordersfilestem(xc); folderpath=EnvConfig.logfolder(), format=format)
 
 function writeorders(xc::XchCache)
-    fn = _ordersfilename(xc; format=:arrow)
-    (verbosity >=0) && println("saving order log in filename=$fn")
-    df = nothing
-    if size(xc.closedorders, 1) > 0
-        df = xc.closedorders
-        if size(xc.orders, 1) > 0
-            df = vcat(df, xc.orders)
-        end
-    elseif size(xc.orders, 1) > 0
-        df = xc.orders
-    else
-        @warn "no orders to save in $fn"
-        return
-    end
-    EnvConfig.savedf(df, _ordersfilestem(xc); folderpath=EnvConfig.logfolder(), format=:arrow)
-    legacyfile = _ordersfilename(xc; format=:jdf)
-    if isdir(legacyfile) || isfile(legacyfile)
-        rm(legacyfile; force=true, recursive=true)
-    end
+    # Orders field removed - orders are now managed externally
+    return
 end
 
 function _assetsfilestem(xc::XchCache, dt)
     ASSETPREFIX = "Assets"
     fnvec = [ASSETPREFIX]
-    if !isnothing(xc.mnemonic)
-        push!(fnvec, xc.mnemonic)
-    end
     push!(fnvec, string(EnvConfig.configmode))
     push!(fnvec, Dates.format(dt, "yy-mm-dd"))
     return join(fnvec, "_")
@@ -3685,13 +3203,8 @@ end
 _assetsfilename(xc::XchCache, dt; format::Symbol=:arrow) = EnvConfig.tablepath(_assetsfilestem(xc, dt); folderpath=EnvConfig.logfolder(), format=format)
 
 function writeassets(xc::XchCache, dt::DateTime)
-    fn = _assetsfilename(xc, dt; format=:arrow)
-    (verbosity >=3) && println("saving asset snapshot in filename=$fn")
-    EnvConfig.savedf(xc.assets, _assetsfilestem(xc, dt); folderpath=EnvConfig.logfolder(), format=:arrow)
-    legacyfile = _assetsfilename(xc, dt; format=:jdf)
-    if isdir(legacyfile) || isfile(legacyfile)
-        rm(legacyfile; force=true, recursive=true)
-    end
+    # Assets field removed - asset snapshots are now managed externally
+    return
 end
 
 #endregion bookkeeping

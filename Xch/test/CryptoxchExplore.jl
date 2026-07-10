@@ -42,7 +42,7 @@ end
 function testorder(xc, price, basevol)
     oo = nothing
     try
-        oo = Xch.createbuyorder("btc", limitprice=price, basequantity=basevol, maker=false)
+        oo = Xch.createopenorder(xc, "btc"; limitprice=price, basequantity=basevol, maker=false, configside=:long)
     catch err
         @error err
     end
