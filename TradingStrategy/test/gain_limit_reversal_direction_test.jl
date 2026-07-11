@@ -18,12 +18,6 @@ function init_trade_columns!(tdf::DataFrame)
     if :sc_amount ∉ propertynames(tdf)
         tdf[!, :sc_amount] = fill(0f0, nrow(tdf))
     end
-    if :longleverage ∉ propertynames(tdf)
-        tdf[!, :longleverage] = fill(UInt8(1), nrow(tdf))
-    end
-    if :shortleverage ∉ propertynames(tdf)
-        tdf[!, :shortleverage] = fill(UInt8(1), nrow(tdf))
-    end
     return tdf
 end
 

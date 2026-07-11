@@ -721,7 +721,7 @@ function _compute_trend_overlay(slice::NamedTuple, trendcfg)::DataFrame
 end
 
 function _compute_tradepair_targets(trenddf::AbstractDataFrame, tradecfg, trendcfg)
-    tp = Targets.TradePairs(trendcfg.targetconfig; entryfraction=Float32(_cfgget(tradecfg, :entryfraction, 0.1f0)), exitfraction=Float32(_cfgget(tradecfg, :exitfraction, 0.1f0)))
+    tp = Targets.TradePairs(trendcfg.targetconfig; entryfraction=(_cfgget(tradecfg, :entryfraction, 0.1f0)), exitfraction=(_cfgget(tradecfg, :exitfraction, 0.1f0)))
     return Targets.tradepairlabels(tp, trenddf[!, :trend_target], Float32.(trenddf[!, :pivot]))
 end
 
@@ -748,13 +748,13 @@ function _bound_status(df::AbstractDataFrame, predlow::AbstractVector{<:Real}, p
     late_range = within_end < n ? ((within_end + 1):n) : ((n + 1):n)
 
     if side == :upper
-        samehit = _first_hit(within_range, j -> Float32(df[j, :high]) >= Float32(predhigh[ix]))
-        oppositehit = _first_hit(within_range, j -> Float32(df[j, :low]) <= Float32(predlow[ix]))
-        latehit = _first_hit(late_range, j -> Float32(df[j, :high]) >= Float32(predhigh[ix]))
+        samehit = _first_hit(within_range, j -> (df[j, :high]) >= (predhigh[ix]))
+        oppositehit = _first_hit(within_range, j -> (df[j, :low]) <= (predlow[ix]))
+        latehit = _first_hit(late_range, j -> (df[j, :high]) >= (predhigh[ix]))
     else
-        samehit = _first_hit(within_range, j -> Float32(df[j, :low]) <= Float32(predlow[ix]))
-        oppositehit = _first_hit(within_range, j -> Float32(df[j, :high]) >= Float32(predhigh[ix]))
-        latehit = _first_hit(late_range, j -> Float32(df[j, :low]) <= Float32(predlow[ix]))
+        samehit = _first_hit(within_range, j -> (df[j, :low]) <= (predlow[ix]))
+        oppositehit = _first_hit(within_range, j -> (df[j, :high]) >= (predhigh[ix]))
+        latehit = _first_hit(late_range, j -> (df[j, :low]) <= (predlow[ix]))
     end
 
     if !isnothing(samehit) && (isnothing(oppositehit) || (samehit <= oppositehit))
@@ -783,7 +783,7 @@ function _compute_bounds_overlay(slice::NamedTuple, boundscfg)
     widthpred = vec(clamp.(Float32.(yraw[2, :]), 0f0, Inf32))
     calcdf = Ohlcv.dataframe(slice.ohlcv)
     featuretimes = Features.opentime(boundscfg.featconfig)
-    pivotmap = Dict(calcdf[ix, :opentime] => Float32(calcdf[ix, :pivot]) for ix in axes(calcdf, 1))
+    pivotmap = Dict(calcdf[ix, :opentime] => (calcdf[ix, :pivot]) for ix in axes(calcdf, 1))
     predpivot = Float32[get(pivotmap, ts, 0f0) for ts in featuretimes]
     predlow, predhigh = _denormalize_bounds(centerpred, widthpred, predpivot)
 
@@ -837,7 +837,7 @@ function _build_diagnostic_heatmap(trenddf::AbstractDataFrame, trade_targets)
         for colix in 1:n
             lbl = _safe_tradelabel(ds.labels[colix])
             z[rowix, colix] = _label_code(lbl)
-            scoretxt = ismissing(ds.scores[colix]) ? "" : "<br>score=$(round(Float32(ds.scores[colix]); digits=3))"
+            scoretxt = ismissing(ds.scores[colix]) ? "" : "<br>score=$(round((ds.scores[colix]); digits=3))"
             labeltxt = ismissing(lbl) ? "missing" : string(lbl)
             hovertext[rowix, colix] = "field=$(ds.name)<br>time=$(x[colix])<br>label=$(labeltxt)$(scoretxt)"
             displaycolors[rowix, colix] = get(DIAGNOSTIC_LABEL_COLOR, lbl, DIAGNOSTIC_LABEL_COLOR[missing])
@@ -906,9 +906,9 @@ function _status_line_trace(x, y, statusvec, delayvec, category::AbstractString,
     text = Vector{String}(undef, length(y))
     for ix in eachindex(y)
         if statusvec[ix] == category
-            ycat[ix] = Float32(y[ix])
+            ycat[ix] = (y[ix])
             delaytxt = ismissing(delayvec[ix]) ? "n/a" : string(delayvec[ix]) * "m"
-            text[ix] = "$(name)<br>status=$(category)<br>delay=$(delaytxt)<br>value=$(round(Float32(y[ix]); digits=5))"
+            text[ix] = "$(name)<br>status=$(category)<br>delay=$(delaytxt)<br>value=$(round((y[ix]); digits=5))"
         else
             ycat[ix] = missing
             text[ix] = ""
@@ -918,7 +918,7 @@ function _status_line_trace(x, y, statusvec, delayvec, category::AbstractString,
 end
 
 function _value_hover_trace(x, y, name::AbstractString)
-    text = ["$(name)<br>value=$(round(Float32(val); digits=5))" for val in y]
+    text = ["$(name)<br>value=$(round((val); digits=5))" for val in y]
     return scatter(
         x=x,
         y=Float32.(y),
@@ -935,7 +935,7 @@ function _status_hover_trace(x, y, statusvec, delayvec, name::AbstractString)
     text = Vector{String}(undef, length(y))
     for ix in eachindex(y)
         delaytxt = ismissing(delayvec[ix]) ? "n/a" : string(delayvec[ix]) * "m"
-        text[ix] = "$(name)<br>status=$(statusvec[ix])<br>delay=$(delaytxt)<br>value=$(round(Float32(y[ix]); digits=5))"
+        text[ix] = "$(name)<br>status=$(statusvec[ix])<br>delay=$(delaytxt)<br>value=$(round((y[ix]); digits=5))"
     end
     return scatter(
         x=x,

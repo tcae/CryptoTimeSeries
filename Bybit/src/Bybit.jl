@@ -5,7 +5,7 @@ using EnvConfig
 using Ohlcv
 using TestOhlcv
 using XchAdapter
-import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, accountcapacity, closeorder
+import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, closebeforeopenflip!
 
 # base URL of the ByBit API
 # BYBIT_API_REST = "https://api.bybit.com"
@@ -50,7 +50,7 @@ function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::Abst
 end
 
 "Return side-specific execution config owned by the Bybit adapter."
-function executionorderspec(side::Symbol)
+function _executionorderspec(side::Symbol)
     side in (:long, :short) || error("Bybit executionorderspec side=$(side) must be :long or :short")
     cfg = executionconfig()
     haskey(cfg, "orders") || error("missing Bybit execution config orders section")
@@ -59,7 +59,7 @@ function executionorderspec(side::Symbol)
     sidecfg = orders[String(side)]
     instrument = haskey(sidecfg, "instrument") ? lowercase(String(sidecfg["instrument"])) : ""
     leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
-    max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+    max_quote = haskey(sidecfg, "max_quote") ? (sidecfg["max_quote"]) : nothing
     return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
 end
 
@@ -67,7 +67,7 @@ function _enforce_maxquote_policy(spec, symbol::AbstractString, basequantity::Re
     if isnothing(spec.max_quote) || isnothing(price)
         return nothing
     end
-    notional = Float64(basequantity) * Float64(price)
+    notional = (basequantity) * (price)
     if notional <= spec.max_quote + 1e-9
         return nothing
     end
@@ -116,6 +116,8 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     orders::Union{Nothing, DataFrame}
     closedorders::Union{Nothing, DataFrame}
 end
+
+executionorderspec(::BybitCache, side::Symbol) = _executionorderspec(side)
 
 BYBIT_APIREST = "https://api.bybit.com"
 BYBIT_TESTNET_APIREST = "https://api-testnet.bybit.com"
@@ -190,11 +192,11 @@ function seedportfolio!(bc::BybitCache, coin::AbstractString, free::Real; locked
     coin = uppercase(String(coin))
     ix = findfirst(==(coin), bc.assets[!, :coin])
     if isnothing(ix)
-        push!(bc.assets, (coin=coin, free=Float32(free), locked=Float32(locked), borrowed=Float32(borrowed), accruedinterest=0f0))
+        push!(bc.assets, (coin=coin, free=(free), locked=(locked), borrowed=(borrowed), accruedinterest=0f0))
     else
-        bc.assets[ix, :free] = Float32(free)
-        bc.assets[ix, :locked] = Float32(locked)
-        bc.assets[ix, :borrowed] = Float32(borrowed)
+        bc.assets[ix, :free] = (free)
+        bc.assets[ix, :locked] = (locked)
+        bc.assets[ix, :borrowed] = (borrowed)
     end
     return bc
 end
@@ -599,7 +601,7 @@ function _sim_lastprice(bc::BybitCache, symbol::AbstractString; atdt::Union{Noth
         size(testdf, 1) > 0 || error("BybitSim missing test OHLCV for base=$(base) at refdt=$(refdt).")
         ix = Ohlcv.rowix(testdf[!, :opentime], refdt, Minute(1))
         ix > 0 || error("BybitSim test OHLCV row lookup failed for base=$(base) at refdt=$(refdt).")
-        return Float32(testdf[ix, :close])
+        return (testdf[ix, :close])
     end
 
     cached = Ohlcv.defaultohlcv(base, "1m")
@@ -607,7 +609,7 @@ function _sim_lastprice(bc::BybitCache, symbol::AbstractString; atdt::Union{Noth
     size(cached.df, 1) > 0 || error("BybitSim missing cached OHLCV for base=$(base), symbol=$(sym).")
     ix = Ohlcv.rowix(cached, refdt)
     ix > 0 || error("BybitSim OHLCV row lookup failed for base=$(base), symbol=$(sym), refdt=$(refdt).")
-    return Float32(cached.df[ix, :close])
+    return (cached.df[ix, :close])
 end
 
 function _sim_get24h(bc::BybitCache, symbol=nothing)
@@ -1067,28 +1069,28 @@ function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractStrin
     is_long_margin = false  # Reserved for future long margin trades
     
     if lowercase(String(side)) == "buy"
-        bc.assets[qix, :free] -= Float32(basequantity * price)
+        bc.assets[qix, :free] -= (basequantity * price)
         if is_short_margin
             # Short margin close: reduce borrowed amount (covering short), don't add to free
-            bc.assets[bix, :borrowed] -= Float32(basequantity)
+            bc.assets[bix, :borrowed] -= (basequantity)
         elseif is_long_margin
             # Long margin open/maintain: add to free base (or track via borrowed in margin account)
-            bc.assets[bix, :free] += Float32(basequantity)
+            bc.assets[bix, :free] += (basequantity)
         else
             # Spot buy: add to free base
-            bc.assets[bix, :free] += Float32(basequantity)
+            bc.assets[bix, :free] += (basequantity)
         end
     else
-        bc.assets[qix, :free] += Float32(basequantity * price)
+        bc.assets[qix, :free] += (basequantity * price)
         if is_short_margin
             # Short margin open: increase borrowed base (short position), don't decrease free
-            bc.assets[bix, :borrowed] += Float32(basequantity)
+            bc.assets[bix, :borrowed] += (basequantity)
         elseif is_long_margin
             # Long margin close/reduce: decrease free base (or track via borrowed)
-            bc.assets[bix, :free] -= Float32(basequantity)
+            bc.assets[bix, :free] -= (basequantity)
         else
             # Spot sell: decrease free base
-            bc.assets[bix, :free] -= Float32(basequantity)
+            bc.assets[bix, :free] -= (basequantity)
         end
     end
 end
@@ -1114,10 +1116,10 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         if isnothing(syminfo)
             return nothing
         end
-        limitprice = isnothing(price) ? Float32(get24h(bc, symbol).lastprice) : Float32(price)
+        limitprice = isnothing(price) ? (get24h(bc, symbol).lastprice) : (price)
         dt = Dates.now(Dates.UTC)
         orderid = string("SIM-", uppercasefirst(lowercase(orderside)), "-", uppercase(symbol), "-", _nextsimorderseq!(bc))
-        row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=Float32(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=Float32(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+        row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce=maker ? "PostOnly" : "GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
         push!(bc.closedorders, row)
         _applyfill!(bc, symbol, orderside, basequantity, limitprice, effective_marginleverage)
         return row
@@ -1226,7 +1228,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     """
     if !isnothing(orderid)
         dt = servertime(bc)
-        order = (orderid=orderid, symbol=symbol, side=orderside, baseqty=Float32(basequantity), ordertype=params["orderType"], timeinforce=params["timeinforce"], limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="SIM_NoError")
+        order = (orderid=orderid, symbol=symbol, side=orderside, baseqty=(basequantity), ordertype=params["orderType"], timeinforce=params["timeinforce"], limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="SIM_NoError")
         return order
     end
     return orderid  # == nothing
@@ -1311,7 +1313,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         else
             changedprice = orderatentry.limitprice
         end
-        changedprice = Float32(round(changedprice, digits=pricedigits))
+        changedprice = (round(changedprice, digits=pricedigits))
         if changedprice != orderatentry.limitprice
             limitchanged = true
             params["price"] = Format.format(changedprice, precision=pricedigits)
@@ -1320,7 +1322,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
             basequantity = basequantity * changedprice < syminfo.minquoteqty ? syminfo.minquoteqty / changedprice : basequantity
             basequantity = basequantity < syminfo.minbaseqty ? syminfo.minbaseqty : basequantity
             qtydigits = (round(Int, log(10, 1/syminfo.baseprecision)))
-            basequantity = Float32(round(basequantity, digits=qtydigits))
+            basequantity = (round(basequantity, digits=qtydigits))
             if basequantity != orderatentry.baseqty
                 quantitychanged = true
                 params["qty"] = Format.format(basequantity, precision=qtydigits)
@@ -1368,7 +1370,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
     end
     if !isnothing(orderid)
         dt = servertime(bc)
-        amendorder = (orderatentry..., baseqty=Float32(isnothing(basequantity) ? orderatentry.baseqty : basequantity),  limitprice=changedprice, updated=dt)
+        amendorder = (orderatentry..., baseqty=(isnothing(basequantity) ? orderatentry.baseqty : basequantity),  limitprice=changedprice, updated=dt)
         return amendorder
     end
     return orderid  # == nothing
@@ -1458,9 +1460,9 @@ function accountcapacity(bc::BybitCache)
     if (:coin in cols) && (:free in cols)
         for row in eachrow(bdf)
             coin = uppercase(String(row.coin))
-            free  = max(0.0, Float64(row.free))
-            locked   = (:locked   in cols) ? max(0.0, Float64(row.locked))   : 0.0
-            borrowed = (:borrowed in cols) ? max(0.0, Float64(row.borrowed)) : 0.0
+            free  = max(0.0, (row.free))
+            locked   = (:locked   in cols) ? max(0.0, (row.locked))   : 0.0
+            borrowed = (:borrowed in cols) ? max(0.0, (row.borrowed)) : 0.0
             net = free + locked - borrowed
             if coin == quotecoin
                 quotefree    += free
@@ -1471,7 +1473,7 @@ function accountcapacity(bc::BybitCache)
                 # deduct the liability but also does not inflate equity).
                 symbol = string(coin, quotecoin)
                 price = try
-                    Float64(_sim_lastprice(bc, symbol))
+                    (_sim_lastprice(bc, symbol))
                 catch
                     0.0
                 end
@@ -1511,8 +1513,8 @@ function positionsnapshot(bc::BybitCache)::DataFrame
     for row in eachrow(bdf)
         coin = uppercase(String(row.coin))
         coin == quotecoin && continue
-        longqty = max(0f0, Float32(row.free))
-        shortqty = hasborrowed ? max(0f0, Float32(row.borrowed)) : 0f0
+        longqty = max(0f0, (row.free))
+        shortqty = hasborrowed ? max(0f0, (row.borrowed)) : 0f0
         (longqty == 0f0 && shortqty == 0f0) && continue
         push!(out, (coin=coin, long_qty=longqty, short_qty=shortqty))
     end

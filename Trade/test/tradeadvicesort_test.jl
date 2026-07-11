@@ -15,7 +15,7 @@ function mkrow(base, label, probability)
         sc_limit=Float32[98f0],
         label=Targets.TradeLabel[label],
     )
-    return (base=base, rowix=1, tradesdf=tdf, probability=Float32(probability), configid=0)
+    return (base=base, rowix=1, tradesdf=tdf, probability=(probability), configid=0)
 end
 
 rows = [

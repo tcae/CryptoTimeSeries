@@ -72,8 +72,8 @@ function filled_orders_df(xc::Xch.XchCache)::DataFrame
                 status = lowercase(strip(String(row[statuscol])))
                 status == "closed" || continue
 
-                filled = ismissing(row[filledcol]) ? 0.0 : Float64(row[filledcol])
-                avg = ismissing(row[pavgcol]) ? 0.0 : Float64(row[pavgcol])
+                filled = ismissing(row[filledcol]) ? 0.0 : (row[filledcol])
+                avg = ismissing(row[pavgcol]) ? 0.0 : (row[pavgcol])
                 (filled > 0.0 && avg > 0.0) || continue
 
                 push!(rows, (
@@ -114,13 +114,13 @@ function ensure_quote_budget!(xc::Xch.XchCache, quote_coin::AbstractString, mini
     q = uppercase(String(quote_coin))
     balancesdf = Xch.balances(xc, ignoresmallvolume=false)
     qix = size(balancesdf, 1) > 0 ? findfirst(==(q), uppercase.(String.(balancesdf[!, :coin]))) : nothing
-    current_free = isnothing(qix) ? 0.0 : Float64(balancesdf[qix, :free])
-    if current_free + 1e-6 < Float64(minimum_free)
+    current_free = isnothing(qix) ? 0.0 : (balancesdf[qix, :free])
+    if current_free + 1e-6 < (minimum_free)
         seed_quote_balance!(xc, q, minimum_free)
         balancesdf = Xch.balances(xc, ignoresmallvolume=false)
         qix = size(balancesdf, 1) > 0 ? findfirst(==(q), uppercase.(String.(balancesdf[!, :coin]))) : nothing
-        reseeded_free = isnothing(qix) ? 0.0 : Float64(balancesdf[qix, :free])
-        @assert reseeded_free + 1e-6 >= Float64(minimum_free) "totalusdt seed $(q) budget is insufficient after reseed; expected >= $(minimum_free), got $(reseeded_free)"
+        reseeded_free = isnothing(qix) ? 0.0 : (balancesdf[qix, :free])
+        @assert reseeded_free + 1e-6 >= (minimum_free) "totalusdt seed $(q) budget is insufficient after reseed; expected >= $(minimum_free), got $(reseeded_free)"
         println("$(EnvConfig.now()): reseeded $(q) free balance from $(round(current_free, digits=2)) to $(round(reseeded_free, digits=2))")
     else
         println("$(EnvConfig.now()): confirmed $(q) free seed budget $(round(current_free, digits=2))")
@@ -172,7 +172,7 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
     for row in eachrow(co)
         day = Date(row.created)
         if !ismissing(row.executedqty) && !ismissing(row.avgprice) && uppercasefirst(string(row.side)) == "Sell"
-            pnl = Float64(row.executedqty) * Float64(row.avgprice)
+            pnl = (row.executedqty) * (row.avgprice)
             daily_pnl[day] = get(daily_pnl, day, 0.0) + pnl
         end
     end
@@ -203,8 +203,8 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
                 continue
             end
             sym = string(row.symbol)
-            px = Float64(row.avgprice)
-            qty = Float64(row.executedqty)
+            px = (row.avgprice)
+            qty = (row.executedqty)
             (px <= 0.0 || qty <= 0.0) && continue
 
             side = uppercasefirst(string(row.side))

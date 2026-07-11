@@ -3,16 +3,20 @@ using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
-@testset "Trade leverage defaults" begin
+@testset "Trade amount defaults" begin
     df = DataFrame(opentime=[DateTime("2025-01-01T00:00:00")], pair=["BTCUSDT"])
     for contributor in Trade.tradesdf_contributors()
         contributor(df)
     end
 
-    @test eltype(df[!, :longleverage]) == UInt8
-    @test eltype(df[!, :shortleverage]) == UInt8
-    @test df[1, :longleverage] == UInt8(1)
-    @test df[1, :shortleverage] == UInt8(1)
+    @test eltype(df[!, :lo_amount]) == Float32
+    @test eltype(df[!, :lc_amount]) == Float32
+    @test eltype(df[!, :so_amount]) == Float32
+    @test eltype(df[!, :sc_amount]) == Float32
+    @test df[1, :lo_amount] == 0f0
+    @test df[1, :lc_amount] == 0f0
+    @test df[1, :so_amount] == 0f0
+    @test df[1, :sc_amount] == 0f0
 end
 
 @testset "Managed close order state" begin

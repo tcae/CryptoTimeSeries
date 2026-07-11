@@ -17,10 +17,10 @@ function _run_kraken_order_lifecycle!(exchange::String)
     row = mdf[1, :]
     base = String(row.basecoin)
     quotecoin = String(EnvConfig.pairquote)
-    mid = Float32(max(row.lastprice, row.bidprice, row.askprice))
+    mid = (max(row.lastprice, row.bidprice, row.askprice))
     # Post-only far-from-touch price to avoid accidental fills in tests.
     limit = mid * 0.75f0
-    minqty = Float32(Xch.minimumbasequantity(xc, base, limit))
+    minqty = (Xch.minimumbasequantity(xc, base, limit))
     amount = max(minqty * 1.25f0, minqty + 1.0f-6)
 
     req = DataFrame(
@@ -28,7 +28,6 @@ function _run_kraken_order_lifecycle!(exchange::String)
         label=[Targets.longopen],
         lo_limit=[limit],
         lo_amount=[amount],
-        longleverage=[UInt8(0)],
     )
 
     first_result = Xch.process_order_request(xc, req, 1)

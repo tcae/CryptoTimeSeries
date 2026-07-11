@@ -2,7 +2,7 @@ module KrakenSpot
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
 using XchAdapter
-import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, wsclosedkline
+import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, closebeforeopenflip!, wsclosedkline
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
 # The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
@@ -45,12 +45,12 @@ function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::Abst
 	sidecfg = orders[String(side)]
 	instrument = lowercase(String(sidecfg["instrument"]))
 	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : Int(marginleverage)
-	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	max_quote = haskey(sidecfg, "max_quote") ? (sidecfg["max_quote"]) : nothing
 	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
 end
 
 "Return side-specific execution config owned by the KrakenSpot adapter."
-function executionorderspec(side::Symbol)
+function _executionorderspec(side::Symbol)
 	side in (:long, :short) || error("KrakenSpot executionorderspec side=$(side) must be :long or :short")
 	cfg = executionconfig()
 	haskey(cfg, "orders") || error("missing KrakenSpot execution config orders section")
@@ -59,7 +59,7 @@ function executionorderspec(side::Symbol)
 	sidecfg = orders[String(side)]
 	instrument = haskey(sidecfg, "instrument") ? lowercase(String(sidecfg["instrument"])) : ""
 	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
-	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	max_quote = haskey(sidecfg, "max_quote") ? (sidecfg["max_quote"]) : nothing
 	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
 end
 
@@ -305,10 +305,10 @@ function _ws_orderrow_from_dict(bc, entry::AbstractDict)
 	symbol = rawsymbol == "" ? "" : _resultkey2symbol(bc, rawsymbol)
 	side = lowercase(String(_ws_tryget(entry, ["side", "type", "direction"], "buy"))) == "buy" ? "Buy" : "Sell"
 	ordertype = titlecase(String(_ws_tryget(entry, ["ordertype", "order_type", "orderType"], "Limit")))
-	baseqty = _float32(_ws_tryget(entry, ["vol", "qty", "size", "order_qty", "orderQty"], 0), 0f0)
-	executedqty = _float32(_ws_tryget(entry, ["vol_exec", "filled", "filled_qty", "cum_qty", "cumQty"], 0), 0f0)
-	limitprice = _float32(_ws_tryget(entry, ["price", "limit_price", "limitPrice"], 0), 0f0)
-	avgprice = _float32(_ws_tryget(entry, ["avgPrice", "fill_price", "fillPrice", "price"], limitprice), limitprice)
+	baseqty = _numstrict(_firstpresent(entry, ["vol", "qty", "size", "order_qty", "orderQty"]), "ws order $(oid) baseqty")
+	executedqty = _numstrict(_firstpresent(entry, ["vol_exec", "filled", "filled_qty", "cum_qty", "cumQty"]), "ws order $(oid) executedqty")
+	limitprice = _numstrict(_firstpresent(entry, ["price", "limit_price", "limitPrice"]), "ws order $(oid) limitprice")
+	avgprice = _numstrict(_firstpresent(entry, ["avgPrice", "fill_price", "fillPrice", "price"]), "ws order $(oid) avgprice")
 	status = lowercase(String(_ws_tryget(entry, ["status", "orderStatus"], "open")))
 	created = _ws_todatetime(_ws_tryget(entry, ["created", "createdTime", "timestamp", "time", "opentm"], Dates.now(Dates.UTC)))
 	updated = _ws_todatetime(_ws_tryget(entry, ["updated", "updatedTime", "lastUpdateTime", "timestamp"], created))
@@ -362,10 +362,10 @@ function _ws_balances_df_from_payload(payload)
 		coinraw = _ws_tryget(entry, ["asset", "coin", "currency", "ccy"], "")
 		coin = _normalizeasset(String(coinraw))
 		coin == "" && continue
-		free = _float32(_ws_tryget(entry, ["available", "free", "walletBalance"], 0), 0f0)
-		locked = _float32(_ws_tryget(entry, ["hold", "locked", "hold_trade", "initialMargin"], 0), 0f0)
-		borrowed = _float32(_ws_tryget(entry, ["borrowed", "borrow", "liability"], 0), 0f0)
-		accruedinterest = _float32(_ws_tryget(entry, ["accruedinterest", "interest"], 0), 0f0)
+		free = _numstrict(_firstpresent(entry, ["available", "free", "walletBalance"]), "ws balance $(coin) free")
+		locked = _numstrict(_firstpresent(entry, ["hold", "locked", "hold_trade", "initialMargin"]), "ws balance $(coin) locked")
+		borrowed = _numstrict(_firstpresent(entry, ["borrowed", "borrow", "liability"]), "ws balance $(coin) borrowed")
+		accruedinterest = _numstrict(_firstpresent(entry, ["accruedinterest", "interest"]), "ws balance $(coin) accruedinterest")
 		push!(df, (coin=coin, locked=locked, free=free, borrowed=borrowed, accruedinterest=accruedinterest))
 	end
 	return df
@@ -397,6 +397,8 @@ struct KrakenSpotCache <: XchAdapter.XchAdapterCache
 	publickey::String
 	secretkey::String
 end
+
+executionorderspec(::KrakenSpotCache, side::Symbol) = _executionorderspec(side)
 
 """
 Build a new `KrakenSpotCache` and optionally preload symbol metadata.
@@ -618,74 +620,105 @@ function _nextnonce()::String
 end
 
 """
-Convert a value to `Float32`, returning `default` when parsing fails.
+Convert a value to a numeric scalar, returning `default` when parsing fails.
 """
-function _float32(value, default::Float32=0f0)::Float32
+function _num(value, default::Real=0.0)
 	if isnothing(value)
 		return default
-	elseif value isa Float32
-		return value
 	elseif value isa Real
-		return Float32(value)
+		return (value)
 	elseif value isa AbstractString
 		return value == "" ? default : try
-			parse(Float32, value)
+			parse(typeof(default), value)
 		catch
 			default
 		end
 	elseif value isa AbstractVector
-		return isempty(value) ? default : _float32(first(value), default)
+		return isempty(value) ? default : _num(first(value), default)
 	end
 	return default
 end
 
 """
-Read one `Float32` from a vector-like field using 1-based `index`.
+Read one numeric value from a vector-like field using 1-based `index`.
 Falls back to `default` when the index is unavailable or parsing fails.
 """
-function _float32at(value, index::Integer, default::Float32=0f0)::Float32
+function _numat(value, index::Integer, default::Real=0.0)
 	if value isa AbstractVector
 		ix = Int(index)
-		return (1 <= ix <= length(value)) ? _float32(value[ix], default) : default
+		return (1 <= ix <= length(value)) ? _num(value[ix], default) : default
 	end
-	return _float32(value, default)
+	return _num(value, default)
+end
+
+"Return the first present value for any of `keys` in `dict`, otherwise `nothing`."
+function _firstpresent(dict::AbstractDict, keys::AbstractVector{<:AbstractString})
+	for key in keys
+		haskey(dict, key) && return dict[key]
+	end
+	return nothing
+end
+
+"Parse one numeric value strictly at an API boundary; throws on missing or malformed values."
+function _numstrict(value, context::AbstractString)
+	isnothing(value) && error("$(context) is missing")
+	if value isa Real
+		return value
+	elseif value isa AbstractString
+		s = strip(String(value))
+		isempty(s) && error("$(context) must not be empty")
+		try
+			return parse(Float64, s)
+		catch err
+			error("$(context) must be numeric, got value=$(repr(value)) type=$(typeof(value)) parse_error=$(sprint(showerror, err))")
+		end
+	end
+	error("$(context) must be Real or numeric string, got type=$(typeof(value)) value=$(repr(value))")
+end
+
+"Read one numeric vector element strictly using 1-based `index`."
+function _numatstrict(value, index::Integer, context::AbstractString)
+	value isa AbstractVector || error("$(context) must be a vector, got type=$(typeof(value))")
+	ix = Int(index)
+	(1 <= ix <= length(value)) || error("$(context) missing index $(ix), length=$(length(value))")
+	return _numstrict(value[ix], context)
 end
 
 "Parse Kraken leverage values (e.g. \"2\", \"2:1\", \"none\") into a positive ratio or 0."
-function _leveragevalue(value)::Float32
+function _leveragevalue(value)
 	if isnothing(value)
-		return 0f0
+		return 0.0
 	end
 	if value isa Real
-		v = Float32(value)
-		return v > 0f0 ? v : 0f0
+		v = (value)
+		return v > 0.0 ? v : 0.0
 	end
 	if value isa AbstractString
 		s = lowercase(strip(String(value)))
-		(s == "") && return 0f0
-		(s == "none") && return 0f0
+		(s == "") && return 0.0
+		(s == "none") && return 0.0
 		if occursin(":", s)
 			parts = split(s, ":")
 			if !isempty(parts)
 				lhs = try
-					parse(Float32, strip(parts[1]))
+					parse(Float64, strip(parts[1]))
 				catch
-					0f0
+					0.0
 				end
-				return lhs > 0f0 ? lhs : 0f0
+				return lhs > 0.0 ? lhs : 0.0
 			end
 		end
 		parsed = try
-			parse(Float32, s)
+			parse(Float64, s)
 		catch
-			0f0
+			0.0
 		end
-		return parsed > 0f0 ? parsed : 0f0
+		return parsed > 0.0 ? parsed : 0.0
 	end
 	if value isa AbstractVector
-		return isempty(value) ? 0f0 : _leveragevalue(first(value))
+		return isempty(value) ? 0.0 : _leveragevalue(first(value))
 	end
-	return 0f0
+	return 0.0
 end
 
 """
@@ -717,7 +750,7 @@ end
 "Return decimal digits implied by a precision step size (e.g. 0.01 => 2)."
 function _precisiondigits(step::Real, defaultdigits::Int=8)::Int
 	step <= 0 && return defaultdigits
-	d = round(Int, log10(1 / Float64(step)))
+	d = round(Int, log10(1 / (step)))
 	return max(d, 0)
 end
 
@@ -790,28 +823,28 @@ end
 
 "Normalize limit order price/qty to exchange precision and min constraints."
 function _normalizelimitorderparams(syminfo::DataFrameRow, basequantity::Real, limitprice::Real)
-	pricedigits = _precisiondigits(Float64(syminfo.ticksize), 5)
-	qtydigits = _precisiondigits(Float64(syminfo.baseprecision), 8)
+	pricedigits = _precisiondigits((syminfo.ticksize), 5)
+	qtydigits = _precisiondigits((syminfo.baseprecision), 8)
 
-	normprice = Float32(round(Float64(limitprice), digits=pricedigits))
+	normprice = (round((limitprice), digits=pricedigits))
 	normprice > 0f0 || throw(ArgumentError("normalized limitprice must be > 0, got $(normprice)"))
 
-	normqty = Float64(basequantity)
-	minquote = Float64(syminfo.minquoteqty)
-	minbase = Float64(syminfo.minbaseqty)
-	if (minquote > 0.0) && ((normqty * Float64(normprice)) < minquote)
-		normqty = minquote / Float64(normprice)
+	normqty = (basequantity)
+	minquote = (syminfo.minquoteqty)
+	minbase = (syminfo.minbaseqty)
+	if (minquote > 0.0) && ((normqty * (normprice)) < minquote)
+		normqty = minquote / (normprice)
 	end
 	normqty = max(normqty, minbase)
 	normqty = floor(normqty, digits=qtydigits)
 	if normqty < minbase
 		normqty = minbase
 	end
-	if (minquote > 0.0) && ((normqty * Float64(normprice)) < minquote)
-		normqty = ceil(minquote / Float64(normprice), digits=qtydigits)
+	if (minquote > 0.0) && ((normqty * (normprice)) < minquote)
+		normqty = ceil(minquote / (normprice), digits=qtydigits)
 		normqty = max(normqty, minbase)
 	end
-	return (basequantity=Float32(normqty), limitprice=normprice, qtydigits=qtydigits, pricedigits=pricedigits)
+	return (basequantity=(normqty), limitprice=normprice, qtydigits=qtydigits, pricedigits=pricedigits)
 end
 
 "Validate requested spot margin leverage range before submitting Kraken orders."
@@ -1179,10 +1212,10 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 
 		pairdecimals = _int(get(info, "pair_decimals", 5), 5)
 		lotdecimals = _int(get(info, "lot_decimals", 8), 8)
-		ticksize = Float32(10.0^-pairdecimals)
-		baseprecision = Float32(10.0^-lotdecimals)
-		minbaseqty = _float32(get(info, "ordermin", "0"), 0f0)
-		minquoteqty = _float32(get(info, "costmin", "0"), 0f0)
+		ticksize = (10.0^-pairdecimals)
+		baseprecision = (10.0^-lotdecimals)
+		minbaseqty = _num(get(info, "ordermin", "0"), 0f0)
+		minquoteqty = _num(get(info, "costmin", "0"), 0f0)
 		status = String(get(info, "status", "online"))
 		maxleveragebuy = _maxleverage(get(info, "leverage_buy", Any[]))
 		maxleveragesell = _maxleverage(get(info, "leverage_sell", Any[]))
@@ -1290,14 +1323,14 @@ end
 Parse one Kraken ticker object into Bybit-compatible ticker fields.
 """
 function _tickerrow(bc::KrakenSpotCache, key::AbstractString, ticker::Dict)
-	ask = _float32(get(ticker, "a", Any[]), 0f0)
-	bid = _float32(get(ticker, "b", Any[]), 0f0)
-	lastprice = _float32(get(ticker, "c", Any[]), 0f0)
-	openprice = _float32(get(ticker, "o", "0"), 0f0)
+	ask = _numatstrict(get(ticker, "a", nothing), 1, "ticker $(key) ask")
+	bid = _numatstrict(get(ticker, "b", nothing), 1, "ticker $(key) bid")
+	lastprice = _numatstrict(get(ticker, "c", nothing), 1, "ticker $(key) lastprice")
+	openprice = _numstrict(get(ticker, "o", nothing), "ticker $(key) openprice")
 	# Kraken ticker volume array `v` is [today, last_24h]; selection uses rolling 24h.
-	basevolume = _float32at(get(ticker, "v", Any[]), 2, 0f0)
+	basevolume = _numatstrict(get(ticker, "v", nothing), 2, "ticker $(key) basevolume24h")
 	quotevolume = basevolume * lastprice
-	pricechangepercent = openprice == 0f0 ? 0f0 : Float32((lastprice - openprice) / openprice)
+	pricechangepercent = openprice == 0f0 ? 0f0 : ((lastprice - openprice) / openprice)
 	symbol = _resultkey2symbol(bc, key)
 	return (askprice=ask, bidprice=bid, lastprice=lastprice, quotevolume24h=quotevolume, pricechangepercent=pricechangepercent, symbol=symbol)
 end
@@ -1345,11 +1378,11 @@ function _convertklines(klines)::DataFrame
 		opentime = Dates.unix2datetime(_int(row[1]))
 		push!(df, (
 			opentime=opentime,
-			open=_float32(row[2]),
-			high=_float32(row[3]),
-			low=_float32(row[4]),
-			close=_float32(row[5]),
-			basevolume=_float32(row[7]),
+			open=_num(row[2]),
+			high=_num(row[3]),
+			low=_num(row[4]),
+			close=_num(row[5]),
+			basevolume=_num(row[7]),
 		))
 	end
 	return sort!(df, :opentime)
@@ -1411,7 +1444,7 @@ end
 
 "Parse one account metric from a TradeBalance-like dictionary."
 function _accountfloat(d::AbstractDict, keys::AbstractVector{<:AbstractString}, default::Float64=0.0)::Float64
-	return Float64(_float32(_dictgetci(d, keys, default), Float32(default)))
+	return (_num(_dictgetci(d, keys, default), (default)))
 end
 
 "Return exchange-concept account capacity metrics for Kraken Spot mixed spot+margin accounts."
@@ -1445,7 +1478,7 @@ function accountcapacity(bc::KrakenSpotCache)
 		if (:coin in names(bdf)) && (:free in names(bdf))
 			for row in eachrow(bdf)
 				if uppercase(String(row.coin)) == quotecoin
-					available_long_quote += max(0.0, Float64(row.free))
+					available_long_quote += max(0.0, (row.free))
 				end
 			end
 		end
@@ -1493,7 +1526,7 @@ function positionsnapshot(bc::KrakenSpotCache)::DataFrame
 	end
 	borrowed = _borrowedfromopenpositions(bc)
 	for (coin, qty) in borrowed
-		sqty = max(0f0, Float32(qty))
+		sqty = max(0f0, (qty))
 		sqty <= 0f0 && continue
 		push!(df, (coin=uppercase(String(coin)), long_qty=0f0, short_qty=sqty))
 	end
@@ -1509,12 +1542,12 @@ function _orderrow(bc::KrakenSpotCache, orderid::AbstractString, entry::Dict)
 	symbol = _resultkey2symbol(bc, rawpair)
 	side = lowercase(String(get(descr, "type", "buy"))) == "buy" ? "Buy" : "Sell"
 	ordertype = titlecase(String(get(descr, "ordertype", "limit")))
-	baseqty = _float32(get(entry, "vol", "0"), 0f0)
-	executedqty = _float32(get(entry, "vol_exec", "0"), 0f0)
-	limitprice = _float32(get(descr, "price", get(entry, "price", "0")), 0f0)
-	avgprice = _float32(get(entry, "price", limitprice), limitprice)
+	baseqty = _numstrict(get(entry, "vol", nothing), "order $(orderid) vol")
+	executedqty = _numstrict(get(entry, "vol_exec", nothing), "order $(orderid) vol_exec")
+	limitprice = _numstrict(_firstpresent(descr, ["price"]), "order $(orderid) limitprice")
+	avgprice = _numstrict(_firstpresent(entry, ["price"]), "order $(orderid) avgprice")
 	status = titlecase(String(get(entry, "status", "open")))
-	created = Dates.unix2datetime(_int(round(_float32(get(entry, "opentm", 0), 0f0))))
+	created = Dates.unix2datetime(_int(round(_numstrict(get(entry, "opentm", nothing), "order $(orderid) opentm"))))
 	updated = created
 	leverage = _leveragevalue(get(descr, "leverage", "0"))
 	orderLinkId = String(get(entry, "cl_ord_id", ""))
@@ -1655,22 +1688,22 @@ end
 
 "Return a post-only limit price one tick inside the spread for maker orders with omitted price."
 function _makerlimitprice(syminfo::DataFrameRow, snapshot, orderside::AbstractString)
-	ticksize = Float32(syminfo.ticksize)
+	ticksize = (syminfo.ticksize)
 	side = lowercase(String(orderside))
-	price = side == "buy" ? Float32(snapshot.askprice) - ticksize : Float32(snapshot.bidprice) + ticksize
+	price = side == "buy" ? (snapshot.askprice) - ticksize : (snapshot.bidprice) + ticksize
 	return price > 0f0 ? price : nothing
 end
 
 function _icebergdisplayqty(syminfo::DataFrameRow, totalqty::Real, limitprice::Real, max_quote)::Float32
-	qtydigits = _precisiondigits(Float64(syminfo.baseprecision), 0)
-	targetqty = isnothing(max_quote) ? Float64(totalqty) : Float64(max_quote) / Float64(limitprice)
-	minimum_display = max(Float64(syminfo.minbaseqty), Float64(totalqty) / 15.0)
+	qtydigits = _precisiondigits((syminfo.baseprecision), 0)
+	targetqty = isnothing(max_quote) ? (totalqty) : (max_quote) / (limitprice)
+	minimum_display = max((syminfo.minbaseqty), (totalqty) / 15.0f0)
 	displayqty = max(targetqty, minimum_display)
 	displayqty = floor(displayqty, digits=qtydigits)
-	if displayqty < Float64(syminfo.minbaseqty)
-		displayqty = Float64(syminfo.minbaseqty)
+	if displayqty < (syminfo.minbaseqty)
+		displayqty = (syminfo.minbaseqty)
 	end
-	return Float32(min(displayqty, Float64(totalqty)))
+	return (min(displayqty, (totalqty)))
 end
 
 function _usenativeiceberg(ordertype::AbstractString, totalqty::Real, limitprice, max_quote)::Bool
@@ -1680,7 +1713,7 @@ function _usenativeiceberg(ordertype::AbstractString, totalqty::Real, limitprice
 	if isnothing(limitprice) || isnothing(max_quote)
 		return false
 	end
-	return (Float64(totalqty) * Float64(limitprice)) > Float64(max_quote) + 1e-9
+	return ((totalqty) * (limitprice)) > (max_quote) + 1e-9
 end
 
 "Build Kraken Spot AddOrder parameters, optionally in validate-only mode."
@@ -1747,8 +1780,8 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 	adaptivepost = maker && isnothing(price)
 	attempts = adaptivepost ? 5 : 1
 	ordertype = (maker || !isnothing(price)) ? "limit" : "market"
-	chosenqty = Float32(basequantity)
-	effectiveprice = isnothing(price) ? nothing : Float32(price)
+	chosenqty = (basequantity)
+	effectiveprice = isnothing(price) ? nothing : (price)
 	iceberg_displayqty = nothing
 	clientOrderId = _next_client_order_id()
 	txids = Any[]
@@ -1841,7 +1874,7 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 		baseqty=chosenqty,
 		ordertype=isnothing(iceberg_displayqty) ? titlecase(ordertype) : "Iceberg",
 			timeinforce=(maker && !isnothing(effectiveprice)) ? "PostOnly" : "GTC",
-			limitprice=isnothing(effectiveprice) ? 0f0 : Float32(effectiveprice),
+			limitprice=isnothing(effectiveprice) ? 0f0 : (effectiveprice),
 		avgprice=0f0,
 		executedqty=0f0,
 		status="New",
@@ -1904,7 +1937,7 @@ function amendorder(bc::KrakenSpotCache, symbol::String, orderid::String; basequ
 		return nothing
 	end
 
-	qty = isnothing(basequantity) ? current.baseqty : Float32(basequantity)
+	qty = isnothing(basequantity) ? current.baseqty : (basequantity)
 	syminfo = symbolinfo(bc, symbol)
 	isnothing(syminfo) && return nothing
 	maker = current.timeinforce == "PostOnly"
@@ -1914,11 +1947,11 @@ function amendorder(bc::KrakenSpotCache, symbol::String, orderid::String; basequ
 		snapshot = get24h(bc, symbol)
 		if !isnothing(snapshot)
 			price = _makerlimitprice(syminfo, snapshot, current.side)
-			pricechanged = !isapprox(Float64(price), Float64(current.limitprice); atol=0.0, rtol=0.0)
+			pricechanged = !isapprox((price), (current.limitprice); atol=0.0, rtol=0.0)
 		end
 	elseif !isnothing(limitprice)
-		price = Float32(limitprice)
-		pricechanged = !isapprox(Float64(price), Float64(current.limitprice); atol=0.0, rtol=0.0)
+		price = (limitprice)
+		pricechanged = !isapprox((price), (current.limitprice); atol=0.0, rtol=0.0)
 	end
 	if qty == current.baseqty && !pricechanged
 		return current
@@ -2036,7 +2069,7 @@ function _borrowedfromopenpositionsresult(bc::KrakenSpotCache, result)::Dict{Str
 		positiontype = lowercase(String(get(pos, "type", "")))
 		positiontype == "sell" || continue
 
-		vol = abs(_float32(get(pos, "vol", "0"), 0f0))
+		vol = abs(_num(get(pos, "vol", "0"), 0f0))
 		vol > 0f0 || continue
 
 		pairkey = String(get(pos, "pair", ""))
@@ -2056,7 +2089,7 @@ function _mergeborrowedbalances!(df::DataFrame, borrowed::Dict{String, Float32})
 		if isnothing(ix)
 			push!(df, (coin=coin, locked=0f0, free=0f0, borrowed=borrowedqty, accruedinterest=0f0))
 		else
-			df[ix, :borrowed] = Float32(df[ix, :borrowed]) + borrowedqty
+			df[ix, :borrowed] = (df[ix, :borrowed]) + borrowedqty
 		end
 	end
 	return df
@@ -2064,8 +2097,8 @@ end
 
 "Return Kraken free quantity from BalanceEx-style fields, accounting for all hold fields."
 function _balancefreefromfields(value::AbstractDict{<:Any, <:Any})::Float32
-	balance = _float32(get(value, "balance", "0"), 0f0)
-	available = _float32(get(value, "available", string(balance)), balance)
+	balance = _num(get(value, "balance", "0"), 0f0)
+	available = _num(get(value, "available", string(balance)), balance)
 	if haskey(value, "available")
 		return max(0f0, min(balance, available))
 	end
@@ -2073,7 +2106,7 @@ function _balancefreefromfields(value::AbstractDict{<:Any, <:Any})::Float32
 	for (k, v) in value
 		kstr = lowercase(String(k))
 		if (kstr == "hold") || startswith(kstr, "hold_")
-			hold_total += _float32(v, 0f0)
+			hold_total += _num(v, 0f0)
 		end
 	end
 	return max(0f0, balance - hold_total)
@@ -2121,12 +2154,12 @@ function balances(bc::KrakenSpotCache)
 		coin = _normalizeasset(String(asset))
 		if value isa AbstractDict
 			vdict = Dict(value)
-			balance = _float32(get(vdict, "balance", "0"), 0f0)
-			locked = _float32(get(vdict, "hold_trade", "0"), 0f0)
+			balance = _num(get(vdict, "balance", "0"), 0f0)
+			locked = _num(get(vdict, "hold_trade", "0"), 0f0)
 			free = _balancefreefromfields(vdict)
 			push!(df, (coin=coin, locked=locked, free=free, borrowed=0f0, accruedinterest=0f0))
 		else
-			free = _float32(value, 0f0)
+			free = _num(value, 0f0)
 			push!(df, (coin=coin, locked=0f0, free=free, borrowed=0f0, accruedinterest=0f0))
 		end
 	end
@@ -2206,9 +2239,9 @@ function ws_ticker(bc::KrakenSpotCache, symbol::String)
 							setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
 							put!(channel, Dict(
 								"symbol" => symbol,
-								"askprice" => _float32(get(pdata, "ask", "0"), 0f0),
-								"bidprice" => _float32(get(pdata, "bid", "0"), 0f0),
-								"lastprice" => _float32(get(pdata, "last", "0"), 0f0),
+								"askprice" => _num(get(pdata, "ask", "0"), 0f0),
+								"bidprice" => _num(get(pdata, "bid", "0"), 0f0),
+								"lastprice" => _num(get(pdata, "last", "0"), 0f0),
 								"source" => "ws",
 							))
 						end
@@ -2289,11 +2322,11 @@ function ws_kline(bc::KrakenSpotCache, symbol::String, interval::String="1m")
 							symbol = _ws2symbol(String(get(pdata, "symbol", wssymbol)))
 							candle = (
 								opentime=Dates.unix2datetime(_int(get(pdata, "interval_begin", 0), 0)),
-								open=_float32(get(pdata, "open", "0"), 0f0),
-								high=_float32(get(pdata, "high", "0"), 0f0),
-								low=_float32(get(pdata, "low", "0"), 0f0),
-								close=_float32(get(pdata, "close", "0"), 0f0),
-								basevolume=_float32(get(pdata, "volume", "0"), 0f0),
+								open=_num(get(pdata, "open", "0"), 0f0),
+								high=_num(get(pdata, "high", "0"), 0f0),
+								low=_num(get(pdata, "low", "0"), 0f0),
+								close=_num(get(pdata, "close", "0"), 0f0),
+								basevolume=_num(get(pdata, "volume", "0"), 0f0),
 							)
 							_recordwskline!(symbol, interval, candle)
 							setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
@@ -2386,7 +2419,7 @@ function _wsreconnectbackoffseconds(failure_streak::Int)::Float64
 	streak = max(1, failure_streak)
 	expwait = _ws_private_backoff_base_seconds * (2.0 ^ (streak - 1))
 	basewait = max(Dates.value(_ws_private_min_reconnect_interval) / 1000, min(_ws_private_backoff_cap_seconds, expwait))
-	jitter = (Float64(mod(time_ns(), 1_000_000_000)) / 1_000_000_000) * _ws_private_backoff_jitter_seconds
+	jitter = ((mod(time_ns(), 1_000_000_000)) / 1_000_000_000) * _ws_private_backoff_jitter_seconds
 	return basewait + jitter
 end
 

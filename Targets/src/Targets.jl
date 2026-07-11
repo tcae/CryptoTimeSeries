@@ -797,7 +797,7 @@ function supplement!(trd::TrendRegression)
             featureix = min(currentix + trd.graddfnooffset, size(trd.f6.fdfno, 1))
             endregry = trd.f6.fdfno[featureix, regrycolumn]
             grad = trd.f6.fdfno[featureix, gradcolumn]
-            relgains[currentix - recalcstartix + 1] = Float32(Features.relativegain(endregry, grad, trd.window))
+            relgains[currentix - recalcstartix + 1] = (Features.relativegain(endregry, grad, trd.window))
         end
         currentrelgain = relgains[currentix - recalcstartix + 1]
         targetlabels[currentix - recalcstartix + 1] = currentrelgain >= trd.longthreshold ? longopen :

@@ -896,7 +896,7 @@ function _table_feature_matrix(columns, featurecols::AbstractVector; rows)
         colname = col isa Symbol ? col : Symbol(col)
         coldata = Tables.getcolumn(columns, colname)
         for (j, srcix) in enumerate(rows)
-            feats[fidx, j] = Float32(coldata[srcix])
+            feats[fidx, j] = (coldata[srcix])
         end
     end
 
@@ -1804,8 +1804,8 @@ function classweighting(targets::AbstractVector, labels::AbstractVector=unique(t
     dist = Distributions.fit(UnivariateFinite, targetcats)
     activecount = max(count(label -> pdf(dist, label) > 0, labelnames), 1)
     classweights = Float32[
-        (let prob = Float32(pdf(dist, label))
-            prob > 0f0 ? inv(Float32(activecount) * prob) : 0f0
+        (let prob = (pdf(dist, label))
+            prob > 0f0 ? inv((activecount) * prob) : 0f0
         end) for label in labelnames
     ]
     weightmap = Dict{String, Float32}(label => weight for (label, weight) in zip(labelnames, classweights))

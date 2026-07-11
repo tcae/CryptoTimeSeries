@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "65adde81b23db58ba896de0c80d90b5fa416199b"
+project_hash = "3c3a0ae14e7a873ad1b4835a45fa1edd27914d1e"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -2273,7 +2273,7 @@ weakdeps = ["RecipesBase"]
 deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
 path = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.19.2"
+version = "0.19.3"
 
 [[deps.TradingStrategy]]
 deps = ["CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Targets", "Test", "TestOhlcv", "Xch"]
@@ -2415,7 +2415,7 @@ version = "5.8.3+0"
 deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.4"
+version = "1.6.5"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]

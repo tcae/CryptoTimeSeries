@@ -71,7 +71,6 @@ end
         label=[Targets.longopen],
         lo_limit=[price * 0.98f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
-        longleverage=[UInt8(0)],
     )
     for contributor in Xch.tradesdf_contributors()
         contributor(accepted)
@@ -104,7 +103,6 @@ end
         label=[Targets.longopen],
         lo_limit=[price],
         lo_amount=[max(minqty * 0.1f0, 1.0f-8)],
-        longleverage=[UInt8(0)],
     )
     for contributor in Xch.tradesdf_contributors()
         contributor(rejected)
@@ -144,9 +142,9 @@ end
         opentime=[startdt],
         pair=["BTCUSDT"],
         label=[Targets.longclose],
+        lp_amount=[1f0],
         lc_limit=[price * 0.98],
         lc_amount=[1 - (minqty * 0.25)],
-        longleverage=[UInt8(0)],
     )
     for contributor in Xch.tradesdf_contributors()
         contributor(close_req)

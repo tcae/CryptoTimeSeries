@@ -46,7 +46,7 @@ function discrete_background_color_bins(df; n_bins=5, columns="all")
     for column in names(df_numeric_columns, Number)
         for v in df_numeric_columns[!, column]
             ismissing(v) && continue
-            push!(vals, Float64(v))
+            push!(vals, (v))
         end
     end
     isempty(vals) && return Dict[]

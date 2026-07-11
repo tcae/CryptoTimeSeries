@@ -267,11 +267,11 @@ mutable struct XchCache
                     status=String(row.status),
                     basecoin=String(row.basecoin),
                     quotecoin=String(row.quotecoin),
-                    ticksize=Float32(row.ticksize),
-                    baseprecision=Float32(row.baseprecision),
-                    quoteprecision=Float32(row.quoteprecision),
-                    minbaseqty=Float32(row.minbaseqty),
-                    minquoteqty=Float32(row.minquoteqty),
+                    ticksize=(row.ticksize),
+                    baseprecision=(row.baseprecision),
+                    quoteprecision=(row.quoteprecision),
+                    minbaseqty=(row.minbaseqty),
+                    minquoteqty=(row.minquoteqty),
                 ))
             end
         end
@@ -280,7 +280,6 @@ mutable struct XchCache
 end
 
 exchange(xc::XchCache)::String = xc.exchange
-_exchangeModule(xc::XchCache) = _exchangeModule(xc.exchange)
 
 """
     tradingpairkey(base, quotecoin)
@@ -1049,11 +1048,11 @@ function _exchangesymbolinfo(xc::XchCache, symbol)
                 status        = string(row.status),
                 basecoin      = string(row.basecoin),
                 quotecoin     = string(row.quotecoin),
-                ticksize      = Float32(row.ticksize),
-                baseprecision = Float32(row.baseprecision),
-                quoteprecision = Float32(row.quoteprecision),
-                minbaseqty    = Float32(row.minbaseqty),
-                minquoteqty   = Float32(row.minquoteqty),
+                ticksize      = (row.ticksize),
+                baseprecision = (row.baseprecision),
+                quoteprecision = (row.quoteprecision),
+                minbaseqty    = (row.minbaseqty),
+                minquoteqty   = (row.minquoteqty),
             )
             _syminfocache(xc)[symbol] = nt
             return row  # keep returning the original DataFrameRow for backward compat
@@ -1439,11 +1438,11 @@ function _upsert_closed_wscandle!(ohlcv, candle)
     isnothing(candle) && return nothing
     df = Ohlcv.dataframe(ohlcv)
     cdt = floor(DateTime(candle.opentime), Minute(1))
-    copen = Float32(candle.open)
-    chigh = Float32(candle.high)
-    clow = Float32(candle.low)
-    cclose = Float32(candle.close)
-    cvol = Float32(candle.basevolume)
+    copen = (candle.open)
+    chigh = (candle.high)
+    clow = (candle.low)
+    cclose = (candle.close)
+    cvol = (candle.basevolume)
 
     rowix = size(df, 1) == 0 ? nothing : findfirst(==(cdt), df[!, :opentime])
     if isnothing(rowix)
@@ -1794,11 +1793,11 @@ function _tickerrow(data)
 
     return (
         symbol=String(row.symbol),
-        askprice=Float32(row.askprice),
-        bidprice=Float32(row.bidprice),
-        lastprice=Float32(row.lastprice),
-        quotevolume24h=Float32(row.quotevolume24h),
-        pricechangepercent=Float32(row.pricechangepercent),
+        askprice=(row.askprice),
+        bidprice=(row.bidprice),
+        lastprice=(row.lastprice),
+        quotevolume24h=(row.quotevolume24h),
+        pricechangepercent=(row.pricechangepercent),
     )
 end
 
@@ -1874,9 +1873,9 @@ function _asfloat64(value, default::Float64=0.0)::Float64
     if ismissing(value) || isnothing(value)
         return default
     elseif value isa AbstractFloat
-        return Float64(value)
+        return (value)
     elseif value isa Real
-        return Float64(value)
+        return (value)
     elseif value isa AbstractString
         stripped = strip(String(value))
         isempty(stripped) && return default
@@ -1910,11 +1909,11 @@ function _fallbackaccountcapacity(xc::XchCache)
     if (:coin in names(assets)) && (:free in names(assets))
         for row in eachrow(assets)
             if uppercase(String(row.coin)) == quotecoin
-                quotefree += max(0.0, Float64(row.free))
+                quotefree += max(0.0, (row.free))
             end
         end
     end
-    equity = (:usdtvalue in names(assets)) ? Float64(sum(assets[!, :usdtvalue])) : quotefree
+    equity = (:usdtvalue in names(assets)) ? (sum(assets[!, :usdtvalue])) : quotefree
     return (
         equity_quote=max(0.0, equity),
         available_opening_quote=max(0.0, quotefree),
@@ -1971,7 +1970,7 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
     if (:coin in names(assetsdf)) && (:free in names(assetsdf))
         for row in eachrow(assetsdf)
             if uppercase(String(row.coin)) == quotecoin
-                free_quote += max(0.0, Float64(row.free))
+                free_quote += max(0.0, (row.free))
             end
         end
     end
@@ -2008,8 +2007,8 @@ function _ordersidefromaction(action::Symbol)::String
 end
 
 function _openorderremaining(orow)
-    baseqty = hasproperty(orow, :baseqty) ? Float64(orow.baseqty) : 0.0
-    executed = hasproperty(orow, :executedqty) ? Float64(orow.executedqty) : 0.0
+    baseqty = hasproperty(orow, :baseqty) ? (orow.baseqty) : 0.0
+    executed = hasproperty(orow, :executedqty) ? (orow.executedqty) : 0.0
     return max(0.0, baseqty - executed)
 end
 
@@ -2027,10 +2026,10 @@ function _matchingopenorder(xc::XchCache, base::AbstractString, side::AbstractSt
 end
 
 function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
-    tradesdf[ix, :equity] = Float32(acct.equity_quote)
-    tradesdf[ix, :balance] = Float32(acct.free_quote)
-    tradesdf[ix, :freemargin] = Float32(acct.free_margin_quote)
-    tradesdf[ix, :freequote] = Float32(acct.free_quote)
+    tradesdf[ix, :equity] = (acct.equity_quote)
+    tradesdf[ix, :balance] = (acct.free_quote)
+    tradesdf[ix, :freemargin] = (acct.free_margin_quote)
+    tradesdf[ix, :freequote] = (acct.free_quote)
     return nothing
 end
 
@@ -2057,10 +2056,10 @@ end
 end
 
 function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
-    has_lo = _hascol(tradesdf, :lo_amount) && !ismissing(tradesdf[ix, :lo_amount]) && (abs(Float32(tradesdf[ix, :lo_amount])) > 0f0)
-    has_lc = _hascol(tradesdf, :lc_amount) && !ismissing(tradesdf[ix, :lc_amount]) && (abs(Float32(tradesdf[ix, :lc_amount])) > 0f0)
-    has_so = _hascol(tradesdf, :so_amount) && !ismissing(tradesdf[ix, :so_amount]) && (abs(Float32(tradesdf[ix, :so_amount])) > 0f0)
-    has_sc = _hascol(tradesdf, :sc_amount) && !ismissing(tradesdf[ix, :sc_amount]) && (abs(Float32(tradesdf[ix, :sc_amount])) > 0f0)
+    has_lo = _hascol(tradesdf, :lo_amount) && !ismissing(tradesdf[ix, :lo_amount]) && (abs((tradesdf[ix, :lo_amount])) > 0f0)
+    has_lc = _hascol(tradesdf, :lc_amount) && !ismissing(tradesdf[ix, :lc_amount]) && (abs((tradesdf[ix, :lc_amount])) > 0f0)
+    has_so = _hascol(tradesdf, :so_amount) && !ismissing(tradesdf[ix, :so_amount]) && (abs((tradesdf[ix, :so_amount])) > 0f0)
+    has_sc = _hascol(tradesdf, :sc_amount) && !ismissing(tradesdf[ix, :sc_amount]) && (abs((tradesdf[ix, :sc_amount])) > 0f0)
     return has_lo || has_lc || has_so || has_sc
 end
 
@@ -2107,14 +2106,14 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         status = hasproperty(info, :status) ? String(info.status) : "Unknown"
         tradesdf[ix, stcol] = status
         if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
-            executed = Float64(info.executedqty)
-            tradesdf[ix, filledcol] = Float32(max(0.0, executed))
+            executed = (info.executedqty)
+            tradesdf[ix, filledcol] = (max(0.0, executed))
             if row_is_open_intent && (executed > 0.0)
                 tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
             end
         end
         if hasproperty(info, :avgprice) && !ismissing(info.avgprice)
-            tradesdf[ix, avgcol] = Float32(info.avgprice)
+            tradesdf[ix, avgcol] = (info.avgprice)
         end
         if hasproperty(info, :rejectreason)
             rr = String(info.rejectreason)
@@ -2181,9 +2180,9 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing)
             odf = Ohlcv.dataframe(o)
             oix = Ohlcv.ix(o)
             if size(odf, 1) > 0 && 1 <= oix <= size(odf, 1)
-                :close ∈ propertynames(tdf) && (tdf[rowix, :close] = Float32(odf[oix, :close]))
-                :high  ∈ propertynames(tdf) && (tdf[rowix, :high]  = Float32(odf[oix, :high]))
-                :low   ∈ propertynames(tdf) && (tdf[rowix, :low]   = Float32(odf[oix, :low]))
+                :close ∈ propertynames(tdf) && (tdf[rowix, :close] = (odf[oix, :close]))
+                :high  ∈ propertynames(tdf) && (tdf[rowix, :high]  = (odf[oix, :high]))
+                :low   ∈ propertynames(tdf) && (tdf[rowix, :low]   = (odf[oix, :low]))
             end
         end
 
@@ -2193,17 +2192,17 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing)
         # Position amounts from portfolio snapshot
         bix = _hascol(balancesdf, :coin) ? findfirst(==(base), uppercase.(String.(balancesdf[!, :coin]))) : nothing
         if !isnothing(bix)
-            free_val  = _hascol(balancesdf, :free)     ? Float32(balancesdf[bix, :free])     : 0f0
-            borr_val  = _hascol(balancesdf, :borrowed) ? Float32(balancesdf[bix, :borrowed]) : 0f0
+            free_val  = _hascol(balancesdf, :free)     ? (balancesdf[bix, :free])     : 0f0
+            borr_val  = _hascol(balancesdf, :borrowed) ? (balancesdf[bix, :borrowed]) : 0f0
             :lp_amount ∈ propertynames(tdf) && (tdf[rowix, :lp_amount] = max(0f0, free_val))
             :sp_amount ∈ propertynames(tdf) && (tdf[rowix, :sp_amount] = max(0f0, borr_val))
         end
 
         # lastopentrade: set to current time on open-order fills, else propagate or clear
-        lo_filled = (:lo_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lo_filled])) ? Float32(tdf[rowix, :lo_filled]) : 0f0
-        so_filled = (:so_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :so_filled])) ? Float32(tdf[rowix, :so_filled]) : 0f0
-        lp_amount = (:lp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lp_amount])) ? Float32(tdf[rowix, :lp_amount]) : 0f0
-        sp_amount = (:sp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :sp_amount])) ? Float32(tdf[rowix, :sp_amount]) : 0f0
+        lo_filled = (:lo_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lo_filled])) ? (tdf[rowix, :lo_filled]) : 0f0
+        so_filled = (:so_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :so_filled])) ? (tdf[rowix, :so_filled]) : 0f0
+        lp_amount = (:lp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lp_amount])) ? (tdf[rowix, :lp_amount]) : 0f0
+        sp_amount = (:sp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :sp_amount])) ? (tdf[rowix, :sp_amount]) : 0f0
         if :lastopentrade ∈ propertynames(tdf)
             if lo_filled > 0f0 || so_filled > 0f0
                 tdf[rowix, :lastopentrade] = currentdt
@@ -2224,7 +2223,7 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing)
 
         # Account snapshot columns
         _apply_accountsnapshot!(tdf, rowix, acct)
-        :maintmargin ∈ propertynames(tdf) && (tdf[rowix, :maintmargin] = Float32(acct.capacity.maintenance_margin_quote))
+        :maintmargin ∈ propertynames(tdf) && (tdf[rowix, :maintmargin] = (acct.capacity.maintenance_margin_quote))
 
         rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
     end
@@ -2242,11 +2241,11 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     labelval = tradesdf[ix, :label]
     action = if labelval in (longopen, longstrongopen)
         :long_open
-    elseif labelval in (longclose, longstrongclose)
+    elseif (labelval in (longclose, longstrongclose)) && (tradesdf[ix, :lp_amount] > 0f0)
         :long_close
     elseif labelval in (shortopen, shortstrongopen)
         :short_open
-    elseif labelval in (shortclose, shortstrongclose)
+    elseif (labelval in (shortclose, shortstrongclose)) && (tradesdf[ix, :sp_amount] > 0f0)
         :short_close
     else
         :none
@@ -2266,13 +2265,6 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         action == :long_open ? :lo_amount : :lc_amount
     else
         action == :short_open ? :so_amount : :sc_amount
-    end
-    leveragecol = if action == :long_open
-        :longleverage
-    elseif action == :short_open
-        :shortleverage
-    else
-        :missing_leverage  # Closes don't use leverage
     end
     idcol = if action == :long_open
         :lo_id
@@ -2311,22 +2303,17 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         :sc_pavg
     end
 
-    requested_limit = _hascol(tradesdf, limitcol) ? Float32(tradesdf[ix, limitcol]) : 0f0
-    limitprice = requested_limit > 0f0 ? requested_limit : nothing
-    requested_amount = _hascol(tradesdf, amountcol) ? Float32(tradesdf[ix, amountcol]) : 0f0
-    leverage = _hascol(tradesdf, leveragecol) ? Int(tradesdf[ix, leveragecol]) : 0
-
-    amount = requested_amount
+    limitprice = tradesdf[ix, limitcol]
+    amount = tradesdf[ix, amountcol]
 
     if !(amount > 0f0)
         _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(amount) is not tradable for action=$(action) pair=$(base)-$(quotecoin)")
         return (accepted=false, action=action, reason="amount_not_positive")
     end
 
-    refprice = !isnothing(limitprice) ? Float32(limitprice) : (base in keys(xc.bases) ? Float32(currentprice(ohlcv(xc, base))) : 0f0)
-    minqty = isnothing(refprice) || (refprice <= 0f0) ? nothing : minimumbasequantity(xc, base, refprice)
-    if isnothing(minqty) || (amount < Float32(minqty))
-        _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(amount) below minimum qty $(minqty) for pair=$(base)-$(quotecoin)")
+    minqty = minimumbasequantity(xc, base, tradesdf[ix, :close])
+    if amount < minqty
+        _rejectedrequest!(xc, tradesdf, ix, action, "base amount=$(amount) below minimum base qty $(minqty) for pair=$(base)-$(quotecoin)")
         return (accepted=false, action=action, reason="below_minimum_qty")
     end
 
@@ -2337,18 +2324,18 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             existing = _matchingopenorder(xc, base, side)
             if !isnothing(existing)
                 remaining = _openorderremaining(existing)
-                oid = changeorder(xc, String(existing.orderid); basequantity=Float32(remaining + Float64(amount)), limitprice=limitprice)
+                oid = changeorder(xc, String(existing.orderid); basequantity=(remaining + (amount)), limitprice=limitprice)
             else
                 if action == :long_open
-                    oid = createbuyorder(xc, base; limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage))
+                    oid = createbuyorder(xc, base; limitprice=limitprice, basequantity=amount, maker=true)
                 else
-                    oid = createsellorder(xc, base; limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage))
+                    oid = createsellorder(xc, base; limitprice=limitprice, basequantity=amount, maker=true)
                 end
             end
         elseif action == :long_close
-            oid = closeorder(xc, base; positionside=:long, limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage), reduceonly=true)
+            oid = closeorder(xc, base; positionside=:long, limitprice=limitprice, basequantity=amount, maker=true, reduceonly=true)
         elseif action == :short_close
-            oid = closeorder(xc, base; positionside=:short, limitprice=limitprice, basequantity=amount, maker=true, marginleverage=max(0, leverage), reduceonly=true)
+            oid = closeorder(xc, base; positionside=:short, limitprice=limitprice, basequantity=amount, maker=true, reduceonly=true)
         end
     catch err
         logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
@@ -2595,12 +2582,12 @@ end
 function createopenorder(xc::XchCache, base::AbstractString; limitprice, basequantity, maker::Bool=true, configside::Symbol, marginleverage::Signed=0, reduceonly::Bool=false, kwargs...)
     basequantity < 0 && throw(ArgumentError("basequantity=$(basequantity) must be non-negative for createopenorder"))
     @assert configside in (:long, :short) "createopenorder configside=$(configside) must be :long or :short"
-    refprice = isnothing(limitprice) ? nothing : Float32(limitprice)
+    refprice = isnothing(limitprice) ? nothing : (limitprice)
     if isnothing(refprice) && uppercase(String(base)) in keys(xc.bases)
-        refprice = Float32(currentprice(ohlcv(xc, uppercase(String(base)))))
+        refprice = (currentprice(ohlcv(xc, uppercase(String(base)))))
     end
     minqty = isnothing(refprice) || (refprice <= 0f0) ? nothing : minimumbasequantity(xc, base, refprice)
-    if !isnothing(minqty) && Float32(basequantity) < Float32(minqty)
+    if !isnothing(minqty) && (basequantity) < (minqty)
         return nothing
     end
     if configside == :long
@@ -2737,15 +2724,15 @@ function createocoorder(xc::XchCache, base::AbstractString;
     # --- entry leg ---
     entry_order_id = if entry_side == :buy
         createbuyorder(xc, base;
-            limitprice=Float32(entry_price),
-            basequantity=Float32(basequantity),
+            limitprice=(entry_price),
+            basequantity=(basequantity),
             maker=maker,
             marginleverage=marginleverage,
         )
     else
         createsellorder(xc, base;
-            limitprice=Float32(entry_price),
-            basequantity=Float32(basequantity),
+            limitprice=(entry_price),
+            basequantity=(basequantity),
             maker=maker,
             marginleverage=marginleverage,
         )
@@ -2754,16 +2741,16 @@ function createocoorder(xc::XchCache, base::AbstractString;
     # --- take-profit leg ---
     take_profit_order_id = if exit_buy
         createbuyorder(xc, base;
-            limitprice=Float32(take_profit_price),
-            basequantity=Float32(basequantity),
+            limitprice=(take_profit_price),
+            basequantity=(basequantity),
             maker=maker,
             marginleverage=marginleverage,
             parent_order_id=entry_order_id,
         )
     else
         createsellorder(xc, base;
-            limitprice=Float32(take_profit_price),
-            basequantity=Float32(basequantity),
+            limitprice=(take_profit_price),
+            basequantity=(basequantity),
             maker=maker,
             marginleverage=marginleverage,
             parent_order_id=entry_order_id,
@@ -2773,16 +2760,16 @@ function createocoorder(xc::XchCache, base::AbstractString;
     # --- stop-loss leg ---
     stop_loss_order_id = if exit_buy
         createbuyorder(xc, base;
-            limitprice=Float32(stop_loss_price),
-            basequantity=Float32(basequantity),
+            limitprice=(stop_loss_price),
+            basequantity=(basequantity),
             maker=maker,
             marginleverage=marginleverage,
             parent_order_id=entry_order_id,
         )
     else
         createsellorder(xc, base;
-            limitprice=Float32(stop_loss_price),
-            basequantity=Float32(basequantity),
+            limitprice=(stop_loss_price),
+            basequantity=(basequantity),
             maker=maker,
             marginleverage=marginleverage,
             parent_order_id=entry_order_id,

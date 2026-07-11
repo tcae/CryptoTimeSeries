@@ -171,9 +171,9 @@ end
     btcodf = Ohlcv.dataframe(btcohlcv)
     btcoix = Ohlcv.ix(btcohlcv)
     @test btcrow[btcrowix, :opentime] == btcodf[btcoix, :opentime]
-    @test btcrow[btcrowix, :low] == Float32(btcodf[btcoix, :low])
-    @test btcrow[btcrowix, :high] == Float32(btcodf[btcoix, :high])
-    @test btcrow[btcrowix, :close] == Float32(btcodf[btcoix, :close])
+    @test btcrow[btcrowix, :low] == (btcodf[btcoix, :low])
+    @test btcrow[btcrowix, :high] == (btcodf[btcoix, :high])
+    @test btcrow[btcrowix, :close] == (btcodf[btcoix, :close])
     @test btcrow[btcrowix, :lp_amount] == 1.5f0
     @test btcrow[btcrowix, :sp_amount] == 0.25f0
     @test btcrow[btcrowix, :lastopentrade] == btcrow[btcrowix, :opentime]
@@ -188,11 +188,11 @@ end
     @test !ismissing(btcrow[btcrowix, :sc_msg])
 
     acct = Xch.account_status(xc; force_refresh=true, ttl_seconds=0)
-    @test btcrow[btcrowix, :maintmargin] == Float32(acct.maintenance_margin_quote)
-    @test btcrow[btcrowix, :equity] == Float32(acct.equity_quote)
-    @test btcrow[btcrowix, :balance] == Float32(acct.free_quote)
-    @test btcrow[btcrowix, :freemargin] == Float32(acct.free_margin_quote)
-    @test btcrow[btcrowix, :freequote] == Float32(acct.free_quote)
+    @test isapprox(btcrow[btcrowix, :maintmargin], acct.maintenance_margin_quote; rtol=1f-6, atol=1f-6)
+    @test isapprox(btcrow[btcrowix, :equity], acct.equity_quote; rtol=1f-6, atol=1f-6)
+    @test isapprox(btcrow[btcrowix, :balance], acct.free_quote; rtol=1f-6, atol=1f-6)
+    @test isapprox(btcrow[btcrowix, :freemargin], acct.free_margin_quote; rtol=1f-6, atol=1f-6)
+    @test isapprox(btcrow[btcrowix, :freequote], acct.free_quote; rtol=1f-6, atol=1f-6)
 
     @test ethrow[ethrowix, :lp_amount] == 0.75f0
     @test ethrow[ethrowix, :sp_amount] == 0f0

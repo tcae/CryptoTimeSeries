@@ -25,6 +25,7 @@ amendorder(ac::XchAdapterCache, symbol::String, orderid::String; basequantity::U
 amendorder(ac::XchAdapterCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = _required_method_error(ac, :amendorder)
 servertime(ac::XchAdapterCache) = _required_method_error(ac, :servertime)
 symboltoken(ac::XchAdapterCache, basecoin::AbstractString, quotecoin::AbstractString) = _required_method_error(ac, :symboltoken)
+executionorderspec(ac::XchAdapterCache, side::Symbol) = _required_method_error(ac, :executionorderspec)
 
 marginlimits(ac::XchAdapterCache, symbol::AbstractString) = (maxleveragebuy=0, maxleveragesell=0)
 marginpermitted(ac::XchAdapterCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed) = true
@@ -32,6 +33,7 @@ marketdataheartbeats(ac::XchAdapterCache) = Dict{String, DateTime}()
 marketdataheartbeat(ac::XchAdapterCache; symbol::Union{Nothing, AbstractString}=nothing) = nothing
 accountcapacity(ac::XchAdapterCache) = nothing
 closeorder(ac::XchAdapterCache, symbol::String, side::Symbol, basequantity, limitprice, maker::Bool; marginleverage::Signed=0, reduceonly::Bool=true) = nothing
+closebeforeopenflip!(ac::XchAdapterCache, symbol::String, positionside::Symbol, close_basequantity::Real, close_limitprice::Union{Real, Nothing}, close_maker::Bool=true, open_maker::Bool=true; open_limitprice::Union{Real, Nothing}=nothing, open_basequantity::Union{Nothing, Real}=nothing, close_marginleverage::Signed=0, open_marginleverage::Signed=0, close_reduceonly::Bool=true, open_reduceonly::Bool=false) = _required_method_error(ac, :closebeforeopenflip!)
 wsclosedkline(ac::XchAdapterCache, symbol::AbstractString, interval::AbstractString) = nothing
 
 end

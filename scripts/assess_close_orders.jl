@@ -53,8 +53,8 @@ function _covered_qty(oo::AbstractDataFrame, symbol::String, side::String; requi
             hasproperty(r, :isLeverage) || continue
             Bool(getproperty(r, :isLeverage)) == require_leverage || continue
         end
-        executed = hasproperty(r, :executedqty) ? Float32(r.executedqty) : 0f0
-        total += max(0f0, Float32(r.baseqty) - executed)
+        executed = hasproperty(r, :executedqty) ? (r.executedqty) : 0f0
+        total += max(0f0, (r.baseqty) - executed)
     end
     return total
 end
@@ -89,12 +89,12 @@ function main(args::Vector{String})
         base = uppercase(String(row.coin))
         base == q && continue
 
-        freebase = Float32(row.free)
-        borrowed = Float32(row.borrowed)
+        freebase = (row.free)
+        borrowed = (row.borrowed)
         symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote)
 
         minq = try
-            Float32(Xch.minimumbasequantity(xc, base, Float32(row.usdtprice)))
+            (Xch.minimumbasequantity(xc, base, (row.usdtprice)))
         catch
             0f0
         end
@@ -107,10 +107,10 @@ function main(args::Vector{String})
         push!(rows, (
             base=base,
             free=freebase,
-            locked=Float32(row.locked),
+            locked=(row.locked),
             borrowed=borrowed,
-            usdtvalue=Float32(row.usdtvalue),
-            usdtprice=Float32(row.usdtprice),
+            usdtvalue=(row.usdtvalue),
+            usdtprice=(row.usdtprice),
             minqty=minq,
             sell_cov=sell_cov,
             sell_gap=sell_gap,

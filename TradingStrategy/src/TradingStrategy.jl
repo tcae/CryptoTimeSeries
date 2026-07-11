@@ -212,9 +212,9 @@ function _clearopenintent!(ta::TradeAction)
 end
 
 @inline _lanehascloseguidance(ta::TradeAction) = (ta.openprice > 0f0) && (ta.closeprice > 0f0)
-@inline _price_in_bar(price::Float32, low::Real, high::Real) = (Float32(low) <= price) && (price <= Float32(high))
-@inline _price_in_bar(price::Float32, low::Real, high::Real, boundary::Symbol) = boundary === :high ? (price <= Float32(high)) : (Float32(low) <= price)
-@inline _relpricedelta(a::Real, b::Real) = abs(Float32(a) - Float32(b)) / max(abs(Float32(b)), 1f-6)
+@inline _price_in_bar(price::Float32, low::Real, high::Real) = ((low) <= price) && (price <= (high))
+@inline _price_in_bar(price::Float32, low::Real, high::Real, boundary::Symbol) = boundary === :high ? (price <= (high)) : ((low) <= price)
+@inline _relpricedelta(a::Real, b::Real) = abs((a) - (b)) / max(abs((b)), 1f-6)
 
 " true if candidate > 0 and either current <= 0 or relative price delta exceeds minpricedelta"
 @inline function _should_update_price(current::Real, candidate::Real, minpricedelta::Float32)
@@ -394,10 +394,10 @@ function _normalizereconciliationinput(reconciliation)
     end
     return (
         has_long_open=Bool(getproperty(reconciliation, :has_long_open)),
-        long_avg_entry=Float32(getproperty(reconciliation, :long_avg_entry)),
+        long_avg_entry=(getproperty(reconciliation, :long_avg_entry)),
         long_open_ix=Int(getproperty(reconciliation, :long_open_ix)),
         has_short_open=Bool(getproperty(reconciliation, :has_short_open)),
-        short_avg_entry=Float32(getproperty(reconciliation, :short_avg_entry)),
+        short_avg_entry=(getproperty(reconciliation, :short_avg_entry)),
         short_open_ix=Int(getproperty(reconciliation, :short_open_ix)),
     )
 end
@@ -463,7 +463,7 @@ function _set_runtimegatestate!(rt::TsCache, base::AbstractString; last_advice, 
     basekey = uppercase(String(base))
     rt.classifier_gate_state[basekey] = (
         last_advice=last_advice,
-        last_classify_close=Float32(last_classify_close),
+        last_classify_close=(last_classify_close),
     )
     return rt
 end
@@ -603,7 +603,7 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
         datetime=datetime,
         tradesdf=tdf,
         rowix=trowix,
-        probability=Float32(tdf[trowix, :score]),
+        probability=(tdf[trowix, :score]),
         configid=0,
         source=:tradingstrategy,
     )
@@ -638,9 +638,9 @@ end
 function _closeprice(cfg::StrategyConfig, limitreductionminutes::Int, refprice::Float32, updown::Targets.TrendPhase)
     closelimit = 0f0
     if updown == up
-        closelimit = refprice * (1f0 + Float32(cfg.sellgain))
+        closelimit = refprice * (1f0 + (cfg.sellgain))
     elseif updown == down
-        closelimit = refprice * (1f0 - Float32(cfg.sellgain))
+        closelimit = refprice * (1f0 - (cfg.sellgain))
     end
     if limitreductionminutes <= 0
         return closelimit
@@ -697,10 +697,10 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
 
     if (tradesdf[ix, :label] in (longopen, longstrongopen)) 
         if (tradesdf[ix, :score] >= cfg.openthreshold)
-            if _should_update_price(tradesdf[ix, :lo_limit], tradesdf[ix, :close] * (1f0 - Float32(cfg.buygain)), cfg.minpricedelta)
-                tradesdf[ix, :lo_limit] = tradesdf[ix, :close] * (1f0 - Float32(cfg.buygain))
+            if _should_update_price(tradesdf[ix, :lo_limit], tradesdf[ix, :close] * (1f0 - (cfg.buygain)), cfg.minpricedelta)
+                tradesdf[ix, :lo_limit] = tradesdf[ix, :close] * (1f0 - (cfg.buygain))
                 tradesdf[ix, :lc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], up)
-            elseif _should_update_price(tradesdf[ix, :lc_limit], tradesdf[ix, :lo_pavg] * (1f0 + Float32(cfg.sellgain)), cfg.minpricedelta)
+            elseif _should_update_price(tradesdf[ix, :lc_limit], tradesdf[ix, :lo_pavg] * (1f0 + (cfg.sellgain)), cfg.minpricedelta)
                 # refresh lc_limit in case it was reduced
                 tradesdf[ix, :lc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], up)
             end
@@ -711,10 +711,10 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
         end
     elseif (tradesdf[ix, :label] in (shortopen, shortstrongopen)) 
         if (tradesdf[ix, :score] >= cfg.openthreshold)
-            if _should_update_price(tradesdf[ix, :so_limit], tradesdf[ix, :close] * (1f0 - Float32(cfg.buygain)), cfg.minpricedelta)
-                tradesdf[ix, :so_limit] = tradesdf[ix, :close] * (1f0 + Float32(cfg.buygain))
+            if _should_update_price(tradesdf[ix, :so_limit], tradesdf[ix, :close] * (1f0 - (cfg.buygain)), cfg.minpricedelta)
+                tradesdf[ix, :so_limit] = tradesdf[ix, :close] * (1f0 + (cfg.buygain))
                 tradesdf[ix, :sc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], down)
-            elseif _should_update_price(tradesdf[ix, :sc_limit], tradesdf[ix, :so_pavg] * (1f0 - Float32(cfg.sellgain)), cfg.minpricedelta)
+            elseif _should_update_price(tradesdf[ix, :sc_limit], tradesdf[ix, :so_pavg] * (1f0 - (cfg.sellgain)), cfg.minpricedelta)
                 # refresh sc_limit in case it was reduced
                 tradesdf[ix, :sc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], down)
             end
@@ -779,8 +779,8 @@ function _executed_open_hit_dt(tradesdf::DataFrame, ix::Integer)
     so_amount = tradesdf[ix, :so_amount]
     high = tradesdf[ix, :high]
     low = tradesdf[ix, :low]
-    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && _openlimitactive(lo_limit) && _price_in_bar(Float32(lo_limit), low, high, :low)
-    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && _openlimitactive(so_limit) && _price_in_bar(Float32(so_limit), low, high, :high)
+    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && _openlimitactive(lo_limit) && _price_in_bar((lo_limit), low, high, :low)
+    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && _openlimitactive(so_limit) && _price_in_bar((so_limit), low, high, :high)
     @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo_limit), so=$(so_limit), low=$(low), high=$(high)"
     if long_open_hit
         @assert tradesdf[ix, :sp_amount] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(tradesdf[ix, :sp_amount]) is not zero"

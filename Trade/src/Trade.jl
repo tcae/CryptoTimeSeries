@@ -77,22 +77,6 @@ function tradesdf_sc_amount(tradesdf::DataFrame)::DataFrame
     return tradesdf
 end
 
-"""Ensure Trades column `longleverage` exists. Owner: Trade. Eltype: `UInt8` with `1` as the default. Note: Request order leverage consumed by Xch order processing."""
-function tradesdf_longleverage(tradesdf::DataFrame)::DataFrame
-    if :longleverage ∉ propertynames(tradesdf)
-        tradesdf[!, :longleverage] = fill(UInt8(1), nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `shortleverage` exists. Owner: Trade. Eltype: `UInt8` with `1` as the default. Note: Request order leverage consumed by Xch order processing."""
-function tradesdf_shortleverage(tradesdf::DataFrame)::DataFrame
-    if :shortleverage ∉ propertynames(tradesdf)
-        tradesdf[!, :shortleverage] = fill(UInt8(1), nrow(tradesdf))
-    end
-    return tradesdf
-end
-
 """Return Trade-contributed Trades schema initializer functions."""
 function tradesdf_contributors()::Vector{Function}
     return Function[
@@ -100,8 +84,6 @@ function tradesdf_contributors()::Vector{Function}
         tradesdf_lc_amount,
         tradesdf_so_amount,
         tradesdf_sc_amount,
-        tradesdf_longleverage,
-        tradesdf_shortleverage,
     ]
 end
 
@@ -110,7 +92,7 @@ end
 const LIQUIDITY_LOOKBACK_MARGIN_MINUTES = 5
 
 function _portfoliototal(assets::AbstractDataFrame)::Float64
-    return size(assets, 1) == 0 ? 0.0 : Float64(sum(assets[!, :usdtvalue]))
+    return size(assets, 1) == 0 ? 0.0 : (sum(assets[!, :usdtvalue]))
 end
 
 "Return the effective trading budget in quote currency, capped by `mc[:maxbudgetquote]` when configured."
@@ -120,7 +102,7 @@ function _effectivebudgetquote(cache, assets::AbstractDataFrame)::Float64
     if isnothing(maxbudget)
         return totalusdt
     end
-    cap = Float64(maxbudget)
+    cap = (maxbudget)
     if !isfinite(cap) || (cap <= 0.0)
         return totalusdt
     end
@@ -140,7 +122,7 @@ function _portfolioquotevalue(assets::AbstractDataFrame)::Union{Missing, Float64
     if isnothing(quoteix)
         return missing
     end
-    return Float64((assets[quoteix, :free] + assets[quoteix, :locked]) - assets[quoteix, :borrowed])
+    return ((assets[quoteix, :free] + assets[quoteix, :locked]) - assets[quoteix, :borrowed])
 end
 
 """
@@ -328,14 +310,14 @@ function _rolling_quotevolume24h(df::AbstractDataFrame, endix::Int, enddt::DateT
     end
     if :quotevolume in propertynames(df)
         qv = @view df[startix:stopix, :quotevolume]
-        return Float64(sum(qv))
+        return (sum(qv))
     end
     @assert (:basevolume in propertynames(df)) && (:close in propertynames(df)) "OHLCV dataframe must include quotevolume or basevolume+close; names=$(names(df))"
     basevol = @view df[startix:stopix, :basevolume]
     closes = @view df[startix:stopix, :close]
     s = 0.0
     @inbounds for ix in eachindex(basevol)
-        s += Float64(basevol[ix]) * Float64(closes[ix])
+        s += (basevol[ix]) * (closes[ix])
     end
     return s
 end
@@ -347,12 +329,12 @@ function _rolling_pricechangepercent24h(df::AbstractDataFrame, endix::Int, enddt
     if !(1 <= startix <= endix)
         return 0f0
     end
-    firstclose = Float64(df[startix, :close])
-    lastclose = Float64(df[endix, :close])
+    firstclose = (df[startix, :close])
+    lastclose = (df[endix, :close])
     if firstclose <= 0.0
         return 0f0
     end
-    return Float32(((lastclose / firstclose) - 1.0) * 100.0)
+    return (((lastclose / firstclose) - 1.0) * 100.0)
 end
 
 """
@@ -365,7 +347,7 @@ function _continuous_liquidity_now(df::AbstractDataFrame, datetime::DateTime;
     minquotevol::Float32=Ohlcv.ld.minquotevol,
     accumulate::Int=Int(Ohlcv.ld.accumulate),
     checkperiod::Int=Int(Ohlcv.ld.checkperiod),
-    threshold::Float64=Float64(Ohlcv.ld.startthreshold))::Bool
+    threshold::Float64=(Ohlcv.ld.startthreshold))::Bool
     rows = size(df, 1)
     rows == 0 && return false
     endix = min(_rowix_at_or_before(df[!, :opentime], datetime), rows)
@@ -439,13 +421,13 @@ function _simulated_usdtmarketview(tc::TradeCache, datetime::DateTime, bases::Se
         if rowix < 1
             continue
         end
-        lastprice = Float32(df[rowix, :close])
+        lastprice = (df[rowix, :close])
         quotevolume24h = _rolling_quotevolume24h(df, rowix, datetime)
         pricechangepercent = _rolling_pricechangepercent24h(df, rowix, datetime)
         push!(basecoins, String(base))
-        push!(quotevolumes, Float64(quotevolume24h))
-        push!(pricechanges, Float32(pricechangepercent))
-        push!(lastprices, Float32(lastprice))
+        push!(quotevolumes, (quotevolume24h))
+        push!(pricechanges, (pricechangepercent))
+        push!(lastprices, (lastprice))
     end
 
     if isempty(basecoins)
@@ -478,11 +460,11 @@ end
 "Log enriched diagnostics for Kraken margin order failures with expected vs available margin." 
 function _log_margin_order_diagnostics(cache::TradeCache, basecfg::DataFrameRow, ta, base::AbstractString, side::AbstractString, requested_leverage::Signed, requested_limitprice::Union{Nothing, Real}, basequantity::Real, freebase::Real, borrowedbase::Real, freeusdt::Real, totalborrowedusdt::Real, effectivebudgetquote::Real, err)
     symbol = Xch.symboltoken(cache.xc, base, EnvConfig.pairquote)
-    additional_base = max(0.0, Float64(basequantity) - Float64(freebase))
-    requested_limitprice_value = isnothing(requested_limitprice) ? missing : Float64(requested_limitprice)
-    expected_margin_quote = isnothing(requested_limitprice) ? missing : (additional_base * Float64(requested_limitprice))
+    additional_base = max(0.0, (basequantity) - (freebase))
+    requested_limitprice_value = isnothing(requested_limitprice) ? missing : (requested_limitprice)
+    expected_margin_quote = isnothing(requested_limitprice) ? missing : (additional_base * (requested_limitprice))
     limits = Xch.marginlimits(cache.xc, symbol)
-    @error "margin order submission failed" exchange=Xch.exchange(cache.xc) base=String(base) symbol=String(symbol) side=String(side) tradelabel=String(Symbol(ta.tradelabel)) requested_leverage=requested_leverage requested_baseqty=Float64(basequantity) requested_limitprice=requested_limitprice_value expected_margin_quote=expected_margin_quote available_free_quote=Float64(freeusdt) freebase=Float64(freebase) borrowedbase=Float64(borrowedbase) totalborrowedquote=Float64(totalborrowedusdt) effectivebudgetquote=Float64(effectivebudgetquote) buyenabled=_cfgbool(basecfg, :buyenabled, false) sellenabled=_cfgbool(basecfg, :sellenabled, false) inportfolio=_cfgbool(basecfg, :inportfolio, false) maxleveragebuy=limits.maxleveragebuy maxleveragesell=limits.maxleveragesell error_message=sprint(showerror, err)
+    @error "margin order submission failed" exchange=Xch.exchange(cache.xc) base=String(base) symbol=String(symbol) side=String(side) tradelabel=String(Symbol(ta.tradelabel)) requested_leverage=requested_leverage requested_baseqty=(basequantity) requested_limitprice=requested_limitprice_value expected_margin_quote=expected_margin_quote available_free_quote=(freeusdt) freebase=(freebase) borrowedbase=(borrowedbase) totalborrowedquote=(totalborrowedusdt) effectivebudgetquote=(effectivebudgetquote) buyenabled=_cfgbool(basecfg, :buyenabled, false) sellenabled=_cfgbool(basecfg, :sellenabled, false) inportfolio=_cfgbool(basecfg, :inportfolio, false) maxleveragebuy=limits.maxleveragebuy maxleveragesell=limits.maxleveragesell error_message=sprint(showerror, err)
 end
 
 "Return true when an order error indicates exchange/account permission restrictions for the symbol."
@@ -588,9 +570,9 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
             for row in eachrow(balancesdf)
                 base = _normalize_basecoin_token(row.coin, quotecoin)
                 isnothing(base) && continue
-                freeqty = hasfree ? Float64(row.free) : 0.0
-                lockedqty = haslocked ? Float64(row.locked) : 0.0
-                borrowedqty = hasborrowed ? Float64(row.borrowed) : 0.0
+                freeqty = hasfree ? (row.free) : 0.0
+                lockedqty = haslocked ? (row.locked) : 0.0
+                borrowedqty = hasborrowed ? (row.borrowed) : 0.0
                 if (abs(freeqty) + abs(lockedqty) + abs(borrowedqty)) > 0.0
                     push!(portfolioassetbaseset, String(base))
                 end
@@ -638,11 +620,11 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
                 end
                 push!(usdtdf, (
                     basecoin=base,
-                    quotevolume24h=Float32(row.quotevolume24h),
-                    pricechangepercent=Float32(row.pricechangepercent),
-                    lastprice=Float32(row.lastprice),
-                    askprice=Float32(row.askprice),
-                    bidprice=Float32(row.bidprice),
+                    quotevolume24h=(row.quotevolume24h),
+                    pricechangepercent=(row.pricechangepercent),
+                    lastprice=(row.lastprice),
+                    askprice=(row.askprice),
+                    bidprice=(row.bidprice),
                 ))
                 push!(knownbases, base)
             end
@@ -757,7 +739,7 @@ function _tradetolabeltext(label)
 end
 
 function _requested_row_limitprice(cache::TradeCache, requested_price, fallback_price::Real)
-    return (ismissing(requested_price) || isnothing(requested_price)) ? _orderlimitprice(cache, fallback_price) : Float32(requested_price)
+    return (ismissing(requested_price) || isnothing(requested_price)) ? _orderlimitprice(cache, fallback_price) : (requested_price)
 end
 
 function _rowbase(tradesdf::DataFrame, rowix::Integer)::String
@@ -790,13 +772,13 @@ end
 
 function _action_columns(action::Symbol)
     if action == :long_open
-        return (limitcol=:lo_limit, amountcol=:lo_amount, idcol=:lo_id, statuscol=:lo_status, leveragecol=:longleverage)
+        return (limitcol=:lo_limit, amountcol=:lo_amount, idcol=:lo_id, statuscol=:lo_status)
     elseif action == :long_close
-        return (limitcol=:lc_limit, amountcol=:lc_amount, idcol=:lc_id, statuscol=:lc_status, leveragecol=:longleverage)
+        return (limitcol=:lc_limit, amountcol=:lc_amount, idcol=:lc_id, statuscol=:lc_status)
     elseif action == :short_open
-        return (limitcol=:so_limit, amountcol=:so_amount, idcol=:so_id, statuscol=:so_status, leveragecol=:shortleverage)
+        return (limitcol=:so_limit, amountcol=:so_amount, idcol=:so_id, statuscol=:so_status)
     elseif action == :short_close
-        return (limitcol=:sc_limit, amountcol=:sc_amount, idcol=:sc_id, statuscol=:sc_status, leveragecol=:shortleverage)
+        return (limitcol=:sc_limit, amountcol=:sc_amount, idcol=:sc_id, statuscol=:sc_status)
     end
     error("unsupported action=$(action)")
 end
@@ -805,7 +787,7 @@ function _row_signal(tradesdf::DataFrame, rowix::Integer, base::AbstractString)
     return (
         tradelabel=tradesdf[rowix, :label],
         base=uppercase(String(base)),
-        probability=hasproperty(tradesdf, :score) ? Float32(tradesdf[rowix, :score]) : 0f0,
+        probability=hasproperty(tradesdf, :score) ? (tradesdf[rowix, :score]) : 0f0,
     )
 end
 
@@ -820,30 +802,30 @@ end
 
 function _current_order_qty(orow)::Float32
     if hasproperty(orow, :baseqty)
-        return Float32(getproperty(orow, :baseqty))
+        return (getproperty(orow, :baseqty))
     elseif hasproperty(orow, :qty)
-        return Float32(getproperty(orow, :qty))
+        return (getproperty(orow, :qty))
     end
     return 0f0
 end
 
 function _material_order_change(old_price, new_price, old_qty::Real, new_qty::Real; price_reltol::Real=1f-3, qty_reltol::Real=1f-3)::Bool
-    oldp = (ismissing(old_price) || isnothing(old_price)) ? nothing : Float32(old_price)
-    newp = (ismissing(new_price) || isnothing(new_price)) ? nothing : Float32(new_price)
+    oldp = (ismissing(old_price) || isnothing(old_price)) ? nothing : (old_price)
+    newp = (ismissing(new_price) || isnothing(new_price)) ? nothing : (new_price)
     if isnothing(oldp) != isnothing(newp)
         return true
     end
     if !isnothing(oldp) && !isnothing(newp)
         denom = max(abs(oldp), 1f-6)
-        if abs(newp - oldp) / denom > Float32(price_reltol)
+        if abs(newp - oldp) / denom > (price_reltol)
             return true
         end
     end
 
-    oldq = Float32(old_qty)
-    newq = Float32(new_qty)
+    oldq = (old_qty)
+    newq = (new_qty)
     qdenom = max(abs(oldq), 1f-6)
-    return abs(newq - oldq) / qdenom > Float32(qty_reltol)
+    return abs(newq - oldq) / qdenom > (qty_reltol)
 end
 
 function trade!(cache::TradeCache, tradesdfdict::Dict)
@@ -934,11 +916,11 @@ end
 # ── Strategy config ─────────────────────────────────────────────────────────
 
 function _validatestrategyconfig!(spec::TradingStrategy.StrategyConfig)
-    openthreshold = Float32(spec.openthreshold)
-    closethreshold = Float32(spec.closethreshold)
-    buygain = Float32(spec.buygain)
-    sellgain = Float32(spec.sellgain)
-    limitreduction = Float32(spec.limitreduction)
+    openthreshold = (spec.openthreshold)
+    closethreshold = (spec.closethreshold)
+    buygain = (spec.buygain)
+    sellgain = (spec.sellgain)
+    limitreduction = (spec.limitreduction)
     maxwindow = Int(spec.maxwindow)
 
     @assert 0f0 <= openthreshold <= 1f0 "strategy_openthreshold must be in [0, 1], got $(openthreshold)"
@@ -1007,8 +989,8 @@ function _managedcloseset!(cache::TradeCache, base::AbstractString, orderid, tra
         :symbol => symbol,
         :orderid => String(orderid),
         :label => tradelabel,
-        :limitprice => isnothing(limitprice) ? nothing : Float32(limitprice),
-        :baseqty => Float32(baseqty),
+        :limitprice => isnothing(limitprice) ? nothing : (limitprice),
+        :baseqty => (baseqty),
         :updated => Dates.now(Dates.UTC),
     )
     return nothing
@@ -1021,8 +1003,8 @@ end
 
 function _positioncloselabels(assets::AbstractDataFrame, base::AbstractString; sellenabled::Bool=true)::Vector{Targets.TradeLabel}
     basekey = uppercase(String(base))
-    freebase = Float32(sum(assets[uppercase.(String.(assets[!, :coin])) .== basekey, :free]))
-    borrowedbase = Float32(sum(assets[uppercase.(String.(assets[!, :coin])) .== basekey, :borrowed]))
+    freebase = (sum(assets[uppercase.(String.(assets[!, :coin])) .== basekey, :free]))
+    borrowedbase = (sum(assets[uppercase.(String.(assets[!, :coin])) .== basekey, :borrowed]))
     labels = Targets.TradeLabel[]
     if sellenabled && (freebase > 0f0)
         push!(labels, longclose)
@@ -1074,8 +1056,8 @@ function _close_management_bases(cache::TradeCache, assets::AbstractDataFrame)::
     for row in eachrow(assets)
         base = uppercase(String(row.coin))
         (base == quote_coin) && continue
-        freebase = Float32(getproperty(row, :free))
-        borrowedbase = Float32(getproperty(row, :borrowed))
+        freebase = (getproperty(row, :free))
+        borrowedbase = (getproperty(row, :borrowed))
         if (freebase > 0f0) || (borrowedbase > 0f0)
             push!(bases, base)
         end
@@ -1097,8 +1079,8 @@ function _reconstruct_managed_close_orders!(cache::TradeCache, rowsbybase::Abstr
             (isempty(strip(oid)) || (lowercase(strip(oid)) == Xch.NO_ORDER_ID)) && continue
             status = String(tradesdf[rowix, stcol])
             Xch.openstatus(status) || continue
-            limitprice = (hasproperty(tradesdf, limitcol) && !ismissing(tradesdf[rowix, limitcol])) ? Float32(tradesdf[rowix, limitcol]) : nothing
-            baseqty = Float32(tradesdf[rowix, amountcol])
+            limitprice = (hasproperty(tradesdf, limitcol) && !ismissing(tradesdf[rowix, limitcol])) ? (tradesdf[rowix, limitcol]) : nothing
+            baseqty = (tradesdf[rowix, amountcol])
             _managedcloseset!(cache, base, oid, closelabel; limitprice=limitprice, baseqty=baseqty)
         end
     end
@@ -1153,7 +1135,7 @@ end
 function _strategyrowprobability(rowstate)::Float32
     tdf = rowstate.tradesdf
     rowix = Int(rowstate.rowix)
-    return hasproperty(tdf, :score) ? Float32(tdf[rowix, :score]) : 0f0
+    return hasproperty(tdf, :score) ? (tdf[rowix, :score]) : 0f0
 end
 
 function _syncroworder(tdf::DataFrame, rowix::Integer, ordertype::Symbol, oo::AbstractDataFrame)
@@ -1272,9 +1254,9 @@ function _positions_without_close_orders(cache::TradeCache, assets::AbstractData
             (msymbol == symbolu) || continue
             mlabel = get(managed, :label, ignore)
             if (sideu == "SELL") && (mlabel in [longclose, longstrongclose])
-                total += Float32(get(managed, :baseqty, 0f0))
+                total += (get(managed, :baseqty, 0f0))
             elseif (sideu == "BUY") && (mlabel in [shortclose, shortstrongclose])
-                total += Float32(get(managed, :baseqty, 0f0))
+                total += (get(managed, :baseqty, 0f0))
             end
         end
         return total
@@ -1303,8 +1285,8 @@ function _positions_without_close_orders(cache::TradeCache, assets::AbstractData
                 elseif closekind == :short
                     orderclosekind == :short || continue
                 end
-                baseqty = Float32(tradesdf[rowix, amountcol])
-                executed = hasproperty(tradesdf, filledcol) && !ismissing(tradesdf[rowix, filledcol]) ? Float32(tradesdf[rowix, filledcol]) : 0f0
+                baseqty = (tradesdf[rowix, amountcol])
+                executed = hasproperty(tradesdf, filledcol) && !ismissing(tradesdf[rowix, filledcol]) ? (tradesdf[rowix, filledcol]) : 0f0
                 remaining = max(0f0, baseqty - executed)
                 total += max(0f0, remaining)
             end
@@ -1314,13 +1296,13 @@ function _positions_without_close_orders(cache::TradeCache, assets::AbstractData
 
     function _min_base_qty(base::AbstractString, symbol::AbstractString, row)::Float32
         price = try
-            hasproperty(row, :usdtprice) ? Float32(getproperty(row, :usdtprice)) : 0f0
+            hasproperty(row, :usdtprice) ? (getproperty(row, :usdtprice)) : 0f0
         catch
             0f0
         end
         if !(price > 0f0)
             price = try
-                Float32(currentprice(Xch.ohlcv(cache.xc, base)))
+                (currentprice(Xch.ohlcv(cache.xc, base)))
             catch
                 0f0
             end
@@ -1334,16 +1316,16 @@ function _positions_without_close_orders(cache::TradeCache, assets::AbstractData
             return 0f0
         end
         if price > 0f0
-            return Float32(1.01f0 * max(Float32(syminfo.minbaseqty), Float32(syminfo.minquoteqty) / price))
+            return (1.01f0 * max((syminfo.minbaseqty), (syminfo.minquoteqty) / price))
         end
-        return Float32(1.01f0 * Float32(syminfo.minbaseqty))
+        return (1.01f0 * (syminfo.minbaseqty))
     end
 
     for row in eachrow(assets)
         base = uppercase(String(row.coin))
         base == quote_coin && continue
-        freebase = Float32(row.free)
-        borrowedbase = Float32(row.borrowed)
+        freebase = (row.free)
+        borrowedbase = (row.borrowed)
         if (freebase <= 0f0) && (borrowedbase <= 0f0)
             continue
         end

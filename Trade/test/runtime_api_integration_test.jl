@@ -43,14 +43,14 @@ function TradingStrategy.gettradesrow!(
     tdf[rowix, :lc_limit] = hasproperty(spec, :lc_limit) ? spec.lc_limit : spec.longcloselimit
     tdf[rowix, :so_limit] = hasproperty(spec, :so_limit) ? spec.so_limit : spec.shortopenlimit
     tdf[rowix, :sc_limit] = hasproperty(spec, :sc_limit) ? spec.sc_limit : spec.shortcloselimit
-    tdf[rowix, :score] = Float32(get(spec, :probability, 0f0))
+    tdf[rowix, :score] = (get(spec, :probability, 0f0))
 
     return (
         base=basekey,
         datetime=datetime,
         tradesdf=tdf,
         rowix=rowix,
-        probability=Float32(get(spec, :probability, 0f0)),
+        probability=(get(spec, :probability, 0f0)),
         configid=Int(get(spec, :configid, 0)),
         source=:test,
     )

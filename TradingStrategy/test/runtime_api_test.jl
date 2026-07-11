@@ -286,6 +286,6 @@ end
     @test rowmeta.base == "SINE"
     @test rowmeta.datetime == evaldt
     @test rowmeta.rowix >= 1
-    @test Float32(rowmeta.tradesdf[rowmeta.rowix, :close]) > 0f0
-    @test Float32(rowmeta.tradesdf[rowmeta.rowix, :lo_limit]) > 0f0
+    @test (rowmeta.tradesdf[rowmeta.rowix, :close]) > 0f0
+    @test (rowmeta.tradesdf[rowmeta.rowix, :lo_limit]) > 0f0
 end

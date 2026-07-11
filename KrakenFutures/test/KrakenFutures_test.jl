@@ -55,11 +55,11 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
     )
     tickrow = KrakenFutures._tickerrow(cache, "PI_XBTUSDT", ticker)
     @test tickrow.symbol == "BTCUSDT"
-    @test tickrow.lastprice == 101.2f0
+    @test isapprox(tickrow.lastprice, 101.2f0; atol=1f-4)
     @test tickrow.quotevolume24h ≈ 1214.4f0 atol = 1f-3
 
-    @test KrakenFutures._makerlimitprice(info, tickrow, "Buy") == 101.4f0
-    @test KrakenFutures._makerlimitprice(info, tickrow, "Sell") == 101.1f0
+    @test isapprox(KrakenFutures._makerlimitprice(info, tickrow, "Buy"), 101.4f0; atol=1f-4)
+    @test isapprox(KrakenFutures._makerlimitprice(info, tickrow, "Sell"), 101.1f0; atol=1f-4)
 
     chunk, split = KrakenFutures._icebergchunkamount(10.0, 100.0, 1.0, 250.0)
     @test split
@@ -91,7 +91,7 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
     submit_counter = Ref(1)
     submit_stub = function (_bc, _symbol, _orderside, basequantity, _price, _maker; orderLinkId=nothing, kwargs...)
         _ = kwargs
-        push!(submit_calls, (basequantity=Float64(basequantity), orderLinkId=String(orderLinkId)))
+        push!(submit_calls, (basequantity=(basequantity), orderLinkId=String(orderLinkId)))
         submit_counter[] += 1
         return (orderid="child-$(submit_counter[])", orderLinkId=String(orderLinkId))
     end

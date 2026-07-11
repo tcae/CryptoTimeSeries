@@ -94,14 +94,14 @@ function _orderisleverage(orow)::Bool
         return Bool(getproperty(orow, :isLeverage))
     end
     if hasproperty(orow, :marginleverage)
-        return Float32(getproperty(orow, :marginleverage)) > 0f0
+        return (getproperty(orow, :marginleverage)) > 0f0
     end
     return false
 end
 
 function _remaining_open_qty(orow)::Float32
-    total = hasproperty(orow, :baseqty) ? Float32(getproperty(orow, :baseqty)) : 0f0
-    executed = hasproperty(orow, :executedqty) ? Float32(getproperty(orow, :executedqty)) : 0f0
+    total = hasproperty(orow, :baseqty) ? (getproperty(orow, :baseqty)) : 0f0
+    executed = hasproperty(orow, :executedqty) ? (getproperty(orow, :executedqty)) : 0f0
     return max(0f0, total - executed)
 end
 
@@ -125,8 +125,8 @@ function _safe_min_qty(xc::Xch.XchCache, base::AbstractString, usdtprice::Real):
         return 0f0
     end
     try
-        q = Xch.minimumbasequantity(xc, base, Float32(usdtprice))
-        return isnothing(q) ? 0f0 : Float32(q)
+        q = Xch.minimumbasequantity(xc, base, (usdtprice))
+        return isnothing(q) ? 0f0 : (q)
     catch
         return 0f0
     end
@@ -145,7 +145,7 @@ end
 function main(args::Vector{String})
     quote_coin = uppercase(String(_argvalue(args, "quote", "USD")))
     exchange = _resolve_exchange(_argvalue(args, "xch", nothing))
-    maxassetfraction = Float32(_argfloat(args, "maxassetfraction", 0.10))
+    maxassetfraction = (_argfloat(args, "maxassetfraction", 0.10))
     topn = _argint(args, "top", 25)
     refresh = _argbool(args, "refresh", true)
 
@@ -177,18 +177,18 @@ function main(args::Vector{String})
     end
 
     q = uppercase(String(EnvConfig.pairquote))
-    total_usdt = size(assets, 1) == 0 ? 0f0 : Float32(sum(Float32.(assets[!, :usdtvalue])))
+    total_usdt = size(assets, 1) == 0 ? 0f0 : (sum(Float32.(assets[!, :usdtvalue])))
 
     rows = NamedTuple[]
     for row in eachrow(assets)
         base = uppercase(String(row.coin))
         base == q && continue
 
-        freebase = Float32(row.free)
-        lockedbase = Float32(row.locked)
-        borrowedbase = Float32(row.borrowed)
-        usdtprice = Float32(row.usdtprice)
-        usdtvalue = Float32(row.usdtvalue)
+        freebase = (row.free)
+        lockedbase = (row.locked)
+        borrowedbase = (row.borrowed)
+        usdtprice = (row.usdtprice)
+        usdtvalue = (row.usdtvalue)
         sellablelong = max(0f0, freebase - borrowedbase)
         symbol = Xch.symboltoken(xc, base, EnvConfig.pairquote)
 

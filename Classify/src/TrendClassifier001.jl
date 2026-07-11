@@ -303,7 +303,7 @@ function advice(cl::TrendClassifier001, base::AbstractString, dt::DateTime; inve
     label = labels[1] isa Targets.TradeLabel ? labels[1] : Targets.tradelabel(string(labels[1]))
     oix = Ohlcv.rowix(basecfg.ohlcv, dt)
     price = Ohlcv.dataframe(basecfg.ohlcv)[oix, :pivot]
-    return TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, Float32(scores[1]), investment)
+    return TradeAdvice(cl, cl.cfgid, label, 1f0, base, price, dt, 0f0, (scores[1]), investment)
 end
 
 """

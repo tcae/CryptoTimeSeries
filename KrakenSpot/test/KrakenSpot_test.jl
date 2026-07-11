@@ -82,11 +82,11 @@ using DataFrames, Dates, KrakenSpot, Test
     )
     tickrow = KrakenSpot._tickerrow(cache, "XBTUSDT", ticker)
     @test tickrow.symbol == "BTCUSDT"
-    @test tickrow.lastprice == 101.2f0
+    @test isapprox(tickrow.lastprice, 101.2f0; atol=1f-4)
     @test tickrow.quotevolume24h ≈ 1315.6f0 atol = 1f-3
 
-    @test KrakenSpot._makerlimitprice(info, tickrow, "Buy") == 101.4f0
-    @test KrakenSpot._makerlimitprice(info, tickrow, "Sell") == 101.1f0
+    @test isapprox(KrakenSpot._makerlimitprice(info, tickrow, "Buy"), 101.4f0; atol=1f-4)
+    @test isapprox(KrakenSpot._makerlimitprice(info, tickrow, "Sell"), 101.1f0; atol=1f-4)
 
     displayqty = KrakenSpot._icebergdisplayqty(info, 1.5f0, 100f0, 20.0)
     @test displayqty >= 0.2f0

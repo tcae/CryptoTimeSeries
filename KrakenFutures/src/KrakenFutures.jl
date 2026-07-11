@@ -2,7 +2,7 @@ module KrakenFutures
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
 using XchAdapter
-import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, wsclosedkline
+import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, closebeforeopenflip!, wsclosedkline
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
 # The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
@@ -40,13 +40,13 @@ function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::Abst
 	orders = cfg["orders"]
 	sidecfg = orders[String(side)]
 	instrument = lowercase(String(sidecfg["instrument"]))
-	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	max_quote = haskey(sidecfg, "max_quote") ? (sidecfg["max_quote"]) : nothing
 	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : Int(marginleverage)
 	return (side=side, instrument=instrument, max_quote=max_quote, leverage=leverage)
 end
 
 "Return side-specific execution config owned by the KrakenFutures adapter."
-function executionorderspec(side::Symbol)
+function _executionorderspec(side::Symbol)
 	side in (:long, :short) || error("KrakenFutures executionorderspec side=$(side) must be :long or :short")
 	cfg = executionconfig()
 	haskey(cfg, "orders") || error("missing KrakenFutures execution config orders section")
@@ -55,7 +55,7 @@ function executionorderspec(side::Symbol)
 	sidecfg = orders[String(side)]
 	instrument = haskey(sidecfg, "instrument") ? lowercase(String(sidecfg["instrument"])) : ""
 	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
-	max_quote = haskey(sidecfg, "max_quote") ? Float64(sidecfg["max_quote"]) : nothing
+	max_quote = haskey(sidecfg, "max_quote") ? (sidecfg["max_quote"]) : nothing
 	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
 end
 
@@ -341,10 +341,10 @@ function _ws_balances_df_from_payload(payload)
 		coinraw = _tryget(entry, ["asset", "coin", "currency", "ccy"], "")
 		coin = _normalizeasset(String(coinraw))
 		coin == "" && continue
-		free = _float32(_tryget(entry, ["available", "free", "walletBalance"], 0), 0f0)
-		locked = _float32(_tryget(entry, ["hold", "locked", "initialMargin"], 0), 0f0)
-		borrowed = _float32(_tryget(entry, ["borrowed", "borrow", "liability"], 0), 0f0)
-		accruedinterest = _float32(_tryget(entry, ["accruedinterest", "interest"], 0), 0f0)
+		free = _numstrict(_firstpresent(entry, ["available", "free", "walletBalance"]), "ws balance $(coin) free")
+		locked = _numstrict(_firstpresent(entry, ["hold", "locked", "initialMargin"]), "ws balance $(coin) locked")
+		borrowed = _numstrict(_firstpresent(entry, ["borrowed", "borrow", "liability"]), "ws balance $(coin) borrowed")
+		accruedinterest = _numstrict(_firstpresent(entry, ["accruedinterest", "interest"]), "ws balance $(coin) accruedinterest")
 		push!(df, (coin=coin, locked=locked, free=free, borrowed=borrowed, accruedinterest=accruedinterest))
 	end
 	return df
@@ -452,6 +452,8 @@ struct KrakenFuturesCache <: XchAdapter.XchAdapterCache
 	publickey::String
 	secretkey::String
 end
+
+executionorderspec(::KrakenFuturesCache, side::Symbol) = _executionorderspec(side)
 
 function _authtargetpurpose()::String
 	return EnvConfig.configmode == EnvConfig.test ? "testing" : "trading"
@@ -736,25 +738,51 @@ function _downloadsrequest(method::AbstractString, url::AbstractString; headers=
 end
 
 """
-Convert value to `Float32`, returning `default` when parsing fails.
+Convert value to a numeric scalar, returning `default` when parsing fails.
 """
-function _float32(value, default::Float32=0f0)::Float32
+function _num(value, default::Real=0.0)
 	if isnothing(value)
 		return default
-	elseif value isa Float32
-		return value
 	elseif value isa Real
-		return Float32(value)
+		return (value)
 	elseif value isa AbstractString
 		return value == "" ? default : try
-			parse(Float32, value)
+			parse(typeof(default), value)
 		catch
 			default
 		end
 	elseif value isa AbstractVector
-		return isempty(value) ? default : _float32(first(value), default)
+		return isempty(value) ? default : _num(first(value), default)
 	end
 	return default
+end
+
+"Return the first present value for any of `keys` in `dict`, otherwise `nothing`."
+function _firstpresent(dict::AbstractDict, keys::AbstractVector{<:AbstractString})
+	for key in keys
+		haskey(dict, key) && return dict[key]
+	end
+	return nothing
+end
+
+"Parse one numeric value strictly at an API boundary; throws on missing or malformed values."
+function _numstrict(value, context::AbstractString)
+	isnothing(value) && error("$(context) is missing")
+	if value isa Real
+		return value
+	elseif value isa AbstractString
+		s = strip(String(value))
+		isempty(s) && error("$(context) must not be empty")
+		try
+			return parse(Float64, s)
+		catch err
+			error("$(context) must be numeric, got value=$(repr(value)) type=$(typeof(value)) parse_error=$(sprint(showerror, err))")
+		end
+	elseif value isa AbstractVector
+		isempty(value) && error("$(context) must not be an empty vector")
+		return _numstrict(first(value), context)
+	end
+	error("$(context) must be Real or numeric string, got type=$(typeof(value)) value=$(repr(value))")
 end
 
 """
@@ -786,7 +814,7 @@ end
 "Return decimal digits implied by a precision step size (e.g. 0.01 => 2)."
 function _precisiondigits(step::Real, defaultdigits::Int=8)::Int
 	step <= 0 && return defaultdigits
-	d = round(Int, log10(1 / Float64(step)))
+	d = round(Int, log10(1 / (step)))
 	return max(d, 0)
 end
 
@@ -844,29 +872,29 @@ end
 
 "Normalize limit order price/qty to exchange precision and min constraints."
 function _normalizelimitorderparams(syminfo::DataFrameRow, basequantity::Real, limitprice::Real)
-	pricedigits = _precisiondigits(Float64(syminfo.ticksize), 5)
-	qtydigits = _precisiondigits(Float64(syminfo.baseprecision), 0)
+	pricedigits = _precisiondigits((syminfo.ticksize), 5)
+	qtydigits = _precisiondigits((syminfo.baseprecision), 0)
 
-	normprice = Float32(round(Float64(limitprice), digits=pricedigits))
+	normprice = (round((limitprice), digits=pricedigits))
 	normprice > 0f0 || throw(ArgumentError("normalized limitprice must be > 0, got $(normprice)"))
 
-	normqty = Float64(basequantity)
-	minquote = Float64(syminfo.minquoteqty)
-	minbase = Float64(syminfo.minbaseqty)
-	if (minquote > 0.0) && ((normqty * Float64(normprice)) < minquote)
-		normqty = minquote / Float64(normprice)
+	normqty = (basequantity)
+	minquote = (syminfo.minquoteqty)
+	minbase = (syminfo.minbaseqty)
+	if (minquote > 0.0) && ((normqty * (normprice)) < minquote)
+		normqty = minquote / (normprice)
 	end
 	normqty = max(normqty, minbase)
 	normqty = floor(normqty, digits=qtydigits)
 	if normqty < minbase
 		normqty = minbase
 	end
-	if (minquote > 0.0) && ((normqty * Float64(normprice)) < minquote)
-		normqty = ceil(minquote / Float64(normprice), digits=qtydigits)
+	if (minquote > 0.0) && ((normqty * (normprice)) < minquote)
+		normqty = ceil(minquote / (normprice), digits=qtydigits)
 		normqty = max(normqty, minbase)
 	end
 	normqty > 0.0 || throw(ArgumentError("normalized basequantity must be > 0, got $(normqty) (input basequantity=$(basequantity), limitprice=$(limitprice), minbase=$(minbase), minquote=$(minquote), qtydigits=$(qtydigits))"))
-	return (basequantity=Float32(normqty), limitprice=normprice, qtydigits=qtydigits, pricedigits=pricedigits)
+	return (basequantity=(normqty), limitprice=normprice, qtydigits=qtydigits, pricedigits=pricedigits)
 end
 
 "Validate requested futures leverage before submitting Kraken futures orders."
@@ -1340,13 +1368,13 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 
 		tradable = _tryget(info, ["tradeable", "enabled", "is_active"], true)
 		status = (tradable isa Bool) ? (tradable ? "online" : "offline") : String(tradable)
-		ticksize = _float32(_tryget(info, ["tickSize", "tick_size", "priceIncrement"], 0.01), 0.01f0)
-		baseprecision = _float32(_tryget(info, ["contractSize", "qtyIncrement", "qty_increment"], 1.0), 1.0f0)
-		minbaseqty_raw = _float32(_tryget(info, ["minimumOrderSize", "minOrderSize", "qtyIncrement"], 0.0), 0.0f0)
+		ticksize = _num(_tryget(info, ["tickSize", "tick_size", "priceIncrement"], 0.01), 0.01f0)
+		baseprecision = _num(_tryget(info, ["contractSize", "qtyIncrement", "qty_increment"], 1.0), 1.0f0)
+		minbaseqty_raw = _num(_tryget(info, ["minimumOrderSize", "minOrderSize", "qtyIncrement"], 0.0), 0.0f0)
 		# Futures contracts often require integer contract counts; if explicit minimum is
 		# missing/zero, fall back to qty increment (contract size) as effective minimum.
 		minbaseqty = max(minbaseqty_raw, baseprecision)
-		minquoteqty = _float32(_tryget(info, ["minimumOrderValue", "minOrderValue", "notionalMinimum", "notional_min"], 0.0), 0.0f0)
+		minquoteqty = _num(_tryget(info, ["minimumOrderValue", "minOrderValue", "notionalMinimum", "notional_min"], 0.0), 0.0f0)
 		maxleveragebuy = _futuresmaxleverage(info, ["maxLeverageBuy", "maxLeverageLong", "maxLeverage", "maxLeverageValue", "max_leverage", "leverageCap"])
 		maxleveragesell = _futuresmaxleverage(info, ["maxLeverageSell", "maxLeverageShort", "maxLeverage", "maxLeverageValue", "max_leverage", "leverageCap"])
 
@@ -1390,11 +1418,11 @@ function _exchangeinfo(apirest::String, symbol=nothing)::DataFrame
 				if (basecoin == "") || (quotecoin == "")
 					continue
 				end
-				ticksize = Float32(10.0^-_int(_tryget(info, ["pair_decimals"], 5), 5))
-				baseprecision = Float32(10.0^-_int(_tryget(info, ["lot_decimals"], 8), 8))
-				minbaseqty_raw = _float32(_tryget(info, ["ordermin"], "0"), 0f0)
+				ticksize = (10.0^-_int(_tryget(info, ["pair_decimals"], 5), 5))
+				baseprecision = (10.0^-_int(_tryget(info, ["lot_decimals"], 8), 8))
+				minbaseqty_raw = _num(_tryget(info, ["ordermin"], "0"), 0f0)
 				minbaseqty = max(minbaseqty_raw, baseprecision)
-				minquoteqty = _float32(_tryget(info, ["costmin"], "0"), 0f0)
+				minquoteqty = _num(_tryget(info, ["costmin"], "0"), 0f0)
 				status = String(_tryget(info, ["status"], "online"))
 				push!(df, (
 					symbol=symbolname,
@@ -1503,13 +1531,13 @@ end
 Parse one ticker object into Bybit-compatible fields.
 """
 function _tickerrow(bc::KrakenFuturesCache, key::AbstractString, ticker::Dict)
-	ask = _float32(_tryget(ticker, ["ask", "askPrice", "bestAsk", "ask_price"], 0), 0f0)
-	bid = _float32(_tryget(ticker, ["bid", "bidPrice", "bestBid", "bid_price"], 0), 0f0)
-	lastprice = _float32(_tryget(ticker, ["last", "lastPrice", "markPrice", "last_price"], 0), 0f0)
-	openprice = _float32(_tryget(ticker, ["open24h", "open", "openPrice"], 0), 0f0)
-	basevolume = _float32(_tryget(ticker, ["volume24h", "vol24h", "volume"], 0), 0f0)
-	quotevolume = _float32(_tryget(ticker, ["turnover24h", "quoteVolume", "volumeQuote", "volumeQuote24h"], 0), basevolume * lastprice)
-	pricechangepercent = openprice == 0f0 ? _float32(_tryget(ticker, ["price24hPcnt", "change"], 0), 0f0) : Float32((lastprice - openprice) / openprice)
+	ask = _numstrict(_firstpresent(ticker, ["ask", "askPrice", "bestAsk", "ask_price"]), "ticker $(key) ask")
+	bid = _numstrict(_firstpresent(ticker, ["bid", "bidPrice", "bestBid", "bid_price"]), "ticker $(key) bid")
+	lastprice = _numstrict(_firstpresent(ticker, ["last", "lastPrice", "markPrice", "last_price"]), "ticker $(key) lastprice")
+	openprice = _numstrict(_firstpresent(ticker, ["open24h", "open", "openPrice"]), "ticker $(key) openprice")
+	basevolume = _numstrict(_firstpresent(ticker, ["volume24h", "vol24h", "volume"]), "ticker $(key) basevolume")
+	quotevolume = _numstrict(_firstpresent(ticker, ["turnover24h", "quoteVolume", "volumeQuote", "volumeQuote24h"]), "ticker $(key) quotevolume")
+	pricechangepercent = openprice == 0f0 ? _numstrict(_firstpresent(ticker, ["price24hPcnt", "change"]), "ticker $(key) pricechangepercent") : ((lastprice - openprice) / openprice)
 	symbol = _resultkey2symbol(bc, key)
 	return (askprice=ask, bidprice=bid, lastprice=lastprice, quotevolume24h=quotevolume, pricechangepercent=pricechangepercent, symbol=symbol)
 end
@@ -1575,21 +1603,21 @@ function _convertklines(klines)::DataFrame
 			r = Dict(row)
 			push!(df, (
 				opentime=_todatetime(_tryget(r, ["time", "t", "interval_begin"], Dates.now(Dates.UTC))),
-				open=_float32(_tryget(r, ["open", "o"], 0), 0f0),
-				high=_float32(_tryget(r, ["high", "h"], 0), 0f0),
-				low=_float32(_tryget(r, ["low", "l"], 0), 0f0),
-				close=_float32(_tryget(r, ["close", "c"], 0), 0f0),
-				basevolume=_float32(_tryget(r, ["volume", "v"], 0), 0f0),
+				open=_num(_tryget(r, ["open", "o"], 0), 0f0),
+				high=_num(_tryget(r, ["high", "h"], 0), 0f0),
+				low=_num(_tryget(r, ["low", "l"], 0), 0f0),
+				close=_num(_tryget(r, ["close", "c"], 0), 0f0),
+				basevolume=_num(_tryget(r, ["volume", "v"], 0), 0f0),
 			))
 		elseif row isa AbstractVector
 			length(row) < 6 && continue
 			push!(df, (
 				opentime=_todatetime(row[1]),
-				open=_float32(row[2]),
-				high=_float32(row[3]),
-				low=_float32(row[4]),
-				close=_float32(row[5]),
-				basevolume=_float32(row[6]),
+				open=_num(row[2]),
+				high=_num(row[3]),
+				low=_num(row[4]),
+				close=_num(row[5]),
+				basevolume=_num(row[6]),
 			))
 		end
 	end
@@ -1652,7 +1680,7 @@ end
 
 "Parse one account metric from a futures account dictionary."
 function _accountfloat(d::AbstractDict, keys::AbstractVector{<:AbstractString}, default::Float64=0.0)::Float64
-	return Float64(_float32(_dictgetci(d, keys, default), Float32(default)))
+	return (_num(_dictgetci(d, keys, default), (default)))
 end
 
 "Return exchange-concept account capacity metrics for Kraken Futures."
@@ -1699,7 +1727,7 @@ function accountcapacity(bc::KrakenFuturesCache)
 				quotecoin = uppercase(String(EnvConfig.pairquote))
 				for (coin, val) in balmap
 					if uppercase(_normalizeasset(String(coin))) == quotecoin
-						available_quote += max(0.0, Float64(_float32(val, 0f0)))
+						available_quote += max(0.0, (_num(val, 0f0)))
 					end
 				end
 			end
@@ -1750,7 +1778,7 @@ function positionsnapshot(bc::KrakenFuturesCache)::DataFrame
 		end
 		basecoin == "" && continue
 
-		sizevalue = Float64(_float32(_tryget(entry, ["size", "qty", "positionSize", "amount", "contracts", "vol"], 0), 0f0))
+		sizevalue = (_num(_tryget(entry, ["size", "qty", "positionSize", "amount", "contracts", "vol"], 0), 0f0))
 		side = lowercase(String(_tryget(entry, ["side", "direction"], "")))
 		islong = side in ["buy", "long"]
 		isshort = side in ["sell", "short"]
@@ -1758,7 +1786,7 @@ function positionsnapshot(bc::KrakenFuturesCache)::DataFrame
 			islong = sizevalue > 0.0
 			isshort = sizevalue < 0.0
 		end
-		qty = abs(Float32(sizevalue))
+		qty = abs((sizevalue))
 		qty <= 0f0 && continue
 
 		prev = get(acc, basecoin, (0f0, 0f0))
@@ -1784,17 +1812,17 @@ function _orderrow(bc::KrakenFuturesCache, orderid::AbstractString, entry::Dict)
 	symbol = _resultkey2symbol(bc, rawpair)
 	side = lowercase(String(_tryget(descr, ["type", "side", "direction"], "buy"))) == "buy" ? "Buy" : "Sell"
 	ordertype = titlecase(String(_tryget(descr, ["ordertype", "orderType", "order_type"], "limit")))
-	executedqty = _float32(_tryget(entry, ["vol_exec", "filled", "filledSize"], 0), 0f0)
+	executedqty = _numstrict(_firstpresent(entry, ["vol_exec", "filled", "filledSize"]), "order $(orderid) executedqty")
 	# Kraken Futures open orders frequently expose `unfilledSize` instead of `size`/`qty`.
 	# Reconstruct total order qty as filled + unfilled when direct total fields are absent.
-	unfilledqty = _float32(_tryget(entry, ["unfilledSize", "remainingSize"], 0), 0f0)
-	baseqty = _float32(_tryget(entry, ["vol", "qty", "size", "orderQty"], executedqty + unfilledqty), executedqty + unfilledqty)
-	limitprice = _float32(_tryget(descr, ["price", "limitPrice"], _tryget(entry, ["price", "limitPrice"], 0)), 0f0)
-	avgprice = _float32(_tryget(entry, ["avgPrice", "fillPrice", "price"], limitprice), limitprice)
+	unfilledqty = _numstrict(_firstpresent(entry, ["unfilledSize", "remainingSize"]), "order $(orderid) unfilledqty")
+	baseqty = _numstrict(_firstpresent(entry, ["vol", "qty", "size", "orderQty"]), "order $(orderid) baseqty")
+	limitprice = _numstrict(_firstpresent(descr, ["price", "limitPrice"]), "order $(orderid) limitprice")
+	avgprice = _numstrict(_firstpresent(entry, ["avgPrice", "fillPrice", "price"]), "order $(orderid) avgprice")
 	status = lowercase(String(_tryget(entry, ["status", "orderStatus"], "open")))
 	created = _todatetime(_tryget(entry, ["opentm", "created", "timestamp", "createdTime"], Dates.now(Dates.UTC)))
 	updated = _todatetime(_tryget(entry, ["updated", "updatedTime", "lastUpdateTime"], created))
-	leverage = _float32(_tryget(descr, ["leverage"], 1), 1f0)
+	leverage = _numstrict(_firstpresent(descr, ["leverage"]), "order $(orderid) leverage")
 	tif = String(_tryget(descr, ["timeinforce", "timeInForce"], "GTC"))
 	orderLinkId = String(_tryget(entry, ["cliOrdId", "clientOrderId", "cl_ord_id"], ""))
 	rawreduceonly = _tryget(entry, ["reduceOnly", "reduce_only"], _tryget(descr, ["reduceOnly", "reduce_only"], false))
@@ -1966,22 +1994,22 @@ end
 
 "Return a post-only limit price one tick inside the spread for maker orders with omitted price."
 function _makerlimitprice(syminfo::DataFrameRow, snapshot, orderside::AbstractString)
-	ticksize = Float32(syminfo.ticksize)
+	ticksize = (syminfo.ticksize)
 	side = lowercase(String(orderside))
-	price = side == "buy" ? Float32(snapshot.askprice) - ticksize : Float32(snapshot.bidprice) + ticksize
+	price = side == "buy" ? (snapshot.askprice) - ticksize : (snapshot.bidprice) + ticksize
 	return price > 0f0 ? price : nothing
 end
 
 function _icebergchunkamount(amount::Real, refprice::Real, minqty::Real, max_quote)::Tuple{Float64, Bool}
-	total = Float64(amount)
-	if isnothing(max_quote) || !(Float64(max_quote) > 0.0) || !(Float64(refprice) > 0.0)
+	total = (amount)
+	if isnothing(max_quote) || !((max_quote) > 0.0) || !((refprice) > 0.0)
 		return (total, false)
 	end
-	if total * Float64(refprice) <= Float64(max_quote) + 1e-9
+	if total * (refprice) <= (max_quote) + 1e-9
 		return (total, false)
 	end
-	target = Float64(max_quote) / Float64(refprice)
-	chunk = min(total, max(target, Float64(minqty)))
+	target = (max_quote) / (refprice)
+	chunk = min(total, max(target, (minqty)))
 	return (chunk, chunk + 1e-9 < total)
 end
 
@@ -2051,8 +2079,8 @@ function _createorder_single!(bc::KrakenFuturesCache, symbol::String, orderside:
 	adaptivepost = maker && isnothing(price)
 	attempts = adaptivepost ? 5 : 1
 	ordertype = (maker || !isnothing(price)) ? "lmt" : "mkt"
-	chosenqty = Float32(basequantity)
-	effectiveprice = isnothing(price) ? nothing : Float32(price)
+	chosenqty = (basequantity)
+	effectiveprice = isnothing(price) ? nothing : (price)
 	clientOrderId = isnothing(orderLinkId) ? _next_client_order_id() : String(orderLinkId)
 	orderid = nothing
 	while attempts > 0
@@ -2159,7 +2187,7 @@ function _createorder_single!(bc::KrakenFuturesCache, symbol::String, orderside:
 		baseqty=chosenqty,
 		ordertype=isnothing(effectiveprice) ? "Market" : "Limit",
 		timeinforce=(maker && !isnothing(effectiveprice)) ? "PostOnly" : "GTC",
-		limitprice=isnothing(effectiveprice) ? 0f0 : Float32(effectiveprice),
+		limitprice=isnothing(effectiveprice) ? 0f0 : (effectiveprice),
 		avgprice=0f0,
 		executedqty=0f0,
 		status="New",
@@ -2172,7 +2200,7 @@ end
 function _advanceicebergsequence!(bc::KrakenFuturesCache, rootid::AbstractString; submitfn::Function=_createorder_single!)::Bool
 	root, state = _icebergstate(rootid)
 	isnothing(state) && return false
-	remaining = Float64(state[:remaining_baseqty])
+	remaining = (state[:remaining_baseqty])
 	if remaining <= 1e-9
 		_deleteicebergstate!(String(root))
 		return false
@@ -2208,13 +2236,13 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 	syminfo = symbolinfo(bc, symbol)
 	isnothing(syminfo) && return _createorder_single!(bc, symbol, orderside, basequantity, price, maker; configside=configside, execution_spec=spec, marginleverage=marginleverage, reduceonly=reduceonly)
 	refprice = isnothing(price) ? (maker ? _makerlimitprice(syminfo, get24h(bc, symbol), orderside) : get24h(bc, symbol).lastprice) : price
-	minqty = max(Float64(syminfo.minbaseqty), Float64(syminfo.minquoteqty) / max(Float64(refprice), 1e-9))
+	minqty = max((syminfo.minbaseqty), (syminfo.minquoteqty) / max((refprice), 1e-9))
 	chunk, split = _icebergchunkamount(basequantity, refprice, minqty, spec.max_quote)
 	first_order = _createorder_single!(bc, symbol, orderside, chunk, price, maker; configside=configside, execution_spec=spec, marginleverage=marginleverage, reduceonly=reduceonly)
 	if !isnothing(first_order) && split
 		_seticebergstate!(String(first_order.orderid), Dict{Symbol, Any}(
 			:current_order_id => String(first_order.orderid),
-			:remaining_baseqty => max(0.0, Float64(basequantity) - Float64(chunk)),
+			:remaining_baseqty => max(0.0, (basequantity) - (chunk)),
 			:symbol => String(symbol),
 			:orderside => String(orderside),
 			:configside => spec.side,
@@ -2222,8 +2250,8 @@ function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, 
 			:reduceonly => reduceonly,
 			:maker => maker,
 			:price => price,
-			:refprice => Float64(refprice),
-			:minqty => Float64(minqty),
+			:refprice => (refprice),
+			:minqty => (minqty),
 			:max_quote => spec.max_quote,
 			:execution_spec => spec,
 			:root_order_link_id => String(first_order.orderLinkId),
@@ -2279,18 +2307,18 @@ function amendorder(bc::KrakenFuturesCache, symbol::String, orderid::String; bas
 	current = order(bc, orderid)
 	isnothing(current) && return nothing
 
-	qty = isnothing(basequantity) ? current.baseqty : Float32(basequantity)
+	qty = isnothing(basequantity) ? current.baseqty : (basequantity)
 	prc = current.limitprice
 	pricechanged = false
 	if current.timeinforce == "PostOnly"
 		snapshot = get24h(bc, symbol)
 		if !isnothing(snapshot)
 			prc = _makerlimitprice(symbolinfo(bc, symbol), snapshot, current.side)
-			pricechanged = !isapprox(Float64(prc), Float64(current.limitprice); atol=0.0, rtol=0.0)
+			pricechanged = !isapprox((prc), (current.limitprice); atol=0.0, rtol=0.0)
 		end
 	elseif !isnothing(limitprice)
-		prc = Float32(limitprice)
-		pricechanged = !isapprox(Float64(prc), Float64(current.limitprice); atol=0.0, rtol=0.0)
+		prc = (limitprice)
+		pricechanged = !isapprox((prc), (current.limitprice); atol=0.0, rtol=0.0)
 	end
 	if qty == current.baseqty && !pricechanged
 		return current
@@ -2351,7 +2379,7 @@ function balances(bc::KrakenFuturesCache)
 		balmap = _tryget(cash, ["balances"], Dict())
 		if balmap isa AbstractDict
 			for (coin, val) in balmap
-				free = _float32(val, 0f0)
+				free = _num(val, 0f0)
 				free == 0f0 && continue
 				push!(df, (coin=_normalizeasset(uppercase(String(coin))), locked=0f0, free=free, borrowed=0f0, accruedinterest=0f0))
 			end
@@ -2361,8 +2389,8 @@ function balances(bc::KrakenFuturesCache)
 	# Flex collateral account: report aggregate USD collateral value
 	if haskey(accounts, "flex")
 		flex = Dict(accounts["flex"])
-		available = _float32(_tryget(flex, ["availableMargin", "marginEquity"], 0), 0f0)
-		locked = _float32(_tryget(flex, ["initialMargin", "initialMarginWithOrders"], 0), 0f0)
+		available = _num(_tryget(flex, ["availableMargin", "marginEquity"], 0), 0f0)
+		locked = _num(_tryget(flex, ["initialMargin", "initialMarginWithOrders"], 0), 0f0)
 		total = available + locked
 		if total > 0f0
 			push!(df, (coin="USD", locked=locked, free=available, borrowed=0f0, accruedinterest=0f0))
@@ -2388,7 +2416,7 @@ function balances(bc::KrakenFuturesCache)
 				end
 				basecoin == "" && continue
 
-				sizevalue = Float64(_float32(_tryget(entry, ["size", "qty", "positionSize", "amount", "contracts", "vol"], 0), 0f0))
+				sizevalue = (_num(_tryget(entry, ["size", "qty", "positionSize", "amount", "contracts", "vol"], 0), 0f0))
 				side = lowercase(String(_tryget(entry, ["side", "direction"], "")))
 				islong = side in ["buy", "long"]
 				isshort = side in ["sell", "short"]
@@ -2396,7 +2424,7 @@ function balances(bc::KrakenFuturesCache)
 					islong = sizevalue > 0.0
 					isshort = sizevalue < 0.0
 				end
-				qty = abs(Float32(sizevalue))
+				qty = abs((sizevalue))
 				qty <= 0f0 && continue
 
 				if islong
@@ -2469,9 +2497,9 @@ function ws_ticker(bc::KrakenFuturesCache, symbol::String)
 						setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
 						put!(channel, Dict(
 							"symbol" => symbol,
-							"askprice" => _float32(_tryget(p, ["ask", "askPrice"], 0), 0f0),
-							"bidprice" => _float32(_tryget(p, ["bid", "bidPrice"], 0), 0f0),
-							"lastprice" => _float32(_tryget(p, ["last", "lastPrice", "markPrice"], 0), 0f0),
+							"askprice" => _num(_tryget(p, ["ask", "askPrice"], 0), 0f0),
+							"bidprice" => _num(_tryget(p, ["bid", "bidPrice"], 0), 0f0),
+							"lastprice" => _num(_tryget(p, ["last", "lastPrice", "markPrice"], 0), 0f0),
 							"source" => "ws",
 						))
 					end
@@ -2543,11 +2571,11 @@ function ws_kline(bc::KrakenFuturesCache, symbol::String, interval::String="1m")
 						symbol = _resultkey2symbol(bc, wskey)
 						candle = (
 							opentime=_todatetime(_tryget(p, ["time", "timestamp"], Dates.now(Dates.UTC))),
-							open=_float32(_tryget(p, ["open"], 0), 0f0),
-							high=_float32(_tryget(p, ["high"], 0), 0f0),
-							low=_float32(_tryget(p, ["low"], 0), 0f0),
-							close=_float32(_tryget(p, ["close"], 0), 0f0),
-							basevolume=_float32(_tryget(p, ["volume"], 0), 0f0),
+							open=_num(_tryget(p, ["open"], 0), 0f0),
+							high=_num(_tryget(p, ["high"], 0), 0f0),
+							low=_num(_tryget(p, ["low"], 0), 0f0),
+							close=_num(_tryget(p, ["close"], 0), 0f0),
+							basevolume=_num(_tryget(p, ["volume"], 0), 0f0),
 						)
 						_recordwskline!(symbol, interval, candle)
 						setmarketdataheartbeat!(bc, symbol, Dates.now(Dates.UTC))
@@ -2643,7 +2671,7 @@ function _wsreconnectbackoffseconds(failure_streak::Int)::Float64
 	streak = max(1, failure_streak)
 	expwait = _ws_private_backoff_base_seconds * (2.0 ^ (streak - 1))
 	basewait = max(Dates.value(_ws_private_min_reconnect_interval) / 1000, min(_ws_private_backoff_cap_seconds, expwait))
-	jitter = (Float64(mod(time_ns(), 1_000_000_000)) / 1_000_000_000) * _ws_private_backoff_jitter_seconds
+	jitter = ((mod(time_ns(), 1_000_000_000)) / 1_000_000_000) * _ws_private_backoff_jitter_seconds
 	return basewait + jitter
 end
 
