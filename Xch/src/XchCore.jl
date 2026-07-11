@@ -8,6 +8,8 @@ module Xch
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
+using XchAdapter: XchAdapterCache
+import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, wsclosedkline
 import Ohlcv: intervalperiod
 
 const authorization = Ref{Any}(nothing)
@@ -223,10 +225,12 @@ function _exchangecache(exchange::AbstractString, simmode::SimMode)
     return KrakenSpot.KrakenSpotCache(publickey=publickey, secretkey=secretkey)
 end
 
+_rawcache(ac::XchAdapterCache) = rawcache(ac)
+
 mutable struct XchCache
     bases  # ::Dict{String, Ohlcv.OhlcvData}
     pairstates::Dict{String, DataFrame}  # keyed by canonical trading pair, stores phase-2 Trades DataFrames
-    bc  # exchange specific cache, e.g. Bybit.BybitCache or KrakenSpot.KrakenSpotCache
+    bc::XchAdapterCache  # typed adapter cache wrapper
     exchange::String
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
@@ -251,8 +255,13 @@ mutable struct XchCache
         xc.mc[:trades_v1_required_columns] = TRADES_V1_REQUIRED_COLUMNS
         xc.tradesrowtemplate = _buildtradesrowtemplate(xc)
         _setexchangepath!(xc)
-        if hasproperty(xc.bc, :syminfodf) && !isnothing(xc.bc.syminfodf)
-            for row in eachrow(xc.bc.syminfodf)
+        syminfodf = if hasproperty(_rawcache(xc.bc), :syminfodf)
+            getproperty(_rawcache(xc.bc), :syminfodf)
+        else
+            nothing
+        end
+        if !isnothing(syminfodf)
+            for row in eachrow(syminfodf)
                 setsymbolinfocache!(xc, row.symbol, (
                     symbol=String(row.symbol),
                     status=String(row.status),
@@ -267,19 +276,6 @@ mutable struct XchCache
             end
         end
         return xc
-    end
-end
-
-"""Get the exchange module corresponding to the adapter in xc.bc"""
-function _adaptermodule(xc::XchCache)
-    if xc.bc isa Bybit.BybitCache
-        return Bybit
-    elseif xc.bc isa KrakenFutures.KrakenFuturesCache
-        return KrakenFutures
-    elseif xc.bc isa KrakenSpot.KrakenSpotCache
-        return KrakenSpot
-    else
-        throw(ArgumentError("Unknown adapter type: $(typeof(xc.bc))"))
     end
 end
 
@@ -907,24 +903,13 @@ function marketdataheartbeats(xc::XchCache)
     end
     localmap = xc.mc[:marketdata_ws_last_update_by_symbol]
 
-    mod = _adaptermodule(xc)
-    if isdefined(mod, :marketdataheartbeats)
-        moduledict = try
-            getproperty(mod, :marketdataheartbeats)(xc.bc)
-        catch
-            try
-                getproperty(mod, :marketdataheartbeats)()
-            catch
-                Dict{String, DateTime}()
-            end
-        end
-        for (sym, dt) in moduledict
-            key = uppercase(String(sym))
-            moddt = DateTime(dt)
-            prev = get(localmap, key, nothing)
-            if isnothing(prev) || (moddt > DateTime(prev))
-                localmap[key] = moddt
-            end
+    moduledict = marketdataheartbeats(xc.bc)
+    for (sym, dt) in moduledict
+        key = uppercase(String(sym))
+        moddt = DateTime(dt)
+        prev = get(localmap, key, nothing)
+        if isnothing(prev) || (moddt > DateTime(prev))
+            localmap[key] = moddt
         end
     end
     return copy(localmap)
@@ -936,19 +921,7 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
         key = uppercase(String(symbol))
         localmap = marketdataheartbeats(xc)
         localdt = get(localmap, key, nothing)
-        moduledt = nothing
-        mod = _adaptermodule(xc)
-        if isdefined(mod, :marketdataheartbeat)
-            try
-                moduledt = getproperty(mod, :marketdataheartbeat)(xc.bc, key)
-            catch
-                try
-                    moduledt = getproperty(mod, :marketdataheartbeat)(key)
-                catch
-                    moduledt = nothing
-                end
-            end
-        end
+        moduledt = marketdataheartbeat(xc.bc; symbol=key)
         if isnothing(localdt)
             if !isnothing(moduledt)
                 setmarketdataheartbeat!(xc, key, DateTime(moduledt))
@@ -965,19 +938,7 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
     end
 
     localdt = get(xc.mc, :marketdata_ws_last_update_dt, nothing)
-    moduledt = nothing
-    mod = _adaptermodule(xc)
-    if isdefined(mod, :marketdataheartbeat)
-        try
-            moduledt = getproperty(mod, :marketdataheartbeat)(xc.bc)
-        catch
-            try
-                moduledt = getproperty(mod, :marketdataheartbeat)()
-            catch
-                moduledt = nothing
-            end
-        end
-    end
+    moduledt = marketdataheartbeat(xc.bc)
 
     if isnothing(localdt)
         if !isnothing(moduledt)
@@ -1011,8 +972,8 @@ end
 
 # Stub implementations for removed routing layer WebSocket functions
 _ensurewschannel!(xc::XchCache, args...; kwargs...) = nothing
-_adapterwsdfsnapshot(xc::XchCache, args...; kwargs...) = DataFrame()
-_adapterwsheartbeat(xc::XchCache, args...; kwargs...) = nothing
+wsdfsnapshot(xc::XchCache, args...; kwargs...) = DataFrame()
+wsheartbeat(xc::XchCache, args...; kwargs...) = nothing
 
 function _refreshwsstreams!(xc::XchCache)
     # Stub: WebSocket streams no longer managed via routing layer
@@ -1052,7 +1013,7 @@ Falls back to `xc.bc` (the primary adapter) when no role override is configured.
 
 "Return the exchange module for the given adapter instance."
 
-_exchangeservertime(xc::XchCache) = _adaptermodule(xc).servertime(xc.bc)
+_exchangeservertime(xc::XchCache) = servertime(xc.bc)
 
 "Return the syminfo cache dict, creating it lazily."
 _syminfocache(xc::XchCache) = get!(xc.mc, :syminfo_cache, Dict{String, NamedTuple}())
@@ -1078,9 +1039,9 @@ Falls back to the local cache when no live connection is available (sim mode).
 """
 function _exchangesymbolinfo(xc::XchCache, symbol)
     symbol = uppercase(string(symbol))
-    bc = xc.bc
+    bc = _rawcache(xc.bc)
     if !isnothing(bc)
-        row = _adaptermodule(xc).symbolinfo(bc, symbol)
+        row = symbolinfo(xc.bc, symbol)
         if !isnothing(row)
             # Populate / refresh local cache from live data
             nt = (
@@ -1103,21 +1064,17 @@ function _exchangesymbolinfo(xc::XchCache, symbol)
     return get(_syminfocache(xc), symbol, nothing)
 end
 
-_exchangevalidsymbol(xc::XchCache, sym) = _adaptermodule(xc).validsymbol(xc.bc, sym)
-_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = _adaptermodule(xc).getklines(xc.bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
-_exchangeget24h(xc::XchCache) = _adaptermodule(xc).get24h(xc.bc)
-_exchangeget24h(xc::XchCache, symbol) = _adaptermodule(xc).get24h(xc.bc, symbol)
-_exchangebalances(xc::XchCache) = _adaptermodule(xc).balances(xc.bc)
+_exchangevalidsymbol(xc::XchCache, sym) = validsymbol(xc.bc, sym)
+_exchangegetklines(xc::XchCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m") = getklines(xc.bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
+_exchangeget24h(xc::XchCache) = get24h(xc.bc)
+_exchangeget24h(xc::XchCache, symbol) = get24h(xc.bc, symbol)
+_exchangebalances(xc::XchCache) = balances(xc.bc)
 function _exchangeaccountcapacity(xc::XchCache)
-    mod = _adaptermodule(xc)
-    if isdefined(mod, :accountcapacity)
-        return getproperty(mod, :accountcapacity)(xc.bc)
-    end
-    return nothing
+    return accountcapacity(xc.bc)
 end
-_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _adaptermodule(xc).openorders(xc.bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
-_exchangeorder(xc::XchCache, orderid) = _adaptermodule(xc).order(xc.bc, orderid)
-_exchangecancelorder(xc::XchCache, symbol, orderid) = _adaptermodule(xc).cancelorder(xc.bc, symbol, orderid)
+_exchangeopenorders(xc::XchCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = openorders(xc.bc; symbol=symbol, orderid=orderid, orderLinkId=orderLinkId)
+_exchangeorder(xc::XchCache, orderid) = order(xc.bc, orderid)
+_exchangecancelorder(xc::XchCache, symbol, orderid) = cancelorder(xc.bc, symbol, orderid)
 
 """
 Guard: (deprecated - no longer needed in single-exchange model)
@@ -1248,9 +1205,9 @@ function _normalizeamendedorder(xc::XchCache, amended)
     return (nothing, amended)
 end
 
-_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = (_asserttradeallowed(xc); _adaptermodule(xc).createorder(xc.bc, symbol, orderside, basequantity, price, maker, marginleverage=marginleverage, reduceonly=reduceonly))
-_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _adaptermodule(xc).amendorder(xc.bc, symbol, orderid; basequantity=basequantity, limitprice=limitprice))
-_exchangeamendorder(xc::XchCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); _adaptermodule(xc).amendorder(xc.bc, orderid; basequantity=basequantity, limitprice=limitprice))
+_exchangecreateorder(xc::XchCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = (_asserttradeallowed(xc); createorder(xc.bc, symbol, orderside, basequantity, price, maker, marginleverage=marginleverage, reduceonly=reduceonly))
+_exchangeamendorder(xc::XchCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); amendorder(xc.bc, symbol, orderid; basequantity=basequantity, limitprice=limitprice))
+_exchangeamendorder(xc::XchCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = (_asserttradeallowed(xc); amendorder(xc.bc, orderid; basequantity=basequantity, limitprice=limitprice))
 
 """
 Create a close order for one existing position side.
@@ -1267,25 +1224,15 @@ function closeorder(xc::XchCache, base::AbstractString; positionside::Symbol, li
 
     baseup = uppercase(String(base))
     symbol = symboltoken(xc, baseup, EnvConfig.pairquote)
-    mod = _adaptermodule(xc)
-    bc = xc.bc
-
-    if isdefined(mod, :closeorder)
-        fn = getfield(mod, :closeorder)
-        if applicable(fn, bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
-            _asserttradeallowed(xc)
-            try
-                created = fn(bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
-                oid, oocreate = _normalizecreatedorder(xc, created)
-                orderside = side == :long ? "Sell" : "Buy"
-                if isnothing(limitprice) && maker && !isnothing(oid)
-                    registeradaptiveorder!(xc, oid)
-                end
-                return oid
-            catch err
-                rethrow()
-            end
+    created = closeorder(xc.bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
+    if !isnothing(created)
+        _asserttradeallowed(xc)
+        oid, oocreate = _normalizecreatedorder(xc, created)
+        orderside = side == :long ? "Sell" : "Buy"
+        if isnothing(limitprice) && maker && !isnothing(oid)
+            registeradaptiveorder!(xc, oid)
         end
+        return oid
     end
 
     if side == :long
@@ -1356,34 +1303,26 @@ Resolve the exchange-specific symbol token for a pair on the primary exchange.
 Falls back to a concatenated symbol if the adapter cannot map the pair yet.
 """
 function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)
-    bc = xc.bc
+    bc = _rawcache(xc.bc)
     if isnothing(bc)
         return symboltoken(basecoin, quotecoin)
     end
-    return _exchangeModule(xc).symboltoken(bc, basecoin, quotecoin)
+    return symboltoken(xc.bc, basecoin, quotecoin)
 end
 
 "Return side-specific margin leverage caps for one symbol when supported by the primary exchange."
 function marginlimits(xc::XchCache, symbol::AbstractString)
-    bc = xc.bc
+    bc = _rawcache(xc.bc)
     isnothing(bc) && return (maxleveragebuy=0, maxleveragesell=0)
-    mod = _exchangeModule(xc)
-    if isdefined(mod, :marginlimits) && applicable(getfield(mod, :marginlimits), bc, symbol)
-        return mod.marginlimits(bc, symbol)
-    end
-    return (maxleveragebuy=0, maxleveragesell=0)
+    return marginlimits(xc.bc, symbol)
 end
 
 "Return true when primary exchange metadata permits side/leverage for one symbol."
 function marginpermitted(xc::XchCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed)::Bool
     marginleverage <= 0 && return true
-    bc = xc.bc
+    bc = _rawcache(xc.bc)
     isnothing(bc) && return false
-    mod = _exchangeModule(xc)
-    if isdefined(mod, :marginpermitted) && applicable(getfield(mod, :marginpermitted), bc, symbol, orderside, marginleverage)
-        return mod.marginpermitted(bc, symbol, orderside, marginleverage)
-    end
-    return true
+    return marginpermitted(xc.bc, symbol, orderside, marginleverage)
 end
 
 ceilbase(base, qty) = base == "usdt" ? ceil(qty, digits=3) : ceil(qty, digits=5)
@@ -1455,7 +1394,7 @@ function Base.iterate(xc::XchCache, currentdt=nothing)
 end
 
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
-tradetime(xc::XchCache) = isnothing(xc.currentdt) ? (isnothing(xc.bc) ? xc.startdt : floor(_exchangeservertime(xc), Minute(1))) : xc.currentdt
+tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(_exchangeservertime(xc), Minute(1)) : xc.currentdt
 # tradetime(xc::XchCache) = (xc.mc[:simmode] != bybitsim) ? _exchangeservertime(xc) : Dates.now(UTC)
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
@@ -1493,19 +1432,7 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
 end
 
 function _fetchwsclosedkline(xc::XchCache, symbol::AbstractString, interval::AbstractString)
-    mod = _adaptermodule(xc)
-    if !isdefined(mod, :wsclosedkline)
-        return nothing
-    end
-    try
-        return getproperty(mod, :wsclosedkline)(xc.bc, symbol, String(interval))
-    catch
-        try
-            return getproperty(mod, :wsclosedkline)(symbol, String(interval))
-        catch
-            return nothing
-        end
-    end
+    return wsclosedkline(xc.bc, symbol, interval)
 end
 
 function _upsert_closed_wscandle!(ohlcv, candle)
@@ -1584,7 +1511,7 @@ function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
     end
 
     xc.currentdt = datetime
-    _setsimtime!(xc.bc, datetime)
+    _setsimtime!(_rawcache(xc.bc), datetime)
     if !isnothing(datetime)
         for base in keys(xc.bases)
             try
@@ -1793,8 +1720,7 @@ function validsymbol(xc::XchCache, symbol)
 end
 
 function validsymbol(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString)
-    bc = xc.bc
-    return !isnothing(bc) && validsymbol(bc, basecoin, quotecoin)
+    return validsymbol(xc, symboltoken(xc, basecoin, quotecoin))
 end
 
 "Returns a tuple of (minimum base quantity, minimum quote quantity)"
@@ -2068,13 +1994,10 @@ _hascol(df::DataFrame, col::Symbol) = col in propertynames(df)
 _ensuretradesexecutioncolumns!(tradesdf::DataFrame)::DataFrame = _ensuretradesv1schema(tradesdf)
 
 function _pairfromtradesrow(tradesdf::DataFrame, ix::Integer)
-    if _hascol(tradesdf, :pair)
-        pair = String(tradesdf[ix, :pair])
-        bq = basequote(pair)
-        !isnothing(bq) && return bq
-        error("trades row pair=$(pair) is not a valid base-quote symbol")
-    end
-    error("trades row must provide :pair for request processing")
+    pair = String(tradesdf[ix, :pair])
+    bq = basequote(pair)
+    @assert !isnothing(bq) "trades row pair=$(pair) is not a valid base-quote symbol"
+    return bq
 end
 
 function _ordersidefromaction(action::Symbol)::String
@@ -2130,7 +2053,7 @@ function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, actio
 end
 
 @inline function _is_open_label(label)::Bool
-    return label in (Targets.longopen, Targets.longstrongopen, Targets.shortopen, Targets.shortstrongopen)
+    return label in (longopen, longstrongopen, shortopen, shortstrongopen)
 end
 
 function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
@@ -2312,21 +2235,18 @@ end
 "Evaluate and execute one row-level order request from the Trades DataFrame."
 function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-    acct = account_status(xc)
 
     pair = _pairfromtradesrow(tradesdf, ix)
     base = pair.basecoin
     quotecoin = pair.quotecoin
     labelval = tradesdf[ix, :label]
-    @assert labelval isa Targets.TradeLabel "label must be Targets.TradeLabel; got labelval=$(labelval) of type $(typeof(labelval))"
-    labelstr = lowercase(string(labelval))
-    action = if labelstr in ["longopen", "longstrongopen"]
+    action = if labelval in (longopen, longstrongopen)
         :long_open
-    elseif labelstr in ["longclose", "longstrongclose"]
+    elseif labelval in (longclose, longstrongclose)
         :long_close
-    elseif labelstr in ["shortopen", "shortstrongopen"]
+    elseif labelval in (shortopen, shortstrongopen)
         :short_open
-    elseif labelstr in ["shortclose", "shortstrongclose"]
+    elseif labelval in (shortclose, shortstrongclose)
         :short_close
     else
         :none
@@ -2391,33 +2311,12 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         :sc_pavg
     end
 
-    requested_limit = _hascol(tradesdf, limitcol) ? tradesdf[ix, limitcol] : missing
-    limitprice = (ismissing(requested_limit) || isnothing(requested_limit)) ? nothing : Float32(requested_limit)
-    requested_amount = _hascol(tradesdf, amountcol) ? tradesdf[ix, amountcol] : missing
-    leverage = (_hascol(tradesdf, leveragecol) && !ismissing(tradesdf[ix, leveragecol])) ? Int(tradesdf[ix, leveragecol]) : 0
+    requested_limit = _hascol(tradesdf, limitcol) ? Float32(tradesdf[ix, limitcol]) : 0f0
+    limitprice = requested_limit > 0f0 ? requested_limit : nothing
+    requested_amount = _hascol(tradesdf, amountcol) ? Float32(tradesdf[ix, amountcol]) : 0f0
+    leverage = _hascol(tradesdf, leveragecol) ? Int(tradesdf[ix, leveragecol]) : 0
 
-    balancesdf = acct.balances
-    freebase = 0.0
-    borrowedbase = 0.0
-    if _hascol(balancesdf, :coin)
-        bix = findfirst(==(base), uppercase.(String.(balancesdf[!, :coin])))
-        if !isnothing(bix)
-            freebase = _hascol(balancesdf, :free) ? Float64(balancesdf[bix, :free]) : 0.0
-            borrowedbase = _hascol(balancesdf, :borrowed) ? Float64(balancesdf[bix, :borrowed]) : 0.0
-        end
-    end
-
-    amount = if ismissing(requested_amount) || isnothing(requested_amount)
-        if action == :long_close
-            Float32(max(0.0, freebase))
-        elseif action == :short_close
-            Float32(max(0.0, borrowedbase))
-        else
-            0f0
-        end
-    else
-        Float32(requested_amount)
-    end
+    amount = requested_amount
 
     if !(amount > 0f0)
         _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(amount) is not tradable for action=$(action) pair=$(base)-$(quotecoin)")
@@ -2429,21 +2328,6 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     if isnothing(minqty) || (amount < Float32(minqty))
         _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(amount) below minimum qty $(minqty) for pair=$(base)-$(quotecoin)")
         return (accepted=false, action=action, reason="below_minimum_qty")
-    end
-
-    if action == :long_open
-        quote_need = Float64(amount) * Float64(refprice)
-        if quote_need > acct.free_quote
-            _rejectedrequest!(xc, tradesdf, ix, action, "long open quote need $(quote_need) exceeds free quote $(acct.free_quote) for pair=$(base)-$(quotecoin)")
-            return (accepted=false, action=action, reason="insufficient_free_quote")
-        end
-    elseif action == :short_open
-        quote_need = Float64(amount) * Float64(refprice)
-        margin_need = leverage > 0 ? quote_need / max(1, leverage) : quote_need
-        if margin_need > acct.free_margin_quote
-            _rejectedrequest!(xc, tradesdf, ix, action, "short open margin need $(margin_need) exceeds free margin $(acct.free_margin_quote) for pair=$(base)-$(quotecoin)")
-            return (accepted=false, action=action, reason="insufficient_free_margin")
-        end
     end
 
     side = _ordersidefromaction(action)
@@ -2501,7 +2385,6 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         tradesdf[ix, :lp_amount] = 0f0
         tradesdf[ix, :sp_amount] = amount
     end
-    _apply_accountsnapshot!(tradesdf, ix, acct)
     return (accepted=true, action=action, orderid=String(oid))
 end
 
@@ -2929,10 +2812,10 @@ end
 
 "Set a fixed asset amount for coin in adapter-backed bookkeeping and return the asset row."
 function _updateasset!(xc::XchCache, coin, amount)
-    bc = xc.bc
-    if !(bc isa Bybit.BybitCache)
-        throw(ArgumentError("_updateasset! requires Bybit cache for adapter-backed seeding, got $(typeof(bc))"))
+    if !(xc.bc isa Bybit.BybitCache)
+        throw(ArgumentError("_updateasset! requires Bybit adapter cache for adapter-backed seeding, got $(typeof(xc.bc))"))
     end
+    bc = _rawcache(xc.bc)
     Bybit.seedportfolio!(bc, coin, amount)
     ix = findfirst(==(uppercase(String(coin))), bc.assets[!, :coin])
     return isnothing(ix) ? nothing : bc.assets[ix, :]

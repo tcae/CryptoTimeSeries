@@ -48,7 +48,7 @@ end
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     # Make acceptance deterministic: enforce simulation wallet quote buying power.
-    bc = xc.bc
+    bc = Xch._rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote],
         free=Float32[1_000f0],
@@ -126,7 +126,7 @@ end
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
     Xch.addbase!(xc, "BTC", startdt, enddt)
 
-    bc = xc.bc
+    bc = Xch._rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[1_000f0, 1f0],

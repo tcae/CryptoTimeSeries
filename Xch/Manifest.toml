@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "47b9a16160623db31a1f905253f1fc626683ba30"
+project_hash = "2cc2991d9f775b0d171665e593d4654c21c4ad1c"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -75,7 +75,7 @@ uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
 [[deps.Bybit]]
-deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv"]
+deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "../Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
 version = "4.2.3"
@@ -395,13 +395,13 @@ uuid = "f7e6163d-2fa5-5f23-b69c-1db539e41963"
 version = "0.2.1+0"
 
 [[deps.KrakenFutures]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "../KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
 version = "0.1.1"
 
 [[deps.KrakenSpot]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "../KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
 version = "0.1.1"
@@ -926,10 +926,16 @@ uuid = "76eceee3-57b5-4d4a-8e66-0e911cebbf60"
 version = "1.6.1"
 
 [[deps.Xch]]
-deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs"]
+deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "."
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 version = "1.6.3"
+
+[[deps.XchAdapter]]
+deps = ["Dates"]
+path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
+uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "0.2.0"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

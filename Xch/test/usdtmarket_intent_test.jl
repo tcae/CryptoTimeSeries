@@ -12,9 +12,10 @@ EnvConfig.setpairquote!("USDT")
     dt = DateTime("2025-05-01T12:00:00")
     xc = Xch.XchCache(startdt=dt, enddt=dt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.setcurrenttime!(xc, dt)
+    bc = Xch._rawcache(xc.bc)
 
-    if isnothing(findfirst(==("AAPLXUSDT"), xc.bc.syminfodf[!, :symbol]))
-        push!(xc.bc.syminfodf, (
+    if isnothing(findfirst(==("AAPLXUSDT"), bc.syminfodf[!, :symbol]))
+        push!(bc.syminfodf, (
             symbol="AAPLXUSDT",
             status="Trading",
             basecoin="AAPLX",
@@ -28,8 +29,8 @@ EnvConfig.setpairquote!("USDT")
         ))
     end
 
-    Bybit.seedportfolio!(xc.bc, "USDT", 100000.0)
-    Bybit.seedportfolio!(xc.bc, "BTC", 0.5)
+    Bybit.seedportfolio!(bc, "USDT", 100000.0)
+    Bybit.seedportfolio!(bc, "BTC", 0.5)
 
     balancesdf = Xch.balances(xc; ignoresmallvolume=false)
     requestedbases = [String(c) for c in balancesdf[!, :coin] if c != EnvConfig.pairquote]

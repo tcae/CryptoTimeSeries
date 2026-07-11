@@ -1,6 +1,8 @@
 module KrakenSpot
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
+using XchAdapter
+import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, wsclosedkline
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
 # The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
@@ -165,36 +167,6 @@ function setmarketdataheartbeat!(bc, symbol::AbstractString, dt::DateTime)
 	return setmarketdataheartbeat!(symbol, dt)
 end
 
-"Return latest websocket marketdata heartbeat timestamp from KrakenSpot adapter state."
-marketdataheartbeat() = _marketdata_ws_last_update_dt[]
-
-"Return latest websocket marketdata heartbeat timestamp from a KrakenSpot cache handle."
-function marketdataheartbeat(bc)
-	_ = bc
-	return marketdataheartbeat()
-end
-
-"Return latest websocket marketdata heartbeat timestamp for one normalized symbol."
-function marketdataheartbeat(symbol::AbstractString)
-	key = uppercase(String(symbol))
-	lock(_marketdata_ws_symbol_lock) do
-		return get(_marketdata_ws_last_update_by_symbol, key, nothing)
-	end
-end
-
-"Return a copy of per-symbol websocket marketdata heartbeats."
-function marketdataheartbeats()
-	lock(_marketdata_ws_symbol_lock) do
-		return copy(_marketdata_ws_last_update_by_symbol)
-	end
-end
-
-"Return a copy of per-symbol websocket marketdata heartbeats using a cache handle."
-function marketdataheartbeats(bc)
-	_ = bc
-	return marketdataheartbeats()
-end
-
 _klinekey(symbol::AbstractString, interval::AbstractString) = (uppercase(String(symbol)), String(interval))
 
 function _recordwskline!(symbol::AbstractString, interval::AbstractString, candle)
@@ -213,19 +185,6 @@ function _recordwskline!(symbol::AbstractString, interval::AbstractString, candl
 		end
 		return candle
 	end
-end
-
-"Return latest websocket-confirmed closed kline for `symbol` and `interval` when available."
-function wsclosedkline(symbol::AbstractString, interval::String="1m")
-	key = _klinekey(symbol, interval)
-	lock(_ws_kline_state_lock) do
-		return get(_ws_closed_kline_by_key, key, nothing)
-	end
-end
-
-function wsclosedkline(bc, symbol::AbstractString, interval::String="1m")
-	_ = bc
-	return wsclosedkline(symbol, interval)
 end
 
 "Return latest websocket order snapshot maintained by KrakenSpot adapter."
@@ -432,7 +391,7 @@ end
 """
 Cached KrakenSpot state used by higher-level trading modules.
 """
-struct KrakenSpotCache
+struct KrakenSpotCache <: XchAdapter.XchAdapterCache
 	syminfodf::Union{Nothing, DataFrame}
 	apirest::String
 	publickey::String
@@ -455,6 +414,32 @@ function KrakenSpotCache(; autoloadexchangeinfo::Bool=true, apirest::String=KRAK
 		sort!(syminfo, :basecoin)
 	end
 	return KrakenSpotCache(syminfo, apirest, keys.publickey, keys.secretkey)
+end
+
+function marketdataheartbeats(bc::KrakenSpotCache)
+	_ = bc
+	lock(_marketdata_ws_symbol_lock) do
+		return copy(_marketdata_ws_last_update_by_symbol)
+	end
+end
+
+function marketdataheartbeat(bc::KrakenSpotCache; symbol::Union{Nothing, AbstractString}=nothing)
+	_ = bc
+	if isnothing(symbol)
+		return _marketdata_ws_last_update_dt[]
+	end
+	key = uppercase(String(symbol))
+	lock(_marketdata_ws_symbol_lock) do
+		return get(_marketdata_ws_last_update_by_symbol, key, nothing)
+	end
+end
+
+function wsclosedkline(bc::KrakenSpotCache, symbol::AbstractString, interval::AbstractString)
+	_ = bc
+	key = _klinekey(symbol, String(interval))
+	lock(_ws_kline_state_lock) do
+		return get(_ws_closed_kline_by_key, key, nothing)
+	end
 end
 
 """

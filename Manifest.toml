@@ -216,10 +216,10 @@ uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
 [[deps.Bybit]]
-deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv"]
+deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.2.3"
+version = "4.2.4"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1109,16 +1109,16 @@ weakdeps = ["EnzymeCore", "LinearAlgebra", "SparseArrays"]
     SparseArraysExt = "SparseArrays"
 
 [[deps.KrakenFutures]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.1"
+version = "0.1.2"
 
 [[deps.KrakenSpot]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.1"
+version = "0.1.2"
 
 [[deps.LAME_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -2412,10 +2412,16 @@ uuid = "ffd25f8a-64ca-5728-b0f7-c24cf3aae800"
 version = "5.8.3+0"
 
 [[deps.Xch]]
-deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs"]
+deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.3"
+version = "1.6.4"
+
+[[deps.XchAdapter]]
+deps = ["Dates"]
+path = "XchAdapter"
+uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "0.2.0"
 
 [[deps.Xorg_libICE_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

@@ -47,7 +47,7 @@ end
     Xch.addbase!(xc, "ETH", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = xc.bc
+    bc = Xch._rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC", "ETH"],
         free=Float32[5_000f0, 1.5f0, 0.75f0],
@@ -211,7 +211,7 @@ end
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = xc.bc
+    bc = Xch._rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[2_000f0, 0.5f0],
@@ -255,7 +255,7 @@ end
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = xc.bc
+    bc = Xch._rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[1_000f0, 0.25f0],
@@ -295,7 +295,7 @@ end
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = xc.bc
+    bc = Xch._rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[1_000f0, 0.25f0],

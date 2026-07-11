@@ -4,6 +4,8 @@ using HTTP, SHA, JSON3, Dates, Printf, Logging, DataFrames, InlineStrings, Forma
 using EnvConfig
 using Ohlcv
 using TestOhlcv
+using XchAdapter
+import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, accountcapacity, closeorder
 
 # base URL of the ByBit API
 # BYBIT_API_REST = "https://api.bybit.com"
@@ -103,7 +105,7 @@ const BALANCE_CACHE_TTL = Dates.Second(5)
 
 "Bybit exchange cache supporting both production API and simulation mode (BybitSim).
 When used in BybitSim mode, assets/orders/closedorders track simulated bookkeeping."
-mutable struct BybitCache
+mutable struct BybitCache <: XchAdapter.XchAdapterCache
     syminfodf::Union{Nothing, DataFrame}
     apirest::String
     publickey

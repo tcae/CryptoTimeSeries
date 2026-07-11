@@ -6,7 +6,11 @@ applyTo: '*.jl'
 - write unit tests for all functions and types of a module and place these unit tests in the test subfolder of the module
 - follow the Julia style guide: https://docs.julialang.org/en/v1/manual/style-guide/
 - use meaningful variable and function names
+- don't use type conversions. Either the compiler can convert implicitly or we have a API mismatch problem that should be thought through and a fast failure identifies those issues quickly while a conversion masks them and makes root cause finding more difficult
+- when changing a function signature also adapt the docstring accordingly
+- when changing functions of a module that are used from outside the module then increase the modules version number in Project.toml
 - avoid global variables
+- this workspace is not intended to provide general use packages. Therefore configurations are set up during init and execution logic can rely on it or shall fail fast. Do not introduce fallbacks or backward compatibility code.
 - write comments to explain complex code
 - keep functions short and focused on a single task
 - use type annotations for function arguments and return types when appropriate
