@@ -29,7 +29,7 @@ Notes:
 | EnvConfig.setdfformat!(format) | :jdf, :arrow, :csv | Default dataframe storage format for read/write helpers | EnvConfig and callers of table/read/write helpers |
 | EnvConfig.setcoinspath!(folder) | path string | Override coin data root used by coinfile/coinfolder helpers | EnvConfig and data-loading callers |
 | EnvConfig.setdebugpath(folder) | path string or nothing | Override debug output path helper target | EnvConfig and debug workflows |
-| EnvConfig.tradingfolder | usually "$HOME/crypto" | Canonical shared runtime/data root folder | EnvConfig, TradeLog, KrakenFutures, scripts |
+| EnvConfig.tradingfolder | usually "$HOME/crypto" | Canonical shared runtime/data root folder | EnvConfig, KrakenFutures, scripts |
 | EnvConfig.pairquote / EnvConfig.setpairquote!(quote) | usually "USDT" | Canonical quote currency configuration for symbol/path helpers | EnvConfig, Trade, Xch, scripts |
 
 ### 1.3 Trade runtime knobs (cache-level)
@@ -63,23 +63,14 @@ These are runtime options configured through Trade.TradeCache().mc and are relev
 | CTS_WS_PRIMARY_MODE | Promotes websocket snapshots to primary source (with REST fallback) | Trade, scripts/tradereal |
 | CTS_WS_SHADOW_MODE | Enables websocket-vs-REST shadow comparison diagnostics | scripts/tradereal |
 | CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH | Auto-fallback to REST when primary websocket mode detects mismatches | scripts/tradereal |
-| CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED | Enables startup worker probe for TradeLog migration/cutover checks | scripts/tradereal |
-| CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED | Enables migration fill-balance behavior during startup/cutover | scripts/tradereal |
 
 ### 2.2 Run identity and production test gating
 
 | Env var | Intent | Used by modules |
 |---|---|---|
-| CTS_RUN_ID | Correlation/run ID used for tradelog/audit partitioning | Xch, scripts/BoundsEstimator, scripts/TrendDetector, scripts/simulationcheck |
+| CTS_RUN_ID | Correlation/run ID used for scripts/BoundsEstimator, scripts/TrendDetector, scripts/simulationcheck |
 | CTS_RUN_PRODUCTION_TESTS | Allows production-only Xch tests when explicitly enabled | Xch tests |
 
-### 2.3 TradeLog persistence controls
-
-| Env var | Intent | Used by modules |
-|---|---|---|
-| CTS_TRADELOG_ENABLED | Global TradeLog write on/off | TradeLog, scripts/benchmark_tradesim_audit, TradeLog tests |
-| CTS_TRADELOG_SIMULATION_ENABLED | TradeLog write on/off for simulation run_mode | TradeLog, scripts/benchmark_tradesim_audit, TradeLog tests |
-| CTS_TRADELOG_ROOT | Overrides TradeLog storage root folder | TradeLog, Xch tests |
 
 ### 2.4 Exchange credentials and exchange-specific behavior
 
@@ -171,16 +162,11 @@ Legend:
 | KRAKEN_FUTURES_INCLUDE_NONCE_IN_POST_BODY | production-safe | Exchange-API compatibility toggle |
 | KRAKEN_FUTURES_NONCE_MODE | production-safe | Nonce mode selection (ms/ns) |
 | CTS_RUN_ID | production-safe | Run correlation/partition identifier |
-| CTS_TRADELOG_ENABLED | production-safe | Global TradeLog persistence switch |
-| CTS_TRADELOG_SIMULATION_ENABLED | production-safe | TradeLog simulation persistence switch |
-| CTS_TRADELOG_ROOT | production-safe | TradeLog root override |
 | CTS_WS_ORDERS_ENABLED | production-safe | Enables websocket order ownership path |
 | CTS_WS_BALANCES_ENABLED | production-safe | Enables websocket balance ownership path |
 | CTS_WS_PRIMARY_MODE | production-safe | Enables websocket-primary ownership mode with fallback |
 | CTS_WS_SHADOW_MODE | test-only | Websocket-vs-REST shadow comparison diagnostic mode |
 | CTS_WS_PRIMARY_AUTOFALLBACK_ON_MISMATCH | production-safe | Auto-fallback safety guard when websocket-primary mismatches are detected |
-| CTS_TRADELOG_MIGRATION_WORKER_PROBE_ENABLED | test-only | Startup/cutover probe for migration worker behavior |
-| CTS_TRADELOG_MIGRATION_FILL_BALANCE_ENABLED | production-safe | Enables fill-balance migration behavior in startup/cutover path |
 | CTS_TREND_CONFIG_REF | production-safe | Selects TrendDetector config reference for scripts |
 | CTS_RUN_PRODUCTION_TESTS | test-only | Allows production test suite execution |
 | KRAKEN_ONLINE_TESTS | test-only | Enables online KrakenSpot integration tests |
@@ -224,7 +210,6 @@ Legend:
 
 - EnvConfig/src/EnvConfig.jl
 - Trade/src/Trade.jl
-- TradeLog/src/TradeLog.jl
 - Xch/src/Xch.jl
 - Bybit/src/Bybit.jl
 - KrakenSpot/src/KrakenSpot.jl

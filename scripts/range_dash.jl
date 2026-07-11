@@ -141,14 +141,17 @@ using Dash, PlotlyJS, JSON3
 
                 return min,max
         ## changed the zoom
-        elseif  try range[:autosize]  catch end === nothing && typeof(range) == (NamedTuple{(Symbol("xaxis.range[0]"), Symbol("xaxis.range[1]"), Symbol("yaxis.range[0]"), Symbol("yaxis.range[1]")),NTuple{4,Float64}})
-            min = range[1]
-            max = range[2]
+            elseif  (try range[:autosize]  catch end === nothing) &&
+                (try haskey(range, Symbol("xaxis.range[0]")) && haskey(range, Symbol("xaxis.range[1]")) &&
+                     haskey(range, Symbol("yaxis.range[0]")) && haskey(range, Symbol("yaxis.range[1]")) catch; false end)
+                min = range[Symbol("xaxis.range[0]")]
+                max = range[Symbol("xaxis.range[1]")]
             println("min = $min  max = $max")
 
                 return min,max
         ## set back to autosize
-        elseif  try range[:autosize]  catch end === nothing && typeof(range) == (NamedTuple{(Symbol("xaxis.autorange"), Symbol("yaxis.autorange")),Tuple{Bool,Bool}})
+            elseif  (try range[:autosize]  catch end === nothing) &&
+                (try haskey(range, Symbol("xaxis.autorange")) && haskey(range, Symbol("yaxis.autorange")) catch; false end)
             xdata_fig = figure[:data][1][:x]
             min = minimum(xdata_fig)
             max = maximum(xdata_fig)

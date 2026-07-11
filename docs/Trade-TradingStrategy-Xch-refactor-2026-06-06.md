@@ -213,7 +213,7 @@ It became clear that we run into a situation with more and more omplex code alth
 - Overall status: refactor design is still in planning / pre-implementation, but the runtime baseline was stabilized and workspace/package tests were brought back to green.
 - Completed baseline work relevant to this plan:
   - `Trade` tests were repaired and are passing again.
-  - removed `TradeAudit` call sites were migrated or removed in favor of `TradeLog`.
+  - All relevant info shall be logged via tradesdf
   - `KrakenSpot` test execution was stabilized by making online tests opt-in by default.
   - `KrakenFutures` websocket challenge signing was corrected to match the documented vector.
   - workspace test entrypoint was re-run successfully after the above fixes.
@@ -250,7 +250,7 @@ Goal: lock interfaces before implementation work in phases 1-5.
   - [x] Trade request short: `shortleverage::UInt8`, `so_amount::Float32`, `so_limit::Float32`, `sc_limit::Float32`.
   - [x] Exchange feedback long: `lo_id::CategoricalVector{String}`, `lo_status::CategoricalVector{String}`, `lo_filled::Float32`, `lo_pavg::Float32`, `lo_msg::CategoricalVector{String}`.
   - [x] Exchange feedback short: `so_id::CategoricalVector{String}`, `so_status::CategoricalVector{String}`, `so_filled::Float32`, `so_pavg::Float32`, `so_msg::CategoricalVector{String}`.
-  - [x] Position/account snapshot: `lp_amount::Float32`, `sp_amount::Float32`, `quoteprice::Float32`, `maintmargin::Float32`, `equity::Float32`, `balance::Float32`, `freemargin::Float32`, `freequote::Float32`.
+  - [x] Position/account snapshot: `lp_amount::Float32`, `sp_amount::Float32`, `maintmargin::Float32`, `equity::Float32`, `balance::Float32`, `freemargin::Float32`, `freequote::Float32`.
 - Required tests (Xch/test)
   - [x] schema test: a newly created trades table contains exactly all v1 columns with expected eltypes.
   - [x] issue logging test: `log_trading_issue` returns the normalized message string for direct Trades storage.
@@ -467,7 +467,6 @@ Progress note:
 - [x] Add loop-local reservation ledger for quote and margin to avoid over-allocation across pairs.
 - [x] Implement close-first then open sequencing with explicit close confirmation requirement within web socket handling of orders.
 - [x] Integrate log_trading_issue and message-id capture into Trades rows.
-- [x] Default integration mode runs with TradeLog disabled (opt-in only) to reduce runtime overhead during refactor rollout.
 - [x] `usenewtrade` is default-on in `TradeCache`; scripts `tradesim.jl` and `tradereal.jl` now follow this default (with env opt-out toggles).
 - Exit gate:
   - [x] tradesim and tradereal runtime entry paths are switched to the new Trade/Xch DataFrame orchestration path.
@@ -481,7 +480,6 @@ Progress note:
 - `open_amount` now applies account constraints in the new path and is covered by integration tests.
 - Close-then-open sequencing guard is active in the new path and covered by integration tests.
 - Dust-level false warnings for positions-without-close-order were suppressed to reduce noise (`qty` below tradable minimum is ignored).
-- TradeLog/audit writes are now default-off in integration mode (`TradeCache` sets `enable_tradelog=false`), with explicit test/runtime opt-in where audit artifacts are required.
 - Validation snapshot (2026-06-14): `Pkg.test("Trade")` passes (94/94), and workspace `test/runtests.jl` is green.
 - `usenewtrade` default-ready cutover is complete and enabled by default.
 - Script-level runtime toggle support added: `TRADESIM_USE_NEW_TRADE` and `TRADEREAL_USE_NEW_TRADE` (default `true`, set `false` to force legacy path during rollback diagnostics).

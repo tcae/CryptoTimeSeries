@@ -14,13 +14,14 @@ Flags:
 """
 
 import Pkg
-Pkg.develop("EnvConfig")
+Pkg.activate(joinpath(@__DIR__, ".."))
 using EnvConfig
+import EnvConfig: checkfolders
 # ----------------------------
 # Argument parsing
 # ----------------------------
 const VERBOSE = any(x -> x in ("-v", "--verbose", "--debug"), ARGS)
 const DEBUG   = any(x -> x == "--debug", ARGS)
 
-EnvConfig.checkfolders(VERBOSE, DEBUG)
+checkfolders(VERBOSE, DEBUG)
 exit(0)

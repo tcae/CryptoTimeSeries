@@ -38,7 +38,6 @@ const WORKSPACE_PACKAGES = [
 	"KrakenSpot",
 	"KrakenFutures",
 	"Xch",
-	"TradeLog",
 	"TradingStrategy",
 	"Trade",
 ]

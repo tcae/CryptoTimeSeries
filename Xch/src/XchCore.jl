@@ -266,7 +266,6 @@ mutable struct XchCache
                 ))
             end
         end
-        xc.mc[:tradelog_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
         return xc
     end
 end
@@ -283,26 +282,6 @@ function _adaptermodule(xc::XchCache)
         throw(ArgumentError("Unknown adapter type: $(typeof(xc.bc))"))
     end
 end
-
-function tradelogrunmode(xc::XchCache)::String
-    return xc.mc[:simmode] == nosimulation ? "live" : "simulation"
-end
-
-function tradelogrunid(xc::XchCache)::String
-    if !haskey(xc.mc, :tradelog_run_id)
-        # Migrate lazily from old key when available.
-        if haskey(xc.mc, :audit_run_id)
-            xc.mc[:tradelog_run_id] = String(xc.mc[:audit_run_id])
-        else
-            xc.mc[:tradelog_run_id] = get(ENV, "CTS_RUN_ID", string(uuid4()))
-        end
-    end
-    return String(xc.mc[:tradelog_run_id])
-end
-
-# Backward-compatible aliases for legacy callers.
-auditrunmode(xc::XchCache)::String = tradelogrunmode(xc)
-auditrunid(xc::XchCache)::String = tradelogrunid(xc)
 
 exchange(xc::XchCache)::String = xc.exchange
 _exchangeModule(xc::XchCache) = _exchangeModule(xc.exchange)
@@ -350,9 +329,6 @@ end
 function tradesdf_label(df::DataFrame)::DataFrame
     if :label ∉ propertynames(df)
         df[!, :label] = fill(Targets.ignore, nrow(df))
-    elseif Missing <: eltype(df[!, :label])
-        # Repair column promoted to Union{Missing,TradeLabel} by push! with cols=:subset
-        df[!, :label] = Targets.TradeLabel[ismissing(v) ? Targets.ignore : v for v in df[!, :label]]
     end
     return df
 end
@@ -1151,11 +1127,6 @@ function _asserttradeallowed(xc::XchCache)
     return
 end
 
-_tradelogstring(value) = ismissing(value) || isnothing(value) ? missing : String(value)
-_tradelogstring(value::Enum) = String(Symbol(value))
-_tradelogfloat(value) = ismissing(value) || isnothing(value) ? missing : Float64(value)
-_tradelogenabled(xc::XchCache)::Bool = Bool(get(xc.mc, :enable_tradelog, true))
-
 function _orderfield(orderinfo, field::Symbol)
     if isnothing(orderinfo) || !hasproperty(orderinfo, field)
         return missing
@@ -1163,52 +1134,9 @@ function _orderfield(orderinfo, field::Symbol)
     return getproperty(orderinfo, field)
 end
 
-# Stub implementations for removed TradeLog audit functions
-_tradelogeventcontext!(xc::XchCache) = get!(xc.mc, :tradelog_event_context, Dict{Symbol, Any}())
-_tradelogcreatedorder!(xc::XchCache, args...; kwargs...) = nothing
-_tradelogordererror!(xc::XchCache, args...; kwargs...) = nothing
-_tradelogsetorderparent!(xc::XchCache, args...; kwargs...) = nothing
-_tradelogreconcileorderstate!(xc::XchCache, args...; kwargs...) = nothing
-_tradeloglogmissingopenorders!(xc::XchCache, args...; kwargs...) = nothing
-
-"Set temporary TradeLog context fields used for subsequent order events."
-function settradelogcontext!(xc::XchCache; strategy_engine=missing, strategy_config_ref=missing, signal_label=missing, signal_score=missing, notes=missing, leg_group_id=missing, leg_label=missing)
-    ctx = _tradelogeventcontext!(xc)
-    for (k, v) in [
-        (:strategy_engine, strategy_engine),
-        (:strategy_config_ref, strategy_config_ref),
-        (:signal_label, signal_label),
-        (:signal_score, signal_score),
-        (:notes, notes),
-        (:leg_group_id, leg_group_id),
-        (:leg_label, leg_label),
-    ]
-        if ismissing(v) || isnothing(v)
-            haskey(ctx, k) && delete!(ctx, k)
-        else
-            ctx[k] = v
-        end
-    end
-    return xc
-end
-
-"Clear all temporary TradeLog context fields."
-function cleartradelogcontext!(xc::XchCache)
-    haskey(xc.mc, :tradelog_event_context) && empty!(xc.mc[:tradelog_event_context])
-    return xc
-end
-
-# Backward-compatible aliases for legacy callers.
-setauditcontext!(xc::XchCache; kwargs...) = settradelogcontext!(xc; kwargs...)
-clearauditcontext!(xc::XchCache) = cleartradelogcontext!(xc)
-
-
-"Return TradeLog event timestamp in UTC; use simulated time in sim mode when available."
-
-
-
-
-
+"""
+Return the set of order ids that were created as adaptive maker orders with `limitprice=nothing`.
+"""
 
 
 
@@ -1346,29 +1274,16 @@ function closeorder(xc::XchCache, base::AbstractString; positionside::Symbol, li
         fn = getfield(mod, :closeorder)
         if applicable(fn, bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
             _asserttradeallowed(xc)
-            if !isnothing(leg_group_id) || !isnothing(leg_label)
-                settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
-            end
             try
                 created = fn(bc, symbol, side, basequantity, limitprice, maker; marginleverage=marginleverage, reduceonly=reduceonly)
                 oid, oocreate = _normalizecreatedorder(xc, created)
                 orderside = side == :long ? "Sell" : "Buy"
-                if !isnothing(parent_order_id) && !isnothing(oid)
-                    _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
-                end
-                _tradelogcreatedorder!(xc, symbol, orderside, basequantity, limitprice, marginleverage, oocreate)
                 if isnothing(limitprice) && maker && !isnothing(oid)
                     registeradaptiveorder!(xc, oid)
                 end
                 return oid
             catch err
-                orderside = side == :long ? "Sell" : "Buy"
-                _tradelogordererror!(xc, symbol, orderside, basequantity, limitprice, marginleverage, err)
                 rethrow()
-            finally
-                if !isnothing(leg_group_id) || !isnothing(leg_label)
-                    cleartradelogcontext!(xc)
-                end
             end
         end
     end
@@ -2145,7 +2060,7 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
     )
 end
 
-"Return the current order state for one order id and optionally reconcile it to TradeLog."
+"Return the current order state for one order id."
 order_status(xc::XchCache, orderid; auditevent::Bool=true) = getorder(xc, orderid; auditevent=auditevent)
 
 _hascol(df::DataFrame, col::Symbol) = col in propertynames(df)
@@ -2336,7 +2251,6 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing)
         tdf_rowix = ensuretradesrow!(xc, base, quotecoin, currentdt)
         tdf = tdf_rowix.tradesdf
         rowix = tdf_rowix.rowix
-        tradesdf_label(tdf)  # repair missing→ignore if push! without :label was used
 
         # OHLCV columns
         if base in keys(xc.bases)
@@ -2748,13 +2662,7 @@ function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
         _exchangeopenorders(xc, symbol=symboltoken(base))
     end
     openordersdf = size(oo) == (0, 0) ? _emptyorders(exchange(xc)) : oo
-    for row in eachrow(openordersdf)
-        _tradelogreconcileorderstate!(xc, NamedTuple(row); source="getopenorders")
-    end
     if isnothing(base) && "orderid" in names(openordersdf)
-        _tradeloglogmissingopenorders!(xc, openordersdf[!, :orderid])
-    end
-    if "orderid" in names(openordersdf)
         pruneadaptiveorders!(xc, openordersdf[!, :orderid])
     end
     return openordersdf
@@ -2763,40 +2671,14 @@ end
 "Returns a named tuple with elements equal to columns of getopenorders() dataframe of the identified order or `nothing` if order is not found"
 function getorder(xc::XchCache, orderid; auditevent::Bool=true)
     order = _exchangeorder(xc, orderid)
-    if auditevent && !isnothing(order)
-        _tradelogreconcileorderstate!(xc, order; source="getorder")
-    end
     return order
 end
 
 "Returns orderid in case of a successful cancellation"
 function cancelorder(xc::XchCache, base, orderid; leg_group_id=nothing, leg_label=nothing)
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
-    end
     unregisteradaptiveorder!(xc, orderid)
     cancelsymbol = symboltoken(xc, base, EnvConfig.pairquote)
     cancelled = _exchangecancelorder(xc, cancelsymbol, orderid)
-    if !isnothing(cancelled)
-        # Assume exchange-side cancel success when Kraken confirms CancelOrder.
-        # If reality diverges, the next OpenOrders loop will re-discover the order.
-        current = (
-            orderid=String(orderid),
-            symbol=String(cancelsymbol),
-            side=missing,
-            baseqty=0f0,
-            executedqty=0f0,
-            limitprice=missing,
-            marginleverage=0,
-            status="Cancelled",
-            updated=Dates.now(Dates.UTC),
-            rejectreason="cancelled_by_user",
-        )
-        _tradelogreconcileorderstate!(xc, current; source="cancelorder_assumed_success")
-    end
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        cleartradelogcontext!(xc)
-    end
     return cancelled
 end
 
@@ -2849,29 +2731,17 @@ function createbuyorder(xc::XchCache, base::AbstractString; limitprice, basequan
     base = uppercase(base)
     _asserttradeallowed(xc)
     symbol = symboltoken(xc, base, EnvConfig.pairquote)
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
-    end
     try
         # Adapter-backed path for both live and simulation exchanges.
         created = _exchangecreateorder(xc, symbol, "Buy", basequantity, limitprice, maker, marginleverage=marginleverage, reduceonly=reduceonly)
         oid, oocreate = _normalizecreatedorder(xc, created)
-        if !isnothing(parent_order_id) && !isnothing(oid)
-            _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
-        end
-        _tradelogcreatedorder!(xc, symbol, "Buy", basequantity, limitprice, marginleverage, oocreate)
         if isnothing(limitprice) && maker && !isnothing(oid)
             registeradaptiveorder!(xc, oid)
         end
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     catch err
-        _tradelogordererror!(xc, symbol, "Buy", basequantity, limitprice, marginleverage, err)
         rethrow()
-    finally
-        if !isnothing(leg_group_id) || !isnothing(leg_label)
-            cleartradelogcontext!(xc)
-        end
     end
 end
 
@@ -2891,29 +2761,17 @@ function createsellorder(xc::XchCache, base::AbstractString; limitprice, basequa
     base = uppercase(base)
     _asserttradeallowed(xc)
     symbol = symboltoken(xc, base, EnvConfig.pairquote)
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
-    end
     try
         # Adapter-backed path for both live and simulation exchanges.
         created = _exchangecreateorder(xc, symbol, "Sell", basequantity, limitprice, maker, marginleverage=marginleverage, reduceonly=reduceonly)
         oid, oocreate = _normalizecreatedorder(xc, created)
-        if !isnothing(parent_order_id) && !isnothing(oid)
-            _tradelogsetorderparent!(xc, String(oid), String(parent_order_id))
-        end
-        _tradelogcreatedorder!(xc, symbol, "Sell", basequantity, limitprice, marginleverage, oocreate)
         if isnothing(limitprice) && maker && !isnothing(oid)
             registeradaptiveorder!(xc, oid)
         end
         (verbosity >= 3) && @info "$(tradetime(xc)) $base: $(isnothing(oocreate) ? "no order info" : oocreate)"
         return oid
     catch err
-        _tradelogordererror!(xc, symbol, "Sell", basequantity, limitprice, marginleverage, err)
         rethrow()
-    finally
-        if !isnothing(leg_group_id) || !isnothing(leg_label)
-            cleartradelogcontext!(xc)
-        end
     end
 end
 
@@ -2925,15 +2783,9 @@ re-snapshot the current spread and keep the maker intent adaptive instead of
 freezing the previous limit.
 """
 function changeorder(xc::XchCache, symbol::AbstractString, orderid; limitprice=nothing, basequantity=nothing, leg_group_id=nothing, leg_label=nothing)
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
-    end
     amended = _exchangeamendorder(xc, String(symbol), String(orderid); basequantity=basequantity, limitprice=limitprice)
     new_orderid, ooamend = _normalizeamendedorder(xc, amended)
     if isnothing(new_orderid)
-        if !isnothing(leg_group_id) || !isnothing(leg_label)
-            cleartradelogcontext!(xc)
-        end
         return nothing
     end
     old_orderid = String(orderid)
@@ -2942,42 +2794,14 @@ function changeorder(xc::XchCache, symbol::AbstractString, orderid; limitprice=n
             unregisteradaptiveorder!(xc, old_orderid)
             registeradaptiveorder!(xc, new_orderid)
         end
-        if !isnothing(ooamend) && hasproperty(ooamend, :symbol)
-            cancelled = (
-                orderid=old_orderid,
-                symbol=String(getproperty(ooamend, :symbol)),
-                side=hasproperty(ooamend, :side) ? getproperty(ooamend, :side) : missing,
-                baseqty=hasproperty(ooamend, :baseqty) ? getproperty(ooamend, :baseqty) : 0f0,
-                executedqty=0f0,
-                limitprice=missing,
-                marginleverage=0,
-                status="Cancelled",
-                updated=Dates.now(Dates.UTC),
-                rejectreason="amended_to=$(new_orderid)",
-            )
-            _tradelogreconcileorderstate!(xc, cancelled; source="changeorder")
-        end
-        _tradelogsetorderparent!(xc, new_orderid, old_orderid)
-    end
-    if !isnothing(ooamend)
-        _tradelogreconcileorderstate!(xc, ooamend; source="changeorder")
-    end
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        cleartradelogcontext!(xc)
     end
     return new_orderid
 end
 
 function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=nothing, leg_group_id=nothing, leg_label=nothing)
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        settradelogcontext!(xc; leg_group_id=leg_group_id, leg_label=leg_label)
-    end
     amended = _exchangeamendorder(xc, String(orderid); basequantity=basequantity, limitprice=limitprice)
     new_orderid, ooamend = _normalizeamendedorder(xc, amended)
     if isnothing(new_orderid)
-        if !isnothing(leg_group_id) || !isnothing(leg_label)
-            cleartradelogcontext!(xc)
-        end
         return nothing
     end
     old_orderid = String(orderid)
@@ -2986,28 +2810,6 @@ function changeorder(xc::XchCache, orderid; limitprice=nothing, basequantity=not
             unregisteradaptiveorder!(xc, old_orderid)
             registeradaptiveorder!(xc, new_orderid)
         end
-        if !isnothing(ooamend) && hasproperty(ooamend, :symbol)
-            cancelled = (
-                orderid=old_orderid,
-                symbol=String(getproperty(ooamend, :symbol)),
-                side=hasproperty(ooamend, :side) ? getproperty(ooamend, :side) : missing,
-                baseqty=hasproperty(ooamend, :baseqty) ? getproperty(ooamend, :baseqty) : 0f0,
-                executedqty=0f0,
-                limitprice=missing,
-                marginleverage=0,
-                status="Cancelled",
-                updated=Dates.now(Dates.UTC),
-                rejectreason="amended_to=$(new_orderid)",
-            )
-            _tradelogreconcileorderstate!(xc, cancelled; source="changeorder")
-        end
-        _tradelogsetorderparent!(xc, new_orderid, old_orderid)
-    end
-    if !isnothing(ooamend)
-        _tradelogreconcileorderstate!(xc, ooamend; source="changeorder")
-    end
-    if !isnothing(leg_group_id) || !isnothing(leg_label)
-        cleartradelogcontext!(xc)
     end
     return new_orderid
 end
@@ -3023,7 +2825,7 @@ Places a three-leg bracket (OCO) order group:
 - **stop_loss**: limit order on the opposite side at `stop_loss_price`
 
 All three legs share the same `leg_group_id` (a new UUID) and the take-profit/stop-loss
-legs record the entry order id as their `parent_order_id` in the TradeLog trail.
+legs record the entry order id in the trades dataframe .
 
 Returns a `NamedTuple` `(; leg_group_id, entry_order_id, take_profit_order_id, stop_loss_order_id)`.
 Any leg that fails to submit will have `nothing` as its order id.
@@ -3046,87 +2848,62 @@ function createocoorder(xc::XchCache, base::AbstractString;
 
     # Helper: set full context (signal info + leg metadata) and return it to the caller so
     # we can manage the clear ourselves rather than relying on createXorder's finally block.
-    _setlegctx!(leg_label_str) = settradelogcontext!(xc;
-        strategy_engine=something(strategy_engine, missing),
-        strategy_config_ref=something(strategy_config_ref, missing),
-        signal_label=something(signal_label, missing),
-        signal_score=something(signal_score, missing),
-        leg_group_id=leg_group_id,
-        leg_label=leg_label_str,
-    )
-
-    # We call createXorder without leg_group_id/leg_label so it does NOT touch the context
-    # (createXorder only calls settradelogcontext!/cleartradelogcontext! when those kwargs are
-    # non-nothing).  We manage context ourselves here.
+    leg_group_id = string(UUIDs.uuid4())
+    exit_buy = entry_side == :sell
 
     # --- entry leg ---
-    _setlegctx!("entry")
-    entry_order_id = try
-        if entry_side == :buy
-            createbuyorder(xc, base;
-                limitprice=Float32(entry_price),
-                basequantity=Float32(basequantity),
-                maker=maker,
-                marginleverage=marginleverage,
-            )
-        else
-            createsellorder(xc, base;
-                limitprice=Float32(entry_price),
-                basequantity=Float32(basequantity),
-                maker=maker,
-                marginleverage=marginleverage,
-            )
-        end
-    finally
-        cleartradelogcontext!(xc)
+    entry_order_id = if entry_side == :buy
+        createbuyorder(xc, base;
+            limitprice=Float32(entry_price),
+            basequantity=Float32(basequantity),
+            maker=maker,
+            marginleverage=marginleverage,
+        )
+    else
+        createsellorder(xc, base;
+            limitprice=Float32(entry_price),
+            basequantity=Float32(basequantity),
+            maker=maker,
+            marginleverage=marginleverage,
+        )
     end
 
     # --- take-profit leg ---
-    _setlegctx!("take_profit")
-    take_profit_order_id = try
-        if exit_buy
-            createbuyorder(xc, base;
-                limitprice=Float32(take_profit_price),
-                basequantity=Float32(basequantity),
-                maker=maker,
-                marginleverage=marginleverage,
-                parent_order_id=entry_order_id,
-            )
-        else
-            createsellorder(xc, base;
-                limitprice=Float32(take_profit_price),
-                basequantity=Float32(basequantity),
-                maker=maker,
-                marginleverage=marginleverage,
-                parent_order_id=entry_order_id,
-            )
-        end
-    finally
-        cleartradelogcontext!(xc)
+    take_profit_order_id = if exit_buy
+        createbuyorder(xc, base;
+            limitprice=Float32(take_profit_price),
+            basequantity=Float32(basequantity),
+            maker=maker,
+            marginleverage=marginleverage,
+            parent_order_id=entry_order_id,
+        )
+    else
+        createsellorder(xc, base;
+            limitprice=Float32(take_profit_price),
+            basequantity=Float32(basequantity),
+            maker=maker,
+            marginleverage=marginleverage,
+            parent_order_id=entry_order_id,
+        )
     end
 
     # --- stop-loss leg ---
-    _setlegctx!("stop_loss")
-    stop_loss_order_id = try
-        if exit_buy
-            createbuyorder(xc, base;
-                limitprice=Float32(stop_loss_price),
-                basequantity=Float32(basequantity),
-                maker=maker,
-                marginleverage=marginleverage,
-                parent_order_id=entry_order_id,
-            )
-        else
-            createsellorder(xc, base;
-                limitprice=Float32(stop_loss_price),
-                basequantity=Float32(basequantity),
-                maker=maker,
-                marginleverage=marginleverage,
-                parent_order_id=entry_order_id,
-            )
-        end
-    finally
-        cleartradelogcontext!(xc)
+    stop_loss_order_id = if exit_buy
+        createbuyorder(xc, base;
+            limitprice=Float32(stop_loss_price),
+            basequantity=Float32(basequantity),
+            maker=maker,
+            marginleverage=marginleverage,
+            parent_order_id=entry_order_id,
+        )
+    else
+        createsellorder(xc, base;
+            limitprice=Float32(stop_loss_price),
+            basequantity=Float32(basequantity),
+            maker=maker,
+            marginleverage=marginleverage,
+            parent_order_id=entry_order_id,
+        )
     end
 
     return (; leg_group_id, entry_order_id, take_profit_order_id, stop_loss_order_id)

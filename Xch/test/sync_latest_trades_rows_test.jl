@@ -4,7 +4,7 @@ using Dates
 using DataFrames
 using CategoricalArrays: CategoricalVector
 
-using EnvConfig, Ohlcv, Xch
+using EnvConfig, Ohlcv, Xch, Targets
 
 function _trade_lo_amount(df::DataFrame)::DataFrame
     if :lo_amount ∉ propertynames(df)
@@ -119,6 +119,7 @@ end
     push!(btcdf, (
         opentime=currentdt - Dates.Minute(1),
         pair="BTCUSDT",
+        label=Targets.ignore,
         lp_amount=1.0f0,
         sp_amount=0.25f0,
         lastopentrade=currentdt - Dates.Minute(1),
@@ -126,6 +127,7 @@ end
     push!(btcdf, (
         opentime=currentdt,
         pair="BTCUSDT",
+        label=Targets.ignore,
         lo_id="oid-lo-filled",
         lo_amount=1.0f0,
         lc_id="oid-lc-open",
@@ -139,6 +141,7 @@ end
     push!(ethdf, (
         opentime=currentdt - Dates.Minute(1),
         pair="ETHUSDT",
+        label=Targets.ignore,
         lp_amount=0.75f0,
         sp_amount=0f0,
         lastopentrade=currentdt - Dates.Minute(1),
@@ -146,6 +149,7 @@ end
     push!(ethdf, (
         opentime=currentdt,
         pair="ETHUSDT",
+        label=Targets.ignore,
         lastopentrade=missing,
     ); cols=:subset)
 

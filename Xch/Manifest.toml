@@ -929,7 +929,7 @@ version = "1.6.1"
 deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs"]
 path = "."
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.2"
+version = "1.6.3"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

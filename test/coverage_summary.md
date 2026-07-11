@@ -19,7 +19,6 @@ Overall executable lines covered: 4770 / 6513 (73.24%)
 | Targets | 977 | 1072 | 91.14% |
 | TestOhlcv | 40 | 43 | 93.02% |
 | Trade | 837 | 1265 | 66.17% |
-| TradeLog | 67 | 77 | 87.01% |
 
 ## Per File
 
@@ -54,4 +53,3 @@ Overall executable lines covered: 4770 / 6513 (73.24%)
 | Trade/test/objective4_scaffolding_test.jl | 4 | 4 | 100.00% |
 | Trade/test/ownership_selection_test.jl | 4 | 4 | 100.00% |
 | Trade/test/runtests.jl | 4 | 5 | 80.00% |
-| TradeLog/src/TradeLog.jl | 67 | 77 | 87.01% |

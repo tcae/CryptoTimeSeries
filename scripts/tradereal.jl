@@ -105,7 +105,6 @@ try
     Trade.run_live!(cache)
 finally
     EnvConfig.setlogpath(ORDERS_SUBFOLDER)
-    @info "$(EnvConfig.now()): order history persisted via TradeLog"
     @info "$(EnvConfig.now()): tradereal finished"
     global_logger(defaultlogger)
 end

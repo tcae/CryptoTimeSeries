@@ -2,6 +2,7 @@
     "python.pythonPath": "/usr/bin/python3",
     "julia.numTestProcesses": 2,
     "julia.NumThreads": 4,
+    "julia.environmentPath": "/Users/torsten/github/CryptoTimeSeries",
     "files.exclude": {
         "**/*.cov": true
     }

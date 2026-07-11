@@ -8,8 +8,8 @@ Provides
 
 """
 module EnvConfig
-using Logging, Dates, Pkg, JSON3, DataFrames, JDF, Arrow
-using CategoricalArrays
+using Logging, Dates, Pkg
+import JSON3, JDF, Arrow, DataFrames, CategoricalArrays
 export test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, setcoinspath!, coinfolderpath, coinfile, setdebugpath, tradingfolder, pairquote, setpairquote!
 
 """
@@ -617,19 +617,19 @@ end
 "Convert values to a categorical representation that Arrow stores as dictionary-encoded while preserving missings."
 function _arrow_dictencoded_categorical(values)
     normalized = _arrow_stringify.(values)
-    return CategoricalArray(normalized)
+    return CategoricalArrays.CategoricalArray(normalized)
 end
 
 "Convert non-native Arrow columns to dictionary-encoded categorical or enum-backed values while preserving missings."
 function _arrow_safe_table(table)
-    df = DataFrame(table)
-    for name in names(df)
+    df = DataFrames.DataFrame(table)
+    for name in DataFrames.names(df)
         column = df[!, name]
         colsym = Symbol(name)
         T = Base.nonmissingtype(eltype(column))
         if T <: Enum
             df[!, name] = _arrow_dictencoded_categorical(column)
-        elseif (column isa CategoricalArray) || (T <: CategoricalValue)
+        elseif (column isa CategoricalArrays.CategoricalArray) || (T <: CategoricalArrays.CategoricalValue)
             df[!, name] = column
         elseif (colsym == :coin) && (T <: AbstractString)
             df[!, name] = _arrow_dictencoded_categorical(column)
@@ -664,7 +664,7 @@ function writetable(table, filename::AbstractString; folderpath=logfolder(), for
     filepath = tablepath(filename; folderpath=folderpath, format=format)
     mkpath(dirname(filepath))
     if format == :jdf
-        JDF.savejdf(filepath, DataFrame(table))
+        JDF.savejdf(filepath, DataFrames.DataFrame(table))
     else
         safetable = _arrow_safe_table(table)
         if append && isfile(filepath)
@@ -700,7 +700,7 @@ function readtable(filename::AbstractString; folderpath=logfolder(), format::Sym
 
     if format == :jdf
         (verbosity >= 4) && print("$(EnvConfig.now()) loading JDF dataframe from $(filepath) ... ")
-        df = DataFrame(JDF.loadjdf(filepath))
+        df = DataFrames.DataFrame(JDF.loadjdf(filepath))
         (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
         return df
     end
@@ -708,7 +708,7 @@ function readtable(filename::AbstractString; folderpath=logfolder(), format::Sym
     (verbosity >= 4) && print("$(EnvConfig.now()) loading Arrow table from $(filepath) ... ")
     table = Arrow.Table(filepath)
     if materialize
-        df = DataFrame(table; copycols=copycols)
+        df = DataFrames.DataFrame(table; copycols=copycols)
         (verbosity >= 4) && println("$(EnvConfig.now()) loaded $(size(df, 1)) rows successfully")
         return df
     end
@@ -897,7 +897,15 @@ The subtype shall implement a property `cfg` to longhold the DataFrame of all co
 abstract type AbstractConfiguration end
 
 "Returns the configuration id in case the configuration is already registered or registers configuration persistently and returns cfgset configuration identifier"
-function configurationid(cfgset::AbstractConfiguration, config::Union{NamedTuple, DataFrameRow})::Integer
+function configurationid(cfgset::AbstractConfiguration, config::NamedTuple)::Integer
+    return _configurationid(cfgset, config)
+end
+
+function configurationid(cfgset::AbstractConfiguration, config::DataFrames.DataFrameRow)::Integer
+    return _configurationid(cfgset, config)
+end
+
+function _configurationid(cfgset::AbstractConfiguration, config)::Integer
     if !hasproperty(cfgset, :cfg)
         return 0
     end
@@ -972,7 +980,7 @@ function readconfigurations!(cfgset::AbstractConfiguration, optparams::Dict=Dict
     fn = filename(cfgset; format=:arrow)
     loaded = EnvConfig.readdf(stem; folderpath=folderpath, format=:arrow, copycols=true)
     if !isnothing(loaded)
-        cfgset.cfg = DataFrame(loaded; copycols=true)
+        cfgset.cfg = DataFrames.DataFrame(loaded; copycols=true)
         if isnothing(cfgset.cfg)
             @error "Loading $fn failed"
             cfgset.cfg = emptyconfigdf(cfgset, optparams)
@@ -993,7 +1001,7 @@ end
 
 function emptyconfigdf(cfgset::AbstractConfiguration, optparams::Dict=Dict())
     (verbosity >= 3) && println("AbstractConfiguration emptyconfigdf of $(typeof(cfgset))")
-    df = DataFrame(
+    df = DataFrames.DataFrame(
         cfgid=Int16[]  # config identificator
     )
     for (col, vec) in optparams

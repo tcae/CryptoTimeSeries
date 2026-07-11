@@ -49,7 +49,7 @@ const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "training")
 const LOG_SUBFOLDER = "tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
 
-"Return ORDER_FILLED events from TradeLog for this run as a DataFrame."
+"Return ORDER_FILLED events as a DataFrame."
 function filled_orders_df(xc::Xch.XchCache)::DataFrame
     rows = NamedTuple[]
 
@@ -176,8 +176,6 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
             daily_pnl[day] = get(daily_pnl, day, 0.0) + pnl
         end
     end
-
-    println("  Return metrics: use trades/tradelog snapshots (dbgdf removed from TradeCache).")
 
     # ── Win rate and gain metrics from closed orders ───────────────────────
     # Pair buys and sells by symbol in chronological order and calculate
