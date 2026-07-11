@@ -1,7 +1,7 @@
 module TrendDetector
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils, StatisticalMeasures
 using CategoricalArrays, CategoricalDistributions, Distributions
-using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Trade, Xch
+using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Trade, Xch, Bybit
 
 #TODO regression from last trend pivot as feature 
 """
@@ -508,7 +508,7 @@ function getgainsdf(cfg::TrendDetectorConfig)
     end
 
     ts = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(cfg.configname), source="trenddetector:$(cfg.configname)")
-    xc = Xch.XchCache(startdt=cfg.startdt, enddt=cfg.enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(Bybit.BybitSimCache(); startdt=cfg.startdt, enddt=cfg.enddt)
     Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), Trade.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), tradesdf_contributors()))
 
     # Range ids can collide across independently cached coins/runs. Replay must

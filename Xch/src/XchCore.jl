@@ -7,7 +7,7 @@ module Xch
 
 using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
-using BybitSim, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
+using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
 using XchAdapter: XchAdapterCache
 import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
 import Ohlcv: intervalperiod
@@ -215,7 +215,31 @@ mutable struct XchCache
     end
 end
 
-XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, defaultquote::Union{Nothing, AbstractString}=nothing) = XchCache(BybitSim.BybitSimCache(); startdt=startdt, enddt=enddt, mnemonic=mnemonic, defaultquote=defaultquote)
+function _adaptercache(exchange::AbstractString)::XchAdapterCache
+    ex = String(exchange)
+    if ex == EXCHANGE_BYBITSIM
+        bc = Bybit.BybitSimCache()
+        if isnothing(_rawcache(bc).assets)
+            Bybit.seedportfolio!(bc, EnvConfig.pairquote, 0f0)
+        end
+        return bc
+    elseif ex == EXCHANGE_BYBIT
+        bc = Bybit.BybitCache()
+        bc.assets = nothing
+        bc.orders = nothing
+        bc.closedorders = nothing
+        return bc
+    elseif ex == EXCHANGE_KRAKENSPOT
+        return KrakenSpot.KrakenSpotCache()
+    elseif ex == EXCHANGE_KRAKENFUTURES
+        return KrakenFutures.KrakenFuturesCache()
+    end
+    throw(ArgumentError("unsupported exchange=$(exchange), expected one of $(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_KRAKENSPOT), $(EXCHANGE_KRAKENFUTURES)"))
+end
+
+function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, defaultquote::Union{Nothing, AbstractString}=nothing, exchange::AbstractString=EXCHANGE_BYBITSIM)
+    return XchCache(_adaptercache(exchange); startdt=startdt, enddt=enddt, mnemonic=mnemonic, defaultquote=defaultquote)
+end
 
 exchange(xc::XchCache)::String = exchangeid(xc.bc)
 
@@ -2706,11 +2730,11 @@ end
 
 "Set a fixed asset amount for coin in adapter-backed bookkeeping and return the asset row."
 function _updateasset!(xc::XchCache, coin, amount)
-    if !(xc.bc isa BybitSim.BybitSimCache)
+    if !(xc.bc isa Bybit.BybitSimCache)
         throw(ArgumentError("_updateasset! requires BybitSim adapter cache for adapter-backed seeding, got $(typeof(xc.bc))"))
     end
     bc = _rawcache(xc.bc)
-    BybitSim.seedportfolio!(bc, coin, amount)
+    Bybit.seedportfolio!(bc, coin, amount)
     ix = findfirst(==(uppercase(String(coin))), bc.assets[!, :coin])
     return isnothing(ix) ? nothing : bc.assets[ix, :]
 end

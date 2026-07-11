@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "acbbf5479bda59f3ab7c5b90bf93eb08e0e7a8df"
+project_hash = "081231184d13d1099be7ef941c7fc70ccc9d8486"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -78,7 +78,7 @@ version = "1.2.2"
 deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "."
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.3.0"
+version = "4.2.4"
 
 [[deps.CSV]]
 deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers", "PooledArrays", "PrecompileTools", "SentinelArrays", "Tables", "Unicode", "WeakRefStrings", "WorkerUtilities"]

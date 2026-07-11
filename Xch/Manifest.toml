@@ -78,7 +78,7 @@ version = "1.2.2"
 deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "../Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.2.3"
+version = "4.2.4"
 
 [[deps.CSV]]
 deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers", "PooledArrays", "PrecompileTools", "SentinelArrays", "Tables", "Unicode", "WeakRefStrings", "WorkerUtilities"]
@@ -398,13 +398,13 @@ version = "0.2.1+0"
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "../KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.1"
+version = "0.1.6"
 
 [[deps.KrakenSpot]]
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "../KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.1"
+version = "0.1.6"
 
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"
@@ -929,13 +929,13 @@ version = "1.6.1"
 deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JDF", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "."
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.3"
+version = "1.6.5"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]
 path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.2.0"
+version = "0.2.4"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

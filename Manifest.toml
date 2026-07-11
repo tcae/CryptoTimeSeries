@@ -450,7 +450,7 @@ uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
 version = "4.1.1"
 
 [[deps.CryptoTimeSeries]]
-deps = ["Arrow", "BSON", "BetterFileWatching", "Bybit", "CSV", "CategoricalArrays", "CategoricalDistributions", "Classify", "Colors", "Combinatorics", "Coverage", "Dash", "DataAPI", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "Hwloc", "IJulia", "InlineStrings", "JDF", "JLSO", "JSON", "JSON3", "JuliaInterpreter", "KrakenFutures", "KrakenSpot", "LinearRegression", "Logging", "LoggingExtras", "LoggingFacilities", "MLBase", "MLUtils", "MarketData", "MultivariateStats", "NamedArrays", "Ohlcv", "Pkg", "PlotlyJS", "Plots", "PrettyPrinting", "Printf", "Profile", "ProgressMeter", "RDatasets", "Revise", "RollingFunctions", "SHA", "SortingAlgorithms", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "Trade", "TradingStrategy", "Transducers", "WebSockets", "Xch"]
+deps = ["Arrow", "BSON", "BetterFileWatching", "Bybit", "CSV", "CategoricalArrays", "CategoricalDistributions", "Classify", "Colors", "Combinatorics", "Coverage", "Dash", "DataAPI", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "Hwloc", "IJulia", "InlineStrings", "JDF", "JLSO", "JSON", "JSON3", "JuliaInterpreter", "KrakenFutures", "KrakenSpot", "LinearRegression", "Logging", "LoggingExtras", "LoggingFacilities", "MLBase", "MLUtils", "MarketData", "MultivariateStats", "NamedArrays", "Ohlcv", "Pkg", "PlotlyJS", "Plots", "PrettyPrinting", "Printf", "Profile", "ProgressMeter", "RDatasets", "Revise", "RollingFunctions", "SHA", "SortingAlgorithms", "StatisticalMeasures", "Statistics", "Targets", "Test", "TestOhlcv", "Trade", "TradingStrategy", "Transducers", "WebSockets", "Xch", "XchAdapter"]
 path = "."
 uuid = "b701e8db-9a49-4397-91f7-1b5d24279289"
 version = "0.0.0"
@@ -1112,13 +1112,13 @@ weakdeps = ["EnzymeCore", "LinearAlgebra", "SparseArrays"]
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.2"
+version = "0.1.6"
 
 [[deps.KrakenSpot]]
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.2"
+version = "0.1.6"
 
 [[deps.LAME_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -2421,7 +2421,7 @@ version = "1.6.5"
 deps = ["Dates"]
 path = "XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.2.0"
+version = "0.2.4"
 
 [[deps.Xorg_libICE_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

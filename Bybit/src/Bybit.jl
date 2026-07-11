@@ -5,7 +5,7 @@ using EnvConfig
 using Ohlcv
 using TestOhlcv
 using XchAdapter
-import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, closebeforeopenflip!
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
 
 # base URL of the ByBit API
 # BYBIT_API_REST = "https://api.bybit.com"
@@ -38,15 +38,22 @@ function _executionconfigside(configside::Union{Nothing, Symbol}, orderside::Abs
     return side
 end
 
-function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString, marginleverage::Signed)
+function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString)
     side = _executionconfigside(configside, orderside)
     cfg = executionconfig()
     orders = cfg["orders"]
     sidecfg = orders[String(side)]
     instrument = lowercase(String(sidecfg["instrument"]))
     max_quote = haskey(sidecfg, "max_quote") ? sidecfg["max_quote"] : nothing
-    leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : Int(marginleverage)
+    leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
     return (side=side, instrument=instrument, max_quote=max_quote, leverage=leverage)
+end
+
+"Compatibility overload for legacy call sites still passing margin leverage explicitly."
+function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString, marginleverage::Signed)
+    spec = _executionorderspec(configside, orderside)
+    leverage = (spec.leverage == 0 && marginleverage > 0) ? marginleverage : spec.leverage
+    return (side=spec.side, instrument=spec.instrument, max_quote=spec.max_quote, leverage=leverage)
 end
 
 "Return side-specific execution config owned by the Bybit adapter."
@@ -118,6 +125,9 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
 end
 
 executionorderspec(::BybitCache, side::Symbol) = _executionorderspec(side)
+const BybitSimCache = BybitCache
+const BybitsimCache = BybitCache
+exchangeid(bc::BybitCache)::String = isnothing(bc.assets) ? "Bybit" : "BybitSim"
 
 BYBIT_APIREST = "https://api.bybit.com"
 BYBIT_TESTNET_APIREST = "https://api-testnet.bybit.com"
@@ -141,7 +151,11 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    return BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    if EnvConfig.configmode == EnvConfig.test
+        _init_simulation!(bc)
+    end
+    return bc
 end
 
 "Initialize simulation state (assets, orders, closedorders) for BybitSim mode"
@@ -879,6 +893,7 @@ function account(bc::BybitCache)
 end
 
 emptyorders()::DataFrame = EnvConfig.configmode == production ? DataFrame() : DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
+emptyorders(::BybitCache)::DataFrame = emptyorders()
 
 """
 Returns a DataFrame of open **spot** orders with columns:
@@ -1102,8 +1117,8 @@ If `price` is omitted and `maker=true`, the simulation and live adapters will
 choose a limit price as close as possible to the current spread while staying
 post-only so the order can qualify for maker fees.
 """
-function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=false)
-    spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside, marginleverage) : execution_spec
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false)
+    spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside) : execution_spec
     effective_marginleverage = spec.instrument == "spot_margin" ? spec.leverage : 0
     if spec.instrument == "spot_margin"
         2 <= effective_marginleverage <= 10 || error("invalid Bybit spot-margin leverage $(effective_marginleverage) for symbol=$(symbol) configside=$(spec.side)")
@@ -1140,7 +1155,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         return nothing
     end
     if 2 <= effective_marginleverage <= 10
-        Bybit.HttpPrivateRequest(bc, "POST", "/v5/spot-margin-trade/set-leverage", Dict("leverage" => string(effective_marginleverage)), "set margin leverage")
+        HttpPrivateRequest(bc, "POST", "/v5/spot-margin-trade/set-leverage", Dict("leverage" => string(effective_marginleverage)), "set margin leverage")
     end
     attempts = 5
     httpresponse = orderid = nothing
@@ -1157,7 +1172,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         "timeInForce" => "undefined")  # "PostOnly" "GTC
     while attempts > 0
         if isnothing(price) # == market order
-            now = Bybit.get24h(bc, symbol)
+            now = get24h(bc, symbol)
             # devratio = round(abs(now.lastprice - price) / price * 100)
             # if devratio > 0.01
             #     @warn "limitprice=$price deviates $(devratio)% > 1% of currentprice=$(now.lastprice)"
@@ -1191,7 +1206,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         if "orderId" in keys(httpresponse["result"])
             orderid = httpresponse["result"]["orderId"]
             if maker
-                order = Bybit.order(bc, httpresponse["result"]["orderId"])
+                order = order(bc, httpresponse["result"]["orderId"])
                 if !isnothing(order) && (order.status == "Rejected")
                     (verbosity >= 3) && println("$(attempts) PostOnly order for $symbol is rejected")
                     attempts = attempts - 1
@@ -1240,11 +1255,72 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=true)
+function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true)
     side = Symbol(lowercase(String(positionside)))
     @assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
     orderside = side == :long ? "Sell" : "Buy"
-    return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, marginleverage=marginleverage, reduceonly=reduceonly)
+    return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly)
+end
+
+_isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
+
+"Upsert one close leg independent from any open leg handling."
+function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true)
+    existing = nothing
+    if !isnothing(existing_orderid)
+        probe = order(bc, String(existing_orderid))
+        if !isnothing(probe) && hasproperty(probe, :status) && _isopenstatus(String(probe.status))
+            existing = probe
+        end
+    end
+    if isnothing(existing)
+        return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly)
+    end
+
+    remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
+    currentlimit = hasproperty(existing, :limitprice) ? existing.limitprice : nothing
+    qtychanged = remaining != basequantity
+    limitchanged = (isnothing(currentlimit) && !isnothing(limitprice)) || (!isnothing(currentlimit) && isnothing(limitprice)) || (!isnothing(currentlimit) && !isnothing(limitprice) && (currentlimit != limitprice))
+    if qtychanged || limitchanged
+        return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice)
+    end
+    return String(existing.orderid)
+end
+
+"Upsert one open leg independent from any close leg handling."
+function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false)
+    side = Symbol(lowercase(String(positionside)))
+    @assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
+    orderside = side == :long ? "Buy" : "Sell"
+    existing = nothing
+    if !isnothing(existing_orderid)
+        probe = order(bc, String(existing_orderid))
+        if !isnothing(probe) && hasproperty(probe, :status) && _isopenstatus(String(probe.status))
+            existing = probe
+        end
+    end
+    if isnothing(existing)
+        return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly)
+    end
+
+    remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
+    currentlimit = hasproperty(existing, :limitprice) ? existing.limitprice : nothing
+    qtychanged = remaining != basequantity
+    limitchanged = (isnothing(currentlimit) && !isnothing(limitprice)) || (!isnothing(currentlimit) && isnothing(limitprice)) || (!isnothing(currentlimit) && !isnothing(limitprice) && (currentlimit != limitprice))
+    if qtychanged || limitchanged
+        return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice)
+    end
+    return String(existing.orderid)
+end
+
+"Register direct predecessor/successor sequencing at adapter layer."
+function directsequence!(bc::BybitCache, predecessor_orderid::AbstractString, successor_orderid::AbstractString)
+    predecessor = order(bc, String(predecessor_orderid))
+    successor = order(bc, String(successor_orderid))
+    @assert !isnothing(predecessor) "directsequence! predecessor order missing predecessor_orderid=$(predecessor_orderid)"
+    @assert !isnothing(successor) "directsequence! successor order missing successor_orderid=$(successor_orderid)"
+    @assert String(predecessor.symbol) == String(successor.symbol) "directsequence! symbol mismatch predecessor_symbol=$(String(predecessor.symbol)) successor_symbol=$(String(successor.symbol)) predecessor_orderid=$(predecessor_orderid) successor_orderid=$(successor_orderid)"
+    return (predecessor_orderid=String(predecessor_orderid), successor_orderid=String(successor_orderid), symbol=String(predecessor.symbol), acknowledged=true)
 end
 
 "Sequence a close order before an opening order using the Bybit adapter's own execution path."
@@ -1252,9 +1328,9 @@ function closebeforeopenflip!(bc::BybitCache, symbol::String, positionside::Symb
     side = Symbol(lowercase(String(positionside)))
     @assert side in (:long, :short) "closebeforeopenflip! positionside=$(positionside) must be :long or :short"
     openqty = isnothing(open_basequantity) ? close_basequantity : open_basequantity
-    closeoid = closeorder(bc, symbol, side, close_basequantity, close_limitprice, close_maker; marginleverage=close_marginleverage, reduceonly=close_reduceonly)
+    closeoid = closeorder(bc, symbol, side, close_basequantity, close_limitprice, close_maker; reduceonly=close_reduceonly)
     isnothing(closeoid) && return (closeorderid=nothing, openorderid=nothing)
-    openoid = side == :long ? createorder(bc, symbol, "Sell", openqty, open_limitprice, open_maker; configside=:short, marginleverage=open_marginleverage, reduceonly=open_reduceonly) : createorder(bc, symbol, "Buy", openqty, open_limitprice, open_maker; configside=:long, marginleverage=open_marginleverage, reduceonly=open_reduceonly)
+    openoid = side == :long ? createorder(bc, symbol, "Sell", openqty, open_limitprice, open_maker; configside=:short, reduceonly=open_reduceonly) : createorder(bc, symbol, "Buy", openqty, open_limitprice, open_maker; configside=:long, reduceonly=open_reduceonly)
     return (closeorderid=closeoid, openorderid=openoid)
 end
 

@@ -304,10 +304,11 @@ run_startdt, run_enddt = effective_startdt, effective_enddt
 # BUILD TRADE CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
-xc = Xch.XchCache(;
+bc = Bybit.BybitSimCache()
+Bybit.seedportfolio!(bc, QUOTE_COIN, 0.0)
+xc = Xch.XchCache(bc;
     startdt  = run_startdt,
     enddt    = run_enddt,
-    exchange = EXCHANGE,
 )
 Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), Trade.tradesdf_contributors()))
 

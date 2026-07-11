@@ -13,6 +13,7 @@ Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using Dates, Logging, LoggingExtras
 using EnvConfig, TradingStrategy, Trade, Classify, Xch, Features, Ohlcv, Targets
+using Bybit, KrakenFutures, KrakenSpot
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — adjust these values before running
@@ -42,6 +43,19 @@ const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "production")
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradereal-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
 const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
+
+"Build one adapter cache matching the configured exchange id."
+function build_adapter_cache(exchange::AbstractString)
+    ex = String(exchange)
+    if ex == Xch.EXCHANGE_BYBIT
+        return Bybit.BybitCache()
+    elseif ex == Xch.EXCHANGE_KRAKENSPOT
+        return KrakenSpot.KrakenSpotCache()
+    elseif ex == Xch.EXCHANGE_KRAKENFUTURES
+        return KrakenFutures.KrakenFuturesCache()
+    end
+    error("unsupported tradereal exchange=$(exchange)")
+end
 
 function safe_runid()::String
     try
@@ -81,7 +95,8 @@ Trade.verbosity     = 2
 # BUILD TRADE CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
-xc = Xch.XchCache(; enddt=nothing, exchange=EXCHANGE)
+bc = build_adapter_cache(EXCHANGE)
+xc = Xch.XchCache(bc; enddt=nothing)
 Xch.setstartdt(xc, Xch.tradetime(xc))
 Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), Trade.tradesdf_contributors()))
 
