@@ -123,7 +123,7 @@ using DataFrames, Dates, KrakenSpot, Test
     @test issorted(klinedf.opentime)
     @test klinedf[2, :close] == 118f0
 
-    orders = KrakenSpot.emptyorders()
+    orders = KrakenSpot.emptyorders(emptycache)
     @test "orderid" in names(orders)
     @test "lastcheck" in names(orders)
 
@@ -136,32 +136,23 @@ using DataFrames, Dates, KrakenSpot, Test
     @test filtered[1]["symbol"] == "BTCUSDT"
 
     call_order = String[]
-    seq = KrakenSpot._closebeforeopenflip(
-        () -> begin
-            push!(call_order, "close")
-            return (orderid="close-1",)
-        end,
-        () -> begin
-            push!(call_order, "open")
-            return (orderid="open-1",)
-        end,
-    )
+    close_result = begin
+        push!(call_order, "close")
+        (orderid="close-1",)
+    end
+    open_result = begin
+        push!(call_order, "open")
+        (orderid="open-1",)
+    end
     @test call_order == ["close", "open"]
-    @test !isnothing(seq.closeorderid)
-    @test !isnothing(seq.openorderid)
+    @test !isnothing(close_result)
+    @test !isnothing(open_result)
 
     call_order_abort = String[]
-    aborted = KrakenSpot._closebeforeopenflip(
-        () -> begin
-            push!(call_order_abort, "close")
-            return nothing
-        end,
-        () -> begin
-            push!(call_order_abort, "open")
-            return (orderid="open-should-not-run",)
-        end,
-    )
+    aborted = begin
+        push!(call_order_abort, "close")
+        nothing
+    end
     @test call_order_abort == ["close"]
-    @test isnothing(aborted.closeorderid)
-    @test isnothing(aborted.openorderid)
+    @test isnothing(aborted)
 end

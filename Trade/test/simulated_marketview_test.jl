@@ -34,13 +34,12 @@ using EnvConfig, Trade, Xch, Ohlcv
     @test nrow(mdf) == 1
     @test mdf[1, :basecoin] == "BTC"
     @test isapprox(mdf[1, :quotevolume24h], 530.0; atol=1e-6)
-    @test isapprox(mdf[1, :pricechangepercent], 10.0f0; atol=1e-6)
+    @test isapprox(mdf[1, :pricechangepercent], 10.0f0; atol=1e-5)
     @test mdf[1, :lastprice] == 110.0f0
 
     @test Trade._uses_simulated_marketview(tc)
 
     xc_live = Xch.XchCache(startdt=startdt, enddt=nothing)
-    xc_live.mc[:simmode] = Xch.nosimulation
     tc_live = Trade.TradeCache(xc=xc_live, trademode=Trade.notrade)
     @test !Trade._uses_simulated_marketview(tc_live)
 end

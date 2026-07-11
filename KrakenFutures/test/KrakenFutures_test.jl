@@ -69,14 +69,13 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
         empty!(KrakenFutures._iceberg_sequences)
     end
     rootid = "root-seq"
-    spec = KrakenFutures._executionorderspec(:long, "Buy", 0)
+    spec = KrakenFutures._executionorderspec(:long, "Buy")
     KrakenFutures._seticebergstate!(rootid, Dict{Symbol, Any}(
         :current_order_id => "child-1",
         :remaining_baseqty => 5.0,
         :symbol => "BTCUSDT",
         :orderside => "Buy",
         :configside => :long,
-        :marginleverage => 0,
         :reduceonly => false,
         :maker => true,
         :price => 100.0,
@@ -134,7 +133,7 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
     @test issorted(klinedf.opentime)
     @test klinedf[2, :close] == 118f0
 
-    orders = KrakenFutures.emptyorders()
+    orders = KrakenFutures.emptyorders(emptycache)
     @test "orderid" in names(orders)
     @test "lastcheck" in names(orders)
 

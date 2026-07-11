@@ -242,7 +242,7 @@ end
     startdt = DateTime(2026, 1, 10)
     enddt = startdt + Minute(240)
     xc = Xch.XchCache(startdt=startdt)
-    Xch.addbase!(xc, "SINE", startdt, enddt)
+    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
@@ -272,7 +272,7 @@ end
     startdt = DateTime(2026, 1, 12)
     enddt = startdt + Minute(240)
     xc = Xch.XchCache(startdt=startdt)
-    Xch.addbase!(xc, "SINE", startdt, enddt)
+    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
     rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)

@@ -111,7 +111,7 @@ end
 
 "Return the explicit limit price used for order creation in simulation mode."
 function _orderlimitprice(cache, price::Real)
-    return cache.xc.mc[:simmode] == Xch.bybitsim ? price : nothing
+    return Xch.exchange(cache.xc) == Xch.EXCHANGE_BYBITSIM ? price : nothing
 end
 
 function _portfolioquotevalue(assets::AbstractDataFrame)::Union{Missing, Float64}
@@ -293,7 +293,7 @@ end
 
 "Use OHLCV-derived marketview in replay/simulation modes instead of persisted trade config snapshots."
 function _uses_simulated_marketview(tc::TradeCache)::Bool
-    return !isnothing(tc.xc.enddt) || (tc.xc.mc[:simmode] != Xch.nosimulation)
+    return !isnothing(tc.xc.enddt)
 end
 
 @inline function _rowix_at_or_before(opentimes, datetime::DateTime)::Int
@@ -736,10 +736,6 @@ _traderank(tl) = _isclosetrade(tl) ? 1 : _isopentrade(tl) ? 2 : 3
 
 function _tradetolabeltext(label)
     return String(Symbol(label))
-end
-
-function _requested_row_limitprice(cache::TradeCache, requested_price, fallback_price::Real)
-    return (ismissing(requested_price) || isnothing(requested_price)) ? _orderlimitprice(cache, fallback_price) : (requested_price)
 end
 
 function _rowbase(tradesdf::DataFrame, rowix::Integer)::String

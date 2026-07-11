@@ -7,6 +7,7 @@ applyTo: '*.jl'
 - follow the Julia style guide: https://docs.julialang.org/en/v1/manual/style-guide/
 - use meaningful variable and function names
 - don't use type conversions. Either the compiler can convert implicitly or we have a API mismatch problem that should be thought through and a fast failure identifies those issues quickly while a conversion masks them and makes root cause finding more difficult
+- for regression tests run them one after each other on package level instead of workspace level because workspace level tests are slow and failing tests that don't result in an abort are often missed if only the x number of last lines are checked.
 - when changing a function signature also adapt the docstring accordingly
 - when changing functions of a module that are used from outside the module then increase the modules version number in Project.toml
 - avoid global variables

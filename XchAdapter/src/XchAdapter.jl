@@ -10,6 +10,7 @@ function _required_method_error(ac::XchAdapterCache, methodname::Symbol)
 end
 
 rawcache(ac::XchAdapterCache) = ac
+exchangeid(ac::XchAdapterCache) = _required_method_error(ac, :exchangeid)
 
 symbolinfo(ac::XchAdapterCache, symbol) = _required_method_error(ac, :symbolinfo)
 validsymbol(ac::XchAdapterCache, sym) = _required_method_error(ac, :validsymbol)
@@ -17,10 +18,11 @@ getklines(ac::XchAdapterCache, symbol; startDateTime=nothing, endDateTime=nothin
 get24h(ac::XchAdapterCache) = _required_method_error(ac, :get24h)
 get24h(ac::XchAdapterCache, symbol) = _required_method_error(ac, :get24h)
 balances(ac::XchAdapterCache) = _required_method_error(ac, :balances)
+emptyorders(ac::XchAdapterCache) = _required_method_error(ac, :emptyorders)
 openorders(ac::XchAdapterCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _required_method_error(ac, :openorders)
 order(ac::XchAdapterCache, orderid) = _required_method_error(ac, :order)
 cancelorder(ac::XchAdapterCache, symbol, orderid) = _required_method_error(ac, :cancelorder)
-createorder(ac::XchAdapterCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; marginleverage::Signed=0, reduceonly::Bool=false) = _required_method_error(ac, :createorder)
+createorder(ac::XchAdapterCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; reduceonly::Bool=false) = _required_method_error(ac, :createorder)
 amendorder(ac::XchAdapterCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = _required_method_error(ac, :amendorder)
 amendorder(ac::XchAdapterCache, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing) = _required_method_error(ac, :amendorder)
 servertime(ac::XchAdapterCache) = _required_method_error(ac, :servertime)
@@ -32,8 +34,16 @@ marginpermitted(ac::XchAdapterCache, symbol::AbstractString, orderside::Abstract
 marketdataheartbeats(ac::XchAdapterCache) = Dict{String, DateTime}()
 marketdataheartbeat(ac::XchAdapterCache; symbol::Union{Nothing, AbstractString}=nothing) = nothing
 accountcapacity(ac::XchAdapterCache) = nothing
-closeorder(ac::XchAdapterCache, symbol::String, side::Symbol, basequantity, limitprice, maker::Bool; marginleverage::Signed=0, reduceonly::Bool=true) = nothing
-closebeforeopenflip!(ac::XchAdapterCache, symbol::String, positionside::Symbol, close_basequantity::Real, close_limitprice::Union{Real, Nothing}, close_maker::Bool=true, open_maker::Bool=true; open_limitprice::Union{Real, Nothing}=nothing, open_basequantity::Union{Nothing, Real}=nothing, close_marginleverage::Signed=0, open_marginleverage::Signed=0, close_reduceonly::Bool=true, open_reduceonly::Bool=false) = _required_method_error(ac, :closebeforeopenflip!)
+closeorder(ac::XchAdapterCache, symbol::String, side::Symbol, basequantity, limitprice, maker::Bool; reduceonly::Bool=true) = nothing
+
+"upsert = update existing or insert new close order"
+upsertcloseorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true) = _required_method_error(ac, :upsertcloseorder!)
+
+"upsert = update existing or insert new open order"
+upsertopenorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false) = _required_method_error(ac, :upsertopenorder!)
+
+"ensure order sequence: predecessor order must be submitted before successor order is submitted"
+directsequence!(ac::XchAdapterCache, predecessor_orderid::AbstractString, successor_orderid::AbstractString) = _required_method_error(ac, :directsequence!)
 wsclosedkline(ac::XchAdapterCache, symbol::AbstractString, interval::AbstractString) = nothing
 
 end

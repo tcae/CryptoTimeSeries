@@ -95,7 +95,6 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    xc.mc[:simmode] = Xch.nosimulation
     tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
 
     @test !isnothing(Trade._strategyruntime(tc))

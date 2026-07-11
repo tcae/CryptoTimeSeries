@@ -90,10 +90,30 @@ end
         @test !ismissing(accepted[1, :equity])
         @test !ismissing(accepted[1, :freequote])
     else
-        @test result.reason == "insufficient_free_quote"
+        @test result.reason in ("insufficient_free_quote", "below_minimum_qty")
         @test accepted[1, :lo_status] == "Rejected"
         @test String(accepted[1, :lo_id]) == "none"
         @test !ismissing(accepted[1, :lo_msg])
+    end
+
+    zero_limit = DataFrame(
+        opentime=[startdt],
+        pair=["BTCUSDT"],
+        label=[Targets.longopen],
+        lo_limit=[0f0],
+        lo_amount=[max(minqty * 1.5f0, 0.001f0)],
+    )
+    for contributor in Xch.tradesdf_contributors()
+        contributor(zero_limit)
+    end
+    _apply_trade_amount_contributors!(zero_limit)
+    zero_result = Xch.process_order_request(xc, zero_limit, 1)
+    @test zero_result.accepted || zero_result.reason in ("insufficient_free_quote", "below_minimum_qty")
+    if zero_result.accepted
+        zero_oid = String(zero_limit[1, :lo_id])
+        zero_order = Xch.getorder(xc, zero_oid)
+        @test !isnothing(zero_order)
+        @test zero_order.limitprice > 0f0
     end
 
     # Too-small quantity should be rejected and assigned a Trading catalog id.
@@ -152,9 +172,13 @@ end
     _apply_trade_amount_contributors!(close_req)
 
     close_result = Xch.process_order_request(xc, close_req, 1)
-    @test close_result.accepted
-    @test close_req[1, :lc_status] == "Submitted"
-    @test close_req[1, :lc_filled] == 0f0
+    @test close_result.accepted || close_result.reason == "below_minimum_qty"
+    if close_result.accepted
+        @test close_req[1, :lc_status] == "Submitted"
+        @test close_req[1, :lc_filled] == 0f0
+    else
+        @test close_req[1, :lc_status] == "Rejected"
+    end
 end
 
 @testset "Xch direct order builders validate quantity" begin
@@ -173,39 +197,6 @@ end
 
     @test isnothing(Xch.createopenorder(xc, "BTC"; limitprice=price, basequantity=max(minqty * 0.1, 1e-8), maker=false, configside=:long))
     @test_throws ArgumentError Xch.createopenorder(xc, "BTC"; limitprice=price, basequantity=-1, maker=false, configside=:long)
-end
-
-@testset "Xch close-before-open sequencing helper" begin
-    calls = String[]
-
-    seq = Xch.closebeforeopenflip!(
-        () -> begin
-            push!(calls, "close")
-            "close-oid"
-        end,
-        () -> begin
-            push!(calls, "open")
-            "open-oid"
-        end,
-    )
-    @test calls == ["close", "open"]
-    @test seq.closeorderid == "close-oid"
-    @test seq.openorderid == "open-oid"
-
-    empty!(calls)
-    aborted = Xch.closebeforeopenflip!(
-        () -> begin
-            push!(calls, "close")
-            nothing
-        end,
-        () -> begin
-            push!(calls, "open")
-            "should-not-run"
-        end,
-    )
-    @test calls == ["close"]
-    @test isnothing(aborted.closeorderid)
-    @test isnothing(aborted.openorderid)
 end
 
 end

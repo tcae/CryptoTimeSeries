@@ -1,7 +1,7 @@
 name = "KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
 authors = ["Torsten <dropincloud7.gmail.com>"]
-version = "0.1.2"
+version = "0.1.6"
 
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"

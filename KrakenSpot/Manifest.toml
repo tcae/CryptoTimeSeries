@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "17bdd72b716e710ca17699cd575a0dc71e31b696"
+project_hash = "0d7e464d50d2fa179397d17d4ef88b9cc5c5e4a5"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -172,7 +172,7 @@ version = "1.0.7"
 deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.2.14"
+version = "0.2.15"
 
 [[deps.ExceptionUnwrapping]]
 deps = ["Test"]
@@ -258,10 +258,10 @@ uuid = "ac6e5ff7-fb65-4e79-a425-ec3bc9c03011"
 version = "1.12.0"
 
 [[deps.KrakenSpot]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test"]
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "."
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.0"
+version = "0.1.6"
 
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"
@@ -629,6 +629,12 @@ deps = ["DataAPI", "InlineStrings", "Parsers"]
 git-tree-sha1 = "0716e01c3b40413de5dedbc9c5c69f27cddfddfc"
 uuid = "ea10d353-3f73-51f8-a26c-33c1cb351aa5"
 version = "1.4.3"
+
+[[deps.XchAdapter]]
+deps = ["Dates"]
+path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
+uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "0.2.4"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

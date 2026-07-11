@@ -2,7 +2,7 @@ module KrakenSpot
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
 using XchAdapter
-import XchAdapter: rawcache, symbolinfo, validsymbol, getklines, get24h, balances, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, closebeforeopenflip!, wsclosedkline
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
 # The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
@@ -38,13 +38,13 @@ function _executionconfigside(configside::Union{Nothing, Symbol}, orderside::Abs
 	return side
 end
 
-function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString, marginleverage::Signed)
+function _executionorderspec(configside::Union{Nothing, Symbol}, orderside::AbstractString)
 	side = _executionconfigside(configside, orderside)
 	cfg = executionconfig()
 	orders = cfg["orders"]
 	sidecfg = orders[String(side)]
 	instrument = lowercase(String(sidecfg["instrument"]))
-	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : Int(marginleverage)
+	leverage = haskey(sidecfg, "leverage") ? Int(sidecfg["leverage"]) : 0
 	max_quote = haskey(sidecfg, "max_quote") ? (sidecfg["max_quote"]) : nothing
 	return (side=side, instrument=instrument, leverage=leverage, max_quote=max_quote)
 end
@@ -338,7 +338,7 @@ function _ws_orders_df_from_payload(bc, payload)
 	if payload isa DataFrame
 		return copy(payload)
 	end
-	rows = emptyorders()
+	rows = emptyordersschema(bc)
 	payload isa AbstractVector || return rows
 	for item in payload
 		entry = item isa AbstractDict ? Dict(item) : Dict{String, Any}()
@@ -399,6 +399,7 @@ struct KrakenSpotCache <: XchAdapter.XchAdapterCache
 end
 
 executionorderspec(::KrakenSpotCache, side::Symbol) = _executionorderspec(side)
+exchangeid(::KrakenSpotCache)::String = "KrakenSpot"
 
 """
 Build a new `KrakenSpotCache` and optionally preload symbol metadata.
@@ -917,7 +918,7 @@ end
 """
 Build the DataFrame schema used by `openorders` and `order`.
 """
-function emptyorders()::DataFrame
+function emptyordersschema(::KrakenSpotCache)::DataFrame
 	return DataFrame(
 		orderid=String[],
 		orderLinkId=String[],
@@ -938,6 +939,8 @@ function emptyorders()::DataFrame
 		lastcheck=DateTime[],
 	)
 end
+
+emptyorders(bc::KrakenSpotCache)::DataFrame = emptyordersschema(bc)
 
 """
 Normalize Kraken asset names to common base/quote symbols.
@@ -1579,7 +1582,7 @@ Return open spot orders in a DataFrame compatible with Bybit order columns.
 """
 function openorders(bc::KrakenSpotCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
 	if !_hascredentials(bc)
-		return emptyorders()
+		return emptyordersschema(bc)
 	end
 
 	# Read-through cache to reduce pressure on private OpenOrders endpoint.
@@ -1617,7 +1620,7 @@ function openorders(bc::KrakenSpotCache; symbol=nothing, orderid=nothing, orderL
 	result = get(response, "result", Dict{String, Any}())
 	open = haskey(result, "open") ? Dict(result["open"]) : Dict{String, Any}()
 
-	out = emptyorders()
+	out = emptyordersschema(bc)
 	symbolspec = isnothing(symbol) ? nothing : _normalizepairsymbol(String(symbol))
 	orderlinkspec = isnothing(orderLinkId) ? nothing : String(orderLinkId)
 	for (oid, rawentry) in open
@@ -1664,7 +1667,7 @@ function order(bc::KrakenSpotCache, orderid)
 		return nothing
 	end
 	row = _orderrow(bc, String(orderid), Dict(result[String(orderid)]))
-	df = emptyorders()
+	df = emptyordersschema(bc)
 	push!(df, row)
 	return df[1, :]
 end
@@ -1746,14 +1749,14 @@ order can qualify for maker fees.
 Set `validate=true` to ask Kraken Spot to validate order parameters without
 executing the order.
 """
-function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=false, validate::Bool=false)
+function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, validate::Bool=false)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(price) || (price > 0.0) "createorder symbol=$(symbol) price=$(price) must be > 0"
 	@assert lowercase(orderside) in ["buy", "sell"] "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
 	if !_hascredentials(bc)
 		return nothing
 	end
-	spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside, marginleverage) : execution_spec
+	spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside) : execution_spec
 	effective_marginleverage = spec.instrument == "margin" ? spec.leverage : 0
 	if spec.instrument == "margin"
 		_validatemarginleverage(effective_marginleverage)
@@ -1890,30 +1893,72 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, marginleverage::Signed=0, reduceonly::Bool=true, validate::Bool=false)
+function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, validate::Bool=false)
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Sell" : "Buy"
-	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, marginleverage=marginleverage, reduceonly=reduceonly, validate=validate)
+	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, validate=validate)
 end
 
-"Execute close then open in strict order, aborting if close fails."
-function _closebeforeopenflip(closefn::Function, openfn::Function)
-	closeoid = closefn()
-	isnothing(closeoid) && return (closeorderid=nothing, openorderid=nothing)
-	openoid = openfn()
-	return (closeorderid=closeoid, openorderid=openoid)
+_isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
+
+"Upsert one close leg independent from any open leg handling."
+function upsertcloseorder!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true)
+	existing = nothing
+	if !isnothing(existing_orderid)
+		probe = order(bc, String(existing_orderid))
+		if !isnothing(probe) && hasproperty(probe, :status) && _isopenstatus(String(probe.status))
+			existing = probe
+		end
+	end
+	if isnothing(existing)
+		return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, validate=false)
+	end
+
+	remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
+	currentlimit = hasproperty(existing, :limitprice) ? existing.limitprice : nothing
+	qtychanged = remaining != basequantity
+	limitchanged = (isnothing(currentlimit) && !isnothing(limitprice)) || (!isnothing(currentlimit) && isnothing(limitprice)) || (!isnothing(currentlimit) && !isnothing(limitprice) && (currentlimit != limitprice))
+	if qtychanged || limitchanged
+		return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice)
+	end
+	return String(existing.orderid)
 end
 
-"Sequence a close order before an opening order using the Kraken Spot adapter's own execution path."
-function closebeforeopenflip!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, close_basequantity::Real, close_limitprice::Union{Real, Nothing}, close_maker::Bool=true, open_maker::Bool=true; open_limitprice::Union{Real, Nothing}=nothing, open_basequantity::Union{Nothing, Real}=nothing, close_marginleverage::Signed=0, open_marginleverage::Signed=0, close_reduceonly::Bool=true, open_reduceonly::Bool=false, validate::Bool=false)
+"Upsert one open leg independent from any close leg handling."
+function upsertopenorder!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false)
 	side = Symbol(lowercase(String(positionside)))
-	@assert side in [:long, :short] "closebeforeopenflip! positionside=$(positionside) must be :long or :short"
-	openqty = isnothing(open_basequantity) ? close_basequantity : open_basequantity
-	return _closebeforeopenflip(
-		() -> closeorder(bc, symbol, side, close_basequantity, close_limitprice, close_maker; marginleverage=close_marginleverage, reduceonly=close_reduceonly, validate=validate),
-		() -> (side == :long ? createorder(bc, symbol, "Sell", openqty, open_limitprice, open_maker; configside=:short, marginleverage=open_marginleverage, reduceonly=open_reduceonly, validate=validate) : createorder(bc, symbol, "Buy", openqty, open_limitprice, open_maker; configside=:long, marginleverage=open_marginleverage, reduceonly=open_reduceonly, validate=validate)),
-	)
+	@assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
+	orderside = side == :long ? "Buy" : "Sell"
+	existing = nothing
+	if !isnothing(existing_orderid)
+		probe = order(bc, String(existing_orderid))
+		if !isnothing(probe) && hasproperty(probe, :status) && _isopenstatus(String(probe.status))
+			existing = probe
+		end
+	end
+	if isnothing(existing)
+		return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, validate=false)
+	end
+
+	remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
+	currentlimit = hasproperty(existing, :limitprice) ? existing.limitprice : nothing
+	qtychanged = remaining != basequantity
+	limitchanged = (isnothing(currentlimit) && !isnothing(limitprice)) || (!isnothing(currentlimit) && isnothing(limitprice)) || (!isnothing(currentlimit) && !isnothing(limitprice) && (currentlimit != limitprice))
+	if qtychanged || limitchanged
+		return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice)
+	end
+	return String(existing.orderid)
+end
+
+"Register direct predecessor/successor sequencing at adapter layer."
+function directsequence!(bc::KrakenSpotCache, predecessor_orderid::AbstractString, successor_orderid::AbstractString)
+	predecessor = order(bc, String(predecessor_orderid))
+	successor = order(bc, String(successor_orderid))
+	@assert !isnothing(predecessor) "directsequence! predecessor order missing predecessor_orderid=$(predecessor_orderid)"
+	@assert !isnothing(successor) "directsequence! successor order missing successor_orderid=$(successor_orderid)"
+	@assert String(predecessor.symbol) == String(successor.symbol) "directsequence! symbol mismatch predecessor_symbol=$(String(predecessor.symbol)) successor_symbol=$(String(successor.symbol)) predecessor_orderid=$(predecessor_orderid) successor_orderid=$(successor_orderid)"
+	return (predecessor_orderid=String(predecessor_orderid), successor_orderid=String(successor_orderid), symbol=String(predecessor.symbol), acknowledged=true)
 end
 
 """

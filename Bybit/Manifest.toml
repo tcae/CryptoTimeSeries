@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "72fdc9ea0fcaf8ad9efc012ce58e849dce6533c3"
+project_hash = "acbbf5479bda59f3ab7c5b90bf93eb08e0e7a8df"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -75,10 +75,10 @@ uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
 [[deps.Bybit]]
-deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv"]
+deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "."
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.2.2"
+version = "4.3.0"
 
 [[deps.CSV]]
 deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers", "PooledArrays", "PrecompileTools", "SentinelArrays", "Tables", "Unicode", "WeakRefStrings", "WorkerUtilities"]
@@ -241,7 +241,7 @@ version = "1.0.7"
 deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
 path = "../EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.2.14"
+version = "0.2.15"
 
 [[deps.ExceptionUnwrapping]]
 deps = ["Test"]
@@ -522,7 +522,7 @@ version = "0.5.5"
 deps = ["Arrow", "CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
 path = "/Users/torsten/github/CryptoTimeSeries/Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
-version = "1.7.2"
+version = "1.7.3"
 
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
@@ -812,7 +812,7 @@ version = "1.11.0"
 deps = ["DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "PlotlyJS", "SortingAlgorithms", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/TestOhlcv"
 uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
-version = "0.1.3"
+version = "0.1.4"
 
 [[deps.TimeZones]]
 deps = ["Artifacts", "Dates", "Downloads", "InlineStrings", "Mocking", "Printf", "Scratch", "TZJData", "Unicode", "p7zip_jll"]
@@ -878,6 +878,12 @@ version = "0.6.7"
 git-tree-sha1 = "cd1659ba0d57b71a464a29e64dbc67cfe83d54e7"
 uuid = "76eceee3-57b5-4d4a-8e66-0e911cebbf60"
 version = "1.6.1"
+
+[[deps.XchAdapter]]
+deps = ["Dates"]
+path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
+uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "0.2.4"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]
