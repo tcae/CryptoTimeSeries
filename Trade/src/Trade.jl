@@ -45,48 +45,6 @@ verbosity =
 """
 verbosity = 2
 
-"""Ensure Trades column `lo_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for long-open consumed by Xch order processing."""
-function tradesdf_lo_amount(tradesdf::DataFrame)::DataFrame
-    if :lo_amount ∉ propertynames(tradesdf)
-        tradesdf[!, :lo_amount] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `lc_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for long-close consumed by Xch order processing."""
-function tradesdf_lc_amount(tradesdf::DataFrame)::DataFrame
-    if :lc_amount ∉ propertynames(tradesdf)
-        tradesdf[!, :lc_amount] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `so_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for short-open consumed by Xch order processing."""
-function tradesdf_so_amount(tradesdf::DataFrame)::DataFrame
-    if :so_amount ∉ propertynames(tradesdf)
-        tradesdf[!, :so_amount] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `sc_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size for short-close consumed by Xch order processing."""
-function tradesdf_sc_amount(tradesdf::DataFrame)::DataFrame
-    if :sc_amount ∉ propertynames(tradesdf)
-        tradesdf[!, :sc_amount] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Return Trade-contributed Trades schema initializer functions."""
-function tradesdf_contributors()::Vector{Function}
-    return Function[
-        tradesdf_lo_amount,
-        tradesdf_lc_amount,
-        tradesdf_so_amount,
-        tradesdf_sc_amount,
-    ]
-end
-
 # Extra minute buffer for liquidity lookback window to absorb minute-boundary rounding
 # and small OHLCV gaps without underfetching the required continuity check horizon.
 const LIQUIDITY_LOOKBACK_MARGIN_MINUTES = 5
@@ -107,11 +65,6 @@ function _effectivebudgetquote(cache, assets::AbstractDataFrame)::Float64
         return totalusdt
     end
     return min(totalusdt, cap)
-end
-
-"Return the explicit limit price used for order creation in simulation mode."
-function _orderlimitprice(cache, price::Real)
-    return Xch.exchange(cache.xc) == Xch.EXCHANGE_BYBITSIM ? price : nothing
 end
 
 function _portfolioquotevalue(assets::AbstractDataFrame)::Union{Missing, Float64}
@@ -464,7 +417,7 @@ function _log_margin_order_diagnostics(cache::TradeCache, basecfg::DataFrameRow,
     requested_limitprice_value = isnothing(requested_limitprice) ? missing : (requested_limitprice)
     expected_margin_quote = isnothing(requested_limitprice) ? missing : (additional_base * (requested_limitprice))
     limits = Xch.marginlimits(cache.xc, symbol)
-    @error "margin order submission failed" exchange=Xch.exchange(cache.xc) base=String(base) symbol=String(symbol) side=String(side) tradelabel=String(Symbol(ta.tradelabel)) requested_leverage=requested_leverage requested_baseqty=(basequantity) requested_limitprice=requested_limitprice_value expected_margin_quote=expected_margin_quote available_free_quote=(freeusdt) freebase=(freebase) borrowedbase=(borrowedbase) totalborrowedquote=(totalborrowedusdt) effectivebudgetquote=(effectivebudgetquote) buyenabled=_cfgbool(basecfg, :buyenabled, false) sellenabled=_cfgbool(basecfg, :sellenabled, false) inportfolio=_cfgbool(basecfg, :inportfolio, false) maxleveragebuy=limits.maxleveragebuy maxleveragesell=limits.maxleveragesell error_message=sprint(showerror, err)
+    @error "margin order submission failed" exchange=Xch.exchangeid(cache.xc) base=String(base) symbol=String(symbol) side=String(side) tradelabel=String(Symbol(ta.tradelabel)) requested_leverage=requested_leverage requested_baseqty=(basequantity) requested_limitprice=requested_limitprice_value expected_margin_quote=expected_margin_quote available_free_quote=(freeusdt) freebase=(freebase) borrowedbase=(borrowedbase) totalborrowedquote=(totalborrowedusdt) effectivebudgetquote=(effectivebudgetquote) buyenabled=_cfgbool(basecfg, :buyenabled, false) sellenabled=_cfgbool(basecfg, :sellenabled, false) inportfolio=_cfgbool(basecfg, :inportfolio, false) maxleveragebuy=limits.maxleveragebuy maxleveragesell=limits.maxleveragesell error_message=sprint(showerror, err)
 end
 
 "Return true when an order error indicates exchange/account permission restrictions for the symbol."

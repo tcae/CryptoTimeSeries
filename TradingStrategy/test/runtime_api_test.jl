@@ -3,7 +3,7 @@ using Dates
 using DataFrames
 using Targets
 using EnvConfig
-using Xch
+using Xch, Bybit
 using Classify
 using Ohlcv
 using TestOhlcv
@@ -15,8 +15,8 @@ Base.@kwdef mutable struct MockClassifier <: Classify.AbstractClassifier
 end
 
 function init_runtime_columns!(tdf::DataFrame)
-    Xch.tradesdf_lastopentrade(tdf)
-    for contributor in TradingStrategy.tradesdf_contributors()
+    Xch.xch_tradesdf_lastopentrade(tdf)
+    for contributor in Xch.tradesdf_all_contributors()
         contributor(tdf)
     end
     return tdf
@@ -107,6 +107,11 @@ end
 end
 
 @testset "Runtime API compatibility adapter" begin
+    startdt = DateTime(2026, 1, 1)
+    evaldt = startdt + Minute(1)
+    xc = Xch.XchCache(Bybit.BybitCache(), startdt=startdt)
+    Xch.addbase!(xc, "BTC", startdt, startdt + Minute(120))
+
     @test_throws ArgumentError TradingStrategy.TsCache(source="test")
     rt = TradingStrategy.TsCache(classifier=MockClassifier())
 
@@ -129,10 +134,6 @@ end
     @test recon.has_long_open
     @test recon.long_open_ix == 7
 
-    startdt = DateTime(2026, 1, 1)
-    evaldt = startdt + Minute(1)
-    xc = Xch.XchCache(startdt=startdt)
-    Xch.addbase!(xc, "BTC", startdt, startdt + Minute(120))
     xc.currentdt = evaldt
     TradingStrategy.preparebases!(rt, xc, ["BTC"]; datetime=evaldt, updatecache=false)
     init_runtime_columns!(Xch.trades(xc, "BTC", EnvConfig.pairquote))

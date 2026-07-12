@@ -42,12 +42,12 @@ end
     currentdt = startdt + Dates.Minute(2)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.addbase!(xc, "ETH", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC", "ETH"],
         free=Float32[5_000f0, 1.5f0, 0.75f0],
@@ -207,11 +207,11 @@ end
     currentdt = startdt + Dates.Minute(3)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[2_000f0, 0.5f0],
@@ -251,11 +251,11 @@ end
     currentdt = startdt + Dates.Minute(2)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[1_000f0, 0.25f0],
@@ -291,11 +291,11 @@ end
     currentdt = startdt + Dates.Minute(2)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[1_000f0, 0.25f0],

@@ -1,6 +1,6 @@
 name = "Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.19.3"
+version = "0.19.4"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]

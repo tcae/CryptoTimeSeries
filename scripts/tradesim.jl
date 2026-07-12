@@ -304,13 +304,13 @@ run_startdt, run_enddt = effective_startdt, effective_enddt
 # BUILD TRADE CACHE
 # ─────────────────────────────────────────────────────────────────────────────
 
-bc = Bybit.BybitSimCache()
+bc = Bybit.BybitCache()
 Bybit.seedportfolio!(bc, QUOTE_COIN, 0.0)
 xc = Xch.XchCache(bc;
     startdt  = run_startdt,
     enddt    = run_enddt,
 )
-Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), Trade.tradesdf_contributors()))
+    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
 cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME"), trademode=TRADE_MODE)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)

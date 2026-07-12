@@ -48,7 +48,7 @@ end
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     # Make acceptance deterministic: enforce simulation wallet quote buying power.
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote],
         free=Float32[1_000f0],
@@ -72,7 +72,7 @@ end
         lo_limit=[price * 0.98f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
     )
-    for contributor in Xch.tradesdf_contributors()
+    for contributor in Xch.xch_tradesdf_contributors()
         contributor(accepted)
     end
     _apply_trade_amount_contributors!(accepted)
@@ -103,7 +103,7 @@ end
         lo_limit=[0f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
     )
-    for contributor in Xch.tradesdf_contributors()
+    for contributor in Xch.xch_tradesdf_contributors()
         contributor(zero_limit)
     end
     _apply_trade_amount_contributors!(zero_limit)
@@ -124,7 +124,7 @@ end
         lo_limit=[price],
         lo_amount=[max(minqty * 0.1f0, 1.0f-8)],
     )
-    for contributor in Xch.tradesdf_contributors()
+    for contributor in Xch.xch_tradesdf_contributors()
         contributor(rejected)
     end
     _apply_trade_amount_contributors!(rejected)
@@ -144,7 +144,7 @@ end
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
     Xch.addbase!(xc, "BTC", startdt, enddt)
 
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[1_000f0, 1f0],
@@ -166,7 +166,7 @@ end
         lc_limit=[price * 0.98],
         lc_amount=[1 - (minqty * 0.25)],
     )
-    for contributor in Xch.tradesdf_contributors()
+    for contributor in Xch.xch_tradesdf_contributors()
         contributor(close_req)
     end
     _apply_trade_amount_contributors!(close_req)

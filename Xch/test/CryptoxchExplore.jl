@@ -53,7 +53,7 @@ end
 # testorder(xc, 19001.0, 20.0/19001.0)
 # testorder(xc, 19001.0001, 5.0/19001.0)
 # testorder(xc, 19001.00000000002, 20.00008/19001.0)
-allbb = Bybit.get24h(Xch._rawcache(xc.bc))
+allbb = Bybit.get24h(Xch.rawcache(xc.bc))
 println(describe(allbb, :all))
 # println(allbb)
 

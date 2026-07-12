@@ -5,7 +5,7 @@ using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
 
 @testset "Trade amount defaults" begin
     df = DataFrame(opentime=[DateTime("2025-01-01T00:00:00")], pair=["BTCUSDT"])
-    for contributor in Trade.tradesdf_contributors()
+    for contributor in Xch.tradesdf_all_contributors()
         contributor(df)
     end
 
@@ -23,14 +23,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    Xch.ensuretradesschema(
-        xc,
-        vcat(
-            Xch.tradesdf_contributors(),
-            TradingStrategy.tradesdf_contributors(),
-            Trade.tradesdf_contributors(),
-        ),
-    )
+    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
     tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
     tc.cfg = DataFrame(
         basecoin=["BTC"],

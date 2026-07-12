@@ -23,7 +23,7 @@ end
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(1)
     xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors()))
+    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
     tdf = Xch.trades(xc, "BTC", EnvConfig.pairquote)
 
@@ -67,11 +67,11 @@ end
     @test eltype(tdf[!, :sp_amount]) == Float32
 
     defaultdf = DataFrame(opentime=[startdt])
-    TradingStrategy.tradesdf_label(defaultdf)
+    Xch.tradingstrategy_tradesdf_label(defaultdf)
     @test defaultdf[1, :label] == Targets.ignore
 
     defaultlimitsdf = DataFrame(opentime=[startdt], pair=["BTCUSDT"])
-    for contributor in TradingStrategy.tradesdf_contributors()
+    for contributor in Xch.tradingstrategy_tradesdf_contributors()
         contributor(defaultlimitsdf)
     end
     @test defaultlimitsdf[1, :lo_limit] == 0f0
@@ -80,10 +80,10 @@ end
     @test defaultlimitsdf[1, :sc_limit] == 0f0
 
     push!(tdf, (opentime=startdt, pair="BTCUSDT", label=Targets.ignore, lastopentrade=missing, lp_amount=0f0, sp_amount=0f0); cols=:subset)
-    Xch.tradesdf_lo_msg(tdf)
-    Xch.tradesdf_lc_msg(tdf)
-    Xch.tradesdf_so_msg(tdf)
-    Xch.tradesdf_sc_msg(tdf)
+    Xch.xch_tradesdf_lo_msg(tdf)
+    Xch.xch_tradesdf_lc_msg(tdf)
+    Xch.xch_tradesdf_so_msg(tdf)
+    Xch.xch_tradesdf_sc_msg(tdf)
     @test nrow(tdf) == 1
     @test tdf[1, :label] == Targets.ignore
     @test !ismissing(tdf[1, :pair])

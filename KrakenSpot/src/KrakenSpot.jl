@@ -2,7 +2,8 @@ module KrakenSpot
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
 using XchAdapter
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
+import XchAdapter: normalize_order_status
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
 # The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
@@ -188,48 +189,24 @@ function _recordwskline!(symbol::AbstractString, interval::AbstractString, candl
 end
 
 "Return latest websocket order snapshot maintained by KrakenSpot adapter."
-function wsordersnapshot()
+function _wsorderssnapshot()
 	lock(_ws_orders_state_lock) do
 		return copy(_ws_orders_snapshot[])
 	end
 end
 
-"Return latest websocket order snapshot using a cache handle."
-function wsordersnapshot(bc)
-	_ = bc
-	return wsordersnapshot()
-end
-
 "Return latest websocket order heartbeat timestamp from KrakenSpot adapter state."
-wsordersheartbeat() = _ws_orders_last_update_dt[]
-
-"Return latest websocket order heartbeat timestamp using a cache handle."
-function wsordersheartbeat(bc)
-	_ = bc
-	return wsordersheartbeat()
-end
+_wsordersheartbeat() = _ws_orders_last_update_dt[]
 
 "Return latest websocket balances snapshot maintained by KrakenSpot adapter."
-function wsbalancessnapshot()
+function _wsbalancessnapshot()
 	lock(_ws_balances_state_lock) do
 		return copy(_ws_balances_snapshot[])
 	end
 end
 
-"Return latest websocket balances snapshot using a cache handle."
-function wsbalancessnapshot(bc)
-	_ = bc
-	return wsbalancessnapshot()
-end
-
 "Return latest websocket balances heartbeat timestamp from KrakenSpot adapter state."
-wsbalancesheartbeat() = _ws_balances_last_update_dt[]
-
-"Return latest websocket balances heartbeat timestamp using a cache handle."
-function wsbalancesheartbeat(bc)
-	_ = bc
-	return wsbalancesheartbeat()
-end
+_wsbalancesheartbeat() = _ws_balances_last_update_dt[]
 
 function _update_ws_orders_snapshot!(df::DataFrame)
 	lock(_ws_orders_state_lock) do
@@ -398,8 +375,48 @@ struct KrakenSpotCache <: XchAdapter.XchAdapterCache
 	secretkey::String
 end
 
-executionorderspec(::KrakenSpotCache, side::Symbol) = _executionorderspec(side)
-exchangeid(::KrakenSpotCache)::String = "KrakenSpot"
+executionorderspec(bc::KrakenSpotCache, side::Symbol) = _executionorderspec(side)
+exchangeid(bc::KrakenSpotCache)::String = "KrakenSpot"
+
+"Return latest websocket order snapshot using a cache handle."
+function wsordersnapshot(bc::KrakenSpotCache)
+	_ = bc
+	return _wsorderssnapshot()
+end
+
+"Return latest websocket order heartbeat timestamp using a cache handle."
+function wsordersheartbeat(bc::KrakenSpotCache)
+	_ = bc
+	return _wsordersheartbeat()
+end
+
+"Return latest websocket balances snapshot using a cache handle."
+function wsbalancessnapshot(bc::KrakenSpotCache)
+	_ = bc
+	return _wsbalancessnapshot()
+end
+
+"Return latest websocket balances heartbeat timestamp using a cache handle."
+function wsbalancesheartbeat(bc::KrakenSpotCache)
+	_ = bc
+	return _wsbalancesheartbeat()
+end
+
+"""Normalize Kraken Spot raw order status into Xch status vocabulary."""
+function normalize_order_status(bc::KrakenSpotCache, rawstatus::AbstractString)::String
+	_ = bc
+	st = lowercase(String(rawstatus))
+	if st in ["open", "new", "untouched"]
+		return "submitted"
+	elseif st in ["filled", "closed"]
+		return "closed"
+	elseif st in ["cancelled", "canceled"]
+		return "canceled"
+	elseif st in ["expired", "rejected", "cancel_reject", "error"]
+		return "rejected"
+	end
+	return st
+end
 
 """
 Build a new `KrakenSpotCache` and optionally preload symbol metadata.
@@ -416,7 +433,10 @@ function KrakenSpotCache(; autoloadexchangeinfo::Bool=true, apirest::String=KRAK
 		syminfo = size(filtered, 1) > 0 ? filtered : syminfo
 		sort!(syminfo, :basecoin)
 	end
-	return KrakenSpotCache(syminfo, apirest, keys.publickey, keys.secretkey)
+	bc = KrakenSpotCache(syminfo, apirest, keys.publickey, keys.secretkey)
+    EnvConfig.setcoinspath!(exchangeid(bc))
+	EnvConfig.setpairquote!("USD")
+    return bc
 end
 
 function marketdataheartbeats(bc::KrakenSpotCache)

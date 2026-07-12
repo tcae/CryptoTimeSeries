@@ -6,6 +6,7 @@ using Ohlcv
 using TestOhlcv
 using XchAdapter
 import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
+import XchAdapter: normalize_order_status
 
 # base URL of the ByBit API
 # BYBIT_API_REST = "https://api.bybit.com"
@@ -124,10 +125,25 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     closedorders::Union{Nothing, DataFrame}
 end
 
-executionorderspec(::BybitCache, side::Symbol) = _executionorderspec(side)
+executionorderspec(bc::BybitCache, side::Symbol) = _executionorderspec(side)
 const BybitSimCache = BybitCache
 const BybitsimCache = BybitCache
-exchangeid(bc::BybitCache)::String = isnothing(bc.assets) ? "Bybit" : "BybitSim"
+exchangeid(bc::BybitCache)::String = "Bybit"
+
+"""Normalize Bybit raw order status into Xch status vocabulary."""
+function normalize_order_status(bc::BybitCache, rawstatus::AbstractString)::String
+    st = lowercase(String(rawstatus))
+    if st in ["created", "new", "untriggered", "triggered", "partiallyfilled"]
+        return "submitted"
+    elseif st in ["filled"]
+        return "closed"
+    elseif st in ["cancelled", "deactivated"]
+        return "canceled"
+    elseif st in ["rejected"]
+        return "rejected"
+    end
+    return st
+end
 
 BYBIT_APIREST = "https://api.bybit.com"
 BYBIT_TESTNET_APIREST = "https://api-testnet.bybit.com"
@@ -152,6 +168,8 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
     bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    EnvConfig.setcoinspath!(exchangeid(bc))
+	EnvConfig.setpairquote!("USDT")
     if EnvConfig.configmode == EnvConfig.test
         _init_simulation!(bc)
     end

@@ -20,14 +20,7 @@ function TradingStrategy.gettradesrow!(
     empty!(TEST_RECONCILIATION_BY_BASE)
     empty!(TEST_PREPARE_CALLS)
     basekey = uppercase(String(base))
-    Xch.ensuretradesschema(
-        xc,
-        vcat(
-            Xch.tradesdf_contributors(),
-            TradingStrategy.tradesdf_contributors(),
-            Trade.tradesdf_contributors(),
-        ),
-    )
+    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
     row = findfirst(r -> uppercase(String(r.base)) == basekey, TEST_ROWS)
     isnothing(row) && return nothing
 

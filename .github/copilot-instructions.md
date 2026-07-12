@@ -11,7 +11,8 @@ applyTo: '*.jl'
 - when changing a function signature also adapt the docstring accordingly
 - when changing functions of a module that are used from outside the module then increase the modules version number in Project.toml
 - avoid global variables
-- this workspace is not intended to provide general use packages. Therefore configurations are set up during init and execution logic can rely on it or shall fail fast. Do not introduce fallbacks or backward compatibility code.
+- this workspace is not intended to provide general use packages. Therefore configurations are set up during init and execution logic can rely on it or shall fail fast. 
+- do not introduce code for fallbacks or backward compatibility.
 - write comments to explain complex code
 - keep functions short and focused on a single task
 - use type annotations for function arguments and return types when appropriate
@@ -20,15 +21,22 @@ applyTo: '*.jl'
 - organize code into modules and packages for better maintainability
 - the following workspace local packages should be maintained and build the architecture of CryptoTimeSeries:
     - EnvConfig - for environment configuration management and utilities (e.g., loading environment variables, managing configuration files). It is not dependent from other packages of the workspace
-    - Xch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project and provides also a simulation mode that uses historic OHLCV (open, close high, low, volume) data. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
+    - Xch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
+      - It maintains trades dataframes per trading pair, which is serves as a common dashboard per minute for Xch, Trade, and TradingStrategy. 
+      - Only one order shall be open at a time for a trading pair. If an open trading request is issued, the opposite trading position shall be first closed, which shall be handled asynchronously per adapter websocket handling to avoid waiting for the minute trade loop.
+      - Only the available amount of equity shall be used for trading or any maxium budget constraint whatever is lower.
+      - Leverages for futures and margin trading are defined in exchange specific configuration files and are static. 
+      - Also defined in exchange specific configuration files is the maximum order size, which will be translated into an iceberg order sequence of maximum size orders if a Trade order exceeds such exchange specific maximum order size.
+    - Bybit- Is used for getting market data, cached history data and simulation of Bybit trading. Quote coin is USDC.
+    - KrakenSpot - Is used for spot trading of long positions and margin trading of short positions. Quote coin is USD.
+    - KrakenFutures - Is used for futures trading of long and short positions. Quote coin is USD.
     - Ohlcv - for handling OHLCV data structures and related utilities 
     - Features - for features calculation used to train tading signals 
     - Targets - for target calculation used to train trading signals 
     - TestOhlcv - for artificial OHLCV data generation and testing utilities
     - Classify - to train and infer trading signals.
-    - Trade - for trade execution and asset risk management
-    - Assets - for bookkeeping of trades and asset management
-    - TradingStrategy - is providing trade actions to optimize the gain of buy and sell actions. It uses Classify
+    - Trade - for asset allocation to trade execution request and asset risk management
+    - TradingStrategy - is providing trade actions advice to optimize the gain of buy and sell actions. It uses Classify
 - CryptoTimeSeries - the main workspace that ties everything together and provides high-level functionality
 - CryptoTimeSeries/scripts - folder that provides scripts that use all of the above packages to implement the full trading pipeline  but no other program or script is dependent on them
 - use `Pkg` for managing dependencies

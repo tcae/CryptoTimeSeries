@@ -22,10 +22,7 @@ function init_trade_columns!(tdf::DataFrame)
 end
 
 function init_strategy_columns!(tdf::DataFrame)
-    for contributor in Xch.tradesdf_contributors()
-        contributor(tdf)
-    end
-    for contributor in TradingStrategy.tradesdf_contributors()
+    for contributor in Xch.tradesdf_all_contributors()
         contributor(tdf)
     end
     init_trade_columns!(tdf)

@@ -9,7 +9,8 @@ using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
 using XchAdapter: XchAdapterCache
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
+import XchAdapter: normalize_order_status
 import Ohlcv: intervalperiod
 
 const authorization = Ref{Any}(nothing)
@@ -37,21 +38,6 @@ const EXCHANGE_BYBITSIM::String = "BybitSim"
 const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
 const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
 
-"Return the EnvConfig coin-folder token for one canonical exchange name."
-function _coinsfoldertoken(exchange::AbstractString)::String
-    ex = String(exchange)
-    if ex == EXCHANGE_BYBITSIM
-        return "bybit"
-    end
-    return lowercase(replace(ex, r"[^A-Za-z0-9]+" => ""))
-end
-
-"Return the canonical exchange data-folder token used for hard-cutover paths."
-function _exchangefoldertoken(exchange::AbstractString)::String
-    ex = String(exchange)
-    return ex == EXCHANGE_BYBITSIM ? EXCHANGE_BYBIT : ex
-end
-
 "Return the default quote coin for one canonical exchange."
 function _defaultquote(exchange::AbstractString)::String
     ex = String(exchange)
@@ -61,95 +47,6 @@ function _defaultquote(exchange::AbstractString)::String
         return "USDC"
     end
     return "USDT"
-end
-
-"""
-Normalize exchange-specific order status to Xch order state (none, submitted, closed, canceled, rejected).
-
-
-| Xch | Bybit | Kraken Spot | Kraken Futures |
-|---|---|---|---|
-| none | no order | no order | no order |
-| submitted | Created | — | — |
-| submitted | New, Untriggered | open | open |
-| submitted | Triggered | — | — |
-| submitted | PartiallyFilled | open (with partial fill) | open (with partial fill) |
-| closed | Filled | closed | filled |
-| canceled | Cancelled, Deactivated | canceled | canceled |
-| rejected | — | expired | — |
-| rejected | Rejected | — | rejected |
-"""
-function normalize_order_status(exchange::AbstractString, rawstatus::AbstractString)::String
-    ex = String(exchange)
-    st = lowercase(String(rawstatus))
-    
-    if ex == EXCHANGE_BYBIT || ex == EXCHANGE_BYBITSIM
-        # Bybit: created, new, untriggered, triggered, partiallyfilled, filled, cancelled, deactivated, rejected
-        if st in ["created", "new", "untriggered", "triggered", "partiallyfilled"]
-            return "submitted"
-        elseif st in ["filled"]
-            return "closed"
-        elseif st in ["cancelled", "deactivated"]
-            return "canceled"
-        elseif st in ["rejected"]
-            return "rejected"
-        end
-    elseif ex == EXCHANGE_KRAKENSPOT
-        # Kraken Spot: open, new, untouched, partial, partiallyfilled, partially_filled, filled, closed, cancelled, canceled, expired, rejected, cancel_reject, error
-        if st in ["open", "new", "untouched"]
-            return "submitted"
-        elseif st in ["filled", "closed"]
-            return "closed"
-        elseif st in ["cancelled", "canceled"]
-            return "canceled"
-        elseif st in ["expired", "rejected", "cancel_reject", "error"]
-            return "rejected"
-        end
-    elseif ex == EXCHANGE_KRAKENFUTURES
-        # Kraken Futures: untouched, open, new, partiallyfilled, partial, partially_filled, filled, closed, cancelled, canceled, rejected
-        if st in ["untouched", "open", "new"]
-            return "submitted"
-        elseif st in ["filled", "closed"]
-            return "closed"
-        elseif st in ["cancelled", "canceled"]
-            return "canceled"
-        elseif st in ["rejected"]
-            return "rejected"
-        end
-    end
-    
-    # Fallback for unknown exchange or status
-    return lowercase(st)
-end
-
-"Return true when the given coin-root folder exists under the trading folder."
-function _coinrootexists(foldername::AbstractString)::Bool
-    return isdir(normpath(joinpath(EnvConfig.tradingfolder, String(foldername))))
-end
-
-"Update EnvConfig coin root to the canonical exchange-specific path."
-function _setexchangepath!(xc)::String
-    canonical = _exchangefoldertoken(exchange(xc))
-    return EnvConfig.setcoinspath!(canonical)
-end
-
-function _authfromname(exchange::AbstractString)
-    ex = String(exchange)
-    # Kraken adapters require exchange-specific credentials and should always
-    # resolve auth tuples constrained by exchange.
-    if ex == EXCHANGE_KRAKENSPOT || ex == EXCHANGE_KRAKENFUTURES
-        return Authentication(nothing; exchange=ex)
-    elseif ex == EXCHANGE_BYBIT
-        # Bybit keeps one optional global auth tuple resolved once per process.
-        if isnothing(authorization[])
-            try
-                setauthorization!(nothing)
-            catch
-            end
-        end
-        return authorization[]
-    end
-    return nothing
 end
 
 """
@@ -169,30 +66,23 @@ function log_private_call_summary!(xc)
     return nothing
 end
 
-_rawcache(ac::XchAdapterCache) = rawcache(ac)
-
 mutable struct XchCache
     bases  # ::Dict{String, Ohlcv.OhlcvData}
     pairstates::Dict{String, DataFrame}  # keyed by canonical trading pair, stores phase-2 Trades DataFrames
     bc::XchAdapterCache  # typed adapter cache wrapper
-    exchange::String
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mc::Dict # MC = module constants
     tradesrowtemplate::DataFrame  # single-row default template used when appending new Trades rows
-    function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, defaultquote::Union{Nothing, AbstractString}=nothing)
+    function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
         exchange = exchangeid(bc)
-        dq = isnothing(defaultquote) ? _defaultquote(exchange) : uppercase(String(defaultquote))
-        xc = new(Dict(), Dict{String, DataFrame}(), bc, exchange, startdt, nothing, enddt, Dict(), DataFrame())
-        EnvConfig.setpairquote!(dq)
-        xc.mc[:trades_v1_required_columns] = TRADES_V1_REQUIRED_COLUMNS
+        xc = new(Dict(), Dict{String, DataFrame}(), bc, startdt, nothing, enddt, Dict(), DataFrame())
         xc.tradesrowtemplate = _buildtradesrowtemplate(xc)
-        _setexchangepath!(xc)
-        syminfodf = if hasproperty(_rawcache(xc.bc), :syminfodf)
-            getproperty(_rawcache(xc.bc), :syminfodf)
+        syminfodf = if hasproperty(rawcache(xc.bc), :syminfodf)
+            getproperty(rawcache(xc.bc), :syminfodf)
         else
             nothing
         end
@@ -216,29 +106,20 @@ mutable struct XchCache
 end
 
 function _adaptercache(exchange::AbstractString)::XchAdapterCache
-    ex = String(exchange)
-    if ex == EXCHANGE_BYBITSIM
-        bc = Bybit.BybitSimCache()
-        if isnothing(_rawcache(bc).assets)
-            Bybit.seedportfolio!(bc, EnvConfig.pairquote, 0f0)
-        end
-        return bc
-    elseif ex == EXCHANGE_BYBIT
-        bc = Bybit.BybitCache()
-        bc.assets = nothing
-        bc.orders = nothing
-        bc.closedorders = nothing
-        return bc
-    elseif ex == EXCHANGE_KRAKENSPOT
+    if exchange == EXCHANGE_BYBITSIM
+        return Bybit.BybitSimCache()
+    elseif exchange == EXCHANGE_BYBIT
+        return Bybit.BybitCache()
+    elseif exchange == EXCHANGE_KRAKENSPOT
         return KrakenSpot.KrakenSpotCache()
-    elseif ex == EXCHANGE_KRAKENFUTURES
+    elseif exchange == EXCHANGE_KRAKENFUTURES
         return KrakenFutures.KrakenFuturesCache()
     end
     throw(ArgumentError("unsupported exchange=$(exchange), expected one of $(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_KRAKENSPOT), $(EXCHANGE_KRAKENFUTURES)"))
 end
 
-function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, mnemonic=nothing, defaultquote::Union{Nothing, AbstractString}=nothing, exchange::AbstractString=EXCHANGE_BYBITSIM)
-    return XchCache(_adaptercache(exchange); startdt=startdt, enddt=enddt, mnemonic=mnemonic, defaultquote=defaultquote)
+function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, exchange::AbstractString=EXCHANGE_KRAKENSPOT)::XchCache
+    return XchCache(_adaptercache(exchange); startdt=startdt, enddt=enddt)
 end
 
 exchange(xc::XchCache)::String = exchangeid(xc.bc)
@@ -282,443 +163,12 @@ function hastrades(xc::XchCache, base::AbstractString, quotecoin::AbstractString
     return hastrades(xc, tradingpairkey(base, quotecoin))
 end
 
-"""Ensure Trades column `label` exists. Owner: Xch. Eltype: `TradeLabel` with `ignore` as the default. Note: Trade direction signal label used by order placement and status reconciliation."""
-function tradesdf_label(df::DataFrame)::DataFrame
-    if :label ∉ propertynames(df)
-        df[!, :label] = fill(Targets.ignore, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestamp derived from sample data."""
-function tradesdf_opentime(df::DataFrame)::DataFrame
-    if :opentime ∉ propertynames(df)
-        df[!, :opentime] = DateTime[]
-    end
-    return df
-end
-
-"""Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: Timestamp of the last open-trade event for the pair while `lp_amount > 0f0` or `sp_amount > 0f0`; otherwise `missing`."""
-function tradesdf_lastopentrade(df::DataFrame)::DataFrame
-    if :lastopentrade ∉ propertynames(df)
-        df[!, :lastopentrade] = Vector{Union{Missing, DateTime}}(missing, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Required identity/routing column of the trading pair used by Xch."""
-function tradesdf_pair(df::DataFrame)::DataFrame
-    if :pair ∉ propertynames(df)
-        df[!, :pair] = CategoricalVector(fill("none", nrow(df)))
-    end
-    return df
-end
-
 const NO_ORDER_ID = "none"
 const NO_ORDER_MSG = "none"
 
 @inline _normalized_order_msg(v)::String = begin
     s = ismissing(v) ? "" : strip(String(v))
     return (isempty(s) || lowercase(s) == "none") ? NO_ORDER_MSG : s
-end
-
-# Long-Open order lane (lo_)
-"""Ensure Trades column `lo_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
-function tradesdf_lo_id(df::DataFrame)::DataFrame
-    if :lo_id ∉ propertynames(df)
-        df[!, :lo_id] = CategoricalVector(fill(NO_ORDER_ID, nrow(df)))
-    end
-    return df
-end
-
-"""Ensure Trades column `lo_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states (mapping via normalize_order_status): none, submitted, closed, canceled, rejected."""
-function tradesdf_lo_status(df::DataFrame)::DataFrame
-    status_levels = ["none", "submitted", "closed", "canceled", "rejected"]
-    if :lo_status ∉ propertynames(df)
-        df[!, :lo_status] = CategoricalVector(fill("none", nrow(df)); levels=status_levels)
-    end
-    return df
-end
-
-"""Ensure Trades column `lo_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function tradesdf_lo_filled(df::DataFrame)::DataFrame
-    if :lo_filled ∉ propertynames(df)
-        df[!, :lo_filled] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `lo_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function tradesdf_lo_pavg(df::DataFrame)::DataFrame
-    if :lo_pavg ∉ propertynames(df)
-        df[!, :lo_pavg] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `lo_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
-function tradesdf_lo_msg(df::DataFrame)::DataFrame
-    if :lo_msg ∉ propertynames(df)
-        df[!, :lo_msg] = CategoricalVector(fill(NO_ORDER_MSG, nrow(df)))
-    end
-    return df
-end
-
-# Long-Close order lane (lc_)
-"""Ensure Trades column `lc_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
-function tradesdf_lc_id(df::DataFrame)::DataFrame
-    if :lc_id ∉ propertynames(df)
-        df[!, :lc_id] = CategoricalVector(fill(NO_ORDER_ID, nrow(df)))
-    end
-    return df
-end
-
-"""Ensure Trades column `lc_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states (mapping via normalize_order_status): none, submitted, closed, canceled, rejected."""
-function tradesdf_lc_status(df::DataFrame)::DataFrame
-    status_levels = ["none", "submitted", "closed", "canceled", "rejected"]
-    if :lc_status ∉ propertynames(df)
-        df[!, :lc_status] = CategoricalVector(fill("none", nrow(df)); levels=status_levels)
-    end
-    return df
-end
-
-"""Ensure Trades column `lc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function tradesdf_lc_filled(df::DataFrame)::DataFrame
-    if :lc_filled ∉ propertynames(df)
-        df[!, :lc_filled] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `lc_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function tradesdf_lc_pavg(df::DataFrame)::DataFrame
-    if :lc_pavg ∉ propertynames(df)
-        df[!, :lc_pavg] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `lc_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
-function tradesdf_lc_msg(df::DataFrame)::DataFrame
-    if :lc_msg ∉ propertynames(df)
-        df[!, :lc_msg] = CategoricalVector(fill(NO_ORDER_MSG, nrow(df)))
-    end
-    return df
-end
-
-# Short-Open order lane (so_)
-"""Ensure Trades column `so_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
-function tradesdf_so_id(df::DataFrame)::DataFrame
-    if :so_id ∉ propertynames(df)
-        df[!, :so_id] = CategoricalVector(fill(NO_ORDER_ID, nrow(df)))
-    end
-    return df
-end
-
-"""Ensure Trades column `so_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states (mapping via normalize_order_status): none, submitted, closed, canceled, rejected."""
-function tradesdf_so_status(df::DataFrame)::DataFrame
-    status_levels = ["none", "submitted", "closed", "canceled", "rejected"]
-    if :so_status ∉ propertynames(df)
-        df[!, :so_status] = CategoricalVector(fill("none", nrow(df)); levels=status_levels)
-    end
-    return df
-end
-
-"""Ensure Trades column `so_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function tradesdf_so_filled(df::DataFrame)::DataFrame
-    if :so_filled ∉ propertynames(df)
-        df[!, :so_filled] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `so_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function tradesdf_so_pavg(df::DataFrame)::DataFrame
-    if :so_pavg ∉ propertynames(df)
-        df[!, :so_pavg] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `so_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
-function tradesdf_so_msg(df::DataFrame)::DataFrame
-    if :so_msg ∉ propertynames(df)
-        df[!, :so_msg] = CategoricalVector(fill(NO_ORDER_MSG, nrow(df)))
-    end
-    return df
-end
-
-# Short-Close order lane (sc_)
-"""Ensure Trades column `sc_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
-function tradesdf_sc_id(df::DataFrame)::DataFrame
-    if :sc_id ∉ propertynames(df)
-        df[!, :sc_id] = CategoricalVector(fill(NO_ORDER_ID, nrow(df)))
-    end
-    return df
-end
-
-"""Ensure Trades column `sc_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states (mapping via normalize_order_status): none, submitted, closed, canceled, rejected."""
-function tradesdf_sc_status(df::DataFrame)::DataFrame
-    status_levels = ["none", "submitted", "closed", "canceled", "rejected"]
-    if :sc_status ∉ propertynames(df)
-        df[!, :sc_status] = CategoricalVector(fill("none", nrow(df)); levels=status_levels)
-    end
-    return df
-end
-
-"""Ensure Trades column `sc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function tradesdf_sc_filled(df::DataFrame)::DataFrame
-    if :sc_filled ∉ propertynames(df)
-        df[!, :sc_filled] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `sc_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function tradesdf_sc_pavg(df::DataFrame)::DataFrame
-    if :sc_pavg ∉ propertynames(df)
-        df[!, :sc_pavg] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `sc_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
-function tradesdf_sc_msg(df::DataFrame)::DataFrame
-    if :sc_msg ∉ propertynames(df)
-        df[!, :sc_msg] = CategoricalVector(fill(NO_ORDER_MSG, nrow(df)))
-    end
-    return df
-end
-
-"""Ensure Trades column `lp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Long position amount snapshot for the trading pair."""
-function tradesdf_lp_amount(df::DataFrame)::DataFrame
-    if :lp_amount ∉ propertynames(df)
-        df[!, :lp_amount] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `sp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Short position amount snapshot for the trading pair."""
-function tradesdf_sp_amount(df::DataFrame)::DataFrame
-    if :sp_amount ∉ propertynames(df)
-        df[!, :sp_amount] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `close` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Close price of OHLCV sample for the trading pair."""
-function tradesdf_close(df::DataFrame)::DataFrame
-    if :close ∉ propertynames(df)
-        df[!, :close] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `high` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: High price of OHLCV sample for the trading pair."""
-function tradesdf_high(df::DataFrame)::DataFrame
-    if :high ∉ propertynames(df)
-        df[!, :high] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `low` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Low price of OHLCV sample for the trading pair."""
-function tradesdf_low(df::DataFrame)::DataFrame
-    if :low ∉ propertynames(df)
-        df[!, :low] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `maintmargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Maintenance margin of position."""
-function tradesdf_maintmargin(df::DataFrame)::DataFrame
-    if :maintmargin ∉ propertynames(df)
-        df[!, :maintmargin] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `equity` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account equity amount of trading pair base."""
-function tradesdf_equity(df::DataFrame)::DataFrame
-    if :equity ∉ propertynames(df)
-        df[!, :equity] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `balance` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account balance amount of trading pair base."""
-function tradesdf_balance(df::DataFrame)::DataFrame
-    if :balance ∉ propertynames(df)
-        df[!, :balance] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `freemargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free margin amount of trading pair base."""
-function tradesdf_freemargin(df::DataFrame)::DataFrame
-    if :freemargin ∉ propertynames(df)
-        df[!, :freemargin] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Ensure Trades column `freequote` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free quote amount of trading pair base."""
-function tradesdf_freequote(df::DataFrame)::DataFrame
-    if :freequote ∉ propertynames(df)
-        df[!, :freequote] = fill(0f0, nrow(df))
-    end
-    return df
-end
-
-"""Return Xch-owned Trades column contributor functions."""
-function tradesdf_contributors()::Vector{Function}
-    return Function[
-        tradesdf_opentime,
-        tradesdf_lastopentrade,
-        tradesdf_pair,
-        tradesdf_label,
-        tradesdf_lo_id,
-        tradesdf_lo_status,
-        tradesdf_lo_filled,
-        tradesdf_lo_pavg,
-        tradesdf_lo_msg,
-        tradesdf_lc_id,
-        tradesdf_lc_status,
-        tradesdf_lc_filled,
-        tradesdf_lc_pavg,
-        tradesdf_lc_msg,
-        tradesdf_so_id,
-        tradesdf_so_status,
-        tradesdf_so_filled,
-        tradesdf_so_pavg,
-        tradesdf_so_msg,
-        tradesdf_sc_id,
-        tradesdf_sc_status,
-        tradesdf_sc_filled,
-        tradesdf_sc_pavg,
-        tradesdf_sc_msg,
-        tradesdf_lp_amount,
-        tradesdf_sp_amount,
-        tradesdf_close,
-        tradesdf_high,
-        tradesdf_low,
-        tradesdf_maintmargin,
-        tradesdf_equity,
-        tradesdf_balance,
-        tradesdf_freemargin,
-        tradesdf_freequote,
-    ]
-end
-
-const TRADES_V1_REQUIRED_COLUMNS = (
-    :opentime, :lastopentrade, :pair, :label,
-    :lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg,
-    :lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg,
-    :so_id, :so_status, :so_filled, :so_pavg, :so_msg,
-    :sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg,
-    :lp_amount, :sp_amount, :close, :high, :low, :maintmargin,
-    :equity, :balance, :freemargin, :freequote,
-)
-
-function _asserttradesv1schema(df::DataFrame)::Nothing
-    present = Set(Symbol.(names(df)))
-    missing = [c for c in TRADES_V1_REQUIRED_COLUMNS if !(c in present)]
-    isempty(missing) || throw(ArgumentError("trades dataframe violates v1 schema contract; missing columns=$(missing), names=$(names(df))"))
-    return nothing
-end
-
-function _tradescontributors(xc::XchCache)::Vector{Function}
-    if !haskey(xc.mc, :trades_schema_contributors)
-        xc.mc[:trades_schema_contributors] = copy(tradesdf_contributors())
-    end
-    return xc.mc[:trades_schema_contributors]
-end
-
-function _applytradescontributors!(xc::XchCache, df::DataFrame)::DataFrame
-    for contributor in _tradescontributors(xc)
-        contributor(df)
-    end
-    return df
-end
-
-"Build a one-row Trades template initialized via registered schema contributors."
-function _buildtradesrowtemplate(xc::XchCache)::DataFrame
-    template = DataFrame(opentime=[DateTime(1970, 1, 1)])
-    _applytradescontributors!(xc, template)
-    if :pair in propertynames(template)
-        template[1, :pair] = "none"
-    end
-    return template
-end
-
-"Refresh and return the cached one-row Trades template for default row appends."
-function _tradesrowtemplate!(xc::XchCache)::DataFrame
-    if nrow(xc.tradesrowtemplate) != 1
-        xc.tradesrowtemplate = _buildtradesrowtemplate(xc)
-    else
-        _applytradescontributors!(xc, xc.tradesrowtemplate)
-    end
-    return xc.tradesrowtemplate
-end
-
-"Append one default-initialized Trades row and return its index."
-function _appendtradesrow!(xc::XchCache, tdf::DataFrame, pairkey::AbstractString, opentime::DateTime)::Int
-    _applytradescontributors!(xc, tdf)
-    rowdf = DataFrame(_tradesrowtemplate!(xc); copycols=true)
-    rowdf[1, :opentime] = opentime
-    if :pair in propertynames(rowdf)
-        rowdf[1, :pair] = uppercase(String(pairkey))
-    end
-    append!(tdf, rowdf; cols=:subset)
-    return nrow(tdf)
-end
-
-"""
-    ensuretradesschema(xc, contributors)
-
-Register contributor column-initializer functions used to materialize Trades
-columns at dataframe creation/ingestion time.
-"""
-function ensuretradesschema(xc::XchCache, contributors)::XchCache
-    xc.mc[:trades_schema_contributors] = Function[contributors...]
-    for pair in keys(xc.pairstates)
-        _applytradescontributors!(xc, xc.pairstates[pair])
-    end
-    xc.tradesrowtemplate = _buildtradesrowtemplate(xc)
-    return xc
-end
-
-"""
-    _ensuretradesv1schema(df)
-
-Backfill required Trades v1 identity/time columns when missing, which is only :opentime
-"""
-function _ensuretradesv1schema(df::DataFrame)::DataFrame
-    cols = Set(Symbol.(names(df)))
-    if !(:opentime in cols)
-        if nrow(df) == 0
-            df[!, :opentime] = DateTime[]
-        else
-            throw(ArgumentError("settrades! requires :opentime for non-empty trades dataframes; names=$(names(df))"))
-        end
-    end
-    tradesdf_opentime(df)
-    return df
-end
-
-"""
-    _emptytradesv1df()
-
-Return an empty Trades DataFrame initialized with Xch-owned columns.
-Contributor columns from higher-level modules are materialized via
-`ensuretradesschema` when attached to an `XchCache`.
-"""
-function _emptytradesv1df()::DataFrame
-    df = DataFrame(opentime=DateTime[])
-    for contributor in tradesdf_contributors()
-        contributor(df)
-    end
-    return df
 end
 
 """
@@ -749,7 +199,6 @@ end
 Store `df` as the Phase 2 Trades DataFrame for `pair` and return the cache.
 """
 function settrades!(xc::XchCache, pair::AbstractString, df::AbstractDataFrame)
-    normalized = _ensuretradesv1schema(DataFrame(df))
     _applytradescontributors!(xc, normalized)
     pairkey = uppercase(String(pair))
     basekey = try
@@ -771,10 +220,9 @@ Store `df` as the Phase 2 Trades DataFrame for one `(base, quotecoin)` pair.
 function settrades!(xc::XchCache, base::AbstractString, quotecoin::AbstractString, df::AbstractDataFrame)
     pairkey = tradingpairkey(base, quotecoin)
     basekey = uppercase(String(base))
-    normalized = _ensuretradesv1schema(DataFrame(df))
-    _applytradescontributors!(xc, normalized)
-    _ensuretradesidentity!(normalized, pairkey; basekey=basekey)
-    xc.pairstates[pairkey] = normalized
+    _applytradescontributors!(xc, df)
+    _ensuretradesidentity!(df, pairkey; basekey=basekey)
+    xc.pairstates[pairkey] = df
     return xc
 end
 
@@ -942,29 +390,38 @@ function _refreshwsstreams!(xc::XchCache)
 end
 
 
+function _ensurewsorders!(xc::XchCache)
+    _ = ws_orders(xc.bc)
+    return nothing
+end
+
+function _ensurewsbalances!(xc::XchCache)
+    _ = ws_balances(xc.bc)
+    return nothing
+end
+
+
 
 "Return latest adapter websocket order snapshot (canonical normalized open-order rows when available)."
 function wsordersnapshot(xc::XchCache)::DataFrame
-    # Deprecated: WebSocket snapshots no longer available via routing layer
-    return DataFrame()
+    snapshot = wsorderssnapshot(xc.bc)
+    return isnothing(snapshot) ? DataFrame() : DataFrame(snapshot; copycols=true)
 end
 
 "Return latest adapter websocket balances snapshot (canonical normalized balance rows when available)."
 function wsbalancessnapshot(xc::XchCache)::DataFrame
-    # Deprecated: WebSocket snapshots no longer available via routing layer
-    return DataFrame()
+    snapshot = wsbalancessnapshot(xc.bc)
+    return isnothing(snapshot) ? DataFrame() : DataFrame(snapshot; copycols=true)
 end
 
 "Return latest adapter websocket order heartbeat timestamp when available."
 function wsordersheartbeat(xc::XchCache)
-    # Deprecated: WebSocket heartbeats no longer available via routing layer
-    return nothing
+    return wsordersheartbeat(xc.bc)
 end
 
 "Return latest adapter websocket balances heartbeat timestamp when available."
 function wsbalancesheartbeat(xc::XchCache)
-    # Deprecated: WebSocket heartbeats no longer available via routing layer
-    return nothing
+    return wsbalancesheartbeat(xc.bc)
 end
 
 """
@@ -998,7 +455,7 @@ Falls back to the local cache when no live connection is available (sim mode).
 """
 function _exchangesymbolinfo(xc::XchCache, symbol)
     symbol = uppercase(string(symbol))
-    bc = _rawcache(xc.bc)
+    bc = rawcache(xc.bc)
     if !isnothing(bc)
         row = symbolinfo(xc.bc, symbol)
         if !isnothing(row)
@@ -1021,10 +478,6 @@ function _exchangesymbolinfo(xc::XchCache, symbol)
     end
     # No live connection (bybitsim mode) — use cached info
     return get(_syminfocache(xc), symbol, nothing)
-end
-
-function _exchangeaccountcapacity(xc::XchCache)
-    return accountcapacity(xc.bc)
 end
 
 function _orderfield(orderinfo, field::Symbol)
@@ -1235,7 +688,7 @@ Resolve the exchange-specific symbol token for a pair on the primary exchange.
 Falls back to a concatenated symbol if the adapter cannot map the pair yet.
 """
 function symboltoken(xc::XchCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)
-    bc = _rawcache(xc.bc)
+    bc = rawcache(xc.bc)
     if isnothing(bc)
         return symboltoken(basecoin, quotecoin)
     end
@@ -1244,7 +697,7 @@ end
 
 "Return side-specific margin leverage caps for one symbol when supported by the primary exchange."
 function marginlimits(xc::XchCache, symbol::AbstractString)
-    bc = _rawcache(xc.bc)
+    bc = rawcache(xc.bc)
     isnothing(bc) && return (maxleveragebuy=0, maxleveragesell=0)
     return marginlimits(xc.bc, symbol)
 end
@@ -1252,7 +705,7 @@ end
 "Return true when primary exchange metadata permits side/leverage for one symbol."
 function marginpermitted(xc::XchCache, symbol::AbstractString, orderside::AbstractString, marginleverage::Signed)::Bool
     marginleverage <= 0 && return true
-    bc = _rawcache(xc.bc)
+    bc = rawcache(xc.bc)
     isnothing(bc) && return false
     return marginpermitted(xc.bc, symbol, orderside, marginleverage)
 end
@@ -1363,10 +816,6 @@ function _sleepuntil(xc::XchCache, dt::DateTime)
     sleep(sleepperiod)
 end
 
-function _fetchwsclosedkline(xc::XchCache, symbol::AbstractString, interval::AbstractString)
-    return wsclosedkline(xc.bc, symbol, interval)
-end
-
 function _upsert_closed_wscandle!(ohlcv, candle)
     isnothing(candle) && return nothing
     df = Ohlcv.dataframe(ohlcv)
@@ -1398,17 +847,6 @@ function _upsert_closed_wscandle!(ohlcv, candle)
     return nothing
 end
 
-function _applywsclosedcandle!(xc::XchCache, ohlcv, dt::DateTime)
-    sym = symboltoken(xc, ohlcv.base, ohlcv.quotecoin)
-    candle = _fetchwsclosedkline(xc, sym, ohlcv.interval)
-    isnothing(candle) && return nothing
-    cutoff = dt - intervalperiod(ohlcv.interval)
-    if floor(DateTime(candle.opentime), Minute(1)) <= cutoff
-        _upsert_closed_wscandle!(ohlcv, candle)
-    end
-    return nothing
-end
-
 "Sleeps until `datetime` if reached if `datetime` is in the future, set the *current* time and updates ohlcv if required"
 function setcurrenttime!(xc::XchCache, base, datetime::DateTime)
     dt = floor(datetime, Minute(1))
@@ -1423,7 +861,6 @@ function setcurrenttime!(xc::XchCache, base, datetime::DateTime)
         xc.bases[base] = ohlcv = cryptodownload(xc, base, "1m", dt, dt)
         ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
     end
-    _applywsclosedcandle!(xc, ohlcv, dt)
     Ohlcv.setix!(ohlcv, Ohlcv.rowix(ohlcv, dt))
     if (length(ot) > 0) && (ot[begin] <= dt <= ot[end]) && (ot[Ohlcv.ix(ohlcv)] != dt)
         if (verbosity >= 1) && (EnvConfig.configmode == production)
@@ -1443,7 +880,7 @@ function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
     end
 
     xc.currentdt = datetime
-    _setsimtime!(_rawcache(xc.bc), datetime)
+    _setsimtime!(rawcache(xc.bc), datetime)
     if !isnothing(datetime)
         for base in keys(xc.bases)
             try
@@ -1873,7 +1310,7 @@ function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::I
     end
 
     snapshot = try
-        _exchangeaccountcapacity(xc)
+        accountcapacity(xc.bc)
     catch err
         (verbosity >= 1) && @warn "accountcapacity: exchange snapshot failed, using fallback" exchange=exchange(xc) error=sprint(showerror, err)
         nothing
@@ -1893,11 +1330,11 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
     assetsdf = portfolio!(xc, balancesdf; ignoresmallvolume=false)
     capacity = accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
     quotecoin = uppercase(String(EnvConfig.pairquote))
-    free_quote = 0.0
+    freequote = 0.0
     if (:coin in names(assetsdf)) && (:free in names(assetsdf))
         for row in eachrow(assetsdf)
             if uppercase(String(row.coin)) == quotecoin
-                free_quote += max(0.0, (row.free))
+                freequote += max(0.0, (row.free))
             end
         end
     end
@@ -1906,7 +1343,7 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
         assets=assetsdf,
         capacity=capacity,
         equity_quote=capacity.equity_quote,
-        free_quote=free_quote,
+        free_quote=freequote,
         free_margin_quote=capacity.available_opening_quote,
         maintenance_margin_quote=capacity.maintenance_margin_quote,
     )
@@ -1916,8 +1353,6 @@ end
 order_status(xc::XchCache, orderid; auditevent::Bool=true) = getorder(xc, orderid; auditevent=auditevent)
 
 _hascol(df::DataFrame, col::Symbol) = col in propertynames(df)
-
-_ensuretradesexecutioncolumns!(tradesdf::DataFrame)::DataFrame = _ensuretradesv1schema(tradesdf)
 
 function _pairfromtradesrow(tradesdf::DataFrame, ix::Integer)
     pair = String(tradesdf[ix, :pair])
@@ -1979,16 +1414,16 @@ end
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
     logged = log_trading_issue(xc, "Trading", message)
     if action == :long_open
-        tradesdf[ix, :lo_status] = "Rejected"
+        tradesdf[ix, :lo_status] = "rejected"
         tradesdf[ix, :lo_msg] = logged
     elseif action == :long_close
-        tradesdf[ix, :lc_status] = "Rejected"
+        tradesdf[ix, :lc_status] = "rejected"
         tradesdf[ix, :lc_msg] = logged
     elseif action == :short_open
-        tradesdf[ix, :so_status] = "Rejected"
+        tradesdf[ix, :so_status] = "rejected"
         tradesdf[ix, :so_msg] = logged
     else
-        tradesdf[ix, :sc_status] = "Rejected"
+        tradesdf[ix, :sc_status] = "rejected"
         tradesdf[ix, :sc_msg] = logged
     end
     return logged
@@ -2043,10 +1478,11 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         (lowercase(strip(oids)) == NO_ORDER_ID || isempty(strip(oids))) && continue
         info = getorder(xc, String(oid); auditevent=auditevent)
         if isnothing(info)
-            tradesdf[ix, stcol] = "Missing"
+            tradesdf[ix, stcol] = "none"
             continue
         end
-        status = hasproperty(info, :status) ? String(info.status) : "Unknown"
+        rawstatus = hasproperty(info, :status) ? String(info.status) : "unknown"
+        status = normalize_order_status(xc.bc, rawstatus)
         tradesdf[ix, stcol] = status
         if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
             executed = (info.executedqty)
@@ -2276,7 +1712,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
                 else
                     closeoid = String(closeoid)
                     tradesdf[ix, flip.close_id_col] = closeoid
-                    tradesdf[ix, flip.close_status_col] = "Submitted"
+                    tradesdf[ix, flip.close_status_col] = "submitted"
                 end
             end
 
@@ -2289,7 +1725,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             end
             oid = String(oid)
             tradesdf[ix, idcol] = oid
-            tradesdf[ix, stcol] = "Submitted"
+            tradesdf[ix, stcol] = "submitted"
             if flip.needed
                 _ = directsequence!(xc.bc, closeoid, oid)
             end
@@ -2301,7 +1737,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
                 return (accepted=false, action=action, reason="missing_orderid")
             end
             tradesdf[ix, idcol] = String(oid)
-            tradesdf[ix, stcol] = "Submitted"
+            tradesdf[ix, stcol] = "submitted"
         elseif action == :short_close
             existing_closeid = (tradesdf[ix, idcol] == NO_ORDER_ID) || (tradesdf[ix, idcol] == "") ? nothing : tradesdf[ix, idcol]
             oid = upsertcloseorder!(xc.bc, pair, :short, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
@@ -2310,7 +1746,9 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
                 return (accepted=false, action=action, reason="missing_orderid")
             end
             tradesdf[ix, idcol] = String(oid)
-            tradesdf[ix, stcol] = "Submitted"
+            tradesdf[ix, stcol] = "submitted"
+        else # no action
+            return (accepted=true, action=action, reason="no_action")
         end
     catch err
         logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
@@ -2333,14 +1771,13 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     return (accepted=true, action=action, orderid=oid)
 end
 
-"Returns a DataFrame[:coin, :locked, :free, :borrowed, :accruedinterest] of wallet/portfolio balances"
-function balances(xc::XchCache; ignoresmallvolume=true)
+function _adapterbalances(xc::XchCache)::DataFrame
     bdf = balances(xc.bc)
-    if !isnothing(bdf)
-        select = [!(coin in baseignore) || (coin == EnvConfig.pairquote) for coin in bdf[!, :coin]]
-        bdf = bdf[select, :]
-    end
-    if !isnothing(bdf) && (size(bdf, 1) > 0) && ignoresmallvolume
+    return isnothing(bdf) ? DataFrame() : DataFrame(bdf; copycols=true)
+end
+
+function _filterbalances!(xc::XchCache, bdf::DataFrame; ignoresmallvolume::Bool=true)::DataFrame
+    if (size(bdf, 1) > 0) && ignoresmallvolume
         delrows = []
         for ix in eachindex(bdf[!, :coin])
             if bdf[ix, :coin] != EnvConfig.pairquote
@@ -2356,25 +1793,36 @@ function balances(xc::XchCache; ignoresmallvolume=true)
     return bdf
 end
 
+"Returns a DataFrame[:coin, :locked, :free, :borrowed, :accruedinterest] of wallet/portfolio balances"
+function balances(xc::XchCache; ignoresmallvolume=true, prefer_websocket::Bool=true)
+    use_ws_primary = prefer_websocket && _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_balances_enabled, false)
+    bdf = if use_ws_primary
+        refreshbalancessnapshot!(xc; ignoresmallvolume=false).snapshot
+    else
+        _adapterbalances(xc)
+    end
+    return _filterbalances!(xc, DataFrame(bdf; copycols=true); ignoresmallvolume=ignoresmallvolume)
+end
+
 "Capture one canonical exchange-owned balances snapshot and store it in `xc.mc`."
 function refreshbalancessnapshot!(xc::XchCache; ignoresmallvolume::Bool=false)
     use_ws_primary = _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_balances_enabled, false)
     snapshot = if use_ws_primary
+        _ensurewsbalances!(xc)
         wsb = wsbalancessnapshot(xc)
         wsdt = wsbalancesheartbeat(xc)
         if (size(wsb, 1) > 0) || !isnothing(wsdt)
             wsb
         else
             (verbosity >= 1) && @warn "ws balance snapshot unavailable; falling back to REST balances"
-            balances(xc; ignoresmallvolume=ignoresmallvolume)
+            _adapterbalances(xc)
         end
     else
-        balances(xc; ignoresmallvolume=ignoresmallvolume)
+        _adapterbalances(xc)
     end
-    if isnothing(snapshot)
-        snapshot = DataFrame()
-    end
-    xc.mc[:exchange_balances_snapshot] = deepcopy(snapshot)
+    snapshotdf = isnothing(snapshot) ? DataFrame() : DataFrame(snapshot; copycols=true)
+    _filterbalances!(xc, snapshotdf; ignoresmallvolume=ignoresmallvolume)
+    xc.mc[:exchange_balances_snapshot] = deepcopy(snapshotdf)
     xc.mc[:exchange_balances_snapshot_dt] = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
     return (snapshot=xc.mc[:exchange_balances_snapshot], datetime=xc.mc[:exchange_balances_snapshot_dt], fresh=true)
 end
@@ -2478,6 +1926,7 @@ Returns an AbstractDataFrame of open **spot** orders with columns:
 function getopenorders(xc::XchCache, base=nothing)::AbstractDataFrame
     use_ws_primary = isnothing(base) && _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_orders_enabled, false)
     oo = if use_ws_primary
+        _ensurewsorders!(xc)
         wsdf = wsordersnapshot(xc)
         wsdt = wsordersheartbeat(xc)
         if (size(wsdf, 1) > 0) || !isnothing(wsdt)
@@ -2733,7 +2182,7 @@ function _updateasset!(xc::XchCache, coin, amount)
     if !(xc.bc isa Bybit.BybitSimCache)
         throw(ArgumentError("_updateasset! requires BybitSim adapter cache for adapter-backed seeding, got $(typeof(xc.bc))"))
     end
-    bc = _rawcache(xc.bc)
+    bc = rawcache(xc.bc)
     Bybit.seedportfolio!(bc, coin, amount)
     ix = findfirst(==(uppercase(String(coin))), bc.assets[!, :coin])
     return isnothing(ix) ? nothing : bc.assets[ix, :]
@@ -2784,6 +2233,8 @@ function writeassets(xc::XchCache, dt::DateTime)
     # Assets field removed - asset snapshots are now managed externally
     return
 end
+
+include("XchTrades.jl")
 
 #endregion bookkeeping
 

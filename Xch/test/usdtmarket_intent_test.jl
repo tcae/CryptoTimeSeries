@@ -12,7 +12,7 @@ EnvConfig.setpairquote!("USDT")
     dt = DateTime("2025-05-01T12:00:00")
     xc = Xch.XchCache(startdt=dt, enddt=dt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.setcurrenttime!(xc, dt)
-    bc = Xch._rawcache(xc.bc)
+    bc = Xch.rawcache(xc.bc)
 
     if isnothing(findfirst(==("AAPLXUSDT"), bc.syminfodf[!, :symbol]))
         push!(bc.syminfodf, (

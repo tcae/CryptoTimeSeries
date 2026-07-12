@@ -1,14 +1,14 @@
 using Dates, DataFrames
-using EnvConfig, Xch
+using EnvConfig, Xch, KrakenFutures, KrakenSpot
 
 """
 Read and print balances for one exchange/auth tuple pair.
 """
-function print_balances(exchange_name::String, auth_tuple::String)
-    println("\n=== $(exchange_name) ($(auth_tuple)) ===")
+function print_balances(xc)
+    println("\n=== $(Xch.exchange(xc)) ===")
     try
-        xc = Xch.XchCache(exchange=exchange_name)
-        bdf = Xch.balances(xc)
+        # This script is a visibility probe; do not hide balances by min-qty filtering.
+        bdf = Xch.balances(xc, ignoresmallvolume=false)
         println("rows=$(size(bdf, 1)) cols=$(size(bdf, 2))")
         println(bdf)
         return bdf
@@ -21,14 +21,17 @@ end
 """
 Entry point for printing Kraken spot and futures balances.
 """
-function main()
+function mymain()
     EnvConfig.init(EnvConfig.production)
 
-    spot = print_balances(Xch.EXCHANGE_KRAKENSPOT, "krakenspot-tcae1")
-    futures = print_balances(Xch.EXCHANGE_KRAKENFUTURES, "krakenfutures-tcae2")
+    xckf = Xch.XchCache(KrakenFutures.KrakenFuturesCache())
+    futures = print_balances(xckf)
+
+    xcks = Xch.XchCache(KrakenSpot.KrakenSpotCache())
+    spot = print_balances(xcks)
 
     println("\nDone at $(Dates.now(Dates.UTC))")
     return (spot=spot, futures=futures)
 end
 
-main()
+mymain()

@@ -6,10 +6,7 @@ using Targets
 using Xch
 
 function init_limit_reversal_columns!(tdf::DataFrame)
-    for contributor in Xch.tradesdf_contributors()
-        contributor(tdf)
-    end
-    for contributor in TradingStrategy.tradesdf_contributors()
+    for contributor in Xch.tradesdf_all_contributors()
         contributor(tdf)
     end
     if :lo_amount ∉ propertynames(tdf)

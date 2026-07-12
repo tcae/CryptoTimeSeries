@@ -508,8 +508,8 @@ function getgainsdf(cfg::TrendDetectorConfig)
     end
 
     ts = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(cfg.configname), source="trenddetector:$(cfg.configname)")
-    xc = Xch.XchCache(Bybit.BybitSimCache(); startdt=cfg.startdt, enddt=cfg.enddt)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), Trade.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), tradesdf_contributors()))
+    xc = Xch.XchCache(Bybit.BybitCache(); startdt=cfg.startdt, enddt=cfg.enddt)
+    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
     # Range ids can collide across independently cached coins/runs. Replay must
     # stay scoped to coin+set+rangeid to avoid mixing samples across ranges.

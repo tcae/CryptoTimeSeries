@@ -2,7 +2,8 @@ module KrakenFutures
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
 using XchAdapter
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
+import XchAdapter: normalize_order_status
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
 # The standalone WebSockets.jl 1.x cannot convert SubArray{UInt8,1,Memory{UInt8},...}
@@ -230,48 +231,24 @@ function _recordwskline!(symbol::AbstractString, interval::AbstractString, candl
 end
 
 "Return latest websocket order snapshot maintained by KrakenFutures adapter."
-function wsordersnapshot()
+function _wsorderssnapshot()
 	lock(_ws_orders_state_lock) do
 		return copy(_ws_orders_snapshot[])
 	end
 end
 
-"Return latest websocket order snapshot using a cache handle."
-function wsordersnapshot(bc)
-	_ = bc
-	return wsordersnapshot()
-end
-
 "Return latest websocket order heartbeat timestamp from KrakenFutures adapter state."
-wsordersheartbeat() = _ws_orders_last_update_dt[]
-
-"Return latest websocket order heartbeat timestamp using a cache handle."
-function wsordersheartbeat(bc)
-	_ = bc
-	return wsordersheartbeat()
-end
+_wsordersheartbeat() = _ws_orders_last_update_dt[]
 
 "Return latest websocket balances snapshot maintained by KrakenFutures adapter."
-function wsbalancessnapshot()
+function _wsbalancessnapshot()
 	lock(_ws_balances_state_lock) do
 		return copy(_ws_balances_snapshot[])
 	end
 end
 
-"Return latest websocket balances snapshot using a cache handle."
-function wsbalancessnapshot(bc)
-	_ = bc
-	return wsbalancessnapshot()
-end
-
 "Return latest websocket balances heartbeat timestamp from KrakenFutures adapter state."
-wsbalancesheartbeat() = _ws_balances_last_update_dt[]
-
-"Return latest websocket balances heartbeat timestamp using a cache handle."
-function wsbalancesheartbeat(bc)
-	_ = bc
-	return wsbalancesheartbeat()
-end
+_wsbalancesheartbeat() = _ws_balances_last_update_dt[]
 
 function _update_ws_orders_snapshot!(df::DataFrame)
 	lock(_ws_orders_state_lock) do
@@ -453,8 +430,76 @@ struct KrakenFuturesCache <: XchAdapter.XchAdapterCache
 	secretkey::String
 end
 
-executionorderspec(::KrakenFuturesCache, side::Symbol) = _executionorderspec(side)
-exchangeid(::KrakenFuturesCache)::String = "KrakenFutures"
+"""
+Build a new `KrakenFuturesCache` and optionally preload symbol metadata.
+"""
+function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::Union{Nothing, AbstractString}=nothing, publickey::Union{Nothing, AbstractString}=nothing, secretkey::Union{Nothing, AbstractString}=nothing)
+	resolved_apirest = _resolve_futures_apirest(apirest)
+	keys = _resolve_credentials(publickey, secretkey)
+	syminfo = _emptyexchangeinfo()
+	if autoloadexchangeinfo
+		try
+			syminfo = _exchangeinfo(resolved_apirest)
+		catch err
+			(verbosity >= 1) && @warn "failed to load KrakenFutures exchange info: $(err)"
+			syminfo = _emptyexchangeinfo()
+		end
+		if size(syminfo, 1) > 0
+			targetquote = uppercase(EnvConfig.pairquote)
+			filtered = syminfo[uppercase.(syminfo.quotecoin) .== targetquote, :]
+			syminfo = size(filtered, 1) > 0 ? filtered : syminfo
+			sort!(syminfo, :basecoin)
+		end
+	end
+	bc = KrakenFuturesCache(syminfo, resolved_apirest, keys.publickey, keys.secretkey)
+    EnvConfig.setcoinspath!(exchangeid(bc))
+	EnvConfig.setpairquote!("USD")
+	_restore_nonce_floor!(bc)
+	return bc
+end
+
+executionorderspec(bc::KrakenFuturesCache, side::Symbol) = _executionorderspec(side)
+exchangeid(bc::KrakenFuturesCache)::String = "KrakenFutures"
+
+"Return latest websocket order snapshot using a cache handle."
+function wsordersnapshot(bc::KrakenFuturesCache)
+	_ = bc
+	return _wsorderssnapshot()
+end
+
+"Return latest websocket order heartbeat timestamp using a cache handle."
+function wsordersheartbeat(bc::KrakenFuturesCache)
+	_ = bc
+	return _wsordersheartbeat()
+end
+
+"Return latest websocket balances snapshot using a cache handle."
+function wsbalancessnapshot(bc::KrakenFuturesCache)
+	_ = bc
+	return _wsbalancessnapshot()
+end
+
+"Return latest websocket balances heartbeat timestamp using a cache handle."
+function wsbalancesheartbeat(bc::KrakenFuturesCache)
+	_ = bc
+	return _wsbalancesheartbeat()
+end
+
+"""Normalize Kraken Futures raw order status into Xch status vocabulary."""
+function normalize_order_status(bc::KrakenFuturesCache, rawstatus::AbstractString)::String
+	_ = bc
+	st = lowercase(String(rawstatus))
+	if st in ["untouched", "open", "new"]
+		return "submitted"
+	elseif st in ["filled", "closed"]
+		return "closed"
+	elseif st in ["cancelled", "canceled"]
+		return "canceled"
+	elseif st in ["rejected"]
+		return "rejected"
+	end
+	return st
+end
 
 function _authtargetpurpose()::String
 	return EnvConfig.configmode == EnvConfig.test ? "testing" : "trading"
@@ -472,32 +517,6 @@ function _resolve_futures_apirest(apirest::Union{Nothing, AbstractString})::Stri
 	catch
 	end
 	return KRAKEN_FUTURES_APIREST
-end
-
-"""
-Build a new `KrakenFuturesCache` and optionally preload symbol metadata.
-"""
-function KrakenFuturesCache(; autoloadexchangeinfo::Bool=true, apirest::Union{Nothing, AbstractString}=nothing, publickey::Union{Nothing, AbstractString}=nothing, secretkey::Union{Nothing, AbstractString}=nothing)
-	resolved_apirest = _resolve_futures_apirest(apirest)
-	keys = _resolve_credentials(publickey, secretkey)
-	bc = KrakenFuturesCache(_emptyexchangeinfo(), resolved_apirest, keys.publickey, keys.secretkey)
-	_restore_nonce_floor!(bc)
-	syminfo = _emptyexchangeinfo()
-	if autoloadexchangeinfo
-		try
-			syminfo = _exchangeinfo(resolved_apirest)
-		catch err
-			(verbosity >= 1) && @warn "failed to load KrakenFutures exchange info: $(err)"
-			syminfo = _emptyexchangeinfo()
-		end
-		if size(syminfo, 1) > 0
-			targetquote = uppercase(EnvConfig.pairquote)
-			filtered = syminfo[uppercase.(syminfo.quotecoin) .== targetquote, :]
-			syminfo = size(filtered, 1) > 0 ? filtered : syminfo
-			sort!(syminfo, :basecoin)
-		end
-	end
-	return KrakenFuturesCache(syminfo, resolved_apirest, keys.publickey, keys.secretkey)
 end
 
 function marketdataheartbeats(bc::KrakenFuturesCache)

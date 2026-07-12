@@ -98,7 +98,8 @@ Trade.verbosity     = 2
 bc = build_adapter_cache(EXCHANGE)
 xc = Xch.XchCache(bc; enddt=nothing)
 Xch.setstartdt(xc, Xch.tradetime(xc))
-Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_contributors(), TradingStrategy.tradesdf_contributors(), Trade.tradesdf_contributors()))
+
+Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
 cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="trenddetector:$CONFIG_NAME"), trademode=TRADE_MODE)
 

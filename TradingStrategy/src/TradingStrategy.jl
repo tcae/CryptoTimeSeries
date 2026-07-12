@@ -12,67 +12,6 @@ module TradingStrategy
 using DataFrames, Dates, CategoricalArrays
 using EnvConfig, Features, Targets, Classify, Xch, Ohlcv
 
-"""Ensure Trades column `label` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions."""
-function tradesdf_label(tradesdf::DataFrame)::DataFrame
-    if :label ∉ propertynames(tradesdf)
-        tradesdf[!, :label] = fill(ignore, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `score` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score of trade label."""
-function tradesdf_score(tradesdf::DataFrame)::DataFrame
-    if :score ∉ propertynames(tradesdf)
-        tradesdf[!, :score] = zeros(Float32, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-
-"""Ensure Trades column `lo_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (long-open limit) consumed by Xch as requested limit per action."""
-function tradesdf_lo_limit(tradesdf::DataFrame)::DataFrame
-    if :lo_limit ∉ propertynames(tradesdf)
-        tradesdf[!, :lo_limit] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `lc_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (long-close limit) consumed by Xch as requested limit per action."""
-function tradesdf_lc_limit(tradesdf::DataFrame)::DataFrame
-    if :lc_limit ∉ propertynames(tradesdf)
-        tradesdf[!, :lc_limit] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `so_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (short-open limit) consumed by Xch as requested limit per action."""
-function tradesdf_so_limit(tradesdf::DataFrame)::DataFrame
-    if :so_limit ∉ propertynames(tradesdf)
-        tradesdf[!, :so_limit] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Ensure Trades column `sc_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance (short-close limit) consumed by Xch as requested limit per action."""
-function tradesdf_sc_limit(tradesdf::DataFrame)::DataFrame
-    if :sc_limit ∉ propertynames(tradesdf)
-        tradesdf[!, :sc_limit] = fill(0f0, nrow(tradesdf))
-    end
-    return tradesdf
-end
-
-"""Return TradingStrategy-contributed Trades schema initializer functions. Note: Trade contributes lo_amount/lc_amount/so_amount/sc_amount columns via Trade.tradesdf_contributors()."""
-function tradesdf_contributors()::Vector{Function}
-    return Function[
-        tradesdf_label,
-        tradesdf_score,
-        tradesdf_lo_limit,
-        tradesdf_lc_limit,
-        tradesdf_so_limit,
-        tradesdf_sc_limit,
-    ]
-end
-
 """Return the normalized config-scoped subfolder used for persisted trade artifacts."""
 function tradesfolder(stem::AbstractString="gains")::String
     normalized = replace(normpath(splitext(String(stem))[1]), '\\' => '/')
