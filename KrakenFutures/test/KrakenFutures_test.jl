@@ -1,23 +1,29 @@
 using DataFrames, Dates, EnvConfig, KrakenFutures, Test
 
 @testset "KrakenFutures offline interface tests" begin
+    EnvConfig.init(EnvConfig.test)
+
     emptycache = KrakenFutures.KrakenFuturesCache(autoloadexchangeinfo=false, publickey="", secretkey="")
     @test emptycache.syminfodf isa DataFrame
     @test size(emptycache.syminfodf, 1) == 0
+
+    quotecoin = uppercase(String(EnvConfig.pairquote))
+    testsymbol = string("BTC", quotecoin)
+    wssymbol = string("PI_XBT", quotecoin)
 
     query = KrakenFutures._dict2paramsget(Dict("b" => 2, "a" => "x y"))
     @test query == "a=x%20y&b=2"
 
     @test KrakenFutures._normalizeasset("XXBT") == "BTC"
-    @test KrakenFutures._ws2symbol("PI_XBTUSDT") == "BTCUSDT"
-    @test KrakenFutures._symbol2ws("BTCUSDT") == "PI_XBTUSDT"
+    @test KrakenFutures._ws2symbol(wssymbol) == testsymbol
+    @test KrakenFutures._symbol2ws(testsymbol) == wssymbol
 
     syminfo = KrakenFutures._emptyexchangeinfo()
     push!(syminfo, (
-        symbol="BTCUSDT",
+        symbol=testsymbol,
         status="online",
         basecoin="BTC",
-        quotecoin="USDT",
+        quotecoin=quotecoin,
         maxleveragebuy=0,
         maxleveragesell=0,
         ticksize=0.1f0,
@@ -25,13 +31,13 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
         quoteprecision=0.1f0,
         minbaseqty=1f0,
         minquoteqty=500f0,
-        krakenpairname="PI_XBTUSDT",
-        wsname="PI_XBTUSDT",
+        krakenpairname=wssymbol,
+        wsname=wssymbol,
     ))
 
     cache = KrakenFutures.KrakenFuturesCache(syminfo, KrakenFutures.KRAKEN_FUTURES_APIREST, "", "")
 
-    info = KrakenFutures.symbolinfo(cache, "BTCUSDT")
+    info = KrakenFutures.symbolinfo(cache, testsymbol)
     @test !isnothing(info)
     @test KrakenFutures._istradablestatus("online")
     @test !KrakenFutures._istradablestatus("cancel_only")
@@ -42,7 +48,7 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
     @test norm.basequantity * norm.limitprice >= info.minquoteqty
 
     @test KrakenFutures.validsymbol(cache, info)
-    @test KrakenFutures.validsymbol(cache, "BTCUSDT")
+    @test KrakenFutures.validsymbol(cache, testsymbol)
     @test !KrakenFutures.validsymbol(cache, "ETHUSD")
 
     ticker = Dict(
@@ -53,8 +59,8 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
         "volume24h" => "12.0",
         "turnover24h" => "1214.4",
     )
-    tickrow = KrakenFutures._tickerrow(cache, "PI_XBTUSDT", ticker)
-    @test tickrow.symbol == "BTCUSDT"
+    tickrow = KrakenFutures._tickerrow(cache, wssymbol, ticker)
+    @test tickrow.symbol == testsymbol
     @test isapprox(tickrow.lastprice, 101.2f0; atol=1f-4)
     @test tickrow.quotevolume24h ≈ 1214.4f0 atol = 1f-3
 
@@ -73,7 +79,7 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
     KrakenFutures._seticebergstate!(rootid, Dict{Symbol, Any}(
         :current_order_id => "child-1",
         :remaining_baseqty => 5.0,
-        :symbol => "BTCUSDT",
+        :symbol => testsymbol,
         :orderside => "Buy",
         :configside => :long,
         :reduceonly => false,

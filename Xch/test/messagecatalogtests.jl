@@ -9,7 +9,7 @@ using EnvConfig, Xch
     msg1 = Xch.log_trading_issue(xc, "Trading", "insufficient funds for buy order")
     @test msg1 == "insufficient funds for buy order"
 
-    msg2 = Xch.log_trading_issue(xc, Xch.exchangeid(xc), "order not found")
+    msg2 = Xch.log_trading_issue(xc, Xch.exchange(xc), "order not found")
     @test msg2 == "order not found"
 end
 

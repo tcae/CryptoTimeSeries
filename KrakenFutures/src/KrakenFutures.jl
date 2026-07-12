@@ -2427,6 +2427,12 @@ function balances(bc::KrakenFuturesCache)
 	df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
 	!_hascredentials(bc) && return df
 
+	# WS balances are intentionally disabled for KrakenFutures for now.
+	# Reason: live private WS balances payloads use feed-specific shapes
+	# (e.g. balances_snapshot/holding maps) that are not yet aligned with the
+	# normalized balance parser contract. Until parser support is completed,
+	# REST account endpoints are the authoritative source for free/locked balances.
+
 	# Check balance cache (5s TTL to avoid Kraken API rate limits)
 	lock(_balance_cache_lock) do
 		now = Dates.now(UTC)
@@ -2772,7 +2778,6 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 			WebSockets.open(KRAKEN_FUTURES_WS_PRIVATE) do ws
 				connection_started = Dates.now(Dates.UTC)
 				orders_active = false
-				balances_active = false
 				WebSockets.send(ws, JSON3.write(Dict("event" => "challenge", "api_key" => bc.publickey)))
 				challraw = WebSockets.receive(ws)
 				challtxt = _wsraw2text(challraw)
@@ -2786,13 +2791,6 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 				WebSockets.send(ws, JSON3.write(Dict(
 					"event" => "subscribe",
 					"feed" => "open_orders",
-					"api_key" => bc.publickey,
-					"original_challenge" => challenge,
-					"signed_challenge" => _wssignedchallenge(bc.secretkey, challenge),
-				)))
-				WebSockets.send(ws, JSON3.write(Dict(
-					"event" => "subscribe",
-					"feed" => "balances",
 					"api_key" => bc.publickey,
 					"original_challenge" => challenge,
 					"signed_challenge" => _wssignedchallenge(bc.secretkey, challenge),
@@ -2823,21 +2821,11 @@ function _run_private_ws_worker!(bc::KrakenFuturesCache, order_channel::Channel{
 						end
 						orders_active = true
 						isopen(order_channel) && put!(order_channel, Dict("topic" => "open_orders", "source" => "ws", "data" => rawdata))
-					elseif feed == "balances"
-						rawdata = haskey(msg, "balances") ? msg["balances"] : get(msg, "data", Any[])
-						df = _ws_balances_df_from_payload(rawdata)
-						if size(df, 1) > 0
-							_update_ws_balances_snapshot!(df)
-						else
-							_touch_ws_balances_heartbeat!()
-						end
-						balances_active = true
-						isopen(balance_channel) && put!(balance_channel, Dict("topic" => "balances", "source" => "ws", "data" => rawdata))
 					end
 					nowdt = Dates.now(Dates.UTC)
 					if (nowdt - connection_started) > _ws_private_subscribe_ack_timeout
-						if !orders_active || !balances_active
-							throw(ErrorException("private websocket channel activation timeout orders_active=$(orders_active) balances_active=$(balances_active)"))
+						if !orders_active
+							throw(ErrorException("private websocket channel activation timeout orders_active=$(orders_active)"))
 						end
 					end
 				end
@@ -2956,16 +2944,15 @@ function _pollbalancesfallback!(channel::Channel{Dict}, bc::KrakenFuturesCache)
 end
 
 """
-Subscribe to private balance updates via websocket, then fall back to REST polling.
+Return balance updates via REST polling.
+
+Websocket balances are intentionally disabled for KrakenFutures until private WS
+balances payload parsing is aligned with live exchange payloads.
 """
 function ws_balances(bc::KrakenFuturesCache)
-	if _hascredentials(bc)
-		_, balance_channel = _ensure_private_ws_worker!(bc)
-		return balance_channel
-	end
 	channel = Channel{Dict}(32)
 	@async begin
-		(verbosity >= 2) && @info "ws_balances fallback to REST polling"
+		(verbosity >= 2) && @info "ws_balances uses REST polling; KrakenFutures WS balances are disabled"
 		try
 			_pollbalancesfallback!(channel, bc)
 		catch err

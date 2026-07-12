@@ -45,7 +45,7 @@ end
 
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     # Make acceptance deterministic: enforce simulation wallet quote buying power.
     bc = Xch.rawcache(xc.bc)
@@ -91,7 +91,7 @@ end
         @test !ismissing(accepted[1, :freequote])
     else
         @test result.reason in ("insufficient_free_quote", "below_minimum_qty")
-        @test accepted[1, :lo_status] == "Rejected"
+        @test lowercase(String(accepted[1, :lo_status])) == "rejected"
         @test String(accepted[1, :lo_id]) == "none"
         @test !ismissing(accepted[1, :lo_msg])
     end
@@ -132,7 +132,7 @@ end
     @test !reject_result.accepted
     @test reject_result.reason == "below_minimum_qty"
     @test ismissing(rejected[1, :lastopentrade])
-    @test rejected[1, :lo_status] == "Rejected"
+    @test lowercase(String(rejected[1, :lo_status])) == "rejected"
     @test !ismissing(rejected[1, :lo_msg])
 end
 
@@ -141,7 +141,7 @@ end
 
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.addbase!(xc, "BTC", startdt, enddt)
 
     bc = Xch.rawcache(xc.bc)
@@ -177,7 +177,7 @@ end
         @test close_req[1, :lc_status] == "Submitted"
         @test close_req[1, :lc_filled] == 0f0
     else
-        @test close_req[1, :lc_status] == "Rejected"
+        @test lowercase(String(close_req[1, :lc_status])) == "rejected"
     end
 end
 
@@ -186,7 +186,7 @@ end
 
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.addbase!(xc, "BTC", startdt, enddt)
 
     mdf = Xch.getUSDTmarket(xc)

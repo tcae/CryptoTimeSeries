@@ -41,7 +41,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.addbase!(xc, "ETH", startdt, enddt)
@@ -177,9 +177,9 @@ end
     @test btcrow[btcrowix, :lp_amount] == 1.5f0
     @test btcrow[btcrowix, :sp_amount] == 0.25f0
     @test btcrow[btcrowix, :lastopentrade] == btcrow[btcrowix, :opentime]
-    @test btcrow[btcrowix, :lo_status] == "Filled"
-    @test btcrow[btcrowix, :lc_status] == "PartiallyFilled"
-    @test btcrow[btcrowix, :sc_status] == "Rejected"
+    @test lowercase(String(btcrow[btcrowix, :lo_status])) == "closed"
+    @test lowercase(String(btcrow[btcrowix, :lc_status])) == "submitted"
+    @test lowercase(String(btcrow[btcrowix, :sc_status])) == "rejected"
     @test btcrow[btcrowix, :lo_filled] == 1.0f0
     @test btcrow[btcrowix, :lc_filled] == 0.25f0
     @test btcrow[btcrowix, :sc_filled] == 0f0
@@ -206,7 +206,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(3)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
@@ -250,7 +250,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
@@ -290,7 +290,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
     Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)

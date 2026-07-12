@@ -1393,11 +1393,13 @@ _rowlimitprice(value)::Union{Nothing, Real} = value == 0 ? nothing : value
 function _implicitflipplan(tradesdf::DataFrame, ix::Integer, action::Symbol, open_limitprice)
     if action == :long_open
         closeqty = tradesdf[ix, :sp_amount]
-        closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? 0f0 : min(tradesdf[ix, :sc_limit], open_limitprice)
+        closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : min(tradesdf[ix, :sc_limit], open_limitprice)
+        # closelimit = 0f0 means adaptive maker price that follows the market price
         return (needed=closeqty > 0.0, positionside=:short, closeqty=closeqty, closelimit=closelimit, close_id_col=:sc_id, close_status_col=:sc_status, close_filled_col=:sc_filled, close_pavg_col=:sc_pavg)
     elseif action == :short_open
         closeqty = tradesdf[ix, :lp_amount]
-        closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? 0f0 : max(tradesdf[ix, :sc_limit], open_limitprice)
+        closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : max(tradesdf[ix, :sc_limit], open_limitprice)
+        # closelimit = 0f0 means adaptive maker price that follows the market price
         return (needed=closeqty > 0.0, positionside=:long, closeqty=closeqty, closelimit=closelimit, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lc_filled, close_pavg_col=:lc_pavg)
     end
     return (needed=false, positionside=:long, closeqty=0.0, closelimit=open_limitprice, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lc_filled, close_pavg_col=:lc_pavg)

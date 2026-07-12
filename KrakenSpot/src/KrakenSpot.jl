@@ -2183,6 +2183,12 @@ function balances(bc::KrakenSpotCache)
 		return df
 	end
 
+	# WS balances are intentionally disabled for KrakenSpot for now.
+	# Reason: live private WS balances payloads use nested wallet structures and
+	# do not consistently expose the normalized free/locked keys expected by the
+	# adapter parser. Until WS parsing is aligned with the exchange payload shape,
+	# REST BalanceEx is the authoritative source for free/locked balances.
+
 	# Check balance cache (5s TTL to avoid Kraken API rate limits)
 	lock(_balance_cache_lock) do
 		now = Dates.now(UTC)
@@ -2519,9 +2525,7 @@ function _run_private_ws_worker!(bc::KrakenSpotCache, order_channel::Channel{Dic
 			WebSockets.open(KRAKEN_WS_PRIVATE) do ws
 				connection_started = Dates.now(Dates.UTC)
 				orders_active = false
-				balances_active = false
 				WebSockets.send(ws, JSON3.write(Dict("method" => "subscribe", "params" => Dict("channel" => "executions", "token" => token))))
-				WebSockets.send(ws, JSON3.write(Dict("method" => "subscribe", "params" => Dict("channel" => "balances", "token" => token))))
 				while isopen(ws) && (isopen(order_channel) || isopen(balance_channel))
 					msgraw = WebSockets.receive(ws)
 					msgtxt = _wsraw2text(msgraw)
@@ -2549,21 +2553,11 @@ function _run_private_ws_worker!(bc::KrakenSpotCache, order_channel::Channel{Dic
 						end
 						orders_active = true
 						isopen(order_channel) && put!(order_channel, Dict("topic" => ch, "source" => "ws", "data" => rawdata))
-					elseif ch in ["balances", "balance"]
-						rawdata = get(msg, "data", Any[])
-						df = _ws_balances_df_from_payload(rawdata)
-						if size(df, 1) > 0
-							_update_ws_balances_snapshot!(df)
-						else
-							_touch_ws_balances_heartbeat!()
-						end
-						balances_active = true
-						isopen(balance_channel) && put!(balance_channel, Dict("topic" => ch, "source" => "ws", "data" => rawdata))
 					end
 					nowdt = Dates.now(Dates.UTC)
 					if (nowdt - connection_started) > _ws_private_subscribe_ack_timeout
-						if !orders_active || !balances_active
-							throw(ErrorException("private websocket channel activation timeout orders_active=$(orders_active) balances_active=$(balances_active)"))
+						if !orders_active
+							throw(ErrorException("private websocket channel activation timeout orders_active=$(orders_active)"))
 						end
 					end
 				end
@@ -2680,16 +2674,15 @@ function _pollbalancesfallback!(channel::Channel{Dict}, bc::KrakenSpotCache)
 end
 
 """
-Subscribe to private balance updates via websocket and fall back to polling balances.
+Return balance updates via REST polling.
+
+Websocket balances are intentionally disabled for KrakenSpot until private WS
+balances payload parsing is aligned with live exchange payloads.
 """
 function ws_balances(bc::KrakenSpotCache)
-	if _hascredentials(bc)
-		_, balance_channel = _ensure_private_ws_worker!(bc)
-		return balance_channel
-	end
 	channel = Channel{Dict}(32)
 	@async begin
-		(verbosity >= 2) && @info "ws_balances fallback to REST polling"
+		(verbosity >= 2) && @info "ws_balances uses REST polling; KrakenSpot WS balances are disabled"
 		try
 			_pollbalancesfallback!(channel, bc)
 		catch err
