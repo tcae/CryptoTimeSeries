@@ -25,7 +25,7 @@ everything should work out of the box.
 
 ## What is it all about?
 
-This is a playground Machine Learning project that aims to predict the best trades using popular cryptocurrencies on Binance.
+This is a playground Machine Learning project that aims to predict the best trades using popular cryptocurrencies.
 
 Be cautious and don't use it for real trading unless you know what to do. There is no backward compatibility intention, restructuring of project parts may happen without announcement. Any trade signal from this software is no recommendation to trade. Trading cryptocurrencies is high risk.
 
