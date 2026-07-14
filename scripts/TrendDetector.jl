@@ -857,6 +857,43 @@ function averageconfusionmatrix(cfg::TrendDetectorConfig)
     return ccmdf, cxcmdf
 end
 
+function gainspipeline(cfg)
+    # getclassifier(cfg) # ensure preparation of baseline mix classifier
+    cmdf, xcmdf = getconfusionmatrices(cfg)
+    @assert isnothing(cmdf) == isnothing(xcmdf) "unexpected cmdf and xcmdf existence mismatch with isnothing(cmdf)=$(isnothing(cmdf)) and isnothing(xcmdf)=$(isnothing(xcmdf))"
+    if !isnothing(cmdf) && (size(cmdf, 1) > 0)
+        println("$(EnvConfig.now()) Confusion matrix: $cmdf")
+        println("$(EnvConfig.now()) Extended confusion matrix: $xcmdf")
+        # ccmdf,cxcmdf = averageconfusionmatrix(cfg)
+        # println("Average extended confusion matrix: $cxcmdf")
+        # println("Average confusion matrix: $ccmdf")
+    end
+    gaindf = getgainsdf(cfg)
+    if !isnothing(gaindf) && (size(gaindf, 1) > 0)
+        # println(describe(gaindf))
+        # println(gaindf[1:2,:])
+        gaindfgroup = groupby(gaindf, [:set, :trend, :predicted, :openthreshold, :closethreshold])
+        # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
+        cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum, :gainfee => sum)
+        sort!(cgaindf, [:set, :trend, :openthreshold, :closethreshold])
+        println("$(EnvConfig.now()) cgaindf=$cgaindf")
+    end
+
+    # distdf = getdistances(cfg)
+    # if !isnothing(distdf) && (size(distdf, 1) > 0)
+    #     println("size(distdf)=$(size(distdf))")
+    #     println("describe(distdf)=$(describe(distdf))")
+    #     # println(distdf[.!ismissing.(distdf[!, :tpdistnext]),:])
+    #     distdfgroup = groupby(distdf, [:set, :trend])
+    #     # println(distdfgroup)
+    #     # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
+    #     diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(median, x)) => :fpdistnext_median, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
+    #     println("$(EnvConfig.now()) Distances: $(diststatdf)")
+    # else
+    #     println("$(EnvConfig.now()) no distance data available")
+    # end
+end
+
 function safe(f, v; default=missing)
     v = skipmissing(v)
     isempty(v) ? default : f(v)
@@ -968,7 +1005,7 @@ function _clear_test_trade_cache!()
 end
 
 function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime)
-    configref = _argvalue(args, "config", "029")
+    configref = _argvalue(args, "config", "046")
     basecfg = TradingStrategy.trenddetectorconfig(configref)
     configname = _argvalue(args, "configname", string(basecfg.configname))
     folder = _argvalue(args, "folder", "Trend-$configname-$(EnvConfig.configmode)")
@@ -1020,7 +1057,7 @@ Flag parameters:
       Default: false
 
   special
-      Enable special/debug mode. Currently no special task is defined and this also enables `inspect`.
+      Enable special mode, which currently a defined limited time range with 2 trading pairs to have a limited comparison for tradesim.
       Default: false
 
   retrain
@@ -1068,11 +1105,11 @@ function main(args::Vector{String}=ARGS)
     println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$(args)")
     global retrain = "retrain" in args
     retrain && println("retrain mode activated - existing classifiers that did not converge will be overwritten")
-    testmode = true
+    testmode = specialonly = true
     testmode = "test" in args ? true : "train" in args ? false : testmode
     inspectonly = "inspect" in args
     specialonly = "special" in args
-    inspectonly = specialonly ? true : inspectonly # if specialonly then also do inspection
+    # inspectonly = specialonly ? true : inspectonly # if specialonly then also do inspection
 
     global verbosity = 2
     allowedcoins = String[]
@@ -1099,11 +1136,14 @@ function main(args::Vector{String}=ARGS)
     end
 
     if specialonly
-        Ohlcv.verbosity = 3
+        Ohlcv.verbosity = 1
         Features.verbosity = 1
         Targets.verbosity = 1
         EnvConfig.verbosity = 1
         Classify.verbosity = 1
+        allowedcoins = ["SINE"] # , "DOUBLESINE"
+        startdt = DateTime("2025-07-01T01:00:00")
+        enddt = DateTime("2025-07-30T01:00:00")
     end
 
     EnvConfig.setcoinspath!("Bybit")
@@ -1121,51 +1161,18 @@ function main(args::Vector{String}=ARGS)
 
     if specialonly
         # renamepredictionfiles([TradingStrategy.mk001config().folder, TradingStrategy.mk002config().folder, TradingStrategy.mk003config().folder, TradingStrategy.mk004config().folder, TradingStrategy.mk005config().folder])
-        println("No special task defined")
+        println("create comparison basis for tradesim using $allowedcoins in special mode with startdt=$startdt and enddt=$enddt")
+        gainspipeline(cfg)
     elseif inspectonly
         introspection(cfg)
     else
-        # getclassifier(cfg) # ensure preparation of baseline mix classifier
-        cmdf, xcmdf = getconfusionmatrices(cfg)
-        @assert isnothing(cmdf) == isnothing(xcmdf) "unexpected cmdf and xcmdf existence mismatch with isnothing(cmdf)=$(isnothing(cmdf)) and isnothing(xcmdf)=$(isnothing(xcmdf))"
-        if !isnothing(cmdf) && (size(cmdf, 1) > 0)
-            println("$(EnvConfig.now()) Confusion matrix: $cmdf")
-            println("$(EnvConfig.now()) Extended confusion matrix: $xcmdf")
-            # ccmdf,cxcmdf = averageconfusionmatrix(cfg)
-            # println("Average extended confusion matrix: $cxcmdf")
-            # println("Average confusion matrix: $ccmdf")
-        end
-        gaindf = getgainsdf(cfg)
-        if !isnothing(gaindf) && (size(gaindf, 1) > 0)
-            # println(describe(gaindf))
-            # println(gaindf[1:2,:])
-            gaindfgroup = groupby(gaindf, [:set, :trend, :predicted, :openthreshold, :closethreshold])
-            # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
-            cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum, :gainfee => sum)
-            sort!(cgaindf, [:set, :trend, :openthreshold, :closethreshold])
-            println("$(EnvConfig.now()) cgaindf=$cgaindf")
-        end
-
-        # distdf = getdistances(cfg)
-        # if !isnothing(distdf) && (size(distdf, 1) > 0)
-        #     println("size(distdf)=$(size(distdf))")
-        #     println("describe(distdf)=$(describe(distdf))")
-        #     # println(distdf[.!ismissing.(distdf[!, :tpdistnext]),:])
-        #     distdfgroup = groupby(distdf, [:set, :trend])
-        #     # println(distdfgroup)
-        #     # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
-        #     diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(median, x)) => :fpdistnext_median, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
-        #     println("$(EnvConfig.now()) Distances: $(diststatdf)")
-        # else
-        #     println("$(EnvConfig.now()) no distance data available")
-        # end
+        gainspipeline(cfg)
     end
 
     println("$(EnvConfig.now()) done @ $(cfg.folder)")
     return nothing
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    main(ARGS)
-end
+main(ARGS)
+
 end # of TrendDetector
