@@ -8,7 +8,7 @@ cd(@__DIR__)
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 # Pkg.upgrade_manifest()
 Pkg.add([
-    "Test", "JDF",
+    "Test", 
     "DataFrames",
     "Dates",
     "Logging"

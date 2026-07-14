@@ -1,7 +1,7 @@
 
 module VolatilityTracker
 
-using DataFrames, Dates, Statistics, CSV, Logging, JDF
+using DataFrames, Dates, Statistics, CSV, Logging
 using EnvConfig, TestOhlcv, Ohlcv, Features, Targets
 
 const FEE = 0.08 / 100 # VIP1 Bybit taker fee (worst case)

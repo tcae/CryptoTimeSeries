@@ -440,7 +440,9 @@ relies on grad without offset and 2h target, i.e. maxwindow 2h, hold threshold e
 mk030config() = trendmkconfig("030", trendf6config09(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=false)
 mk031config() = trendmkconfig("031", trendf6config09(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=true)
 mk032config() = trendmkconfig("032", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk046config() = trendmkconfig("046", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy03(); classbalancing=true)
+
+mk046config() = trendmkconfig("046", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy03(); classbalancing=true) # favorite
+
 mk047config() = trendmkconfig("047", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy04(); classbalancing=true)
 mk048config() = trendmkconfig("048", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy05(); classbalancing=true)
 mk049config() = trendmkconfig("049", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy06(); classbalancing=true)

@@ -1,11 +1,11 @@
 # using Pkg;
 # Pkg.add(PackageSpec(url="https://github.com/DennisRutjes/Binance.jl",rev="master"))
-# Pkg.add(["Dates", "DataFrames", "DataAPI", "JDF", "CSV"])
+# Pkg.add(["Dates", "DataFrames", "DataAPI", "CSV"])
 
 
 module Xch
 
-using Dates, DataFrames, DataAPI, JDF, CSV, Logging, InlineStrings, UUIDs
+using Dates, DataFrames, DataAPI, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
 using XchAdapter: XchAdapterCache

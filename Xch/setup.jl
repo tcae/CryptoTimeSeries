@@ -7,7 +7,7 @@ Pkg.activate(@__DIR__)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
 
-Pkg.add([ "Dates", "Logging", "DataFrames", "DataAPI", "JDF", "CSV", "InlineStrings" ])
+Pkg.add([ "Dates", "Logging", "DataFrames", "DataAPI", "CSV", "InlineStrings" ])
 
 # develop(path="/home/tor/TorProjects/CryptoTimeSeries")
 

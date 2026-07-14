@@ -1,7 +1,7 @@
 name = "Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-authors = ["tcae <tcae@posteo.nl>"]
 version = "1.6.6"
+authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]
 Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
@@ -13,14 +13,13 @@ DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
-JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 KrakenFutures = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
 KrakenSpot = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
-Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"

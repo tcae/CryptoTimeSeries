@@ -9,8 +9,8 @@ using DataFrames, Dates, KrakenSpot, Test
     @test query == "a=x%20y&b=2"
 
     @test KrakenSpot._normalizeasset("XXBT") == "BTC"
-    @test KrakenSpot._ws2symbol("BTC/USDT") == "BTCUSDT"
-    @test KrakenSpot._symbol2ws("BTCUSDT") == "BTC/USDT"
+    @test KrakenSpot._ws2symbol("BTC/USD") == "BTCUSD"
+    @test KrakenSpot._symbol2ws("BTCUSD") == "BTC/USD"
 
     n1 = parse(Int, KrakenSpot._nextnonce())
     n2 = parse(Int, KrakenSpot._nextnonce())
@@ -18,24 +18,24 @@ using DataFrames, Dates, KrakenSpot, Test
 
     syminfo = KrakenSpot._emptyexchangeinfo()
     push!(syminfo, (
-        symbol="BTCUSDT",
+        symbol="BTCUSD",
         status="online",
         basecoin="BTC",
-        quotecoin="USDT",
+        quotecoin="USD",
         ticksize=0.1f0,
         baseprecision=1f-6,
         quoteprecision=0.1f0,
         minbaseqty=0.0001f0,
         minquoteqty=5f0,
-        krakenpairname="XBTUSDT",
-        wsname="BTC/USDT",
+        krakenpairname="XBTUSD",
+        wsname="BTC/USD",
     ); cols=:subset)
 
     cache = KrakenSpot.KrakenSpotCache(syminfo, KrakenSpot.KRAKEN_APIREST, "", "")
 
     positions = Dict(
-        "tx1" => Dict("type" => "sell", "pair" => "XBTUSDT", "vol" => "0.25"),
-        "tx2" => Dict("type" => "buy", "pair" => "XBTUSDT", "vol" => "99"),
+        "tx1" => Dict("type" => "sell", "pair" => "XBTUSD", "vol" => "0.25"),
+        "tx2" => Dict("type" => "buy", "pair" => "XBTUSD", "vol" => "99"),
         "tx3" => Dict("type" => "sell", "pair" => "UNKNOWNPAIR", "vol" => "1.0"),
     )
     borrowed = KrakenSpot._borrowedfromopenpositionsresult(cache, positions)
@@ -44,7 +44,7 @@ using DataFrames, Dates, KrakenSpot, Test
     @test !haskey(borrowed, "UNKNOWN")
 
     balancedf = DataFrame(
-        coin=AbstractString["BTC", "USDT"],
+        coin=AbstractString["BTC", "USD"],
         locked=Float32[0f0, 0f0],
         free=Float32[1f0, 100f0],
         borrowed=Float32[0.1f0, 0f0],
@@ -59,7 +59,7 @@ using DataFrames, Dates, KrakenSpot, Test
     @test balancedf[ethix, :borrowed] ≈ 0.5f0
     @test balancedf[ethix, :free] == 0f0
 
-    info = KrakenSpot.symbolinfo(cache, "BTCUSDT")
+    info = KrakenSpot.symbolinfo(cache, "BTCUSD")
     @test !isnothing(info)
     @test KrakenSpot._istradablestatus("online")
     @test !KrakenSpot._istradablestatus("cancel_only")
@@ -70,7 +70,7 @@ using DataFrames, Dates, KrakenSpot, Test
     @test norm.basequantity * norm.limitprice >= info.minquoteqty
 
     @test KrakenSpot.validsymbol(cache, info)
-    @test KrakenSpot.validsymbol(cache, "BTCUSDT")
+    @test KrakenSpot.validsymbol(cache, "BTCUSD")
     @test !KrakenSpot.validsymbol(cache, "ETHUSD")
 
     ticker = Dict(
@@ -80,8 +80,8 @@ using DataFrames, Dates, KrakenSpot, Test
         "o" => "100.0",
         "v" => Any["12.0", "13.0"],
     )
-    tickrow = KrakenSpot._tickerrow(cache, "XBTUSDT", ticker)
-    @test tickrow.symbol == "BTCUSDT"
+    tickrow = KrakenSpot._tickerrow(cache, "XBTUSD", ticker)
+    @test tickrow.symbol == "BTCUSD"
     @test isapprox(tickrow.lastprice, 101.2f0; atol=1f-4)
     @test tickrow.quotevolume24h ≈ 1315.6f0 atol = 1f-3
 
@@ -93,14 +93,14 @@ using DataFrames, Dates, KrakenSpot, Test
     @test KrakenSpot._usenativeiceberg("limit", 1.5f0, 100f0, 20.0)
     @test !KrakenSpot._usenativeiceberg("market", 1.5f0, 100f0, 20.0)
 
-    validated_params = KrakenSpot._addorderparams("XBTUSDT", "Buy", "limit", 0.5f0, "ROBO-TEST";
+    validated_params = KrakenSpot._addorderparams("XBTUSD", "Buy", "limit", 0.5f0, "ROBO-TEST";
         effectiveprice=100.0f0,
         maker=true,
         effective_marginleverage=3,
         reduceonly=true,
         validate=true,
     )
-    @test validated_params["pair"] == "XBTUSDT"
+    @test validated_params["pair"] == "XBTUSD"
     @test validated_params["type"] == "buy"
     @test validated_params["ordertype"] == "limit"
     @test validated_params["oflags"] == "post"
@@ -108,7 +108,7 @@ using DataFrames, Dates, KrakenSpot, Test
     @test validated_params["reduce_only"] == true
     @test validated_params["validate"] == true
 
-    normal_params = KrakenSpot._addorderparams("XBTUSDT", "Sell", "market", 0.5f0, "ROBO-TEST-2";
+    normal_params = KrakenSpot._addorderparams("XBTUSD", "Sell", "market", 0.5f0, "ROBO-TEST-2";
         validate=false,
     )
     @test !haskey(normal_params, "validate")
@@ -128,12 +128,12 @@ using DataFrames, Dates, KrakenSpot, Test
     @test "lastcheck" in names(orders)
 
     filtered = KrakenSpot.filterOnRegex("BTC", [
-        Dict("symbol" => "BTCUSDT"),
-        Dict("symbol" => "ETHUSDT"),
+        Dict("symbol" => "BTCUSD"),
+        Dict("symbol" => "ETHUSD"),
         Dict("other" => "ignored"),
     ])
     @test length(filtered) == 1
-    @test filtered[1]["symbol"] == "BTCUSDT"
+    @test filtered[1]["symbol"] == "BTCUSD"
 
     call_order = String[]
     close_result = begin

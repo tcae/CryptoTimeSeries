@@ -15,7 +15,7 @@ Pkg.add([
     "Logging", "ProfileView",
     "Statistics",
     # "MLJ", # "PartialLeastSquaresRegressor", "ScikitLearn", "MLJFlux",
-    "Flux", "cuDNN", "StatisticalMeasures", "BSON", "ProgressMeter", "MLUtils", "JDF",
+    "Flux", "cuDNN", "StatisticalMeasures", "BSON", "ProgressMeter", "MLUtils",
     # "MLJGLMInterface", "GLM",
     # "MLJLinearModels", "MLJDecisionTreeInterface", # "MLJScikitLearnInterface",
     "Combinatorics", # MLJtest -

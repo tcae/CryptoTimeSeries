@@ -364,7 +364,8 @@ function _simulated_usdtmarketview(tc::TradeCache, datetime::DateTime, bases::Se
 
     for base in bases_sorted
         isempty(base) && continue
-        Xch.validbase(tc.xc, base) || continue
+        basekey = String(base)
+        (Xch.validbase(tc.xc, base) || (basekey in loaded)) || continue
         ohlcv = _ensure_marketview_ohlcv!(tc, base, history_startdt, datetime, loaded)
         df = Ohlcv.dataframe(ohlcv)
         if size(df, 1) == 0
@@ -917,7 +918,8 @@ function _managedcloseside(tradelabel::Targets.TradeLabel)::String
 end
 
 function _managedclosekey(cache::TradeCache, base::AbstractString, tradelabel::Targets.TradeLabel)::String
-    symbol = uppercase(String(Xch.symboltoken(cache.xc, base, EnvConfig.pairquote)))
+    # Keep managed-close state keys canonical and exchange-agnostic.
+    symbol = uppercase(String(base)) * uppercase(String(EnvConfig.pairquote))
     return string(symbol, "|", _managedcloseside(tradelabel))
 end
 

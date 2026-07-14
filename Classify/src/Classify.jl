@@ -4,7 +4,7 @@ Train and evaluate the trading signal classifiers
 module Classify
 
 using CSV, DataFrames, Logging, Dates, Random
-using BSON, JDF, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils, Tables
+using BSON, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils, Tables
 using CategoricalArrays
 using CategoricalDistributions
 using Distributions

@@ -1,5 +1,5 @@
 # using Pkg;
-# Pkg.add(["Dates", "DataFrames", "CategoricalArrays", "JDF", "CSV"])
+# Pkg.add(["Dates", "DataFrames", "CategoricalArrays", "CSV"])
 
 """
 Provides facilities to work with OHLCV data sequences including storage and retrieval.

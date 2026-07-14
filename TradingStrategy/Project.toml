@@ -4,6 +4,7 @@ version = "0.8.3"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]
+Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
 CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
 Classify = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
