@@ -25,8 +25,9 @@ using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, 
 const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 
 # Backtest time range (UTC).
-const BACKTEST_STARTDT = DateTime("2025-01-01T00:00:00")
-const BACKTEST_ENDDT   = DateTime("2025-08-01T00:00:00")
+const BACKTEST_STARTDT = DateTime("2025-07-01T01:00:00")
+const BACKTEST_ENDDT   = DateTime("2025-07-30T01:00:00")
+const BACKTEST_BASES = ["SINE"] # nothing
 
 # Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
 const TRADE_MODE = Trade.buysell
@@ -34,7 +35,7 @@ const TRADE_MODE = Trade.buysell
 const QUOTE_COIN = "USDT"
 
 # Initial quote-asset balance used in simulation mode (cryptoxchsim).
-const INITIAL_QUOTE_BALANCE = 100000.0
+const INITIAL_QUOTE_BALANCE = 1000.0
 
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
@@ -313,12 +314,14 @@ xc = Xch.XchCache(bc;
     Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
 cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME"), trademode=TRADE_MODE)
+if !isnothing(BACKTEST_BASES)
+    Trade.tradeselection!(cache, BACKTEST_BASES; datetime=xc.startdt, assetonly=true, updatecache=false)
+end
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
 # Override risk parameters.
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
-cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")

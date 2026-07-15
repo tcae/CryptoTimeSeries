@@ -1468,19 +1468,47 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
     _carry_lastopentrade_from_previous!(tradesdf, ix)
     row_is_open_intent = _is_open_label(tradesdf[ix, :label])
 
-    for (idcol, stcol, filledcol, avgcol, msgcol) in [
-        (:lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg),
-        (:lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg),
-        (:so_id, :so_status, :so_filled, :so_pavg, :so_msg),
-        (:sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg),
+    _lane_orderid(v) = begin
+        if ismissing(v) || isnothing(v)
+            return nothing
+        end
+        s = strip(String(v))
+        return (isempty(s) || (lowercase(s) == NO_ORDER_ID)) ? nothing : s
+    end
+
+    _isopenstatuslabel(s::AbstractString) = lowercase(strip(String(s))) in ("submitted", "new", "partiallyfilled", "untriggered", "open")
+
+    for (idcol, stcol, filledcol, avgcol, msgcol, amountcol, poscol) in [
+        (:lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg, :lo_amount, :lp_amount),
+        (:lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg, :lc_amount, :lp_amount),
+        (:so_id, :so_status, :so_filled, :so_pavg, :so_msg, :so_amount, :sp_amount),
+        (:sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg, :sc_amount, :sp_amount),
     ]
-        oid = tradesdf[ix, idcol]
-        ismissing(oid) && continue  # no order id assigned to this lane
-        oids = String(oid)
-        (lowercase(strip(oids)) == NO_ORDER_ID || isempty(strip(oids))) && continue
-        info = getorder(xc, String(oid); auditevent=auditevent)
+        oid = _lane_orderid(tradesdf[ix, idcol])
+
+        # For a new row, lane id can be defaulted to `none`; reconcile from previous open lane state.
+        if isnothing(oid) && (ix > 1)
+            previd = _lane_orderid(tradesdf[ix - 1, idcol])
+            prevstatus = String(tradesdf[ix - 1, stcol])
+            if !isnothing(previd) && _isopenstatuslabel(prevstatus)
+                oid = previd
+                tradesdf[ix, idcol] = oid
+                tradesdf[ix, stcol] = tradesdf[ix - 1, stcol]
+                tradesdf[ix, filledcol] = tradesdf[ix - 1, filledcol]
+                tradesdf[ix, avgcol] = tradesdf[ix - 1, avgcol]
+                tradesdf[ix, msgcol] = tradesdf[ix - 1, msgcol]
+                if amountcol in propertynames(tradesdf)
+                    tradesdf[ix, amountcol] = tradesdf[ix - 1, amountcol]
+                end
+            end
+        end
+
+        isnothing(oid) && continue
+
+        info = getorder(xc, oid; auditevent=auditevent)
         if isnothing(info)
             tradesdf[ix, stcol] = "none"
+            tradesdf[ix, idcol] = NO_ORDER_ID
             continue
         end
         rawstatus = hasproperty(info, :status) ? String(info.status) : "unknown"
@@ -1492,6 +1520,20 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             if row_is_open_intent && (executed > 0.0)
                 tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
             end
+
+            # If the lane order closed this tick, materialize into position amounts immediately.
+            # Portfolio snapshot reconciliation later in sync_latest_trades_rows! remains authoritative.
+            if status == "closed"
+                if idcol == :lo_id
+                    tradesdf[ix, :lp_amount] = max(tradesdf[ix, :lp_amount], (executed))
+                elseif idcol == :so_id
+                    tradesdf[ix, :sp_amount] = max(tradesdf[ix, :sp_amount], (executed))
+                elseif idcol == :lc_id
+                    tradesdf[ix, :lp_amount] = max(0f0, tradesdf[ix, :lp_amount] - (executed))
+                elseif idcol == :sc_id
+                    tradesdf[ix, :sp_amount] = max(0f0, tradesdf[ix, :sp_amount] - (executed))
+                end
+            end
         end
         if hasproperty(info, :avgprice) && !ismissing(info.avgprice)
             tradesdf[ix, avgcol] = (info.avgprice)
@@ -1500,6 +1542,13 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             rr = String(info.rejectreason)
             if !isempty(strip(rr)) && (uppercase(rr) != "NO ERROR")
                 tradesdf[ix, msgcol] = log_trading_issue(xc, exchange(xc), rr)
+            end
+        end
+
+        if status in ("closed", "canceled", "rejected", "none")
+            tradesdf[ix, idcol] = NO_ORDER_ID
+            if amountcol in propertynames(tradesdf)
+                tradesdf[ix, amountcol] = 0f0
             end
         end
     end
@@ -1619,6 +1668,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     pair = _pairfromtradesrow(tradesdf, ix)
     base = pair.basecoin
     quotecoin = pair.quotecoin
+    symbol = symboltoken(xc, base, quotecoin)
     labelval = tradesdf[ix, :label]
     action = if labelval in (longopen, longstrongopen)
         :long_open
@@ -1699,55 +1749,79 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     end
 
     side = _ordersidefromaction(action)
+
+    _orderid(raw)::Union{Nothing, String} = begin
+        if isnothing(raw)
+            return nothing
+        elseif raw isa AbstractString
+            return String(raw)
+        elseif hasproperty(raw, :orderid)
+            return String(getproperty(raw, :orderid))
+        else
+            return nothing
+        end
+    end
+
+    _existing_orderid(raw)::Union{Nothing, String} = begin
+        sid = strip(String(raw))
+        return (isempty(sid) || (lowercase(sid) == NO_ORDER_ID)) ? nothing : sid
+    end
+
     oid = nothing
     try
         if action in [:long_open, :short_open]
             flip = _implicitflipplan(tradesdf, ix, action, limitprice)
             closeoid = nothing
             if flip.needed
-                existing_closeid = (tradesdf[ix, flip.close_id_col] == NO_ORDER_ID) || (tradesdf[ix, flip.close_id_col] == "") ? nothing : tradesdf[ix, flip.close_id_col]
-                closeoid = upsertcloseorder!(xc.bc, pair, flip.positionside, flip.closeqty, flip.closelimit; existing_orderid=existing_closeid, maker=true, reduceonly=true)
+                existing_closeid = _existing_orderid(tradesdf[ix, flip.close_id_col])
+                closeoid = upsertcloseorder!(xc.bc, symbol, flip.positionside, flip.closeqty, flip.closelimit; existing_orderid=existing_closeid, maker=true, reduceonly=true)
 
                 if isnothing(closeoid)
                     _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no close order id for action=$(action) pair=$(base)-$(quotecoin)")
                     # return (accepted=false, action=action, reason="missing_close_orderid") # not applicable because the order can be executed in the meanwhile, the open order still need tobe placed 
                 else
-                    closeoid = String(closeoid)
+                    closeoid = _orderid(closeoid)
+                    @assert !isnothing(closeoid) "close order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin); result=$(flip.close_id_col)"
                     tradesdf[ix, flip.close_id_col] = closeoid
                     tradesdf[ix, flip.close_status_col] = "submitted"
                 end
             end
 
-            existing_openid = (tradesdf[ix, idcol] == NO_ORDER_ID) || (tradesdf[ix, idcol] == "") ? nothing : tradesdf[ix, idcol]
+            existing_openid = _existing_orderid(tradesdf[ix, idcol])
             openside = action == :long_open ? :long : :short
-            oid = upsertopenorder!(xc.bc, pair, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
+            oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
             if isnothing(oid)
                 _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id for action=$(action) pair=$(base)-$(quotecoin)")
                 return (accepted=false, action=action, reason="missing_open_orderid")
             end
-            oid = String(oid)
+            oid = _orderid(oid)
+            @assert !isnothing(oid) "open order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
             tradesdf[ix, idcol] = oid
             tradesdf[ix, stcol] = "submitted"
             if flip.needed
                 _ = directsequence!(xc.bc, closeoid, oid)
             end
         elseif action == :long_close
-            existing_closeid = (tradesdf[ix, idcol] == NO_ORDER_ID) || (tradesdf[ix, idcol] == "") ? nothing : tradesdf[ix, idcol]
-            oid = upsertcloseorder!(xc.bc, pair, :long, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
+            existing_closeid = _existing_orderid(tradesdf[ix, idcol])
+            oid = upsertcloseorder!(xc.bc, symbol, :long, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
             if isnothing(oid)
                 _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for action=$(action) pair=$(base)-$(quotecoin)")
                 return (accepted=false, action=action, reason="missing_orderid")
             end
-            tradesdf[ix, idcol] = String(oid)
+            oid = _orderid(oid)
+            @assert !isnothing(oid) "close order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
+            tradesdf[ix, idcol] = oid
             tradesdf[ix, stcol] = "submitted"
         elseif action == :short_close
-            existing_closeid = (tradesdf[ix, idcol] == NO_ORDER_ID) || (tradesdf[ix, idcol] == "") ? nothing : tradesdf[ix, idcol]
-            oid = upsertcloseorder!(xc.bc, pair, :short, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
+            existing_closeid = _existing_orderid(tradesdf[ix, idcol])
+            oid = upsertcloseorder!(xc.bc, symbol, :short, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
             if isnothing(oid)
                 _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for action=$(action) pair=$(base)-$(quotecoin)")
                 return (accepted=false, action=action, reason="missing_orderid")
             end
-            tradesdf[ix, idcol] = String(oid)
+            oid = _orderid(oid)
+            @assert !isnothing(oid) "close order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
+            tradesdf[ix, idcol] = oid
             tradesdf[ix, stcol] = "submitted"
         else # no action
             return (accepted=true, action=action, reason="no_action")

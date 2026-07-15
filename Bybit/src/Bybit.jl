@@ -1333,7 +1333,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         push!(bc.closedorders, row)
     end
     if !isempty(closeix)
-        deleteat!(bc.orders, sort(closeix; rev=true))
+        deleteat!(bc.orders, sort!(unique!(closeix)))
     end
     return nothing
 end

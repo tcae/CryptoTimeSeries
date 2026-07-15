@@ -105,7 +105,6 @@ cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; sou
 
 # Override risk parameters.
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
-cache.mc[:audit_portfolio_snapshot_mode] = :session_start
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy")

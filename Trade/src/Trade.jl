@@ -781,8 +781,6 @@ end
 function trade!(cache::TradeCache, tradesdfdict::Dict)
     opencount = 0f0
     closequote = 0f0
-    freequote = nothing
-    equity = nothing
     for basecfg in eachrow(cache.cfg)
         base = uppercase(String(basecfg.basecoin))
         tradesix = tradesdfdict[base].rowix
@@ -795,19 +793,35 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
             tradesrow.label = ignore
             tradesrow.lo_limit = tradesrow.lc_limit = tradesrow.so_limit = tradesrow.sc_limit = 0f0
         else
-            ts.cfg.algorithm(ts.cfg, tradesdf, tradesix)
+            cache.ts.cfg.algorithm(cache.ts.cfg, tradesdf, tradesix)
             opencount += tradesrow.label in [shortstrongopen, shortopen, longopen, longstrongopen] ? 1 : 0
             if tradesrow.label in [shortstrongclose, shortclose, allclose, longstrongclose, longclose]
                 closequote += (tradesrow.lp_amount + tradesrow.sp_amount) * tradesrow.close
             end
         end
-        equity = isnothing(equity) ? tradesrow.equity : equity
-        freequote = isnothing(freequote) ? tradesrow.freequote : freequote
     end
 
-    tradeamount = min(freequote + closequote, equity, cache.mc[:maxbudgetquote]) 
-    tradeamount = tradeamount / opencount
+    assets = Xch.portfolio!(cache.xc)
+    quotefree = _portfolioquotevalue(assets)
+    freequote = ismissing(quotefree) ? 0f0 : quotefree
+    equity = _portfoliototal(assets)
+
+    maxbudgetquote = get(cache.mc, :maxbudgetquote, nothing)
+    availablequote = (freequote + closequote)
+    cappedquote = if isnothing(maxbudgetquote)
+        min(availablequote, equity)
+    else
+        cap = (maxbudgetquote)
+        if !isfinite(cap) || (cap <= 0.0)
+            min(availablequote, equity)
+        else
+            min(availablequote, equity, cap)
+        end
+    end
+
+    tradeamount = opencount > 0f0 ? (cappedquote / opencount) : 0f0
     tradeamount = min(tradeamount, equity * cache.mc[:maxassetfraction])  # limit per base to maxassetfraction of total equity
+    (verbosity >= 3) && println("$(tradetime(cache)) trade sizing: opencount=$(opencount), freequote=$(round(freequote, digits=4)), closequote=$(round(closequote, digits=4)), equity=$(round(equity, digits=4)), cappedquote=$(round(cappedquote, digits=4)), tradeamount=$(round(tradeamount, digits=4))")
 
     for basecfg in eachrow(cache.cfg)
         base = uppercase(String(basecfg.basecoin))
@@ -815,9 +829,9 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
         if tradesrow.label in [longopen, longstrongopen]
-            tradesrow.lp_amount = tradeamount
+            tradesrow.lo_amount = tradeamount
         elseif tradesrow.label in [shortstrongopen, shortopen]
-            tradesrow.sp_amount = tradeamount
+            tradesrow.so_amount = tradeamount
         end
         Xch.process_order_request(cache.xc, tradesdf, tradesix) #TODO check implementation
 
@@ -1314,7 +1328,7 @@ function _tradestep!(cache::TradeCache)
     # rowsbybase is a Dict[base] => (tradesdf, rowix, ohlcv) where rowix is the index of the current trade row.
 
     trade!(cache, rowsbybase)
-    _maybe_refresh_tradeselection!(cache; assets=assets_after)
+    _maybe_refresh_tradeselection!(cache; assets=Xch.balances(cache.xc))
     return nothing
 end
 
