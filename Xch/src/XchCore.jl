@@ -886,6 +886,7 @@ function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
             try
                 setcurrenttime!(xc, base, datetime)
             catch err
+                err isa InterruptException && rethrow(err)
                 (verbosity >= 2) && @warn "setcurrenttime!($base, $datetime) failed; skipping base" exception=sprint(showerror, err)
                 removebase!(xc, base)
             end
@@ -1325,9 +1326,9 @@ function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::I
 end
 
 "Return the current account snapshot used by Trade loop orchestration."
-function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5)
-    balancesdf = balances(xc; ignoresmallvolume=false)
-    assetsdf = portfolio!(xc, balancesdf; ignoresmallvolume=false)
+function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, assetsdf=nothing)
+    balancesdf = isnothing(balancesdf) ? balances(xc; ignoresmallvolume=false) : DataFrame(balancesdf; copycols=true)
+    assetsdf = isnothing(assetsdf) ? portfolio!(xc, balancesdf; ignoresmallvolume=false) : DataFrame(assetsdf; copycols=true)
     capacity = accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
     quotecoin = uppercase(String(EnvConfig.pairquote))
     freequote = 0.0
@@ -1567,10 +1568,10 @@ currently in `xc.bases` are synced.
 
 Returns `Dict{String, NamedTuple{(:tradesdf, :rowix)}}` keyed by uppercase base.
 """
-function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing)
+function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
     quotecoin = uppercase(String(EnvConfig.pairquote))
-    acct = account_status(xc; force_refresh=true, ttl_seconds=0)
-    balancesdf = acct.balances
+    acct = isnothing(acct) ? account_status(xc; force_refresh=true, ttl_seconds=0) : acct
+    balancesdf = acct.assets
 
     bases_to_sync = String[]
     if isnothing(syncpairs)
@@ -1827,6 +1828,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             return (accepted=true, action=action, reason="no_action")
         end
     catch err
+        err isa InterruptException && rethrow(err)
         logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
         if action == :long_open
             tradesdf[ix, :lo_msg] = logged
@@ -1948,6 +1950,7 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
                 ohlcv = try
                     setcurrenttime!(xc, portfoliodf[bix, :coin], xc.currentdt)
                 catch err
+                    err isa InterruptException && rethrow(err)
                     (verbosity >= 3) && @warn "portfolio!: skipping price fetch for $(portfoliodf[bix, :coin]) — unknown or unsupported pair" exception=sprint(showerror, err)
                     push!(usdtprice, 0f0)
                     continue

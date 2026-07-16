@@ -9,6 +9,14 @@ module Trade
 using Dates, DataFrames, Profile, Logging, CSV, Statistics
 using EnvConfig, Ohlcv, Xch, Features, Targets, TradingStrategy
 
+function _summarize_symbols(symbols; limit::Int=8)::String
+    values = sort!(String.(collect(symbols)))
+    total = length(values)
+    shown = values[1:min(limit, total)]
+    suffix = total > limit ? ", ..." : ""
+    return "count=$(total) [$(join(shown, ", "))$(suffix)]"
+end
+
 """
 - buysell is the normal trade mode
 - closeonly disables opening trades and only closes existing long/short positions
@@ -409,6 +417,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg = select(usdtdf, :basecoin, :quotevolume24h => (x -> x ./ 1000000) => :quotevolume24h_M, :pricechangepercent, :lastprice)
     if size(tc.cfg, 1) == 0
         tc.cfg[:, :datetime] = DateTime[]
+        tc.cfg[:, :pair] = String[]
         tc.cfg[:, :minquotevol] = Bool[]
         tc.cfg[:, :continuousminvol] = Bool[]
         tc.cfg[:, :inportfolio] = Bool[]
@@ -419,6 +428,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         (verbosity >= 1) && @warn "no basecoins selected - empty result tc.cfg=$(tc.cfg)"
         return tc
     end
+    tc.cfg[:, :pair] = [Xch.tradingpairkey(String(base), quotecoin) for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :datetime] .= datetime
     # tc.cfg[:, :validbase] = [Xch.validbase(tc.xc, base) for base in tc.cfg[!, :basecoin]] # is already filtered by getUSDTmarket
     minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) # ignore allcoins with less than liquiddailyminimumquotevolume
@@ -479,13 +489,15 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     xcbases = Xch.bases(tc.xc)
     classifierbases = TradingStrategy.acceptedbases(rt)
     classifierbaseset = Set(classifierbases)
-    @assert Set(xcbases) == classifierbaseset "Set(xcbases)=$(xcbases) != Set(classifierbases)=$(classifierbases)"
+    missing_in_classifier = setdiff(Set(xcbases), classifierbaseset)
+    missing_in_xc = setdiff(classifierbaseset, Set(xcbases))
+    @assert isempty(missing_in_classifier) && isempty(missing_in_xc) "exchange/classifier base mismatch: xc=$(_summarize_symbols(xcbases)), classifier=$(_summarize_symbols(classifierbases)), xc_only=$(_summarize_symbols(missing_in_classifier)), classifier_only=$(_summarize_symbols(missing_in_xc))"
 
     tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
     _sync_tradeflags!(tc; assetonly=assetonly)
     (verbosity >= 4) && println("$(Xch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
     # tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
-    (verbosity >= 2) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases($(length(classifierbases)))=$(classifierbases) ")
+    (verbosity >= 2) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases=$(_summarize_symbols(classifierbases))")
 
     if !assetonly
         (verbosity >= 2) && println("\r$(Xch.ttstr(tc.xc)) trained trade config on the fly including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
@@ -493,7 +505,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     return tc
 end
 
-function trade!(cache::TradeCache, tradesdfdict::Dict)
+function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame)
     opencount = 0f0
     closequote = 0f0
     for basecfg in eachrow(cache.cfg)
@@ -516,7 +528,6 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
         end
     end
 
-    assets = Xch.portfolio!(cache.xc)
     quotefree = _portfolioquotevalue(assets)
     freequote = ismissing(quotefree) ? 0f0 : quotefree
     equity = _portfoliototal(assets)
@@ -617,6 +628,21 @@ function _mark_tradeselection_refreshed!(cache::TradeCache)
     return cache
 end
 
+function _summarize_cfg(cfg::AbstractDataFrame)::String
+    rows = size(cfg, 1)
+    bases = (:basecoin in names(cfg)) ? String.(cfg[!, :basecoin]) : String[]
+    buys = (:buyenabled in names(cfg)) ? sum(cfg[!, :buyenabled]) : 0
+    sells = (:sellenabled in names(cfg)) ? sum(cfg[!, :sellenabled]) : 0
+    return "rows=$(rows), bases=$(_summarize_symbols(bases)), buyenabled=$(buys), sellenabled=$(sells)"
+end
+
+function _summarize_openorders(oo::AbstractDataFrame)::String
+    rows = size(oo, 1)
+    symbols = (:symbol in names(oo)) ? String.(oo[!, :symbol]) : String[]
+    sides = (:side in names(oo)) ? String.(oo[!, :side]) : String[]
+    return "rows=$(rows), symbols=$(_summarize_symbols(symbols)), sides=$(_summarize_symbols(sides))"
+end
+
 function _maybe_refresh_tradeselection!(cache::TradeCache; assets::Union{Nothing, AbstractDataFrame}=nothing)
     if !_should_refresh_tradeselection(cache)
         return false
@@ -626,7 +652,7 @@ function _maybe_refresh_tradeselection!(cache::TradeCache; assets::Union{Nothing
     tradeselection!(cache, assets_df[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
     cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
     _mark_tradeselection_refreshed!(cache)
-    (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(cache.cfg)"
+    (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(_summarize_cfg(cache.cfg))"
     return true
 end
 
@@ -640,19 +666,20 @@ Called by the loop runners once per iterate step.
 function _tradestep!(cache::TradeCache)
     (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
 
-    syncpairs = [Xch.tradingpairkey(String(base), EnvConfig.pairquote) for base in cache.cfg[!, :basecoin]]
-    rowsbybase = Xch.sync_latest_trades_rows!(cache.xc, syncpairs)
+    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0)
+        syncpairs = String.(cache.cfg[!, :pair])
+    rowsbybase = Xch.sync_latest_trades_rows!(cache.xc, syncpairs; acct=acct)
     # rowsbybase is a Dict[base] => (tradesdf, rowix, ohlcv) where rowix is the index of the current trade row.
 
-    trade!(cache, rowsbybase)
-    _maybe_refresh_tradeselection!(cache; assets=Xch.balances(cache.xc))
+    trade!(cache, rowsbybase; assets=acct.assets)
+    _maybe_refresh_tradeselection!(cache; assets=acct.assets)
     return nothing
 end
 
 "Load or derive the initial trade configuration if `cache.cfg` is empty."
 function _ensure_tradeloop_initialized!(cache::TradeCache)
     if size(cache.cfg, 1) == 0
-        assets = Xch.balances(cache.xc)
+        assets = Xch.portfolio!(cache.xc)
         (verbosity >= 2) && print("\r$(tradetime(cache)): start calculating trading strategy on the fly")
         tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
         cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
@@ -664,10 +691,13 @@ end
 function _tradefinish!(cache::TradeCache)
     (verbosity >= 2) && println("$(tradetime(cache)): finished trading core loop")
     oo = Xch.getopenorders(cache.xc)
-    (verbosity >= 3) && @info (size(oo, 1) > 0) ? "$(EnvConfig.now()): open orders snapshot $(oo)" : "$(EnvConfig.now()): no open orders"
+    (verbosity >= 3) && @info (size(oo, 1) > 0) ? "$(EnvConfig.now()): open orders summary $(_summarize_openorders(oo))" : "$(EnvConfig.now()): no open orders"
     (verbosity >= 2) && @info "$(EnvConfig.now()): open orders $(size(oo, 1))"
     assets = Xch.portfolio!(cache.xc)
-    (verbosity >= 3) && @info "assets = $assets"
+    if verbosity >= 3
+        assetcoins = (:coin in names(assets)) ? String.(assets[!, :coin]) : String[]
+        @info "assets summary: rows=$(size(assets, 1)), coins=$(_summarize_symbols(assetcoins))"
+    end
     (verbosity >= 2) && @info "total $(EnvConfig.pairquote) = $(sum(assets.usdtvalue))"
 end
 
