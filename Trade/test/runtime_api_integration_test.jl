@@ -65,6 +65,54 @@ function TradingStrategy.preparebases!(
     return nothing
 end
 
+function _prepare_strategy_runtime_for_cfg!(cache::TradeCache, datetime::DateTime; updatecache::Bool=false)::Nothing
+    hasproperty(cache.cfg, :basecoin) || return nothing
+    size(cache.cfg, 1) == 0 && return nothing
+
+    rt = Trade._strategyruntime(cache)
+    bases = String.(cache.cfg[!, :basecoin])
+    isempty(bases) && return nothing
+
+    TradingStrategy.preparebases!(rt, cache.xc, bases; datetime=datetime, updatecache=updatecache)
+    return nothing
+end
+
+function _collect_strategy_row(cache::TradeCache, base::AbstractString)
+    dt = cache.xc.currentdt
+    isnothing(dt) && return nothing
+    rt = Trade._strategyruntime(cache)
+    rowmeta = TradingStrategy.gettradesrow!(rt, cache.xc, uppercase(String(base)), dt)
+    isnothing(rowmeta) && return nothing
+    return (tradesdf=rowmeta.tradesdf, rowix=Int(rowmeta.rowix))
+end
+
+"Blacklist one base in the current runtime config to avoid repeated order attempts."
+function _blacklistbase!(cache::TradeCache, base::AbstractString, reason::AbstractString)::Nothing
+    base_upper = uppercase(String(base))
+    blacklist = get!(cache.mc, :blacklistbases, String[])
+    !(base_upper in blacklist) && push!(blacklist, base_upper)
+
+    if !hasproperty(cache.cfg, :basecoin)
+        (verbosity >= 1) && @warn "blacklisted base cannot be removed from runtime config because :basecoin column is missing" base=base_upper reason=String(reason)
+        return nothing
+    end
+
+    rowix = findfirst(==(base_upper), cache.cfg[!, :basecoin])
+    if isnothing(rowix)
+        (verbosity >= 1) && @warn "blacklisted base not found in runtime config" base=base_upper reason=String(reason)
+        return nothing
+    end
+    cache.cfg = cache.cfg[cache.cfg[!, :basecoin] .!= base_upper, :]
+    try
+        Xch.removebase!(cache.xc, base_upper)
+    catch err
+        (verbosity >= 1) && @warn "failed removing blacklisted base from exchange cache" base=base_upper error=sprint(showerror, err)
+    end
+    (verbosity >= 1) && @warn "removed blacklisted base from trading universe" base=base_upper reason=String(reason)
+    return nothing
+end
+
+
 @testset "Blacklisted base removal stays outside runtime until prepare" begin
     EnvConfig.init(EnvConfig.test)
 
@@ -78,7 +126,7 @@ end
     @test !isnothing(Trade._strategyruntime(tc))
     @test tc.ts.cfg == rt.cfg
 
-    Trade._blacklistbase!(tc, "BTC", "test")
+    _blacklistbase!(tc, "BTC", "test")
     @test tc.mc[:blacklistbases] == ["BTC"]
     @test tc.cfg[!, :basecoin] == ["ETH"]
     @test "BTC" in TradingStrategy.acceptedbases(rt)
@@ -111,7 +159,7 @@ end
     )
     tc.ts = rt
 
-    rowstate = Trade._collect_strategy_row(tc, "BTC")
+    rowstate = _collect_strategy_row(tc, "BTC")
 
     @test !isnothing(rowstate)
     @test rowstate.tradesdf[rowstate.rowix, :label] == Targets.longopen
@@ -137,7 +185,7 @@ end
     tc.ts = rt
 
     dt = DateTime("2026-05-30T12:34:00")
-    Trade._prepare_strategy_runtime_for_cfg!(tc, dt; updatecache=true)
+    _prepare_strategy_runtime_for_cfg!(tc, dt; updatecache=true)
 
     @test !isempty(TEST_PREPARE_CALLS)
     @test length(TEST_PREPARE_CALLS) == 1

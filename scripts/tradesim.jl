@@ -42,9 +42,10 @@ const MAX_ASSET_FRACTION = 0.1f0
 
 # Strategy parameters used by the backtest.
 const CONFIG_REF = get(ENV, "TRADESIM_CONFIG_REF", "046")
+const CLFOLDER = get(ENV, "TRADESIM_CLFOLDER", "test") # training
 const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
-const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "training")
+const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, CLFOLDER)
 
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
