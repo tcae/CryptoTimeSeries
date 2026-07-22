@@ -67,6 +67,66 @@ function tradesdf_all_contributors()::Vector{Function}
     return vcat(xch_tradesdf_contributors(), tradingstrategy_tradesdf_contributors(), trade_tradesdf_contributors())
 end
 
+"""
+    collecttradesdf(xc)
+
+Collect per-pair Trades tables from `xc` into one DataFrame suitable for
+persisting and cross-script comparisons.
+"""
+function collecttradesdf(xc::XchCache)::DataFrame
+    pairkeys = tradingpairs(xc)
+    if isempty(pairkeys)
+        return DataFrame()
+    end
+
+    parts = DataFrame[]
+    for pair in pairkeys
+        tdf = trades(xc, pair)
+        size(tdf, 1) > 0 || continue
+        push!(parts, tdf)
+    end
+    if isempty(parts)
+        return DataFrame()
+    end
+
+    tradesdf = reduce(vcat, parts; cols=:union)
+    sortcols = Symbol[]
+    for col in (:coin, :set, :rangeid, :pair, :opentime)
+        (col in names(tradesdf)) && push!(sortcols, col)
+    end
+    !isempty(sortcols) && sort!(tradesdf, sortcols)
+    return tradesdf
+end
+
+"""
+    savetradesdf(tradesdf; stem="trades")
+
+Persist one Trades DataFrame in the current log folder as `<stem>.arrow`.
+"""
+function savetradesdf(tradesdf::AbstractDataFrame; stem::AbstractString="trades")::String
+    return EnvConfig.savedf(DataFrame(tradesdf; copycols=false), String(stem))
+end
+
+"""
+    savetradesdf(xc; stem="trades")
+
+Collect and persist the combined Trades DataFrame from one `XchCache`.
+"""
+function savetradesdf(xc::XchCache; stem::AbstractString="trades")::String
+    return savetradesdf(collecttradesdf(xc); stem=stem)
+end
+
+"""
+    readtradesdf(; stem="trades")
+
+Load one Trades DataFrame from the current log folder, returning an empty
+DataFrame when the file is missing.
+"""
+function readtradesdf(; stem::AbstractString="trades")::DataFrame
+    loaded = EnvConfig.readdf(String(stem))
+    return isnothing(loaded) ? DataFrame() : DataFrame(loaded; copycols=false)
+end
+
 
 
 #region Xch ownership

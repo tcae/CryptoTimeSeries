@@ -27,7 +27,18 @@ const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 # Backtest time range (UTC).
 const BACKTEST_STARTDT = DateTime("2025-07-01T01:00:00")
 const BACKTEST_ENDDT   = DateTime("2025-07-30T01:00:00")
-const BACKTEST_BASES = ["SINE"] # nothing
+
+function env_bases(default_bases::Vector{String})::Vector{String}
+    raw = strip(get(ENV, "TRADESIM_BASES", ""))
+    if isempty(raw)
+        return default_bases
+    end
+    bases = [uppercase(strip(token)) for token in split(raw, ",") if !isempty(strip(token))]
+    @assert !isempty(bases) "TRADESIM_BASES must contain at least one base symbol when provided"
+    return unique(bases)
+end
+
+const BACKTEST_BASES = env_bases(["SINE"])
 
 # Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
 const TRADE_MODE = Trade.buysell
@@ -48,8 +59,10 @@ const CONFIG_NAME = String(CONFIG.configname)
 const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, CLFOLDER)
 
 # Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = "tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
-const ORDERS_SUBFOLDER = joinpath(LOG_SUBFOLDER, "orders")
+const LOG_SUBFOLDER = begin
+    raw = strip(get(ENV, "TRADESIM_LOG_SUBFOLDER", ""))
+    isempty(raw) ? ("tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))) : raw
+end
 
 "Return ORDER_FILLED events as a DataFrame."
 function filled_orders_df(xc::Xch.XchCache)::DataFrame
@@ -341,7 +354,9 @@ Trade.run_backtest!(cache)
 # ─────────────────────────────────────────────────────────────────────────────
 
 backtest_report(cache, run_startdt, run_enddt)
+EnvConfig.setdebugpath(LOG_SUBFOLDER)
+tradespath = Xch.savetradesdf(xc; stem="trades-ts")
+println("$(EnvConfig.now()): saved trades dataframe to $tradespath")
 
 # Keep legacy debug-path split for parity with previous script layout.
-EnvConfig.setdebugpath(ORDERS_SUBFOLDER)
 println("$(EnvConfig.now()): order history report derived from xc.pairstates trades data")

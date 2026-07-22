@@ -43,6 +43,8 @@ mutable struct TrendDetectorConfig
     partitionconfig::NamedTuple
     coins::Vector{String}
     classbalancing::Bool
+    featuresdf::Union{DataFrame, Nothing}
+    targetsdf::Union{DataFrame, Nothing}
     function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, classifiertype::Type{<:Classify.AbstractClassifier}=Classify.TrendClassifier001, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=TradingStrategy.partitionconfig02(), coins, classbalancing=true)
         EnvConfig.setlogpath(folder)
         EnvConfig.setdfformat!(:arrow)
@@ -52,7 +54,7 @@ mutable struct TrendDetectorConfig
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
         (verbosity >= 2) && println("classbalancing=$(classbalancing)")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, classifiertype, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing)
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, classifiertype, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing, nothing, nothing)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
@@ -224,14 +226,16 @@ end
 
 function getfeaturestargetsdf(cfg::TrendDetectorConfig)
     resultsdf = featuresdf = nothing
-    (verbosity >= 2) && println("$(EnvConfig.now()) get features and targets                             ")
+    if !isnothing(cfg.featuresdf) && !isnothing(cfg.targetsdf)
+        resultsdf = cfg.targetsdf
+        featuresdf = cfg.featuresdf
+    else
+        resultsdf, featuresdf, cachedcoins = _concat_coin_featuretarget_caches(cfg)
+        if !isnothing(resultsdf)
+            (verbosity >= 2) && println("$(EnvConfig.now()) using $(length(cachedcoins)) coin-specific cached trend feature/target pairs")
+        end
+        (verbosity >= 2) && println("$(EnvConfig.now()) get features and targets                             ")
 
-    resultsdf, featuresdf, cachedcoins = _concat_coin_featuretarget_caches(cfg)
-    if !isnothing(resultsdf)
-        (verbosity >= 2) && println("$(EnvConfig.now()) using $(length(cachedcoins)) coin-specific cached trend feature/target pairs")
-    end
-
-    if isnothing(resultsdf)
         cl = _trendclassifierseed(cfg)
         rangeid = UInt16(1) # shall be unique across coins
         skippedcoins = String[]
@@ -308,6 +312,8 @@ function getfeaturestargetsdf(cfg::TrendDetectorConfig)
         (verbosity >= 2) && println("$(EnvConfig.now()) processed $(length(processedcoins)), skipped $(length(skippedcoins)) coins")
         (verbosity >= 3) && println("$(EnvConfig.now()) processed $processedcoins")
         (verbosity >= 3) && (length(skippedcoins) > 0) && println("skipped to process $skippedcoins due to no liquid ranges")
+        cfg.targetsdf = resultsdf
+        cfg.featuresdf = featuresdf
     end
 
     @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(featuresdf, 1) > 0) "unexpected resultsdf and featuresdf size with resultsdf size $(isnothing(resultsdf) ? "nothing" : size(resultsdf, 1)) and featuresdf size $(isnothing(featuresdf) ? "nothing" : size(featuresdf, 1))"
@@ -329,12 +335,17 @@ end
 
 classifiermenmonic(coins=nothing, coinix=nothing) = "mix"
 
+function _classifierfolder(cfg::TrendDetectorConfig)::String
+    override = strip(get(ENV, "TRENDDETECTOR_CLASSIFIER_FOLDER", ""))
+    return isempty(override) ? cfg.folder : override
+end
+
 function _trendclassifierspec(cfg::TrendDetectorConfig)
     return (
         config_ref=cfg.configname,
         featconfig=() -> cfg.featconfig,
         targetconfig=() -> cfg.targetconfig,
-        folder=cfg.folder,
+        folder=_classifierfolder(cfg),
     )
 end
 
@@ -351,7 +362,7 @@ function _trendclassifierseed(cfg::TrendDetectorConfig)::Classify.AbstractClassi
         mnemonic,
         cfg.classifiermodel;
         mode=EnvConfig.configmode,
-        folder=cfg.folder,
+        folder=_classifierfolder(cfg),
     )
 end
 
@@ -374,7 +385,7 @@ function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassi
             retrain=retrain,
             save_after=true,
             mode=EnvConfig.configmode,
-            folder=cfg.folder,
+            folder=_classifierfolder(cfg),
         )
         (verbosity >= 3) && showlosses(model)
         println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(cl) ? "did" : "did not") converge")
@@ -596,24 +607,8 @@ function getgainsdf(cfg::TrendDetectorConfig)
         end
     end
 
-    pairkeys = Xch.tradingpairs(xc)
-    if !isempty(pairkeys)
-        tradeparts = DataFrame[]
-        for pair in pairkeys
-            tdf = Xch.trades(xc, pair)
-            size(tdf, 1) > 0 || continue
-            push!(tradeparts, DataFrame(tdf; copycols=true))
-        end
-        if !isempty(tradeparts)
-            tradesv1 = reduce(vcat, tradeparts; cols=:union)
-            sortcols = Symbol[]
-            for c in [:coin, :set, :rangeid, :opentime]
-                (c in names(tradesv1)) && push!(sortcols, c)
-            end
-            !isempty(sortcols) && sort!(tradesv1, sortcols)
-            TradingStrategy.savetrades(tradesv1; stem="tradesV1")
-        end
-    end
+    EnvConfig.setlogpath(cfg.folder)
+    Xch.savetradesdf(xc; stem="trades-td")
 
     (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")
     return gaindf
@@ -859,6 +854,7 @@ end
 
 function gainspipeline(cfg)
     # getclassifier(cfg) # ensure preparation of baseline mix classifier
+    getfeaturestargetsdf(cfg)
     cmdf, xcmdf = getconfusionmatrices(cfg)
     @assert isnothing(cmdf) == isnothing(xcmdf) "unexpected cmdf and xcmdf existence mismatch with isnothing(cmdf)=$(isnothing(cmdf)) and isnothing(xcmdf)=$(isnothing(xcmdf))"
     if !isnothing(cmdf) && (size(cmdf, 1) > 0)
@@ -999,6 +995,12 @@ function _parse_bool(raw::AbstractString)::Bool
     error("classbalancing=$(raw) must be one of true/false, yes/no, on/off, 1/0")
 end
 
+function _parse_csv_tokens(raw::AbstractString)::Vector{String}
+    tokens = [uppercase(strip(token)) for token in split(String(raw), ",") if !isempty(strip(token))]
+    @assert !isempty(tokens) "coins=$(raw) must provide at least one non-empty token"
+    return unique(tokens)
+end
+
 function _clear_test_trade_cache!()
     EnvConfig.deletefolder("trades")
     return nothing
@@ -1081,6 +1083,18 @@ Key=value parameters:
       Apply inverse-frequency class weights during training.
       Default: preset value (for `029`: `false`)
 
+  startdt=<DateTime>
+      Override start datetime (ISO-8601 format).
+      Example: `2025-07-01T01:00:00`
+
+  enddt=<DateTime>
+      Override end datetime (ISO-8601 format).
+      Example: `2025-07-30T01:00:00`
+
+  coins=<CSV>
+      Override trading pair bases as a comma-separated list.
+      Example: `coins=SINE,BTC,ETH`
+
 Fixed date defaults:
   train startdt: `2017-11-17T20:56:00`
   test startdt: `2025-01-17T20:56:00`
@@ -1142,9 +1156,23 @@ function main(args::Vector{String}=ARGS)
         EnvConfig.verbosity = 1
         Classify.verbosity = 1
         allowedcoins = ["SINE"] # , "DOUBLESINE"
-        startdt = DateTime("2025-07-01T01:00:00")
-        enddt = DateTime("2025-07-30T01:00:00")
+        startdt = DateTime("2025-07-01T04:01:00")
+        enddt = DateTime("2025-07-20T04:01:00") # DateTime("2025-07-30T01:00:00")
     end
+
+    startdt_arg = _argvalue(args, "startdt", nothing)
+    if !isnothing(startdt_arg)
+        startdt = DateTime(String(startdt_arg))
+    end
+    enddt_arg = _argvalue(args, "enddt", nothing)
+    if !isnothing(enddt_arg)
+        enddt = DateTime(String(enddt_arg))
+    end
+    coins_arg = _argvalue(args, "coins", nothing)
+    if !isnothing(coins_arg)
+        allowedcoins = _parse_csv_tokens(String(coins_arg))
+    end
+    @assert startdt <= enddt "startdt=$(startdt) must be <= enddt=$(enddt)"
 
     EnvConfig.setcoinspath!("Bybit")
     (verbosity >= 2) && println("coinspath: $(EnvConfig.coinspath())")

@@ -1739,13 +1739,14 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     orderamount = tradesdf[ix, orderamountcol]
 
     if !(orderamount > 0f0)
-        _rejectedrequest!(xc, tradesdf, ix, action, "amount=$(orderamount) is not tradable for action=$(action) pair=$(base)-$(quotecoin)")
+        _rejectedrequest!(xc, tradesdf, ix, action, "amount is not tradable")
         return (accepted=false, action=action, reason="amount_not_positive")
     end
 
     minqty = minimumbasequantity(xc, base, tradesdf[ix, :close])
     if orderamount < minqty
-        _rejectedrequest!(xc, tradesdf, ix, action, "base amount=$(orderamount) below minimum base qty $(minqty) for pair=$(base)-$(quotecoin)")
+        _rejectedrequest!(xc, tradesdf, ix, action, "base amount below minimum quantity")
+        # _rejectedrequest!(xc, tradesdf, ix, action, "base amount=$(orderamount) below minimum base qty $(minqty) for pair=$(base)-$(quotecoin)")
         return (accepted=false, action=action, reason="below_minimum_qty")
     end
 
@@ -1778,7 +1779,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
                 closeoid = upsertcloseorder!(xc.bc, symbol, flip.positionside, flip.closeqty, flip.closelimit; existing_orderid=existing_closeid, maker=true, reduceonly=true)
 
                 if isnothing(closeoid)
-                    _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no close order id for action=$(action) pair=$(base)-$(quotecoin)")
+                    _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no close order id")
                     # return (accepted=false, action=action, reason="missing_close_orderid") # not applicable because the order can be executed in the meanwhile, the open order still need tobe placed 
                 else
                     closeoid = _orderid(closeoid)
@@ -1792,7 +1793,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             openside = action == :long_open ? :long : :short
             oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
             if isnothing(oid)
-                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id for action=$(action) pair=$(base)-$(quotecoin)")
+                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id")
                 return (accepted=false, action=action, reason="missing_open_orderid")
             end
             oid = _orderid(oid)
@@ -1806,7 +1807,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             existing_closeid = _existing_orderid(tradesdf[ix, idcol])
             oid = upsertcloseorder!(xc.bc, symbol, :long, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
             if isnothing(oid)
-                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for action=$(action) pair=$(base)-$(quotecoin)")
+                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for long close")
                 return (accepted=false, action=action, reason="missing_orderid")
             end
             oid = _orderid(oid)
@@ -1817,7 +1818,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
             existing_closeid = _existing_orderid(tradesdf[ix, idcol])
             oid = upsertcloseorder!(xc.bc, symbol, :short, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
             if isnothing(oid)
-                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for action=$(action) pair=$(base)-$(quotecoin)")
+                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for short close")
                 return (accepted=false, action=action, reason="missing_orderid")
             end
             oid = _orderid(oid)

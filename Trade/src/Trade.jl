@@ -291,11 +291,11 @@ end
 """Synchronize `buyenabled` and `sellenabled` flags from the currently computed criteria columns."""
 function _sync_tradeflags!(tc::TradeCache; assetonly::Bool=false)
     if assetonly
-        tc.cfg[:, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
-        tc.cfg[:, :sellenabled] .= tc.cfg[!, :inportfolio]
+        tc.cfg[!, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
+        tc.cfg[!, :sellenabled] .= tc.cfg[!, :inportfolio]
     else
-        tc.cfg[:, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :minquotevol] .&& tc.cfg[!, :continuousminvol] .&& .!tc.cfg[!, :blacklisted]
-        tc.cfg[:, :sellenabled] .= tc.cfg[:, :buyenabled] .|| tc.cfg[!, :inportfolio]
+        tc.cfg[!, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :minquotevol] .&& tc.cfg[!, :continuousminvol] .&& .!tc.cfg[!, :blacklisted]
+        tc.cfg[!, :sellenabled] .= tc.cfg[!, :buyenabled] .|| tc.cfg[!, :inportfolio]
     end
     return tc
 end
@@ -436,8 +436,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in portfolioassetbaseset for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
-    tc.cfg[:, :buyenabled] .= false
-    tc.cfg[:, :sellenabled] .= false
+    tc.cfg[!, :buyenabled] .= false
+    tc.cfg[!, :sellenabled] .= false
     tc.cfg[:, :blacklisted] = [base in blacklistset for base in tc.cfg[!, :basecoin]]
 
     # download latest OHLCV and classifier features
@@ -650,7 +650,7 @@ function _maybe_refresh_tradeselection!(cache::TradeCache; assets::Union{Nothing
     assets_df = isnothing(assets) ? Xch.portfolio!(cache.xc) : assets
     (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
     tradeselection!(cache, assets_df[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
-    cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
+    cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[!, :sellenabled]), :]
     _mark_tradeselection_refreshed!(cache)
     (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(_summarize_cfg(cache.cfg))"
     return true
@@ -682,7 +682,7 @@ function _ensure_tradeloop_initialized!(cache::TradeCache)
         assets = Xch.portfolio!(cache.xc)
         (verbosity >= 2) && print("\r$(tradetime(cache)): start calculating trading strategy on the fly")
         tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
-        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[:, :sellenabled]), :]
+        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[!, :sellenabled]), :]
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
 end
@@ -712,6 +712,7 @@ function _run_tradeloop!(cache::TradeCache)
         for c in cache.xc
             st = _waitforactive_loopstate!(cache)
             (st == loop_stopping) && break
+            print("\r$(tradetime(cache))             ")
             _tradestep!(cache)
         end
     catch ex

@@ -441,7 +441,7 @@ logpath(file) = normpath(joinpath(logfilespath, file))
 logsubfolder() = splitpath(logfilespath)[end] == logfilesfolder ? "" : splitpath(logfilespath)[end]
 logfolder() = logfilespath
 
-const defaultdfformat = Ref{Symbol}(:jdf)
+const defaultdfformat = Ref{Symbol}(:arrow)
 
 "Return the preferred default storage format for `savedf` / `readdf`."
 dfformat() = defaultdfformat[]
