@@ -25,8 +25,8 @@ using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, 
 const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 
 # Backtest time range (UTC).
-const BACKTEST_STARTDT = DateTime("2025-07-01T01:00:00")
-const BACKTEST_ENDDT   = DateTime("2025-07-30T01:00:00")
+const BACKTEST_STARTDT = DateTime("2025-07-01T04:01:00")
+const BACKTEST_ENDDT   = DateTime("2025-07-02T03:59:00")
 
 function env_bases(default_bases::Vector{String})::Vector{String}
     raw = strip(get(ENV, "TRADESIM_BASES", ""))
@@ -47,6 +47,9 @@ const QUOTE_COIN = "USDT"
 
 # Initial quote-asset balance used in simulation mode (cryptoxchsim).
 const INITIAL_QUOTE_BALANCE = 1000.0
+
+# Maximum budget in quote coin allocated in total
+const MAX_BUDGET_QUOTE = 500f0
 
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
@@ -336,6 +339,7 @@ ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
 # Override risk parameters.
 cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
+cache.mc[:maxbudgetquote]   = MAX_BUDGET_QUOTE
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")

@@ -1399,7 +1399,7 @@ function _implicitflipplan(tradesdf::DataFrame, ix::Integer, action::Symbol, ope
         return (needed=closeqty > 0.0, positionside=:short, closeqty=closeqty, closelimit=closelimit, close_id_col=:sc_id, close_status_col=:sc_status, close_filled_col=:sc_filled, close_pavg_col=:sc_pavg)
     elseif action == :short_open
         closeqty = tradesdf[ix, :lp_amount]
-        closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : max(tradesdf[ix, :sc_limit], open_limitprice)
+        closelimit = (tradesdf[ix, :lc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : max(tradesdf[ix, :lc_limit], open_limitprice)
         # closelimit = 0f0 means adaptive maker price that follows the market price
         return (needed=closeqty > 0.0, positionside=:long, closeqty=closeqty, closelimit=closelimit, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lc_filled, close_pavg_col=:lc_pavg)
     end
@@ -1415,7 +1415,7 @@ function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
 end
 
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
-    logged = log_trading_issue(xc, "Trading", message)
+    logged = log_trading_issue(xc, "Xch", message)
     if action == :long_open
         tradesdf[ix, :lo_status] = "rejected"
         tradesdf[ix, :lo_msg] = logged

@@ -85,10 +85,10 @@ mutable struct TradeCache
         cache.mc[:blacklistbases] = String[] # bases excluded from new trading; held positions may still be closed
         cache.mc[:maxassetfraction] = 0.1f0 # defines the maximum ratio of (a specific asset) / ( total assets) - only close trades, if this is exceeded
         cache.mc[:maxbudgetquote] = nothing # optional overall quote-currency budget cap; if set, trading uses min(totalusdt, maxbudgetquote)
+        cache.mc[:minorderquote] = 10f0
         cache.mc[:reloadtimes] = [Time("04:00:00")]
         cache.mc[:last_traderefresh_dt] = nothing
         cache.mc[:trademode] = trademode  # see TradeMode definition above
-        cache.mc[:managed_close_orders] = Dict{String, Dict{Symbol, Any}}()  # per-base reconstructed/managed close orders
         cache.mc[:loop_state] = loop_idle
         (verbosity >= 4) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), maxbudgetquote = $(cache.mc[:maxbudgetquote]), reloadtimes = $(cache.mc[:reloadtimes]), blacklistbases = $(cache.mc[:blacklistbases])")
         return cache
@@ -506,8 +506,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 end
 
 function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame)
-    opencount = 0f0
-    closequote = 0f0
+    opencount = 0
+    closequote = posquote = 0f0
     for basecfg in eachrow(cache.cfg)
         base = uppercase(String(basecfg.basecoin))
         tradesix = tradesdfdict[base].rowix
@@ -516,14 +516,30 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:blacklistbases])
             tradesrow.label = allclose
             tradesrow.lo_limit = tradesrow.lc_limit = tradesrow.so_limit = tradesrow.sc_limit = 0f0
+            if cache.mc[:trademode] == quickexit
+                tradesrow.lo_msg = tradesrow.lc_msg = tradesrow.so_msg = tradesrow.sc_msg = Xch.log_trading_issue(cache.xc, "Trade", "quickexit mode")
+            elseif base in cache.mc[:blacklistbases]
+                tradesrow.lo_msg = tradesrow.lc_msg = tradesrow.so_msg = tradesrow.sc_msg = Xch.log_trading_issue(cache.xc, "Trade", "blacklisted base")
+            end
         elseif cache.mc[:trademode] == notrade
             tradesrow.label = ignore
-            tradesrow.lo_limit = tradesrow.lc_limit = tradesrow.so_limit = tradesrow.sc_limit = 0f0
+            tradesrow.lo_amount = tradesrow.lc_amount = tradesrow.so_amount = tradesrow.sc_amount = 0f0
+            tradesrow.lo_msg = tradesrow.lc_msg = tradesrow.so_msg = tradesrow.sc_msg = Xch.log_trading_issue(cache.xc, "Trade", "notrade mode")
         else
             cache.ts.cfg.algorithm(cache.ts.cfg, tradesdf, tradesix)
-            opencount += tradesrow.label in [shortstrongopen, shortopen, longopen, longstrongopen] ? 1 : 0
-            if tradesrow.label in [shortstrongclose, shortclose, allclose, longstrongclose, longclose]
-                closequote += (tradesrow.lp_amount + tradesrow.sp_amount) * tradesrow.close
+            if tradesrow.label in [shortstrongopen, shortopen, allclose, longstrongclose, longclose]
+                closequote += (tradesrow.lp_amount) * tradesrow.close
+                if tradesrow.label in [shortstrongopen, shortopen]
+                    posquote += (tradesrow.sp_amount) * tradesrow.close
+                    opencount += 1
+                end
+            end
+            if tradesrow.label in [longstrongopen, longopen, allclose, shortstrongclose, shortclose]
+                closequote += (tradesrow.sp_amount) * tradesrow.close
+                if tradesrow.label in [longstrongopen, longopen]
+                    posquote += (tradesrow.lp_amount) * tradesrow.close
+                    opencount += 1
+                end
             end
         end
     end
@@ -533,20 +549,12 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
     equity = _portfoliototal(assets)
 
     maxbudgetquote = get(cache.mc, :maxbudgetquote, nothing)
-    availablequote = (freequote + closequote)
-    cappedquote = if isnothing(maxbudgetquote)
-        min(availablequote, equity)
-    else
-        cap = (maxbudgetquote)
-        if !isfinite(cap) || (cap <= 0.0)
-            min(availablequote, equity)
-        else
-            min(availablequote, equity, cap)
-        end
-    end
+    availablequote = freequote + closequote + posquote
+    cappedquote = isnothing(maxbudgetquote) ? min(availablequote, equity) : min(availablequote, equity, maxbudgetquote)
+    max_servable_orders = floor(Int, cappedquote / cache.mc[:minorderquote])
+    ordercount = min(max_servable_orders, opencount)
 
-    tradeamount = opencount > 0f0 ? (cappedquote / opencount) : 0f0
-    tradeamount = min(tradeamount, equity * cache.mc[:maxassetfraction])  # limit per base to maxassetfraction of total equity
+    tradeamount = opencount > 0 ? (cappedquote / ordercount) : 0f0
     # (verbosity >= 3) && println("$(tradetime(cache)) trade sizing: opencount=$(opencount), freequote=$(round(freequote, digits=4)), closequote=$(round(closequote, digits=4)), equity=$(round(equity, digits=4)), cappedquote=$(round(cappedquote, digits=4)), tradeamount=$(round(tradeamount, digits=4))")
 
     for basecfg in eachrow(cache.cfg)
@@ -555,12 +563,44 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
         if tradesrow.label in [longopen, longstrongopen]
-            tradesrow.lo_amount = tradeamount
+            if cappedquote >= cache.mc[:minorderquote]
+                tradesrow.lo_amount = min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close)
+                tradesrow.sc_amount = tradesrow.sp_amount
+                cappedquote -= tradesrow.lo_amount * tradesrow.close
+            else
+                tradesrow.lo_msg = Xch.log_trading_issue(cache.xc, "Trade", "long open skipped: insufficient free quote")
+                tradesrow.lo_amount = 0f0
+                tradesrow.sc_amount = tradesrow.sp_amount
+            end
+            Xch.process_order_request(cache.xc, tradesdf, tradesix)
         elseif tradesrow.label in [shortstrongopen, shortopen]
-            tradesrow.so_amount = tradeamount
+            if cappedquote >= cache.mc[:minorderquote]
+                tradesrow.so_amount = min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close)
+                tradesrow.lc_amount = tradesrow.lp_amount
+                cappedquote -= tradesrow.so_amount * tradesrow.close
+            else
+                tradesrow.so_msg = Xch.log_trading_issue(cache.xc, "Trade", "short open skipped: insufficient free quote")
+                tradesrow.so_amount = 0f0
+                tradesrow.lc_amount = tradesrow.lp_amount
+            end
+            Xch.process_order_request(cache.xc, tradesdf, tradesix)
+        elseif tradesrow.label in [shortstrongclose, shortclose]
+            if tradesrow.sp_amount > 0f0
+                tradesrow.sc_amount = tradesrow.sp_amount
+                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            end
+        elseif tradesrow.label in [longstrongclose, longclose]
+            if tradesrow.lp_amount > 0f0
+                tradesrow.lc_amount = tradesrow.lp_amount
+                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            end
+        elseif tradesrow.label in [allclose]
+            if (tradesrow.sp_amount + tradesrow.lp_amount) > 0f0
+                tradesrow.sc_amount = tradesrow.sp_amount
+                tradesrow.lc_amount = tradesrow.lp_amount
+                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            end
         end
-        Xch.process_order_request(cache.xc, tradesdf, tradesix) #TODO check implementation
-
     end
 
 end

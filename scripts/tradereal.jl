@@ -35,6 +35,9 @@ const QUOTE_COIN = "USD"
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
+# Maximum budget in quote coin allocated in total
+const MAX_BUDGET_QUOTE = 1000f0
+
 const CONFIG_REF = get(ENV, "TRADEREAL_CONFIG_REF", "046")
 const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
@@ -105,6 +108,7 @@ cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; sou
 
 # Override risk parameters.
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
+cache.mc[:maxbudgetquote]   = MAX_BUDGET_QUOTE
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy")
