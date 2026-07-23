@@ -270,14 +270,20 @@ function adapt!(
     size(tresults, 1) == 0 && return cl
 
     x = _featurematrix(cl, tfeatures)
-    y = tresults[!, :target]
+    # Cached tables can surface targets as strings/categorical values.
+    # Normalize to TradeLabel to match nn.labels for onehot encoding.
+    y = [target isa Targets.TradeLabel ? target : Targets.tradelabel(string(target), cl.nn.labels) for target in tresults[!, :target]]
 
     sampleweights = nothing
     if classbalancing
         weightinfo = classweighting(y, cl.nn.labels)
         sampleweights = weightinfo.sampleweights
     end
-    adaptnn!(cl.nn, x, y; sampleweights=sampleweights)
+    if retrain
+        adaptnn!(cl.nn, x, y; sampleweights=sampleweights, reinforce_epochs=10)
+    else
+        adaptnn!(cl.nn, x, y; sampleweights=sampleweights, reinforce_epochs=0)
+    end
 
     if save_after
         save(cl; mode=mode, folder=folder)

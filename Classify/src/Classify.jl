@@ -1846,24 +1846,41 @@ function adaptboundsregressor!(nn::NN, features::AbstractMatrix, Y::AbstractMatr
     return adaptnn!(nn, features, Y)
 end
 
+"Return sample indices where predicted class differs from one-hot target class."
+function _misclassified_indices(nn::NN, X::AbstractMatrix, Y::AbstractMatrix)
+    @assert size(X, 2) == size(Y, 2) "size(X,2)=$(size(X,2)) must equal size(Y,2)=$(size(Y,2))"
+    @assert size(Y, 1) == length(nn.labels) "size(Y,1)=$(size(Y,1)) must equal length(nn.labels)=$(length(nn.labels))"
+
+    # Evaluate logits with deterministic inference behavior before selecting hard samples.
+    Flux.testmode!(nn.model)
+    y_hat = nn.valuecorrection(nn.model(X))
+    Flux.trainmode!(nn.model)
+
+    predix = vec(mapslices(argmax, y_hat, dims=1))
+    trueix = vec(mapslices(argmax, Y, dims=1))
+    return findall(predix .!= trueix)
+end
+
 """
 creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
 relativedist is a vector
 """
-function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector; sampleweights::Union{Nothing,AbstractVector}=nothing)
+function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector; sampleweights::Union{Nothing,AbstractVector}=nothing, reinforce_epochs::Integer=0)
     if !isnothing(sampleweights)
         @assert length(sampleweights) == length(targets) "length(sampleweights)=$(length(sampleweights)) must equal length(targets)=$(length(targets))"
     end
     # onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
     onehottargets = Flux.onehotbatch(targets, nn.labels)  # onehot class encoding of an observation as one column
-    return adaptnn!(nn, features, onehottargets; sampleweights=sampleweights)
+    return adaptnn!(nn, features, onehottargets; sampleweights=sampleweights, reinforce_epochs=reinforce_epochs)
 end
 
 """
 Common adaptation loop for matrix targets.
 Uses nn.valuecorrection to transform raw model outputs before loss evaluation.
+If `reinforce_epochs > 0`, hard-sample filtering is applied once after that many
+epochs: remaining training continues only with currently misclassified samples.
 """
-function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; sampleweights::Union{Nothing,AbstractVector}=nothing)
+function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; sampleweights::Union{Nothing,AbstractVector}=nothing, reinforce_epochs::Integer=0)
     X = Float32.(features)
     Yf = Float32.(Y)
     Wf = isnothing(sampleweights) ? nothing : Float32.(vec(sampleweights))
@@ -1871,6 +1888,7 @@ function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; samplewei
     if !isnothing(Wf)
         @assert size(X, 2) == length(Wf) "size(X,2)=$(size(X,2)) must equal length(sampleweights)=$(length(Wf))"
     end
+
     loader = isnothing(Wf) ?
         Flux.DataLoader((X, Yf), batchsize=64, shuffle=true) :
         Flux.DataLoader((X, Yf, Wf), batchsize=64, shuffle=true)
@@ -1903,6 +1921,27 @@ function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; samplewei
         if nnconverged(nn)
             breakmsg = "stopping adaptation after epoch $epoch due to no loss reduction ($(nn.losses[end-4:end])) in last 4 epochs"
             break
+        end
+
+        if (reinforce_epochs > 0) && (epoch % reinforce_epochs == 0)
+            if nn.lossfunc === Flux.logitcrossentropy
+                wrongix = _misclassified_indices(nn, X, Yf)
+                if isempty(wrongix)
+                    breakmsg = "stopping adaptation after epoch $epoch because reinforce filtering found no misclassified samples"
+                    break
+                end
+                X = @view X[:, wrongix]
+                Yf = @view Yf[:, wrongix]
+                if !isnothing(Wf)
+                    Wf = @view Wf[wrongix]
+                end
+                loader = isnothing(Wf) ?
+                    Flux.DataLoader((X, Yf), batchsize=64, shuffle=true) :
+                    Flux.DataLoader((X, Yf, Wf), batchsize=64, shuffle=true)
+                breakmsg = "applied reinforce filtering after epoch $epoch with $(length(wrongix)) hard samples; continuing training"
+            else
+                breakmsg = "reinforce filtering skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy"
+            end
         end
     end
     testmode!(nn)
@@ -2117,6 +2156,9 @@ function savenn(nn::NN)
     (verbosity >= 4) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
     # nn.losses = compresslosses(nn.losses)
     BSON.@save nnfilename(nn.fileprefix) nn
+    if nn.losses[end] == minimum(nn.losses)
+        BSON.@save nnfilename(nn.fileprefix * "-best") nn
+    end
     # @error "save machine to be implemented for pure flux" filename
     # smach = serializable(mach)
     # JLSO.save(filename, :machine => smach)
@@ -2233,13 +2275,16 @@ generates summary statistics from predictions
 function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thresholdbins=10)
     @assert isinteger(thresholdbins) && (thresholdbins > 0) "thresholdbins=$thresholdbins must be a positive integer"
     nancount = outofrangecount = 0
+    normlabel(value) = value isa Targets.TradeLabel ? value : Targets.tradelabel(string(value), alllabels)
     confcatsyms = [:tp, :tn, :fp, :fn]
     confcat = Dict(zip(confcatsyms, 1:length(confcatsyms)))
     # preallocate collection matrices with columns TP, TN, FP, FN and rows as bins with lower separation value x/thresholdbins per label per set
     setnames = levels(predictions.set)
     cmc = zeros(Int, length(setnames), length(alllabels), length(confcatsyms), thresholdbins)
     for ix in eachindex(predictions[!, :label])
-        labelix = Targets.tradelabelix(predictions[ix, :label], alllabels)
+        predlabel = normlabel(predictions[ix, :label])
+        targetlabel = normlabel(predictions[ix, :target])
+        labelix = Targets.tradelabelix(predlabel, alllabels)
         @assert 0.0 <= predictions[ix, :score] <= 1.0 "prediction[$ix]==$(predictions[ix, :])"
         binix = score2bin(predictions[ix, :score], thresholdbins)
         if isnan(binix)
@@ -2247,7 +2292,7 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thre
         elseif binix == 0
             outofrangecount += 1
         else
-            if predictions[ix, :label] == predictions[ix, :target]
+            if predlabel == targetlabel
                 cmc[levelcode(predictions.set[ix]), labelix, confcat[:tp], binix] += 1
             else  
                 cmc[levelcode(predictions.set[ix]), labelix, confcat[:fp], binix] += 1
@@ -2310,11 +2355,14 @@ function confusionmatrix(predictions::AbstractDataFrame, alllabels::AbstractVect
     # combi -> classified label vs target label -> tp, fp, tn, fn label = cm label
     # %cm label = per set specific cm label / all cm label 
     classified = predictions.label
+    normlabel(value) = value isa Targets.TradeLabel ? value : Targets.tradelabel(string(value), alllabels)
     setnames = levels(predictions.set)
     # create cmdict as a dict(key=setname, value=Dict(key=classified label, value=Dict(key=target label, value=count)))
     cmdict = Dict(zip(setnames, [newclassifydict(alllabels) for _ in setnames]))
     for ix in eachindex(classified)
-        cmdict[predictions[ix, :set]][classified[ix]][predictions[ix, :target]] += 1
+        predlabel = normlabel(classified[ix])
+        targetlabel = normlabel(predictions[ix, :target])
+        cmdict[predictions[ix, :set]][predlabel][targetlabel] += 1
     end
     # setcount = Dict([(setname, count(predictions[!, :set] .== setname)) for setname in setnames])
 

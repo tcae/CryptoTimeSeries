@@ -64,7 +64,8 @@ const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, CLFOLDER)
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = begin
     raw = strip(get(ENV, "TRADESIM_LOG_SUBFOLDER", ""))
-    isempty(raw) ? ("tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))) : raw
+    isempty(raw) ? ("tradesim-" * CONFIG_NAME ) : raw
+    # isempty(raw) ? ("tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))) : raw
 end
 
 "Return ORDER_FILLED events as a DataFrame."

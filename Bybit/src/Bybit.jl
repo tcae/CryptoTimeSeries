@@ -598,21 +598,6 @@ function servertime(bc::BybitCache)
     return ret["time"]
 end
 
-"""
-Returns a DataFrame with trading information of the last 24h one row per symbol. If symbol is provided the returned DataFrame is limited to that symbol.
-
-In BybitSim mode this snapshot is used to support maker orders created with
-`price=nothing`: the backend chooses the closest post-only limit price it can
-derive from the simulated ticker snapshot.
-
-- symbol
-- quotevolume24h
-- pricechangepercent
-- lastprice
-- askprice
-- bidprice
-
-"""
 function _simreferencedt(bc::BybitCache, atdt::Union{Nothing, DateTime}=nothing)::DateTime
     dt = isnothing(atdt) ? bc.simtime : atdt
     dt = isnothing(dt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(dt, Minute(1))
@@ -1275,6 +1260,8 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     isnothing(bc.orders) && return nothing
     size(bc.orders, 1) == 0 && return nothing
 
+    decisiondt = isnothing(atdt) ? bc.simtime : atdt
+    decisiondt = isnothing(decisiondt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(decisiondt, Minute(1))
     refdt = _simreferencedt(bc, atdt)
     closeix = Int[]
     closerows = NamedTuple[]
@@ -1284,7 +1271,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         !_isopenstatus(String(row.status)) && continue
 
         lastcheck = DateTime(row.lastcheck)
-        if refdt <= lastcheck
+        if decisiondt <= lastcheck
             continue
         end
 
@@ -1301,8 +1288,8 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         end
 
         if isnothing(filldt)
-            bc.orders[ix, :lastcheck] = refdt
-            bc.orders[ix, :updated] = refdt
+            bc.orders[ix, :lastcheck] = decisiondt
+            bc.orders[ix, :updated] = decisiondt
             continue
         end
 
@@ -1364,15 +1351,18 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         dt = isnothing(bc.simtime) ? Dates.now(Dates.UTC) : DateTime(bc.simtime)
         orderid = string("SIM-", uppercasefirst(lowercase(orderside)), "-", uppercase(symbol), "-", _nextsimorderseq!(bc))
         if maker
+            # `created=dt` is the order timestamp and `lastcheck=dt` is the last
+            # decision row already processed for this order. The next simulation row
+            # can then evaluate the first newly visible candle whose `opentime`
+            # became observable after `dt`.
             row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
             _simreserveorder!(bc, symbol, orderside, basequantity, limitprice, effective_marginleverage)
             push!(bc.orders, row)
-            return row
+        else # taker
+            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+            push!(bc.closedorders, row)
+            _applyfill!(bc, symbol, orderside, basequantity, limitprice, effective_marginleverage)
         end
-
-        row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-        push!(bc.closedorders, row)
-        _applyfill!(bc, symbol, orderside, basequantity, limitprice, effective_marginleverage)
         return row
     end
     

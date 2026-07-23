@@ -565,25 +565,51 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         if tradesrow.label in [longopen, longstrongopen]
             if cappedquote >= cache.mc[:minorderquote]
                 tradesrow.lo_amount = min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close)
-                tradesrow.sc_amount = tradesrow.sp_amount
-                cappedquote -= tradesrow.lo_amount * tradesrow.close
+                if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
+                    cappedquote -= tradesrow.lo_amount * tradesrow.close
+                else
+                    tradesrow.lo_msg = "Trade: long open skipped - full position already present"
+                    tradesrow.lo_amount = 0f0
+                    tradesrow.label = ignore
+                end
             else
-                tradesrow.lo_msg = Xch.log_trading_issue(cache.xc, "Trade", "long open skipped: insufficient free quote")
+                tradesrow.lo_msg = "Trade: long open skipped - insufficient free quote"
                 tradesrow.lo_amount = 0f0
-                tradesrow.sc_amount = tradesrow.sp_amount
+                tradesrow.label = ignore
             end
-            Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            if tradesrow.sp_amount > 0f0
+                tradesrow.sc_amount = tradesrow.sp_amount
+                if tradesrow.label == ignore
+                    tradesrow.label = shortclose
+                end
+            end
+            if tradesrow.label != ignore
+                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            end
         elseif tradesrow.label in [shortstrongopen, shortopen]
             if cappedquote >= cache.mc[:minorderquote]
                 tradesrow.so_amount = min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close)
-                tradesrow.lc_amount = tradesrow.lp_amount
-                cappedquote -= tradesrow.so_amount * tradesrow.close
+                if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
+                    cappedquote -= tradesrow.so_amount * tradesrow.close
+                else
+                    tradesrow.so_msg = "Trade: short open skipped - full position already present"
+                    tradesrow.so_amount = 0f0
+                    tradesrow.label = ignore
+                end
             else
-                tradesrow.so_msg = Xch.log_trading_issue(cache.xc, "Trade", "short open skipped: insufficient free quote")
+                tradesrow.so_msg = "Trade: short open skipped - insufficient free quote"
                 tradesrow.so_amount = 0f0
-                tradesrow.lc_amount = tradesrow.lp_amount
+                tradesrow.label = ignore
             end
-            Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            if tradesrow.lp_amount > 0f0
+                tradesrow.lc_amount = tradesrow.lp_amount
+                if tradesrow.label == ignore
+                    tradesrow.label = longclose
+                end
+            end
+            if tradesrow.label != ignore
+                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            end
         elseif tradesrow.label in [shortstrongclose, shortclose]
             if tradesrow.sp_amount > 0f0
                 tradesrow.sc_amount = tradesrow.sp_amount

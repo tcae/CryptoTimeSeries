@@ -94,6 +94,21 @@ EnvConfig.init(production)  # test production
     @test !isnothing(qix_pending)
     @test b_pending[qix_pending, :locked] > 0f0
 
+    # The first pending fill check should happen on the very next minute tick.
+    bc_pending_fast = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_pending_fast)
+    Bybit.seedportfolio!(bc_pending_fast, EnvConfig.pairquote, 1_000f0)
+    bc_pending_fast.simtime = DateTime("2025-01-05T00:10:00")
+    fast_lastpx = Bybit.get24h(bc_pending_fast, "SINEUSDT").lastprice
+    fast_pending = Bybit.createorder(bc_pending_fast, "SINEUSDT", "Buy", 1.0f0, 2f0 * fast_lastpx, true)
+    @test fast_pending.status == "New"
+    bc_pending_fast.simtime = bc_pending_fast.simtime + Minute(1)
+    _ = Bybit.balances(bc_pending_fast)
+    fast_filled = Bybit.order(bc_pending_fast, String(fast_pending.orderid))
+    @test !isnothing(fast_filled)
+    @test fast_filled.status == "Filled"
+    @test size(Bybit.openorders(bc_pending_fast), 1) == 0
+
     # Move time forward and amend to a guaranteed trigger level; processing should
     # sweep candles since lastcheck and fill the pending order.
     bc_pending.simtime = bc_pending.simtime + Minute(3)
@@ -152,14 +167,12 @@ EnvConfig.init(production)  # test production
     @test !isnothing(qix0)
     @test b_lock0[qix0, :locked] == 100f0
 
-    bc_amend_cancel.simtime = bc_amend_cancel.simtime + Minute(1)
     amended1 = Bybit.amendorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid); basequantity=1f0, limitprice=120f0)
     @test !isnothing(amended1)
     b_lock1 = Bybit.balances(bc_amend_cancel)
     qix1 = findfirst(==(uppercase(EnvConfig.pairquote)), String.(b_lock1.coin))
     @test b_lock1[qix1, :locked] == 120f0
 
-    bc_amend_cancel.simtime = bc_amend_cancel.simtime + Minute(1)
     amended2 = Bybit.amendorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid); basequantity=0.5f0, limitprice=80f0)
     @test !isnothing(amended2)
     b_lock2 = Bybit.balances(bc_amend_cancel)
@@ -212,7 +225,6 @@ EnvConfig.init(production)  # test production
     @test adaptive.status == "New"
     adaptive_oid = String(adaptive.orderid)
 
-    bc_adaptive.simtime = bc_adaptive.simtime + Minute(1)
     mkt1 = Bybit.get24h(bc_adaptive, "SINEUSDT")
     am1 = Bybit.amendorder(bc_adaptive, "SINEUSDT", adaptive_oid; limitprice=nothing)
     @test !isnothing(am1)
@@ -220,7 +232,6 @@ EnvConfig.init(production)  # test production
     expected1 = mkt1.askprice - syminfo_sine.ticksize
     @test abs((am1.limitprice) - expected1) <= syminfo_sine.ticksize
 
-    bc_adaptive.simtime = bc_adaptive.simtime + Minute(1)
     mkt2 = Bybit.get24h(bc_adaptive, "SINEUSDT")
     am2 = Bybit.amendorder(bc_adaptive, "SINEUSDT", adaptive_oid; limitprice=nothing)
     @test !isnothing(am2)

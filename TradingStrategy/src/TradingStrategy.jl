@@ -166,6 +166,31 @@ end
     return _relpricedelta(candidate, current) > minpricedelta
 end
 
+function _enforce_reversal_limit_ordering!(tradesdf::DataFrame, ix::Integer)
+    if (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :so_amount] > 0f0)
+        lc_limit = tradesdf[ix, :lc_limit]
+        so_limit = tradesdf[ix, :so_limit]
+        if (lc_limit == 0f0) || (so_limit == 0f0)
+            tradesdf[ix, :lc_limit] = 0f0
+            tradesdf[ix, :so_limit] = 0f0
+        else
+            tradesdf[ix, :lc_limit] = min(lc_limit, so_limit)
+        end
+    end
+
+    if (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :lo_amount] > 0f0)
+        sc_limit = tradesdf[ix, :sc_limit]
+        lo_limit = tradesdf[ix, :lo_limit]
+        if (sc_limit == 0f0) || (lo_limit == 0f0)
+            tradesdf[ix, :sc_limit] = 0f0
+            tradesdf[ix, :lo_limit] = 0f0
+        else
+            tradesdf[ix, :sc_limit] = max(sc_limit, lo_limit)
+        end
+    end
+    return nothing
+end
+
 """
 Immutable strategy configuration payload for runtime strategy execution.
 """
@@ -670,11 +695,6 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
                 if _should_update_price(tradesdf[ix, :lc_limit], lc_candidate, cfg.minpricedelta)
                     tradesdf[ix, :lc_limit] = lc_candidate
                 end
-                coupled_short_reversal = (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :so_amount] > 0f0) && (tradesdf[ix, :so_limit] > 0f0)
-                if coupled_short_reversal
-                    # Preserve close-before-open ordering for long->short reversal while still allowing reduction.
-                    tradesdf[ix, :lc_limit] = min(tradesdf[ix, :lc_limit], tradesdf[ix, :so_limit])
-                end
             # else lc_limit is waiting for lo_limit to fill
             end
             if (tradesdf[ix, :sc_limit] > 0f0) && (tradesdf[ix, :sp_amount] > 0f0)
@@ -682,15 +702,12 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
                 if _should_update_price(tradesdf[ix, :sc_limit], sc_candidate, cfg.minpricedelta)
                     tradesdf[ix, :sc_limit] = sc_candidate
                 end
-                coupled_long_reversal = (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :lo_amount] > 0f0) && (tradesdf[ix, :lo_limit] > 0f0)
-                if coupled_long_reversal
-                    # Symmetric ordering guard for short->long reversal.
-                    tradesdf[ix, :sc_limit] = max(tradesdf[ix, :sc_limit], tradesdf[ix, :lo_limit])
-                end
             # else sc_limit is waiting for so_limit to fill
             end
         end
     end
+
+    _enforce_reversal_limit_ordering!(tradesdf, ix)
 
     return
 end
@@ -716,10 +733,12 @@ function _executed_open_hit_dt(tradesdf::DataFrame, ix::Integer)
     lo_amount = tradesdf[ix, :lo_amount]
     so_limit = tradesdf[ix, :so_limit]
     so_amount = tradesdf[ix, :so_amount]
+    lp_amount = tradesdf[ix, :lp_amount]
+    sp_amount = tradesdf[ix, :sp_amount]
     high = tradesdf[ix, :high]
     low = tradesdf[ix, :low]
-    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && _openlimitactive(lo_limit) && _price_in_bar((lo_limit), low, high, :low)
-    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && _openlimitactive(so_limit) && _price_in_bar((so_limit), low, high, :high)
+    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && (sp_amount == 0f0) && _openlimitactive(lo_limit) && _price_in_bar((lo_limit), low, high, :low)
+    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && (lp_amount == 0f0) && _openlimitactive(so_limit) && _price_in_bar((so_limit), low, high, :high)
     @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo_limit), so=$(so_limit), low=$(low), high=$(high)"
     if long_open_hit
         @assert tradesdf[ix, :sp_amount] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(tradesdf[ix, :sp_amount]) is not zero"
@@ -745,6 +764,58 @@ function _executed_open_hit_dt(tradesdf::DataFrame, ix::Integer)
     return (long_open_hit || short_open_hit) ? tradesdf[ix, :opentime] : missing
 end
 
+function _open_hit_spec(tradesdf::DataFrame, ix::Integer)
+    label = tradesdf[ix, :label]
+    lo_limit = tradesdf[ix, :lo_limit]
+    lo_amount = tradesdf[ix, :lo_amount]
+    so_limit = tradesdf[ix, :so_limit]
+    so_amount = tradesdf[ix, :so_amount]
+    high = tradesdf[ix, :high]
+    low = tradesdf[ix, :low]
+    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && _openlimitactive(lo_limit) && _price_in_bar((lo_limit), low, high, :low)
+    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && _openlimitactive(so_limit) && _price_in_bar((so_limit), low, high, :high)
+    @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo_limit), so=$(so_limit), low=$(low), high=$(high)"
+    if long_open_hit
+        return (side=:long, limitprice=lo_limit, amount=lo_amount)
+    elseif short_open_hit
+        return (side=:short, limitprice=so_limit, amount=so_amount)
+    end
+    return nothing
+end
+
+function _apply_open_hit!(tradesdf::DataFrame, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32)
+    if side == :long
+        @assert tradesdf[ix, :sp_amount] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(tradesdf[ix, :sp_amount]) is not zero"
+        prior_amount = tradesdf[ix, :lp_amount]
+        prior_pavg = tradesdf[ix, :lo_pavg]
+        total_amount = prior_amount + amount
+        tradesdf[ix, :lastopentrade] = ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade]
+        tradesdf[ix, :lp_amount] = total_amount
+        tradesdf[ix, :lo_pavg] = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
+        _resetorder(tradesdf, ix, "lo", reset_pavg=false)
+        tradesdf[ix, :lc_amount] = tradesdf[ix, :lp_amount]
+        tradesdf[ix, :lc_pavg] = 0f0
+        tradesdf[ix, :lc_filled] = 0f0
+        tradesdf[ix, :lc_status] = "submitted"
+    elseif side == :short
+        @assert tradesdf[ix, :lp_amount] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(tradesdf[ix, :lp_amount]) is not zero"
+        prior_amount = tradesdf[ix, :sp_amount]
+        prior_pavg = tradesdf[ix, :so_pavg]
+        total_amount = prior_amount + amount
+        tradesdf[ix, :lastopentrade] = ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade]
+        tradesdf[ix, :sp_amount] = total_amount
+        tradesdf[ix, :so_pavg] = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
+        _resetorder(tradesdf, ix, "so", reset_pavg=false)
+        tradesdf[ix, :sc_amount] = tradesdf[ix, :sp_amount]
+        tradesdf[ix, :sc_pavg] = 0f0
+        tradesdf[ix, :sc_filled] = 0f0
+        tradesdf[ix, :sc_status] = "submitted"
+    else
+        error("unsupported open hit side=$(side)")
+    end
+    return nothing
+end
+
 function _rowtakeover!(tdf::DataFrame, ix::Integer)
     if ix > 1
         if tdf[ix, :score] == 0f0
@@ -768,21 +839,36 @@ function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf:
     lastix <= 0 && return tp
     @assert !isnothing(gaindf) "expeting gaindf to be a DataFrame when gain materialization is requested"
 
-    # Read-only views of labels/scores — each rawlabels[ix]/rawscores[ix] is read before the algorithm mutates row ix.
-    rawlabels = @view tp.tradesdf[!, :label][1:lastix]
-    rawscores = @view tp.tradesdf[!, :score][1:lastix]
-
     last_openix = 0
+    pending_open = nothing
     for ix in 1:lastix
         try
             _rowtakeover!(tp.tradesdf, ix)
             last_openix = _materialize_gains_sample_from_trades!(gaindf, tp.tradesdf, ix, last_openix; makerfee=cfg.makerfee, lastix=lastix)
-            # first close (=materialize) then open if both are applicable shall be also enforced in real by Xch
-            last_openix = ismissing(_executed_open_hit_dt(tp.tradesdf, ix)) ? last_openix : ix
+            if !isnothing(pending_open)
+                # Replay row `ix` is the first decision row that can observe the
+                # prior row's candle hit. Close materialization must run first so
+                # same-row flip cases can flatten the old side before opening the
+                # new side.
+                pending_side, pending_limitprice, pending_amount = pending_open
+                can_apply = pending_side == :long ? (tp.tradesdf[ix, :sp_amount] == 0f0) : (tp.tradesdf[ix, :lp_amount] == 0f0)
+                if can_apply
+                    _apply_open_hit!(tp.tradesdf, ix, pending_side, pending_limitprice, pending_amount)
+                    last_openix = ix
+                end
+                pending_open = nothing
+            end
             # algorithm after materialization because label and order limits are set on the basis of the last minute (ix is the last complete minute sample in the past) and prices can hit these limits from the next ix+1 minute
             cfg.algorithm(cfg, tp.tradesdf, ix)
             _process_advice_row!(cfg, tp.tradesdf, ix)
             _validate_row_consistency(tp.tradesdf, ix)
+            # Any open hit detected on row `ix` is only actionable from row
+            # `ix+1`, matching the replay convention that row `ix` just made the
+            # candle visible and decided whether the limit matched.
+            openhit = _open_hit_spec(tp.tradesdf, ix)
+            if !isnothing(openhit)
+                pending_open = openhit
+            end
         catch err
             if err isa AssertionError
                 lo = max(1, ix - 1)
@@ -802,22 +888,42 @@ end
 
 "Input is :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit. Output is :lo_status, :so_status, :lo_amount, :so_amount."
 function _process_advice_row!(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer)
-    if islongopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :lp_amount] == 0f0)
+    if islongopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :sp_amount] == 0f0)
+        tradesdf[ix, :so_amount] = 0f0
         tradesdf[ix, :lo_status] = "submitted"
         tradesdf[ix, :lo_amount] = 100f0
-        tradesdf[ix, :lo_pavg] = 0f0
+        if tradesdf[ix, :lp_amount] == 0f0
+            tradesdf[ix, :lo_pavg] = 0f0
+        end
         tradesdf[ix, :lo_filled] = 0f0
     end
-    if isshortopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :sp_amount] == 0f0)
+    if isshortopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :lp_amount] == 0f0)
+        tradesdf[ix, :lo_amount] = 0f0
         tradesdf[ix, :so_status] = "submitted"
         tradesdf[ix, :so_amount] = 100f0
-        tradesdf[ix, :so_pavg] = 0f0
+        if tradesdf[ix, :sp_amount] == 0f0
+            tradesdf[ix, :so_pavg] = 0f0
+        end
         tradesdf[ix, :so_filled] = 0f0
     end
 end
 
 function _validate_row_consistency(tradesdf::DataFrame, ix::Integer)::Nothing
     @assert !((tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :sp_amount] > 0f0)) "Invalid overlap at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount]). A row cannot hold long and short position amounts at the same time."
+
+    coupled_short_reversal = (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :so_amount] > 0f0)
+    if coupled_short_reversal
+        lc_limit = tradesdf[ix, :lc_limit]
+        so_limit = tradesdf[ix, :so_limit]
+        @assert ((lc_limit == 0f0) && (so_limit == 0f0)) || ((lc_limit > 0f0) && (so_limit > 0f0) && (lc_limit <= so_limit)) "Expected long-close limit to match no later than short-open limit at ix=$(ix): lc_limit=$(lc_limit), so_limit=$(so_limit), lp_amount=$(tradesdf[ix, :lp_amount]), so_amount=$(tradesdf[ix, :so_amount])"
+    end
+
+    coupled_long_reversal = (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :lo_amount] > 0f0)
+    if coupled_long_reversal
+        sc_limit = tradesdf[ix, :sc_limit]
+        lo_limit = tradesdf[ix, :lo_limit]
+        @assert ((sc_limit == 0f0) && (lo_limit == 0f0)) || ((sc_limit > 0f0) && (lo_limit > 0f0) && (sc_limit >= lo_limit)) "Expected short-close limit to match no later than long-open limit at ix=$(ix): sc_limit=$(sc_limit), lo_limit=$(lo_limit), sp_amount=$(tradesdf[ix, :sp_amount]), lo_amount=$(tradesdf[ix, :lo_amount])"
+    end
 
     if islongopenlabel(tradesdf[ix, :label])
         @assert _hasguidance(tradesdf[ix, :lo_limit], tradesdf[ix, :lc_limit]) "Missing long guidance for long open signal at ix=$(ix): lo=$(tradesdf[ix, :lo_limit]), lc=$(tradesdf[ix, :lc_limit])"
@@ -851,7 +957,8 @@ end
 function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, tradesdf::DataFrame, ix::Integer, last_openix::Int; makerfee::Float32=0f0, lastix::Integer=0)::Int
 
     if tradesdf[ix, :lp_amount] > 0f0
-        openprice = tradesdf[last_openix, :lo_limit]
+        openprice = tradesdf[ix, :lo_pavg]
+        @assert openprice > 0f0 "Expected positive long openprice at ix=$(ix): openprice=$(openprice), last_openix=$(last_openix), lo_pavg=$(tradesdf[ix, :lo_pavg]), lo_limit[last_openix]=$(last_openix > 0 ? tradesdf[last_openix, :lo_limit] : missing)"
         minutes = Int(div(Dates.value(tradesdf[ix, :opentime] - tradesdf[ix, :lastopentrade]), 60000)) + 1
         if _price_in_bar(tradesdf[ix, :lc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :high)
             gain = (tradesdf[ix, :lc_limit] - openprice) / openprice
@@ -868,7 +975,8 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
             last_openix = 0
         end
     elseif tradesdf[ix, :sp_amount] > 0f0
-        openprice = tradesdf[last_openix, :so_limit]
+        openprice = tradesdf[ix, :so_pavg]
+        @assert openprice > 0f0 "Expected positive short openprice at ix=$(ix): openprice=$(openprice), last_openix=$(last_openix), so_pavg=$(tradesdf[ix, :so_pavg]), so_limit[last_openix]=$(last_openix > 0 ? tradesdf[last_openix, :so_limit] : missing)"
         minutes = Int(div(Dates.value(tradesdf[ix, :opentime] - tradesdf[ix, :lastopentrade]), 60000)) + 1
         if _price_in_bar(tradesdf[ix, :sc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :low)
             gain = -(tradesdf[ix, :sc_limit] - openprice) / openprice

@@ -138,7 +138,7 @@ end
 function log_trading_issue(xc::XchCache, issuer::AbstractString, message::AbstractString)::String
     issuerstr = String(issuer)
     messagestr = String(message)
-    @warn "Xch.$(ttstr(xc)) $(issuerstr): $(messagestr)"
+    # @warn "Xch.$(ttstr(xc)) $(issuerstr): $(messagestr)"
     return _normalized_order_msg(messagestr)
 end
 
@@ -1739,7 +1739,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     orderamount = tradesdf[ix, orderamountcol]
 
     if !(orderamount > 0f0)
-        _rejectedrequest!(xc, tradesdf, ix, action, "amount is not tradable")
+        _rejectedrequest!(xc, tradesdf, ix, action, "amount is not positive")
         return (accepted=false, action=action, reason="amount_not_positive")
     end
 
