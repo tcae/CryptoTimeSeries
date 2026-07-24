@@ -664,16 +664,18 @@ function writetable(table, filename::AbstractString; folderpath=logfolder(), for
     filepath = tablepath(filename; folderpath=folderpath, format=format)
     mkpath(dirname(filepath))
     if format == :jdf
+        (verbosity >= 3) && println("$(EnvConfig.now()) writing JDF dataframe to $filepath")
         JDF.savejdf(filepath, DataFrames.DataFrame(table))
     else
         safetable = _arrow_safe_table(table)
         if append && isfile(filepath)
+            (verbosity >= 3) && println("$(EnvConfig.now()) appending Arrow dataframe to $filepath")
             Arrow.append(filepath, safetable)
         else
+            (verbosity >= 3) && println("$(EnvConfig.now()) writing Arrow dataframe to $filepath")
             Arrow.write(filepath, safetable; file=false)
         end
     end
-    (verbosity >= 3) && println("$(EnvConfig.now()) saved $(format) table to $(filepath) append=$(append)")
     return filepath
 end
 
@@ -684,6 +686,7 @@ function readtable(filename::AbstractString; folderpath=logfolder(), format::Sym
             candidate_format = endswith(lowercase(candidate), ".arrow") ? :arrow : :jdf
             filepath = normpath(joinpath(folderpath, candidate))
             if _table_storage_exists(filepath, candidate_format)
+                (verbosity >= 3) && println("$(EnvConfig.now()) reading dataframe from $filepath")
                 return readtable(candidate; folderpath=folderpath, format=candidate_format, preferred=preferred, materialize=materialize, copycols=copycols)
             end
         end

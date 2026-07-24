@@ -67,7 +67,7 @@ end
             end
         end
 
-        resultsdf, featuresdf = TrendDetector.getfeaturestargetsdf(cfg)
+        resultsdf, featuresdf = TrendDetector.getfeaturestargetsdf!(cfg)
         @test size(resultsdf, 1) == 2
         @test size(featuresdf, 1) == 2
         @test resultsdf[!, :coin] == cached_results[!, :coin]

@@ -161,11 +161,11 @@ function featurestargetsdf(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, targe
 end
 
 "Adapt or retrain one classifier instance from prepared results/features tables."
-function adapt!(cl::AbstractClassifier, resultsdf::AbstractDataFrame, featuresdf::AbstractDataFrame; kwargs...)
+function prepareadaptation(cl::AbstractClassifier, resultsdf::AbstractDataFrame, featuresdf::AbstractDataFrame; kwargs...)
     _ = resultsdf
     _ = featuresdf
     _ = kwargs
-    error("missing adapt! implementation for classifier type $(typeof(cl))")
+    error("missing prepareadaptation implementation for classifier type $(typeof(cl))")
 end
 
 "Return whether classifier training/adaptation has been executed already."
@@ -1878,20 +1878,25 @@ end
 Common adaptation loop for matrix targets.
 Uses nn.valuecorrection to transform raw model outputs before loss evaluation.
 If `reinforce_epochs > 0`, hard-sample filtering is applied once after that many
-epochs: remaining training continues only with currently misclassified samples.
+epochs: remaining training continues on the currently misclassified samples, but
+the misclassification check itself always reevaluates the parent adaptation set
+so previously correct samples can be reintroduced if they become wrong again.
 """
 function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; sampleweights::Union{Nothing,AbstractVector}=nothing, reinforce_epochs::Integer=0)
-    X = Float32.(features)
-    Yf = Float32.(Y)
-    Wf = isnothing(sampleweights) ? nothing : Float32.(vec(sampleweights))
-    @assert size(X, 2) == size(Yf, 2) "size(X,2)=$(size(X,2)) must equal size(Y,2)=$(size(Yf,2))"
-    if !isnothing(Wf)
-        @assert size(X, 2) == length(Wf) "size(X,2)=$(size(X,2)) must equal length(sampleweights)=$(length(Wf))"
+    Xfull = Float32.(features)
+    Yfull = Float32.(Y)
+    Wfull = isnothing(sampleweights) ? nothing : Float32.(vec(sampleweights))
+    @assert size(Xfull, 2) == size(Yfull, 2) "size(X,2)=$(size(Xfull,2)) must equal size(Y,2)=$(size(Yfull,2))"
+    if !isnothing(Wfull)
+        @assert size(Xfull, 2) == length(Wfull) "size(X,2)=$(size(Xfull,2)) must equal length(sampleweights)=$(length(Wfull))"
     end
 
-    loader = isnothing(Wf) ?
-        Flux.DataLoader((X, Yf), batchsize=64, shuffle=true) :
-        Flux.DataLoader((X, Yf, Wf), batchsize=64, shuffle=true)
+    Xtrain = Xfull
+    Ytrain = Yfull
+    Wtrain = Wfull
+    loader = isnothing(Wtrain) ?
+        Flux.DataLoader((Xtrain, Ytrain), batchsize=64, shuffle=true) :
+        Flux.DataLoader((Xtrain, Ytrain, Wtrain), batchsize=64, shuffle=true)
 
     # Training loop, using the whole data set 1000 times:
     trainmode!(nn)
@@ -1925,19 +1930,21 @@ function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; samplewei
 
         if (reinforce_epochs > 0) && (epoch % reinforce_epochs == 0)
             if nn.lossfunc === Flux.logitcrossentropy
-                wrongix = _misclassified_indices(nn, X, Yf)
+                # Re-evaluate against the full set so hard-sample filtering can
+                # bring back samples that were correct before but became wrong.
+                wrongix = _misclassified_indices(nn, Xfull, Yfull)
                 if isempty(wrongix)
                     breakmsg = "stopping adaptation after epoch $epoch because reinforce filtering found no misclassified samples"
                     break
                 end
-                X = @view X[:, wrongix]
-                Yf = @view Yf[:, wrongix]
-                if !isnothing(Wf)
-                    Wf = @view Wf[wrongix]
+                Xtrain = @view Xfull[:, wrongix]
+                Ytrain = @view Yfull[:, wrongix]
+                if !isnothing(Wfull)
+                    Wtrain = @view Wfull[wrongix]
                 end
-                loader = isnothing(Wf) ?
-                    Flux.DataLoader((X, Yf), batchsize=64, shuffle=true) :
-                    Flux.DataLoader((X, Yf, Wf), batchsize=64, shuffle=true)
+                loader = isnothing(Wtrain) ?
+                    Flux.DataLoader((Xtrain, Ytrain), batchsize=64, shuffle=true) :
+                    Flux.DataLoader((Xtrain, Ytrain, Wtrain), batchsize=64, shuffle=true)
                 breakmsg = "applied reinforce filtering after epoch $epoch with $(length(wrongix)) hard samples; continuing training"
             else
                 breakmsg = "reinforce filtering skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy"
@@ -2155,9 +2162,9 @@ end
 function savenn(nn::NN)
     (verbosity >= 4) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
     # nn.losses = compresslosses(nn.losses)
-    BSON.@save nnfilename(nn.fileprefix) nn
+    BSON.@save nnfilename(nn.fileprefix * "-lastepoch") nn
     if nn.losses[end] == minimum(nn.losses)
-        BSON.@save nnfilename(nn.fileprefix * "-best") nn
+        BSON.@save nnfilename(nn.fileprefix) nn
     end
     # @error "save machine to be implemented for pure flux" filename
     # smach = serializable(mach)

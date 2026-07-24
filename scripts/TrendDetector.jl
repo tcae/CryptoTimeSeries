@@ -43,8 +43,6 @@ mutable struct TrendDetectorConfig
     partitionconfig::NamedTuple
     coins::Vector{String}
     classbalancing::Bool
-    featuresdf::Union{DataFrame, Nothing}
-    targetsdf::Union{DataFrame, Nothing}
     function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, classifiertype::Type{<:Classify.AbstractClassifier}=Classify.TrendClassifier001, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=TradingStrategy.partitionconfig02(), coins, classbalancing=true)
         EnvConfig.setlogpath(folder)
         EnvConfig.setdfformat!(:arrow)
@@ -54,7 +52,7 @@ mutable struct TrendDetectorConfig
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
         (verbosity >= 2) && println("classbalancing=$(classbalancing)")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, classifiertype, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing, nothing, nothing)
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, classifiertype, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
@@ -94,6 +92,26 @@ end
     else
         return Targets.tradelabel(string(value))
     end
+end
+
+"""
+Return `(ix, reason)` for the first invalid score where valid scores are finite
+numbers within `[0.0, 1.0]`. Returns `(nothing, "")` when all scores are valid.
+"""
+function _first_invalid_score(scores)
+    for ix in eachindex(scores)
+        value = scores[ix]
+        if ismissing(value)
+            return ix, "missing"
+        elseif isnan(value)
+            return ix, "NaN"
+        elseif !isfinite(value)
+            return ix, "non-finite"
+        elseif (value < 0.0) || (value > 1.0)
+            return ix, "out-of-range"
+        end
+    end
+    return nothing, ""
 end
 
 """Ensure Trades column `set` exists. Owner: TrendDetector. Eltype: `String`."""
@@ -181,10 +199,6 @@ function _concat_coin_featuretarget_caches(cfg::TrendDetectorConfig, coins::Abst
     cachedcoins = String[]
     resultsdf = featuresdf = nothing
 
-    if !isnothing(cfg.featuresdf) && !isnothing(cfg.targetsdf) 
-        @assert size(cfg.featuresdf, 1) == size(cfg.targetsdf, 1) "unexpected mismatch of cfg.featuresdf and cfg.targetsdf size with cfg.featuresdf size $(size(cfg.featuresdf, 1)) and cfg.targetsdf size $(size(cfg.targetsdf, 1))"
-        return cfg.targetsdf, cfg.featuresdf, string.(unique(cfg.targetsdf[!, :coin]))
-    end
     hasresults = EnvConfig.isfolder(TradingStrategy.resultsfilename(nothing))
     hasfeatures = EnvConfig.isfolder(TradingStrategy.featuresfilename(nothing))
     @assert hasresults == hasfeatures "unexpected mismatch of coin-specific results/features cache existence for coin=all with hasresults=$(hasresults) and hasfeatures=$(hasfeatures)"
@@ -192,8 +206,6 @@ function _concat_coin_featuretarget_caches(cfg::TrendDetectorConfig, coins::Abst
         resultsdf, featuresdf = _load_featuretarget_pair(nothing)
         cachedcoins = string.(unique(resultsdf[!, :coin]))
         @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of concatenated results/features size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1))"
-        cfg.targetsdf = resultsdf
-        cfg.featuresdf = featuresdf
         return resultsdf, featuresdf, cachedcoins
     end
     for coin in coins
@@ -219,12 +231,10 @@ function _concat_coin_featuretarget_caches(cfg::TrendDetectorConfig, coins::Abst
     @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of concatenated results/features size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1))"
     EnvConfig.savedf(resultsdf, TradingStrategy.resultsfilename(nothing))
     EnvConfig.savedf(featuresdf, TradingStrategy.featuresfilename(nothing))
-    cfg.targetsdf = resultsdf
-    cfg.featuresdf = featuresdf
     return resultsdf, featuresdf, cachedcoins
 end
 
-function getfeaturestargetsdf(cfg::TrendDetectorConfig)
+function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
     resultsdf, featuresdf, cachedcoins = _concat_coin_featuretarget_caches(cfg)
     if !isnothing(resultsdf) && !isnothing(featuresdf) 
         (verbosity >= 2) && println("$(EnvConfig.now()) using $(length(cachedcoins)) coin-specific cached trend feature/target pairs")
@@ -365,21 +375,25 @@ function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassi
 
     if !Classify.isadapted(cl) || retrain
         println("$(EnvConfig.now()) adapting one mix classifier for all coins")
-        resultsdf, featuresdf = getfeaturestargetsdf(cfg)
+        resultsdf, featuresdf = getfeaturestargetsdf!(cfg)
         if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
             return cl
         end
-        Classify.adapt!(
+        x, y, sampleweights = Classify.prepareadaptation(
             cl,
             resultsdf,
             featuresdf;
             settype="train",
-            classbalancing=cfg.classbalancing,
-            retrain=retrain,
-            save_after=true,
-            mode=EnvConfig.configmode,
-            folder=_classifierfolder(cfg),
+            classbalancing=cfg.classbalancing
         )
+        resultsdf = featuresdf = nothing # free memory
+        if retrain
+            Classify.adaptnn!(cl.nn, x, y; sampleweights=sampleweights, reinforce_epochs=10)
+        else
+            Classify.adaptnn!(cl.nn, x, y; sampleweights=sampleweights, reinforce_epochs=0)
+        end
+
+
         (verbosity >= 3) && showlosses(model)
         println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(cl) ? "did" : "did not") converge")
     end
@@ -419,45 +433,58 @@ function getclassifier(cfg::TrendDetectorConfig)
     return Classify.model(getruntimeclassifier(cfg))
 end
 
+function checkpredictionsdf(predictionsdf::Union{AbstractDataFrame, Nothing}, refdf::Union{AbstractDataFrame, Nothing}=nothing)
+    @assert !isnothing(predictionsdf) "missing predictionsdf"
+    @assert size(predictionsdf, 1) > 0 "unexpected empty predictionsdf"
+    @assert isnothing(refdf) || (size(predictionsdf, 1) == size(refdf, 1)) "size mismatch: size(predictionsdf, 1)=$(size(predictionsdf, 1)) != size(refdf, 1)=$(size(refdf, 1))"
+    @assert :score in propertynames(predictionsdf) "missing :score column in predictionsdf with columns=$(propertynames(predictionsdf))"
+    badix, badreason = _first_invalid_score(predictionsdf[!, :score])
+    @assert isnothing(badix) "invalid score in predictionsdf at row $(badix) due to $(badreason): $(predictionsdf[badix, :]) of $(describe(predictionsdf, :all))"
+end
+
 """
 Returns the max prediction with its corresponding trade label for the samples of all coins. 
 The returned DataFrame provides one score::Float32 column and one label::TradeLabel column representing the best sample prediction + the original targets::TradeLabel and set::CategoricalVector.
 """
 function getmaxpredictionsdf(cfg::TrendDetectorConfig)
-    if retrain
-        predictionsdf = nothing
-    else
+    predictionsdf = nothing
+    if !retrain
         predictionsdf = EnvConfig.readdf(TradingStrategy.predictionsfilename())
         depfiles = _featuretarget_cachefiles(cfg)
-        if !isnothing(predictionsdf) && !isfreshcache(TradingStrategy.predictionsfilename(), depfiles)
-            @warn "ignoring stale max predictions cache; rebuilding from newer coin-specific trend feature/target caches"
-            EnvConfig.deletefolder(TradingStrategy.predictionsfilename())
-            predictionsdf = nothing
+        if !isnothing(predictionsdf) 
+            if isfreshcache(TradingStrategy.predictionsfilename(), depfiles)
+                checkpredictionsdf(predictionsdf)
+            else
+                @warn "ignoring stale max predictions cache; rebuilding from newer coin-specific trend feature/target caches"
+                EnvConfig.deletefolder(TradingStrategy.predictionsfilename())
+                predictionsdf = nothing
+            end
         end
     end
+    resultsdf = featuresdf = nothing
     # predictions are stored in a predictionsdf to avoid loading every time also features bu eventually you want the whole resultdf with predictions
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
         cl = getruntimeclassifier(cfg)
-        resultsdf, featuresdf = getfeaturestargetsdf(cfg) 
-        (verbosity >= 2) && print("$(EnvConfig.now()) get maximum predictions                             \r")
+        if isnothing(resultsdf) || isnothing(featuresdf)
+            resultsdf, featuresdf = getfeaturestargetsdf!(cfg) 
+        end
+        (verbosity >= 2) && print("$(EnvConfig.now()) classify maximum predictions                             \r")
         (verbosity >= 3) && println()
         predictionsdf = Classify.maxpredictdf(cl, featuresdf)
-        @assert size(predictionsdf, 1) == size(featuresdf, 1) == size(resultsdf, 1) "size(predictionsdf, 1)=$(size(predictionsdf, 1)) != size(featuresdf, 1)=$(size(featuresdf, 1)) != size(resultsdf, 1)=$(size(resultsdf, 1)) for mix"
+        checkpredictionsdf(predictionsdf, featuresdf)
         if (size(resultsdf, 1) > 0)
             EnvConfig.savedf(predictionsdf, TradingStrategy.predictionsfilename())
         end
     end
     if !isnothing(predictionsdf) && (size(predictionsdf, 1) > 0)
-        resultsdf, _ = getfeaturestargetsdf(cfg)
-        if !isnothing(resultsdf)
-            resultsdf = DataFrame(resultsdf; copycols=true)
-            if :sampleix in propertynames(resultsdf)
-                select!(resultsdf, Not(:sampleix))
-            end
+        if isnothing(resultsdf)
+            resultsdf, _ = getfeaturestargetsdf!(cfg)
         end
-        @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(predictionsdf, 1) > 0) "size mismatch: size(resultsdf, 1)=$(isnothing(resultsdf) ? "nothing" : size(resultsdf, 1)), size(predictionsdf, 1)=$(size(predictionsdf, 1))"
+        checkpredictionsdf(predictionsdf, resultsdf)
         resultsdf[:, :score] = predictionsdf[!, :score]
         resultsdf[:, :label] = predictionsdf[!, :label]
+        badix, badreason = _first_invalid_score(resultsdf[!, :score])
+        @assert isnothing(badix) "invalid score after assigning predictionsdf to resultsdf at row $(badix) due to $(badreason): $(resultsdf[badix, :])"
     else
         resultsdf = nothing
     end
@@ -793,14 +820,16 @@ function getconfusionmatrices(cfg::TrendDetectorConfig)
     if !isnothing(cmdf) && !isnothing(xcmdf) && (size(cmdf, 1) > 0) && (size(xcmdf, 1) > 0)
         return cmdf, xcmdf
     end
-    dfp = getmaxpredictionsdf(cfg)
-    if isnothing(dfp) || (size(dfp, 1) == 0)
+    resultsdf = getmaxpredictionsdf(cfg)
+    if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
         return nothing, nothing
     end
-    dfp = @view dfp[.!ismissing.(dfp[!, :set]), :] # exclude gaps between set partitions
+    badix, badreason = _first_invalid_score(resultsdf[!, :score])
+    @assert isnothing(badix) "invalid score before confusion matrix evaluation at row $(badix) due to $(badreason): $(resultsdf[badix, :])"
+    resultsdf = @view resultsdf[.!ismissing.(resultsdf[!, :set]), :] # exclude gaps between set partitions
     (verbosity >= 2) && print("$(EnvConfig.now()) calculating confusion matrices                             \r")
     (verbosity >= 3) && println()
-    if (size(dfp, 1) > 0)
+    if (size(resultsdf, 1) > 0)
         # predictedlabel = categorical(string.(dfp[!, :label]), levels=string.(Targets.uniquelabels(cfg.targetconfig)))
         # println("predictedllabels=$(unique(predictedlabel)), levels=$(levels(predictedlabel))")
         # targetlabel = categorical(string.(dfp[!, :target]), levels=string.(Targets.uniquelabels(cfg.targetconfig)))
@@ -808,16 +837,16 @@ function getconfusionmatrices(cfg::TrendDetectorConfig)
         # cm = StatisticalMeasures.ConfusionMatrices.confmat(predictedlabel, targetlabel)
         # println("describe(predictions): $(describe(dfp))")
         # display(cm)
-        cmdf = Classify.confusionmatrix(dfp, Targets.uniquelabels(cfg.targetconfig))
+        cmdf = Classify.confusionmatrix(resultsdf, Targets.uniquelabels(cfg.targetconfig))
         if size(cmdf, 1) > 0
             EnvConfig.savedf(cmdf, TradingStrategy.confusionfilename())
         end
-        xcmdf = Classify.extendedconfusionmatrix(dfp, Targets.uniquelabels(cfg.targetconfig))
+        xcmdf = Classify.extendedconfusionmatrix(resultsdf, Targets.uniquelabels(cfg.targetconfig))
         if size(xcmdf, 1) > 0
             EnvConfig.savedf(xcmdf, TradingStrategy.xconfusionfilename())
         end
     else
-        (verbosity >= 1) && println("skipping evaluation of $(cfg.coins) due to missing predictions (size(dfp)= $(size(dfp)))")
+        (verbosity >= 1) && println("skipping evaluation of $(cfg.coins) due to missing predictions (size(dfp)= $(size(resultsdf)))")
     end
     (verbosity >= 2) && print("$(EnvConfig.now()) calculated confusion matrices                             \r")
     (verbosity >= 3) && println()
@@ -858,7 +887,6 @@ end
 
 function gainspipeline(cfg)
     # getclassifier(cfg) # ensure preparation of baseline mix classifier
-    # getfeaturestargetsdf(cfg)
     cmdf, xcmdf = getconfusionmatrices(cfg)
     @assert isnothing(cmdf) == isnothing(xcmdf) "unexpected cmdf and xcmdf existence mismatch with isnothing(cmdf)=$(isnothing(cmdf)) and isnothing(xcmdf)=$(isnothing(xcmdf))"
     if !isnothing(cmdf) && (size(cmdf, 1) > 0)
@@ -944,6 +972,17 @@ function introspection(cfg::TrendDetectorConfig)
     if !isnothing(preddf) && (size(preddf, 1) > 0)
         println("$(TradingStrategy.predictionsfilename()): size(preddf) = $(size(preddf))")
         println("describe(preddf, :all)=$(describe(preddf, :all))")
+        if :score in propertynames(preddf)
+            badix, badreason = _first_invalid_score(preddf[!, :score])
+            first_invalid_ix = isnothing(badix) ? "none" : string(badix)
+            reason = isnothing(badix) ? "none" : badreason
+            println("predictions score integrity: valid=$(isnothing(badix)) first_invalid_ix=$(first_invalid_ix) reason=$(reason)")
+            if !isnothing(badix)
+                println("first invalid prediction row: $(preddf[badix, :])")
+            end
+        else
+            println("predictions score integrity: missing :score column in preddf with columns=$(propertynames(preddf))")
+        end
     else
         println("No results file found in $(EnvConfig.logfolder()) - size(preddf)=$(isnothing(preddf) ? "nothing" : size(preddf))")
     end
@@ -1147,7 +1186,7 @@ function main(args::Vector{String}=ARGS)
         Ohlcv.verbosity = 1
         Features.verbosity = 1
         Targets.verbosity = 1
-        EnvConfig.verbosity = 1
+        EnvConfig.verbosity = 3
         Classify.verbosity = 1
         EnvConfig.init(training)
         allowedcoins = TradingStrategy.traincoins()

@@ -245,25 +245,17 @@ function featurestargetsdf(
 end
 
 """
-    adapt!(cl::TrendClassifier001, resultsdf::AbstractDataFrame, featuresdf::AbstractDataFrame; settype="train", classbalancing=true, retrain=false, save_after=false, mode=EnvConfig.configmode, folder=nothing)
+    prepareadaptation(cl::TrendClassifier001, resultsdf::AbstractDataFrame, featuresdf::AbstractDataFrame; settype="train", classbalancing=true, retrain=false)
 
-Adapt or retrain the underlying NN using provided feature/target tables.
+Returns features, targets, and sampleweights in teh correct matrix format to adapt the classifier cl.
 """
-function adapt!(
+function prepareadaptation(
     cl::TrendClassifier001,
     resultsdf::AbstractDataFrame,
     featuresdf::AbstractDataFrame;
     settype::AbstractString="train",
-    classbalancing::Bool=true,
-    retrain::Bool=false,
-    save_after::Bool=false,
-    mode=EnvConfig.configmode,
-    folder::Union{Nothing, AbstractString}=nothing,
+    classbalancing::Bool=true
 )
-    if !retrain && isadapted(cl.nn) && nnconverged(cl.nn)
-        return cl
-    end
-
     mask = string.(resultsdf[!, :set]) .== String(settype)
     tresults = @view resultsdf[mask, :]
     tfeatures = @view featuresdf[mask, :]
@@ -279,16 +271,7 @@ function adapt!(
         weightinfo = classweighting(y, cl.nn.labels)
         sampleweights = weightinfo.sampleweights
     end
-    if retrain
-        adaptnn!(cl.nn, x, y; sampleweights=sampleweights, reinforce_epochs=10)
-    else
-        adaptnn!(cl.nn, x, y; sampleweights=sampleweights, reinforce_epochs=0)
-    end
-
-    if save_after
-        save(cl; mode=mode, folder=folder)
-    end
-    return cl
+    return x, y, sampleweights
 end
 
 """
