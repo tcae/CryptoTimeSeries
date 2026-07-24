@@ -288,14 +288,14 @@ function _simulated_usdtmarketview(tc::TradeCache, datetime::DateTime, bases::Se
     return DataFrame(basecoin=basecoins, quotevolume24h=quotevolumes, pricechangepercent=pricechanges, lastprice=lastprices)
 end
 
-"""Synchronize `buyenabled` and `sellenabled` flags from the currently computed criteria columns."""
+"""Synchronize `openenabled` and `closeenabled` flags from the currently computed criteria columns."""
 function _sync_tradeflags!(tc::TradeCache; assetonly::Bool=false)
     if assetonly
-        tc.cfg[!, :buyenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted]
-        tc.cfg[!, :sellenabled] .= tc.cfg[!, :inportfolio]
+        tc.cfg[!, :openenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted] .&& .!tc.cfg[!, :blacklisted] .&& (tc.mc[:trademode] == buysell)
+        tc.cfg[!, :closeenabled] .= tc.cfg[!, :inportfolio]
     else
-        tc.cfg[!, :buyenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :minquotevol] .&& tc.cfg[!, :continuousminvol] .&& .!tc.cfg[!, :blacklisted]
-        tc.cfg[!, :sellenabled] .= tc.cfg[!, :buyenabled] .|| tc.cfg[!, :inportfolio]
+        tc.cfg[!, :openenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :minquotevol] .&& tc.cfg[!, :continuousminvol] .&& .!tc.cfg[!, :blacklisted] .&& (tc.mc[:trademode] == buysell)
+        tc.cfg[!, :closeenabled] .= tc.cfg[!, :openenabled] .|| tc.cfg[!, :inportfolio]
     end
     return tc
 end
@@ -333,7 +333,7 @@ end
 """
 Loads all USDT coins, checks liquidity volume criteria, removes risk coins.
 If isnothing(datetime) or datetime > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
-The resulting DataFrame table of tradable coins is stored, consisting of the union of buyenabled and sellenabled pairs.
+The resulting DataFrame table of tradable coins is stored, consisting of the union of openenabled and closeenabled pairs.
 `assetonly` is an input parameter to limit coins for backtesting.
 """
 function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.startdt, assetonly=false, updatecache=false)
@@ -422,8 +422,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         tc.cfg[:, :continuousminvol] = Bool[]
         tc.cfg[:, :inportfolio] = Bool[]
         tc.cfg[:, :classifieraccepted] = Bool[]
-        tc.cfg[:, :buyenabled] = Bool[]
-        tc.cfg[:, :sellenabled] = Bool[]
+        tc.cfg[:, :openenabled] = Bool[]
+        tc.cfg[:, :closeenabled] = Bool[]
         tc.cfg[:, :blacklisted] = Bool[]
         (verbosity >= 1) && @warn "no basecoins selected - empty result tc.cfg=$(tc.cfg)"
         return tc
@@ -436,8 +436,8 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in portfolioassetbaseset for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :classifieraccepted] .= false
-    tc.cfg[!, :buyenabled] .= false
-    tc.cfg[!, :sellenabled] .= false
+    tc.cfg[!, :openenabled] .= false
+    tc.cfg[!, :closeenabled] .= false
     tc.cfg[:, :blacklisted] = [base in blacklistset for base in tc.cfg[!, :basecoin]]
 
     # download latest OHLCV and classifier features
@@ -496,7 +496,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
     _sync_tradeflags!(tc; assetonly=assetonly)
     (verbosity >= 4) && println("$(Xch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
-    # tc.cfg = tc.cfg[(tc.cfg[!, :buyenabled] .|| tc.cfg[:, :sellenabled]), :]
+    # tc.cfg = tc.cfg[(tc.cfg[!, :openenabled] .|| tc.cfg[:, :closeenabled]), :]
     (verbosity >= 2) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases=$(_summarize_symbols(classifierbases))")
 
     if !assetonly
@@ -563,7 +563,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
         if tradesrow.label in [longopen, longstrongopen]
-            if cappedquote >= cache.mc[:minorderquote]
+            if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
                 tradesrow.lo_amount = min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close)
                 if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.lo_amount * tradesrow.close
@@ -573,7 +573,11 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
                     tradesrow.label = ignore
                 end
             else
-                tradesrow.lo_msg = "Trade: long open skipped - insufficient free quote"
+                if basecfg.openenabled == false
+                    tradesrow.lo_msg = "Trade: long open skipped - open order disabled"
+                else
+                    tradesrow.lo_msg = "Trade: long open skipped - insufficient free quote"
+                end
                 tradesrow.lo_amount = 0f0
                 tradesrow.label = ignore
             end
@@ -587,7 +591,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
                 Xch.process_order_request(cache.xc, tradesdf, tradesix)
             end
         elseif tradesrow.label in [shortstrongopen, shortopen]
-            if cappedquote >= cache.mc[:minorderquote]
+            if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
                 tradesrow.so_amount = min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close)
                 if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.so_amount * tradesrow.close
@@ -597,7 +601,11 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
                     tradesrow.label = ignore
                 end
             else
-                tradesrow.so_msg = "Trade: short open skipped - insufficient free quote"
+                if basecfg.openenabled == false
+                    tradesrow.so_msg = "Trade: short open skipped - open order disabled"
+                else
+                    tradesrow.so_msg = "Trade: short open skipped - insufficient free quote"
+                end
                 tradesrow.so_amount = 0f0
                 tradesrow.label = ignore
             end
@@ -697,9 +705,9 @@ end
 function _summarize_cfg(cfg::AbstractDataFrame)::String
     rows = size(cfg, 1)
     bases = (:basecoin in names(cfg)) ? String.(cfg[!, :basecoin]) : String[]
-    buys = (:buyenabled in names(cfg)) ? sum(cfg[!, :buyenabled]) : 0
-    sells = (:sellenabled in names(cfg)) ? sum(cfg[!, :sellenabled]) : 0
-    return "rows=$(rows), bases=$(_summarize_symbols(bases)), buyenabled=$(buys), sellenabled=$(sells)"
+    buys = (:openenabled in names(cfg)) ? sum(cfg[!, :openenabled]) : 0
+    sells = (:closeenabled in names(cfg)) ? sum(cfg[!, :closeenabled]) : 0
+    return "rows=$(rows), bases=$(_summarize_symbols(bases)), openenabled=$(buys), closeenabled=$(sells)"
 end
 
 function _summarize_openorders(oo::AbstractDataFrame)::String
@@ -716,7 +724,7 @@ function _maybe_refresh_tradeselection!(cache::TradeCache; assets::Union{Nothing
     assets_df = isnothing(assets) ? Xch.portfolio!(cache.xc) : assets
     (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
     tradeselection!(cache, assets_df[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
-    cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[!, :sellenabled]), :]
+    cache.cfg = cache.cfg[(cache.cfg[!, :openenabled] .|| cache.cfg[!, :closeenabled]), :]
     _mark_tradeselection_refreshed!(cache)
     (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(_summarize_cfg(cache.cfg))"
     return true
@@ -748,7 +756,7 @@ function _ensure_tradeloop_initialized!(cache::TradeCache)
         assets = Xch.portfolio!(cache.xc)
         (verbosity >= 2) && print("\r$(tradetime(cache)): start calculating trading strategy on the fly")
         tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
-        cache.cfg = cache.cfg[(cache.cfg[!, :buyenabled] .|| cache.cfg[!, :sellenabled]), :]
+        cache.cfg = cache.cfg[(cache.cfg[!, :openenabled] .|| cache.cfg[!, :closeenabled]), :]
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
 end

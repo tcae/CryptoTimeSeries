@@ -943,7 +943,8 @@ function introspection(cfg::TrendDetectorConfig)
         else
             println("size(targetissuesdf) = $(size(targetissuesdf))")
             println("describe(targetissuesdf, :all)=$(describe(targetissuesdf, :all))")
-            println(targetissuesdf)
+            show(targetissuesdf, truncate=100)
+            println()
         end
     else
         println("No target issues file found in $(EnvConfig.logfolder())")
