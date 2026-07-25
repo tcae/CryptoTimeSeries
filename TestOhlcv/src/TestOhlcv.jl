@@ -4,6 +4,8 @@ module TestOhlcv
 using Dates, DataFrames, Logging
 using EnvConfig, Ohlcv
 
+const FIXED_SINE_ANCHOR_UTC = round(DateTime("2025-01-02 01:11:28:121", "y-m-d H:M:S:s"), Dates.Minute)
+
 """
 Returns cumulative sine function samples by adding sines on each other described by parameters given as a tuple (periodsamples, offset, amplitude).
 The parameter samples defines the length of the returned functioni samples and level the zero level of the function.
@@ -21,13 +23,14 @@ function sinesamples(samples, level, sineparams)
 end
 
 """
-returns ohlcv data starting 2019-01-02 01:11 for - by default 5.7 years
+returns synthetic minute OHLCV data. Prices are phase-anchored by `offset`.
+When `firstutc` is provided, timestamps start there; otherwise a fixed anchor is used.
 """
-function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmultiple = 1)
+function sinedata(periodminutes, totalminutes=3000000, offset=0, overlayperiodmultiple = 1; firstutc::Union{Nothing, DateTime}=nothing)
     price::Float32 = 2  # 200
-    volumeconst::Float32 = 4 * 3 * 3000 # increase for liquiditycheck: 3000 EUR/min but 2* 3000/min per day (use 3*) and volume is modulated with sine resulting in 4* down (to be compensated by 4*)
+    volumeconst::Float32 = 4 * 30 * 3000 # high synthetic baseline quote liquidity headroom for strict liquidity checks
     amplitude::Float32 = 0.07  # 0.007  # 0.7% of price
-    firstutc = DateTime("2025-01-02 01:11:28:121", "y-m-d H:M:S:s")
+    firstutc = isnothing(firstutc) ? FIXED_SINE_ANCHOR_UTC : firstutc
     firstutc = round(firstutc, Dates.Minute)
     # lastutc = round(lastutc, Dates.Minute)
     # first is the reference point to reproduce the pattern
@@ -132,8 +135,11 @@ function sinedata_test()
 end
 
 function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
-    # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
-    df = sinedata(2*60, 3000000)
+    startm = floor(startdt, Dates.Minute)
+    endm = ceil(enddt, Dates.Minute)
+    totalminutes = max(1, Int(cld(Dates.value(endm - startm), 60000)))
+    anchor_offset_minutes = Int(fld(Dates.value(startm - FIXED_SINE_ANCHOR_UTC), 60000))
+    df = sinedata(2*60, totalminutes, anchor_offset_minutes, 1; firstutc=startm)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     # df = @view df[startdt .<= df.opentime .<= enddt, :]
     # println("test single sinus $(size(df))")
@@ -142,8 +148,11 @@ function singlesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m
 end
 
 function doublesine(startdt::DateTime, enddt::DateTime=Dates.now(), interval="1m")
-    # totalminutes = Dates.value(ceil(enddt, Dates.Minute(1)) - floor(startdt, Dates.Minute(1)))
-    df = sinedata(2*60, 3000000, 0, 10.5)
+    startm = floor(startdt, Dates.Minute)
+    endm = ceil(enddt, Dates.Minute)
+    totalminutes = max(1, Int(cld(Dates.value(endm - startm), 60000)))
+    anchor_offset_minutes = Int(fld(Dates.value(startm - FIXED_SINE_ANCHOR_UTC), 60000))
+    df = sinedata(2*60, totalminutes, anchor_offset_minutes, 10.5; firstutc=startm)
     # df.opentime = [startdt + Dates.Minute(m) for m in 1:totalminutes]
     # df = @view df[startdt .<= df.opentime .<= enddt, :]
     # println("test double sinus $(size(df))")

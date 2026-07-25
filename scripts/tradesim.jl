@@ -318,6 +318,9 @@ println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
 
 run_startdt, run_enddt = effective_startdt, effective_enddt
+strategy_runtime = TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME")
+required_history_minutes = max(0, Int(TradingStrategy.requiredhistoryminutes(strategy_runtime)))
+history_startdt = run_startdt - Minute(required_history_minutes)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BUILD TRADE CACHE
@@ -326,15 +329,18 @@ run_startdt, run_enddt = effective_startdt, effective_enddt
 bc = Bybit.BybitCache()
 Bybit.seedportfolio!(bc, QUOTE_COIN, 0.0)
 xc = Xch.XchCache(bc;
-    startdt  = run_startdt,
+    startdt  = history_startdt,
     enddt    = run_enddt,
 )
     Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
-cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME"), trademode=TRADE_MODE)
+cache = Trade.TradeCache(xc=xc, strategy=strategy_runtime, trademode=TRADE_MODE)
 if !isnothing(BACKTEST_BASES)
-    Trade.tradeselection!(cache, BACKTEST_BASES; datetime=xc.startdt, assetonly=true, updatecache=false)
+    Trade.tradeselection!(cache, BACKTEST_BASES; datetime=run_startdt, assetonly=true, updatecache=false)
 end
+# Keep the requested backtest range as the real simulation window. The earlier
+# preload start is only for feature-history warmup.
+cache.xc.startdt = run_startdt
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
@@ -344,6 +350,7 @@ cache.mc[:maxbudgetquote]   = MAX_BUDGET_QUOTE
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")
+println("$(EnvConfig.now()): required history preload = $(required_history_minutes) minutes (history_start=$(history_startdt))")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): blacklist ($(length(cache.mc[:blacklistbases])) bases): $(cache.mc[:blacklistbases])")
 println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")

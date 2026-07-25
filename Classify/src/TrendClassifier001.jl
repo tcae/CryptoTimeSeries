@@ -184,10 +184,20 @@ function featurestargetsdf(
 
     fotcol = _resolve_opentime_col(fdf)
     if isnothing(fotcol)
-        fot = Features.opentime(featcfg)
-        @assert size(fdf, 1) == length(fot) "feature rows $(size(fdf, 1)) must match feature opentime length $(length(fot)) for $(ohlcv.base)"
-        firstdt = fot[begin]
-        lastdt = fot[end]
+        if !isnothing(startdt) && !isnothing(enddt)
+            # When explicit range boundaries are provided, feature tables may
+            # omit opentime while still being aligned to the requested range.
+            firstdt = floor(startdt, Minute(1))
+            lastdt = floor(enddt, Minute(1))
+        else
+            fot = Features.opentime(featcfg)
+            @assert length(fot) >= size(fdf, 1) "feature rows $(size(fdf, 1)) must be <= feature opentime length $(length(fot)) for $(ohlcv.base)"
+            fot_lastix = lastindex(fot)
+            firstix = fot_lastix - (size(fdf, 1) - 1)
+            @assert firstindex(fot) <= firstix <= fot_lastix "calculated firstix=$(firstix) out of opentime bounds $(firstindex(fot)):$(fot_lastix) for $(ohlcv.base)"
+            firstdt = fot[firstix]
+            lastdt = fot[fot_lastix]
+        end
     else
         firstdt = fdf[begin, fotcol]
         lastdt = fdf[end, fotcol]

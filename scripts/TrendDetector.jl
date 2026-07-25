@@ -26,8 +26,9 @@ tradingstrategy02() = TradingStrategy.tradingstrategy02()
 inspect = provide a look into files and data structures 
 execute = run training and evaluation
 special = run special tasks for repair, debugging or refactoring
+gain = run inference-only gains/trades pipeline
 """
-@enum TrendDetectorMode inspect execute special
+@enum TrendDetectorMode inspect execute special gain
 
 mutable struct TrendDetectorConfig
     configname::String
@@ -251,7 +252,7 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
             coin = cfg.coins[coinix]
             coinresultsdf = coinfeaturesdf = nothing
             resultsdf = featuresdf = nothing
-            (verbosity >= 2) && print("calculating $coin ($coinix/$(length(cfg.coins))) liquid ranges, features and targets                                                          \r")
+            (verbosity >= 2) && print("calculating $coin ($coinix/$(length(cfg.coins))) features and targets                                                          \r")
             (verbosity >= 3) && println()
             ohlcv = Ohlcv.read(coin)
             odf = Ohlcv.dataframe(ohlcv)
@@ -268,39 +269,97 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
             cfg.enddt = isnothing(cfg.enddt) ? ot[end] : cfg.enddt
             endix = Ohlcv.rowix(ot, cfg.enddt)
             @assert startix < endix "unexpected startix $startix >= endix $endix for $coin with startdt $(cfg.startdt) and enddt $(cfg.enddt)              "
-            rv = Ohlcv.liquiditycheck(Ohlcv.ohlcvview(ohlcv, startix:endix))
+            reqmins = max(0, Int(Classify.requiredminutes(cl)))
 
-            for rngix in eachindex(rv) # rng indices are related to the ohlcvview dataframe rows
-                rng = rv[rngix]
-                rng = rng .+ (startix - 1) # adjust to complete ohlcv dataframe row indices
-                if rng[end] - rng[begin] > 0
-                    (verbosity >= 2) && print("$(EnvConfig.now()) calculating features and targets for $coin ($coinix/$(length(cfg.coins))) range ($rngix/$(length(rv))) $rng from $(ot[rng[begin]]) until $(ot[rng[end]]) with $(rng[end] - rng[begin]) samples                \r")
-                    (verbosity >= 3) && println()
-                    rngohlcv = Ohlcv.ohlcvview(ohlcv, rng)
-                    trgcfg = cfg.targetconfig
-                    rngresults, rngfeatures = Classify.featurestargetsdf(
-                        cl,
-                        rngohlcv,
-                        trgcfg;
-                        partitionconfig=cfg.partitionconfig,
-                        coin=coin,
-                        rangeid_start=rangeid,
-                    )
-                    issues = Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
-                    if !isnothing(issues) && (length(issues) > 0)
-                        if size(targetissuesdf, 1) > 0
-                            targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
-                        else
-                            targetissuesdf = DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues)))
+            if cfg.opmode == gain
+                history_begin_ix = max(firstindex(ot), startix - reqmins)
+                history_startdt = ot[history_begin_ix]
+                real_startdt = ot[startix]
+                real_enddt = ot[endix]
+                (verbosity >= 2) && print("$(EnvConfig.now()) calculating features and targets for $coin ($coinix/$(length(cfg.coins))) gain window $(real_startdt) → $(real_enddt), preload $(history_startdt) (feature_req=$(reqmins))                \r")
+                (verbosity >= 3) && println()
+                rngohlcv = Ohlcv.ohlcvview(ohlcv, history_begin_ix:endix)
+                trgcfg = cfg.targetconfig
+                rngresults, rngfeatures = Classify.featurestargetsdf(
+                    cl,
+                    rngohlcv,
+                    trgcfg;
+                    startdt=real_startdt,
+                    enddt=real_enddt,
+                    partitionconfig=nothing,
+                    coin=coin,
+                    rangeid_start=rangeid,
+                )
+                issues = Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
+                if !isnothing(issues) && (length(issues) > 0)
+                    if size(targetissuesdf, 1) > 0
+                        targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
+                    else
+                        targetissuesdf = DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues)))
+                    end
+                end
+                if size(rngresults, 1) > 0
+                    rangeid = UInt16(maximum(rngresults[!, :rangeid]) + 1)
+                end
+                coinresultsdf = isnothing(coinresultsdf) ? rngresults : vcat(coinresultsdf, rngresults)
+                coinfeaturesdf = isnothing(coinfeaturesdf) ? rngfeatures : vcat(coinfeaturesdf, rngfeatures)
+            else
+                window_minutes = endix - startix + 1
+                liq_checkperiod = min(Ohlcv.ld.checkperiod, max(15, fld(window_minutes, 4)))
+                liq_accumulate = min(Ohlcv.ld.accumulate, liq_checkperiod)
+                liq_startdistance = min(Ohlcv.ld.startdistance, max(0, window_minutes - liq_checkperiod))
+                liq_minliquidminutes = min(Ohlcv.ld.minliquidminutes, max(1, window_minutes - liq_checkperiod + 1))
+                rv = Ohlcv.liquiditycheck(
+                    Ohlcv.ohlcvview(ohlcv, startix:endix);
+                    minquotevol=Ohlcv.ld.minquotevol,
+                    accumulate=liq_accumulate,
+                    checkperiod=liq_checkperiod,
+                    startthreshold=Ohlcv.ld.startthreshold,
+                    stopthreshold=Ohlcv.ld.stopthreshold,
+                    minliquidminutes=liq_minliquidminutes,
+                    startdistance=liq_startdistance,
+                )
+                liq_historymins = max(liq_checkperiod, liq_accumulate, liq_startdistance)
+                preload_historymins = max(reqmins, liq_historymins)
+
+                for rngix in eachindex(rv) # rng indices are related to the ohlcvview dataframe rows
+                    rng = rv[rngix]
+                    rng = rng .+ (startix - 1) # adjust to complete ohlcv dataframe row indices
+                    if rng[end] - rng[begin] > 0
+                        real_startdt = ot[rng[begin]]
+                        real_enddt = ot[rng[end]]
+                        history_begin_ix = max(firstindex(ot), rng[begin] - preload_historymins)
+                        history_startdt = ot[history_begin_ix]
+                        (verbosity >= 2) && print("$(EnvConfig.now()) calculating features and targets for $coin ($coinix/$(length(cfg.coins))) range ($rngix/$(length(rv))) $rng real $(real_startdt) → $(real_enddt), preload $(history_startdt) (feature_req=$(reqmins), liquidity_req=$(liq_historymins), used=$(preload_historymins))                \r")
+                        (verbosity >= 3) && println()
+                        rngohlcv = Ohlcv.ohlcvview(ohlcv, history_begin_ix:rng[end])
+                        trgcfg = cfg.targetconfig
+                        rngresults, rngfeatures = Classify.featurestargetsdf(
+                            cl,
+                            rngohlcv,
+                            trgcfg;
+                            startdt=real_startdt,
+                            enddt=real_enddt,
+                            partitionconfig=cfg.partitionconfig,
+                            coin=coin,
+                            rangeid_start=rangeid,
+                        )
+                        issues = Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
+                        if !isnothing(issues) && (length(issues) > 0)
+                            if size(targetissuesdf, 1) > 0
+                                targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
+                            else
+                                targetissuesdf = DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues)))
+                            end
                         end
+                        if size(rngresults, 1) > 0
+                            rangeid = UInt16(maximum(rngresults[!, :rangeid]) + 1)
+                        end
+                        coinresultsdf = isnothing(coinresultsdf) ? rngresults : vcat(coinresultsdf, rngresults)
+                        coinfeaturesdf = isnothing(coinfeaturesdf) ? rngfeatures : vcat(coinfeaturesdf, rngfeatures)
+                    else
+                        @error "unexpected zero length range for " ohlcv.base rng rv
                     end
-                    if size(rngresults, 1) > 0
-                        rangeid = UInt16(maximum(rngresults[!, :rangeid]) + 1)
-                    end
-                    coinresultsdf = isnothing(coinresultsdf) ? rngresults : vcat(coinresultsdf, rngresults)
-                    coinfeaturesdf = isnothing(coinfeaturesdf) ? rngfeatures : vcat(coinfeaturesdf, rngfeatures)
-                else
-                    @error "unexpected zero length range for " ohlcv.base rng rv
                 end
             end
             ohlcv = ot = rngohlcv = rngresults = rngfeatures = nothing # free memory
@@ -316,7 +375,13 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
         resultsdf, featuresdf, cachedcoins = _concat_coin_featuretarget_caches(cfg, processedcoins)
         (verbosity >= 2) && println("$(EnvConfig.now()) processed $(length(processedcoins)), skipped $(length(skippedcoins)) coins")
         (verbosity >= 3) && println("$(EnvConfig.now()) processed $processedcoins")
-        (verbosity >= 3) && (length(skippedcoins) > 0) && println("skipped to process $skippedcoins due to no liquid ranges")
+        if (verbosity >= 3) && (length(skippedcoins) > 0)
+            if cfg.opmode == gain
+                println("skipped to process $skippedcoins due to empty data/results")
+            else
+                println("skipped to process $skippedcoins due to no liquid ranges")
+            end
+        end
     end
 
     @assert !isnothing(resultsdf) && (size(resultsdf, 1) == size(featuresdf, 1) > 0) "unexpected resultsdf and featuresdf size with resultsdf size $(isnothing(resultsdf) ? "nothing" : size(resultsdf, 1)) and featuresdf size $(isnothing(featuresdf) ? "nothing" : size(featuresdf, 1))"
@@ -340,7 +405,14 @@ classifiermenmonic(coins=nothing, coinix=nothing) = "mix"
 
 function _classifierfolder(cfg::TrendDetectorConfig)::String
     override = strip(get(ENV, "TRENDDETECTOR_CLASSIFIER_FOLDER", ""))
-    return isempty(override) ? cfg.folder : override
+    if !isempty(override)
+        return override
+    end
+    if cfg.opmode == gain
+        # Gain mode performs inference-only and must reuse the phase artifact folder.
+        return "Trend-$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
+    end
+    return cfg.folder
 end
 
 function _trendclassifierspec(cfg::TrendDetectorConfig)
@@ -356,7 +428,20 @@ function _trendclassifierseed(cfg::TrendDetectorConfig)::Classify.AbstractClassi
     featurecount = Features.featurecount(cfg.featconfig)
     labels = Targets.uniquelabels(cfg.targetconfig)
     mnemonic = classifiermenmonic()
+    classifierfolder = _classifierfolder(cfg)
     spec = _trendclassifierspec(cfg)
+
+    if cfg.opmode == gain
+        nntmp = cfg.classifiermodel(featurecount, labels, mnemonic)
+        loadspec = merge(spec, (nn_fileprefix=nntmp.fileprefix,))
+        return Classify.load(
+            cfg.classifiertype,
+            loadspec;
+            mode=EnvConfig.configmode,
+            folder=classifierfolder,
+        )
+    end
+
     return Classify.loadorbuild(
         cfg.classifiertype,
         spec,
@@ -365,12 +450,19 @@ function _trendclassifierseed(cfg::TrendDetectorConfig)::Classify.AbstractClassi
         mnemonic,
         cfg.classifiermodel;
         mode=EnvConfig.configmode,
-        folder=_classifierfolder(cfg),
+        folder=classifierfolder,
     )
 end
 
 function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassifier
     cl = _trendclassifierseed(cfg)
+
+    if cfg.opmode == gain
+        @assert !retrain "retrain mode is not allowed in gain mode"
+        @assert Classify.isadapted(cl) "gain mode requires an existing adapted classifier in $(_classifierfolder(cfg)); train it first"
+        return cl
+    end
+
     model = Classify.model(cl)
 
     if !Classify.isadapted(cl) || retrain
@@ -537,7 +629,9 @@ function getgainsdf(cfg::TrendDetectorConfig)
     end
 
     ts = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(cfg.configname), source="trenddetector:$(cfg.configname)")
-    xc = Xch.XchCache(Bybit.BybitCache(); startdt=cfg.startdt, enddt=cfg.enddt)
+    replay_startdt = minimum(resultsdf[!, :opentime])
+    replay_enddt = maximum(resultsdf[!, :opentime])
+    xc = Xch.XchCache(Bybit.BybitCache(); startdt=replay_startdt, enddt=replay_enddt)
     Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
 
     # Range ids can collide across independently cached coins/runs. Replay must
@@ -1050,15 +1144,15 @@ function _clear_test_trade_cache!()
     return nothing
 end
 
-function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime)
+function buildcfg(args::Vector{String}, allowedcoins::Vector{String}, startdt::DateTime, enddt::DateTime, defaultfoldersuffix::AbstractString, opmode::TrendDetectorMode)
     configref = _argvalue(args, "config", "046")
     basecfg = TradingStrategy.trenddetectorconfig(configref)
     configname = _argvalue(args, "configname", string(basecfg.configname))
-    folder = _argvalue(args, "folder", "Trend-$configname-$(EnvConfig.configmode)")
+    folder = _argvalue(args, "folder", "Trend-$configname-$defaultfoldersuffix")
     classbalancing_default = (:classbalancing in keys(basecfg)) ? string(getfield(basecfg, :classbalancing)) : "true"
     classbalancing = _parse_bool(_argvalue(args, "classbalancing", classbalancing_default))
     mergedcfg = merge(basecfg, (configname=configname, folder=folder, classbalancing=classbalancing))
-    return TrendDetectorConfig(; mergedcfg..., coins=allowedcoins, startdt=startdt, enddt=enddt)
+    return TrendDetectorConfig(; mergedcfg..., coins=allowedcoins, startdt=startdt, enddt=enddt, opmode=opmode)
 end
 
 """
@@ -1083,7 +1177,7 @@ Return CLI help text for `TrendDetector.jl`.
 function trenddetectorhelp()::String
     return """
 Usage:
-  julia --project=. scripts/TrendDetector.jl [help] [test|train] [inspect] [special] [retrain] [key=value ...]
+    julia --project=. scripts/TrendDetector.jl [help] [test|train|gain] [inspect] [special] [retrain] [key=value ...]
 
 Flag parameters:
   help, --help, -h
@@ -1094,9 +1188,18 @@ Flag parameters:
     Use `EnvConfig.init(test)` with `TradingStrategy.testcoins()`.
       Default: true
 
-  train
-    Use `EnvConfig.init(training)` with `TradingStrategy.traincoins()`.
-      Default: false
+    train
+        Use `EnvConfig.init(training)` with `TradingStrategy.traincoins()`.
+            Default: false
+
+    gain
+        Inference-only mode. Uses the selected data phase (`test` or `train`) and
+        loads an existing classifier from `Trend-<config>-<phase>` unless
+        `TRENDDETECTOR_CLASSIFIER_FOLDER` overrides it.
+        Uses the explicit `startdt..enddt` window directly (no liquidity-range
+        filtering and no partition split).
+        Writes outputs to `Trend-<config>-gain-<phase>` by default.
+            Default: false
 
   inspect
       Print cached features, targets, predictions, and `results/targetissues.arrow` when present, without training/evaluation.
@@ -1121,7 +1224,7 @@ Key=value parameters:
 
   folder=<name>
       Output subfolder.
-      Default: `Trend-<configname>-$(EnvConfig.configmode)`
+      Default: `Trend-<configname>-<mode>` where mode is `test`, `training`, `gain-test`, or `gain-training`
 
   classbalancing=<Bool>
       Apply inverse-frequency class weights during training.
@@ -1163,10 +1266,24 @@ function main(args::Vector{String}=ARGS)
     println("$(EnvConfig.now()) $PROGRAM_FILE ARGS=$(args)")
     global retrain = "retrain" in args
     retrain && println("retrain mode activated - existing classifiers that did not converge will be overwritten")
+    has_test = "test" in args
+    has_train = "train" in args
+    has_gain = "gain" in args
+    train_or_test_count = (has_test ? 1 : 0) + (has_train ? 1 : 0)
+    @assert train_or_test_count <= 1 "mode flags are exclusive for phase selection; use only one of test or train"
+
     testmode = true
-    testmode = "test" in args ? true : "train" in args ? false : testmode
+    trainmode = false
+    if has_train
+        testmode = false
+        trainmode = true
+    elseif has_test
+        testmode = true
+        trainmode = false
+    end
     inspectonly = "inspect" in args
     specialonly = "special" in args
+    opmode = has_gain ? gain : (specialonly ? special : (inspectonly ? inspect : execute))
     # inspectonly = specialonly ? true : inspectonly # if specialonly then also do inspection
 
     global verbosity = 2
@@ -1191,6 +1308,11 @@ function main(args::Vector{String}=ARGS)
         Classify.verbosity = 1
         EnvConfig.init(training)
         allowedcoins = TradingStrategy.traincoins()
+    end
+
+    if opmode == gain
+        # Gain mode is inference-only and uses the selected phase context.
+        EnvConfig.verbosity = 1
     end
 
     if specialonly
@@ -1221,13 +1343,16 @@ function main(args::Vector{String}=ARGS)
     EnvConfig.setcoinspath!("Bybit")
     (verbosity >= 2) && println("coinspath: $(EnvConfig.coinspath())")
 
-    global cfg = buildcfg(args, allowedcoins, startdt, enddt)
+    phase = string(Symbol(EnvConfig.configmode))
+    folder_suffix = opmode == gain ? "gain-$phase" : phase
+    global cfg = buildcfg(args, allowedcoins, startdt, enddt, folder_suffix, opmode)
     testmode && _clear_test_trade_cache!()
     _set_deterministic_run_id!(args, [
-        "mode" => string(Symbol(EnvConfig.configmode)),
+        "mode" => (opmode == gain ? "gain-$phase" : phase),
         "configname" => cfg.configname,
         "folder" => cfg.folder,
         "testmode" => string(testmode),
+        "gainmode" => string(opmode == gain),
         "retrain" => string(retrain),
     ])
 
