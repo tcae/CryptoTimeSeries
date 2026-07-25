@@ -124,7 +124,7 @@ DataFrame when the file is missing.
 """
 function readtradesdf(; stem::AbstractString="trades")::DataFrame
     loaded = EnvConfig.readdf(String(stem))
-    return isnothing(loaded) ? DataFrame() : DataFrame(loaded; copycols=false)
+    return isnothing(loaded) ? DataFrame() : loaded
 end
 
 """Return the grouping columns used to compile gains from concatenated Trades rows."""

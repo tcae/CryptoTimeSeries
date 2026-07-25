@@ -291,11 +291,13 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
                     rangeid_start=rangeid,
                 )
                 issues = Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
-                if !isnothing(issues) && (length(issues) > 0)
+                issues_count = isnothing(issues) ? 0 : (issues isa AbstractDataFrame ? size(issues, 1) : length(issues))
+                if issues_count > 0
+                    issue_values = issues isa AbstractDataFrame ? issues[!, :issue] : issues
                     if size(targetissuesdf, 1) > 0
-                        targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
+                        targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issue_values, coin=CategoricalVector(fill(coin, issues_count), levels=cfg.coins), rangeid=fill(rangeid, issues_count)))
                     else
-                        targetissuesdf = DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues)))
+                        targetissuesdf = DataFrame(issue=issue_values, coin=CategoricalVector(fill(coin, issues_count), levels=cfg.coins), rangeid=fill(rangeid, issues_count))
                     end
                 end
                 if size(rngresults, 1) > 0
@@ -345,11 +347,13 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
                             rangeid_start=rangeid,
                         )
                         issues = DataFrame() # disabled Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
-                        if !isnothing(issues) && (length(issues) > 0)
+                        issues_count = isnothing(issues) ? 0 : (issues isa AbstractDataFrame ? size(issues, 1) : length(issues))
+                        if issues_count > 0
+                            issue_values = issues isa AbstractDataFrame ? issues[!, :issue] : issues
                             if size(targetissuesdf, 1) > 0
-                                targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
+                                targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issue_values, coin=CategoricalVector(fill(coin, issues_count), levels=cfg.coins), rangeid=fill(rangeid, issues_count)))
                             else
-                                targetissuesdf = DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues)))
+                                targetissuesdf = DataFrame(issue=issue_values, coin=CategoricalVector(fill(coin, issues_count), levels=cfg.coins), rangeid=fill(rangeid, issues_count))
                             end
                         end
                         if size(rngresults, 1) > 0
@@ -1294,7 +1298,7 @@ function main(args::Vector{String}=ARGS)
         Features.verbosity = 1 # 3
         Targets.verbosity = 1 # 3
         EnvConfig.verbosity = 1
-        Classify.verbosity = 1 # 3
+        Classify.verbosity = 3
         allowedcoins = TradingStrategy.testcoins()
         EnvConfig.init(test)
         startdt = DateTime("2025-01-17T20:56:00")

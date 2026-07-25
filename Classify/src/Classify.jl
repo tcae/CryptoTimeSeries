@@ -1894,6 +1894,10 @@ function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; samplewei
     Xtrain = Xfull
     Ytrain = Yfull
     Wtrain = Wfull
+    if verbosity >= 3
+        wtraindesc = isnothing(Wtrain) ? "is nothing" : "size=$(size(Wtrain)) eltype=$(eltype(Wtrain))"
+        println("adaptnn! train arrays: Xtrain size=$(size(Xtrain)) eltype=$(eltype(Xtrain)); Ytrain size=$(size(Ytrain)) eltype=$(eltype(Ytrain)); Wtrain $(wtraindesc)")
+    end
     loader = isnothing(Wtrain) ?
         Flux.DataLoader((Xtrain, Ytrain), batchsize=64, shuffle=true) :
         Flux.DataLoader((Xtrain, Ytrain, Wtrain), batchsize=64, shuffle=true)
