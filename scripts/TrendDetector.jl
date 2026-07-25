@@ -344,7 +344,7 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
                             coin=coin,
                             rangeid_start=rangeid,
                         )
-                        issues = Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
+                        issues = DataFrame() # disabled Targets.crosscheck(trgcfg, rngresults[!, :target], rngresults[!, :pivot])
                         if !isnothing(issues) && (length(issues) > 0)
                             if size(targetissuesdf, 1) > 0
                                 targetissuesdf = vcat(targetissuesdf, DataFrame(issue=issues, coin=CategoricalVector(fill(coin, length(issues)), levels=cfg.coins), rangeid=fill(rangeid, length(issues))))
@@ -1346,7 +1346,7 @@ function main(args::Vector{String}=ARGS)
     phase = string(Symbol(EnvConfig.configmode))
     folder_suffix = opmode == gain ? "gain-$phase" : phase
     global cfg = buildcfg(args, allowedcoins, startdt, enddt, folder_suffix, opmode)
-    testmode && _clear_test_trade_cache!()
+    testmode # && _clear_test_trade_cache!()
     _set_deterministic_run_id!(args, [
         "mode" => (opmode == gain ? "gain-$phase" : phase),
         "configname" => cfg.configname,

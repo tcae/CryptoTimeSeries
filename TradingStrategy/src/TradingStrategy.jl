@@ -727,43 +727,6 @@ function _resetorder(tradesdf::DataFrame, ix::Integer, ordertype::String; reset_
     _ro(tradesdf, ix, ordertype)
 end
 
-function _executed_open_hit_dt(tradesdf::DataFrame, ix::Integer)
-    label = tradesdf[ix, :label]
-    lo_limit = tradesdf[ix, :lo_limit]
-    lo_amount = tradesdf[ix, :lo_amount]
-    so_limit = tradesdf[ix, :so_limit]
-    so_amount = tradesdf[ix, :so_amount]
-    lp_amount = tradesdf[ix, :lp_amount]
-    sp_amount = tradesdf[ix, :sp_amount]
-    high = tradesdf[ix, :high]
-    low = tradesdf[ix, :low]
-    long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && (sp_amount == 0f0) && _openlimitactive(lo_limit) && _price_in_bar((lo_limit), low, high, :low)
-    short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && (lp_amount == 0f0) && _openlimitactive(so_limit) && _price_in_bar((so_limit), low, high, :high)
-    @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo_limit), so=$(so_limit), low=$(low), high=$(high)"
-    if long_open_hit
-        @assert tradesdf[ix, :sp_amount] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(tradesdf[ix, :sp_amount]) is not zero"
-        tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
-        tradesdf[ix, :lp_amount] = tradesdf[ix, :lo_amount]
-        tradesdf[ix, :lo_pavg] = tradesdf[ix, :lo_limit]
-        _resetorder(tradesdf, ix, "lo", reset_pavg=false)
-        tradesdf[ix, :lc_amount] = tradesdf[ix, :lp_amount]
-        tradesdf[ix, :lc_pavg] = 0f0
-        tradesdf[ix, :lc_filled] = 0f0
-        tradesdf[ix, :lc_status] = "submitted"
-    elseif short_open_hit
-        @assert tradesdf[ix, :lp_amount] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(tradesdf[ix, :lp_amount]) is not zero"
-        tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
-        tradesdf[ix, :sp_amount] = tradesdf[ix, :so_amount]
-        tradesdf[ix, :so_pavg] = tradesdf[ix, :so_limit]
-        _resetorder(tradesdf, ix, "so", reset_pavg=false)
-        tradesdf[ix, :sc_amount] = tradesdf[ix, :sp_amount]
-        tradesdf[ix, :sc_pavg] = 0f0
-        tradesdf[ix, :sc_filled] = 0f0
-        tradesdf[ix, :sc_status] = "submitted"
-    end
-    return (long_open_hit || short_open_hit) ? tradesdf[ix, :opentime] : missing
-end
-
 function _open_hit_spec(tradesdf::DataFrame, ix::Integer)
     label = tradesdf[ix, :label]
     lo_limit = tradesdf[ix, :lo_limit]

@@ -1490,7 +1490,9 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         # For a new row, lane id can be defaulted to `none`; reconcile from previous open lane state.
         if isnothing(oid) && (ix > 1)
             previd = _lane_orderid(tradesdf[ix - 1, idcol])
-            prevstatus = String(tradesdf[ix - 1, stcol])
+            prevstatus_raw = tradesdf[ix - 1, stcol]
+            @assert !ismissing(prevstatus_raw) && !isnothing(prevstatus_raw) "Schema violation: $(stcol) must be non-missing at ix=$(ix-1), pair=$(tradesdf[ix - 1, :pair]), opentime=$(tradesdf[ix - 1, :opentime])"
+            prevstatus = String(prevstatus_raw)
             if !isnothing(previd) && _isopenstatuslabel(prevstatus)
                 oid = previd
                 tradesdf[ix, idcol] = oid
@@ -1512,11 +1514,18 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             tradesdf[ix, idcol] = NO_ORDER_ID
             continue
         end
-        rawstatus = hasproperty(info, :status) ? String(info.status) : "unknown"
+        rawstatus = if hasproperty(info, :status)
+            statusraw = info.status
+            @assert !ismissing(statusraw) && !isnothing(statusraw) "Schema violation: adapter order status is missing for orderid=$(oid), lane=$(idcol), ix=$(ix), pair=$(tradesdf[ix, :pair])"
+            String(statusraw)
+        else
+            "unknown"
+        end
         status = normalize_order_status(xc.bc, rawstatus)
         tradesdf[ix, stcol] = status
         if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
             executed = (info.executedqty)
+            @assert !ismissing(executed) && !isnothing(executed) "Schema violation: adapter executedqty is missing for orderid=$(oid), lane=$(idcol), ix=$(ix), pair=$(tradesdf[ix, :pair])"
             tradesdf[ix, filledcol] = (max(0.0, executed))
             if row_is_open_intent && (executed > 0.0)
                 tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
@@ -1540,7 +1549,9 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             tradesdf[ix, avgcol] = (info.avgprice)
         end
         if hasproperty(info, :rejectreason)
-            rr = String(info.rejectreason)
+            rrraw = info.rejectreason
+            @assert !ismissing(rrraw) && !isnothing(rrraw) "Schema violation: adapter rejectreason is missing for orderid=$(oid), lane=$(idcol), ix=$(ix), pair=$(tradesdf[ix, :pair])"
+            rr = String(rrraw)
             if !isempty(strip(rr)) && (uppercase(rr) != "NO ERROR")
                 tradesdf[ix, msgcol] = log_trading_issue(xc, exchange(xc), rr)
             end

@@ -115,43 +115,35 @@ end
         reduceonly=true,
     ))
 
-    btcdf = Xch.trades(xc, "BTC", EnvConfig.pairquote)
-    push!(btcdf, (
-        opentime=currentdt - Dates.Minute(1),
-        pair="BTCUSDT",
-        label=Targets.ignore,
-        lp_amount=1.0f0,
-        sp_amount=0.25f0,
-        lastopentrade=currentdt - Dates.Minute(1),
-    ); cols=:subset)
-    push!(btcdf, (
-        opentime=currentdt,
-        pair="BTCUSDT",
-        label=Targets.ignore,
-        lo_id="oid-lo-filled",
-        lo_amount=1.0f0,
-        lc_id="oid-lc-open",
-        lc_amount=0.5f0,
-        sc_id="oid-sc-rejected",
-        sc_amount=0.3f0,
-        lastopentrade=missing,
-    ); cols=:subset)
+    btcrow_prev = Xch.ensuretradesrow!(xc, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    btcdf = btcrow_prev.tradesdf
+    btcdf[btcrow_prev.rowix, :label] = Targets.ignore
+    btcdf[btcrow_prev.rowix, :lp_amount] = 1.0f0
+    btcdf[btcrow_prev.rowix, :sp_amount] = 0.25f0
+    btcdf[btcrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
-    ethdf = Xch.trades(xc, "ETH", EnvConfig.pairquote)
-    push!(ethdf, (
-        opentime=currentdt - Dates.Minute(1),
-        pair="ETHUSDT",
-        label=Targets.ignore,
-        lp_amount=0.75f0,
-        sp_amount=0f0,
-        lastopentrade=currentdt - Dates.Minute(1),
-    ); cols=:subset)
-    push!(ethdf, (
-        opentime=currentdt,
-        pair="ETHUSDT",
-        label=Targets.ignore,
-        lastopentrade=missing,
-    ); cols=:subset)
+    btcrow_now = Xch.ensuretradesrow!(xc, "BTC", EnvConfig.pairquote, currentdt)
+    btcdf = btcrow_now.tradesdf
+    btcdf[btcrow_now.rowix, :label] = Targets.ignore
+    btcdf[btcrow_now.rowix, :lo_id] = "oid-lo-filled"
+    btcdf[btcrow_now.rowix, :lo_amount] = 1.0f0
+    btcdf[btcrow_now.rowix, :lc_id] = "oid-lc-open"
+    btcdf[btcrow_now.rowix, :lc_amount] = 0.5f0
+    btcdf[btcrow_now.rowix, :sc_id] = "oid-sc-rejected"
+    btcdf[btcrow_now.rowix, :sc_amount] = 0.3f0
+    btcdf[btcrow_now.rowix, :lastopentrade] = missing
+
+    ethrow_prev = Xch.ensuretradesrow!(xc, "ETH", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    ethdf = ethrow_prev.tradesdf
+    ethdf[ethrow_prev.rowix, :label] = Targets.ignore
+    ethdf[ethrow_prev.rowix, :lp_amount] = 0.75f0
+    ethdf[ethrow_prev.rowix, :sp_amount] = 0f0
+    ethdf[ethrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
+
+    ethrow_now = Xch.ensuretradesrow!(xc, "ETH", EnvConfig.pairquote, currentdt)
+    ethdf = ethrow_now.tradesdf
+    ethdf[ethrow_now.rowix, :label] = Targets.ignore
+    ethdf[ethrow_now.rowix, :lastopentrade] = missing
 
     oodf = Xch.getopenorders(xc)
     @test :avgprice in Symbol.(names(oodf))
@@ -221,12 +213,9 @@ end
     )
     empty!(bc.orders)
 
-    btcdf = Xch.trades(xc, "BTC", EnvConfig.pairquote)
-    push!(btcdf, (
-        opentime=currentdt - Dates.Minute(1),
-        pair="BTCUSDT",
-        lastopentrade=currentdt - Dates.Minute(1),
-    ); cols=:subset)
+    btcrow_prev = Xch.ensuretradesrow!(xc, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    btcdf = btcrow_prev.tradesdf
+    btcdf[btcrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
     prevrows = nrow(btcdf)
     rowsbybase = Xch.sync_latest_trades_rows!(xc)

@@ -1,6 +1,6 @@
 name = "Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.6"
+version = "1.6.8"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]

@@ -127,6 +127,301 @@ function readtradesdf(; stem::AbstractString="trades")::DataFrame
     return isnothing(loaded) ? DataFrame() : DataFrame(loaded; copycols=false)
 end
 
+"""Return the grouping columns used to compile gains from concatenated Trades rows."""
+function _compilegains_groupcols(tradesdf::AbstractDataFrame)::Vector{Symbol}
+    @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair to compile gains; names=$(names(tradesdf))"
+    cols = Symbol[:pair]
+    (:set in propertynames(tradesdf)) && push!(cols, :set)
+    (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
+    return cols
+end
+
+"""Return an empty Xch gains dataframe with optional grouping columns mirrored from `tradesdf`."""
+function _emptyxchgainsdf(tradesdf::AbstractDataFrame)::DataFrame
+    gainsdf = DataFrame(
+        pair=String[],
+        opentime=DateTime[],
+        closetime=DateTime[],
+        openprice=Float32[],
+        closeprice=Float32[],
+        volume=Float32[],
+        side=String[],
+        gain=Float32[],
+        gainquote=Float32[],
+    )
+    if :set in propertynames(tradesdf)
+        insertcols!(gainsdf, 2, :set => copy(tradesdf[1:0, :set]))
+    end
+    if :rangeid in propertynames(tradesdf)
+        insert_at = :set in propertynames(tradesdf) ? 3 : 2
+        insertcols!(gainsdf, insert_at, :rangeid => copy(tradesdf[1:0, :rangeid]))
+    end
+    return gainsdf
+end
+
+"""Return one numeric Trades column value, defaulting to `0f0` for missing rows."""
+function _compilegainsvalue(tradesdf::AbstractDataFrame, ix::Integer, col::Symbol)
+    if !(col in propertynames(tradesdf))
+        return 0f0
+    end
+    value = tradesdf[ix, col]
+    return (ismissing(value) || isnothing(value)) ? 0f0 : value
+end
+
+"""Return the execution timestamp stored on the row whose position snapshot changed."""
+function _compilegainstime(tradesdf::AbstractDataFrame, ix::Integer)::DateTime
+    @assert :opentime in propertynames(tradesdf) "tradesdf must contain :opentime to compile gains; names=$(names(tradesdf))"
+    return tradesdf[ix, :opentime]
+end
+
+"""Return the execution price stored on the position-change row for one order lane."""
+function _compilegainsprice(tradesdf::AbstractDataFrame, ix::Integer, pricecol::Symbol)::Float32
+    @assert pricecol in propertynames(tradesdf) "tradesdf must contain $(pricecol) to compile gains; names=$(names(tradesdf))"
+    price = tradesdf[ix, pricecol]
+    @assert !ismissing(price) && !isnothing(price) && (price > 0f0) "Expected positive $(pricecol) on position change at ix=$(ix), opentime=$(_compilegainstime(tradesdf, ix)), pair=$(tradesdf[ix, :pair]); got $(price)"
+    return price
+end
+
+"""Append one compiled gain row, mirroring optional `set` and `rangeid` columns from `tradesdf`."""
+function _pushcompiledgain!(gainsdf::DataFrame, tradesdf::AbstractDataFrame, ix::Integer, opentime::DateTime, openprice::Float32, closetime::DateTime, closeprice::Float32, volume::Float32, side::Symbol)::Nothing
+    gain = side == :long ? (closeprice - openprice) / openprice : (openprice - closeprice) / openprice
+    gainquote = side == :long ? volume * (closeprice - openprice) : volume * (openprice - closeprice)
+
+    if (:set in propertynames(gainsdf)) && (:rangeid in propertynames(gainsdf))
+        push!(gainsdf, (
+            pair=String(tradesdf[ix, :pair]),
+            set=tradesdf[ix, :set],
+            rangeid=tradesdf[ix, :rangeid],
+            opentime=opentime,
+            closetime=closetime,
+            openprice=openprice,
+            closeprice=closeprice,
+            volume=volume,
+            side=String(side),
+            gain=gain,
+            gainquote=gainquote,
+        ))
+    elseif :set in propertynames(gainsdf)
+        push!(gainsdf, (
+            pair=String(tradesdf[ix, :pair]),
+            set=tradesdf[ix, :set],
+            opentime=opentime,
+            closetime=closetime,
+            openprice=openprice,
+            closeprice=closeprice,
+            volume=volume,
+            side=String(side),
+            gain=gain,
+            gainquote=gainquote,
+        ))
+    elseif :rangeid in propertynames(gainsdf)
+        push!(gainsdf, (
+            pair=String(tradesdf[ix, :pair]),
+            rangeid=tradesdf[ix, :rangeid],
+            opentime=opentime,
+            closetime=closetime,
+            openprice=openprice,
+            closeprice=closeprice,
+            volume=volume,
+            side=String(side),
+            gain=gain,
+            gainquote=gainquote,
+        ))
+    else
+        push!(gainsdf, (
+            pair=String(tradesdf[ix, :pair]),
+            opentime=opentime,
+            closetime=closetime,
+            openprice=openprice,
+            closeprice=closeprice,
+            volume=volume,
+            side=String(side),
+            gain=gain,
+            gainquote=gainquote,
+        ))
+    end
+    return nothing
+end
+
+"""Queue one open execution for later FIFO close matching."""
+function _enqueuecompiledopen!(openqueue::Vector{NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}}, opentime::DateTime, openprice::Float32, volume::Float32)::Nothing
+    volume > 0f0 || return nothing
+    push!(openqueue, (opentime=opentime, openprice=openprice, remaining=volume))
+    return nothing
+end
+
+"""Consume one close execution against queued opens in FIFO order and emit gain rows."""
+function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}}, tradesdf::AbstractDataFrame, ix::Integer, closeprice::Float32, closevolume::Float32, side::Symbol)::Nothing
+    remaining = closevolume
+    closetime = _compilegainstime(tradesdf, ix)
+    while remaining > 0f0
+        @assert !isempty(openqueue) "Encountered unmatched $(side) close volume=$(remaining) at ix=$(ix), opentime=$(closetime), pair=$(tradesdf[ix, :pair])"
+        opentrade = first(openqueue)
+        matched = min(opentrade.remaining, remaining)
+        _pushcompiledgain!(gainsdf, tradesdf, ix, opentrade.opentime, opentrade.openprice, closetime, closeprice, matched, side)
+        remaining -= matched
+        if matched == opentrade.remaining
+            popfirst!(openqueue)
+        else
+            openqueue[1] = (opentime=opentrade.opentime, openprice=opentrade.openprice, remaining=opentrade.remaining - matched)
+        end
+    end
+    return nothing
+end
+
+"""Compile gain rows for one pair-scoped Trades partition."""
+function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFrame)::Nothing
+    nrow(tradesview) == 0 && return nothing
+    ordered = sort(DataFrame(tradesview; copycols=false), :opentime)
+
+    longopens = NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}[]
+    shortopens = NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}[]
+
+    for ix in 1:nrow(ordered)
+        longamount = _compilegainsvalue(ordered, ix, :lp_amount)
+        shortamount = _compilegainsvalue(ordered, ix, :sp_amount)
+        @assert !((longamount > 0f0) && (shortamount > 0f0)) "Expected at most one open position side per row while compiling gains at ix=$(ix), opentime=$(_compilegainstime(ordered, ix)), pair=$(ordered[ix, :pair]); got lp_amount=$(longamount), sp_amount=$(shortamount)"
+
+        ix == 1 && continue
+
+        prevlong = _compilegainsvalue(ordered, ix - 1, :lp_amount)
+        prevshort = _compilegainsvalue(ordered, ix - 1, :sp_amount)
+        longdelta = longamount - prevlong
+        shortdelta = shortamount - prevshort
+
+        # Position changes on row `ix` indicate executions that happened in the prior minute.
+        if longdelta > 0f0
+            _enqueuecompiledopen!(longopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :lo_pavg), longdelta)
+        elseif longdelta < 0f0
+            _matchcompiledclose!(gainsdf, longopens, ordered, ix, _compilegainsprice(ordered, ix, :lc_pavg), -longdelta, :long)
+        end
+
+        if shortdelta > 0f0
+            _enqueuecompiledopen!(shortopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :so_pavg), shortdelta)
+        elseif shortdelta < 0f0
+            _matchcompiledclose!(gainsdf, shortopens, ordered, ix, _compilegainsprice(ordered, ix, :sc_pavg), -shortdelta, :short)
+        end
+    end
+    return nothing
+end
+
+"""
+    compilegainsdf(tradesdf; stem="xchgains")
+
+Compile open/close gain pairs from one Trades DataFrame, scoping matching by
+`pair` plus optional `set` and `rangeid`, then persist the result in the current
+log folder as `<stem>.arrow`.
+"""
+function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="xchgains")::DataFrame
+    gainsdf = _emptyxchgainsdf(tradesdf)
+    if nrow(tradesdf) == 0
+        EnvConfig.savedf(gainsdf, String(stem))
+        return gainsdf
+    end
+
+    groupcols = _compilegains_groupcols(tradesdf)
+    for tradesview in groupby(DataFrame(tradesdf; copycols=false), groupcols; sort=false)
+        _compilegainspartition!(gainsdf, tradesview)
+    end
+
+    sortcols = Symbol[]
+    (:set in propertynames(gainsdf)) && push!(sortcols, :set)
+    (:rangeid in propertynames(gainsdf)) && push!(sortcols, :rangeid)
+    append!(sortcols, [:pair, :opentime, :closetime])
+    !isempty(sortcols) && sort!(gainsdf, sortcols)
+    EnvConfig.savedf(gainsdf, String(stem))
+    return gainsdf
+end
+
+"""
+    compilegainsdf(xc; stem="xchgains")
+
+Collect the combined Trades DataFrame from one `XchCache`, compile gain pairs,
+and persist the result in the current log folder as `<stem>.arrow`.
+"""
+function compilegainsdf(xc::XchCache; stem::AbstractString="xchgains")::DataFrame
+    return compilegainsdf(collecttradesdf(xc); stem=stem)
+end
+
+"""Return one gain-segment duration in minutes, inclusive of open and close rows."""
+function _gainsegmentminutes(opentime::DateTime, closetime::DateTime)::Int
+    @assert closetime >= opentime "closetime=$(closetime) must be >= opentime=$(opentime)"
+    return Int(div(Dates.value(closetime - opentime), 60000)) + 1
+end
+
+"""Return the arithmetic mean for a non-empty vector."""
+function _mean_nonempty(values::AbstractVector{<:Real})
+    @assert !isempty(values) "values must be non-empty"
+    return sum(values) / length(values)
+end
+
+"""Return the empirical 75th percentile via nearest-rank on a non-empty vector."""
+function _q75_nonempty(values::AbstractVector{<:Real})
+    @assert !isempty(values) "values must be non-empty"
+    ordered = sort!(collect(values))
+    rankix = Int(ceil(0.75 * length(ordered)))
+    rankix = max(firstindex(ordered), min(lastindex(ordered), rankix))
+    return ordered[rankix]
+end
+
+"""Return an empty gains report dataframe."""
+function _emptygainsreportdf()::DataFrame
+    return DataFrame(
+        set=String[],
+        avggain=Float32[],
+        avgminutes=Float32[],
+        q75minutes=Float32[],
+        maxminutes=Int[],
+        segments=Int[],
+    )
+end
+
+"""
+    gainsreport(; instem="xchgains", stem="xchgainsreport")
+
+Load `<instem>.arrow` from the current log folder, aggregate gains across all
+pairs and ranges per set, persist `<stem>.arrow`, and return the report table.
+"""
+function gainsreport(; instem::AbstractString="xchgains", stem::AbstractString="xchgainsreport")::DataFrame
+    loaded = EnvConfig.readdf(String(instem))
+    if isnothing(loaded)
+        report = _emptygainsreportdf()
+        EnvConfig.savedf(report, String(stem))
+        return report
+    end
+
+    @assert loaded isa DataFrame "xchgains must load as DataFrame, got $(typeof(loaded))"
+    gainsdf = loaded
+    if nrow(gainsdf) == 0
+        report = _emptygainsreportdf()
+        EnvConfig.savedf(report, String(stem))
+        return report
+    end
+
+    @assert :opentime in propertynames(gainsdf) "xchgains must contain :opentime; names=$(names(gainsdf))"
+    @assert :closetime in propertynames(gainsdf) "xchgains must contain :closetime; names=$(names(gainsdf))"
+    @assert :gain in propertynames(gainsdf) "xchgains must contain :gain; names=$(names(gainsdf))"
+
+    if :set ∉ propertynames(gainsdf)
+        gainsdf[!, :set] = fill("all", nrow(gainsdf))
+    end
+
+    gainsdf[!, :minutes] = [_gainsegmentminutes(gainsdf[ix, :opentime], gainsdf[ix, :closetime]) for ix in 1:nrow(gainsdf)]
+
+    grouped = groupby(gainsdf, :set; sort=true)
+    report = combine(
+        grouped,
+        :gain => _mean_nonempty => :avggain,
+        :minutes => _mean_nonempty => :avgminutes,
+        :minutes => _q75_nonempty => :q75minutes,
+        :minutes => maximum => :maxminutes,
+        nrow => :segments,
+    )
+    sort!(report, :set)
+    EnvConfig.savedf(report, String(stem))
+    return report
+end
+
 
 
 #region Xch ownership
