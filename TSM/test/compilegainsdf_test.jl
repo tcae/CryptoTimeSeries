@@ -40,10 +40,10 @@ using EnvConfig, TSM
             ],
             lp_amount=Float32[0f0, 300f0, 350f0, 150f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 40f0, 0f0],
             sp_amount=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 150f0, 50f0, 0f0, 0f0, 0f0, 0f0],
-            lo_pavg=Float32[0f0, 100f0, 105f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 200f0, 0f0],
-            lc_pavg=Float32[0f0, 0f0, 0f0, 110f0, 120f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 210f0],
-            so_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 90f0, 0f0, 0f0, 0f0, 0f0, 0f0],
-            sc_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
+            lol_pavg=Float32[0f0, 100f0, 105f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 200f0, 0f0],
+            lcl_pavg=Float32[0f0, 0f0, 0f0, 110f0, 120f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 210f0],
+            sol_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 90f0, 0f0, 0f0, 0f0, 0f0, 0f0],
+            scl_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
         )
 
         tradepath = TSM.savetradesdf(tradesdf; stem="trades-compilegainsdf", folderpath=tmpdir)
@@ -122,10 +122,10 @@ end
             ],
             lp_amount=Float32[0f0, 300f0, 350f0, 150f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 40f0, 0f0],
             sp_amount=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 150f0, 50f0, 0f0, 0f0, 0f0, 0f0],
-            lo_pavg=Float32[0f0, 100f0, 105f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 200f0, 0f0],
-            lc_pavg=Float32[0f0, 0f0, 0f0, 110f0, 120f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 210f0],
-            so_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 90f0, 0f0, 0f0, 0f0, 0f0, 0f0],
-            sc_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
+            lol_pavg=Float32[0f0, 100f0, 105f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 200f0, 0f0],
+            lcl_pavg=Float32[0f0, 0f0, 0f0, 110f0, 120f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 210f0],
+            sol_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 90f0, 0f0, 0f0, 0f0, 0f0, 0f0],
+            scl_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
         )
 
         TSM.compilegainsdf(tradesdf; stem="xchgains", folderpath=tmpdir)

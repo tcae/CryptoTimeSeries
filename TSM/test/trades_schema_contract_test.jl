@@ -14,10 +14,10 @@ using Targets, TSM
     required = Set([
         :opentime, :lastopentrade, :pair, :config, :tsmstate, :label, :score,
         :lo_limit, :lc_limit, :so_limit, :sc_limit,
-        :lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg,
-        :lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg,
-        :so_id, :so_status, :so_filled, :so_pavg, :so_msg,
-        :sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg,
+        :lo_id, :lo_status, :lol_filled, :lol_pavg, :lo_msg,
+        :lc_id, :lc_status, :lcl_filled, :lcl_pavg, :lc_msg,
+        :so_id, :so_status, :sol_filled, :sol_pavg, :so_msg,
+        :sc_id, :sc_status, :scl_filled, :scl_pavg, :sc_msg,
         :lp_amount, :sp_amount, :close, :high, :low, :maintmargin,
         :equity, :balance, :freemargin, :freequote,
     ])

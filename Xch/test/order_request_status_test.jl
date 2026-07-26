@@ -173,7 +173,7 @@ end
     @test close_result.accepted || close_result.reason == "below_minimum_qty"
     if close_result.accepted
         @test close_req[1, :lc_status] == "Submitted"
-        @test close_req[1, :lc_filled] == 0f0
+        @test close_req[1, :lcl_filled] == 0f0
     else
         @test lowercase(String(close_req[1, :lc_status])) == "rejected"
     end

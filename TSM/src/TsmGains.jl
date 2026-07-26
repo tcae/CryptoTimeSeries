@@ -227,15 +227,15 @@ function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFra
 
         # Position changes on row `ix` indicate executions that happened in the prior minute.
         if longdelta > 0f0
-            _enqueuecompiledopen!(longopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :lo_pavg), longdelta)
+            _enqueuecompiledopen!(longopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :lol_pavg), longdelta)
         elseif longdelta < 0f0
-            _matchcompiledclose!(gainsdf, longopens, ordered, ix, _compilegainsprice(ordered, ix, :lc_pavg), -longdelta, :long)
+            _matchcompiledclose!(gainsdf, longopens, ordered, ix, _compilegainsprice(ordered, ix, :lcl_pavg), -longdelta, :long)
         end
 
         if shortdelta > 0f0
-            _enqueuecompiledopen!(shortopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :so_pavg), shortdelta)
+            _enqueuecompiledopen!(shortopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :sol_pavg), shortdelta)
         elseif shortdelta < 0f0
-            _matchcompiledclose!(gainsdf, shortopens, ordered, ix, _compilegainsprice(ordered, ix, :sc_pavg), -shortdelta, :short)
+            _matchcompiledclose!(gainsdf, shortopens, ordered, ix, _compilegainsprice(ordered, ix, :scl_pavg), -shortdelta, :short)
         end
     end
     return nothing

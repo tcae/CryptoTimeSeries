@@ -160,6 +160,9 @@ function _load_featuretarget_pair(coin::Union{AbstractString, Nothing})
         if :sampleix in propertynames(resultsdf)
             select!(resultsdf, Not(:sampleix))
         end
+        if :target in propertynames(resultsdf)
+            resultsdf[!, :target] = [_normalize_tradelabel(value) for value in resultsdf[!, :target]]
+        end
         @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of resultsdf and featuresdf size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1)) for coin=$(coin)"
     end
 
@@ -336,6 +339,7 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
                         (verbosity >= 3) && println()
                         rngohlcv = Ohlcv.ohlcvview(ohlcv, history_begin_ix:rng[end])
                         trgcfg = cfg.targetconfig
+                        #TODO verbosity == 3 shows that the features.arrow file of the base under consideration is read for each range while it should not be read at all during feature generation
                         rngresults, rngfeatures = Classify.featurestargetsdf(
                             cl,
                             rngohlcv,

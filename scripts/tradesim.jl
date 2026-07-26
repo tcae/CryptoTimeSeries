@@ -75,7 +75,7 @@ function filled_orders_df(xc::Xch.XchCache)::DataFrame
     for (pair, tdf) in xc.tsm.pairstates
         nrow(tdf) == 0 && continue
         cols = propertynames(tdf)
-        required = (:opentime, :pair, :lo_status, :lo_filled, :lo_pavg, :lc_status, :lc_filled, :lc_pavg, :so_status, :so_filled, :so_pavg, :sc_status, :sc_filled, :sc_pavg)
+        required = (:opentime, :pair, :lo_status, :lol_filled, :lol_pavg, :lc_status, :lcl_filled, :lcl_pavg, :so_status, :sol_filled, :sol_pavg, :sc_status, :scl_filled, :scl_pavg)
         all(c -> c in cols, required) || continue
 
         for row in eachrow(tdf)
@@ -83,10 +83,10 @@ function filled_orders_df(xc::Xch.XchCache)::DataFrame
             symbol = String(ismissing(row.pair) ? pair : row.pair)
 
             for (statuscol, filledcol, pavgcol, side) in [
-                (:lo_status, :lo_filled, :lo_pavg, "Buy"),
-                (:lc_status, :lc_filled, :lc_pavg, "Sell"),
-                (:so_status, :so_filled, :so_pavg, "Sell"),
-                (:sc_status, :sc_filled, :sc_pavg, "Buy"),
+                (:lo_status, :lol_filled, :lol_pavg, "Buy"),
+                (:lc_status, :lcl_filled, :lcl_pavg, "Sell"),
+                (:so_status, :sol_filled, :sol_pavg, "Sell"),
+                (:sc_status, :scl_filled, :scl_pavg, "Buy"),
             ]
                 status = lowercase(strip(String(row[statuscol])))
                 status == "closed" || continue

@@ -1260,14 +1260,14 @@ function _implicitflipplan(tradesdf::DataFrame, ix::Integer, action::Symbol, ope
         closeqty = tradesdf[ix, :sp_amount]
         closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : min(tradesdf[ix, :sc_limit], open_limitprice)
         # closelimit = 0f0 means adaptive maker price that follows the market price
-        return (needed=closeqty > 0.0, positionside=:short, closeqty=closeqty, closelimit=closelimit, close_id_col=:sc_id, close_status_col=:sc_status, close_filled_col=:sc_filled, close_pavg_col=:sc_pavg)
+        return (needed=closeqty > 0.0, positionside=:short, closeqty=closeqty, closelimit=closelimit, close_id_col=:sc_id, close_status_col=:sc_status, close_filled_col=:scl_filled, close_pavg_col=:scl_pavg)
     elseif action == :short_open
         closeqty = tradesdf[ix, :lp_amount]
         closelimit = (tradesdf[ix, :lc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : max(tradesdf[ix, :lc_limit], open_limitprice)
         # closelimit = 0f0 means adaptive maker price that follows the market price
-        return (needed=closeqty > 0.0, positionside=:long, closeqty=closeqty, closelimit=closelimit, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lc_filled, close_pavg_col=:lc_pavg)
+        return (needed=closeqty > 0.0, positionside=:long, closeqty=closeqty, closelimit=closelimit, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lcl_filled, close_pavg_col=:lcl_pavg)
     end
-    return (needed=false, positionside=:long, closeqty=0.0, closelimit=open_limitprice, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lc_filled, close_pavg_col=:lc_pavg)
+    return (needed=false, positionside=:long, closeqty=0.0, closelimit=open_limitprice, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lcl_filled, close_pavg_col=:lcl_pavg)
 end
 
 function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
@@ -1351,10 +1351,10 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
     _isopenstatuslabel(s::AbstractString) = lowercase(strip(String(s))) in ("submitted", "new", "partiallyfilled", "untriggered", "open")
 
     for (idcol, stcol, filledcol, avgcol, msgcol, amountcol, poscol) in [
-        (:lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg, :lo_amount, :lp_amount),
-        (:lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg, :lc_amount, :lp_amount),
-        (:so_id, :so_status, :so_filled, :so_pavg, :so_msg, :so_amount, :sp_amount),
-        (:sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg, :sc_amount, :sp_amount),
+        (:lo_id, :lo_status, :lol_filled, :lol_pavg, :lo_msg, :lo_amount, :lp_amount),
+        (:lc_id, :lc_status, :lcl_filled, :lcl_pavg, :lc_msg, :lc_amount, :lp_amount),
+        (:so_id, :so_status, :sol_filled, :sol_pavg, :so_msg, :so_amount, :sp_amount),
+        (:sc_id, :sc_status, :scl_filled, :scl_pavg, :sc_msg, :sc_amount, :sp_amount),
     ]
         oid = _lane_orderid(tradesdf[ix, idcol])
 
@@ -1573,22 +1573,22 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         :sc_status
     end
     filledcol = if action == :long_open
-        :lo_filled
+        :lol_filled
     elseif action == :long_close
-        :lc_filled
+        :lcl_filled
     elseif action == :short_open
-        :so_filled
+        :sol_filled
     else  # :short_close
-        :sc_filled
+        :scl_filled
     end
     avgcol = if action == :long_open
-        :lo_pavg
+        :lol_pavg
     elseif action == :long_close
-        :lc_pavg
+        :lcl_pavg
     elseif action == :short_open
-        :so_pavg
+        :sol_pavg
     else  # :short_close
-        :sc_pavg
+        :scl_pavg
     end
 
     limitprice = _rowlimitprice(tradesdf[ix, limitcol])

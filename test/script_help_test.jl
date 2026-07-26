@@ -35,7 +35,7 @@ end
     startdt = DateTime("2025-01-17T20:56:00")
     enddt = DateTime("2025-08-10T15:00:00")
 
-    trendcfg = TrendDetector.buildcfg(["config=029"], ["SINE"], startdt, enddt)
+    trendcfg = TrendDetector.buildcfg(["config=029"], ["SINE"], startdt, enddt, "unittest", TrendDetector.execute)
     @test trendcfg.configname == "029"
     @test trendcfg.classbalancing == false
 

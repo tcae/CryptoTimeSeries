@@ -173,11 +173,11 @@ end
     @test lowercase(String(btcrow[btcrowix, :lo_status])) == "closed"
     @test lowercase(String(btcrow[btcrowix, :lc_status])) == "submitted"
     @test lowercase(String(btcrow[btcrowix, :sc_status])) == "rejected"
-    @test btcrow[btcrowix, :lo_filled] == 1.0f0
-    @test btcrow[btcrowix, :lc_filled] == 0.25f0
-    @test btcrow[btcrowix, :sc_filled] == 0f0
-    @test btcrow[btcrowix, :lo_pavg] == 100.5f0
-    @test btcrow[btcrowix, :lc_pavg] == 101.5f0
+    @test btcrow[btcrowix, :lol_filled] == 1.0f0
+    @test btcrow[btcrowix, :lcl_filled] == 0.25f0
+    @test btcrow[btcrowix, :scl_filled] == 0f0
+    @test btcrow[btcrowix, :lol_pavg] == 100.5f0
+    @test btcrow[btcrowix, :lcl_pavg] == 101.5f0
     @test !ismissing(btcrow[btcrowix, :sc_msg])
 
     acct = Xch.account_status(xc; force_refresh=true, ttl_seconds=0)

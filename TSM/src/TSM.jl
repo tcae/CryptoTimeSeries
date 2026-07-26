@@ -17,24 +17,36 @@ export tradesdf_all_contributors,
     xch_tradesdf_pair,
     xch_tradesdf_lo_id,
     xch_tradesdf_lo_status,
-    xch_tradesdf_lo_filled,
-    xch_tradesdf_lo_pavg,
+    xch_tradesdf_lol_id,
+    xch_tradesdf_lol_status,
+    xch_tradesdf_lol_filled,
+    xch_tradesdf_lol_pavg,
     xch_tradesdf_lo_msg,
+    xch_tradesdf_lol_msg,
     xch_tradesdf_lc_id,
     xch_tradesdf_lc_status,
-    xch_tradesdf_lc_filled,
-    xch_tradesdf_lc_pavg,
+    xch_tradesdf_lcl_id,
+    xch_tradesdf_lcl_status,
+    xch_tradesdf_lcl_filled,
+    xch_tradesdf_lcl_pavg,
     xch_tradesdf_lc_msg,
+    xch_tradesdf_lcl_msg,
     xch_tradesdf_so_id,
     xch_tradesdf_so_status,
-    xch_tradesdf_so_filled,
-    xch_tradesdf_so_pavg,
+    xch_tradesdf_sol_id,
+    xch_tradesdf_sol_status,
+    xch_tradesdf_sol_filled,
+    xch_tradesdf_sol_pavg,
     xch_tradesdf_so_msg,
+    xch_tradesdf_sol_msg,
     xch_tradesdf_sc_id,
     xch_tradesdf_sc_status,
-    xch_tradesdf_sc_filled,
-    xch_tradesdf_sc_pavg,
+    xch_tradesdf_scl_id,
+    xch_tradesdf_scl_status,
+    xch_tradesdf_scl_filled,
+    xch_tradesdf_scl_pavg,
     xch_tradesdf_sc_msg,
+    xch_tradesdf_scl_msg,
     xch_tradesdf_lp_amount,
     xch_tradesdf_sp_amount,
     xch_tradesdf_close,
@@ -46,61 +58,85 @@ export tradesdf_all_contributors,
     xch_tradesdf_freemargin,
     xch_tradesdf_freequote,
     tradingstrategy_tradesdf_label,
+    gettrades_lol_id,
+    settrades_lol_id!,
+    gettrades_lol_status,
+    settrades_lol_status!,
     tradingstrategy_tradesdf_score,
     tradingstrategy_tradesdf_lo_limit,
     tradingstrategy_tradesdf_lc_limit,
     tradingstrategy_tradesdf_so_limit,
     tradingstrategy_tradesdf_sc_limit,
     trade_tradesdf_lo_amount,
+    gettrades_lol_msg,
+    settrades_lol_msg!,
     trade_tradesdf_lc_amount,
     trade_tradesdf_so_amount,
     trade_tradesdf_sc_amount,
     tsm_tradesdf_config,
+    gettrades_lcl_id,
+    settrades_lcl_id!,
+    gettrades_lcl_status,
+    settrades_lcl_status!,
     tsm_tradesdf_tsmstate,
     gettrades_opentime,
     settrades_opentime!,
     gettrades_lastopentrade,
     settrades_lastopentrade!,
     gettrades_pair,
+    gettrades_lcl_msg,
+    settrades_lcl_msg!,
     settrades_pair!,
     gettrades_lo_id,
     settrades_lo_id!,
     gettrades_lo_status,
+    gettrades_sol_id,
+    settrades_sol_id!,
+    gettrades_sol_status,
+    settrades_sol_status!,
     settrades_lo_status!,
-    gettrades_lo_filled,
-    settrades_lo_filled!,
-    gettrades_lo_pavg,
-    settrades_lo_pavg!,
+    gettrades_lol_filled,
+    settrades_lol_filled!,
+    gettrades_lol_pavg,
+    settrades_lol_pavg!,
     gettrades_lo_msg,
+    gettrades_sol_msg,
+    settrades_sol_msg!,
     settrades_lo_msg!,
     gettrades_lc_id,
     settrades_lc_id!,
     gettrades_lc_status,
+    gettrades_scl_id,
+    settrades_scl_id!,
+    gettrades_scl_status,
+    settrades_scl_status!,
     settrades_lc_status!,
-    gettrades_lc_filled,
-    settrades_lc_filled!,
-    gettrades_lc_pavg,
-    settrades_lc_pavg!,
+    gettrades_lcl_filled,
+    settrades_lcl_filled!,
+    gettrades_lcl_pavg,
+    settrades_lcl_pavg!,
     gettrades_lc_msg,
+    gettrades_scl_msg,
+    settrades_scl_msg!,
     settrades_lc_msg!,
     gettrades_so_id,
     settrades_so_id!,
     gettrades_so_status,
     settrades_so_status!,
-    gettrades_so_filled,
-    settrades_so_filled!,
-    gettrades_so_pavg,
-    settrades_so_pavg!,
+    gettrades_sol_filled,
+    settrades_sol_filled!,
+    gettrades_sol_pavg,
+    settrades_sol_pavg!,
     gettrades_so_msg,
     settrades_so_msg!,
     gettrades_sc_id,
     settrades_sc_id!,
     gettrades_sc_status,
     settrades_sc_status!,
-    gettrades_sc_filled,
-    settrades_sc_filled!,
-    gettrades_sc_pavg,
-    settrades_sc_pavg!,
+    gettrades_scl_filled,
+    settrades_scl_filled!,
+    gettrades_scl_pavg,
+    settrades_scl_pavg!,
     gettrades_sc_msg,
     settrades_sc_msg!,
     gettrades_lp_amount,
@@ -173,8 +209,8 @@ const TSM_NO_ORDER_MSG = "none"
 const TSM_NO_CONFIG = "none"
 const TSM_NO_STATE = "none"
 const TSM_STATUS_LEVELS = ["none", "submitted", "closed", "canceled", "rejected"]
-const TSM_CATEGORICAL_COLUMNS = Set([:pair, :lo_id, :lo_status, :lo_msg, :lc_id, :lc_status, :lc_msg, :so_id, :so_status, :so_msg, :sc_id, :sc_status, :sc_msg, :config, :tsmstate])
-const TSM_FLOAT_COLUMNS = Set([:lo_filled, :lo_pavg, :lc_filled, :lc_pavg, :so_filled, :so_pavg, :sc_filled, :sc_pavg, :lp_amount, :sp_amount, :close, :high, :low, :maintmargin, :equity, :balance, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
+const TSM_CATEGORICAL_COLUMNS = Set([:pair, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :config, :tsmstate])
+const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :maintmargin, :equity, :balance, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
 
 _nrows(df::AbstractDataFrame) = nrow(df)
 
@@ -383,11 +419,11 @@ function _defaultcolumn(field::Symbol, n::Integer)
         return Vector{Union{Missing, DateTime}}(missing, n)
     elseif field === :label
         return fill(Targets.ignore, n)
-    elseif field === :lo_status || field === :lc_status || field === :so_status || field === :sc_status
+    elseif field === :lo_status || field === :lol_status || field === :lc_status || field === :lcl_status || field === :so_status || field === :sol_status || field === :sc_status || field === :scl_status
         return _compressedcategorical(fill("none", n); levels=TSM_STATUS_LEVELS)
-    elseif field === :lo_id || field === :lc_id || field === :so_id || field === :sc_id
+    elseif field === :lo_id || field === :lol_id || field === :lc_id || field === :lcl_id || field === :so_id || field === :sol_id || field === :sc_id || field === :scl_id
         return _compressedcategorical(fill(TSM_NO_ORDER_ID, n); levels=[TSM_NO_ORDER_ID])
-    elseif field === :lo_msg || field === :lc_msg || field === :so_msg || field === :sc_msg
+    elseif field === :lo_msg || field === :lol_msg || field === :lc_msg || field === :lcl_msg || field === :so_msg || field === :sol_msg || field === :sc_msg || field === :scl_msg
         return _compressedcategorical(fill(TSM_NO_ORDER_MSG, n); levels=[TSM_NO_ORDER_MSG])
     elseif field === :pair || field === :config || field === :tsmstate
         default = field === :pair ? "none" : field === :config ? TSM_NO_CONFIG : TSM_NO_STATE
@@ -438,7 +474,7 @@ function _label_setter!(tradesdf::DataFrame, ix::Integer, value)
     return tradesdf
 end
 
-for field in (:opentime, :lastopentrade, :pair, :lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg, :lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg, :so_id, :so_status, :so_filled, :so_pavg, :so_msg, :sc_id, :sc_status, :sc_filled, :sc_pavg, :sc_msg, :lp_amount, :sp_amount, :close, :high, :low, :maintmargin, :equity, :balance, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
+for field in (:opentime, :lastopentrade, :pair, :lo_id, :lo_status, :lol_filled, :lol_pavg, :lo_msg, :lc_id, :lc_status, :lcl_filled, :lcl_pavg, :lc_msg, :so_id, :so_status, :sol_filled, :sol_pavg, :so_msg, :sc_id, :sc_status, :scl_filled, :scl_pavg, :sc_msg, :lp_amount, :sp_amount, :close, :high, :low, :maintmargin, :equity, :balance, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
     ensurefn = Symbol("ensuretrades_", field, "!")
     getfn = Symbol("gettrades_", field)
     setfn = Symbol("settrades_", field, "!")
@@ -522,23 +558,23 @@ function xch_tradesdf_contributors()::Vector{Function}
         xch_tradesdf_lastopentrade,
         xch_tradesdf_lo_id,
         xch_tradesdf_lo_status,
-        xch_tradesdf_lo_filled,
-        xch_tradesdf_lo_pavg,
+        xch_tradesdf_lol_filled,
+        xch_tradesdf_lol_pavg,
         xch_tradesdf_lo_msg,
         xch_tradesdf_lc_id,
         xch_tradesdf_lc_status,
-        xch_tradesdf_lc_filled,
-        xch_tradesdf_lc_pavg,
+        xch_tradesdf_lcl_filled,
+        xch_tradesdf_lcl_pavg,
         xch_tradesdf_lc_msg,
         xch_tradesdf_so_id,
         xch_tradesdf_so_status,
-        xch_tradesdf_so_filled,
-        xch_tradesdf_so_pavg,
+        xch_tradesdf_sol_filled,
+        xch_tradesdf_sol_pavg,
         xch_tradesdf_so_msg,
         xch_tradesdf_sc_id,
         xch_tradesdf_sc_status,
-        xch_tradesdf_sc_filled,
-        xch_tradesdf_sc_pavg,
+        xch_tradesdf_scl_filled,
+        xch_tradesdf_scl_pavg,
         xch_tradesdf_sc_msg,
         xch_tradesdf_lp_amount,
         xch_tradesdf_sp_amount,
@@ -608,19 +644,34 @@ function xch_tradesdf_lo_status(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lo_status)
 end
 
-"""Ensure Trades column `lo_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_lo_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lo_filled)
+"""Ensure Trades column `lol_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the long-open limit lane."""
+function xch_tradesdf_lol_id(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lol_id)
 end
 
-"""Ensure Trades column `lo_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_lo_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lo_pavg)
+"""Ensure Trades column `lol_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the long-open limit lane."""
+function xch_tradesdf_lol_status(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lol_status)
+end
+
+"""Ensure Trades column `lol_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
+function xch_tradesdf_lol_filled(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lol_filled)
+end
+
+"""Ensure Trades column `lol_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
+function xch_tradesdf_lol_pavg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lol_pavg)
 end
 
 """Ensure Trades column `lo_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
 function xch_tradesdf_lo_msg(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lo_msg)
+end
+
+"""Ensure Trades column `lol_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the long-open limit lane."""
+function xch_tradesdf_lol_msg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lol_msg)
 end
 
 """Ensure Trades column `lc_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
@@ -633,19 +684,34 @@ function xch_tradesdf_lc_status(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lc_status)
 end
 
-"""Ensure Trades column `lc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_lc_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lc_filled)
+"""Ensure Trades column `lcl_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the long-close limit lane."""
+function xch_tradesdf_lcl_id(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lcl_id)
 end
 
-"""Ensure Trades column `lc_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_lc_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lc_pavg)
+"""Ensure Trades column `lcl_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the long-close limit lane."""
+function xch_tradesdf_lcl_status(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lcl_status)
+end
+
+"""Ensure Trades column `lcl_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
+function xch_tradesdf_lcl_filled(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lcl_filled)
+end
+
+"""Ensure Trades column `lcl_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
+function xch_tradesdf_lcl_pavg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lcl_pavg)
 end
 
 """Ensure Trades column `lc_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
 function xch_tradesdf_lc_msg(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lc_msg)
+end
+
+"""Ensure Trades column `lcl_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the long-close limit lane."""
+function xch_tradesdf_lcl_msg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :lcl_msg)
 end
 
 """Ensure Trades column `so_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
@@ -658,19 +724,34 @@ function xch_tradesdf_so_status(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :so_status)
 end
 
-"""Ensure Trades column `so_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_so_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :so_filled)
+"""Ensure Trades column `sol_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the short-open limit lane."""
+function xch_tradesdf_sol_id(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :sol_id)
 end
 
-"""Ensure Trades column `so_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_so_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :so_pavg)
+"""Ensure Trades column `sol_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the short-open limit lane."""
+function xch_tradesdf_sol_status(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :sol_status)
+end
+
+"""Ensure Trades column `sol_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
+function xch_tradesdf_sol_filled(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :sol_filled)
+end
+
+"""Ensure Trades column `sol_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
+function xch_tradesdf_sol_pavg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :sol_pavg)
 end
 
 """Ensure Trades column `so_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
 function xch_tradesdf_so_msg(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :so_msg)
+end
+
+"""Ensure Trades column `sol_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the short-open limit lane."""
+function xch_tradesdf_sol_msg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :sol_msg)
 end
 
 """Ensure Trades column `sc_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request."""
@@ -683,19 +764,34 @@ function xch_tradesdf_sc_status(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :sc_status)
 end
 
-"""Ensure Trades column `sc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_sc_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sc_filled)
+"""Ensure Trades column `scl_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the short-close limit lane."""
+function xch_tradesdf_scl_id(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :scl_id)
 end
 
-"""Ensure Trades column `sc_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_sc_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sc_pavg)
+"""Ensure Trades column `scl_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the short-close limit lane."""
+function xch_tradesdf_scl_status(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :scl_status)
+end
+
+"""Ensure Trades column `scl_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
+function xch_tradesdf_scl_filled(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :scl_filled)
+end
+
+"""Ensure Trades column `scl_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
+function xch_tradesdf_scl_pavg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :scl_pavg)
 end
 
 """Ensure Trades column `sc_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical)."""
 function xch_tradesdf_sc_msg(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :sc_msg)
+end
+
+"""Ensure Trades column `scl_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the short-close limit lane."""
+function xch_tradesdf_scl_msg(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :scl_msg)
 end
 
 """Ensure Trades column `lp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Long position amount snapshot for the trading pair."""
@@ -798,12 +894,45 @@ function trade_tradesdf_sc_amount(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :sc_amount)
 end
 
-"""Ensure Trades column `config` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Note: TSM configuration tag used to track the active state-machine configuration."""
+"""Ensure Trades column `config` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Identifies the Trade configuration id. Any change in config, e.g. different openthresholds, shall result in a different config marker"""
 function tsm_tradesdf_config(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :config)
 end
 
-"""Ensure Trades column `tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Note: TSM state tag used to track the active state-machine state."""
+"""Ensure Trades column `tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`.  
+- Initial and default state is *none*
+- *xch* is a state where order settings have to be in place before entering and exchange side changes are refleced before leaving the state
+  - input used:
+    - pair
+    - label
+    - lo_limit, lo_amount, lo_id
+    - lc_limit, lc_amount, lc_id
+    - so_limit, so_amount, so_id
+    - sc_limit, sc_amount, sc_id
+  - a new row is created reflecting a new minute 
+  - updated output (reflects changes during the **previous** minute)
+    - close, high, low
+    - an order id may be changed, e.g. it is replaced by another order due to amendments or because it is an iceberg order
+    - the status is the status of the listed order id. The status of a replaced order id is not reflected and need to be requested from the exchange.
+    - filled shows the amount filled during the previous minute.
+    - price shows the execution price of the amount executed in the last minute.
+    - lo_id, lo_status, lol_filled, lol_pavg, lo_msg
+    - lc_id, lc_status, lcl_filled, lcl_pavg, lc_msg
+    - so_id, so_status, sol_filled, sol_pavg, so_msg
+    - sc_id, sc_status, scl_filled, scl_pavg, sc_msg
+    - maintmargin, equity, balance, freemargin, freequote
+    - lp_amount, sp_amount
+    - tsmstate becomes *sync*
+- *sync* is a state where the exchange changes from the previous minute shall be processed. When done, tsmstate becomes *request*
+- *request* is a state where any orders shall be prepared
+  - updated output
+    - label
+    - lo_limit, lo_amount, lo_id
+    - lc_limit, lc_amount, lc_id
+    - so_limit, so_amount, so_id
+    - sc_limit, sc_amount, sc_id
+    - tsmstate becomes *xch*
+"""
 function tsm_tradesdf_tsmstate(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :tsmstate)
 end
@@ -819,42 +948,66 @@ function gettradesfield(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
         return gettrades_lo_id(tradesdf, ix)
     elseif field === :lo_status
         return gettrades_lo_status(tradesdf, ix)
-    elseif field === :lo_filled
-        return gettrades_lo_filled(tradesdf, ix)
-    elseif field === :lo_pavg
-        return gettrades_lo_pavg(tradesdf, ix)
+    elseif field === :lol_id
+        return gettrades_lol_id(tradesdf, ix)
+    elseif field === :lol_status
+        return gettrades_lol_status(tradesdf, ix)
+    elseif field === :lol_filled
+        return gettrades_lol_filled(tradesdf, ix)
+    elseif field === :lol_pavg
+        return gettrades_lol_pavg(tradesdf, ix)
     elseif field === :lo_msg
         return gettrades_lo_msg(tradesdf, ix)
+    elseif field === :lol_msg
+        return gettrades_lol_msg(tradesdf, ix)
     elseif field === :lc_id
         return gettrades_lc_id(tradesdf, ix)
     elseif field === :lc_status
         return gettrades_lc_status(tradesdf, ix)
-    elseif field === :lc_filled
-        return gettrades_lc_filled(tradesdf, ix)
-    elseif field === :lc_pavg
-        return gettrades_lc_pavg(tradesdf, ix)
+    elseif field === :lcl_id
+        return gettrades_lcl_id(tradesdf, ix)
+    elseif field === :lcl_status
+        return gettrades_lcl_status(tradesdf, ix)
+    elseif field === :lcl_filled
+        return gettrades_lcl_filled(tradesdf, ix)
+    elseif field === :lcl_pavg
+        return gettrades_lcl_pavg(tradesdf, ix)
     elseif field === :lc_msg
         return gettrades_lc_msg(tradesdf, ix)
+    elseif field === :lcl_msg
+        return gettrades_lcl_msg(tradesdf, ix)
     elseif field === :so_id
         return gettrades_so_id(tradesdf, ix)
     elseif field === :so_status
         return gettrades_so_status(tradesdf, ix)
-    elseif field === :so_filled
-        return gettrades_so_filled(tradesdf, ix)
-    elseif field === :so_pavg
-        return gettrades_so_pavg(tradesdf, ix)
+    elseif field === :sol_id
+        return gettrades_sol_id(tradesdf, ix)
+    elseif field === :sol_status
+        return gettrades_sol_status(tradesdf, ix)
+    elseif field === :sol_filled
+        return gettrades_sol_filled(tradesdf, ix)
+    elseif field === :sol_pavg
+        return gettrades_sol_pavg(tradesdf, ix)
     elseif field === :so_msg
         return gettrades_so_msg(tradesdf, ix)
+    elseif field === :sol_msg
+        return gettrades_sol_msg(tradesdf, ix)
     elseif field === :sc_id
         return gettrades_sc_id(tradesdf, ix)
     elseif field === :sc_status
         return gettrades_sc_status(tradesdf, ix)
-    elseif field === :sc_filled
-        return gettrades_sc_filled(tradesdf, ix)
-    elseif field === :sc_pavg
-        return gettrades_sc_pavg(tradesdf, ix)
+    elseif field === :scl_id
+        return gettrades_scl_id(tradesdf, ix)
+    elseif field === :scl_status
+        return gettrades_scl_status(tradesdf, ix)
+    elseif field === :scl_filled
+        return gettrades_scl_filled(tradesdf, ix)
+    elseif field === :scl_pavg
+        return gettrades_scl_pavg(tradesdf, ix)
     elseif field === :sc_msg
         return gettrades_sc_msg(tradesdf, ix)
+    elseif field === :scl_msg
+        return gettrades_scl_msg(tradesdf, ix)
     elseif field === :lp_amount
         return gettrades_lp_amount(tradesdf, ix)
     elseif field === :sp_amount
@@ -914,42 +1067,66 @@ function settradesfield!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
         return settrades_lo_id!(tradesdf, ix, value)
     elseif field === :lo_status
         return settrades_lo_status!(tradesdf, ix, value)
-    elseif field === :lo_filled
-        return settrades_lo_filled!(tradesdf, ix, value)
-    elseif field === :lo_pavg
-        return settrades_lo_pavg!(tradesdf, ix, value)
+    elseif field === :lol_id
+        return settrades_lol_id!(tradesdf, ix, value)
+    elseif field === :lol_status
+        return settrades_lol_status!(tradesdf, ix, value)
+    elseif field === :lol_filled
+        return settrades_lol_filled!(tradesdf, ix, value)
+    elseif field === :lol_pavg
+        return settrades_lol_pavg!(tradesdf, ix, value)
     elseif field === :lo_msg
         return settrades_lo_msg!(tradesdf, ix, value)
+    elseif field === :lol_msg
+        return settrades_lol_msg!(tradesdf, ix, value)
     elseif field === :lc_id
         return settrades_lc_id!(tradesdf, ix, value)
     elseif field === :lc_status
         return settrades_lc_status!(tradesdf, ix, value)
-    elseif field === :lc_filled
-        return settrades_lc_filled!(tradesdf, ix, value)
-    elseif field === :lc_pavg
-        return settrades_lc_pavg!(tradesdf, ix, value)
+    elseif field === :lcl_id
+        return settrades_lcl_id!(tradesdf, ix, value)
+    elseif field === :lcl_status
+        return settrades_lcl_status!(tradesdf, ix, value)
+    elseif field === :lcl_filled
+        return settrades_lcl_filled!(tradesdf, ix, value)
+    elseif field === :lcl_pavg
+        return settrades_lcl_pavg!(tradesdf, ix, value)
     elseif field === :lc_msg
         return settrades_lc_msg!(tradesdf, ix, value)
+    elseif field === :lcl_msg
+        return settrades_lcl_msg!(tradesdf, ix, value)
     elseif field === :so_id
         return settrades_so_id!(tradesdf, ix, value)
     elseif field === :so_status
         return settrades_so_status!(tradesdf, ix, value)
-    elseif field === :so_filled
-        return settrades_so_filled!(tradesdf, ix, value)
-    elseif field === :so_pavg
-        return settrades_so_pavg!(tradesdf, ix, value)
+    elseif field === :sol_id
+        return settrades_sol_id!(tradesdf, ix, value)
+    elseif field === :sol_status
+        return settrades_sol_status!(tradesdf, ix, value)
+    elseif field === :sol_filled
+        return settrades_sol_filled!(tradesdf, ix, value)
+    elseif field === :sol_pavg
+        return settrades_sol_pavg!(tradesdf, ix, value)
     elseif field === :so_msg
         return settrades_so_msg!(tradesdf, ix, value)
+    elseif field === :sol_msg
+        return settrades_sol_msg!(tradesdf, ix, value)
     elseif field === :sc_id
         return settrades_sc_id!(tradesdf, ix, value)
     elseif field === :sc_status
         return settrades_sc_status!(tradesdf, ix, value)
-    elseif field === :sc_filled
-        return settrades_sc_filled!(tradesdf, ix, value)
-    elseif field === :sc_pavg
-        return settrades_sc_pavg!(tradesdf, ix, value)
+    elseif field === :scl_id
+        return settrades_scl_id!(tradesdf, ix, value)
+    elseif field === :scl_status
+        return settrades_scl_status!(tradesdf, ix, value)
+    elseif field === :scl_filled
+        return settrades_scl_filled!(tradesdf, ix, value)
+    elseif field === :scl_pavg
+        return settrades_scl_pavg!(tradesdf, ix, value)
     elseif field === :sc_msg
         return settrades_sc_msg!(tradesdf, ix, value)
+    elseif field === :scl_msg
+        return settrades_scl_msg!(tradesdf, ix, value)
     elseif field === :lp_amount
         return settrades_lp_amount!(tradesdf, ix, value)
     elseif field === :sp_amount
