@@ -44,7 +44,7 @@ end
         low=Float32[99f0, 100f0, 101f0],
         close=Float32[100f0, 101f0, 101f0],
         score=Float32[0.9f0, 0f0, 0.9f0],
-        label=Targets.TradeLabel[Targets.longopen, Targets.allclose, Targets.shortopen],
+        label=TradeLabel[longopen, allclose, shortopen],
     )
     init_limit_reversal_columns!(tradesdf)
 
@@ -62,7 +62,7 @@ end
     @test :score in propertynames(tradesdf)
     @test :lastopentrade in propertynames(tradesdf)
 
-    @test tradesdf[1, :label] == Targets.longopen
+    @test tradesdf[1, :label] == longopen
     @test isapprox(tradesdf[1, :lo_limit], 99.9f0; atol=1f-4)
     @test isapprox(tradesdf[1, :lc_limit], 101f0; atol=1f-4)
     @test ismissing(tradesdf[1, :lastopentrade])
@@ -74,7 +74,7 @@ end
             low=Float32[99f0],
             close=Float32[100f0],
             score=Float32[0.9f0],
-            label=Targets.TradeLabel[Targets.longopen],
+            label=TradeLabel[longopen],
         )
         init_limit_reversal_columns!(probe)
         TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
@@ -93,7 +93,7 @@ end
             low=Float32[99f0, 100f0],
             close=Float32[100f0, 100f0],
             score=Float32[0.9f0, 0f0],
-            label=Targets.TradeLabel[Targets.longopen, Targets.allclose],
+            label=TradeLabel[longopen, allclose],
         )
         init_limit_reversal_columns!(probe)
         TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
@@ -114,16 +114,16 @@ end
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100f0],
             score=Float32[0.9f0, 0.9f0],
-            label=Targets.TradeLabel[Targets.longopen, Targets.longopen],
+            label=TradeLabel[longopen, longopen],
         )
         init_limit_reversal_columns!(probe)
         probe[2, :lp_amount] = 100f0
-        probe[2, :lo_pavg] = 98f0
+        probe[2, :lol_pavg] = 98f0
         probe[2, :lastopentrade] = probe[1, :opentime]
         openhit = (side=:long, limitprice=99f0, amount=25f0)
         TradingStrategy._apply_open_hit!(probe, 2, openhit.side, openhit.limitprice, openhit.amount)
         @test probe[2, :lp_amount] == 125f0
-        @test isapprox(probe[2, :lo_pavg], 98.2f0; atol=1f-4)
+        @test isapprox(probe[2, :lol_pavg], 98.2f0; atol=1f-4)
         @test probe[2, :lastopentrade] == probe[1, :opentime]
     end
 
@@ -134,15 +134,15 @@ end
             low=Float32[99f0],
             close=Float32[100f0],
             score=Float32[0.9f0],
-            label=Targets.TradeLabel[Targets.shortopen],
+            label=TradeLabel[shortopen],
         )
         init_limit_reversal_columns!(probe)
         probe[1, :sp_amount] = 100f0
-        probe[1, :so_pavg] = 2.28228f0
+        probe[1, :sol_pavg] = 2.28228f0
         TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
         TradingStrategy._process_advice_row!(limit_reversal_strategy(), probe, 1)
         @test probe[1, :so_amount] == 100f0
-        @test probe[1, :so_pavg] == 2.28228f0
+        @test probe[1, :sol_pavg] == 2.28228f0
         openhit = TradingStrategy._open_hit_spec(probe, 1)
         @test !isnothing(openhit)
         @test openhit.side == :short
@@ -156,11 +156,11 @@ end
             low=Float32[99f0],
             close=Float32[100f0],
             score=Float32[0.9f0],
-            label=Targets.TradeLabel[Targets.longopen],
+            label=TradeLabel[longopen],
         )
         init_limit_reversal_columns!(probe)
         probe[1, :lp_amount] = 100f0
-        probe[1, :lo_pavg] = 98f0
+        probe[1, :lol_pavg] = 98f0
         probe[1, :so_amount] = 100f0
         TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
         TradingStrategy._process_advice_row!(limit_reversal_strategy(), probe, 1)
@@ -175,11 +175,11 @@ end
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100f0],
             score=Float32[0.9f0, 0.9f0],
-            label=Targets.TradeLabel[Targets.longopen, Targets.longopen],
+            label=TradeLabel[longopen, longopen],
         )
         init_limit_reversal_columns!(probe)
         probe[1, :sp_amount] = 100f0
-        probe[1, :so_pavg] = 101f0
+        probe[1, :sol_pavg] = 101f0
         probe[1, :so_limit] = 101f0
         probe[1, :sc_limit] = 99f0
         probe[1, :lastopentrade] = probe[1, :opentime]
@@ -208,11 +208,11 @@ end
             low=Float32[99f0, 99f0, 99f0],
             close=Float32[100f0, 100f0, 100f0],
             score=Float32[0.9f0, 0.9f0, 0.2f0],
-            label=Targets.TradeLabel[Targets.shortopen, Targets.ignore, Targets.allclose],
+            label=TradeLabel[shortopen, ignore, allclose],
         )
         init_limit_reversal_columns!(probe)
         probe[1, :sp_amount] = 100f0
-        probe[1, :so_pavg] = 2f0
+        probe[1, :sol_pavg] = 2f0
         probe[1, :lastopentrade] = probe[1, :opentime]
         probe[1, :sc_limit] = 1.9f0
         probe[1, :so_limit] = 0f0
@@ -239,7 +239,7 @@ end
             low=tradesdf[!, :low],
             close=tradesdf[!, :close],
             score=tradesdf[!, :score],
-            label=Targets.TradeLabel[tradesdf[ix, :label] for ix in 1:nrow(tradesdf)],
+            label=TradeLabel[tradesdf[ix, :label] for ix in 1:nrow(tradesdf)],
         ),
     )
     init_limit_reversal_columns!(tp.tradesdf)
@@ -270,7 +270,7 @@ end
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100f0],
             score=Float32[0.8f0, 0.2f0],
-            label=Targets.TradeLabel[longopen, allclose],
+            label=TradeLabel[longopen, allclose],
         ),
     )
     init_limit_reversal_columns!(tp.tradesdf)

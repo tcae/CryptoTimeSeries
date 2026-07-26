@@ -44,7 +44,7 @@ using Targets, TSM
     @test all(String(v) == "none" for v in tdf[!, :lc_msg])
     @test all(String(v) == "none" for v in tdf[!, :so_msg])
     @test all(String(v) == "none" for v in tdf[!, :sc_msg])
-    @test eltype(tdf[!, :label]) == Targets.TradeLabel
+    @test eltype(tdf[!, :label]) == TradeLabel
     @test eltype(tdf[!, :lo_limit]) == Float32
     @test eltype(tdf[!, :lc_limit]) == Float32
     @test eltype(tdf[!, :so_limit]) == Float32
@@ -54,7 +54,7 @@ using Targets, TSM
 
     defaultdf = DataFrame(opentime=[startdt])
     TSM.tradingstrategy_tradesdf_label(defaultdf)
-    @test defaultdf[1, :label] == Targets.ignore
+    @test defaultdf[1, :label] == ignore
 
     defaultlimitsdf = DataFrame(opentime=[startdt], pair=["BTCUSDT"])
     for contributor in TSM.tradingstrategy_tradesdf_contributors()
@@ -65,13 +65,13 @@ using Targets, TSM
     @test defaultlimitsdf[1, :so_limit] == 0f0
     @test defaultlimitsdf[1, :sc_limit] == 0f0
 
-    push!(tdf, (opentime=startdt, pair="BTCUSDT", label=Targets.ignore, lastopentrade=missing, lp_amount=0f0, sp_amount=0f0); cols=:subset)
-    TSM.xch_tradesdf_lo_msg(tdf)
-    TSM.xch_tradesdf_lc_msg(tdf)
-    TSM.xch_tradesdf_so_msg(tdf)
-    TSM.xch_tradesdf_sc_msg(tdf)
+    push!(tdf, (opentime=startdt, pair="BTCUSDT", label=ignore, lastopentrade=missing, lp_amount=0f0, sp_amount=0f0); cols=:subset)
+    TSM.xch_tradesdf_msg(tdf, longopen)
+    TSM.xch_tradesdf_msg(tdf, longclose)
+    TSM.xch_tradesdf_msg(tdf, shortopen)
+    TSM.xch_tradesdf_msg(tdf, shortclose)
     @test nrow(tdf) == 1
-    @test tdf[1, :label] == Targets.ignore
+    @test tdf[1, :label] == ignore
     @test !ismissing(tdf[1, :pair])
     @test String(tdf[1, :pair]) == "BTCUSDT"
     @test tdf[1, :lp_amount] == 0f0
@@ -81,8 +81,8 @@ using Targets, TSM
     @test ismissing(tdf[1, :so_msg]) || String(tdf[1, :so_msg]) == "none"
     @test ismissing(tdf[1, :sc_msg]) || String(tdf[1, :sc_msg]) == "none"
 
-    tdf[1, :label] = Targets.longopen
-    @test tdf[1, :label] == Targets.longopen
+    tdf[1, :label] = longopen
+    @test tdf[1, :label] == longopen
 end
 
 end

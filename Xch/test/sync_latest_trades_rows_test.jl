@@ -118,14 +118,14 @@ end
 
     btcrow_prev = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     btcdf = btcrow_prev.tradesdf
-    btcdf[btcrow_prev.rowix, :label] = Targets.ignore
+    btcdf[btcrow_prev.rowix, :label] = ignore
     btcdf[btcrow_prev.rowix, :lp_amount] = 1.0f0
     btcdf[btcrow_prev.rowix, :sp_amount] = 0.25f0
     btcdf[btcrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
     btcrow_now = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt)
     btcdf = btcrow_now.tradesdf
-    btcdf[btcrow_now.rowix, :label] = Targets.ignore
+    btcdf[btcrow_now.rowix, :label] = ignore
     btcdf[btcrow_now.rowix, :lo_id] = "oid-lo-filled"
     btcdf[btcrow_now.rowix, :lo_amount] = 1.0f0
     btcdf[btcrow_now.rowix, :lc_id] = "oid-lc-open"
@@ -136,14 +136,14 @@ end
 
     ethrow_prev = TSM.ensuretradesrow!(xc.tsm, "ETH", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     ethdf = ethrow_prev.tradesdf
-    ethdf[ethrow_prev.rowix, :label] = Targets.ignore
+    ethdf[ethrow_prev.rowix, :label] = ignore
     ethdf[ethrow_prev.rowix, :lp_amount] = 0.75f0
     ethdf[ethrow_prev.rowix, :sp_amount] = 0f0
     ethdf[ethrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
     ethrow_now = TSM.ensuretradesrow!(xc.tsm, "ETH", EnvConfig.pairquote, currentdt)
     ethdf = ethrow_now.tradesdf
-    ethdf[ethrow_now.rowix, :label] = Targets.ignore
+    ethdf[ethrow_now.rowix, :label] = ignore
     ethdf[ethrow_now.rowix, :lastopentrade] = missing
 
     oodf = Xch.getopenorders(xc)

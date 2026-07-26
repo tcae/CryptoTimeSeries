@@ -69,7 +69,7 @@ end
     accepted = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        label=[Targets.longopen],
+        label=[longopen],
         lo_limit=[price * 0.98f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
     )
@@ -100,7 +100,7 @@ end
     zero_limit = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        label=[Targets.longopen],
+        label=[longopen],
         lo_limit=[0f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
     )
@@ -121,7 +121,7 @@ end
     rejected = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        label=[Targets.longopen],
+        label=[longopen],
         lo_limit=[price],
         lo_amount=[max(minqty * 0.1f0, 1.0f-8)],
     )
@@ -159,7 +159,7 @@ end
     close_req = DataFrame(
         opentime=[startdt],
         pair=["BTCUSDT"],
-        label=[Targets.longclose],
+        label=[longclose],
         lp_amount=[1f0],
         lc_limit=[price * 0.98],
         lc_amount=[1 - (minqty * 0.25)],

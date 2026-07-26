@@ -26,23 +26,23 @@ const COCKPIT_BOUNDS_REF = "001"
 const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target"]
 const DIAGNOSTIC_LABEL_CODE = Dict{Any, Int}(
     missing => 0,
-    Targets.shortopen => 1,
-    Targets.shorthold => 2,
-    Targets.shortclose => 3,
-    Targets.allclose => 4,
-    Targets.longopen => 5,
-    Targets.longhold => 6,
-    Targets.longclose => 7,
+    shortopen => 1,
+    shorthold => 2,
+    shortclose => 3,
+    allclose => 4,
+    longopen => 5,
+    longhold => 6,
+    longclose => 7,
 )
 const DIAGNOSTIC_LABEL_COLOR = Dict{Any, String}(
     missing => "#808080",
-    Targets.shortopen => "#99000d",
-    Targets.shorthold => "#ef3b2c",
-    Targets.shortclose => "#fcbba1",
-    Targets.allclose => "#dbeafe",
-    Targets.longopen => "#006d2c",
-    Targets.longhold => "#31a354",
-    Targets.longclose => "#a1d99b",
+    shortopen => "#99000d",
+    shorthold => "#ef3b2c",
+    shortclose => "#fcbba1",
+    allclose => "#dbeafe",
+    longopen => "#006d2c",
+    longhold => "#31a354",
+    longclose => "#a1d99b",
 )
 const DIAGNOSTIC_LABEL_TICKS = [
     "missing",
@@ -631,7 +631,7 @@ function _diagnostic_slice(ohlcv, period, enddt, history_minutes::Int)
 end
 
 function _discrete_colorscale()
-    ordered = [missing, Targets.shortopen, Targets.shorthold, Targets.shortclose, Targets.allclose, Targets.longopen, Targets.longhold, Targets.longclose]
+    ordered = [missing, shortopen, shorthold, shortclose, allclose, longopen, longhold, longclose]
     boundaries = collect(range(0.0, 1.0; length=length(ordered) + 1))
     scale = Any[]
     for (ix, key) in enumerate(ordered)

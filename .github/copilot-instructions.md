@@ -13,6 +13,7 @@ applyTo: '*.jl'
 - avoid global variables
 - this workspace is not intended to provide general use packages. Therefore configurations are set up during init and execution logic can rely on it or shall fail fast. 
 - do not introduce code for fallbacks or backward compatibility.
+- Aside a few exceptions of very often used functions, functions will nolt be exported from a module and shall be called with a module prefix. This is to avoid name clashes and to make it clear which module a function belongs to.
 - write comments to explain complex code
 - keep functions short and focused on a single task
 - use type annotations for function arguments and return types when appropriate

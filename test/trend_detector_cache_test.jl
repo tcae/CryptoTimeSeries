@@ -13,11 +13,11 @@ include("../scripts/TrendDetector.jl")
     mktempdir() do tmpdir
         @test !TrendDetector._persist_coin_featuretarget_cache("SINE", nothing, nothing; folderpath=tmpdir)
 
-        emptyresults = DataFrame(target=Targets.TradeLabel[])
+        emptyresults = DataFrame(target=TradeLabel[])
         emptyfeatures = DataFrame(dummy=Float32[])
         @test !TrendDetector._persist_coin_featuretarget_cache("SINE", emptyresults, emptyfeatures; folderpath=tmpdir)
 
-        savedresults = DataFrame(target=[Targets.allclose], coin=["SINE"], rangeid=Int16[1], set=["train"])
+        savedresults = DataFrame(target=[allclose], coin=["SINE"], rangeid=Int16[1], set=["train"])
         savedfeatures = DataFrame(dummy=Float32[1.0])
         @test TrendDetector._persist_coin_featuretarget_cache("SINE", savedresults, savedfeatures; folderpath=tmpdir)
         @test EnvConfig.tableexists(TrendDetector.resultsfilename("SINE"); folderpath=tmpdir, format=:auto)
@@ -71,7 +71,7 @@ end
         @test size(resultsdf, 1) == 2
         @test size(featuresdf, 1) == 2
         @test resultsdf[!, :coin] == cached_results[!, :coin]
-        @test resultsdf[!, :target] == [Targets.allclose, Targets.longopen]
+        @test resultsdf[!, :target] == [allclose, longopen]
         @test featuresdf[!, :dummy] == cached_features[!, :dummy]
     finally
         EnvConfig.setdfformat!(oldformat)

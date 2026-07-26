@@ -21,8 +21,8 @@ using TSM
     @test String(TSM.gettrades_config(df, 1)) == "cfg-1"
     @test String(TSM.gettrades_tsmstate(df, 1)) == "armed"
 
-    TSM.settrades_label!(df, 1, Targets.longopen)
-    @test TSM.gettrades_label(df, 1) == Targets.longopen
+    TSM.settrades_label!(df, 1, longopen)
+    @test TSM.gettrades_label(df, 1) == longopen
 end
 
 include("trades_schema_contract_test.jl")

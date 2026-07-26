@@ -1281,17 +1281,17 @@ end
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
     logged = log_trading_issue(xc, "Xch", message)
     if action == :long_open
-        TSM.settrades_lo_status!(tradesdf, ix, "rejected")
-        TSM.settrades_lo_msg!(tradesdf, ix, logged)
+        TSM.settrades_status!(tradesdf, ix, longopen, "rejected")
+        TSM.settrades_msg!(tradesdf, ix, longopen, logged)
     elseif action == :long_close
-        TSM.settrades_lc_status!(tradesdf, ix, "rejected")
-        TSM.settrades_lc_msg!(tradesdf, ix, logged)
+        TSM.settrades_status!(tradesdf, ix, longclose, "rejected")
+        TSM.settrades_msg!(tradesdf, ix, longclose, logged)
     elseif action == :short_open
-        TSM.settrades_so_status!(tradesdf, ix, "rejected")
-        TSM.settrades_so_msg!(tradesdf, ix, logged)
+        TSM.settrades_status!(tradesdf, ix, shortopen, "rejected")
+        TSM.settrades_msg!(tradesdf, ix, shortopen, logged)
     else
-        TSM.settrades_sc_status!(tradesdf, ix, "rejected")
-        TSM.settrades_sc_msg!(tradesdf, ix, logged)
+        TSM.settrades_status!(tradesdf, ix, shortclose, "rejected")
+        TSM.settrades_msg!(tradesdf, ix, shortclose, logged)
     end
     return logged
 end
@@ -1688,17 +1688,17 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         err isa InterruptException && rethrow(err)
         logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
         if action == :long_open
-            TSM.settrades_lo_msg!(tradesdf, ix, logged)
-            TSM.settrades_lo_status!(tradesdf, ix, "Error")
+            TSM.settrades_msg!(tradesdf, ix, longopen, logged)
+            TSM.settrades_status!(tradesdf, ix, longopen, "Error")
         elseif action == :long_close
-            TSM.settrades_lc_msg!(tradesdf, ix, logged)
-            TSM.settrades_lc_status!(tradesdf, ix, "Error")
+            TSM.settrades_msg!(tradesdf, ix, longclose, logged)
+            TSM.settrades_status!(tradesdf, ix, longclose, "Error")
         elseif action == :short_open
-            TSM.settrades_so_msg!(tradesdf, ix, logged)
-            TSM.settrades_so_status!(tradesdf, ix, "Error")
+            TSM.settrades_msg!(tradesdf, ix, shortopen, logged)
+            TSM.settrades_status!(tradesdf, ix, shortopen, "Error")
         else  # :short_close
-            TSM.settrades_sc_msg!(tradesdf, ix, logged)
-            TSM.settrades_sc_status!(tradesdf, ix, "Error")
+            TSM.settrades_msg!(tradesdf, ix, shortclose, logged)
+            TSM.settrades_status!(tradesdf, ix, shortclose, "Error")
         end
         return (accepted=false, action=action, reason="exchange_error", error=sprint(showerror, err))
     end

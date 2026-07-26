@@ -48,7 +48,7 @@ using Test
     Features.setbase!(tailf6, tailohlcv, usecache=false)
     tailtrd = Targets.TrendRegression(3, 0.005f0, -0.005f0; f6=tailf6)
     Targets.setbase!(tailtrd, tailf6)
-    @test tailtrd.df[3, :label] == Targets.longopen
+    @test tailtrd.df[3, :label] == longopen
 
     extendedohlcv = testohlcvfrompivots(Float32[100.0, 102.0, 110.0, 111.0, 70.0])
     Ohlcv.setdataframe!(tailohlcv, Ohlcv.dataframe(extendedohlcv))
@@ -65,10 +65,10 @@ using Test
     Targets.setbase!(fulltailtrd, fulltailf6)
 
     @test Targets.lastrowix(tailtrd) == 5
-    @test tailtrd.df[3, :label] == Targets.shortopen
+    @test tailtrd.df[3, :label] == shortopen
     @test collect(tailtrd.df[!, :opentime]) == collect(fulltailtrd.df[!, :opentime])
     @test collect(tailtrd.df[!, :label]) == collect(fulltailtrd.df[!, :label])
-    @test tailtrd.df[1, :label] == Targets.longopen
+    @test tailtrd.df[1, :label] == longopen
     @test tailtrd.df[!, :relgain] ≈ fulltailtrd.df[!, :relgain]
 
     emptyf6 = Features.Features006()

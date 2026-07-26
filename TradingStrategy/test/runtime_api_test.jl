@@ -35,7 +35,7 @@ function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::Dat
     _ = investment
     cl.advice_calls += 1
     return (
-        tradelabel=Targets.longopen,
+        tradelabel=longopen,
         probability=0.75f0,
         configid=42,
         datetime=datetime,
@@ -199,7 +199,7 @@ end
     )
     init_runtime_columns!(tdf)
     tdf[!, :score] = Float32[0.8f0]
-    tdf[!, :label] = Targets.TradeLabel[Targets.longopen]
+    tdf[!, :label] = TradeLabel[longopen]
     noclose_tp = TradingStrategy.TsTp(pair="SINEUSDT", tradesdf=tdf)
     @test_throws AssertionError TradingStrategy.processreplaygains!(
         noclose_tp;

@@ -148,7 +148,7 @@ end
     push!(TEST_ROWS,
         (
                 base="BTC",
-                tradelabel=Targets.longopen,
+                tradelabel=longopen,
                 lo_limit=100f0,
                 lc_limit=110f0,
                 so_limit=0f0,
@@ -162,7 +162,7 @@ end
     rowstate = _collect_strategy_row(tc, "BTC")
 
     @test !isnothing(rowstate)
-    @test rowstate.tradesdf[rowstate.rowix, :label] == Targets.longopen
+    @test rowstate.tradesdf[rowstate.rowix, :label] == longopen
     @test rowstate.tradesdf[rowstate.rowix, :score] == 0.75f0
     @test rowstate.tradesdf[rowstate.rowix, :lo_limit] == 100f0
     @test rowstate.tradesdf[rowstate.rowix, :lc_limit] == 110f0

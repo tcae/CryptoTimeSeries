@@ -48,7 +48,7 @@ end
             high=Float32[101f0],
             low=Float32[99f0],
             close=Float32[100f0],
-            label=Targets.TradeLabel[Targets.longopen],
+            label=TradeLabel[longopen],
             score=Float32[0.9f0],
         )
         init_strategy_columns!(tdf)
@@ -57,7 +57,7 @@ end
             tdf,
             1,
         )
-        @test tdf[1, :label] == Targets.longopen
+        @test tdf[1, :label] == longopen
         @test isapprox(tdf[1, :lo_limit], 99.9f0; atol=1f-4)
         @test isapprox(tdf[1, :lc_limit], 101f0; atol=1f-4)
         @test tdf[1, :so_limit] == 0f0
@@ -69,7 +69,7 @@ end
             high=Float32[101f0],
             low=Float32[99f0],
             close=Float32[100f0],
-            label=Targets.TradeLabel[Targets.shortopen],
+            label=TradeLabel[shortopen],
             score=Float32[0.9f0],
         )
         init_strategy_columns!(tdf)
@@ -78,7 +78,7 @@ end
             tdf,
             1,
         )
-        @test tdf[1, :label] == Targets.shortopen
+        @test tdf[1, :label] == shortopen
         @test isapprox(tdf[1, :so_limit], 100.1f0; atol=1f-4)
         @test isapprox(tdf[1, :sc_limit], 99f0; atol=1f-4)
         @test tdf[1, :lo_limit] == 0f0
@@ -90,7 +90,7 @@ end
             high=Float32[101f0, 101f0],
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100.02f0],
-            label=Targets.TradeLabel[Targets.longopen, Targets.longopen],
+            label=TradeLabel[longopen, longopen],
             score=Float32[0.9f0, 0.9f0],
         )
         init_strategy_columns!(tdf)
@@ -114,12 +114,12 @@ end
             high=Float32[101f0, 101f0],
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100f0],
-            label=Targets.TradeLabel[Targets.ignore, Targets.ignore],
+            label=TradeLabel[ignore, ignore],
             score=Float32[0.9f0, 0.9f0],
         )
         init_strategy_columns!(tdf)
         tdf[1, :lp_amount] = 100f0
-        tdf[1, :lo_pavg] = 100f0
+        tdf[1, :lol_pavg] = 100f0
         tdf[1, :lastopentrade] = tdf[1, :opentime]
         tdf[1, :so_amount] = 100f0
         tdf[1, :so_limit] = 100.5f0
@@ -136,12 +136,12 @@ end
             high=Float32[101f0, 101f0],
             low=Float32[99f0, 99f0],
             close=Float32[100f0, 100f0],
-            label=Targets.TradeLabel[Targets.ignore, Targets.ignore],
+            label=TradeLabel[ignore, ignore],
             score=Float32[0.9f0, 0.9f0],
         )
         init_strategy_columns!(tdf)
         tdf[1, :sp_amount] = 100f0
-        tdf[1, :so_pavg] = 100f0
+        tdf[1, :sol_pavg] = 100f0
         tdf[1, :lastopentrade] = tdf[1, :opentime]
         tdf[1, :lo_amount] = 100f0
         tdf[1, :lo_limit] = 99.5f0
