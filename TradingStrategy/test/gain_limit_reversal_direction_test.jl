@@ -1,6 +1,7 @@
 using Test
 using DataFrames
 using Dates
+using TSM
 using TradingStrategy
 using Targets
 using Xch
@@ -22,7 +23,7 @@ function init_trade_columns!(tdf::DataFrame)
 end
 
 function init_strategy_columns!(tdf::DataFrame)
-    for contributor in Xch.tradesdf_all_contributors()
+    for contributor in TSM.tradesdf_all_contributors()
         contributor(tdf)
     end
     init_trade_columns!(tdf)

@@ -14,7 +14,7 @@ Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using Dates, Statistics, Printf, Logging
 using DataFrames
-using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, Targets
+using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, Targets, TSM
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG — adjust these values before running
@@ -72,7 +72,7 @@ end
 function filled_orders_df(xc::Xch.XchCache)::DataFrame
     rows = NamedTuple[]
 
-    for (pair, tdf) in xc.pairstates
+    for (pair, tdf) in xc.tsm.pairstates
         nrow(tdf) == 0 && continue
         cols = propertynames(tdf)
         required = (:opentime, :pair, :lo_status, :lo_filled, :lo_pavg, :lc_status, :lc_filled, :lc_pavg, :so_status, :so_filled, :so_pavg, :sc_status, :sc_filled, :sc_pavg)
@@ -332,7 +332,7 @@ xc = Xch.XchCache(bc;
     startdt  = history_startdt,
     enddt    = run_enddt,
 )
-    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
+    TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
 cache = Trade.TradeCache(xc=xc, strategy=strategy_runtime, trademode=TRADE_MODE)
 if !isnothing(BACKTEST_BASES)
@@ -367,8 +367,8 @@ Trade.run_backtest!(cache)
 
 backtest_report(cache, run_startdt, run_enddt)
 EnvConfig.setlogpath(LOG_SUBFOLDER)
-tradespath = Xch.savetradesdf(xc; stem="trades-ts")
+tradespath = TSM.savetradesdf(xc.tsm; stem="trades-ts", folderpath=EnvConfig.logfolder())
 println("$(EnvConfig.now()): saved trades dataframe to $tradespath")
 
 # Keep legacy log-path split for parity with previous script layout.
-println("$(EnvConfig.now()): order history report derived from xc.pairstates trades data")
+println("$(EnvConfig.now()): order history report derived from xc.tsm.pairstates trades data")

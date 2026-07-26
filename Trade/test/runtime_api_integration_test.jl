@@ -2,6 +2,7 @@ using Test
 using Dates
 using DataFrames
 using EnvConfig, Trade, TradingStrategy, Classify, Xch, Targets
+using TSM
 
 const TEST_RECONCILIATION_BY_BASE = Dict{String, NamedTuple}()
 const TEST_ROWS = NamedTuple[]
@@ -20,14 +21,13 @@ function TradingStrategy.gettradesrow!(
     empty!(TEST_RECONCILIATION_BY_BASE)
     empty!(TEST_PREPARE_CALLS)
     basekey = uppercase(String(base))
-    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
     row = findfirst(r -> uppercase(String(r.base)) == basekey, TEST_ROWS)
     isnothing(row) && return nothing
 
-    tdf = Xch.trades(xc, basekey, EnvConfig.pairquote)
+    tdf = TSM.trades(xc.tsm, basekey, EnvConfig.pairquote)
     rowix = findlast(==(datetime), tdf[!, :opentime])
     if isnothing(rowix)
-        push!(tdf, (opentime=datetime, lastopentrade=missing, pair=Xch.tradingpairkey(basekey, EnvConfig.pairquote), coin=basekey); cols=:subset)
+        push!(tdf, (opentime=datetime, lastopentrade=missing, pair=TSM.tradingpairkey(basekey, EnvConfig.pairquote), coin=basekey); cols=:subset)
         rowix = nrow(tdf)
     end
     spec = TEST_ROWS[row]

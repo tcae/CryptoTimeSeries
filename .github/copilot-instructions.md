@@ -22,7 +22,6 @@ applyTo: '*.jl'
 - the following workspace local packages should be maintained and build the architecture of CryptoTimeSeries:
     - EnvConfig - for environment configuration management and utilities (e.g., loading environment variables, managing configuration files). It is not dependent from other packages of the workspace
     - Xch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
-      - It maintains trades dataframes per trading pair, which is serves as a common dashboard per minute for Xch, Trade, and TradingStrategy. 
       - Only one order shall be open at a time for a trading pair. If an open trading request is issued, the opposite trading position shall be first closed, which shall be handled asynchronously per adapter websocket handling to avoid waiting for the minute trade loop.
       - Only the available amount of equity shall be used for trading or any maxium budget constraint whatever is lower.
       - Leverages for futures and margin trading are defined in exchange specific configuration files and are static. 
@@ -37,6 +36,9 @@ applyTo: '*.jl'
     - Classify - to train and infer trading signals.
     - Trade - for asset allocation to trade execution request and asset risk management
     - TradingStrategy - is providing trade actions advice to optimize the gain of buy and sell actions. It uses Classify
+    - TSM (akronym for Trade State Machine) - is used to manage the state of the trading strategy and the trade execution via the trades data frame. 
+      - It maintains trades dataframes per trading pair, which is serves as a common dashboard per minute for Xch, Trade, and TradingStrategy. 
+      - Accessing that pair specific dataframe shall only be done via get/set functions to ensure that the state of the trading strategy is always consistent with the trade execution
 - CryptoTimeSeries - the main workspace that ties everything together and provides high-level functionality
 - CryptoTimeSeries/scripts - folder that provides scripts that use all of the above packages to implement the full trading pipeline  but no other program or script is dependent on them
 - use `Pkg` for managing dependencies

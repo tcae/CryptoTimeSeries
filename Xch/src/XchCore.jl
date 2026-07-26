@@ -7,7 +7,7 @@ module Xch
 
 using Dates, DataFrames, DataAPI, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
-using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets
+using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets, TSM
 using XchAdapter: XchAdapterCache
 import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
 import XchAdapter: normalize_order_status
@@ -68,19 +68,16 @@ end
 
 mutable struct XchCache
     bases  # ::Dict{String, Ohlcv.OhlcvData}
-    pairstates::Dict{String, DataFrame}  # keyed by canonical trading pair, stores phase-2 Trades DataFrames
+    tsm::TSM.TsmCache  # owns the pair-state Trades DataFrames and template cache
     bc::XchAdapterCache  # typed adapter cache wrapper
     startdt::Dates.DateTime
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mc::Dict # MC = module constants
-    tradesrowtemplate::DataFrame  # single-row default template used when appending new Trades rows
     function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        exchange = exchangeid(bc)
-        xc = new(Dict(), Dict{String, DataFrame}(), bc, startdt, nothing, enddt, Dict(), DataFrame())
-        xc.tradesrowtemplate = _buildtradesrowtemplate(xc)
+        xc = new(Dict(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict())
         syminfodf = if hasproperty(rawcache(xc.bc), :syminfodf)
             getproperty(rawcache(xc.bc), :syminfodf)
         else
@@ -144,145 +141,12 @@ end
 
 log_trading_issue(issuer::AbstractString, message::AbstractString) = error("log_trading_issue requires an XchCache; call log_trading_issue(xc, issuer, message)")
 
-"""
-    hastrades(xc, pair)
-
-Return `true` when a Phase 2 Trades DataFrame is already stored for `pair`.
-`pair` can be a concatenated symbol like `"BTCUSDT"`.
-"""
-function hastrades(xc::XchCache, pair::AbstractString)::Bool
-    return haskey(xc.pairstates, uppercase(String(pair)))
-end
-
-"""
-    hastrades(xc, base, quotecoin)
-
-Return `true` when a Phase 2 Trades DataFrame is already stored for `(base, quotecoin)`.
-"""
-function hastrades(xc::XchCache, base::AbstractString, quotecoin::AbstractString)::Bool
-    return hastrades(xc, tradingpairkey(base, quotecoin))
-end
-
 const NO_ORDER_ID = "none"
 const NO_ORDER_MSG = "none"
 
 @inline _normalized_order_msg(v)::String = begin
     s = ismissing(v) ? "" : strip(String(v))
     return (isempty(s) || lowercase(s) == "none") ? NO_ORDER_MSG : s
-end
-
-"""
-    trades(xc, pair)
-
-Return the stored Phase 2 Trades DataFrame for `pair`, creating an empty one when missing.
-The returned dataframe is the cache-owned object so callers can mutate it in place.
-"""
-function trades(xc::XchCache, pair::AbstractString)::DataFrame
-    key = uppercase(String(pair))
-    return get!(xc.pairstates, key) do
-        _applytradescontributors!(xc, _emptytradesv1df())
-    end
-end
-
-"""
-    trades(xc, base, quotecoin)
-
-Return the stored Phase 2 Trades DataFrame for one `(base, quotecoin)` pair.
-"""
-function trades(xc::XchCache, base::AbstractString, quotecoin::AbstractString)::DataFrame
-    return trades(xc, tradingpairkey(base, quotecoin))
-end
-
-"""
-    settrades!(xc, pair, df)
-
-Store `df` as the Phase 2 Trades DataFrame for `pair` and return the cache.
-"""
-function settrades!(xc::XchCache, pair::AbstractString, df::AbstractDataFrame)
-    _applytradescontributors!(xc, normalized)
-    pairkey = uppercase(String(pair))
-    basekey = try
-        bq = basequote(pairkey)
-        isnothing(bq) ? nothing : uppercase(String(bq.basecoin))
-    catch
-        nothing
-    end
-    _ensuretradesidentity!(normalized, pairkey; basekey=basekey)
-    xc.pairstates[pairkey] = normalized
-    return xc
-end
-
-"""
-    settrades!(xc, base, quotecoin, df)
-
-Store `df` as the Phase 2 Trades DataFrame for one `(base, quotecoin)` pair.
-"""
-function settrades!(xc::XchCache, base::AbstractString, quotecoin::AbstractString, df::AbstractDataFrame)
-    pairkey = tradingpairkey(base, quotecoin)
-    basekey = uppercase(String(base))
-    _applytradescontributors!(xc, df)
-    _ensuretradesidentity!(df, pairkey; basekey=basekey)
-    xc.pairstates[pairkey] = df
-    return xc
-end
-
-"""Ensure per-row Trades identity metadata (`pair`) is populated."""
-function _ensuretradesidentity!(df::DataFrame, pairkey::AbstractString; basekey::Union{Nothing, AbstractString}=nothing)::DataFrame
-    pkey = uppercase(String(pairkey))
-
-    if :pair ∉ propertynames(df)
-        df[!, :pair] = fill(pkey, nrow(df))
-    else
-        df[!, :pair] = [
-            (ismissing(v) || isempty(strip(String(v))) || (uppercase(strip(String(v))) == "NONE")) ? pkey : String(v)
-            for v in df[!, :pair]
-        ]
-    end
-
-    return df
-end
-
-"""
-    ensuretradesrow!(xc, base, quotecoin, opentime)
-
-Return a writable `(tradesdf, rowix)` for one sample row, creating the row when
-missing and materializing Xch-owned identity metadata.
-"""
-function ensuretradesrow!(xc::XchCache, base::AbstractString, quotecoin::AbstractString, opentime::DateTime)
-    basekey = uppercase(String(base))
-    pairkey = tradingpairkey(basekey, quotecoin)
-    tdf = trades(xc, pairkey)
-
-    rowix = nothing
-    n = nrow(tdf)
-    if n > 0
-        last_open = tdf[n, :opentime]
-        if last_open == opentime
-            rowix = n
-        elseif last_open < opentime
-            rowix = _appendtradesrow!(xc, tdf, pairkey, opentime)
-        end
-    end
-
-    if isnothing(rowix)
-        rowix = findlast(==(opentime), tdf[!, :opentime])
-    end
-    if isnothing(rowix)
-        rowix = _appendtradesrow!(xc, tdf, pairkey, opentime)
-    end
-
-    tdf[rowix, :opentime] = opentime
-    tdf[rowix, :pair] = pairkey
-    return (tradesdf=tdf, rowix=Int(rowix))
-end
-
-"""
-    tradingpairs(xc)
-
-Return stored Phase 2 trading-pair keys in sorted order.
-"""
-function tradingpairs(xc::XchCache)::Vector{String}
-    return sort!(collect(keys(xc.pairstates)))
 end
 
 "Store one canonical websocket marketdata heartbeat timestamp in `xc.mc`."
@@ -1407,27 +1271,27 @@ function _implicitflipplan(tradesdf::DataFrame, ix::Integer, action::Symbol, ope
 end
 
 function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
-    tradesdf[ix, :equity] = (acct.equity_quote)
-    tradesdf[ix, :balance] = (acct.free_quote)
-    tradesdf[ix, :freemargin] = (acct.free_margin_quote)
-    tradesdf[ix, :freequote] = (acct.free_quote)
+    TSM.settrades_equity!(tradesdf, ix, acct.equity_quote)
+    TSM.settrades_balance!(tradesdf, ix, acct.free_quote)
+    TSM.settrades_freemargin!(tradesdf, ix, acct.free_margin_quote)
+    TSM.settrades_freequote!(tradesdf, ix, acct.free_quote)
     return nothing
 end
 
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
     logged = log_trading_issue(xc, "Xch", message)
     if action == :long_open
-        tradesdf[ix, :lo_status] = "rejected"
-        tradesdf[ix, :lo_msg] = logged
+        TSM.settrades_lo_status!(tradesdf, ix, "rejected")
+        TSM.settrades_lo_msg!(tradesdf, ix, logged)
     elseif action == :long_close
-        tradesdf[ix, :lc_status] = "rejected"
-        tradesdf[ix, :lc_msg] = logged
+        TSM.settrades_lc_status!(tradesdf, ix, "rejected")
+        TSM.settrades_lc_msg!(tradesdf, ix, logged)
     elseif action == :short_open
-        tradesdf[ix, :so_status] = "rejected"
-        tradesdf[ix, :so_msg] = logged
+        TSM.settrades_so_status!(tradesdf, ix, "rejected")
+        TSM.settrades_so_msg!(tradesdf, ix, logged)
     else
-        tradesdf[ix, :sc_status] = "rejected"
-        tradesdf[ix, :sc_msg] = logged
+        TSM.settrades_sc_status!(tradesdf, ix, "rejected")
+        TSM.settrades_sc_msg!(tradesdf, ix, logged)
     end
     return logged
 end
@@ -1450,20 +1314,20 @@ end
 
 function _carry_lastopentrade_from_previous!(tradesdf::DataFrame, ix::Integer)
     if !_row_has_position_amount(tradesdf, ix)
-        tradesdf[ix, :lastopentrade] = missing
+        TSM.settrades_lastopentrade!(tradesdf, ix, missing)
         return 
     end
     if !ismissing(tradesdf[ix, :lastopentrade])
         return 
     end
     for j in (ix - 1):-1:firstindex(tradesdf, 1)
-        prev = tradesdf[j, :lastopentrade]
-        if !ismissing(prev)
-            tradesdf[ix, :lastopentrade] = prev
+        if _row_position_increased(tradesdf, j)
+            TSM.settrades_lastopentrade!(tradesdf, ix, tradesdf[j + 1, :opentime])
             break
         end
-        if _row_position_increased(tradesdf, j)
-            tradesdf[ix, :lastopentrade] = tradesdf[j, :opentime]
+        prev = tradesdf[j, :lastopentrade]
+        if !ismissing(prev)
+            TSM.settrades_lastopentrade!(tradesdf, ix, prev)
             break
         end
     end
@@ -1502,13 +1366,13 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             prevstatus = String(prevstatus_raw)
             if !isnothing(previd) && _isopenstatuslabel(prevstatus)
                 oid = previd
-                tradesdf[ix, idcol] = previd
-                tradesdf[ix, stcol] = prevstatus
-                tradesdf[ix, filledcol] = tradesdf[ix - 1, filledcol]
-                tradesdf[ix, avgcol] = tradesdf[ix - 1, avgcol]
+                TSM.settradesfield!(tradesdf, ix, idcol, previd)
+                TSM.settradesfield!(tradesdf, ix, stcol, prevstatus)
+                TSM.settradesfield!(tradesdf, ix, filledcol, tradesdf[ix - 1, filledcol])
+                TSM.settradesfield!(tradesdf, ix, avgcol, tradesdf[ix - 1, avgcol])
                 # no msg take over from previous row
-                tradesdf[ix, amountcol] = tradesdf[ix - 1, amountcol]
-                tradesdf[ix, poscol] = tradesdf[ix - 1, poscol]
+                TSM.settradesfield!(tradesdf, ix, amountcol, tradesdf[ix - 1, amountcol])
+                TSM.settradesfield!(tradesdf, ix, poscol, tradesdf[ix - 1, poscol])
             end
         end
 
@@ -1516,8 +1380,8 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
 
         info = getorder(xc, oid; auditevent=auditevent)
         if isnothing(info)
-            tradesdf[ix, stcol] = "none"
-            tradesdf[ix, idcol] = NO_ORDER_ID
+            TSM.settradesfield!(tradesdf, ix, stcol, "none")
+            TSM.settradesfield!(tradesdf, ix, idcol, NO_ORDER_ID)
             continue
         end
         rawstatus = if hasproperty(info, :status)
@@ -1528,41 +1392,41 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             "unknown"
         end
         status = normalize_order_status(xc.bc, rawstatus)
-        tradesdf[ix, stcol] = status
+        TSM.settradesfield!(tradesdf, ix, stcol, status)
         if hasproperty(info, :baseqty) && hasproperty(info, :executedqty)
             executed = (info.executedqty)
             @assert !ismissing(executed) && !isnothing(executed) "Schema violation: adapter executedqty is missing for orderid=$(oid), lane=$(idcol), ix=$(ix), pair=$(tradesdf[ix, :pair])"
-            tradesdf[ix, filledcol] = (max(0.0, executed))
+            TSM.settradesfield!(tradesdf, ix, filledcol, max(0.0, executed))
             if row_is_open_intent && (executed > 0.0)
-                tradesdf[ix, :lastopentrade] = tradesdf[ix, :opentime]
+                TSM.settrades_lastopentrade!(tradesdf, ix, tradesdf[ix, :opentime])
             end
 
             # If the lane order closed this tick, materialize into position amounts immediately.
             # Portfolio snapshot reconciliation later in sync_latest_trades_rows! remains authoritative.
             if status == "closed"
                 if idcol == :lo_id
-                    tradesdf[ix, :lp_amount] = max(tradesdf[ix, :lp_amount], (executed))
+                    TSM.settrades_lp_amount!(tradesdf, ix, max(tradesdf[ix, :lp_amount], (executed)))
                 elseif idcol == :so_id
-                    tradesdf[ix, :sp_amount] = max(tradesdf[ix, :sp_amount], (executed))
+                    TSM.settrades_sp_amount!(tradesdf, ix, max(tradesdf[ix, :sp_amount], (executed)))
                 end
             end
         end
         if hasproperty(info, :avgprice) && !ismissing(info.avgprice)
-            tradesdf[ix, avgcol] = (info.avgprice)
+            TSM.settradesfield!(tradesdf, ix, avgcol, info.avgprice)
         end
         if hasproperty(info, :rejectreason)
             rrraw = info.rejectreason
             @assert !ismissing(rrraw) && !isnothing(rrraw) "Schema violation: adapter rejectreason is missing for orderid=$(oid), lane=$(idcol), ix=$(ix), pair=$(tradesdf[ix, :pair])"
             rr = String(rrraw)
             if !isempty(strip(rr)) && (uppercase(rr) != "NO ERROR")
-                tradesdf[ix, msgcol] = log_trading_issue(xc, exchange(xc), rr)
+                TSM.settradesfield!(tradesdf, ix, msgcol, log_trading_issue(xc, exchange(xc), rr))
             end
         end
 
         if status in ("closed", "canceled", "rejected", "none")
-            tradesdf[ix, idcol] = NO_ORDER_ID
+            TSM.settradesfield!(tradesdf, ix, idcol, NO_ORDER_ID)
             if amountcol in propertynames(tradesdf)
-                tradesdf[ix, amountcol] = 0f0
+                TSM.settradesfield!(tradesdf, ix, amountcol, 0f0)
             end
         end
     end
@@ -1614,7 +1478,7 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
         end
 
-        tdf_rowix = ensuretradesrow!(xc, base, quotecoin, currentdt)
+        tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt)
         tdf = tdf_rowix.tradesdf
         rowix = tdf_rowix.rowix
 
@@ -1624,9 +1488,9 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             odf = Ohlcv.dataframe(o)
             oix = Ohlcv.ix(o)
             if size(odf, 1) > 0 && 1 <= oix <= size(odf, 1)
-                tdf[rowix, :close] = (odf[oix, :close])
-                tdf[rowix, :high]  = (odf[oix, :high])
-                tdf[rowix, :low]   = (odf[oix, :low])
+                TSM.settrades_close!(tdf, rowix, odf[oix, :close])
+                TSM.settrades_high!(tdf, rowix, odf[oix, :high])
+                TSM.settrades_low!(tdf, rowix, odf[oix, :low])
             end
         end
 
@@ -1638,15 +1502,15 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         if !isnothing(bix)
             free_val  = _hascol(balancesdf, :free)     ? (balancesdf[bix, :free])     : 0f0
             borr_val  = _hascol(balancesdf, :borrowed) ? (balancesdf[bix, :borrowed]) : 0f0
-            tdf[rowix, :lp_amount] = max(0f0, free_val)
-            tdf[rowix, :sp_amount] = max(0f0, borr_val)
+            TSM.settrades_lp_amount!(tdf, rowix, max(0f0, free_val))
+            TSM.settrades_sp_amount!(tdf, rowix, max(0f0, borr_val))
         end
 
         _carry_lastopentrade_from_previous!(tdf, rowix)
 
         # Account snapshot columns
         _apply_accountsnapshot!(tdf, rowix, acct)
-        tdf[rowix, :maintmargin] = (acct.capacity.maintenance_margin_quote)
+        TSM.settrades_maintmargin!(tdf, rowix, acct.capacity.maintenance_margin_quote)
 
         rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
     end
@@ -1824,17 +1688,17 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         err isa InterruptException && rethrow(err)
         logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
         if action == :long_open
-            tradesdf[ix, :lo_msg] = logged
-            tradesdf[ix, :lo_status] = "Error"
+            TSM.settrades_lo_msg!(tradesdf, ix, logged)
+            TSM.settrades_lo_status!(tradesdf, ix, "Error")
         elseif action == :long_close
-            tradesdf[ix, :lc_msg] = logged
-            tradesdf[ix, :lc_status] = "Error"
+            TSM.settrades_lc_msg!(tradesdf, ix, logged)
+            TSM.settrades_lc_status!(tradesdf, ix, "Error")
         elseif action == :short_open
-            tradesdf[ix, :so_msg] = logged
-            tradesdf[ix, :so_status] = "Error"
+            TSM.settrades_so_msg!(tradesdf, ix, logged)
+            TSM.settrades_so_status!(tradesdf, ix, "Error")
         else  # :short_close
-            tradesdf[ix, :sc_msg] = logged
-            tradesdf[ix, :sc_status] = "Error"
+            TSM.settrades_sc_msg!(tradesdf, ix, logged)
+            TSM.settrades_sc_status!(tradesdf, ix, "Error")
         end
         return (accepted=false, action=action, reason="exchange_error", error=sprint(showerror, err))
     end
@@ -2305,8 +2169,6 @@ function writeassets(xc::XchCache, dt::DateTime)
     # Assets field removed - asset snapshots are now managed externally
     return
 end
-
-include("XchTrades.jl")
 
 #endregion bookkeeping
 

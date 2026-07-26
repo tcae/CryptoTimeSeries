@@ -7,7 +7,7 @@
 module Trade
 
 using Dates, DataFrames, Profile, Logging, CSV, Statistics
-using EnvConfig, Ohlcv, Xch, Features, Targets, TradingStrategy
+using EnvConfig, Ohlcv, Xch, Features, Targets, TradingStrategy, TSM
 
 function _summarize_symbols(symbols; limit::Int=8)::String
     values = sort!(String.(collect(symbols)))
@@ -514,17 +514,35 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
         if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:blacklistbases])
-            tradesrow.label = allclose
-            tradesrow.lo_limit = tradesrow.lc_limit = tradesrow.so_limit = tradesrow.sc_limit = 0f0
+            TSM.settrades_label!(tradesdf, tradesix, allclose)
+            TSM.settrades_lo_limit!(tradesdf, tradesix, 0f0)
+            TSM.settrades_lc_limit!(tradesdf, tradesix, 0f0)
+            TSM.settrades_so_limit!(tradesdf, tradesix, 0f0)
+            TSM.settrades_sc_limit!(tradesdf, tradesix, 0f0)
             if cache.mc[:trademode] == quickexit
-                tradesrow.lo_msg = tradesrow.lc_msg = tradesrow.so_msg = tradesrow.sc_msg = Xch.log_trading_issue(cache.xc, "Trade", "quickexit mode")
+                logged = Xch.log_trading_issue(cache.xc, "Trade", "quickexit mode")
+                TSM.settrades_lo_msg!(tradesdf, tradesix, logged)
+                TSM.settrades_lc_msg!(tradesdf, tradesix, logged)
+                TSM.settrades_so_msg!(tradesdf, tradesix, logged)
+                TSM.settrades_sc_msg!(tradesdf, tradesix, logged)
             elseif base in cache.mc[:blacklistbases]
-                tradesrow.lo_msg = tradesrow.lc_msg = tradesrow.so_msg = tradesrow.sc_msg = Xch.log_trading_issue(cache.xc, "Trade", "blacklisted base")
+                logged = Xch.log_trading_issue(cache.xc, "Trade", "blacklisted base")
+                TSM.settrades_lo_msg!(tradesdf, tradesix, logged)
+                TSM.settrades_lc_msg!(tradesdf, tradesix, logged)
+                TSM.settrades_so_msg!(tradesdf, tradesix, logged)
+                TSM.settrades_sc_msg!(tradesdf, tradesix, logged)
             end
         elseif cache.mc[:trademode] == notrade
-            tradesrow.label = ignore
-            tradesrow.lo_amount = tradesrow.lc_amount = tradesrow.so_amount = tradesrow.sc_amount = 0f0
-            tradesrow.lo_msg = tradesrow.lc_msg = tradesrow.so_msg = tradesrow.sc_msg = Xch.log_trading_issue(cache.xc, "Trade", "notrade mode")
+            TSM.settrades_label!(tradesdf, tradesix, ignore)
+            TSM.settrades_lo_amount!(tradesdf, tradesix, 0f0)
+            TSM.settrades_lc_amount!(tradesdf, tradesix, 0f0)
+            TSM.settrades_so_amount!(tradesdf, tradesix, 0f0)
+            TSM.settrades_sc_amount!(tradesdf, tradesix, 0f0)
+            logged = Xch.log_trading_issue(cache.xc, "Trade", "notrade mode")
+            TSM.settrades_lo_msg!(tradesdf, tradesix, logged)
+            TSM.settrades_lc_msg!(tradesdf, tradesix, logged)
+            TSM.settrades_so_msg!(tradesdf, tradesix, logged)
+            TSM.settrades_sc_msg!(tradesdf, tradesix, logged)
         else
             cache.ts.cfg.algorithm(cache.ts.cfg, tradesdf, tradesix)
             if tradesrow.label in [shortstrongopen, shortopen, allclose, longstrongclose, longclose]
@@ -564,27 +582,27 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         tradesrow = tradesdf[tradesix, :]
         if tradesrow.label in [longopen, longstrongopen]
             if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
-                tradesrow.lo_amount = min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close)
+                TSM.settrades_lo_amount!(tradesdf, tradesix, min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close))
                 if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.lo_amount * tradesrow.close
                 else
-                    tradesrow.lo_msg = "Trade: long open skipped - full position already present"
-                    tradesrow.lo_amount = 0f0
-                    tradesrow.label = ignore
+                    TSM.settrades_lo_msg!(tradesdf, tradesix, "Trade: long open skipped - full position already present")
+                    TSM.settrades_lo_amount!(tradesdf, tradesix, 0f0)
+                    TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
-                    tradesrow.lo_msg = "Trade: long open skipped - open order disabled"
+                    TSM.settrades_lo_msg!(tradesdf, tradesix, "Trade: long open skipped - open order disabled")
                 else
-                    tradesrow.lo_msg = "Trade: long open skipped - insufficient free quote"
+                    TSM.settrades_lo_msg!(tradesdf, tradesix, "Trade: long open skipped - insufficient free quote")
                 end
-                tradesrow.lo_amount = 0f0
-                tradesrow.label = ignore
+                TSM.settrades_lo_amount!(tradesdf, tradesix, 0f0)
+                TSM.settrades_label!(tradesdf, tradesix, ignore)
             end
             if tradesrow.sp_amount > 0f0
-                tradesrow.sc_amount = tradesrow.sp_amount
+                TSM.settrades_sc_amount!(tradesdf, tradesix, tradesrow.sp_amount)
                 if tradesrow.label == ignore
-                    tradesrow.label = shortclose
+                    TSM.settrades_label!(tradesdf, tradesix, shortclose)
                 end
             end
             if tradesrow.label != ignore
@@ -592,27 +610,27 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
             end
         elseif tradesrow.label in [shortstrongopen, shortopen]
             if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
-                tradesrow.so_amount = min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close)
+                TSM.settrades_so_amount!(tradesdf, tradesix, min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close))
                 if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.so_amount * tradesrow.close
                 else
-                    tradesrow.so_msg = "Trade: short open skipped - full position already present"
-                    tradesrow.so_amount = 0f0
-                    tradesrow.label = ignore
+                    TSM.settrades_so_msg!(tradesdf, tradesix, "Trade: short open skipped - full position already present")
+                    TSM.settrades_so_amount!(tradesdf, tradesix, 0f0)
+                    TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
-                    tradesrow.so_msg = "Trade: short open skipped - open order disabled"
+                    TSM.settrades_so_msg!(tradesdf, tradesix, "Trade: short open skipped - open order disabled")
                 else
-                    tradesrow.so_msg = "Trade: short open skipped - insufficient free quote"
+                    TSM.settrades_so_msg!(tradesdf, tradesix, "Trade: short open skipped - insufficient free quote")
                 end
-                tradesrow.so_amount = 0f0
-                tradesrow.label = ignore
+                TSM.settrades_so_amount!(tradesdf, tradesix, 0f0)
+                TSM.settrades_label!(tradesdf, tradesix, ignore)
             end
             if tradesrow.lp_amount > 0f0
-                tradesrow.lc_amount = tradesrow.lp_amount
+                TSM.settrades_lc_amount!(tradesdf, tradesix, tradesrow.lp_amount)
                 if tradesrow.label == ignore
-                    tradesrow.label = longclose
+                    TSM.settrades_label!(tradesdf, tradesix, longclose)
                 end
             end
             if tradesrow.label != ignore
@@ -620,18 +638,18 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
             end
         elseif tradesrow.label in [shortstrongclose, shortclose]
             if tradesrow.sp_amount > 0f0
-                tradesrow.sc_amount = tradesrow.sp_amount
+                TSM.settrades_sc_amount!(tradesdf, tradesix, tradesrow.sp_amount)
                 Xch.process_order_request(cache.xc, tradesdf, tradesix)
             end
         elseif tradesrow.label in [longstrongclose, longclose]
             if tradesrow.lp_amount > 0f0
-                tradesrow.lc_amount = tradesrow.lp_amount
+                TSM.settrades_lc_amount!(tradesdf, tradesix, tradesrow.lp_amount)
                 Xch.process_order_request(cache.xc, tradesdf, tradesix)
             end
         elseif tradesrow.label in [allclose]
             if (tradesrow.sp_amount + tradesrow.lp_amount) > 0f0
-                tradesrow.sc_amount = tradesrow.sp_amount
-                tradesrow.lc_amount = tradesrow.lp_amount
+                TSM.settrades_sc_amount!(tradesdf, tradesix, tradesrow.sp_amount)
+                TSM.settrades_lc_amount!(tradesdf, tradesix, tradesrow.lp_amount)
                 Xch.process_order_request(cache.xc, tradesdf, tradesix)
             end
         end

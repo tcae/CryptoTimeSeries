@@ -56,6 +56,7 @@ SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
 StatisticalMeasures = "a19d573c-0a75-4610-95b3-7071388c7541"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+TSM = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
 Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
@@ -77,6 +78,7 @@ Ohlcv = {path = "Ohlcv"}
 Targets = {path = "Targets"}
 TestOhlcv = {path = "TestOhlcv"}
 Trade = {path = "Trade"}
+TSM = {path = "TSM"}
 TradingStrategy = {path = "TradingStrategy"}
 Xch = {path = "Xch"}
 

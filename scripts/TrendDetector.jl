@@ -1,7 +1,7 @@
 module TrendDetector
 using Test, Dates, Logging, CSV, JDF, DataFrames, Statistics, MLUtils, StatisticalMeasures
 using CategoricalArrays, CategoricalDistributions, Distributions
-using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Trade, Xch, Bybit
+using EnvConfig, Classify, Ohlcv, Features, Targets, TradingStrategy, Trade, Xch, Bybit, TSM
 
 #TODO regression from last trend pivot as feature 
 """
@@ -626,8 +626,9 @@ end
 
 """Collect Xch-compiled gains and corresponding gain report from `tradesdf`."""
 function _collectxchgains(tradesdf::AbstractDataFrame; gainsstem::AbstractString="xchgains-td", reportstem::AbstractString="xchgainsreport-td")
-    xchgainsdf = Xch.compilegainsdf(tradesdf; stem=gainsstem)
-    xchreportdf = Xch.gainsreport(instem=gainsstem, stem=reportstem)
+    folderpath = EnvConfig.logfolder()
+    xchgainsdf = TSM.compilegainsdf(tradesdf; stem=gainsstem, folderpath=folderpath)
+    xchreportdf = TSM.gainsreport(instem=gainsstem, stem=reportstem, folderpath=folderpath)
     return xchgainsdf, xchreportdf
 end
 
@@ -785,7 +786,7 @@ function getgainsdf(cfg::TrendDetectorConfig)
     replay_startdt = minimum(resultsdf[!, :opentime])
     replay_enddt = maximum(resultsdf[!, :opentime])
     xc = Xch.XchCache(Bybit.BybitCache(); startdt=replay_startdt, enddt=replay_enddt)
-    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
+    TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
     # Range ids can collide across independently cached coins/runs. Replay must
     # stay scoped to coin+set+rangeid to avoid mixing samples across ranges.
@@ -886,7 +887,7 @@ function getgainsdf(cfg::TrendDetectorConfig)
         end
         !isempty(sortcols) && sort!(tradesdf, sortcols)
     end
-    Xch.savetradesdf(tradesdf; stem="trades-td")
+    TSM.savetradesdf(tradesdf; stem="trades-td", folderpath=EnvConfig.logfolder())
 
     xchgainsdf, xchreportdf = _collectxchgains(tradesdf)
     _report_gain_collection_comparison(gaindf, xchgainsdf, xchreportdf)

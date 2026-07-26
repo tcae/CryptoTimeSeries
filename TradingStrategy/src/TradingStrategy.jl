@@ -10,7 +10,7 @@ This module intentionally keeps only the API surface required by:
 module TradingStrategy
 
 using DataFrames, Dates, CategoricalArrays
-using EnvConfig, Features, Targets, Classify, Xch, Ohlcv
+using EnvConfig, Features, Targets, Classify, Xch, Ohlcv, TSM
 
 """Return the normalized config-scoped subfolder used for persisted trade artifacts."""
 function tradesfolder(stem::AbstractString="gains")::String
@@ -171,10 +171,10 @@ function _enforce_reversal_limit_ordering!(tradesdf::DataFrame, ix::Integer)
         lc_limit = tradesdf[ix, :lc_limit]
         so_limit = tradesdf[ix, :so_limit]
         if (lc_limit == 0f0) || (so_limit == 0f0)
-            tradesdf[ix, :lc_limit] = 0f0
-            tradesdf[ix, :so_limit] = 0f0
+            TSM.settrades_lc_limit!(tradesdf, ix, 0f0)
+            TSM.settrades_so_limit!(tradesdf, ix, 0f0)
         else
-            tradesdf[ix, :lc_limit] = min(lc_limit, so_limit)
+            TSM.settrades_lc_limit!(tradesdf, ix, min(lc_limit, so_limit))
         end
     end
 
@@ -182,10 +182,10 @@ function _enforce_reversal_limit_ordering!(tradesdf::DataFrame, ix::Integer)
         sc_limit = tradesdf[ix, :sc_limit]
         lo_limit = tradesdf[ix, :lo_limit]
         if (sc_limit == 0f0) || (lo_limit == 0f0)
-            tradesdf[ix, :sc_limit] = 0f0
-            tradesdf[ix, :lo_limit] = 0f0
+            TSM.settrades_sc_limit!(tradesdf, ix, 0f0)
+            TSM.settrades_lo_limit!(tradesdf, ix, 0f0)
         else
-            tradesdf[ix, :sc_limit] = max(sc_limit, lo_limit)
+            TSM.settrades_sc_limit!(tradesdf, ix, max(sc_limit, lo_limit))
         end
     end
     return nothing
@@ -304,7 +304,7 @@ end
 "Synchronize one TsCache pair entry to the Xch-owned mutable Trades DataFrame."
 function syncpairtrades!(ts::TsCache, xc::Xch.XchCache, pair::AbstractString; datetime::Union{Nothing, DateTime}=nothing)::TsTp
     tp = getpairstate!(ts, pair)
-    tp.tradesdf = Xch.trades(xc, pair)
+    tp.tradesdf = TSM.trades(xc.tsm, pair)
     tp.last_update_dt = datetime
     return tp
 end
@@ -313,7 +313,7 @@ end
 function syncpairtrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, quotecoin::AbstractString; datetime::Union{Nothing, DateTime}=nothing)::TsTp
     pair = tspairkey(base, quotecoin)
     tp = getpairstate!(ts, pair)
-    tp.tradesdf = Xch.trades(xc, base, quotecoin)
+    tp.tradesdf = TSM.trades(xc.tsm, base, quotecoin)
     tp.last_update_dt = datetime
     return tp
 end
@@ -551,14 +551,14 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
     _ = reconciliation
 
     syncpairtrades!(rt, xc, basekey, EnvConfig.pairquote; datetime=datetime)
-    row = Xch.ensuretradesrow!(xc, basekey, EnvConfig.pairquote, opentime)
+    row = TSM.ensuretradesrow!(xc.tsm, basekey, EnvConfig.pairquote, opentime)
     tdf = row.tradesdf
     trowix = Int(row.rowix)
 
     # Classification is performed in gain_limit_reversal! when row score is zero.
-    tdf[trowix, :label] = ignore
-    tdf[trowix, :score] = 0f0
-    tdf[trowix, :close] = closeprice
+    TSM.settrades_label!(tdf, trowix, ignore)
+    TSM.settrades_score!(tdf, trowix, 0f0)
+    TSM.settrades_close!(tdf, trowix, closeprice)
 
     spec.algorithm(spec, tdf, trowix)
 
@@ -633,13 +633,13 @@ function _get_classifier_result!(cfg::StrategyConfig, tradesdf::DataFrame, ix::I
 
     advice = Classify.advice(classifier, basekey, datetime, investment=nothing)
     if isnothing(advice)
-        tradesdf[ix, :label] = ignore
-        tradesdf[ix, :score] = 0f0
+        TSM.settrades_label!(tradesdf, ix, ignore)
+        TSM.settrades_score!(tradesdf, ix, 0f0)
         return nothing
     end
 
-    tradesdf[ix, :label] = advice.tradelabel
-    tradesdf[ix, :score] = advice.probability
+    TSM.settrades_label!(tradesdf, ix, advice.tradelabel)
+    TSM.settrades_score!(tradesdf, ix, advice.probability)
     return advice
 end
 
@@ -654,38 +654,38 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
         _get_classifier_result!(cfg, tradesdf, ix)
     end
 
-    tradesdf[ix, :lo_limit] = ix > 1 ? tradesdf[ix-1, :lo_limit] : 0f0
-    tradesdf[ix, :lc_limit] = ix > 1 ? tradesdf[ix-1, :lc_limit] : 0f0
-    tradesdf[ix, :so_limit] = ix > 1 ? tradesdf[ix-1, :so_limit] : 0f0
-    tradesdf[ix, :sc_limit] = ix > 1 ? tradesdf[ix-1, :sc_limit] : 0f0
+    TSM.settrades_lo_limit!(tradesdf, ix, ix > 1 ? tradesdf[ix-1, :lo_limit] : 0f0)
+    TSM.settrades_lc_limit!(tradesdf, ix, ix > 1 ? tradesdf[ix-1, :lc_limit] : 0f0)
+    TSM.settrades_so_limit!(tradesdf, ix, ix > 1 ? tradesdf[ix-1, :so_limit] : 0f0)
+    TSM.settrades_sc_limit!(tradesdf, ix, ix > 1 ? tradesdf[ix-1, :sc_limit] : 0f0)
 
     if (tradesdf[ix, :label] in (longopen, longstrongopen)) 
         if (tradesdf[ix, :score] >= cfg.openthreshold)
             if _should_update_price(tradesdf[ix, :lo_limit], tradesdf[ix, :close] * (1f0 - (cfg.buygain)), cfg.minpricedelta)
-                tradesdf[ix, :lo_limit] = tradesdf[ix, :close] * (1f0 - (cfg.buygain))
-                tradesdf[ix, :lc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], up)
+                TSM.settrades_lo_limit!(tradesdf, ix, tradesdf[ix, :close] * (1f0 - (cfg.buygain)))
+                TSM.settrades_lc_limit!(tradesdf, ix, _closeprice(cfg, 0, tradesdf[ix, :close], up))
             elseif _should_update_price(tradesdf[ix, :lc_limit], tradesdf[ix, :lo_pavg] * (1f0 + (cfg.sellgain)), cfg.minpricedelta)
                 # refresh lc_limit in case it was reduced
-                tradesdf[ix, :lc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], up)
+                TSM.settrades_lc_limit!(tradesdf, ix, _closeprice(cfg, 0, tradesdf[ix, :close], up))
             end
-            tradesdf[ix, :so_limit] = 0f0
-            tradesdf[ix, :sc_limit] = tradesdf[ix, :sp_amount] > 0f0 ? tradesdf[ix, :lo_limit] : 0f0
+            TSM.settrades_so_limit!(tradesdf, ix, 0f0)
+            TSM.settrades_sc_limit!(tradesdf, ix, tradesdf[ix, :sp_amount] > 0f0 ? tradesdf[ix, :lo_limit] : 0f0)
         else # label below threshold
-            tradesdf[ix, :label] = longhold
+            TSM.settrades_label!(tradesdf, ix, longhold)
         end
     elseif (tradesdf[ix, :label] in (shortopen, shortstrongopen)) 
         if (tradesdf[ix, :score] >= cfg.openthreshold)
             if _should_update_price(tradesdf[ix, :so_limit], tradesdf[ix, :close] * (1f0 - (cfg.buygain)), cfg.minpricedelta)
-                tradesdf[ix, :so_limit] = tradesdf[ix, :close] * (1f0 + (cfg.buygain))
-                tradesdf[ix, :sc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], down)
+                TSM.settrades_so_limit!(tradesdf, ix, tradesdf[ix, :close] * (1f0 + (cfg.buygain)))
+                TSM.settrades_sc_limit!(tradesdf, ix, _closeprice(cfg, 0, tradesdf[ix, :close], down))
             elseif _should_update_price(tradesdf[ix, :sc_limit], tradesdf[ix, :so_pavg] * (1f0 - (cfg.sellgain)), cfg.minpricedelta)
                 # refresh sc_limit in case it was reduced
-                tradesdf[ix, :sc_limit] = _closeprice(cfg, 0, tradesdf[ix, :close], down)
+                TSM.settrades_sc_limit!(tradesdf, ix, _closeprice(cfg, 0, tradesdf[ix, :close], down))
             end
-            tradesdf[ix, :lo_limit] = 0f0
-            tradesdf[ix, :lc_limit] = tradesdf[ix, :lp_amount] > 0f0 ? tradesdf[ix, :so_limit] : 0f0
+            TSM.settrades_lo_limit!(tradesdf, ix, 0f0)
+            TSM.settrades_lc_limit!(tradesdf, ix, tradesdf[ix, :lp_amount] > 0f0 ? tradesdf[ix, :so_limit] : 0f0)
         else # label below threshold
-            tradesdf[ix, :label] = shorthold
+            TSM.settrades_label!(tradesdf, ix, shorthold)
         end
     else
         lrm = _limitreductionminutes(cfg, tradesdf, ix)
@@ -693,14 +693,14 @@ function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Inte
             if (tradesdf[ix, :lc_limit] > 0f0) && (tradesdf[ix, :lp_amount] > 0f0)
                 lc_candidate = _closeprice(cfg, lrm, tradesdf[ix, :lo_pavg], up)
                 if _should_update_price(tradesdf[ix, :lc_limit], lc_candidate, cfg.minpricedelta)
-                    tradesdf[ix, :lc_limit] = lc_candidate
+                    TSM.settrades_lc_limit!(tradesdf, ix, lc_candidate)
                 end
             # else lc_limit is waiting for lo_limit to fill
             end
             if (tradesdf[ix, :sc_limit] > 0f0) && (tradesdf[ix, :sp_amount] > 0f0)
                 sc_candidate = _closeprice(cfg, lrm, tradesdf[ix, :so_pavg], down)
                 if _should_update_price(tradesdf[ix, :sc_limit], sc_candidate, cfg.minpricedelta)
-                    tradesdf[ix, :sc_limit] = sc_candidate
+                    TSM.settrades_sc_limit!(tradesdf, ix, sc_candidate)
                 end
             # else sc_limit is waiting for so_limit to fill
             end
@@ -752,25 +752,25 @@ function _apply_open_hit!(tradesdf::DataFrame, ix::Integer, side::Symbol, limitp
         prior_amount = tradesdf[ix, :lp_amount]
         prior_pavg = tradesdf[ix, :lo_pavg]
         total_amount = prior_amount + amount
-        tradesdf[ix, :lastopentrade] = ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade]
-        tradesdf[ix, :lp_amount] = total_amount
-        tradesdf[ix, :lo_pavg] = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
+        TSM.settrades_lastopentrade!(tradesdf, ix, ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade])
+        TSM.settrades_lp_amount!(tradesdf, ix, total_amount)
+        TSM.settrades_lo_pavg!(tradesdf, ix, (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice)
         _resetorder(tradesdf, ix, "lo", reset_pavg=false)
-        tradesdf[ix, :lc_amount] = tradesdf[ix, :lp_amount]
-        tradesdf[ix, :lc_filled] = 0f0
-        tradesdf[ix, :lc_status] = "submitted"
+        TSM.settrades_lc_amount!(tradesdf, ix, tradesdf[ix, :lp_amount])
+        TSM.settrades_lc_filled!(tradesdf, ix, 0f0)
+        TSM.settrades_lc_status!(tradesdf, ix, "submitted")
     elseif side == :short
         @assert tradesdf[ix, :lp_amount] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(tradesdf[ix, :lp_amount]) is not zero"
         prior_amount = tradesdf[ix, :sp_amount]
         prior_pavg = tradesdf[ix, :so_pavg]
         total_amount = prior_amount + amount
-        tradesdf[ix, :lastopentrade] = ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade]
-        tradesdf[ix, :sp_amount] = total_amount
-        tradesdf[ix, :so_pavg] = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
+        TSM.settrades_lastopentrade!(tradesdf, ix, ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade])
+        TSM.settrades_sp_amount!(tradesdf, ix, total_amount)
+        TSM.settrades_so_pavg!(tradesdf, ix, (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice)
         _resetorder(tradesdf, ix, "so", reset_pavg=false)
-        tradesdf[ix, :sc_amount] = tradesdf[ix, :sp_amount]
-        tradesdf[ix, :sc_filled] = 0f0
-        tradesdf[ix, :sc_status] = "submitted"
+        TSM.settrades_sc_amount!(tradesdf, ix, tradesdf[ix, :sp_amount])
+        TSM.settrades_sc_filled!(tradesdf, ix, 0f0)
+        TSM.settrades_sc_status!(tradesdf, ix, "submitted")
     else
         error("unsupported open hit side=$(side)")
     end
@@ -780,18 +780,36 @@ end
 function _rowtakeover!(tdf::DataFrame, ix::Integer)
     if ix > 1
         if tdf[ix, :score] == 0f0
-            tdf[ix, :score] = tdf[ix-1, :score]
-            tdf[ix, :label] = tdf[ix-1, :label]
+            TSM.settrades_score!(tdf, ix, tdf[ix-1, :score])
+            TSM.settrades_label!(tdf, ix, tdf[ix-1, :label])
         end
-        for col in [:lo_limit, :lc_limit, :so_limit, :sc_limit, 
-                    :lo_amount, :lc_amount, :so_amount, :sc_amount, 
-                    :lo_status, :lc_status, :so_status, :sc_status, 
-                    :lo_filled, :lc_filled, :so_filled, :sc_filled, 
-                    :lo_id, :lc_id, :so_id, :sc_id, 
-                    :lo_pavg, :lc_pavg, :so_pavg, :sc_pavg, 
-                    :lastopentrade, :lp_amount, :sp_amount]
-            tdf[ix, col] = tdf[ix-1, col]
-        end
+        TSM.settrades_lo_limit!(tdf, ix, tdf[ix-1, :lo_limit])
+        TSM.settrades_lc_limit!(tdf, ix, tdf[ix-1, :lc_limit])
+        TSM.settrades_so_limit!(tdf, ix, tdf[ix-1, :so_limit])
+        TSM.settrades_sc_limit!(tdf, ix, tdf[ix-1, :sc_limit])
+        TSM.settrades_lo_amount!(tdf, ix, tdf[ix-1, :lo_amount])
+        TSM.settrades_lc_amount!(tdf, ix, tdf[ix-1, :lc_amount])
+        TSM.settrades_so_amount!(tdf, ix, tdf[ix-1, :so_amount])
+        TSM.settrades_sc_amount!(tdf, ix, tdf[ix-1, :sc_amount])
+        TSM.settrades_lo_status!(tdf, ix, tdf[ix-1, :lo_status])
+        TSM.settrades_lc_status!(tdf, ix, tdf[ix-1, :lc_status])
+        TSM.settrades_so_status!(tdf, ix, tdf[ix-1, :so_status])
+        TSM.settrades_sc_status!(tdf, ix, tdf[ix-1, :sc_status])
+        TSM.settrades_lo_filled!(tdf, ix, tdf[ix-1, :lo_filled])
+        TSM.settrades_lc_filled!(tdf, ix, tdf[ix-1, :lc_filled])
+        TSM.settrades_so_filled!(tdf, ix, tdf[ix-1, :so_filled])
+        TSM.settrades_sc_filled!(tdf, ix, tdf[ix-1, :sc_filled])
+        TSM.settrades_lo_id!(tdf, ix, tdf[ix-1, :lo_id])
+        TSM.settrades_lc_id!(tdf, ix, tdf[ix-1, :lc_id])
+        TSM.settrades_so_id!(tdf, ix, tdf[ix-1, :so_id])
+        TSM.settrades_sc_id!(tdf, ix, tdf[ix-1, :sc_id])
+        TSM.settrades_lo_pavg!(tdf, ix, tdf[ix-1, :lo_pavg])
+        TSM.settrades_lc_pavg!(tdf, ix, tdf[ix-1, :lc_pavg])
+        TSM.settrades_so_pavg!(tdf, ix, tdf[ix-1, :so_pavg])
+        TSM.settrades_sc_pavg!(tdf, ix, tdf[ix-1, :sc_pavg])
+        TSM.settrades_lastopentrade!(tdf, ix, tdf[ix-1, :lastopentrade])
+        TSM.settrades_lp_amount!(tdf, ix, tdf[ix-1, :lp_amount])
+        TSM.settrades_sp_amount!(tdf, ix, tdf[ix-1, :sp_amount])
     end
 end
 
@@ -850,22 +868,22 @@ end
 "Input is :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit. Output is :lo_status, :so_status, :lo_amount, :so_amount."
 function _process_advice_row!(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer)
     if islongopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :sp_amount] == 0f0)
-        tradesdf[ix, :so_amount] = 0f0
-        tradesdf[ix, :lo_status] = "submitted"
-        tradesdf[ix, :lo_amount] = 100f0
+        TSM.settrades_so_amount!(tradesdf, ix, 0f0)
+        TSM.settrades_lo_status!(tradesdf, ix, "submitted")
+        TSM.settrades_lo_amount!(tradesdf, ix, 100f0)
         if tradesdf[ix, :lp_amount] == 0f0
-            tradesdf[ix, :lo_pavg] = 0f0
+            TSM.settrades_lo_pavg!(tradesdf, ix, 0f0)
         end
-        tradesdf[ix, :lo_filled] = 0f0
+        TSM.settrades_lo_filled!(tradesdf, ix, 0f0)
     end
     if isshortopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :lp_amount] == 0f0)
-        tradesdf[ix, :lo_amount] = 0f0
-        tradesdf[ix, :so_status] = "submitted"
-        tradesdf[ix, :so_amount] = 100f0
+        TSM.settrades_lo_amount!(tradesdf, ix, 0f0)
+        TSM.settrades_so_status!(tradesdf, ix, "submitted")
+        TSM.settrades_so_amount!(tradesdf, ix, 100f0)
         if tradesdf[ix, :sp_amount] == 0f0
-            tradesdf[ix, :so_pavg] = 0f0
+            TSM.settrades_so_pavg!(tradesdf, ix, 0f0)
         end
-        tradesdf[ix, :so_filled] = 0f0
+        TSM.settrades_so_filled!(tradesdf, ix, 0f0)
     end
 end
 
@@ -924,14 +942,14 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
         if _price_in_bar(tradesdf[ix, :lc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :high)
             gain = (tradesdf[ix, :lc_limit] - openprice) / openprice
             push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
-            tradesdf[ix, :lc_pavg] = tradesdf[ix, :lc_limit]
+            TSM.settrades_lc_pavg!(tradesdf, ix, tradesdf[ix, :lc_limit])
             _resetorder(tradesdf, ix, "lc", reset_pavg=false)
             last_openix = 0
         elseif (ix == lastix) && (last_openix > 0)
             # Force-close any open gain segment at range boundary using close price at lastix
             gain = (tradesdf[lastix, :close] - openprice) / openprice
             push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[lastix, :lastopentrade], tradesdf[lastix, :opentime], last_openix, lastix))
-            tradesdf[ix, :lc_pavg] = tradesdf[ix, :close]
+            TSM.settrades_lc_pavg!(tradesdf, ix, tradesdf[ix, :close])
             _resetorder(tradesdf, ix, "lc", reset_pavg=false)
             last_openix = 0
         end
@@ -942,24 +960,24 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
         if _price_in_bar(tradesdf[ix, :sc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :low)
             gain = -(tradesdf[ix, :sc_limit] - openprice) / openprice
             push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
-            tradesdf[ix, :sc_pavg] = tradesdf[ix, :sc_limit]
+            TSM.settrades_sc_pavg!(tradesdf, ix, tradesdf[ix, :sc_limit])
             _resetorder(tradesdf, ix, "sc", reset_pavg=false)
             last_openix = 0
         elseif (ix == lastix) && (last_openix > 0)
             # Force-close any open gain segment at range boundary using close price at lastix
             gain = -(tradesdf[lastix, :close] - openprice) / openprice
             push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[lastix, :lastopentrade], tradesdf[lastix, :opentime], last_openix, lastix))
-            tradesdf[ix, :sc_pavg] = tradesdf[ix, :close]
+            TSM.settrades_sc_pavg!(tradesdf, ix, tradesdf[ix, :close])
             _resetorder(tradesdf, ix, "sc", reset_pavg=false)
             last_openix = 0
         end
     end
     if last_openix == 0
-        tradesdf[ix, :lastopentrade] = missing
-        tradesdf[ix, :lp_amount] = 0f0
-        tradesdf[ix, :sp_amount] = 0f0
-        tradesdf[ix, :lo_pavg] = 0f0
-        tradesdf[ix, :so_pavg] = 0f0
+        TSM.settrades_lastopentrade!(tradesdf, ix, missing)
+        TSM.settrades_lp_amount!(tradesdf, ix, 0f0)
+        TSM.settrades_sp_amount!(tradesdf, ix, 0f0)
+        TSM.settrades_lo_pavg!(tradesdf, ix, 0f0)
+        TSM.settrades_so_pavg!(tradesdf, ix, 0f0)
     end
 
     return last_openix
@@ -968,7 +986,7 @@ end
 """Prepare one replay pair-scoped Trades DataFrame from prediction inputs.
 
 - Receives a resultview DataFrame with columns: target, opentime, high, low, close, pivot, coin, rangeid, set, score, label
-- Adds via Xch.settrades! all Xch columns: opentime, pair, lo_id/lc_id/so_id/sc_id, lo_status/lc_status/so_status/sc_status, etc.
+- Adds via TSM.settrades! all Trades columns: opentime, pair, lo_id/lc_id/so_id/sc_id, lo_status/lc_status/so_status/sc_status, etc.
 - Stores optional metadata columns from the metadata dict.
 """
 function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractString, predictionsdf::AbstractDataFrame, scores::AbstractVector, labels::AbstractVector;
@@ -997,7 +1015,7 @@ function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractStrin
         tradesdf = DataFrame(predictionsdf; copycols=false)
         ohlcv_cols = filter(col -> col in propertynames(tradesdf), [:open, :basevolume, :pivot, :coin, :target])
         !isempty(ohlcv_cols) && select!(tradesdf, Not(ohlcv_cols))
-        Xch.settrades!(xc, base, quotecoin, tradesdf)
+        TSM.settrades!(xc.tsm, base, quotecoin, tradesdf)
         tp = syncpairtrades!(ts, xc, base, quotecoin; datetime=datetime)
     else
         tp = syncpairtrades!(ts, xc, base, quotecoin; datetime=datetime)
@@ -1013,11 +1031,15 @@ function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractStrin
         fill!(@view(tp.tradesdf[:, :sc_limit]), 0f0)
     end
 
-    tp.tradesdf[!, :score] = scores
-    tp.tradesdf[!, :label] = labels
+    for ix in 1:n
+        TSM.settrades_score!(tp.tradesdf, ix, scores[ix])
+        TSM.settrades_label!(tp.tradesdf, ix, labels[ix])
+    end
 
     for (k, v) in metadata
-        tp.tradesdf[!, k] = fill(v, n)
+        for ix in 1:n
+            TSM.settradesfield!(tp.tradesdf, ix, Symbol(k), v)
+        end
     end
     return tp
 end

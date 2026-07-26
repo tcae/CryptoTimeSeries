@@ -2,42 +2,6 @@
 	"folders": [
 		{
 			"path": "."
-		},
-		{
-			"path": "Bybit"
-		},
-		{
-			"path": "Classify"
-		},
-		{
-			"path": "EnvConfig"
-		},
-		{
-			"path": "Features"
-		},
-		{
-			"path": "KrakenFutures"
-		},
-		{
-			"path": "KrakenSpot"
-		},
-		{
-			"path": "Ohlcv"
-		},
-		{
-			"path": "Targets"
-		},
-		{
-			"path": "TestOhlcv"
-		},
-		{
-			"path": "Trade"
-		},
-		{
-			"path": "TradingStrategy"
-		},
-		{
-			"path": "Xch"
 		}
 	],
 	"settings": {

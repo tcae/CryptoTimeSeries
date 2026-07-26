@@ -8,6 +8,7 @@ using Classify
 using Ohlcv
 using TestOhlcv
 using TradingStrategy
+using TSM
 
 Base.@kwdef mutable struct MockClassifier <: Classify.AbstractClassifier
     bc::Dict{String, NamedTuple{(:ohlcv,), Tuple{Ohlcv.OhlcvData}}} = Dict{String, NamedTuple{(:ohlcv,), Tuple{Ohlcv.OhlcvData}}}()
@@ -15,8 +16,8 @@ Base.@kwdef mutable struct MockClassifier <: Classify.AbstractClassifier
 end
 
 function init_runtime_columns!(tdf::DataFrame)
-    Xch.xch_tradesdf_lastopentrade(tdf)
-    for contributor in Xch.tradesdf_all_contributors()
+    TSM.xch_tradesdf_lastopentrade(tdf)
+    for contributor in TSM.tradesdf_all_contributors()
         contributor(tdf)
     end
     return tdf
@@ -53,7 +54,7 @@ end
     cl_plain = MockClassifier()
     rt_plain = TradingStrategy.TsCache(classifier=cl_plain, strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
     evaldt = enddt
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
@@ -68,7 +69,7 @@ end
     )
     rt_gated = TradingStrategy.TsCache(classifier=cl_gated, strategy=gs_gated, source="test")
     TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
     recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=1))
     rowmeta = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
     rowmeta.tradesdf[rowmeta.rowix, :lastopentrade] = evaldt
@@ -91,7 +92,7 @@ end
     )
     rt = TradingStrategy.TsCache(classifier=cl, strategy=gs, source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
     _ = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt)
@@ -136,7 +137,7 @@ end
 
     xc.currentdt = evaldt
     TradingStrategy.preparebases!(rt, xc, ["BTC"]; datetime=evaldt, updatecache=false)
-    init_runtime_columns!(Xch.trades(xc, "BTC", EnvConfig.pairquote))
+    init_runtime_columns!(TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote))
     rowmeta = TradingStrategy.gettradesrow!(rt, xc, "BTC", evaldt; reconciliation=recon)
     @test !isnothing(rowmeta)
     @test rowmeta.base == "BTC"
@@ -151,7 +152,7 @@ end
     xc = Xch.XchCache(startdt=startdt)
 
     seed = DataFrame(opentime=[startdt], lastopentrade=Union{Missing, DateTime}[missing])
-    Xch.settrades!(xc, "btc", "usdt", seed)
+    TSM.settrades!(xc.tsm, "btc", "usdt", seed)
 
     @test_throws ArgumentError TradingStrategy.TsCache(source="test")
     ts = TradingStrategy.TsCache(strategy=TradingStrategy.StrategyConfig(classifier=MockClassifier()), source="test")
@@ -162,10 +163,10 @@ end
     @test tp.pair == "BTCUSDT"
     @test tp.last_update_dt == evaldt
     @test TradingStrategy.haspairstate(ts, "btcusdt")
-    @test tp.tradesdf === Xch.trades(xc, "BTCUSDT")
+    @test tp.tradesdf === TSM.trades(xc.tsm, "BTCUSDT")
 
     push!(tp.tradesdf, (opentime=startdt + Minute(1), lastopentrade=missing); cols=:subset)
-    @test nrow(Xch.trades(xc, "BTCUSDT")) == 2
+    @test nrow(TSM.trades(xc.tsm, "BTCUSDT")) == 2
 
     tp2 = TradingStrategy.getpairstate!(ts, "eth", "usdt")
     @test tp2.pair == "ETHUSDT"
@@ -247,7 +248,7 @@ end
 
     rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
     xc.currentdt = evaldt
@@ -277,7 +278,7 @@ end
 
     rt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(Xch.trades(xc, "SINE", EnvConfig.pairquote))
+    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
 
     evaldt = enddt
     recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=9))

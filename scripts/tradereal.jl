@@ -12,7 +12,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__), io=devnull)
 
 using Dates, Logging, LoggingExtras
-using EnvConfig, TradingStrategy, Trade, Classify, Xch, Features, Ohlcv, Targets
+using EnvConfig, TradingStrategy, Trade, Classify, Xch, Features, Ohlcv, Targets, TSM
 using Bybit, KrakenFutures, KrakenSpot
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ bc = build_adapter_cache(EXCHANGE)
 xc = Xch.XchCache(bc; enddt=nothing)
 Xch.setstartdt(xc, Xch.tradetime(xc))
 
-Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
+TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
 cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="trenddetector:$CONFIG_NAME"), trademode=TRADE_MODE)
 

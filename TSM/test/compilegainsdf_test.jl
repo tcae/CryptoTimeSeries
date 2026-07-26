@@ -1,18 +1,15 @@
-module XchCompileGainsDfTest
+module TsmCompileGainsDfTest
 using Test
 using Dates
 using DataFrames
 
-using EnvConfig, Xch
+using EnvConfig, TSM
 
-@testset "Xch compilegainsdf matches FIFO within pair set and range" begin
-    oldfolder = EnvConfig.logfolder()
+@testset "TSM compilegainsdf matches FIFO within pair set and range" begin
     oldformat = EnvConfig.dfformat()
     tmpdir = mktempdir()
 
     try
-        EnvConfig.init(EnvConfig.test)
-        EnvConfig.setlogpath(tmpdir)
         EnvConfig.setdfformat!(:arrow)
 
         tradesdf = DataFrame(
@@ -49,11 +46,11 @@ using EnvConfig, Xch
             sc_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
         )
 
-        tradepath = Xch.savetradesdf(tradesdf; stem="trades-compilegainsdf")
-        gainsdf = Xch.compilegainsdf(tradesdf)
+        tradepath = TSM.savetradesdf(tradesdf; stem="trades-compilegainsdf", folderpath=tmpdir)
+        gainsdf = TSM.compilegainsdf(tradesdf; stem="xchgains", folderpath=tmpdir)
 
         @test isfile(tradepath)
-        @test isfile(EnvConfig.tablepath("xchgains"; folderpath=EnvConfig.logfolder(), format=:arrow))
+        @test isfile(EnvConfig.tablepath("xchgains"; folderpath=tmpdir, format=:arrow))
         @test nrow(gainsdf) == 6
         @test gainsdf[!, :pair] == ["BTCUSDT", "BTCUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDT", "BTCUSDT"]
         @test gainsdf[!, :set] == ["eval", "eval", "eval", "eval", "eval", "test"]
@@ -81,24 +78,20 @@ using EnvConfig, Xch
         @test isapprox.(gainsdf[!, :gain], Float32[0.1f0, 0.2f0, 15f0 / 105f0, 10f0 / 90f0, 20f0 / 90f0, 0.05f0]; atol=1f-6) |> all
         @test gainsdf[!, :gainquote] == Float32[2000f0, 2000f0, 750f0, 1000f0, 1000f0, 400f0]
 
-        loaded = EnvConfig.readdf("xchgains")
+        loaded = EnvConfig.readdf("xchgains"; folderpath=tmpdir)
         @test !isnothing(loaded)
         @test nrow(loaded) == nrow(gainsdf)
     finally
         EnvConfig.setdfformat!(oldformat)
-        EnvConfig.setlogpath(oldfolder)
         rm(tmpdir; force=true, recursive=true)
     end
 end
 
-@testset "Xch gainsreport aggregates by set across pairs and ranges" begin
-    oldfolder = EnvConfig.logfolder()
+@testset "TSM gainsreport aggregates by set across pairs and ranges" begin
     oldformat = EnvConfig.dfformat()
     tmpdir = mktempdir()
 
     try
-        EnvConfig.init(EnvConfig.test)
-        EnvConfig.setlogpath(tmpdir)
         EnvConfig.setdfformat!(:arrow)
 
         tradesdf = DataFrame(
@@ -135,10 +128,10 @@ end
             sc_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
         )
 
-        Xch.compilegainsdf(tradesdf)
-        report = Xch.gainsreport()
+        TSM.compilegainsdf(tradesdf; stem="xchgains", folderpath=tmpdir)
+        report = TSM.gainsreport(instem="xchgains", stem="xchgainsreport", folderpath=tmpdir)
 
-        @test isfile(EnvConfig.tablepath("xchgainsreport"; folderpath=EnvConfig.logfolder(), format=:arrow))
+        @test isfile(EnvConfig.tablepath("xchgainsreport"; folderpath=tmpdir, format=:arrow))
         @test nrow(report) == 2
         @test report[!, :set] == ["eval", "test"]
 
@@ -160,7 +153,6 @@ end
         @test report[testix, :maxminutes] == 2
     finally
         EnvConfig.setdfformat!(oldformat)
-        EnvConfig.setlogpath(oldfolder)
         rm(tmpdir; force=true, recursive=true)
     end
 end

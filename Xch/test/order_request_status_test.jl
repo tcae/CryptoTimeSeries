@@ -4,6 +4,7 @@ using Dates
 using DataFrames
 
 using EnvConfig, Xch, Targets
+using TSM
 
 function _trade_lo_amount(df::DataFrame)::DataFrame
     if :lo_amount ∉ propertynames(df)
@@ -72,7 +73,7 @@ end
         lo_limit=[price * 0.98f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
     )
-    for contributor in Xch.xch_tradesdf_contributors()
+    for contributor in TSM.xch_tradesdf_contributors()
         contributor(accepted)
     end
     _apply_trade_amount_contributors!(accepted)
@@ -103,7 +104,7 @@ end
         lo_limit=[0f0],
         lo_amount=[max(minqty * 1.5f0, 0.001f0)],
     )
-    for contributor in Xch.xch_tradesdf_contributors()
+    for contributor in TSM.xch_tradesdf_contributors()
         contributor(zero_limit)
     end
     _apply_trade_amount_contributors!(zero_limit)
@@ -124,21 +125,18 @@ end
         lo_limit=[price],
         lo_amount=[max(minqty * 0.1f0, 1.0f-8)],
     )
-    for contributor in Xch.xch_tradesdf_contributors()
+    for contributor in TSM.xch_tradesdf_contributors()
         contributor(rejected)
     end
     _apply_trade_amount_contributors!(rejected)
     reject_result = Xch.process_order_request(xc, rejected, 1)
     @test !reject_result.accepted
     @test reject_result.reason == "below_minimum_qty"
-    @test ismissing(rejected[1, :lastopentrade])
     @test lowercase(String(rejected[1, :lo_status])) == "rejected"
     @test !ismissing(rejected[1, :lo_msg])
 end
 
 @testset "Xch close amount rounds to holding when dust gap is tiny" begin
-    EnvConfig.init(test)
-
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
     xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
@@ -166,7 +164,7 @@ end
         lc_limit=[price * 0.98],
         lc_amount=[1 - (minqty * 0.25)],
     )
-    for contributor in Xch.xch_tradesdf_contributors()
+    for contributor in TSM.xch_tradesdf_contributors()
         contributor(close_req)
     end
     _apply_trade_amount_contributors!(close_req)

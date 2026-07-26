@@ -40,6 +40,7 @@ const WORKSPACE_PACKAGES = [
 	"Xch",
 	"TradingStrategy",
 	"Trade",
+	"TSM"
 ]
 
 const RUN_COVERAGE = _env_bool("CTS_TEST_COVERAGE", false ) # true)

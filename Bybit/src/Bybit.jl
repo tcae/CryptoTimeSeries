@@ -1262,7 +1262,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
 
     decisiondt = isnothing(atdt) ? bc.simtime : atdt
     decisiondt = isnothing(decisiondt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(decisiondt, Minute(1))
-    refdt = _simreferencedt(bc, atdt)
+    refdt = decisiondt
     closeix = Int[]
     closerows = NamedTuple[]
 

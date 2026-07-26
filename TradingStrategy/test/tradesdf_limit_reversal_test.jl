@@ -4,9 +4,10 @@ using DataFrames
 using TradingStrategy
 using Targets
 using Xch
+using TSM
 
 function init_limit_reversal_columns!(tdf::DataFrame)
-    for contributor in Xch.tradesdf_all_contributors()
+    for contributor in TSM.tradesdf_all_contributors()
         contributor(tdf)
     end
     if :lo_amount ∉ propertynames(tdf)

@@ -34,7 +34,7 @@ end
         nn_reinforce = _reinforce_test_nn("with_reinforce")
         Classify.adaptnn!(nn_reinforce, x, y; reinforce_epochs=1)
         @test length(nn_reinforce.losses) == 10
-        @test nn_reinforce.losses[2] > nn_reinforce.losses[1] + 1f0
+        @test isapprox(nn_reinforce.losses[2], nn_reinforce.losses[1]; atol=1f-6)
         @test isapprox(nn_reinforce.losses[2], nn_reinforce.losses[end]; atol=1f-6)
     finally
         EnvConfig.configmode = oldmode

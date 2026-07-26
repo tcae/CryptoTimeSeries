@@ -1,34 +1,18 @@
-module XchTradesSchemaContractTest
+module TsmTradesSchemaContractTest
 using Test
 using Dates
 using DataFrames
 using CategoricalArrays
 
-using EnvConfig, Xch, Targets
+using Targets, TSM
 
-const HAS_TRADINGSTRATEGY = try
-    @eval using TradingStrategy
-    true
-catch
-    false
-end
-
-@testset "Xch trades schema contract" begin
-    if !HAS_TRADINGSTRATEGY
-        @info "Skipping Xch trades schema contract test because TradingStrategy is not available in this test environment"
-        return
-    end
-
-    EnvConfig.init(test)
+@testset "TSM trades schema contract" begin
     startdt = DateTime("2022-01-01T01:00:00")
-    enddt = startdt + Dates.Day(1)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt)
-    Xch.ensuretradesschema(xc, Xch.tradesdf_all_contributors())
-
-    tdf = Xch.trades(xc, "BTC", EnvConfig.pairquote)
+    tsm = TSM.TsmCache()
+    tdf = TSM.trades(tsm, "BTC", "USDT")
 
     required = Set([
-        :opentime, :lastopentrade, :pair, :label, :score,
+        :opentime, :lastopentrade, :pair, :config, :tsmstate, :label, :score,
         :lo_limit, :lc_limit, :so_limit, :sc_limit,
         :lo_id, :lo_status, :lo_filled, :lo_pavg, :lo_msg,
         :lc_id, :lc_status, :lc_filled, :lc_pavg, :lc_msg,
@@ -42,6 +26,8 @@ end
     @test required ⊆ got
     @test !(:coin in got)
     @test tdf[!, :pair] isa CategoricalVector
+    @test tdf[!, :config] isa CategoricalVector
+    @test tdf[!, :tsmstate] isa CategoricalVector
     @test tdf[!, :lo_status] isa CategoricalVector
     @test tdf[!, :lc_status] isa CategoricalVector
     @test tdf[!, :so_status] isa CategoricalVector
@@ -67,11 +53,11 @@ end
     @test eltype(tdf[!, :sp_amount]) == Float32
 
     defaultdf = DataFrame(opentime=[startdt])
-    Xch.tradingstrategy_tradesdf_label(defaultdf)
+    TSM.tradingstrategy_tradesdf_label(defaultdf)
     @test defaultdf[1, :label] == Targets.ignore
 
     defaultlimitsdf = DataFrame(opentime=[startdt], pair=["BTCUSDT"])
-    for contributor in Xch.tradingstrategy_tradesdf_contributors()
+    for contributor in TSM.tradingstrategy_tradesdf_contributors()
         contributor(defaultlimitsdf)
     end
     @test defaultlimitsdf[1, :lo_limit] == 0f0
@@ -80,10 +66,10 @@ end
     @test defaultlimitsdf[1, :sc_limit] == 0f0
 
     push!(tdf, (opentime=startdt, pair="BTCUSDT", label=Targets.ignore, lastopentrade=missing, lp_amount=0f0, sp_amount=0f0); cols=:subset)
-    Xch.xch_tradesdf_lo_msg(tdf)
-    Xch.xch_tradesdf_lc_msg(tdf)
-    Xch.xch_tradesdf_so_msg(tdf)
-    Xch.xch_tradesdf_sc_msg(tdf)
+    TSM.xch_tradesdf_lo_msg(tdf)
+    TSM.xch_tradesdf_lc_msg(tdf)
+    TSM.xch_tradesdf_so_msg(tdf)
+    TSM.xch_tradesdf_sc_msg(tdf)
     @test nrow(tdf) == 1
     @test tdf[1, :label] == Targets.ignore
     @test !ismissing(tdf[1, :pair])

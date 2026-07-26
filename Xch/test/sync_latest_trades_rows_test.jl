@@ -5,6 +5,7 @@ using DataFrames
 using CategoricalArrays: CategoricalVector
 
 using EnvConfig, Ohlcv, Xch, Targets
+using TSM
 
 function _trade_lo_amount(df::DataFrame)::DataFrame
     if :lo_amount ∉ propertynames(df)
@@ -42,7 +43,7 @@ end
     currentdt = startdt + Dates.Minute(2)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.addbase!(xc, "ETH", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
@@ -115,14 +116,14 @@ end
         reduceonly=true,
     ))
 
-    btcrow_prev = Xch.ensuretradesrow!(xc, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    btcrow_prev = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     btcdf = btcrow_prev.tradesdf
     btcdf[btcrow_prev.rowix, :label] = Targets.ignore
     btcdf[btcrow_prev.rowix, :lp_amount] = 1.0f0
     btcdf[btcrow_prev.rowix, :sp_amount] = 0.25f0
     btcdf[btcrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
-    btcrow_now = Xch.ensuretradesrow!(xc, "BTC", EnvConfig.pairquote, currentdt)
+    btcrow_now = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt)
     btcdf = btcrow_now.tradesdf
     btcdf[btcrow_now.rowix, :label] = Targets.ignore
     btcdf[btcrow_now.rowix, :lo_id] = "oid-lo-filled"
@@ -133,14 +134,14 @@ end
     btcdf[btcrow_now.rowix, :sc_amount] = 0.3f0
     btcdf[btcrow_now.rowix, :lastopentrade] = missing
 
-    ethrow_prev = Xch.ensuretradesrow!(xc, "ETH", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    ethrow_prev = TSM.ensuretradesrow!(xc.tsm, "ETH", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     ethdf = ethrow_prev.tradesdf
     ethdf[ethrow_prev.rowix, :label] = Targets.ignore
     ethdf[ethrow_prev.rowix, :lp_amount] = 0.75f0
     ethdf[ethrow_prev.rowix, :sp_amount] = 0f0
     ethdf[ethrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
-    ethrow_now = Xch.ensuretradesrow!(xc, "ETH", EnvConfig.pairquote, currentdt)
+    ethrow_now = TSM.ensuretradesrow!(xc.tsm, "ETH", EnvConfig.pairquote, currentdt)
     ethdf = ethrow_now.tradesdf
     ethdf[ethrow_now.rowix, :label] = Targets.ignore
     ethdf[ethrow_now.rowix, :lastopentrade] = missing
@@ -199,7 +200,6 @@ end
     currentdt = startdt + Dates.Minute(3)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
@@ -213,7 +213,7 @@ end
     )
     empty!(bc.orders)
 
-    btcrow_prev = Xch.ensuretradesrow!(xc, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    btcrow_prev = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     btcdf = btcrow_prev.tradesdf
     btcdf[btcrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
 
@@ -240,7 +240,7 @@ end
     currentdt = startdt + Dates.Minute(2)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
@@ -254,10 +254,10 @@ end
     )
     empty!(bc.orders)
 
-    @test !Xch.hastrades(xc, "BTCUSDT")
+    @test TSM.haspairstate(xc.tsm, "BTCUSDT")
     rowsbybase = Xch.sync_latest_trades_rows!(xc, ["BTCUSDT"])
 
-    @test Xch.hastrades(xc, "BTCUSDT")
+    @test TSM.haspairstate(xc.tsm, "BTCUSDT")
     @test haskey(rowsbybase, "BTC")
 
     btcrow = rowsbybase["BTC"].tradesdf
@@ -280,7 +280,7 @@ end
     currentdt = startdt + Dates.Minute(2)
 
     xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
-    Xch.ensuretradesschema(xc, vcat(Xch.tradesdf_all_contributors(), [_trade_lo_amount, _trade_lc_amount, _trade_so_amount, _trade_sc_amount]))
+    TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
@@ -298,7 +298,7 @@ end
     rowsbybase = Xch.sync_latest_trades_rows!(xc, pairs)
 
     @test haskey(rowsbybase, "BTC")
-    @test Xch.hastrades(xc, "BTCUSDT")
+    @test TSM.haspairstate(xc.tsm, "BTCUSDT")
     @test rowsbybase["BTC"].tradesdf[1, :pair] == "BTCUSDT"
 end
 

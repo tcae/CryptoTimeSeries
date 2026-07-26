@@ -14,8 +14,6 @@ end
 include("openstatus_test.jl")
 include("order_request_status_test.jl")
 include("sync_latest_trades_rows_test.jl")
-include("trades_schema_contract_test.jl")
-include("compilegainsdf_test.jl")
 include("messagecatalogtests.jl")
 include("usdtmarket_intent_test.jl")
 
