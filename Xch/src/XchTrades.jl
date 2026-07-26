@@ -168,10 +168,15 @@ function _compilegainsvalue(tradesdf::AbstractDataFrame, ix::Integer, col::Symbo
     return (ismissing(value) || isnothing(value)) ? 0f0 : value
 end
 
-"""Return the execution timestamp stored on the row whose position snapshot changed."""
+"""Return the execution timestamp for one reflected position change row.
+
+The position snapshot change is observed on row `ix`, but the execution
+itself happened on the previous minute row whose bar triggered the fill.
+"""
 function _compilegainstime(tradesdf::AbstractDataFrame, ix::Integer)::DateTime
     @assert :opentime in propertynames(tradesdf) "tradesdf must contain :opentime to compile gains; names=$(names(tradesdf))"
-    return tradesdf[ix, :opentime]
+    @assert ix > 1 "compile gain timestamps require a previous row; got ix=$(ix)"
+    return tradesdf[ix - 1, :opentime]
 end
 
 """Return the execution price stored on the position-change row for one order lane."""

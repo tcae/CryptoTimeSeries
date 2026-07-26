@@ -1437,36 +1437,43 @@ end
 end
 
 function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
-    has_lo = _hascol(tradesdf, :lo_amount) && !ismissing(tradesdf[ix, :lo_amount]) && (abs((tradesdf[ix, :lo_amount])) > 0f0)
-    has_lc = _hascol(tradesdf, :lc_amount) && !ismissing(tradesdf[ix, :lc_amount]) && (abs((tradesdf[ix, :lc_amount])) > 0f0)
-    has_so = _hascol(tradesdf, :so_amount) && !ismissing(tradesdf[ix, :so_amount]) && (abs((tradesdf[ix, :so_amount])) > 0f0)
-    has_sc = _hascol(tradesdf, :sc_amount) && !ismissing(tradesdf[ix, :sc_amount]) && (abs((tradesdf[ix, :sc_amount])) > 0f0)
-    return has_lo || has_lc || has_so || has_sc
+    return (tradesdf[ix, :lp_amount] > 0f0) || (tradesdf[ix, :sp_amount] > 0f0)
+end
+
+function _row_position_increased(tradesdf::DataFrame, ix::Integer)::Bool
+    if ix < lastindex(tradesdf, 1)
+        return (tradesdf[ix, :lp_amount] < tradesdf[ix + 1, :lp_amount]) || (tradesdf[ix, :sp_amount] < tradesdf[ix + 1, :sp_amount])
+    else
+        return false
+    end
 end
 
 function _carry_lastopentrade_from_previous!(tradesdf::DataFrame, ix::Integer)
     if !_row_has_position_amount(tradesdf, ix)
         tradesdf[ix, :lastopentrade] = missing
-        return nothing
+        return 
     end
     if !ismissing(tradesdf[ix, :lastopentrade])
-        return nothing
+        return 
     end
-    for j in (ix - 1):-1:1
+    for j in (ix - 1):-1:firstindex(tradesdf, 1)
         prev = tradesdf[j, :lastopentrade]
         if !ismissing(prev)
             tradesdf[ix, :lastopentrade] = prev
             break
         end
+        if _row_position_increased(tradesdf, j)
+            tradesdf[ix, :lastopentrade] = tradesdf[j, :opentime]
+            break
+        end
     end
-    return nothing
+    return 
 end
 
 "Synchronize one trades row's exchange feedback columns from current order ids."
 function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent::Bool=true)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
 
-    _carry_lastopentrade_from_previous!(tradesdf, ix)
     row_is_open_intent = _is_open_label(tradesdf[ix, :label])
 
     _lane_orderid(v) = begin
@@ -1495,14 +1502,13 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             prevstatus = String(prevstatus_raw)
             if !isnothing(previd) && _isopenstatuslabel(prevstatus)
                 oid = previd
-                tradesdf[ix, idcol] = oid
-                tradesdf[ix, stcol] = tradesdf[ix - 1, stcol]
+                tradesdf[ix, idcol] = previd
+                tradesdf[ix, stcol] = prevstatus
                 tradesdf[ix, filledcol] = tradesdf[ix - 1, filledcol]
                 tradesdf[ix, avgcol] = tradesdf[ix - 1, avgcol]
-                tradesdf[ix, msgcol] = tradesdf[ix - 1, msgcol]
-                if amountcol in propertynames(tradesdf)
-                    tradesdf[ix, amountcol] = tradesdf[ix - 1, amountcol]
-                end
+                # no msg take over from previous row
+                tradesdf[ix, amountcol] = tradesdf[ix - 1, amountcol]
+                tradesdf[ix, poscol] = tradesdf[ix - 1, poscol]
             end
         end
 
@@ -1538,10 +1544,6 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
                     tradesdf[ix, :lp_amount] = max(tradesdf[ix, :lp_amount], (executed))
                 elseif idcol == :so_id
                     tradesdf[ix, :sp_amount] = max(tradesdf[ix, :sp_amount], (executed))
-                elseif idcol == :lc_id
-                    tradesdf[ix, :lp_amount] = max(0f0, tradesdf[ix, :lp_amount] - (executed))
-                elseif idcol == :sc_id
-                    tradesdf[ix, :sp_amount] = max(0f0, tradesdf[ix, :sp_amount] - (executed))
                 end
             end
         end
@@ -1622,9 +1624,9 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             odf = Ohlcv.dataframe(o)
             oix = Ohlcv.ix(o)
             if size(odf, 1) > 0 && 1 <= oix <= size(odf, 1)
-                :close ∈ propertynames(tdf) && (tdf[rowix, :close] = (odf[oix, :close]))
-                :high  ∈ propertynames(tdf) && (tdf[rowix, :high]  = (odf[oix, :high]))
-                :low   ∈ propertynames(tdf) && (tdf[rowix, :low]   = (odf[oix, :low]))
+                tdf[rowix, :close] = (odf[oix, :close])
+                tdf[rowix, :high]  = (odf[oix, :high])
+                tdf[rowix, :low]   = (odf[oix, :low])
             end
         end
 
@@ -1636,36 +1638,15 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         if !isnothing(bix)
             free_val  = _hascol(balancesdf, :free)     ? (balancesdf[bix, :free])     : 0f0
             borr_val  = _hascol(balancesdf, :borrowed) ? (balancesdf[bix, :borrowed]) : 0f0
-            :lp_amount ∈ propertynames(tdf) && (tdf[rowix, :lp_amount] = max(0f0, free_val))
-            :sp_amount ∈ propertynames(tdf) && (tdf[rowix, :sp_amount] = max(0f0, borr_val))
+            tdf[rowix, :lp_amount] = max(0f0, free_val)
+            tdf[rowix, :sp_amount] = max(0f0, borr_val)
         end
 
-        # lastopentrade: set to current time on open-order fills, else propagate or clear
-        lo_filled = (:lo_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lo_filled])) ? (tdf[rowix, :lo_filled]) : 0f0
-        so_filled = (:so_filled ∈ propertynames(tdf) && !ismissing(tdf[rowix, :so_filled])) ? (tdf[rowix, :so_filled]) : 0f0
-        lp_amount = (:lp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :lp_amount])) ? (tdf[rowix, :lp_amount]) : 0f0
-        sp_amount = (:sp_amount ∈ propertynames(tdf) && !ismissing(tdf[rowix, :sp_amount])) ? (tdf[rowix, :sp_amount]) : 0f0
-        if :lastopentrade ∈ propertynames(tdf)
-            if lo_filled > 0f0 || so_filled > 0f0
-                tdf[rowix, :lastopentrade] = currentdt
-            elseif lp_amount > 0f0 || sp_amount > 0f0
-                if ismissing(tdf[rowix, :lastopentrade])
-                    for j in (rowix - 1):-1:1
-                        prev = tdf[j, :lastopentrade]
-                        if !ismissing(prev)
-                            tdf[rowix, :lastopentrade] = prev
-                            break
-                        end
-                    end
-                end
-            else
-                tdf[rowix, :lastopentrade] = missing
-            end
-        end
+        _carry_lastopentrade_from_previous!(tdf, rowix)
 
         # Account snapshot columns
         _apply_accountsnapshot!(tdf, rowix, acct)
-        :maintmargin ∈ propertynames(tdf) && (tdf[rowix, :maintmargin] = (acct.capacity.maintenance_margin_quote))
+        tdf[rowix, :maintmargin] = (acct.capacity.maintenance_margin_quote)
 
         rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
     end

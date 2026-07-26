@@ -1924,8 +1924,13 @@ function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; samplewei
             Flux.update!(nn.optim, nn.model, grads[1])
             push!(losses, loss)  # logging, outside gradient context
         end
-        epochloss = mean(losses)
-        push!(nn.losses, epochloss)  # register only mean(losses) over a whole epoch
+        # Track convergence on the full adaptation set, even when training batches
+        # are restricted by reinforce filtering.
+        Flux.testmode!(nn.model)
+        y_hat_full = nn.valuecorrection(nn.model(Xfull))
+        Flux.trainmode!(nn.model)
+        epochloss = isnothing(Wfull) ? nn.lossfunc(y_hat_full, Yfull) : weightedloss(nn, y_hat_full, Yfull, Wfull)
+        push!(nn.losses, epochloss)  # register loss measured on the full adaptation set
         savenn(nn)
         if nnconverged(nn)
             breakmsg = "stopping adaptation after epoch $epoch due to no loss reduction ($(nn.losses[end-4:end])) in last 4 epochs"

@@ -60,20 +60,20 @@ using EnvConfig, Xch
         @test gainsdf[!, :rangeid] == [1, 1, 1, 1, 1, 2]
         @test gainsdf[!, :side] == ["long", "long", "long", "short", "short", "long"]
         @test gainsdf[!, :opentime] == [
+            DateTime(2024, 1, 1, 0, 0),
+            DateTime(2024, 1, 1, 0, 0),
             DateTime(2024, 1, 1, 0, 1),
-            DateTime(2024, 1, 1, 0, 1),
-            DateTime(2024, 1, 1, 0, 2),
-            DateTime(2024, 1, 1, 0, 1),
-            DateTime(2024, 1, 1, 0, 1),
-            DateTime(2024, 1, 1, 0, 1),
+            DateTime(2024, 1, 1, 0, 0),
+            DateTime(2024, 1, 1, 0, 0),
+            DateTime(2024, 1, 1, 0, 0),
         ]
         @test gainsdf[!, :closetime] == [
-            DateTime(2024, 1, 1, 0, 3),
-            DateTime(2024, 1, 1, 0, 4),
-            DateTime(2024, 1, 1, 0, 4),
             DateTime(2024, 1, 1, 0, 2),
             DateTime(2024, 1, 1, 0, 3),
+            DateTime(2024, 1, 1, 0, 3),
+            DateTime(2024, 1, 1, 0, 1),
             DateTime(2024, 1, 1, 0, 2),
+            DateTime(2024, 1, 1, 0, 1),
         ]
         @test gainsdf[!, :openprice] == Float32[100f0, 100f0, 105f0, 90f0, 90f0, 200f0]
         @test gainsdf[!, :closeprice] == Float32[110f0, 120f0, 120f0, 80f0, 70f0, 210f0]

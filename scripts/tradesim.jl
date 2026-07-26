@@ -306,7 +306,7 @@ end
 
 EnvConfig.init(test)  # test mode → cryptoxchsim, no live credentials needed
 EnvConfig.setpairquote!(QUOTE_COIN)
-EnvConfig.setdebugpath(LOG_SUBFOLDER)
+EnvConfig.setlogpath(LOG_SUBFOLDER)
 
 Xch.verbosity = 1
 Classify.verbosity  = 2
@@ -366,9 +366,9 @@ Trade.run_backtest!(cache)
 # ─────────────────────────────────────────────────────────────────────────────
 
 backtest_report(cache, run_startdt, run_enddt)
-EnvConfig.setdebugpath(LOG_SUBFOLDER)
+EnvConfig.setlogpath(LOG_SUBFOLDER)
 tradespath = Xch.savetradesdf(xc; stem="trades-ts")
 println("$(EnvConfig.now()): saved trades dataframe to $tradespath")
 
-# Keep legacy debug-path split for parity with previous script layout.
+# Keep legacy log-path split for parity with previous script layout.
 println("$(EnvConfig.now()): order history report derived from xc.pairstates trades data")

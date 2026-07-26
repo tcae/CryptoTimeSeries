@@ -618,6 +618,155 @@ end
 const GAIN_THRESHOLDS = Tuple((openthreshold, closethreshold) for openthreshold in TradingStrategy.default_openthresholds() for closethreshold in TradingStrategy.default_closethresholds() if closethreshold <= openthreshold)
 const TRUE_GAIN_THRESHOLD = (0.9f0, 0.9f0)
 
+"""Return one finite mean gain value or `missing` when no finite values exist."""
+function _meangain_or_missing(values)::Union{Missing, Float64}
+    filtered = [value for value in skipmissing(values) if isfinite(value)]
+    return isempty(filtered) ? missing : mean(filtered)
+end
+
+"""Collect Xch-compiled gains and corresponding gain report from `tradesdf`."""
+function _collectxchgains(tradesdf::AbstractDataFrame; gainsstem::AbstractString="xchgains-td", reportstem::AbstractString="xchgainsreport-td")
+    xchgainsdf = Xch.compilegainsdf(tradesdf; stem=gainsstem)
+    xchreportdf = Xch.gainsreport(instem=gainsstem, stem=reportstem)
+    return xchgainsdf, xchreportdf
+end
+
+"""Return predicted legacy gains used to compare against compiled Xch gains."""
+function _legacytruthgains(gaindf::AbstractDataFrame)::AbstractDataFrame
+    required = (:predicted, :openthreshold, :closethreshold)
+    if !all(col -> col in names(gaindf), required)
+        return gaindf
+    end
+    true_open, true_close = TRUE_GAIN_THRESHOLD
+    mask = (gaindf[!, :predicted] .== true) .&& (gaindf[!, :openthreshold] .== true_open) .&& (gaindf[!, :closethreshold] .== true_close)
+    return DataFrame(gaindf[mask, :])
+end
+
+"""Return one normalized gain segment table with a common comparison schema."""
+function _normalize_gain_segments(gainsdf::AbstractDataFrame; source::AbstractString)
+    if nrow(gainsdf) == 0
+        return DataFrame(source=String[], pair=String[], set=String[], trend=String[], startdt=DateTime[], enddt=DateTime[], gain=Float64[])
+    end
+
+    if source == "legacy"
+        @assert all(col -> col in propertynames(gainsdf), [:pair, :set, :trend, :startdt, :enddt, :gain]) "legacy gainsdf missing required columns; names=$(names(gainsdf))"
+        normalized = DataFrame(
+            source=fill(source, nrow(gainsdf)),
+            pair=String.(gainsdf[!, :pair]),
+            set=String.(gainsdf[!, :set]),
+            trend=string.(gainsdf[!, :trend]),
+            startdt=gainsdf[!, :startdt],
+            enddt=gainsdf[!, :enddt],
+            gain=Float64.(gainsdf[!, :gain]),
+        )
+    else
+        @assert all(col -> col in propertynames(gainsdf), [:pair, :set, :side, :opentime, :closetime, :gain]) "compiled gainsdf missing required columns; names=$(names(gainsdf))"
+        side_to_trend(side) = String(side) == "long" ? string(up) : string(down)
+        normalized = DataFrame(
+            source=fill(source, nrow(gainsdf)),
+            pair=String.(gainsdf[!, :pair]),
+            set=String.(gainsdf[!, :set]),
+            trend=side_to_trend.(gainsdf[!, :side]),
+            startdt=gainsdf[!, :opentime],
+            enddt=gainsdf[!, :closetime],
+            gain=Float64.(gainsdf[!, :gain]),
+        )
+    end
+
+    return normalized
+end
+
+"""Restrict both gain tables to the common time window they share."""
+function _common_time_window(legacydf::AbstractDataFrame, compileddf::AbstractDataFrame)
+    @assert nrow(legacydf) > 0 && nrow(compileddf) > 0 "common time window requires non-empty gain tables"
+    legacy_start = minimum(legacydf[!, :startdt])
+    legacy_end = maximum(legacydf[!, :enddt])
+    compiled_start = minimum(compileddf[!, :startdt])
+    compiled_end = maximum(compileddf[!, :enddt])
+    common_start = max(legacy_start, compiled_start)
+    common_end = min(legacy_end, compiled_end)
+    @assert common_start <= common_end "no common time window between legacy ($(legacy_start) → $(legacy_end)) and compiled ($(compiled_start) → $(compiled_end)) gains"
+    legacymask = (legacydf[!, :startdt] .>= common_start) .&& (legacydf[!, :enddt] .<= common_end)
+    compiledmask = (compileddf[!, :startdt] .>= common_start) .&& (compileddf[!, :enddt] .<= common_end)
+    return DataFrame(legacydf[legacymask, :]), DataFrame(compileddf[compiledmask, :]), common_start, common_end
+end
+
+"""Compare predicted legacy gains against compiled gains on exact gain-segment keys."""
+function _collapse_gain_segments(gainsdf::AbstractDataFrame)
+    keycols = [:pair, :set, :trend, :startdt, :enddt]
+    @assert all(col -> col in propertynames(gainsdf), keycols) "gain table missing key columns; names=$(names(gainsdf))"
+    grouped = groupby(DataFrame(gainsdf), keycols; sort=true)
+    return combine(grouped, :gain => mean => :gain, nrow => :segments)
+end
+
+"""Compare predicted legacy gains against compiled gains on exact gain-segment keys."""
+function _compare_gain_segments(legacydf::AbstractDataFrame, compileddf::AbstractDataFrame)
+    keycols = [:pair, :set, :trend, :startdt, :enddt]
+    @assert all(col -> col in propertynames(legacydf), keycols) "legacy comparison table missing key columns; names=$(names(legacydf))"
+    @assert all(col -> col in propertynames(compileddf), keycols) "compiled comparison table missing key columns; names=$(names(compileddf))"
+
+    legacycmp = _collapse_gain_segments(legacydf)
+    rename!(legacycmp, :gain => :legacy_gain, :segments => :legacy_segments)
+    compiledcmp = _collapse_gain_segments(compileddf)
+    rename!(compiledcmp, :gain => :compiled_gain, :segments => :compiled_segments)
+    joined = innerjoin(legacycmp, compiledcmp; on=keycols, makeunique=true)
+    if nrow(joined) == 0
+        return joined, DataFrame(), DataFrame()
+    end
+
+    joined[!, :gain_delta] = joined[!, :compiled_gain] .- joined[!, :legacy_gain]
+    joined[!, :abs_gain_delta] = abs.(joined[!, :gain_delta])
+
+    legacy_only = antijoin(legacycmp, compiledcmp; on=keycols)
+    compiled_only = antijoin(compiledcmp, legacycmp; on=keycols)
+    return joined, legacy_only, compiled_only
+end
+
+"""Compare legacy gains from `getgainsdf` with Xch-compiled gains and log summary metrics."""
+function _report_gain_collection_comparison(gaindf::Union{AbstractDataFrame, Nothing}, xchgainsdf::Union{AbstractDataFrame, Nothing}, xchreportdf::Union{AbstractDataFrame, Nothing})
+    if isnothing(gaindf) || (size(gaindf, 1) == 0)
+        (verbosity >= 2) && println("$(EnvConfig.now()) gain comparison skipped: missing legacy gains")
+        return nothing
+    end
+    if isnothing(xchgainsdf) || (size(xchgainsdf, 1) == 0)
+        (verbosity >= 2) && println("$(EnvConfig.now()) gain comparison skipped: missing compiled xchgains")
+        return nothing
+    end
+
+    legacypred = _legacytruthgains(gaindf)
+    legacynorm = _normalize_gain_segments(legacypred; source="legacy")
+    compilednorm = _normalize_gain_segments(xchgainsdf; source="compiled")
+    legacywindow, compiledwindow, common_start, common_end = _common_time_window(legacynorm, compilednorm)
+    joined, legacy_only, compiled_only = _compare_gain_segments(legacywindow, compiledwindow)
+
+    legacyrows = size(legacywindow, 1)
+    compiledrows = size(compiledwindow, 1)
+    matchedrows = size(joined, 1)
+    legacyavg = _meangain_or_missing(legacywindow[!, :gain])
+    compiledavg = _meangain_or_missing(compiledwindow[!, :gain])
+    avgdelta = (ismissing(legacyavg) || ismissing(compiledavg)) ? missing : (compiledavg - legacyavg)
+    mean_abs_delta = matchedrows == 0 ? missing : mean(joined[!, :abs_gain_delta])
+    max_abs_delta = matchedrows == 0 ? missing : maximum(joined[!, :abs_gain_delta])
+
+    println("$(EnvConfig.now()) gain comparison window=$(common_start)→$(common_end) legacy_rows=$(legacyrows), compiled_rows=$(compiledrows), matched_segments=$(matchedrows), legacy_avg_gain=$(legacyavg), compiled_avg_gain=$(compiledavg), avg_delta_compiled_minus_legacy=$(avgdelta), mean_abs_segment_delta=$(mean_abs_delta), max_abs_segment_delta=$(max_abs_delta), legacy_only=$(size(legacy_only, 1)), compiled_only=$(size(compiled_only, 1))")
+
+    if nrow(joined) > 0
+        sort!(joined, [:pair, :set, :trend, :startdt])
+        println("$(EnvConfig.now()) gain segment deviation sample: $(first(joined, min(10, nrow(joined))))")
+    end
+
+    if !isnothing(xchreportdf) && (size(xchreportdf, 1) > 0)
+        println("$(EnvConfig.now()) compiled gains report: $xchreportdf")
+    end
+
+    if (:set in names(legacywindow)) && (:gain in names(legacywindow)) && (legacyrows > 0)
+        legacyreport = combine(groupby(DataFrame(legacywindow), :set), :gain => _meangain_or_missing => :legacy_avggain, nrow => :legacy_segments)
+        sort!(legacyreport, :set)
+        println("$(EnvConfig.now()) legacy predicted gains report: $legacyreport")
+    end
+    return nothing
+end
+
 function getgainsdf(cfg::TrendDetectorConfig)
     gaindeps = vcat(_featuretarget_cachefiles(cfg; include_features=false), [TradingStrategy.predictionsfilename()])
     if isfreshcache(TradingStrategy.gainsfilename(), gaindeps)
@@ -738,6 +887,9 @@ function getgainsdf(cfg::TrendDetectorConfig)
         !isempty(sortcols) && sort!(tradesdf, sortcols)
     end
     Xch.savetradesdf(tradesdf; stem="trades-td")
+
+    xchgainsdf, xchreportdf = _collectxchgains(tradesdf)
+    _report_gain_collection_comparison(gaindf, xchgainsdf, xchreportdf)
 
     (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")
     return gaindf

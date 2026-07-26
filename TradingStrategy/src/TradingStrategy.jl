@@ -757,7 +757,6 @@ function _apply_open_hit!(tradesdf::DataFrame, ix::Integer, side::Symbol, limitp
         tradesdf[ix, :lo_pavg] = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
         _resetorder(tradesdf, ix, "lo", reset_pavg=false)
         tradesdf[ix, :lc_amount] = tradesdf[ix, :lp_amount]
-        tradesdf[ix, :lc_pavg] = 0f0
         tradesdf[ix, :lc_filled] = 0f0
         tradesdf[ix, :lc_status] = "submitted"
     elseif side == :short
@@ -770,7 +769,6 @@ function _apply_open_hit!(tradesdf::DataFrame, ix::Integer, side::Symbol, limitp
         tradesdf[ix, :so_pavg] = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
         _resetorder(tradesdf, ix, "so", reset_pavg=false)
         tradesdf[ix, :sc_amount] = tradesdf[ix, :sp_amount]
-        tradesdf[ix, :sc_pavg] = 0f0
         tradesdf[ix, :sc_filled] = 0f0
         tradesdf[ix, :sc_status] = "submitted"
     else
