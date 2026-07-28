@@ -45,7 +45,7 @@ targetconfig14() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=no
 targetconfig15() = trend04targetconfig(10, 60, 0.01, 0.01, holdbehaviormode=no_hold) 
 targetconfig16() = trend04targetconfig(10, 2*60, 0.01, 0.01, holdbehaviormode=no_hold) 
 targetconfig17() = trend04targetconfig(60, 24*60, 0.05, 0.05, holdbehaviormode=no_hold) # Trend04 with long term target
-targetconfig18() = TrendRegression(5, 0.01, -0.01) # for SINE and DOUBLESINE regression tests only
+targetconfig18() = Targets.TrendRegression(5, 0.01, -0.01) # for SINE and DOUBLESINE regression tests only
 targetconfig19() = Targets.TrendRegression(24*60, 0.01, -0.01) 
 targetconfig20() = Targets.TrendRegression(4*60, 0.005, -0.005) 
 targetconfig21() = Targets.TrendRegression(3*24*60, 0.05, -0.05) 
