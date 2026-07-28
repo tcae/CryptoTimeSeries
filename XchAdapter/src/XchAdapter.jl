@@ -39,7 +39,7 @@ executionorderspec(ac::XchAdapterCache, side::Symbol) = _required_method_error(a
 """
 Normalize a raw adapter order status into Xch status vocabulary.
 
-Known normalized values are typically `none`, `submitted`, `closed`, `canceled`,
+Known normalized values are typically `none`, `submitted`, `closed`, `cancelled`,
 and `rejected`. Unknown values fall back to lowercase passthrough.
 """
 normalize_order_status(ac::XchAdapterCache, rawstatus::AbstractString)::String = lowercase(String(rawstatus))

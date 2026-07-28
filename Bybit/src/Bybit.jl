@@ -138,7 +138,7 @@ function normalize_order_status(bc::BybitCache, rawstatus::AbstractString)::Stri
     elseif st in ["filled"]
         return "closed"
     elseif st in ["cancelled", "deactivated"]
-        return "canceled"
+        return "cancelled"
     elseif st in ["rejected"]
         return "rejected"
     end

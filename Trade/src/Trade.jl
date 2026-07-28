@@ -84,7 +84,7 @@ mutable struct TradeCache
         cache = new(xc, DataFrame(), ts, Dict(), looplock, Threads.Condition(looplock))
         cache.mc[:blacklistbases] = String[] # bases excluded from new trading; held positions may still be closed
         cache.mc[:maxassetfraction] = 0.1f0 # defines the maximum ratio of (a specific asset) / ( total assets) - only close trades, if this is exceeded
-        cache.mc[:maxbudgetquote] = nothing # optional overall quote-currency budget cap; if set, trading uses min(totalusdt, maxbudgetquote)
+        cache.mc[:maxbudgetquote] = nothing # optional overall quote budget cap; if set, trading uses min(totalusdt, maxbudgetquote)
         cache.mc[:minorderquote] = 10f0
         cache.mc[:reloadtimes] = [Time("04:00:00")]
         cache.mc[:last_traderefresh_dt] = nothing
@@ -495,6 +495,30 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 
     tc.cfg[:, :classifieraccepted] = [base in classifierbaseset for base in tc.cfg[!, :basecoin]]
     _sync_tradeflags!(tc; assetonly=assetonly)
+
+    # Final loaded scope is contract-driven by trade flags: only openenabled/closeenabled pairs.
+    finalmask = tc.cfg[!, :openenabled] .|| tc.cfg[!, :closeenabled]
+    finalbases = Set{String}(String.(tc.cfg[finalmask, :basecoin]))
+    loadedbases = Set{String}(String.(Xch.bases(tc.xc)))
+
+    # Ensure all selected bases are loaded (closeenabled portfolio bases may bypass classifier acceptance).
+    for base in setdiff(finalbases, loadedbases)
+        ohlcv = Xch.cryptodownload(tc.xc, base, "1m", history_startdt, datetime)
+        tc.xc.bases[base] = ohlcv
+    end
+
+    # Drop any loaded base that is not part of the final open/close-enabled scope.
+    for base in setdiff(Set{String}(String.(Xch.bases(tc.xc))), finalbases)
+        Xch.removebase!(tc.xc, base)
+    end
+
+    # Keep runtime classifier cache aligned to the final loaded base set.
+    for base in setdiff(Set{String}(TradingStrategy.acceptedbases(rt)), finalbases)
+        TradingStrategy.dropbase!(rt, base)
+    end
+
+    @assert Set{String}(String.(Xch.bases(tc.xc))) == finalbases "final loaded base scope mismatch: loaded=$(_summarize_symbols(Xch.bases(tc.xc))), expected=$(_summarize_symbols(finalbases))"
+
     (verbosity >= 4) && println("$(Xch.ttstr(tc.xc)) result of tradeselection! $(tc.cfg)")
     # tc.cfg = tc.cfg[(tc.cfg[!, :openenabled] .|| tc.cfg[:, :closeenabled]), :]
     (verbosity >= 2) && println("$(EnvConfig.now()) #tc.cfg=$(size(tc.cfg, 1)) sum(classifieraccepted)=$(sum(tc.cfg[!, :classifieraccepted])) classifierbases=$(_summarize_symbols(classifierbases))")
@@ -758,8 +782,9 @@ Called by the loop runners once per iterate step.
 function _tradestep!(cache::TradeCache)
     (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
 
-    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0)
-        syncpairs = String.(cache.cfg[!, :pair])
+    bal = Xch.balancessnapshot(cache.xc; force_refresh=true, max_age=Minute(0), ignoresmallvolume=false)
+    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0, balancesdf=bal.snapshot)
+    syncpairs = String.(cache.cfg[!, :pair])
     rowsbybase = Xch.sync_latest_trades_rows!(cache.xc, syncpairs; acct=acct)
     # rowsbybase is a Dict[base] => (tradesdf, rowix, ohlcv) where rowix is the index of the current trade row.
 

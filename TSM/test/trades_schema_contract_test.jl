@@ -18,8 +18,8 @@ using Targets, TSM
         :lc_id, :lc_status, :lcl_filled, :lcl_pavg, :lc_msg,
         :so_id, :so_status, :sol_filled, :sol_pavg, :so_msg,
         :sc_id, :sc_status, :scl_filled, :scl_pavg, :sc_msg,
-        :lp_amount, :sp_amount, :close, :high, :low, :maintmargin,
-        :equity, :balance, :freemargin, :freequote,
+        :lp_amount, :sp_amount, :close, :high, :low,
+        :equity, :freemargin, :freequote,
     ])
 
     got = Set(Symbol.(names(tdf)))

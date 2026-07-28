@@ -1189,11 +1189,37 @@ function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::I
     return normalized
 end
 
+function _capacityfromassets(assetsdf::AbstractDataFrame)
+    quotecoin = uppercase(String(EnvConfig.pairquote))
+    freequote = 0.0
+    if (:coin in names(assetsdf)) && (:free in names(assetsdf))
+        for row in eachrow(assetsdf)
+            if uppercase(String(row.coin)) == quotecoin
+                freequote += max(0.0, (row.free))
+            end
+        end
+    end
+    equity = (:usdtvalue in names(assetsdf)) ? max(0.0, (sum(assetsdf[!, :usdtvalue]))) : freequote
+    return (
+        equity_quote=equity,
+        available_opening_quote=freequote,
+        available_long_quote=freequote,
+        available_short_quote=freequote,
+        initial_margin_quote=0.0,
+        maintenance_margin_quote=0.0,
+        source="Xch:assets_snapshot",
+    )
+end
+
 "Return the current account snapshot used by Trade loop orchestration."
 function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, assetsdf=nothing)
     balancesdf = isnothing(balancesdf) ? balances(xc; ignoresmallvolume=false) : DataFrame(balancesdf; copycols=true)
     assetsdf = isnothing(assetsdf) ? portfolio!(xc, balancesdf; ignoresmallvolume=false) : DataFrame(assetsdf; copycols=true)
-    capacity = accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
+    capacity = if (exchange(xc) == EXCHANGE_BYBITSIM) || timesimulation(xc)
+        _capacityfromassets(assetsdf)
+    else
+        accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
+    end
     quotecoin = uppercase(String(EnvConfig.pairquote))
     freequote = 0.0
     if (:coin in names(assetsdf)) && (:free in names(assetsdf))
@@ -1272,7 +1298,6 @@ end
 
 function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
     TSM.settrades_equity!(tradesdf, ix, acct.equity_quote)
-    TSM.settrades_balance!(tradesdf, ix, acct.free_quote)
     TSM.settrades_freemargin!(tradesdf, ix, acct.free_margin_quote)
     TSM.settrades_freequote!(tradesdf, ix, acct.free_quote)
     return nothing
@@ -1423,7 +1448,7 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             end
         end
 
-        if status in ("closed", "canceled", "rejected", "none")
+        if status in ("closed", "cancelled", "rejected", "none")
             TSM.settradesfield!(tradesdf, ix, idcol, NO_ORDER_ID)
             if amountcol in propertynames(tradesdf)
                 TSM.settradesfield!(tradesdf, ix, amountcol, 0f0)
@@ -1478,7 +1503,7 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
         end
 
-        tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt)
+        tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt) # add a new row to tardes df
         tdf = tdf_rowix.tradesdf
         rowix = tdf_rowix.rowix
 
@@ -1510,7 +1535,6 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
 
         # Account snapshot columns
         _apply_accountsnapshot!(tdf, rowix, acct)
-        TSM.settrades_maintmargin!(tdf, rowix, acct.capacity.maintenance_margin_quote)
 
         rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
     end

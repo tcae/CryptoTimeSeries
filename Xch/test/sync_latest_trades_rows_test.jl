@@ -181,9 +181,7 @@ end
     @test !ismissing(btcrow[btcrowix, :sc_msg])
 
     acct = Xch.account_status(xc; force_refresh=true, ttl_seconds=0)
-    @test isapprox(btcrow[btcrowix, :maintmargin], acct.maintenance_margin_quote; rtol=1f-6, atol=1f-6)
     @test isapprox(btcrow[btcrowix, :equity], acct.equity_quote; rtol=1f-6, atol=1f-6)
-    @test isapprox(btcrow[btcrowix, :balance], acct.free_quote; rtol=1f-6, atol=1f-6)
     @test isapprox(btcrow[btcrowix, :freemargin], acct.free_margin_quote; rtol=1f-6, atol=1f-6)
     @test isapprox(btcrow[btcrowix, :freequote], acct.free_quote; rtol=1f-6, atol=1f-6)
 

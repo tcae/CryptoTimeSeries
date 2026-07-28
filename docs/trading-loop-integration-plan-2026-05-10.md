@@ -91,7 +91,7 @@ Constrain sell-side trading to positions attributable to this trading robot whil
 - [x] Validation rerun passed after the policy change: `Trade` test suite `125/125`.
 
 ### Design objective addressed
-Keep protective/target close orders active across minute ticks for strategy-driven trading (not canceled and lost each cycle), while remaining restart-safe.
+Keep protective/target close orders active across minute ticks for strategy-driven trading (not cancelled and lost each cycle), while remaining restart-safe.
 
 ### Completed in code
 - [x] Replaced blanket per-minute open-order cancellation in `Trade._tradestep!` with selective cancellation of unmanaged orders.

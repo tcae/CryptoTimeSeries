@@ -494,7 +494,7 @@ function normalize_order_status(bc::KrakenFuturesCache, rawstatus::AbstractStrin
 	elseif st in ["filled", "closed"]
 		return "closed"
 	elseif st in ["cancelled", "canceled"]
-		return "canceled"
+		return "cancelled"
 	elseif st in ["rejected"]
 		return "rejected"
 	end

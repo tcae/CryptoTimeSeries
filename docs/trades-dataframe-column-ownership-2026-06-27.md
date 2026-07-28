@@ -1,5 +1,11 @@
 # Trades DataFrame column ownership note (2026-06-27)
 
+Update 2026-07-28:
+- Canonical status spelling is `cancelled`.
+- `score` is one global per-row strategy confidence field, not per trade lane.
+- Account snapshot fields remain in Trades v1 and should be reused when possible to avoid redundant exchange calls.
+- `set` and `rangeid` are promoted into Trades v1 and owned by TSM.
+
 ## Purpose
 
 This note defines which module owns which columns of the Trades DataFrame and which modules may read or mutate them.
@@ -44,24 +50,26 @@ Primary references in code:
 
 | Column(s) | Primary owner | Secondary writer(s) | eltype | default | Main readers | Docstring |
 |---|---|---|---|---|---|---|
-| `opentime` | Xch | None | `DateTime` | `DateTime[]` for an empty trades frame | TradingStrategy, Xch, TrendDetector | Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestamp derived from sample data. |
-| `lastopentrade` | Xch | TradingStrategy (replay/simulation path only) | `Union{Missing, DateTime}` | `missing` | TradingStrategy, TrendDetector | Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: Timestamp of the last open-trade event for the pair while `lp_amount > 0f0` or `sp_amount > 0f0`; otherwise `missing`. |
-| `pair` | Xch | None | `CategoricalVector{String}` | `"none"` | Xch, TrendDetector, TradingStrategy | Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Required identity/routing column of the trading pair used by Xch. |
-| `label` | TradingStrategy | Trade (reserved override only if explicitly designed) | `TradeLabel` | `ignore` | Xch, TrendDetector | Ensure Trades column `label` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions. |
-| `score` | TradingStrategy | None | `Float32` | `0f0` | Xch, TrendDetector | Ensure Trades column `score` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score for the active label. |
-| `lo_limit`, `lc_limit`, `so_limit`, `sc_limit` | TradingStrategy | Trade (reserved override before request processing) | `Float32` | `0f0` | Xch, TrendDetector | Ensure Trades column `lo_limit`/`lc_limit`/`so_limit`/`sc_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: Strategy guidance consumed by Xch as requested limit per action. |
-| `lo_amount`, `lc_amount`, `so_amount`, `sc_amount` | Trade | None | `Float32` | `0f0` | Xch | Ensure Trades column `lo_amount`/`lc_amount`/`so_amount`/`sc_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: Request order size consumed by Xch order processing. |
-| `lo_id`, `lc_id`, `so_id`, `sc_id`, `lol_id`, `lcl_id`, `sol_id`, `scl_id` | Xch | None | `CategoricalVector{String}` | `"none"` | Trade, Xch | Ensure Trades column `lo_id`/`lc_id`/`so_id`/`sc_id` and `lol_id`/`lcl_id`/`sol_id`/`scl_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request. |
-| `lo_status`, `lc_status`, `so_status`, `sc_status`, `lol_status`, `lcl_status`, `sol_status`, `scl_status` | Xch | None | `CategoricalVector{String}` | `"none"` | Trade, Xch | Ensure Trades column `lo_status`/`lc_status`/`so_status`/`sc_status` and `lol_status`/`lcl_status`/`sol_status`/`scl_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states (mapping via normalize_order_status): none, submitted, closed, canceled, rejected. |
-| `lo_filled`, `lc_filled`, `so_filled`, `sc_filled` | Xch | None | `Float32` | `0f0` | Trade, Xch | Ensure Trades column `lo_filled`/`lc_filled`/`so_filled`/`sc_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Remaining base quantity from order status reconciliation. |
-| `lo_pavg`, `lc_pavg`, `so_pavg`, `sc_pavg` | Xch | None | `Float32` | `0f0` | Trade, Xch | Ensure Trades column `lo_pavg`/`lc_pavg`/`so_pavg`/`sc_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis. |
-| `lo_msg`, `lc_msg`, `so_msg`, `sc_msg`, `lol_msg`, `lcl_msg`, `sol_msg`, `scl_msg` | Xch | None | `CategoricalVector{String}` | `"none"` | Trade | Ensure Trades column `lo_msg`/`lc_msg`/`so_msg`/`sc_msg` and `lol_msg`/`lcl_msg`/`sol_msg`/`scl_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text (categorical). |
-| `lp_amount` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades column `lp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Long position amount snapshot for the trading pair. |
-| `sp_amount` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades column `sp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Short position amount snapshot for the trading pair. |
-| `close`, `high`, `low` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades column `close`/`high`/`low` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: OHLCV sample prices for the trading pair. |
-| `maintmargin`, `equity`, `balance`, `freemargin`, `freequote` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades column `maintmargin`/`equity`/`balance`/`freemargin`/`freequote` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: `maintmargin`: maintenance margin of position; `equity`: account equity amount of trading pair base; `balance`: account balance amount of trading pair base; `freemargin`: free margin amount of trading pair base; `freequote`: free quote amount of trading pair base. |
-| `config` | TSM | None | `CategoricalVector{String}` | `"none"` | TSM, Xch, TradingStrategy | Ensure Trades column `config`/`tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Any change in config, e.g. different openthresholds, shall result in a different config marker |
-| `tsmstate` | TSM | None | `CategoricalVector{String}` | `"none"` | TSM, Xch, TradingStrategy | Ensure Trades column `config`/`tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Note: Pair state and strategy-config markers owned by the state machine. |
+| `opentime` | Xch | None | `DateTime` | `DateTime[]` for an empty trades frame | TradingStrategy, Xch, TrendDetector | Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestamp derived from sample data. Represents the time stamp of the most recent fully closed minute as UTC. |
+| `lastopentrade` | Xch | TradingStrategy (replay/simulation path only) | `Union{Missing, DateTime}` | `missing` | TradingStrategy, TrendDetector | Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: Timestamp of the last open position trade, i.e. lp_amount or sp_amount increased; otherwise `missing`. |
+| `pair` | Xch | None | `CategoricalVector{String}` | `"none"` | Xch, TrendDetector, TradingStrategy | Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Identifier of the trading pair. |
+| `set` | TSM | None | `CategoricalVector{String}` | `TSM_NO_SET` | TradingStrategy, Xch, TrendDetector | Ensure Trades column `set` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Denotes the logical run set (for example train/test/eval/production). |
+| `rangeid` | TSM | None | `Int32` | `0` | TradingStrategy, Xch, TrendDetector | Ensure Trades column `rangeid` exists. Owner: TSM. Eltype: `Int32`. Denotes one consecutive liquidity range identifier within one pair data set. |
+| `label` | TradingStrategy | Trade (reserved override only if explicitly designed) | `TradeLabel` | `ignore` | Xch, TrendDetector | Ensure Trades column `label` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: label represents the TradingStrategy trading advice. |
+| `score` | TradingStrategy | None | `Float32` | `0f0` | Xch, TrendDetector | Ensure Trades column `score` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: likelihood of the label to be correct from TradingStrategy. |
+| `lo_limit`, `lc_limit`, `so_limit`, `sc_limit` | TradingStrategy | Trade (reserved override before request processing) | `Float32` | `0f0` | Xch, TrendDetector | Ensure Trades lane column `<lane>_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: order limit in case of a currently active order for that trade lane. |
+| `lo_amount`, `lc_amount`, `so_amount`, `sc_amount` | Trade | None | `Float32` | `0f0` | Xch | Ensure Trades lane column `<lane>_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: if order amount > 0 then order shall be placed, otherwise not. |
+| `lo_id`, `lc_id`, `so_id`, `sc_id`, `lol_id`, `lcl_id`, `sol_id`, `scl_id` | Xch | None | `CategoricalVector{String}` | `TSM_NO_ORDER_ID` | Trade, Xch | Ensure Trades lane column `<lane>_id` and last-lane column `<lane>l_id` exist. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: exchange provided id of currently active order and last minute active order; otherwise TSM_NO_ORDER_ID. |
+| `lo_status`, `lc_status`, `so_status`, `sc_status`, `lol_status`, `lcl_status`, `sol_status`, `scl_status` | Xch | None | `CategoricalVector{String}` | `TSM_NO_STATE` | Trade, Xch | Ensure Trades lane column `<lane>_status` and last-lane column `<lane>l_status` exist. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: order status of currently active order and last minute active order as one of the following: TSM_NO_STATE, `submitted`, `closed`, `cancelled`, `rejected`. |
+| `lol_filled`, `lcl_filled`, `sol_filled`, `scl_filled` | Xch | None | `Float32` | `0f0` | Trade, Xch | Ensure Trades last-lane column `<lane>l_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as default. Note: filled/executed base quantity of the last minute active order. |
+| `lol_pavg`, `lcl_pavg`, `sol_pavg`, `scl_pavg` | Xch | None | `Float32` | `0f0` | Trade, Xch | Ensure Trades last-lane column `<lane>l_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as default. Note: average fill price in quote units of the last minute active order. |
+| `lo_msg`, `lc_msg`, `so_msg`, `sc_msg`, `lol_msg`, `lcl_msg`, `sol_msg`, `scl_msg` | Xch | None | `CategoricalVector{String}` | `TSM_NO_ORDER_MSG` | Trade | Ensure Trades lane column `<lane>_msg` and last-lane column `<lane>l_msg` exist. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: rejection/error message text for the currently active order and last minute active order. |
+| `lp_amount` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades column `lp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Long position amount of trading pair holdings. |
+| `sp_amount` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades column `sp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Short position amount of trading pair holdings. |
+| `close`, `high`, `low` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades columns `close`, `high`, `low` exist. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Last completed minute close/high/low price of the trading pair. |
+| `equity`, `freemargin`, `freequote` | Xch | None | `Float32` | `0f0` | Trade | Ensure Trades columns `equity`, `freemargin`, `freequote` exist. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Notes: `equity` is the most recent equity in quote units as constraint for maximum relative allocation of a trading pair; `freemargin` is free account margin amount in quote units and currently equal to `freequote`; `freequote` is free account amount for orders in quote units. |
+| `config` | TSM | None | `CategoricalVector{String}` | `TSM_NO_CONFIG` | TSM, Xch, TradingStrategy | Ensure Trades column `config` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Identifies the Trade configuration id. Any change in config, e.g. different openthresholds, shall result in a different config marker. |
+| `tsmstate` | TSM | None | `CategoricalVector{String}` | `TSM_NO_STATE` | TSM, Xch, TradingStrategy | Ensure Trades column `tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. `sync`: execution and price changes of the most recent minute are updated in the current row fields; next is `request`. `request`: based on data of the previous minute order requests are defined; next is `xch`. `xch`: order requests are submitted to the exchange; next is `sync`. |
 
 order status mapping via XchCore.normalize_order_status():
 
@@ -73,16 +81,17 @@ order status mapping via XchCore.normalize_order_status():
 | submitted | Triggered | — | — |
 | submitted | PartiallyFilled | open (with partial fill) | open (with partial fill) |
 | closed | Filled | closed | filled |
-| canceled | Cancelled, Deactivated | canceled | canceled |
+| cancelled | Cancelled, Deactivated, Canceled | cancelled, canceled | cancelled, canceled |
 | rejected | — | expired | — |
 | rejected | Rejected | — | rejected |
 
-## Runtime helper columns (non-v1 contract)
+Normalization policy:
+- Canonical internal status vocabulary is: `none`, `submitted`, `closed`, `cancelled`, `rejected`.
+- Adapter-specific spellings (`canceled` vs `cancelled`) are normalized at adapter boundaries before writing Trades rows.
 
-These can appear during strategy execution but are not part of the TSM trades contract contributors:
-- `set`, `rangeid`
+## Runtime helper columns (outside Trades v1)
 
-`predicted`, `openthreshold`, and `closethreshold` are gaindf metadata columns written by TrendDetector gain post-processing (`addgainadmin!`), not Trades helper columns.
+`predicted`, `openthreshold`, and `closethreshold` are gaindf metadata columns written by TrendDetector gain post-processing (`addgainadmin!`), not Trades v1 columns.
 
 Ownership:
 - Primary writer: TrendDetector
@@ -98,7 +107,7 @@ Ownership:
 
 ### TradingStrategy
 - May mutate only strategy advice/state columns.
-- Must not mutate Xch-owned execution feedback columns (`*id`, `*status`, `*filled`, `*pavg`, `*msg`), position snapshot columns (`lp_amount`, `sp_amount`), or account snapshot columns (`maintmargin`, `equity`, `balance`, `freemargin`, `freequote`).
+- Must not mutate Xch-owned execution feedback columns (`*id`, `*status`, `*filled`, `*pavg`, `*msg`), position snapshot columns (`lp_amount`, `sp_amount`), or account snapshot columns (`equity`, `freemargin`, `freequote`).
 
 ## Implementation status note
 
@@ -113,13 +122,15 @@ Ownership:
 ### TrendDetector
 - May append diagnostics metadata columns for analysis output.
 - Must treat v1 contract columns as data input/output, not ownership targets.
+- Must not redefine ownership semantics of `set` and `rangeid`; those are TSM-owned v1 fields.
 
 ## Conflict resolution policy
 
 If multiple modules attempt to write the same column, ownership precedence is:
-1. Xch for execution/account feedback columns
-2. TradingStrategy for strategy advice columns
-3. Trade for request sizing columns
+1. TSM for TSM-owned contract columns (`set`, `rangeid`, `config`, `tsmstate`)
+2. Xch for execution/account feedback columns
+3. TradingStrategy for strategy advice columns
+4. Trade for request sizing columns
 
 Any deviation should be implemented as an explicit API-level exception and documented in this note.
 

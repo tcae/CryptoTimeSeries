@@ -23,9 +23,11 @@ const TSM_NO_ORDER_ID = "none"
 const TSM_NO_ORDER_MSG = "none"
 const TSM_NO_CONFIG = "none"
 const TSM_NO_STATE = "none"
-const TSM_STATUS_LEVELS = ["none", "submitted", "closed", "canceled", "rejected"]
-const TSM_CATEGORICAL_COLUMNS = Set([:pair, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :config, :tsmstate])
-const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :maintmargin, :equity, :balance, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
+const TSM_NO_SET = "none"
+const TSM_STATUS_LEVELS = ["none", "submitted", "closed", "cancelled", "rejected"]
+const TSM_CATEGORICAL_COLUMNS = Set([:pair, :set, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :config, :tsmstate])
+const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
+const TSM_INT_COLUMNS = Set([:rangeid])
 const TSM_TRADE_LANES = Set([:lo, :lc, :so, :sc])
 
 """Map one trade label (or lane symbol) to its canonical lane symbol (`:lo`, `:lc`, `:so`, `:sc`)."""
@@ -105,13 +107,12 @@ function _tradesrowtemplate!(tsm::TsmCache)::DataFrame
 end
 
 function _appendtradesrow!(tsm::TsmCache, tdf::DataFrame, pairkey::AbstractString, opentime::DateTime)::Int
-    _applytradescontributors!(tsm, tdf)
     rowdf = DataFrame(_tradesrowtemplate!(tsm); copycols=true)
     rowdf[1, :opentime] = opentime
     if :pair in propertynames(rowdf)
         rowdf[1, :pair] = uppercase(String(pairkey))
     end
-    append!(tdf, rowdf; cols=:subset)
+    push!(tdf, rowdf[1, :]; cols=:subset)
     return nrow(tdf)
 end
 
@@ -263,9 +264,11 @@ function _defaultcolumn(field::Symbol, n::Integer)
         return _compressedcategorical(fill(TSM_NO_ORDER_ID, n); levels=[TSM_NO_ORDER_ID])
     elseif field === :lo_msg || field === :lol_msg || field === :lc_msg || field === :lcl_msg || field === :so_msg || field === :sol_msg || field === :sc_msg || field === :scl_msg
         return _compressedcategorical(fill(TSM_NO_ORDER_MSG, n); levels=[TSM_NO_ORDER_MSG])
-    elseif field === :pair || field === :config || field === :tsmstate
-        default = field === :pair ? "none" : field === :config ? TSM_NO_CONFIG : TSM_NO_STATE
+    elseif field === :pair || field === :set || field === :config || field === :tsmstate
+        default = field === :pair ? "none" : field === :set ? TSM_NO_SET : field === :config ? TSM_NO_CONFIG : TSM_NO_STATE
         return _compressedcategorical(fill(default, n); levels=[default])
+    elseif field in TSM_INT_COLUMNS
+        return fill(Int32(0), n)
     elseif field in TSM_FLOAT_COLUMNS
         return fill(0f0, n)
     end
@@ -292,6 +295,19 @@ function _float_getter(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
 end
 
 function _float_setter!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
+    _assert_row_bounds(tradesdf, ix, field)
+    _assert_hasfield(tradesdf, field)
+    tradesdf[ix, field] = value
+    return tradesdf
+end
+
+function _int_getter(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
+    _assert_row_bounds(tradesdf, ix, field)
+    _assert_hasfield(tradesdf, field)
+    return tradesdf[ix, field]
+end
+
+function _int_setter!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
     _assert_row_bounds(tradesdf, ix, field)
     _assert_hasfield(tradesdf, field)
     tradesdf[ix, field] = value
@@ -386,7 +402,7 @@ gettrades_last_pavg(tradesdf::AbstractDataFrame, ix::Integer, label) = gettrades
 """Set last-lane average fill price (`lol/lcl/sol/scl`) addressed via a trade label."""
 settrades_last_pavg!(tradesdf::DataFrame, ix::Integer, label, value) = settrades_lastlanefield!(tradesdf, ix, label, :pavg, value)
 
-for field in (:opentime, :lastopentrade, :pair, :lo_id, :lo_status, :lol_id, :lol_status, :lol_filled, :lol_pavg, :lo_msg, :lol_msg, :lc_id, :lc_status, :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lc_msg, :lcl_msg, :so_id, :so_status, :sol_id, :sol_status, :sol_filled, :sol_pavg, :so_msg, :sol_msg, :sc_id, :sc_status, :scl_id, :scl_status, :scl_filled, :scl_pavg, :sc_msg, :scl_msg, :lp_amount, :sp_amount, :close, :high, :low, :maintmargin, :equity, :balance, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
+for field in (:opentime, :lastopentrade, :pair, :set, :rangeid, :lo_id, :lo_status, :lol_id, :lol_status, :lol_filled, :lol_pavg, :lo_msg, :lol_msg, :lc_id, :lc_status, :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lc_msg, :lcl_msg, :so_id, :so_status, :sol_id, :sol_status, :sol_filled, :sol_pavg, :so_msg, :sol_msg, :sc_id, :sc_status, :scl_id, :scl_status, :scl_filled, :scl_pavg, :sc_msg, :scl_msg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
     ensurefn = Symbol("ensuretrades_", field, "!")
     getfn = Symbol("gettrades_", field)
     setfn = Symbol("settrades_", field, "!")
@@ -442,6 +458,18 @@ for field in (:opentime, :lastopentrade, :pair, :lo_id, :lo_status, :lol_id, :lo
             end
             function $setfn(tradesdf::DataFrame, ix::Integer, value)
                 return _float_setter!(tradesdf, ix, $(QuoteNode(field)), value)
+            end
+        end
+    elseif field in TSM_INT_COLUMNS
+        @eval begin
+            function $ensurefn(tradesdf::DataFrame)::DataFrame
+                return _ensurecolumn!(tradesdf, $(QuoteNode(field)))
+            end
+            function $getfn(tradesdf::AbstractDataFrame, ix::Integer)
+                return _int_getter(tradesdf, ix, $(QuoteNode(field)))
+            end
+            function $setfn(tradesdf::DataFrame, ix::Integer, value)
+                return _int_setter!(tradesdf, ix, $(QuoteNode(field)), value)
             end
         end
     else
@@ -505,9 +533,7 @@ function xch_tradesdf_contributors()::Vector{Function}
         xch_tradesdf_close,
         xch_tradesdf_high,
         xch_tradesdf_low,
-        xch_tradesdf_maintmargin,
         xch_tradesdf_equity,
-        xch_tradesdf_balance,
         xch_tradesdf_freemargin,
         xch_tradesdf_freequote,
     ]
@@ -538,238 +564,134 @@ end
 """Return TSM-owned Trades schema initializer functions."""
 function tsm_tradesdf_contributors()::Vector{Function}
     return Function[
+        tsm_tradesdf_set,
+        tsm_tradesdf_rangeid,
         tsm_tradesdf_config,
         tsm_tradesdf_tsmstate,
     ]
 end
 
-"""Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestamp derived from sample data."""
+"""Ensure Trades column `set` exists. Owner: TSM. Eltype: `CategoricalVector{String}`. Denotes the logical run set (for example train/test/eval/production)."""
+function tsm_tradesdf_set(tradesdf::DataFrame)::DataFrame
+    return _ensurecolumn!(tradesdf, :set)
+end
+
+"""Ensure Trades column `rangeid` exists. Owner: TSM. Eltype: `Int32`. Denotes one consecutive liquidity range identifier within one pair data set."""
+function tsm_tradesdf_rangeid(tradesdf::DataFrame)::DataFrame
+    return _ensurecolumn!(tradesdf, :rangeid)
+end
+
+"""Ensure Trades column `opentime` exists. Owner: Xch. Eltype: `DateTime`. Note: Required unique and sorted timestamp derived from sample data. Represents the time stamp of the most recent fully closed minute as UTC."""
 function xch_tradesdf_opentime(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :opentime)
 end
 
-"""Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: Timestamp of the last open-trade event for the pair while `lp_amount > 0f0` or `sp_amount > 0f0`; otherwise `missing`."""
+"""Ensure Trades column `lastopentrade` exists. Owner: Xch. Eltype: `Union{Missing,DateTime}`. Note: Timestamp of the last open position trade, i.e. lp_amount or sp_amount increased; otherwise `missing`."""
 function xch_tradesdf_lastopentrade(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lastopentrade)
 end
 
-"""Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Required identity/routing column of the trading pair used by Xch."""
+"""Ensure Trades column `pair` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Identifier of the trading pair."""
 function xch_tradesdf_pair(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :pair)
 end
 
-"""Ensure Trades lane column `<lane>_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`."""
+"""Ensure Trades lane column `<lane>_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: exchange provided id of currently active order; otherwise TSM_NO_ORDER_ID."""
 function xch_tradesdf_id(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "_id"))
 end
 
-"""Ensure Trades lane column `<lane>_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`."""
+"""Ensure Trades lane column `<lane>_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: order status of currently active order as one of the following: TSM_NO_STATE, `submitted`, `closed`, `cancelled`, `rejected`."""
 function xch_tradesdf_status(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "_status"))
 end
 
-"""Ensure Trades column `lol_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the long-open limit lane."""
-function xch_tradesdf_lol_id(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lol_id)
-end
-
-"""Ensure Trades column `lol_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the long-open limit lane."""
-function xch_tradesdf_lol_status(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lol_status)
-end
-
-"""Ensure Trades column `lol_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_lol_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lol_filled)
-end
-
-"""Ensure Trades column `lol_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_lol_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lol_pavg)
-end
-
-"""Ensure Trades lane column `<lane>_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`."""
+"""Ensure Trades lane column `<lane>_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: rejection/error message text for the currently active order."""
 function xch_tradesdf_msg(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "_msg"))
 end
 
-"""Ensure Trades last-lane column `<lane>l_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`."""
+"""Ensure Trades last-lane column `<lane>l_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: exchange provided id of last minute active order; otherwise TSM_NO_ORDER_ID."""
 function xch_tradesdf_last_id(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "l_id"))
 end
 
-"""Ensure Trades last-lane column `<lane>l_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`."""
+"""Ensure Trades last-lane column `<lane>l_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: order status of the last minute active order as one of the following: TSM_NO_STATE, `submitted`, `closed`, `cancelled`, `rejected`."""
 function xch_tradesdf_last_status(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "l_status"))
 end
 
-"""Ensure Trades last-lane column `<lane>l_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`."""
+"""Ensure Trades last-lane column `<lane>l_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: rejection/error message text for the last minute active order."""
 function xch_tradesdf_last_msg(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "l_msg"))
 end
 
-"""Ensure Trades last-lane column `<lane>l_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as default."""
+"""Ensure Trades last-lane column `<lane>l_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as default. Note: Filled/executed base quantity of the last minute active order."""
 function xch_tradesdf_last_filled(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "l_filled"))
 end
 
-"""Ensure Trades last-lane column `<lane>l_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as default."""
+"""Ensure Trades last-lane column `<lane>l_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as default. Note: Average fill price in quote units of the last minute active order."""
 function xch_tradesdf_last_pavg(df::DataFrame, label)::DataFrame
     return _ensurecolumn!(df, Symbol(tradelane(label), "l_pavg"))
 end
 
-"""Ensure Trades column `lol_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the long-open limit lane."""
-function xch_tradesdf_lol_msg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lol_msg)
-end
-
-
-"""Ensure Trades column `lcl_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the long-close limit lane."""
-function xch_tradesdf_lcl_id(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lcl_id)
-end
-
-"""Ensure Trades column `lcl_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the long-close limit lane."""
-function xch_tradesdf_lcl_status(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lcl_status)
-end
-
-"""Ensure Trades column `lcl_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_lcl_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lcl_filled)
-end
-
-"""Ensure Trades column `lcl_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_lcl_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lcl_pavg)
-end
-
-
-"""Ensure Trades column `lcl_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the long-close limit lane."""
-function xch_tradesdf_lcl_msg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :lcl_msg)
-end
-
-
-"""Ensure Trades column `sol_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the short-open limit lane."""
-function xch_tradesdf_sol_id(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sol_id)
-end
-
-"""Ensure Trades column `sol_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the short-open limit lane."""
-function xch_tradesdf_sol_status(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sol_status)
-end
-
-"""Ensure Trades column `sol_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_sol_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sol_filled)
-end
-
-"""Ensure Trades column `sol_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_sol_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sol_pavg)
-end
-
-
-"""Ensure Trades column `sol_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the short-open limit lane."""
-function xch_tradesdf_sol_msg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :sol_msg)
-end
-
-
-"""Ensure Trades column `scl_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Exchange order id of a submit/amend/close request for the short-close limit lane."""
-function xch_tradesdf_scl_id(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :scl_id)
-end
-
-"""Ensure Trades column `scl_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Order status states for the short-close limit lane."""
-function xch_tradesdf_scl_status(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :scl_status)
-end
-
-"""Ensure Trades column `scl_filled` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Filled/executed base quantity from order status reconciliation."""
-function xch_tradesdf_scl_filled(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :scl_filled)
-end
-
-"""Ensure Trades column `scl_pavg` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Average fill price from exchange order status. Will not be reset at order close time but at order creation time, so that the average price of a closed order can be stored for later analysis."""
-function xch_tradesdf_scl_pavg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :scl_pavg)
-end
-
-
-"""Ensure Trades column `scl_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: Direct rejection/error message text for the short-close limit lane."""
-function xch_tradesdf_scl_msg(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :scl_msg)
-end
-
-"""Ensure Trades column `lp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Long position amount snapshot for the trading pair."""
+"""Ensure Trades column `lp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Long position amount of trading pair holdings."""
 function xch_tradesdf_lp_amount(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lp_amount)
 end
 
-"""Ensure Trades column `sp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Short position amount snapshot for the trading pair."""
+"""Ensure Trades column `sp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Short position amount of trading pair holdings."""
 function xch_tradesdf_sp_amount(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :sp_amount)
 end
 
-"""Ensure Trades column `close` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Close price of OHLCV sample for the trading pair."""
+"""Ensure Trades column `close` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Last completed minute close price of the trading pair."""
 function xch_tradesdf_close(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :close)
 end
 
-"""Ensure Trades column `high` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: High price of OHLCV sample for the trading pair."""
+"""Ensure Trades column `high` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Last completed minute high price of trading pair."""
 function xch_tradesdf_high(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :high)
 end
 
-"""Ensure Trades column `low` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Low price of OHLCV sample for the trading pair."""
+"""Ensure Trades column `low` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Last completed minute low price of trading pair."""
 function xch_tradesdf_low(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :low)
 end
 
-"""Ensure Trades column `maintmargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Maintenance margin of position."""
-function xch_tradesdf_maintmargin(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :maintmargin)
-end
-
-"""Ensure Trades column `equity` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account equity amount of trading pair base."""
+"""Ensure Trades column `equity` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Most recent equity in quote units as constraint for maximum relative allocation  of a trading pair."""
 function xch_tradesdf_equity(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :equity)
 end
 
-"""Ensure Trades column `balance` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Account balance amount of trading pair base."""
-function xch_tradesdf_balance(df::DataFrame)::DataFrame
-    return _ensurecolumn!(df, :balance)
-end
-
-"""Ensure Trades column `freemargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free margin amount of trading pair base."""
+"""Ensure Trades column `freemargin` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free account margin amount in quote units. Currently equal to freequote."""
 function xch_tradesdf_freemargin(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :freemargin)
 end
 
-"""Ensure Trades column `freequote` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free quote amount of trading pair base."""
+"""Ensure Trades column `freequote` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Free account amount for orders in quote units."""
 function xch_tradesdf_freequote(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :freequote)
 end
 
-"""Ensure Trades column `label` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: TradingStrategy writes enum labels; Xch consumes them to map open/close actions."""
+"""Ensure Trades column `label` exists. Owner: TradingStrategy. Eltype: `TradeLabel` with `ignore` as the default. Note: label represents the TradingStrategy trading advice."""
 function tradingstrategy_tradesdf_label(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :label)
 end
 
-"""Ensure Trades column `score` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: Strategy confidence/score of trade label."""
+"""Ensure Trades column `score` exists. Owner: TradingStrategy. Eltype: `Float32`. Note: likelihood of the label to be correct from TradingStrategy."""
 function tradingstrategy_tradesdf_score(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :score)
 end
 
-"""Ensure Trades lane column `<lane>_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default."""
+"""Ensure Trades lane column `<lane>_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: order limit in case of a currently active order for that trade lane."""
 function tradingstrategy_tradesdf_limit(tradesdf::DataFrame, label)::DataFrame
     return _ensurecolumn!(tradesdf, Symbol(tradelane(label), "_limit"))
 end
 
-"""Ensure Trades lane column `<lane>_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default."""
+"""Ensure Trades lane column `<lane>_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: if order amount > 0 then order shall be placed, otherwise not."""
 function trade_tradesdf_amount(tradesdf::DataFrame, label)::DataFrame
     return _ensurecolumn!(tradesdf, Symbol(tradelane(label), "_amount"))
 end
@@ -780,38 +702,9 @@ function tsm_tradesdf_config(tradesdf::DataFrame)::DataFrame
 end
 
 """Ensure Trades column `tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`.  
-- Initial and default state is *none*
-- *xch* is a state where order settings have to be in place before entering and exchange side changes are refleced before leaving the state
-  - input used:
-    - pair
-    - label
-    - lo_limit, lo_amount, lo_id
-    - lc_limit, lc_amount, lc_id
-    - so_limit, so_amount, so_id
-    - sc_limit, sc_amount, sc_id
-  - a new row is created reflecting a new minute 
-  - updated output (reflects changes during the **previous** minute)
-    - close, high, low
-    - an order id may be changed, e.g. it is replaced by another order due to amendments or because it is an iceberg order
-    - the status is the status of the listed order id. The status of a replaced order id is not reflected and need to be requested from the exchange.
-    - filled shows the amount filled during the previous minute.
-    - price shows the execution price of the amount executed in the last minute.
-    - lo_id, lo_status, lol_filled, lol_pavg, lo_msg
-    - lc_id, lc_status, lcl_filled, lcl_pavg, lc_msg
-    - so_id, so_status, sol_filled, sol_pavg, so_msg
-    - sc_id, sc_status, scl_filled, scl_pavg, sc_msg
-    - maintmargin, equity, balance, freemargin, freequote
-    - lp_amount, sp_amount
-    - tsmstate becomes *sync*
-- *sync* is a state where the exchange changes from the previous minute shall be processed. When done, tsmstate becomes *request*
-- *request* is a state where any orders shall be prepared
-  - updated output
-    - label
-    - lo_limit, lo_amount, lo_id
-    - lc_limit, lc_amount, lc_id
-    - so_limit, so_amount, so_id
-    - sc_limit, sc_amount, sc_id
-    - tsmstate becomes *xch*
+- *sync*: execution and price changes of the most recent minute are updated in the current row fields; next is *request*
+- *request*: based on data of the previous minute order requests are defined; next is *xch*
+- *xch*: order requests are submitted to the exchange; next is *sync*
 """
 function tsm_tradesdf_tsmstate(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :tsmstate)
@@ -824,6 +717,10 @@ function gettradesfield(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
         return gettrades_lastopentrade(tradesdf, ix)
     elseif field === :pair
         return gettrades_pair(tradesdf, ix)
+    elseif field === :set
+        return gettrades_set(tradesdf, ix)
+    elseif field === :rangeid
+        return gettrades_rangeid(tradesdf, ix)
     elseif field === :lo_id
         return gettrades_lo_id(tradesdf, ix)
     elseif field === :lo_status
@@ -898,12 +795,8 @@ function gettradesfield(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
         return gettrades_high(tradesdf, ix)
     elseif field === :low
         return gettrades_low(tradesdf, ix)
-    elseif field === :maintmargin
-        return gettrades_maintmargin(tradesdf, ix)
     elseif field === :equity
         return gettrades_equity(tradesdf, ix)
-    elseif field === :balance
-        return gettrades_balance(tradesdf, ix)
     elseif field === :freemargin
         return gettrades_freemargin(tradesdf, ix)
     elseif field === :freequote
@@ -943,6 +836,10 @@ function settradesfield!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
         return settrades_lastopentrade!(tradesdf, ix, value)
     elseif field === :pair
         return settrades_pair!(tradesdf, ix, value)
+    elseif field === :set
+        return settrades_set!(tradesdf, ix, value)
+    elseif field === :rangeid
+        return settrades_rangeid!(tradesdf, ix, value)
     elseif field === :lo_id
         return settrades_lo_id!(tradesdf, ix, value)
     elseif field === :lo_status
@@ -1017,12 +914,8 @@ function settradesfield!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
         return settrades_high!(tradesdf, ix, value)
     elseif field === :low
         return settrades_low!(tradesdf, ix, value)
-    elseif field === :maintmargin
-        return settrades_maintmargin!(tradesdf, ix, value)
     elseif field === :equity
         return settrades_equity!(tradesdf, ix, value)
-    elseif field === :balance
-        return settrades_balance!(tradesdf, ix, value)
     elseif field === :freemargin
         return settrades_freemargin!(tradesdf, ix, value)
     elseif field === :freequote
