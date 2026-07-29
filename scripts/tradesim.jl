@@ -872,41 +872,45 @@ replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpat
 replay_reportdf = TSM.gainsreport(instem=replay_gains_stem, stem=replay_report_stem, folderpath=replay_out_folder)
 saved_gains = EnvConfig.tablepath(replay_gains_stem; folderpath=replay_out_folder, format=:auto)
 saved_gainsreport = EnvConfig.tablepath(replay_report_stem; folderpath=replay_out_folder, format=:auto)
-println("$(EnvConfig.now()): replay gains report \n $replay_reportdf")
+println("$(EnvConfig.now()): replay gains report")
+println(replay_gainsdf)
+println(replay_reportdf)
 println("$(EnvConfig.now()): saved replay trades to $saved_trades rows=$(nrow(alltrades)) $(nrow(alltrades) > 0 ? (string(alltrades[begin, :opentime]) * " - " * string(alltrades[end, :opentime])) : nothing)")
+println(alltrades)
 println("$(EnvConfig.now()): saved replay fills to $saved_fills rows=$(nrow(allfills))")
+println(allfills)
 println("$(EnvConfig.now()): saved replay gains to $saved_gains rows=$(nrow(replay_gainsdf))")
 println("$(EnvConfig.now()): saved replay gains report to $saved_gainsreport rows=$(nrow(replay_reportdf))")
 
-replay_compare_root = joinpath(dirname(EnvConfig.logfolder()), REPLAY_SOURCE_SUBFOLDER)
-trades_td = EnvConfig.readdf("trades-td"; folderpath=replay_compare_root)
-if !isnothing(trades_td)
-    cmp = tradescompare(DataFrame(trades_td), alltrades)
-    println("$(EnvConfig.now()): trades compare rowstats replay=$(cmp.rowstats.replay_rows) td=$(cmp.rowstats.td_rows) joined=$(cmp.rowstats.joined_rows)")
-    println("$(EnvConfig.now()): trades compare equal_cols=$(length(cmp.equal_cols)) unequal_cols=$(length(cmp.unequal_counts))")
-    if haskey(cmp.unequal_counts, :label)
-        println("$(EnvConfig.now()): trades compare label mismatches=$(cmp.unequal_counts[:label])")
-        top_label_transitions = sort(collect(cmp.label_transitions); by=last, rev=true)
-        shown = min(8, length(top_label_transitions))
-        for ix in 1:shown
-            println("$(EnvConfig.now()): label transition $(top_label_transitions[ix][1]) count=$(top_label_transitions[ix][2])")
-        end
-    end
-    for lane in [:lo_limit, :lc_limit, :so_limit, :sc_limit]
-        if haskey(cmp.limit_mismatch_counts, lane)
-            println("$(EnvConfig.now()): trades compare $(lane) mismatches=$(cmp.limit_mismatch_counts[lane])")
-        end
-    end
-else
-    println("$(EnvConfig.now()): trades compare skipped; missing trades-td.arrow in $(replay_compare_root)")
-end
+# replay_compare_root = joinpath(dirname(EnvConfig.logfolder()), REPLAY_SOURCE_SUBFOLDER)
+# trades_td = EnvConfig.readdf("trades-td"; folderpath=replay_compare_root)
+# if !isnothing(trades_td)
+#     cmp = tradescompare(DataFrame(trades_td), alltrades)
+#     println("$(EnvConfig.now()): trades compare rowstats replay=$(cmp.rowstats.replay_rows) td=$(cmp.rowstats.td_rows) joined=$(cmp.rowstats.joined_rows)")
+#     println("$(EnvConfig.now()): trades compare equal_cols=$(length(cmp.equal_cols)) unequal_cols=$(length(cmp.unequal_counts))")
+#     if haskey(cmp.unequal_counts, :label)
+#         println("$(EnvConfig.now()): trades compare label mismatches=$(cmp.unequal_counts[:label])")
+#         top_label_transitions = sort(collect(cmp.label_transitions); by=last, rev=true)
+#         shown = min(8, length(top_label_transitions))
+#         for ix in 1:shown
+#             println("$(EnvConfig.now()): label transition $(top_label_transitions[ix][1]) count=$(top_label_transitions[ix][2])")
+#         end
+#     end
+#     for lane in [:lo_limit, :lc_limit, :so_limit, :sc_limit]
+#         if haskey(cmp.limit_mismatch_counts, lane)
+#             println("$(EnvConfig.now()): trades compare $(lane) mismatches=$(cmp.limit_mismatch_counts[lane])")
+#         end
+#     end
+# else
+#     println("$(EnvConfig.now()): trades compare skipped; missing trades-td.arrow in $(replay_compare_root)")
+# end
 
-focus = replay_focus_first_open_close_windows(alltrades; return_transposed=true)
-println("$(EnvConfig.now()): replay focus group pair=$(focus.meta.pair) set=$(focus.meta.set) rangeid=$(focus.meta.rangeid) side=$(focus.meta.side)")
-println("$(EnvConfig.now()): replay focus open signal=$(focus.meta.open_signal_dt) fill=$(focus.meta.open_fill_dt)")
-println("$(EnvConfig.now()): replay focus close signal=$(focus.meta.close_signal_dt) fill=$(focus.meta.close_fill_dt)")
-println("$(EnvConfig.now()): replay focus open window (transposed)\n$(focus.open_transposed)")
-println("$(EnvConfig.now()): replay focus close window (transposed)\n$(focus.close_transposed)")
+# focus = replay_focus_first_open_close_windows(alltrades; return_transposed=true)
+# println("$(EnvConfig.now()): replay focus group pair=$(focus.meta.pair) set=$(focus.meta.set) rangeid=$(focus.meta.rangeid) side=$(focus.meta.side)")
+# println("$(EnvConfig.now()): replay focus open signal=$(focus.meta.open_signal_dt) fill=$(focus.meta.open_fill_dt)")
+# println("$(EnvConfig.now()): replay focus close signal=$(focus.meta.close_signal_dt) fill=$(focus.meta.close_fill_dt)")
+# println("$(EnvConfig.now()): replay focus open window (transposed)\n$(focus.open_transposed)")
+# println("$(EnvConfig.now()): replay focus close window (transposed)\n$(focus.close_transposed)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PERFORMANCE REPORT

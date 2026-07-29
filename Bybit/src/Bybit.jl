@@ -1792,7 +1792,8 @@ The returned tuple aligns with `Xch.accountcapacity` fields and reports
 quote-currency-conservative opening capacity while exposing full account equity:
 - `available_opening_quote`, `available_long_quote`, `available_short_quote`
   are based on free quote balance.
-- `equity_quote` is full marked-to-market account equity in quote terms.
+- `equity_quote` is net marked-to-market account equity in quote terms
+    (quote cash + long value - short liability).
 
 For BybitSim, each non-quote held asset is priced individually via `_sim_lastprice`
 (which reads cached OHLCV) rather than via a bulk `get24h` join. This avoids the
@@ -1827,8 +1828,9 @@ function accountcapacity(bc::BybitCache)
             catch
                 0.0
             end
-            grossqty = max(0.0, (prow.long_qty)) + max(0.0, (prow.short_qty))
-            equity_quote += grossqty * price
+            longqty = max(0.0, (prow.long_qty))
+            shortqty = max(0.0, (prow.short_qty))
+            equity_quote += (longqty - shortqty) * price
         end
     end
 

@@ -806,12 +806,12 @@ function _tradefinish!(cache::TradeCache)
     oo = Xch.getopenorders(cache.xc)
     (verbosity >= 3) && @info (size(oo, 1) > 0) ? "$(EnvConfig.now()): open orders summary $(_summarize_openorders(oo))" : "$(EnvConfig.now()): no open orders"
     (verbosity >= 2) && @info "$(EnvConfig.now()): open orders $(size(oo, 1))"
-    assets = Xch.portfolio!(cache.xc)
+    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0)
     if verbosity >= 3
-        assetcoins = (:coin in names(assets)) ? String.(assets[!, :coin]) : String[]
-        @info "assets summary: rows=$(size(assets, 1)), coins=$(_summarize_symbols(assetcoins))"
+        assetcoins = (:coin in names(acct.assets)) ? String.(acct.assets[!, :coin]) : String[]
+        @info "assets summary: rows=$(size(acct.assets, 1)), coins=$(_summarize_symbols(assetcoins))"
     end
-    (verbosity >= 2) && @info "total $(EnvConfig.pairquote) = $(sum(assets.usdtvalue))"
+    (verbosity >= 2) && @info "total $(EnvConfig.pairquote) = $(sum(acct.equity_quote))"
 end
 
 """

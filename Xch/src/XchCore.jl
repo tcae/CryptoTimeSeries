@@ -643,7 +643,7 @@ function Base.iterate(xc::XchCache, currentdt=nothing)
 end
 
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
-tradetime(xc::XchCache) = isnothing(xc.currentdt) ? floor(servertime(xc.bc), Minute(1)) : xc.currentdt
+tradetime(xc::XchCache) = isnothing(xc.currentdt) ? (isnothing(xc.enddt) ? floor(servertime(xc.bc), Minute(1)) : xc.enddt) : xc.currentdt
 # tradetime(xc::XchCache) = (xc.mc[:simmode] != bybitsim) ? servertime(xc.bc) : Dates.now(UTC)
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
@@ -1330,6 +1330,14 @@ function _capacityfromassets(assetsdf::AbstractDataFrame)
     )
 end
 
+"Return true when the adapter cache is running simulation-owned bookkeeping."
+function _issimulationassetcache(xc::XchCache)::Bool
+    if timesimulation(xc) || (exchange(xc) == EXCHANGE_BYBITSIM)
+        return true
+    end
+    return (xc.bc isa Bybit.BybitCache) && !isnothing(xc.bc.assets)
+end
+
 "Return the current account snapshot used by Trade loop orchestration."
 function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, assetsdf=nothing, require_holding_valuation::Bool=false)
     balancesdf = isnothing(balancesdf) ? balances(xc; ignoresmallvolume=false) : DataFrame(balancesdf; copycols=true)
@@ -1339,7 +1347,7 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
         DataFrame(assetsdf; copycols=true)
     end
     assetcap = _capacityfromassets(assetsdf)
-    exchcap = if (exchange(xc) == EXCHANGE_BYBITSIM) || timesimulation(xc)
+    exchcap = if _issimulationassetcache(xc)
         assetcap
     else
         accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
@@ -1422,13 +1430,6 @@ function _implicitflipplan(tradesdf::DataFrame, ix::Integer, action::Symbol, ope
         return (needed=closeqty > 0.0, positionside=:long, closeqty=closeqty, closelimit=closelimit, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lcl_filled, close_pavg_col=:lcl_pavg)
     end
     return (needed=false, positionside=:long, closeqty=0.0, closelimit=open_limitprice, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lcl_filled, close_pavg_col=:lcl_pavg)
-end
-
-function _apply_accountsnapshot!(tradesdf::DataFrame, ix::Integer, acct)
-    TSM.settrades_equity!(tradesdf, ix, acct.equity_quote)
-    TSM.settrades_freemargin!(tradesdf, ix, acct.free_margin_quote)
-    TSM.settrades_freequote!(tradesdf, ix, acct.free_quote)
-    return nothing
 end
 
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
@@ -1649,7 +1650,7 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
         end
 
-        tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt) # add a new row to tardes df
+        tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt) # add a new row to trades df
         tdf = tdf_rowix.tradesdf
         rowix = tdf_rowix.rowix
 
@@ -1687,7 +1688,9 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         _carry_lastopentrade_from_previous!(tdf, rowix)
 
         # Account snapshot columns
-        _apply_accountsnapshot!(tdf, rowix, acct)
+        TSM.settrades_equity!(tdf, rowix, acct.equity_quote)
+        TSM.settrades_freemargin!(tdf, rowix, acct.free_margin_quote)
+        TSM.settrades_freequote!(tdf, rowix, acct.free_quote)
 
         rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
     end
