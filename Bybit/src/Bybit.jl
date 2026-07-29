@@ -5,7 +5,7 @@ using EnvConfig
 using Ohlcv
 using TestOhlcv
 using XchAdapter
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
 import XchAdapter: normalize_order_status
 
 # base URL of the ByBit API
@@ -119,7 +119,8 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     publickey
     secretkey
     simtime::Union{Nothing, DateTime}
-    # Simulation state (populated only in BybitSim mode, nil in production)
+    # Simulation state (populated only in BybitSim mode, nil in production).
+    # Rows represent holdings lanes with side in {quote,long,short}.
     assets::Union{Nothing, DataFrame}
     orders::Union{Nothing, DataFrame}
     closedorders::Union{Nothing, DataFrame}
@@ -180,8 +181,8 @@ end
 function _init_simulation!(bc::BybitCache)
     _ensure_sim_symboluniverse!(bc)
     if isnothing(bc.assets)
-        bc.assets = DataFrame(coin=String31[], free=Float32[], locked=Float32[], borrowed=Float32[], accruedinterest=Float32[])
-        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
+        bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[])
+        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
         bc.closedorders = similar(bc.orders)
     end
     haskey(_sim_order_counter, bc) || (_sim_order_counter[bc] = 0)
@@ -219,16 +220,19 @@ function _nextsimorderseq!(bc::BybitCache)::Int64
 end
 
 "Seed simulation portfolio with an initial balance"
-function seedportfolio!(bc::BybitCache, coin::AbstractString, free::Real; locked::Real=0, borrowed::Real=0)
+function seedportfolio!(bc::BybitCache, coin::AbstractString, free::Real; locked::Real=0, side::Union{Nothing, Symbol}=nothing)
     isnothing(bc.assets) && _init_simulation!(bc)
-    coin = uppercase(String(coin))
-    ix = findfirst(==(coin), bc.assets[!, :coin])
+    coinup = uppercase(String(coin))
+    qcoin = uppercase(String(EnvConfig.pairquote))
+    laneside = isnothing(side) ? (coinup == qcoin ? :quote : :long) : Symbol(lowercase(String(side)))
+    @assert laneside in (:quote, :long, :short) "seedportfolio! side=$(laneside) must be :quote, :long, or :short"
+
+    ix = findfirst(((bc.assets[!, :coin] .== coinup) .& (bc.assets[!, :side] .== String(laneside))))
     if isnothing(ix)
-        push!(bc.assets, (coin=coin, free=(free), locked=(locked), borrowed=(borrowed), accruedinterest=0f0))
+        push!(bc.assets, (coin=coinup, side=String(laneside), free=(free), locked=(locked)))
     else
         bc.assets[ix, :free] = (free)
         bc.assets[ix, :locked] = (locked)
-        bc.assets[ix, :borrowed] = (borrowed)
     end
     return bc
 end
@@ -1054,12 +1058,13 @@ function cancelorder(bc::BybitCache, symbol, orderid)
         ix = findfirst(==(String(orderid)), bc.orders[!, :orderid])
         if !isnothing(ix)
             row = bc.orders[ix, :]
-            _simreleaseorder!(bc, row.symbol, row.side, row.baseqty, row.limitprice, row.marginleverage)
+            _simreleaseorder!(bc, row.symbol, row.side, Symbol(lowercase(String(row.positionside))), Bool(row.reduceonly), row.baseqty, row.limitprice)
             dt = isnothing(bc.simtime) ? Dates.now(Dates.UTC) : DateTime(bc.simtime)
             cancelled = (
                 orderid=String(row.orderid),
                 symbol=String(row.symbol),
                 side=String(row.side),
+                positionside=String(row.positionside),
                 baseqty=(row.baseqty),
                 ordertype=String(row.ordertype),
                 isLeverage=Bool(row.isLeverage),
@@ -1091,106 +1096,77 @@ function cancelorder(bc::BybitCache, symbol, orderid)
     return !("orderId" in keys(httpresponse["result"])) ? nothing : httpresponse["result"]["orderId"]
 end
 
-"Helper function to apply order fill to simulation balances"
-function _applyfill!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, price::Real, marginleverage::Signed=0)
-    base = _basefromsymbol(symbol)
-    quote_coin = uppercase(EnvConfig.pairquote)
-    bix = findfirst(==(base), bc.assets[!, :coin])
-    qix = findfirst(==(quote_coin), bc.assets[!, :coin])
-    if isnothing(bix)
-        push!(bc.assets, (coin=base, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
-        bix = lastindex(bc.assets[!, :coin])
-    end
-    if isnothing(qix)
-        push!(bc.assets, (coin=quote_coin, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
-        qix = lastindex(bc.assets[!, :coin])
-    end
-    
-    is_short_margin = marginleverage > 0  # All current margin trades are shorts; distinguishes from potential future is_long_margin
-    is_long_margin = false  # Reserved for future long margin trades
-    
-    if lowercase(String(side)) == "buy"
-        bc.assets[qix, :free] -= (basequantity * price)
-        if is_short_margin
-            # Short margin close: reduce borrowed amount (covering short), don't add to free
-            bc.assets[bix, :borrowed] -= (basequantity)
-        elseif is_long_margin
-            # Long margin open/maintain: add to free base (or track via borrowed in margin account)
-            bc.assets[bix, :free] += (basequantity)
-        else
-            # Spot buy: add to free base
-            bc.assets[bix, :free] += (basequantity)
-        end
-    else
-        bc.assets[qix, :free] += (basequantity * price)
-        if is_short_margin
-            # Short margin open: increase borrowed base (short position), don't decrease free
-            bc.assets[bix, :borrowed] += (basequantity)
-        elseif is_long_margin
-            # Long margin close/reduce: decrease free base (or track via borrowed)
-            bc.assets[bix, :free] -= (basequantity)
-        else
-            # Spot sell: decrease free base
-            bc.assets[bix, :free] -= (basequantity)
-        end
-    end
+function _positionlane(side::Symbol)::String
+    @assert side in (:long, :short) "position lane side=$(side) must be :long or :short"
+    return String(side)
 end
 
-"Ensure one asset row exists in simulation balances and return its row index."
-function _ensureassetrow!(bc::BybitCache, coin::AbstractString)
-    ix = findfirst(==(coin), bc.assets[!, :coin])
+function _iscloseintent(positionside::Symbol, orderside::AbstractString)::Bool
+    os = lowercase(String(orderside))
+    @assert os in ("buy", "sell") "orderside=$(orderside) must be Buy or Sell"
+    return (positionside == :long && os == "sell") || (positionside == :short && os == "buy")
+end
+
+"Ensure one holdings row exists in simulation balances and return its row index."
+function _ensureholdingrow!(bc::BybitCache, coin::AbstractString, side::AbstractString)
+    coinup = uppercase(String(coin))
+    sideraw = String(side)
+    ix = findfirst(((bc.assets[!, :coin] .== coinup) .& (bc.assets[!, :side] .== sideraw)))
     if isnothing(ix)
-        push!(bc.assets, (coin=coin, free=0f0, locked=0f0, borrowed=0f0, accruedinterest=0f0))
+        push!(bc.assets, (coin=coinup, side=sideraw, free=0f0, locked=0f0))
         return lastindex(bc.assets[!, :coin])
     end
     return ix
 end
 
 "Reserve balances for one pending BybitSim order."
-function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, limitprice::Real, marginleverage::Signed)
+function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real)
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.pairquote)
-    bix = _ensureassetrow!(bc, base)
-    qix = _ensureassetrow!(bc, quote_coin)
-    is_short_margin = marginleverage > 0
+    qix = _ensureholdingrow!(bc, quote_coin, "quote")
 
-    if lowercase(String(side)) == "buy"
-        cost = basequantity * limitprice
-        @assert bc.assets[qix, :free] >= cost "BybitSim reserve buy requires free quote >= cost; free=$(bc.assets[qix, :free]) cost=$(cost) symbol=$(symbol)"
-        bc.assets[qix, :free] -= cost
-        bc.assets[qix, :locked] += cost
+    is_close = reduceonly || _iscloseintent(positionside, side)
+    if is_close
+        pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
+        @assert bc.assets[pix, :free] >= basequantity "BybitSim reserve close requires free position >= quantity; free=$(bc.assets[pix, :free]) quantity=$(basequantity) symbol=$(symbol) positionside=$(positionside)"
+        bc.assets[pix, :free] -= basequantity
+        bc.assets[pix, :locked] += basequantity
         return nothing
     end
 
-    if !is_short_margin
-        @assert bc.assets[bix, :free] >= basequantity "BybitSim reserve sell requires free base >= quantity; free=$(bc.assets[bix, :free]) quantity=$(basequantity) symbol=$(symbol)"
-        bc.assets[bix, :free] -= basequantity
-        bc.assets[bix, :locked] += basequantity
+    cost = basequantity * limitprice
+    avail_free = bc.assets[qix, :free]
+    avail_locked = bc.assets[qix, :locked]
+    @assert (avail_free + avail_locked) >= cost "BybitSim reserve open requires quote collateral >= cost; free=$(avail_free) locked=$(avail_locked) cost=$(cost) symbol=$(symbol) positionside=$(positionside)"
+    consume_free = min(avail_free, cost)
+    residual = cost - consume_free
+    bc.assets[qix, :free] -= consume_free
+    if residual > 0f0
+        bc.assets[qix, :locked] -= residual
     end
+    bc.assets[qix, :locked] += cost
     return nothing
 end
 
 "Release the reservation of one pending BybitSim order without filling it."
-function _simreleaseorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, basequantity::Real, limitprice::Real, marginleverage::Signed)
+function _simreleaseorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real)
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.pairquote)
-    bix = _ensureassetrow!(bc, base)
-    qix = _ensureassetrow!(bc, quote_coin)
-    is_short_margin = marginleverage > 0
+    qix = _ensureholdingrow!(bc, quote_coin, "quote")
 
-    if lowercase(String(side)) == "buy"
-        cost = basequantity * limitprice
-        release = min(bc.assets[qix, :locked], cost)
-        bc.assets[qix, :locked] -= release
-        bc.assets[qix, :free] += release
+    is_close = reduceonly || _iscloseintent(positionside, side)
+    if is_close
+        pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
+        release = min(bc.assets[pix, :locked], basequantity)
+        bc.assets[pix, :locked] -= release
+        bc.assets[pix, :free] += release
         return nothing
     end
 
-    if !is_short_margin
-        release = min(bc.assets[bix, :locked], basequantity)
-        bc.assets[bix, :locked] -= release
-        bc.assets[bix, :free] += release
-    end
+    cost = basequantity * limitprice
+    release = min(bc.assets[qix, :locked], cost)
+    bc.assets[qix, :locked] -= release
+    bc.assets[qix, :free] += release
     return nothing
 end
 
@@ -1199,57 +1175,69 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
     symbol = String(orderrow.symbol)
     side = String(orderrow.side)
     baseqty = (orderrow.baseqty)
-    marginleverage = Int(orderrow.marginleverage)
+    positionside = Symbol(lowercase(String(orderrow.positionside)))
+    reduceonly = Bool(orderrow.reduceonly)
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.pairquote)
-    bix = _ensureassetrow!(bc, base)
-    qix = _ensureassetrow!(bc, quote_coin)
-    is_short_margin = marginleverage > 0
+    qix = _ensureholdingrow!(bc, quote_coin, "quote")
+    pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
 
-    if lowercase(side) == "buy"
-        cost = baseqty * fillprice
-        release = min(bc.assets[qix, :locked], cost)
-        bc.assets[qix, :locked] -= release
-        residual = cost - release
-        if residual > 0f0
-            @assert bc.assets[qix, :free] >= residual "BybitSim pending buy fill requires free quote >= residual; free=$(bc.assets[qix, :free]) residual=$(residual) symbol=$(symbol)"
-            bc.assets[qix, :free] -= residual
-        end
-        if is_short_margin
-            bc.assets[bix, :borrowed] -= baseqty
+    is_close = reduceonly || _iscloseintent(positionside, side)
+    if is_close
+        # Close: consume locked position quantity.
+        # Long close realizes quote proceeds, short close pays quote to buy back.
+        release = min(bc.assets[pix, :locked], baseqty)
+        bc.assets[pix, :locked] -= release
+        quote_flow = release * fillprice
+        if positionside == :short
+            locked_use = min(bc.assets[qix, :locked], quote_flow)
+            bc.assets[qix, :locked] -= locked_use
+            residual = quote_flow - locked_use
+            if residual > 0f0
+                @assert bc.assets[qix, :free] >= residual "BybitSim short close requires free quote >= residual cover cost; free=$(bc.assets[qix, :free]) residual=$(residual) symbol=$(symbol)"
+                bc.assets[qix, :free] -= residual
+            end
         else
-            bc.assets[bix, :free] += baseqty
+            bc.assets[qix, :free] += quote_flow
         end
         return nothing
     end
 
-    bc.assets[qix, :free] += baseqty * fillprice
-    if is_short_margin
-        bc.assets[bix, :borrowed] += baseqty
-    else
-        release = min(bc.assets[bix, :locked], baseqty)
-        bc.assets[bix, :locked] -= release
-        residual = baseqty - release
-        if residual > 0f0
-            @assert bc.assets[bix, :free] >= residual "BybitSim pending sell fill requires free base >= residual; free=$(bc.assets[bix, :free]) residual=$(residual) symbol=$(symbol)"
-            bc.assets[bix, :free] -= residual
-        end
+    # Open: add executed quantity to the position lane.
+    cost = baseqty * fillprice
+    if positionside == :short
+        # Short open keeps sale proceeds in locked quote collateral.
+        @assert bc.assets[qix, :locked] >= cost "BybitSim short open requires locked quote collateral >= fill cost; locked=$(bc.assets[qix, :locked]) cost=$(cost) symbol=$(symbol)"
+        bc.assets[pix, :free] += baseqty
+        bc.assets[qix, :locked] += cost
+        return nothing
     end
+
+    # Long open consumes locked quote budget.
+    release = min(bc.assets[qix, :locked], cost)
+    bc.assets[qix, :locked] -= release
+    residual = cost - release
+    if residual > 0f0
+        @assert bc.assets[qix, :free] >= residual "BybitSim pending open fill requires free quote >= residual; free=$(bc.assets[qix, :free]) residual=$(residual) symbol=$(symbol)"
+        bc.assets[qix, :free] -= residual
+    end
+    bc.assets[pix, :free] += baseqty
     return nothing
 end
 
 "Return true when one candle reaches the pending order's limit price."
 function _simordertriggered(orderrow, candle)::Bool
-    # For short-margin simulation orders, trigger direction is reversed compared
-    # with long/spot semantics to match short-position entry/exit intent.
-    if Int(orderrow.marginleverage) > 0
-        if lowercase(String(orderrow.side)) == "buy"
+    os = lowercase(String(orderrow.side))
+    ps = Symbol(lowercase(String(orderrow.positionside)))
+    if ps == :short
+        # Reverse trigger direction for short lane intent.
+        if os == "buy"
             return (candle.high) >= (orderrow.limitprice)
         end
         return (candle.low) <= (orderrow.limitprice)
     end
 
-    if lowercase(String(orderrow.side)) == "buy"
+    if os == "buy"
         return (candle.low) <= (orderrow.limitprice)
     end
     return (candle.high) >= (orderrow.limitprice)
@@ -1299,6 +1287,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
             orderid=String(row.orderid),
             symbol=String(row.symbol),
             side=String(row.side),
+            positionside=String(row.positionside),
             baseqty=(row.baseqty),
             ordertype=String(row.ordertype),
             isLeverage=Bool(row.isLeverage),
@@ -1356,12 +1345,18 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             # can then evaluate the first newly visible candle whose `opentime`
             # became observable after `dt`.
             row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-            _simreserveorder!(bc, symbol, orderside, basequantity, limitprice, effective_marginleverage)
+            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+            _simreserveorder!(bc, symbol, orderside, spec.side, reduceonly, basequantity, limitprice)
             push!(bc.orders, row)
         else # taker
-            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
             push!(bc.closedorders, row)
-            _applyfill!(bc, symbol, orderside, basequantity, limitprice, effective_marginleverage)
+            if reduceonly
+                _simreserveorder!(bc, symbol, orderside, spec.side, true, basequantity, limitprice)
+            else
+                _simreserveorder!(bc, symbol, orderside, spec.side, false, basequantity, limitprice)
+            end
+            _simapplypendingfill!(bc, row, limitprice)
         end
         return row
     end
@@ -1609,12 +1604,13 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         oldside = String(orderatentry.side)
         oldqty = (orderatentry.baseqty)
         oldlimit = (orderatentry.limitprice)
-        oldlev = Int(orderatentry.marginleverage)
+        oldsidepos = Symbol(lowercase(String(orderatentry.positionside)))
+        oldreduceonly = Bool(orderatentry.reduceonly)
 
         assetsbackup = copy(bc.assets)
         try
-            _simreleaseorder!(bc, oldsymbol, oldside, oldqty, oldlimit, oldlev)
-            _simreserveorder!(bc, oldsymbol, oldside, changedqty, changedprice, oldlev)
+            _simreleaseorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, oldqty, oldlimit)
+            _simreserveorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, changedqty, changedprice)
         catch err
             bc.assets = assetsbackup
             rethrow(err)
@@ -1743,7 +1739,7 @@ function balances(bc::BybitCache)
     # Check if in simulation mode (BybitSim with simulation state initialized)
     if !isnothing(bc.assets)
         _simprocesspendingorders!(bc)
-        return _emptybalances(bc.assets)
+        return _balancescolumnsdf(bc.assets)
     end
     
     # Production mode: check balance cache (5s TTL to avoid Bybit API rate limits)
@@ -1812,34 +1808,41 @@ function accountcapacity(bc::BybitCache)
     if (:coin in cols) && (:free in cols)
         for row in eachrow(bdf)
             coin = uppercase(String(row.coin))
-            free  = max(0.0, (row.free))
-            locked   = (:locked   in cols) ? max(0.0, (row.locked))   : 0.0
-            borrowed = (:borrowed in cols) ? max(0.0, (row.borrowed)) : 0.0
-            net = free + locked - borrowed
+            free = max(0.0, (row.free))
+            locked = (:locked in cols) ? max(0.0, (row.locked)) : 0.0
             if coin == quotecoin
-                quotefree    += free
-                equity_quote += net  # quote coin priced at 1.0
-            elseif !isnothing(bc.assets) && net != 0.0
-                # BybitSim: price non-quote asset at current sim time.
-                # Any pricing failure is treated as price=0 (conservative; does not
-                # deduct the liability but also does not inflate equity).
-                symbol = string(coin, quotecoin)
-                price = try
-                    (_sim_lastprice(bc, symbol))
-                catch
-                    0.0
-                end
-                equity_quote += net * price
+                quotefree += free
+                equity_quote += free + locked
             end
-            # Live mode: only quote-wallet balance contributes to equity (conservative).
         end
     end
+
+    posdf = positionsnapshot(bc)
+    if (:coin in propertynames(posdf)) && (:long_qty in propertynames(posdf)) && (:short_qty in propertynames(posdf))
+        for prow in eachrow(posdf)
+            coin = uppercase(String(prow.coin))
+            symbol = string(coin, quotecoin)
+            price = try
+                (_sim_lastprice(bc, symbol))
+            catch
+                0.0
+            end
+            grossqty = max(0.0, (prow.long_qty)) + max(0.0, (prow.short_qty))
+            equity_quote += grossqty * price
+        end
+    end
+
+    # Keep equity conservative but not below immediately available quote cash.
+    equity_quote = max(equity_quote, quotefree)
+
+    equityc = max(0.0, equity_quote)
+    openingc = min(max(0.0, quotefree), equityc)
     source = isnothing(bc.assets) ? "Bybit:wallet_balance" : "Bybit:sim_wallet"
     return (
-        equity_quote=max(0.0, equity_quote),
-        available_opening_quote=max(0.0, quotefree),
-        available_long_quote=max(0.0, quotefree),
-        available_short_quote=max(0.0, quotefree),
+        equity_quote=equityc,
+        available_opening_quote=openingc,
+        available_long_quote=openingc,
+        available_short_quote=openingc,
         initial_margin_quote=0.0,
         maintenance_margin_quote=0.0,
         source=source,
@@ -1853,29 +1856,56 @@ Return explicit per-base position quantities from Bybit balances.
 `long_qty` uses free base quantity.
 """
 function positionsnapshot(bc::BybitCache)::DataFrame
-    bdf = balances(bc)
-    cols = propertynames(bdf)
-    if !((:coin in cols) && (:free in cols))
+    if isnothing(bc.assets)
+        bdf = balances(bc)
+        cols = propertynames(bdf)
+        if !((:coin in cols) && (:free in cols))
+            return DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+        end
+        quotecoin = uppercase(String(EnvConfig.pairquote))
+        out = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+        hasborrowed = :borrowed in cols
+        for row in eachrow(bdf)
+            coin = uppercase(String(row.coin))
+            coin == quotecoin && continue
+            longqty = max(0f0, (row.free))
+            shortqty = hasborrowed ? max(0f0, (row.borrowed)) : 0f0
+            (longqty == 0f0 && shortqty == 0f0) && continue
+            push!(out, (coin=coin, long_qty=longqty, short_qty=shortqty))
+        end
+        return out
+    end
+
+    if !((:coin in propertynames(bc.assets)) && (:side in propertynames(bc.assets)) && (:free in propertynames(bc.assets)) && (:locked in propertynames(bc.assets)))
         return DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
     end
 
     quotecoin = uppercase(String(EnvConfig.pairquote))
+    coins = unique(String.(bc.assets[!, :coin]))
     out = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
-    hasborrowed = :borrowed in cols
-    for row in eachrow(bdf)
-        coin = uppercase(String(row.coin))
+    for coinraw in coins
+        coin = uppercase(String(coinraw))
         coin == quotecoin && continue
-        longqty = max(0f0, (row.free))
-        shortqty = hasborrowed ? max(0f0, (row.borrowed)) : 0f0
-        (longqty == 0f0 && shortqty == 0f0) && continue
-        push!(out, (coin=coin, long_qty=longqty, short_qty=shortqty))
+        lmask = (bc.assets[!, :coin] .== coin) .& (bc.assets[!, :side] .== "long")
+        smask = (bc.assets[!, :coin] .== coin) .& (bc.assets[!, :side] .== "short")
+        lqty = any(lmask) ? sum(bc.assets[lmask, :free]) + sum(bc.assets[lmask, :locked]) : 0f0
+        sqty = any(smask) ? sum(bc.assets[smask, :free]) + sum(bc.assets[smask, :locked]) : 0f0
+        (lqty == 0f0 && sqty == 0f0) && continue
+        push!(out, (coin=coin, long_qty=max(0f0, lqty), short_qty=max(0f0, sqty)))
     end
     return out
 end
 
 "Helper function to format balances DataFrame for both production and simulation"
-function _emptybalances(df::DataFrame)
-    return select(df, :coin, :locked, :free, :borrowed, :accruedinterest)
+function _balancescolumnsdf(df::DataFrame)::DataFrame
+    if (:side in propertynames(df)) && (:free in propertynames(df)) && (:locked in propertynames(df))
+        return select(df, :coin, :side, :locked, :free)
+    end
+    cols = Symbol[]
+    for c in (:coin, :locked, :free, :borrowed)
+        c in propertynames(df) && push!(cols, c)
+    end
+    return select(df, cols)
 end
 
 "Helper function to extract base coin from symbol (e.g., 'BTCUSDT' -> 'BTC')"

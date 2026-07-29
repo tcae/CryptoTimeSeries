@@ -9,7 +9,7 @@ using Dates, DataFrames, DataAPI, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets, TSM
 using XchAdapter: XchAdapterCache
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
 import XchAdapter: normalize_order_status
 import Ohlcv: intervalperiod
 
@@ -1131,26 +1131,150 @@ function _normalizeaccountcapacity(snapshot)
     )
 end
 
+"Return a conservative quote price for one base from the in-memory OHLCV cache."
+function _pricefrombases(xc::XchCache, coin::AbstractString)::Union{Nothing, Float64}
+    base = uppercase(String(coin))
+    if haskey(xc.bases, base)
+        o = ohlcv(xc, base)
+        odf = Ohlcv.dataframe(o)
+        oix = Ohlcv.ix(o)
+        if (size(odf, 1) > 0) && (1 <= oix <= size(odf, 1))
+            px = odf[oix, :close]
+            return px > 0 ? (px) : nothing
+        end
+    end
+
+    return nothing
+end
+
+"Merge explicit adapter position amounts into balances and compute quote valuation in Xch."
+function _assetssnapshot_from_balances_positions(xc::XchCache, balancesdf::AbstractDataFrame; resolve_missing_prices::Bool=true)::DataFrame
+    assets = DataFrame(balancesdf; copycols=true)
+    cols = propertynames(assets)
+    if !(:coin in cols)
+        return DataFrame(coin=String[], free=Float32[], locked=Float32[], usdtprice=Float32[], usdtvalue=Float32[])
+    end
+    !(:free in cols) && (assets[!, :free] = fill(0f0, nrow(assets)))
+    !(:locked in cols) && (assets[!, :locked] = fill(0f0, nrow(assets)))
+    !(:short in cols) && (assets[!, :short] = fill(0f0, nrow(assets)))
+
+    # Some adapters report position exposure separate from wallet balances.
+    # We merge those quantities here so valuation can be done centrally in Xch.
+    posdf = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+    try
+        posdf = positionsnapshot(xc.bc)
+    catch err
+        err isa InterruptException && rethrow(err)
+        (verbosity >= 2) && @warn "positionsnapshot unavailable; falling back to balances-only valuation" exchange=exchange(xc) exception=sprint(showerror, err)
+    end
+
+    if (:coin in propertynames(posdf)) && (:long_qty in propertynames(posdf)) && (:short_qty in propertynames(posdf))
+        for prow in eachrow(posdf)
+            coin = uppercase(String(prow.coin))
+            qix = findfirst(==(coin), uppercase.(String.(assets[!, :coin])))
+            if isnothing(qix)
+                push!(assets, (coin=coin, free=0f0, locked=0f0))
+                qix = nrow(assets)
+            end
+            lqty = max(0f0, (prow.long_qty))
+            sqty = max(0f0, (prow.short_qty))
+            if lqty > assets[qix, :free]
+                assets[qix, :free] = lqty
+            end
+            if sqty > assets[qix, :short]
+                assets[qix, :short] = sqty
+            end
+        end
+    end
+
+    quotecoin = uppercase(String(EnvConfig.pairquote))
+    usdtprice = Float32[]
+    for row in eachrow(assets)
+        coin = uppercase(String(row.coin))
+        if coin == quotecoin
+            push!(usdtprice, 1f0)
+            continue
+        end
+        px = _pricefrombases(xc, coin)
+        push!(usdtprice, isnothing(px) ? 0f0 : (px))
+    end
+
+    # For live modes, resolve missing quote prices via coin-scoped market snapshots.
+    if resolve_missing_prices && !timesimulation(xc)
+        missingbases = String[]
+        for ix in eachindex(usdtprice)
+            coin = uppercase(String(assets[ix, :coin]))
+            if (coin != quotecoin) && (usdtprice[ix] <= 0f0)
+                push!(missingbases, coin)
+            end
+        end
+        if !isempty(missingbases)
+            qdf = valuationUSDTmarket(xc, unique(missingbases))
+            if (:basecoin in propertynames(qdf)) && (:lastprice in propertynames(qdf))
+                pxbycoin = Dict{String, Float64}()
+                for row in eachrow(qdf)
+                    pxbycoin[uppercase(String(row.basecoin))] = (row.lastprice)
+                end
+                for ix in eachindex(usdtprice)
+                    if usdtprice[ix] <= 0f0
+                        coin = uppercase(String(assets[ix, :coin]))
+                        if haskey(pxbycoin, coin)
+                            usdtprice[ix] = (pxbycoin[coin])
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    assets[!, :usdtprice] = usdtprice
+    assets[!, :usdtvalue] = (assets[!, :free] .+ assets[!, :locked] .- assets[!, :short]) .* assets[!, :usdtprice]
+    return assets
+end
+
+"Merge Xch-valued capacity with exchange aggregate capacity when available."
+function _mergecapacity(assetcap, exchcap)
+    _capvalue(cap, field::Symbol, default::Float64=0.0) = hasproperty(cap, field) ? max(0.0, _asfloat64(getproperty(cap, field), default)) : default
+    exch_equity = _capvalue(exchcap, :equity_quote)
+    exch_opening = _capvalue(exchcap, :available_opening_quote)
+    exch_initial_margin = _capvalue(exchcap, :initial_margin_quote)
+    exch_maintenance_margin = _capvalue(exchcap, :maintenance_margin_quote)
+
+    equity = exchcap.equity_quote > 0.0 ? exchcap.equity_quote : assetcap.equity_quote
+    opening = assetcap.available_opening_quote
+    if exch_opening > 0.0
+        opening = min(opening, exch_opening)
+    end
+    opening = min(max(0.0, opening), equity)
+    return (
+        equity_quote=max(0.0, equity),
+        available_opening_quote=opening,
+        available_long_quote=opening,
+        available_short_quote=opening,
+        initial_margin_quote=exch_initial_margin,
+        maintenance_margin_quote=exch_maintenance_margin,
+        source=exch_equity > 0.0 ? string("Xch+", exchcap.source) : assetcap.source,
+    )
+end
+
 function _fallbackaccountcapacity(xc::XchCache)
     balancesdf = balances(xc; ignoresmallvolume=false)
-    assets = portfolio!(xc, balancesdf; ignoresmallvolume=false)
+    assets = _assetssnapshot_from_balances_positions(xc, balancesdf; resolve_missing_prices=true)
     quotecoin = uppercase(String(EnvConfig.pairquote))
     quotefree = 0.0
-    if (:coin in names(assets)) && (:free in names(assets))
+    if (:coin in propertynames(assets)) && (:free in propertynames(assets))
         for row in eachrow(assets)
             if uppercase(String(row.coin)) == quotecoin
                 quotefree += max(0.0, (row.free))
             end
         end
     end
-    equity = (:usdtvalue in names(assets)) ? (sum(assets[!, :usdtvalue])) : quotefree
+    equity = (:usdtvalue in propertynames(assets)) ? (sum(assets[!, :usdtvalue])) : quotefree
+    equityc = max(0.0, equity)
+    openingc = min(max(0.0, quotefree), equityc)
     return (
-        equity_quote=max(0.0, equity),
-        available_opening_quote=max(0.0, quotefree),
-        available_long_quote=max(0.0, quotefree),
-        available_short_quote=max(0.0, quotefree),
-        initial_margin_quote=0.0,
-        maintenance_margin_quote=0.0,
+        equity_quote=equityc,
+        available_opening_quote=openingc,
         source="Xch:portfolio_fallback",
     )
 end
@@ -1161,8 +1285,6 @@ Return exchange-concept account capacity snapshot in quote currency.
 Fields:
 - `equity_quote`: exchange-equity style net worth in quote terms
 - `available_opening_quote`: side-agnostic conservative opening capacity
-- `available_long_quote`: opening capacity for long/spot buy side
-- `available_short_quote`: opening capacity for short/margin sell side
 """
 function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5)
     if !force_refresh && !timesimulation(xc)
@@ -1192,50 +1314,56 @@ end
 function _capacityfromassets(assetsdf::AbstractDataFrame)
     quotecoin = uppercase(String(EnvConfig.pairquote))
     freequote = 0.0
-    if (:coin in names(assetsdf)) && (:free in names(assetsdf))
+    if (:coin in propertynames(assetsdf)) && (:free in propertynames(assetsdf))
         for row in eachrow(assetsdf)
             if uppercase(String(row.coin)) == quotecoin
                 freequote += max(0.0, (row.free))
             end
         end
     end
-    equity = (:usdtvalue in names(assetsdf)) ? max(0.0, (sum(assetsdf[!, :usdtvalue]))) : freequote
+    equity = (:usdtvalue in propertynames(assetsdf)) ? max(0.0, (sum(assetsdf[!, :usdtvalue]))) : freequote
+    opening = min(max(0.0, freequote), equity)
     return (
         equity_quote=equity,
-        available_opening_quote=freequote,
-        available_long_quote=freequote,
-        available_short_quote=freequote,
-        initial_margin_quote=0.0,
-        maintenance_margin_quote=0.0,
+        available_opening_quote=opening,
         source="Xch:assets_snapshot",
     )
 end
 
 "Return the current account snapshot used by Trade loop orchestration."
-function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, assetsdf=nothing)
+function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, assetsdf=nothing, require_holding_valuation::Bool=false)
     balancesdf = isnothing(balancesdf) ? balances(xc; ignoresmallvolume=false) : DataFrame(balancesdf; copycols=true)
-    assetsdf = isnothing(assetsdf) ? portfolio!(xc, balancesdf; ignoresmallvolume=false) : DataFrame(assetsdf; copycols=true)
-    capacity = if (exchange(xc) == EXCHANGE_BYBITSIM) || timesimulation(xc)
-        _capacityfromassets(assetsdf)
+    assetsdf = if isnothing(assetsdf)
+        _assetssnapshot_from_balances_positions(xc, balancesdf; resolve_missing_prices=require_holding_valuation || timesimulation(xc))
+    else
+        DataFrame(assetsdf; copycols=true)
+    end
+    assetcap = _capacityfromassets(assetsdf)
+    exchcap = if (exchange(xc) == EXCHANGE_BYBITSIM) || timesimulation(xc)
+        assetcap
     else
         accountcapacity(xc; force_refresh=force_refresh, ttl_seconds=ttl_seconds)
     end
+    capacity = _mergecapacity(assetcap, exchcap)
     quotecoin = uppercase(String(EnvConfig.pairquote))
     freequote = 0.0
-    if (:coin in names(assetsdf)) && (:free in names(assetsdf))
+    if (:coin in propertynames(assetsdf)) && (:free in propertynames(assetsdf))
         for row in eachrow(assetsdf)
             if uppercase(String(row.coin)) == quotecoin
                 freequote += max(0.0, (row.free))
             end
         end
     end
+    freequote = max(0.0, freequote)
+    @assert freequote <= capacity.equity_quote + 1e-6 "account_status freequote=$(freequote) exceeds equity_quote=$(capacity.equity_quote) source=$(capacity.source)"
+    freemargin = min(max(0.0, capacity.available_opening_quote), capacity.equity_quote)
     return (
         balances=balancesdf,
         assets=assetsdf,
         capacity=capacity,
         equity_quote=capacity.equity_quote,
         free_quote=freequote,
-        free_margin_quote=capacity.available_opening_quote,
+        free_margin_quote=freemargin,
         maintenance_margin_quote=capacity.maintenance_margin_quote,
     )
 end
@@ -1472,8 +1600,6 @@ Returns `Dict{String, NamedTuple{(:tradesdf, :rowix)}}` keyed by uppercase base.
 """
 function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
     quotecoin = uppercase(String(EnvConfig.pairquote))
-    acct = isnothing(acct) ? account_status(xc; force_refresh=true, ttl_seconds=0) : acct
-    balancesdf = acct.assets
 
     bases_to_sync = String[]
     if isnothing(syncpairs)
@@ -1488,6 +1614,26 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             base = uppercase(String(bq.basecoin))
             base == quotecoin && continue
             base in bases_to_sync || push!(bases_to_sync, base)
+        end
+    end
+
+    for base in bases_to_sync
+        @assert base in keys(xc.bases) "sync_latest_trades_rows! missing base=$(base) in xc.bases; addbase! and iterator-driven setcurrenttime! must prepare all synced bases"
+    end
+
+    acct = isnothing(acct) ? account_status(xc; force_refresh=true, ttl_seconds=0) : acct
+    balancesdf = acct.assets
+    posdf = try
+        positionsnapshot(xc.bc)
+    catch err
+        err isa InterruptException && rethrow(err)
+        DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+    end
+    pos_by_coin = Dict{String, Tuple{Float32, Float32}}()
+    if (:coin in propertynames(posdf)) && (:long_qty in propertynames(posdf)) && (:short_qty in propertynames(posdf))
+        for row in eachrow(posdf)
+            coin = uppercase(String(row.coin))
+            pos_by_coin[coin] = (max(0f0, (row.long_qty)), max(0f0, (row.short_qty)))
         end
     end
 
@@ -1523,12 +1669,19 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         order_status(xc, tdf, rowix; auditevent=false)
 
         # Position amounts from portfolio snapshot
-        bix = _hascol(balancesdf, :coin) ? findfirst(==(base), uppercase.(String.(balancesdf[!, :coin]))) : nothing
-        if !isnothing(bix)
-            free_val  = _hascol(balancesdf, :free)     ? (balancesdf[bix, :free])     : 0f0
-            borr_val  = _hascol(balancesdf, :borrowed) ? (balancesdf[bix, :borrowed]) : 0f0
-            TSM.settrades_lp_amount!(tdf, rowix, max(0f0, free_val))
-            TSM.settrades_sp_amount!(tdf, rowix, max(0f0, borr_val))
+        if haskey(pos_by_coin, base)
+            lqty, sqty = pos_by_coin[base]
+            TSM.settrades_lp_amount!(tdf, rowix, lqty)
+            TSM.settrades_sp_amount!(tdf, rowix, sqty)
+        else
+            bix = _hascol(balancesdf, :coin) ? findfirst(==(base), uppercase.(String.(balancesdf[!, :coin]))) : nothing
+            if !isnothing(bix)
+                # Fallback when adapter positionsnapshot is unavailable.
+                # No-liability policy: treat base inventory as long-only.
+                free_val  = _hascol(balancesdf, :free) ? (balancesdf[bix, :free]) : 0f0
+                TSM.settrades_lp_amount!(tdf, rowix, max(0f0, free_val))
+                TSM.settrades_sp_amount!(tdf, rowix, 0f0)
+            end
         end
 
         _carry_lastopentrade_from_previous!(tdf, rowix)
@@ -1713,16 +1866,16 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
         if action == :long_open
             TSM.settrades_msg!(tradesdf, ix, longopen, logged)
-            TSM.settrades_status!(tradesdf, ix, longopen, "Error")
+            TSM.settrades_status!(tradesdf, ix, longopen, "rejected")
         elseif action == :long_close
             TSM.settrades_msg!(tradesdf, ix, longclose, logged)
-            TSM.settrades_status!(tradesdf, ix, longclose, "Error")
+            TSM.settrades_status!(tradesdf, ix, longclose, "rejected")
         elseif action == :short_open
             TSM.settrades_msg!(tradesdf, ix, shortopen, logged)
-            TSM.settrades_status!(tradesdf, ix, shortopen, "Error")
+            TSM.settrades_status!(tradesdf, ix, shortopen, "rejected")
         else  # :short_close
             TSM.settrades_msg!(tradesdf, ix, shortclose, logged)
-            TSM.settrades_status!(tradesdf, ix, shortclose, "Error")
+            TSM.settrades_status!(tradesdf, ix, shortclose, "rejected")
         end
         return (accepted=false, action=action, reason="exchange_error", error=sprint(showerror, err))
     end
@@ -1732,7 +1885,36 @@ end
 
 function _adapterbalances(xc::XchCache)::DataFrame
     bdf = balances(xc.bc)
-    return isnothing(bdf) ? DataFrame() : DataFrame(bdf; copycols=true)
+    if isnothing(bdf)
+        return DataFrame()
+    end
+    out = DataFrame(bdf; copycols=true)
+    cols = propertynames(out)
+
+    # Normalize side-lane adapter balances (coin/side/free/locked) to the
+    # canonical Xch balances schema with explicit short exposure.
+    if (:side in cols) && (:coin in cols) && (:free in cols) && (:locked in cols)
+        canon = DataFrame(coin=String[], free=Float32[], locked=Float32[], short=Float32[])
+        bycoin = Dict{String, Tuple{Float32, Float32, Float32}}()
+        for row in eachrow(out)
+            coin = uppercase(String(row.coin))
+            side = lowercase(String(row.side))
+            freev = max(0f0, (row.free))
+            lockedv = max(0f0, (row.locked))
+            prev = get(bycoin, coin, (0f0, 0f0, 0f0))
+            if side == "short"
+                bycoin[coin] = (prev[1], prev[2], prev[3] + freev + lockedv)
+            else
+                bycoin[coin] = (prev[1] + freev, prev[2] + lockedv, prev[3])
+            end
+        end
+        for (coin, vals) in bycoin
+            push!(canon, (coin=coin, free=vals[1], locked=vals[2], short=vals[3]))
+        end
+        return canon
+    end
+
+    return out
 end
 
 function _filterbalances!(xc::XchCache, bdf::DataFrame; ignoresmallvolume::Bool=true)::DataFrame
@@ -1742,7 +1924,8 @@ function _filterbalances!(xc::XchCache, bdf::DataFrame; ignoresmallvolume::Bool=
             if bdf[ix, :coin] != EnvConfig.pairquote
                 sym = symboltoken(bdf[ix, :coin])
                 syminfo = minimumqty(xc, sym)
-                if !validsymbol(xc, sym) || ((abs(bdf[ix, :free]) + abs(bdf[ix, :locked]) + abs(bdf[ix, :borrowed])) < 1.01 * syminfo.minbaseqty) # 1% more to avoid issues by rounding errors
+                shortv = _hascol(bdf, :short) ? bdf[ix, :short] : 0f0
+                if !validsymbol(xc, sym) || ((abs(bdf[ix, :free]) + abs(bdf[ix, :locked]) + abs(shortv)) < 1.01 * syminfo.minbaseqty) # 1% more to avoid issues by rounding errors
                     push!(delrows, ix)
                 end
             end
@@ -1752,7 +1935,7 @@ function _filterbalances!(xc::XchCache, bdf::DataFrame; ignoresmallvolume::Bool=
     return bdf
 end
 
-"Returns a DataFrame[:coin, :locked, :free, :borrowed, :accruedinterest] of wallet/portfolio balances"
+"Returns a DataFrame[:coin, :locked, :free, :short] of wallet/portfolio balances"
 function balances(xc::XchCache; ignoresmallvolume=true, prefer_websocket::Bool=true)
     use_ws_primary = prefer_websocket && _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_balances_enabled, false)
     bdf = if use_ws_primary
@@ -1846,16 +2029,16 @@ function portfolio!(xc::XchCache, balancesdf=balances(xc, ignoresmallvolume=fals
         end
         portfoliodf.usdtprice = usdtprice
     end
-    # Value is net base exposure in USDT (free + locked - borrowed).
-    # This keeps pure shorts (free=0, borrowed>0) negative instead of incorrectly zero.
-    portfoliodf.usdtvalue = (portfoliodf.free .+ portfoliodf.locked .- portfoliodf.borrowed) .* portfoliodf.usdtprice
+    !(:short in propertynames(portfoliodf)) && (portfoliodf[!, :short] = fill(0f0, nrow(portfoliodf)))
+    # Value is net exposure in USDT with explicit short quantity subtraction.
+    portfoliodf.usdtvalue = (portfoliodf.free .+ portfoliodf.locked .- portfoliodf.short) .* portfoliodf.usdtprice
     if ignoresmallvolume
         delrows = []
         for ix in eachindex(portfoliodf[!, :coin])
             coin = String(portfoliodf[ix, :coin])
             minbasequant = minimumbasequantity(xc, coin, portfoliodf[ix, :usdtprice])
             is_quotecoin = (uppercase(coin) == uppercase(EnvConfig.pairquote)) || (coin in quotecoins)
-            if !is_quotecoin && (isnothing(minbasequant) || ((abs(portfoliodf[ix, :free]) + abs(portfoliodf[ix, :locked]) + abs(portfoliodf[ix, :borrowed])) < minbasequant))
+            if !is_quotecoin && (isnothing(minbasequant) || ((abs(portfoliodf[ix, :free]) + abs(portfoliodf[ix, :locked]) + abs(portfoliodf[ix, :short])) < minbasequant))
                 push!(delrows, ix)
             end
         end
@@ -2129,7 +2312,7 @@ function _assetrow!(adf::DataFrame, coin)
     aorow = nothing
     adfix = size(adf, 1) > 0 ? findfirst(x -> x == coin, adf[!, :coin]) : nothing
     if isnothing(adfix)
-        push!(adf, (coin = coin, free = 0f0, locked = 0f0, marginfree = 0f0, marginlocked = 0f0, assetborrowed = 0f0, orderborrowed = 0f0, accruedinterest = 0f0))
+        push!(adf, (coin = coin, free = 0f0, locked = 0f0, marginfree = 0f0, marginlocked = 0f0, accruedinterest = 0f0))
         aorow = last(adf)
     else
         aorow = adf[adfix, :]
@@ -2149,7 +2332,7 @@ function _updateasset!(xc::XchCache, coin, amount)
 end
 
 
-_emptyassets()::DataFrame = DataFrame(coin=String31[], free=Float32[], locked=Float32[], marginfree=Float32[], marginlocked=Float32[], assetborrowed=Float32[], orderborrowed=Float32[], accruedinterest=Float32[])
+_emptyassets()::DataFrame = DataFrame(coin=String31[], free=Float32[], locked=Float32[], marginfree=Float32[], marginlocked=Float32[], accruedinterest=Float32[])
 
 "Return an empty order dataframe with Xch bookkeeping columns added."
 function emptyorders(xc::XchCache)::DataFrame

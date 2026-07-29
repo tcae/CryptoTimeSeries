@@ -242,13 +242,13 @@ function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFra
 end
 
 """
-    compilegainsdf(tradesdf; stem="xchgains", folderpath=EnvConfig.logfolder())
+    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder())
 
 Compile open/close gain pairs from one Trades DataFrame, scoping matching by
 `pair` plus optional `set` and `rangeid`, then persist the result in the current
 log folder as `<stem>.arrow`.
 """
-function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="xchgains", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
+function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
     gainsdf = _emptygainsdf(tradesdf)
     if nrow(tradesdf) == 0
         EnvConfig.savedf(gainsdf, String(stem); folderpath=String(folderpath))
@@ -270,12 +270,12 @@ function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="xchga
 end
 
 """
-    compilegainsdf(tsm; stem="xchgains", folderpath=EnvConfig.logfolder())
+    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder())
 
 Collect the combined Trades DataFrame from one `TsmCache`, compile gain pairs,
 and persist the result in the current log folder as `<stem>.arrow`.
 """
-function compilegainsdf(tsm::TsmCache; stem::AbstractString="xchgains", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
+function compilegainsdf(tsm::TsmCache; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
     return compilegainsdf(collecttradesdf(tsm); stem=stem, folderpath=folderpath)
 end
 
@@ -342,17 +342,23 @@ function gainsreport(gainsdf::AbstractDataFrame)::DataFrame
         :minutes => maximum => :maxminutes,
         nrow => :segments,
     )
+    set_strings = [ismissing(v) ? "all" : String(v) for v in report[!, :set]]
+    report[!, :set] = set_strings
     sort!(report, :set)
+    # Rebuild `:set` as a fresh categorical vector derived from strings.
+    # This keeps the categorical semantics while avoiding pool internals from
+    # grouped keys that Arrow cannot serialize reliably.
+    report[!, :set] = categorical(report[!, :set]; levels=unique(report[!, :set]), compress=true)
     return report
 end
 
 """
-    gainsreport(; instem="xchgains", stem="xchgainsreport", folderpath=EnvConfig.logfolder())
+    gainsreport(; instem="tsmgains", stem="xchgainsreport", folderpath=EnvConfig.logfolder())
 
 Load `<instem>.arrow` from the current log folder, aggregate gains across all
 pairs and ranges per set, persist `<stem>.arrow`, and return the report table.
 """
-function gainsreport(; instem::AbstractString="xchgains", stem::AbstractString="xchgainsreport", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
+function gainsreport(; instem::AbstractString="tsmgains", stem::AbstractString="xchgainsreport", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
     loaded = EnvConfig.readdf(String(instem); folderpath=String(folderpath))
     report = if isnothing(loaded)
         _emptygainsreportdf()

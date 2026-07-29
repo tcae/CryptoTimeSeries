@@ -14,6 +14,7 @@ Pkg.activate(joinpath(@__DIR__, ".."), io=devnull)
 
 using Dates, Statistics, Printf, Logging
 using DataFrames
+using CategoricalArrays
 using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, Targets, TSM
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25,8 +26,8 @@ using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, 
 const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 
 # Backtest time range (UTC).
-const BACKTEST_STARTDT = DateTime("2025-07-01T04:01:00")
-const BACKTEST_ENDDT   = DateTime("2025-07-02T03:59:00")
+const BACKTEST_STARTDT = DateTime("2025-07-01T07:00:00") # 250706 12:02
+const BACKTEST_ENDDT   = DateTime("2025-07-01T09:00:00") # 250718 13:59 or nothing
 
 function env_bases(default_bases::Vector{String})::Vector{String}
     raw = strip(get(ENV, "TRADESIM_BASES", ""))
@@ -115,12 +116,14 @@ function filled_orders_df(xc::Xch.XchCache)::DataFrame
     return isempty(rows) ? DataFrame() : sort!(DataFrame(rows), :created)
 end
 
-function backtest_bounds_from_env(default_start::DateTime, default_end::DateTime)
+function backtest_bounds_from_env(default_start::Union{Nothing, DateTime}, default_end::Union{Nothing, DateTime})
     sraw = strip(get(ENV, "TRADESIM_STARTDT", ""))
     eraw = strip(get(ENV, "TRADESIM_ENDDT", ""))
     sdt = isempty(sraw) ? default_start : DateTime(sraw)
     edt = isempty(eraw) ? default_end : DateTime(eraw)
-    @assert sdt <= edt "TRADESIM_STARTDT must be <= TRADESIM_ENDDT; got start=$(sdt), end=$(edt)"
+    if !isnothing(sdt) && !isnothing(edt)
+        @assert sdt <= edt "TRADESIM_STARTDT must be <= TRADESIM_ENDDT; got start=$(sdt), end=$(edt)"
+    end
     return sdt, edt
 end
 
@@ -254,6 +257,251 @@ function _validate_tradesim_replay_result!(tradesdf::DataFrame)
     return nothing
 end
 
+"Convert categorical columns to plain strings to keep vcat stable across group pools."
+function _stringify_categorical_columns!(df::DataFrame)::DataFrame
+    for col in propertynames(df)
+        values = df[!, col]
+        if values isa CategoricalVector
+            df[!, col] = string.(values)
+        end
+    end
+    return df
+end
+
+"""
+    tradescompare(trades_td, trades_replay)
+
+Compare TrendDetector (`trades_td`) and tradesim replay (`trades_replay`) on
+key identity `(set, pair, rangeid, opentime)` and report per-column equality.
+
+Returns a named tuple with:
+- `rowstats`: row and join cardinalities
+- `equal_cols`: columns with exact value parity
+- `unequal_counts`: per-column mismatch counts
+- `label_transitions`: source→replay transition counts for mismatching labels
+- `limit_mismatch_counts`: mismatch counts for `lo/lc/so/sc` limit columns
+"""
+function tradescompare(trades_td::DataFrame, trades_replay::DataFrame)
+    _cellsequal(a, b) = begin
+        if ismissing(a) || ismissing(b)
+            return ismissing(a) && ismissing(b)
+        elseif (a isa Number) && (b isa Number)
+            return isequal(a, b)
+        else
+            return string(a) == string(b)
+        end
+    end
+
+    key = [:set, :pair, :rangeid, :opentime]
+    td_props = Set(propertynames(trades_td))
+    replay_props = Set(propertynames(trades_replay))
+    for c in key
+        @assert c in td_props "trades_td missing key column $(c); names=$(names(trades_td))"
+        @assert c in replay_props "trades_replay missing key column $(c); names=$(names(trades_replay))"
+    end
+
+    joined = innerjoin(trades_replay, trades_td; on=key, makeunique=true)
+    rowstats = (
+        replay_rows=nrow(trades_replay),
+        td_rows=nrow(trades_td),
+        joined_rows=nrow(joined),
+    )
+
+    common_cols = [c for c in propertynames(trades_replay) if c in td_props && !(c in key)]
+    equal_cols = Symbol[]
+    unequal_counts = Dict{Symbol, Int}()
+    for c in common_cols
+        leftcol = c
+        rightcol = Symbol(string(c, "_1"))
+        @assert rightcol in propertynames(joined) "joined comparison column missing for $(c)"
+        leftv = joined[!, leftcol]
+        rightv = joined[!, rightcol]
+        ndiff = count(ix -> !_cellsequal(leftv[ix], rightv[ix]), eachindex(leftv))
+        if ndiff == 0
+            push!(equal_cols, c)
+        else
+            unequal_counts[c] = ndiff
+        end
+    end
+
+    label_transitions = Dict{String, Int}()
+    if (:label in propertynames(joined)) && (Symbol("label_1") in propertynames(joined))
+        src = string.(joined[!, Symbol("label_1")])
+        dst = string.(joined[!, :label])
+        for ix in 1:nrow(joined)
+            if src[ix] != dst[ix]
+                k = string(src[ix], " -> ", dst[ix])
+                label_transitions[k] = get(label_transitions, k, 0) + 1
+            end
+        end
+    end
+
+    limit_cols = [:lo_limit, :lc_limit, :so_limit, :sc_limit]
+    limit_mismatch_counts = Dict{Symbol, Int}()
+    for c in limit_cols
+        if c in propertynames(joined) && Symbol(string(c, "_1")) in propertynames(joined)
+            l = joined[!, c]
+            r = joined[!, Symbol(string(c, "_1"))]
+            limit_mismatch_counts[c] = count(ix -> !_cellsequal(l[ix], r[ix]), eachindex(l))
+        end
+    end
+
+    return (
+        rowstats=rowstats,
+        common_cols=common_cols,
+        equal_cols=equal_cols,
+        unequal_counts=unequal_counts,
+        label_transitions=label_transitions,
+        limit_mismatch_counts=limit_mismatch_counts,
+    )
+end
+
+"Transpose one DataFrame into a string-valued field x time table."
+function replay_window_transpose(df::DataFrame)::DataFrame
+    out = DataFrame(field=String.(names(df)))
+    for r in 1:nrow(df)
+        out[!, Symbol("t$(r)")] = [string(df[r, c]) for c in 1:ncol(df)]
+    end
+    return out
+end
+
+"""
+    replay_focus_first_open_close_windows(trades_replay; focus_cols=..., return_transposed=true)
+
+Find the first open signal that effectively increases position amount,
+then find the corresponding close-order signal and first subsequent
+position decrease in the same `(pair, set, rangeid)` group.
+
+Returned named tuple fields:
+- `meta`: group id and event timestamps
+- `open_window`: rows from 1 minute before open signal until position increase
+- `close_window`: rows from 1 minute before close-order signal until position decrease
+- `open_transposed`: transposed `open_window` (if requested)
+- `close_transposed`: transposed `close_window` (if requested)
+"""
+function replay_focus_first_open_close_windows(
+    trades_replay::DataFrame;
+    focus_cols::Vector{Symbol}=[
+        :opentime, :pair, :set, :rangeid,
+        :high, :low, :close,
+        :label, :score,
+        :lp_amount, :sp_amount,
+        :lo_amount, :lc_amount, :so_amount, :sc_amount,
+        :lo_limit, :lc_limit, :so_limit, :sc_limit,
+        :lo_status, :lc_status, :so_status, :sc_status,
+        :lo_id, :lc_id, :so_id, :sc_id,
+        :lo_msg, :lc_msg, :so_msg, :sc_msg,
+        :lol_id, :lol_status, :lol_filled, :lol_pavg, :lol_msg,
+        :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lcl_msg,
+        :sol_id, :sol_status, :sol_filled, :sol_pavg, :sol_msg,
+        :scl_id, :scl_status, :scl_filled, :scl_pavg, :scl_msg,
+        :equity, :freemargin, :freequote,
+    ],
+    return_transposed::Bool=true,
+)
+    @assert nrow(trades_replay) > 2 "trades_replay is empty"
+    df = DataFrame(trades_replay)
+    sort!(df, [:opentime, :pair, :set, :rangeid])
+
+    open_labels_long = Set(["longopen", "longstrongopen"])
+    open_labels_short = Set(["shortopen", "shortstrongopen"])
+    labels = lowercase.(string.(df[!, :label]))
+
+    open_ix = nothing
+    open_fill_ix = nothing
+    side = nothing
+    poscol = nothing
+
+    for ix in 1:nrow(df)
+        current = labels[ix]
+        if current in open_labels_long
+            s = :long
+            p = :lp_amount
+        elseif current in open_labels_short
+            s = :short
+            p = :sp_amount
+        else
+            continue
+        end
+
+        pair = df[ix, :pair]
+        setv = df[ix, :set]
+        rid = df[ix, :rangeid]
+        gix = findall(j -> (df[j, :pair] == pair) && (df[j, :set] == setv) && (df[j, :rangeid] == rid), 1:nrow(df))
+        local_ix = findfirst(==(ix), gix)
+        before = local_ix == 1 ? 0.0 : Float64(df[gix[local_ix - 1], p])
+        fill_local = findfirst(k -> Float64(df[gix[k], p]) > before, local_ix:length(gix))
+        if !isnothing(fill_local)
+            open_ix = ix
+            open_fill_ix = gix[fill_local]
+            side = s
+            poscol = p
+            break
+        end
+    end
+
+    @assert !isnothing(open_ix) "no open signal with subsequent position increase found"
+
+    pair = df[open_ix, :pair]
+    setv = df[open_ix, :set]
+    rid = df[open_ix, :rangeid]
+    gmask = (df.pair .== pair) .& (df.set .== setv) .& (df.rangeid .== rid)
+    gdf = df[gmask, :]
+
+    grouptimes = DateTime.(gdf[!, :opentime])
+    open_local = findfirst(==(DateTime(df[open_ix, :opentime])), grouptimes)
+    open_fill_local = findfirst(==(DateTime(df[open_fill_ix, :opentime])), grouptimes)
+    @assert !isnothing(open_local) && !isnothing(open_fill_local) "failed to map open indices into group"
+
+    close_amount_col = side == :long ? :lc_amount : :sc_amount
+    close_local_scan = findfirst(i -> Float64(gdf[i, close_amount_col]) > 0.0, open_fill_local:nrow(gdf))
+    @assert !isnothing(close_local_scan) "no close order signal ($(close_amount_col)>0) found after first effective open"
+    close_local = (open_fill_local:nrow(gdf))[close_local_scan]
+
+    close_before = close_local == 1 ? 0.0 : Float64(gdf[close_local - 1, poscol])
+    close_fill_scan = findfirst(i -> Float64(gdf[i, poscol]) < close_before, close_local:nrow(gdf))
+    @assert !isnothing(close_fill_scan) "no position decrease found after close order signal"
+    close_fill_local = (close_local:nrow(gdf))[close_fill_scan]
+
+    open_start_dt = DateTime(gdf[open_local, :opentime]) - Minute(2)
+    open_end_dt = DateTime(gdf[open_fill_local, :opentime])
+    close_start_dt = DateTime(gdf[close_local, :opentime]) - Minute(2)
+    close_end_dt = DateTime(gdf[close_fill_local, :opentime])
+
+    cols = [c for c in focus_cols if c in propertynames(gdf)]
+    open_window = gdf[(gdf.opentime .>= open_start_dt) .& (gdf.opentime .<= open_end_dt), :]
+    close_window = gdf[(gdf.opentime .>= close_start_dt) .& (gdf.opentime .<= close_end_dt), :]
+
+    meta = (
+        pair=String(pair),
+        set=String(setv),
+        rangeid=Int32(rid),
+        side=side,
+        position_col=poscol,
+        close_amount_col=close_amount_col,
+        open_signal_dt=DateTime(gdf[open_local, :opentime]),
+        open_fill_dt=DateTime(gdf[open_fill_local, :opentime]),
+        close_signal_dt=DateTime(gdf[close_local, :opentime]),
+        close_fill_dt=DateTime(gdf[close_fill_local, :opentime]),
+    )
+
+    if return_transposed
+        return (
+            meta=meta,
+            open_window=open_window,
+            close_window=close_window,
+            open_transposed=replay_window_transpose(open_window),
+            close_transposed=replay_window_transpose(close_window),
+        )
+    end
+
+    return (
+        meta=meta,
+        open_window=open_window,
+        close_window=close_window,
+    )
+end
+
 "Append or reuse one replay row in the pair dataframe."
 function _upsert_replay_row!(tsm::TSM.TsmCache, pairdf::DataFrame, pair::AbstractString, quotecoin::AbstractString, row)::Integer
     row_opentime = DateTime(row.opentime)
@@ -268,23 +516,6 @@ function _upsert_replay_row!(tsm::TSM.TsmCache, pairdf::DataFrame, pair::Abstrac
     bq = Xch.basequote(String(pair))
     rowref = TSM.ensuretradesrow!(tsm, String(bq.basecoin), String(quotecoin), row_opentime)
     return Int(rowref.rowix)
-end
-
-function _strategy_with_algorithm(spec::TradingStrategy.StrategyConfig, algorithm::Function)::TradingStrategy.StrategyConfig
-    return TradingStrategy.StrategyConfig(
-        classifier=spec.classifier,
-        algorithm=algorithm,
-        maxwindow=spec.maxwindow,
-        openthreshold=spec.openthreshold,
-        closethreshold=spec.closethreshold,
-        makerfee=spec.makerfee,
-        takerfee=spec.takerfee,
-        buygain=spec.buygain,
-        sellgain=spec.sellgain,
-        limitreduction=spec.limitreduction,
-        minpricedelta=spec.minpricedelta,
-        max_classify_staleness_minutes=spec.max_classify_staleness_minutes,
-    )
 end
 
 "Reset mutable runtime state before running one independent replay group."
@@ -318,6 +549,11 @@ function _prepare_replay_group!(cache::Trade.TradeCache, groupdf::DataFrame, quo
     cache.xc.currentdt = nothing
     cache.mc[:reloadtimes] = Time[]
 
+    # Strict sync contract: every synced base must already exist in xc.bases
+    # and be advanced only by the Xch iterator.
+    Xch.removeallbases(cache.xc)
+    Xch.addbase!(cache.xc, base, cache.xc.startdt, cache.xc.enddt)
+
     cache.cfg = DataFrame(
         basecoin=[base],
         pair=[pair],
@@ -337,19 +573,7 @@ function _prepare_replay_group!(cache::Trade.TradeCache, groupdf::DataFrame, quo
     seeddf = select(groupdf, :opentime, :pair, :set, :rangeid, :high, :low, :close, :label, :score)
     TSM.settrades!(cache.xc.tsm, pair, seeddf)
 
-    rowmap = Dict{DateTime, NamedTuple}()
-    for row in eachrow(groupdf)
-        rowmap[DateTime(row.opentime)] = (
-            set=String(setname),
-            rangeid=Int32(rangeid),
-            high=Float32(row.high),
-            low=Float32(row.low),
-            close=Float32(row.close),
-            label=row.label,
-            score=Float32(row.score),
-        )
-    end
-    return (pair=pair, base=base, setname=setname, rangeid=rangeid, rowmap=rowmap)
+    return (pair=pair, base=base, setname=setname, rangeid=rangeid)
 end
 
 "Run one replay group through Trade tradeloop step execution."
@@ -357,28 +581,9 @@ function _run_replay_group_tradeloop!(cache::Trade.TradeCache, groupdf::DataFram
     _reset_replay_runtime!(cache, quotecoin, INITIAL_QUOTE_BALANCE)
     prep = _prepare_replay_group!(cache, groupdf, quotecoin)
 
-    base_algorithm = TradingStrategy.gain_limit_reversal!
-    replay_algorithm = function (cfg::TradingStrategy.StrategyConfig, tradesdf::DataFrame, ix::Integer)
-        dt = DateTime(tradesdf[ix, :opentime])
-        src = get(prep.rowmap, dt, nothing)
-        if isnothing(src)
-            return base_algorithm(cfg, tradesdf, ix)
-        end
-        TSM.settrades_set!(tradesdf, ix, src.set)
-        TSM.settrades_rangeid!(tradesdf, ix, src.rangeid)
-        TSM.settrades_high!(tradesdf, ix, src.high)
-        TSM.settrades_low!(tradesdf, ix, src.low)
-        TSM.settrades_close!(tradesdf, ix, src.close)
-        TSM.settrades_label!(tradesdf, ix, src.label)
-        TSM.settrades_score!(tradesdf, ix, src.score)
-        return base_algorithm(cfg, tradesdf, ix)
-    end
-    cache.ts.cfg = _strategy_with_algorithm(cache.ts.cfg, replay_algorithm)
-
-    for dt in groupdf[!, :opentime]
-        cache.xc.currentdt = DateTime(dt)
-        Trade._tradestep!(cache)
-    end
+    # Execute the native Trade backtest loop over the replay-configured window.
+    # skip_init=true keeps the replay-provided cfg and avoids tradeselection rebuild.
+    Trade.run_backtest!(cache; skip_init=true)
 
     tdf = DataFrame(TSM.trades(cache.xc.tsm, prep.pair))
     fills = filled_orders_df(cache.xc)
@@ -391,10 +596,29 @@ function _run_replay_group_tradeloop!(cache::Trade.TradeCache, groupdf::DataFram
 end
 
 "Run artifact-driven trades replay through Trade tradeloop and return (tradesdf, fillsdf)."
-function run_replay_from_artifacts!(cache::Trade.TradeCache; logsubfolder::AbstractString=REPLAY_SOURCE_SUBFOLDER, quotecoin::AbstractString=QUOTE_COIN)
+function run_replay_from_artifacts!(cache::Trade.TradeCache;
+    logsubfolder::AbstractString=REPLAY_SOURCE_SUBFOLDER,
+    quotecoin::AbstractString=QUOTE_COIN,
+    startdt::Union{Nothing, DateTime}=nothing,
+    enddt::Union{Nothing, DateTime}=nothing,
+)
     resultsdf = _load_replay_df(logsubfolder, "results", "all")
     preddf = _load_replay_df(logsubfolder, "predictions", "maxpredictions")
+    @assert nrow(resultsdf) > 0 "replay source results/all is empty"
+
+    source_opentimes = DateTime.(resultsdf[!, :opentime])
+    source_startdt = minimum(source_opentimes)
+    source_enddt = maximum(source_opentimes)
+    effective_startdt = isnothing(startdt) ? source_startdt : startdt
+    effective_enddt = isnothing(enddt) ? source_enddt : enddt
+    @assert effective_startdt <= effective_enddt "invalid replay bounds: start=$(effective_startdt), end=$(effective_enddt)"
+
+    mask = (source_opentimes .>= effective_startdt) .& (source_opentimes .<= effective_enddt)
+    resultsdf = resultsdf[mask, :]
+    preddf = preddf[mask, :]
     replaydf = _build_replay_input(resultsdf, preddf, quotecoin)
+    @assert nrow(replaydf) > 0 "replay input is empty after timestamp filter; startdt=$(effective_startdt), enddt=$(effective_enddt)"
+
     sort!(replaydf, [:pair, :set, :rangeid, :opentime])
     _validate_replay_sequence!(replaydf)
 
@@ -403,12 +627,19 @@ function run_replay_from_artifacts!(cache::Trade.TradeCache; logsubfolder::Abstr
     groups = groupby(replaydf, [:pair, :set, :rangeid])
     for g in groups
         tradesdf, fillsdf = _run_replay_group_tradeloop!(cache, DataFrame(g), quotecoin)
-        push!(trades_parts, DataFrame(tradesdf))
-        nrow(fillsdf) > 0 && push!(fills_parts, DataFrame(fillsdf))
+        push!(trades_parts, _stringify_categorical_columns!(DataFrame(tradesdf)))
+        nrow(fillsdf) > 0 && push!(fills_parts, _stringify_categorical_columns!(DataFrame(fillsdf)))
     end
 
     alltrades = isempty(trades_parts) ? DataFrame() : reduce(vcat, trades_parts; cols=:union)
     allfills = isempty(fills_parts) ? DataFrame() : reduce(vcat, fills_parts; cols=:union)
+
+    # Keep only rows that correspond to replay source keys. This removes
+    # framework-introduced placeholder rows (for example set="none", rangeid=0)
+    # and guarantees key-space parity with the source artifacts.
+    replay_keys = unique(select(replaydf, [:pair, :set, :rangeid, :opentime]))
+    alltrades = innerjoin(alltrades, replay_keys; on=[:pair, :set, :rangeid, :opentime])
+
     return alltrades, allfills
 end
 
@@ -579,13 +810,17 @@ Classify.verbosity  = 2
 Trade.verbosity     = 3
 
 println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME")
-println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
+# println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 println("$(EnvConfig.now()): replay source folder=$REPLAY_SOURCE_SUBFOLDER")
 
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
-
 run_startdt, run_enddt = effective_startdt, effective_enddt
+resultsdf_window = _load_replay_df(REPLAY_SOURCE_SUBFOLDER, "results", "all")
+@assert nrow(resultsdf_window) > 0 "replay source results/all is empty"
+source_opentimes_window = DateTime.(resultsdf_window[!, :opentime])
+cache_startdt = isnothing(run_startdt) ? minimum(source_opentimes_window) : run_startdt
+cache_enddt = isnothing(run_enddt) ? maximum(source_opentimes_window) : run_enddt
 strategy_runtime = TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -595,8 +830,8 @@ strategy_runtime = TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_
 bc = Bybit.BybitCache()
 Bybit.seedportfolio!(bc, QUOTE_COIN, 0.0)
 xc = Xch.XchCache(bc;
-    startdt  = run_startdt,
-    enddt    = run_enddt,
+    startdt  = cache_startdt,
+    enddt    = cache_enddt,
 )
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
@@ -612,13 +847,18 @@ println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): blacklist ($(length(cache.mc[:blacklistbases])) bases): $(cache.mc[:blacklistbases])")
-println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
+# println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-alltrades, allfills = run_replay_from_artifacts!(cache; logsubfolder=REPLAY_SOURCE_SUBFOLDER, quotecoin=QUOTE_COIN)
+alltrades, allfills = run_replay_from_artifacts!(cache;
+    logsubfolder=REPLAY_SOURCE_SUBFOLDER,
+    quotecoin=QUOTE_COIN,
+    startdt=run_startdt,
+    enddt=run_enddt,
+)
 _validate_tradesim_replay_result!(alltrades)
 println("$(EnvConfig.now()): replay simulation finished, trades rows=$(nrow(alltrades)), fills rows=$(nrow(allfills))")
 
@@ -626,8 +866,47 @@ replay_out_folder = joinpath(EnvConfig.logfolder(), "tradesim-replay")
 mkpath(replay_out_folder)
 saved_trades = EnvConfig.savedf(alltrades, "trades-replay"; folderpath=replay_out_folder)
 saved_fills = EnvConfig.savedf(allfills, "fills-replay"; folderpath=replay_out_folder)
-println("$(EnvConfig.now()): saved replay trades to $saved_trades")
-println("$(EnvConfig.now()): saved replay fills to $saved_fills")
+replay_gains_stem = "xchgains-replay"
+replay_report_stem = "xchgainsreport-replay"
+replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpath=replay_out_folder)
+replay_reportdf = TSM.gainsreport(instem=replay_gains_stem, stem=replay_report_stem, folderpath=replay_out_folder)
+saved_gains = EnvConfig.tablepath(replay_gains_stem; folderpath=replay_out_folder, format=:auto)
+saved_gainsreport = EnvConfig.tablepath(replay_report_stem; folderpath=replay_out_folder, format=:auto)
+println("$(EnvConfig.now()): replay gains report \n $replay_reportdf")
+println("$(EnvConfig.now()): saved replay trades to $saved_trades rows=$(nrow(alltrades)) $(nrow(alltrades) > 0 ? (string(alltrades[begin, :opentime]) * " - " * string(alltrades[end, :opentime])) : nothing)")
+println("$(EnvConfig.now()): saved replay fills to $saved_fills rows=$(nrow(allfills))")
+println("$(EnvConfig.now()): saved replay gains to $saved_gains rows=$(nrow(replay_gainsdf))")
+println("$(EnvConfig.now()): saved replay gains report to $saved_gainsreport rows=$(nrow(replay_reportdf))")
+
+replay_compare_root = joinpath(dirname(EnvConfig.logfolder()), REPLAY_SOURCE_SUBFOLDER)
+trades_td = EnvConfig.readdf("trades-td"; folderpath=replay_compare_root)
+if !isnothing(trades_td)
+    cmp = tradescompare(DataFrame(trades_td), alltrades)
+    println("$(EnvConfig.now()): trades compare rowstats replay=$(cmp.rowstats.replay_rows) td=$(cmp.rowstats.td_rows) joined=$(cmp.rowstats.joined_rows)")
+    println("$(EnvConfig.now()): trades compare equal_cols=$(length(cmp.equal_cols)) unequal_cols=$(length(cmp.unequal_counts))")
+    if haskey(cmp.unequal_counts, :label)
+        println("$(EnvConfig.now()): trades compare label mismatches=$(cmp.unequal_counts[:label])")
+        top_label_transitions = sort(collect(cmp.label_transitions); by=last, rev=true)
+        shown = min(8, length(top_label_transitions))
+        for ix in 1:shown
+            println("$(EnvConfig.now()): label transition $(top_label_transitions[ix][1]) count=$(top_label_transitions[ix][2])")
+        end
+    end
+    for lane in [:lo_limit, :lc_limit, :so_limit, :sc_limit]
+        if haskey(cmp.limit_mismatch_counts, lane)
+            println("$(EnvConfig.now()): trades compare $(lane) mismatches=$(cmp.limit_mismatch_counts[lane])")
+        end
+    end
+else
+    println("$(EnvConfig.now()): trades compare skipped; missing trades-td.arrow in $(replay_compare_root)")
+end
+
+focus = replay_focus_first_open_close_windows(alltrades; return_transposed=true)
+println("$(EnvConfig.now()): replay focus group pair=$(focus.meta.pair) set=$(focus.meta.set) rangeid=$(focus.meta.rangeid) side=$(focus.meta.side)")
+println("$(EnvConfig.now()): replay focus open signal=$(focus.meta.open_signal_dt) fill=$(focus.meta.open_fill_dt)")
+println("$(EnvConfig.now()): replay focus close signal=$(focus.meta.close_signal_dt) fill=$(focus.meta.close_fill_dt)")
+println("$(EnvConfig.now()): replay focus open window (transposed)\n$(focus.open_transposed)")
+println("$(EnvConfig.now()): replay focus close window (transposed)\n$(focus.close_transposed)")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PERFORMANCE REPORT
@@ -639,8 +918,7 @@ else
     println("$(EnvConfig.now()): replay filled-order summary: rows=$(nrow(allfills))")
 end
 EnvConfig.setlogpath(LOG_SUBFOLDER)
-tradespath = TSM.savetradesdf(xc.tsm; stem="trades-ts", folderpath=EnvConfig.logfolder())
-println("$(EnvConfig.now()): saved trades dataframe to $tradespath")
+println("$(EnvConfig.now()): skipped trades-ts persistence; using tradesim-replay/trades-replay.arrow as canonical replay output")
 
 # Keep legacy log-path split for parity with previous script layout.
 println("$(EnvConfig.now()): order history report derived from xc.tsm.pairstates trades data")

@@ -629,7 +629,7 @@ function _meangain_or_missing(values)::Union{Missing, Float64}
 end
 
 """Collect Xch-compiled gains and corresponding gain report from `tradesdf`."""
-function _collectxchgains(tradesdf::AbstractDataFrame; gainsstem::AbstractString="xchgains-td", reportstem::AbstractString="xchgainsreport-td")
+function _collectxchgains(tradesdf::AbstractDataFrame; gainsstem::AbstractString="tsmgains-td", reportstem::AbstractString="xchgainsreport-td")
     folderpath = EnvConfig.logfolder()
     xchgainsdf = TSM.compilegainsdf(tradesdf; stem=gainsstem, folderpath=folderpath)
     xchreportdf = TSM.gainsreport(instem=gainsstem, stem=reportstem, folderpath=folderpath)
@@ -734,7 +734,7 @@ function _report_gain_collection_comparison(gaindf::Union{AbstractDataFrame, Not
         return nothing
     end
     if isnothing(xchgainsdf) || (size(xchgainsdf, 1) == 0)
-        (verbosity >= 2) && println("$(EnvConfig.now()) gain comparison skipped: missing compiled xchgains")
+        (verbosity >= 2) && println("$(EnvConfig.now()) gain comparison skipped: missing compiled tsmgains")
         return nothing
     end
 

@@ -18,6 +18,7 @@ getklines(ac::XchAdapterCache, symbol; startDateTime=nothing, endDateTime=nothin
 get24h(ac::XchAdapterCache) = _required_method_error(ac, :get24h)
 get24h(ac::XchAdapterCache, symbol) = _required_method_error(ac, :get24h)
 balances(ac::XchAdapterCache) = _required_method_error(ac, :balances)
+positionsnapshot(ac::XchAdapterCache) = _required_method_error(ac, :positionsnapshot)
 emptyorders(ac::XchAdapterCache) = _required_method_error(ac, :emptyorders)
 
 openorders(ac::XchAdapterCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _required_method_error(ac, :openorders)

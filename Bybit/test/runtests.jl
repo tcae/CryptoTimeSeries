@@ -199,6 +199,12 @@ EnvConfig.init(production)  # test production
     so_filled = Bybit.order(bc_short_open, String(so.orderid))
     @test !isnothing(so_filled)
     @test so_filled.status == "Filled"
+    short_open_balances = Bybit.balances(bc_short_open)
+    quoteix = findfirst(==(EnvConfig.pairquote), short_open_balances[!, :coin])
+    @test !isnothing(quoteix)
+    short_open_cap = Bybit.accountcapacity(bc_short_open)
+    @test short_open_balances[quoteix, :free] <= short_open_cap.equity_quote + 1f-6
+    @test short_open_cap.available_opening_quote <= short_open_cap.equity_quote + 1f-6
 
     # Explicit short-close trigger semantics: pending short buy fills on high>=limit.
     bc_short_close = Bybit.BybitCache()

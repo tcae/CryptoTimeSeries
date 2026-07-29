@@ -133,7 +133,8 @@ using Ohlcv, EnvConfig, Xch, Bybit
     oodf = Xch.getopenorders(xc)
     println("getopenorders(nothing) - expect no open order: $oodf")
 
-    # Regression: pure short exposure (free=0, borrowed>0) must carry negative value.
+    # Regression: pure short exposure is tracked as positive simulated exposure
+    # under no-liability valuation.
     short_balances = DataFrame(
         coin=String[EnvConfig.pairquote, "BTC"],
         free=Float32[104_000f0, 0f0],
@@ -145,7 +146,7 @@ using Ohlcv, EnvConfig, Xch, Bybit
     short_portfolio = Xch.portfolio!(xc, short_balances, short_prices; ignoresmallvolume=false)
     btc_ix = findfirst(==("BTC"), short_portfolio.coin)
     @test !isnothing(btc_ix)
-    @test short_portfolio[btc_ix, :usdtvalue] < 0f0
+    @test short_portfolio[btc_ix, :usdtvalue] > 0f0
     @test isfinite(sum(short_portfolio.usdtvalue))
 
 

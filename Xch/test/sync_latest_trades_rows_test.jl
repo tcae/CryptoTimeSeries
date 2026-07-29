@@ -50,11 +50,10 @@ end
 
     bc = Xch.rawcache(xc.bc)
     bc.assets = DataFrame(
-        coin=String[EnvConfig.pairquote, "BTC", "ETH"],
-        free=Float32[5_000f0, 1.5f0, 0.75f0],
-        locked=Float32[0f0, 0f0, 0f0],
-        borrowed=Float32[0f0, 0.25f0, 0f0],
-        accruedinterest=Float32[0f0, 0f0, 0f0],
+        coin=String[EnvConfig.pairquote, "BTC", "BTC", "ETH"],
+        side=String["quote", "long", "short", "long"],
+        free=Float32[5_000f0, 1.5f0, 0.25f0, 0.75f0],
+        locked=Float32[0f0, 0f0, 0f0, 0f0],
     )
 
     empty!(bc.orders)
@@ -62,6 +61,7 @@ end
         orderid="oid-lo-filled",
         symbol="BTCUSDT",
         side="Buy",
+        positionside="long",
         baseqty=1.0f0,
         ordertype="Limit",
         isLeverage=false,
@@ -81,6 +81,7 @@ end
         orderid="oid-lc-open",
         symbol="BTCUSDT",
         side="Sell",
+        positionside="long",
         baseqty=0.5f0,
         ordertype="Limit",
         isLeverage=false,
@@ -100,6 +101,7 @@ end
         orderid="oid-sc-rejected",
         symbol="BTCUSDT",
         side="Buy",
+        positionside="short",
         baseqty=0.3f0,
         ordertype="Limit",
         isLeverage=false,
@@ -298,6 +300,43 @@ end
     @test haskey(rowsbybase, "BTC")
     @test TSM.haspairstate(xc.tsm, "BTCUSDT")
     @test rowsbybase["BTC"].tradesdf[1, :pair] == "BTCUSDT"
+end
+
+@testset "Xch sync_latest_trades_rows! values short exposure without liability discount" begin
+    EnvConfig.init(EnvConfig.test)
+
+    startdt = DateTime("2025-07-01T08:30:00")
+    enddt = startdt + Dates.Hour(1)
+    currentdt = DateTime("2025-07-01T08:32:00")
+
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    TSM.trades(xc.tsm, "DOUBLESINE", EnvConfig.pairquote)
+    Xch.addbase!(xc, "DOUBLESINE", startdt, enddt)
+    Xch.setcurrenttime!(xc, currentdt)
+
+    bc = Xch.rawcache(xc.bc)
+    bc.assets = DataFrame(
+        coin=String[EnvConfig.pairquote, "DOUBLESINE"],
+        free=Float32[1000f0, 0f0],
+        locked=Float32[500.5f0, 0f0],
+        borrowed=Float32[0f0, 249.40323f0],
+        accruedinterest=Float32[0f0, 0f0],
+    )
+    empty!(bc.orders)
+
+    rowsbybase = Xch.sync_latest_trades_rows!(xc, ["DOUBLESINEUSDT"])
+    @test haskey(rowsbybase, "DOUBLESINE")
+
+    tradesdf = rowsbybase["DOUBLESINE"].tradesdf
+    rowix = rowsbybase["DOUBLESINE"].rowix
+    acct = Xch.account_status(xc; force_refresh=true, ttl_seconds=0)
+
+    @test acct.equity_quote > 1_500f0
+    @test tradesdf[rowix, :equity] == acct.equity_quote
+    @test tradesdf[rowix, :freemargin] == acct.free_margin_quote
+    @test tradesdf[rowix, :freequote] == acct.free_quote
+    @test tradesdf[rowix, :freequote] == 1000f0
+    @test tradesdf[rowix, :equity] > tradesdf[rowix, :freequote]
 end
 
 end

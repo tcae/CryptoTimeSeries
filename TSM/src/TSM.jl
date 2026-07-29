@@ -38,7 +38,7 @@ function tradelane(label)::Symbol
         return lane
     end
 
-    tl = label isa TradeLabel ? label : tradelabel(String(label))
+    tl = label isa TradeLabel ? label : Targets.tradelabel(String(label))
     if tl === longopen || tl === longstrongopen
         return :lo
     elseif tl === longclose || tl === longstrongclose
@@ -278,6 +278,12 @@ end
 function _ensurecolumn!(tradesdf::DataFrame, field::Symbol)
     if field ∉ propertynames(tradesdf)
         tradesdf[!, field] = _defaultcolumn(field, nrow(tradesdf))
+    elseif field === :label
+        col = tradesdf[!, :label]
+        if !(eltype(col) <: TradeLabel)
+            @assert all(!ismissing(v) for v in col) "tradesdf[:label] contains missing values and cannot be normalized to TradeLabel"
+            tradesdf[!, :label] = [v isa TradeLabel ? v : Targets.tradelabel(String(v)) for v in col]
+        end
     end
     return tradesdf
 end
@@ -324,7 +330,7 @@ end
 function _label_setter!(tradesdf::DataFrame, ix::Integer, value)
     _assert_row_bounds(tradesdf, ix, :label)
     _assert_hasfield(tradesdf, :label)
-    tradesdf[ix, :label] = value isa TradeLabel ? value : tradelabel(String(value))
+    tradesdf[ix, :label] = value isa TradeLabel ? value : Targets.tradelabel(String(value))
     return tradesdf
 end
 

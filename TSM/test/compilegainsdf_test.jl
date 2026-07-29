@@ -2,6 +2,7 @@ module TsmCompileGainsDfTest
 using Test
 using Dates
 using DataFrames
+using CategoricalArrays
 
 using EnvConfig, TSM
 
@@ -18,11 +19,11 @@ using EnvConfig, TSM
                 "ETHUSDT", "ETHUSDT", "ETHUSDT", "ETHUSDT",
                 "BTCUSDT", "BTCUSDT", "BTCUSDT",
             ],
-            set=[
+            set=categorical([
                 "eval", "eval", "eval", "eval", "eval",
                 "eval", "eval", "eval", "eval",
                 "test", "test", "test",
-            ],
+            ]),
             rangeid=[1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2],
             opentime=[
                 DateTime(2024, 1, 1, 0, 0),
@@ -47,10 +48,10 @@ using EnvConfig, TSM
         )
 
         tradepath = TSM.savetradesdf(tradesdf; stem="trades-compilegainsdf", folderpath=tmpdir)
-        gainsdf = TSM.compilegainsdf(tradesdf; stem="xchgains", folderpath=tmpdir)
+        gainsdf = TSM.compilegainsdf(tradesdf; stem="tsmgains", folderpath=tmpdir)
 
         @test isfile(tradepath)
-        @test isfile(EnvConfig.tablepath("xchgains"; folderpath=tmpdir, format=:arrow))
+        @test isfile(EnvConfig.tablepath("tsmgains"; folderpath=tmpdir, format=:arrow))
         @test nrow(gainsdf) == 6
         @test gainsdf[!, :pair] == ["BTCUSDT", "BTCUSDT", "BTCUSDT", "ETHUSDT", "ETHUSDT", "BTCUSDT"]
         @test gainsdf[!, :set] == ["eval", "eval", "eval", "eval", "eval", "test"]
@@ -78,7 +79,7 @@ using EnvConfig, TSM
         @test isapprox.(gainsdf[!, :gain], Float32[0.1f0, 0.2f0, 15f0 / 105f0, 10f0 / 90f0, 20f0 / 90f0, 0.05f0]; atol=1f-6) |> all
         @test gainsdf[!, :gainquote] == Float32[2000f0, 2000f0, 750f0, 1000f0, 1000f0, 400f0]
 
-        loaded = EnvConfig.readdf("xchgains"; folderpath=tmpdir)
+        loaded = EnvConfig.readdf("tsmgains"; folderpath=tmpdir)
         @test !isnothing(loaded)
         @test nrow(loaded) == nrow(gainsdf)
     finally
@@ -128,15 +129,20 @@ end
             scl_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
         )
 
-        TSM.compilegainsdf(tradesdf; stem="xchgains", folderpath=tmpdir)
-        report = TSM.gainsreport(instem="xchgains", stem="xchgainsreport", folderpath=tmpdir)
+        TSM.compilegainsdf(tradesdf; stem="tsmgains", folderpath=tmpdir)
+        report = TSM.gainsreport(instem="tsmgains", stem="xchgainsreport", folderpath=tmpdir)
 
         @test isfile(EnvConfig.tablepath("xchgainsreport"; folderpath=tmpdir, format=:arrow))
         @test nrow(report) == 2
-        @test report[!, :set] == ["eval", "test"]
+        @test report[!, :set] isa CategoricalVector
+        @test String.(report[!, :set]) == ["eval", "test"]
 
-        evalix = findfirst(==("eval"), report[!, :set])
-        testix = findfirst(==("test"), report[!, :set])
+        loadedreport = EnvConfig.readdf("xchgainsreport"; folderpath=tmpdir)
+        @test !isnothing(loadedreport)
+        @test nrow(loadedreport) == nrow(report)
+
+        evalix = findfirst(==("eval"), String.(report[!, :set]))
+        testix = findfirst(==("test"), String.(report[!, :set]))
         @test !isnothing(evalix)
         @test !isnothing(testix)
 

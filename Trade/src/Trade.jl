@@ -49,19 +49,14 @@ verbosity = 2
 # and small OHLCV gaps without underfetching the required continuity check horizon.
 const LIQUIDITY_LOOKBACK_MARGIN_MINUTES = 5
 
-function _portfoliototal(assets::AbstractDataFrame)::Float64
-    return size(assets, 1) == 0 ? 0.0 : (sum(assets[!, :usdtvalue]))
-end
-
-function _portfolioquotevalue(assets::AbstractDataFrame)::Union{Missing, Float64}
-    if size(assets, 1) == 0 || !any(name -> name == "coin", names(assets))
-        return missing
-    end
-    quoteix = findfirst(==(EnvConfig.pairquote), assets[!, :coin])
-    if isnothing(quoteix)
-        return missing
-    end
-    return ((assets[quoteix, :free] + assets[quoteix, :locked]) - assets[quoteix, :borrowed])
+function _tradeaccountsnapshot(tradesdfdict::Dict)
+    firstrow = first(values(tradesdfdict))
+    tradesrow = firstrow.tradesdf[firstrow.rowix, :]
+    return (
+        equity=max(0f0, tradesrow.equity),
+        freequote=max(0f0, tradesrow.freequote),
+        freemargin=max(0f0, tradesrow.freemargin),
+    )
 end
 
 """
@@ -529,7 +524,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     return tc
 end
 
-function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame)
+function trade!(cache::TradeCache, tradesdfdict::Dict)
     opencount = 0
     closequote = posquote = 0f0
     for basecfg in eachrow(cache.cfg)
@@ -562,7 +557,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
             TSM.settrades_amount!(tradesdf, tradesix, longclose, 0f0)
             TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
             TSM.settrades_amount!(tradesdf, tradesix, shortclose, 0f0)
-            logged = Xch.log_trading_issue(cache.xc, "Trade", "notrade mode")
+            logged = Xch.log_trading_issue(cache.xc, "Trade", "no trade mode")
             TSM.settrades_msg!(tradesdf, tradesix, longopen, logged)
             TSM.settrades_msg!(tradesdf, tradesix, longclose, logged)
             TSM.settrades_msg!(tradesdf, tradesix, shortopen, logged)
@@ -586,18 +581,19 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
         end
     end
 
-    quotefree = _portfolioquotevalue(assets)
-    freequote = ismissing(quotefree) ? 0f0 : quotefree
-    equity = _portfoliototal(assets)
+    acct = _tradeaccountsnapshot(tradesdfdict)
+    freequote = acct.freequote
+    freemargin = acct.freemargin
+    equity = acct.equity
 
     maxbudgetquote = get(cache.mc, :maxbudgetquote, nothing)
-    availablequote = freequote + closequote + posquote
+    availablequote = freemargin + closequote + posquote
     cappedquote = isnothing(maxbudgetquote) ? min(availablequote, equity) : min(availablequote, equity, maxbudgetquote)
     max_servable_orders = floor(Int, cappedquote / cache.mc[:minorderquote])
     ordercount = min(max_servable_orders, opencount)
 
     tradeamount = opencount > 0 ? (cappedquote / ordercount) : 0f0
-    # (verbosity >= 3) && println("$(tradetime(cache)) trade sizing: opencount=$(opencount), freequote=$(round(freequote, digits=4)), closequote=$(round(closequote, digits=4)), equity=$(round(equity, digits=4)), cappedquote=$(round(cappedquote, digits=4)), tradeamount=$(round(tradeamount, digits=4))")
+    # (verbosity >= 3) && println("$(tradetime(cache)) trade sizing: opencount=$(opencount), freequote=$(round(freequote, digits=4)), freemargin=$(round(freemargin, digits=4)), closequote=$(round(closequote, digits=4)), equity=$(round(equity, digits=4)), cappedquote=$(round(cappedquote, digits=4)), tradeamount=$(round(tradeamount, digits=4))")
 
     for basecfg in eachrow(cache.cfg)
         base = uppercase(String(basecfg.basecoin))
@@ -610,15 +606,15 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
                 if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.lo_amount * tradesrow.close
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "Trade: long open skipped - full position already present")
+                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "already all assigned")
                     TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
                     TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
-                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "Trade: long open skipped - open order disabled")
+                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "open position disabled")
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "Trade: long open skipped - insufficient free quote")
+                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "free insufficient")
                 end
                 TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
                 TSM.settrades_label!(tradesdf, tradesix, ignore)
@@ -638,15 +634,15 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; assets::AbstractDataFrame
                 if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.so_amount * tradesrow.close
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "Trade: short open skipped - full position already present")
+                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "already all assigned")
                     TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
                     TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
-                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "Trade: short open skipped - open order disabled")
+                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "open position disabled")
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "Trade: short open skipped - insufficient free quote")
+                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "free insufficient")
                 end
                 TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
                 TSM.settrades_label!(tradesdf, tradesix, ignore)
@@ -783,12 +779,12 @@ function _tradestep!(cache::TradeCache)
     (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
 
     bal = Xch.balancessnapshot(cache.xc; force_refresh=true, max_age=Minute(0), ignoresmallvolume=false)
-    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0, balancesdf=bal.snapshot)
+    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0, balancesdf=bal.snapshot, require_holding_valuation=false)
     syncpairs = String.(cache.cfg[!, :pair])
     rowsbybase = Xch.sync_latest_trades_rows!(cache.xc, syncpairs; acct=acct)
     # rowsbybase is a Dict[base] => (tradesdf, rowix, ohlcv) where rowix is the index of the current trade row.
 
-    trade!(cache, rowsbybase; assets=acct.assets)
+    trade!(cache, rowsbybase)
     _maybe_refresh_tradeselection!(cache; assets=acct.assets)
     return nothing
 end

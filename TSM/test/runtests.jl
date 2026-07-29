@@ -25,5 +25,26 @@ using TSM
     @test TSM.gettrades_label(df, 1) == longopen
 end
 
+@testset "TSM normalizes legacy label column" begin
+    df = DataFrame(
+        opentime=[DateTime(2026, 1, 1), DateTime(2026, 1, 1, 0, 1)],
+        label=categorical(["longbuy", "shortopen"]),
+        close=Float32[1f0, 1f0],
+        high=Float32[1f0, 1f0],
+        low=Float32[1f0, 1f0],
+    )
+
+    tsm = TSM.TsmCache()
+    TSM.settrades!(tsm, "BTCUSDT", df)
+    tdf = TSM.trades(tsm, "BTCUSDT")
+
+    @test eltype(tdf[!, :label]) == TradeLabel
+    @test tdf[1, :label] == longopen
+    @test tdf[2, :label] == shortopen
+
+    TSM.settrades_label!(tdf, 1, shortclose)
+    @test tdf[1, :label] == shortclose
+end
+
 include("trades_schema_contract_test.jl")
 include("compilegainsdf_test.jl")
