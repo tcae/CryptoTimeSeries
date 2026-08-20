@@ -6,7 +6,7 @@ Configuration is defined in the CONFIG block below. Adjust the parameters
 to your requirements before running.
 
 Usage:
-    julia --project=scripts scripts/tradesim.jl
+    julia --project=scripts scripts/tradesim.jl [help] [test|train] [config=<name>] [startdt=<DateTime>] [enddt=<DateTime>] [coins=<CSV>]
 """
 
 import Pkg
@@ -25,21 +25,110 @@ using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, 
 # explicit while still allowing the common trading code path to run.
 const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 
-# Backtest time range (UTC).
-const BACKTEST_STARTDT = DateTime("2025-07-01T07:00:00") # 250706 12:02
-const BACKTEST_ENDDT   = DateTime("2025-07-01T09:00:00") # 250718 13:59 or nothing
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI ARGUMENTS — help, test|train, config, startdt, enddt, coins
+# ─────────────────────────────────────────────────────────────────────────────
 
-function env_bases(default_bases::Vector{String})::Vector{String}
-    raw = strip(get(ENV, "TRADESIM_BASES", ""))
+function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing,AbstractString}=nothing)
+    prefix = key * "="
+    for arg in args
+        if startswith(arg, prefix)
+            return split(arg, "="; limit=2)[2]
+        end
+    end
+    return default
+end
+
+function _wants_help(args::Vector{String})::Bool
+    for arg in args
+        normalized = lowercase(strip(arg))
+        if normalized in ("help", "--help", "-h")
+            return true
+        elseif startswith(normalized, "help=")
+            value = split(normalized, "="; limit=2)[2]
+            return value in ("1", "true", "yes", "on")
+        end
+    end
+    return false
+end
+
+function tradesimhelp()::String
+    return """
+Usage:
+    julia --project=scripts scripts/tradesim.jl [help] [test|train] [key=value ...]
+
+Flag parameters:
+  help, --help, -h
+      Show this message and exit.
+      Default: false
+
+  test
+      Use `EnvConfig.init(test)` and default replay source/classifier folder phase `test`.
+      Default: true
+
+  train
+      Use `EnvConfig.init(training)` and default replay source/classifier folder phase `training`.
+      Default: false
+
+Key=value parameters:
+  config=<configname>
+      Trend preset from `TREND_DETECTOR_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`.
+      Default: `046`, or `TRADESIM_CONFIG_REF` env var when set
+
+  startdt=<DateTime>
+      Override backtest start datetime (ISO-8601 format).
+      Example: `startdt=2025-07-01T07:00:00`
+      Default: `TRADESIM_STARTDT` env var, or unset (use full replay source range)
+
+  enddt=<DateTime>
+      Override backtest end datetime (ISO-8601 format).
+      Example: `enddt=2025-07-01T09:00:00`
+      Default: `TRADESIM_ENDDT` env var, or unset (use full replay source range)
+
+  coins=<CSV>
+      Override backtest trading pair bases as a comma-separated list.
+      Example: `coins=SINE,BTC,ETH`
+      Default: `TRADESIM_BASES` env var, or `SINE`
+"""
+end
+
+if _wants_help(ARGS)
+    println(tradesimhelp())
+    exit(0)
+end
+
+const HAS_TEST = "test" in ARGS
+const HAS_TRAIN = "train" in ARGS
+@assert !(HAS_TEST && HAS_TRAIN) "mode flags are exclusive; use only one of test or train"
+const TESTMODE = !HAS_TRAIN  # default true (test), matches previous hardcoded behavior
+
+# Backtest time range (UTC).
+const BACKTEST_STARTDT = begin
+    raw = _argvalue(ARGS, "startdt", nothing)
+    envraw = strip(get(ENV, "TRADESIM_STARTDT", ""))
+    raw = isnothing(raw) ? (isempty(envraw) ? nothing : envraw) : raw
+    isnothing(raw) ? nothing : DateTime(String(raw))
+end
+const BACKTEST_ENDDT = begin
+    raw = _argvalue(ARGS, "enddt", nothing)
+    envraw = strip(get(ENV, "TRADESIM_ENDDT", ""))
+    raw = isnothing(raw) ? (isempty(envraw) ? nothing : envraw) : raw
+    isnothing(raw) ? nothing : DateTime(String(raw))
+end
+@assert isnothing(BACKTEST_STARTDT) || isnothing(BACKTEST_ENDDT) || (BACKTEST_STARTDT <= BACKTEST_ENDDT) "startdt=$(BACKTEST_STARTDT) must be <= enddt=$(BACKTEST_ENDDT)"
+
+function env_bases(args::Vector{String}, default_bases::Vector{String})::Vector{String}
+    araw = _argvalue(args, "coins", nothing)
+    raw = isnothing(araw) ? strip(get(ENV, "TRADESIM_BASES", "")) : araw
     if isempty(raw)
         return default_bases
     end
     bases = [uppercase(strip(token)) for token in split(raw, ",") if !isempty(strip(token))]
-    @assert !isempty(bases) "TRADESIM_BASES must contain at least one base symbol when provided"
+    @assert !isempty(bases) "coins/TRADESIM_BASES must contain at least one base symbol when provided"
     return unique(bases)
 end
 
-const BACKTEST_BASES = env_bases(["SINE"])
+const BACKTEST_BASES = env_bases(ARGS, ["SINE"])
 
 # Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
 const TRADE_MODE = Trade.buysell
@@ -56,16 +145,16 @@ const MAX_BUDGET_QUOTE = 500f0
 const MAX_ASSET_FRACTION = 0.1f0
 
 # Strategy parameters used by the backtest.
-const CONFIG_REF = get(ENV, "TRADESIM_CONFIG_REF", "046")
-const CLFOLDER = get(ENV, "TRADESIM_CLFOLDER", "test") # training
+const CONFIG_REF = _argvalue(ARGS, "config", get(ENV, "TRADESIM_CONFIG_REF", "046"))
+const CLFOLDER = TESTMODE ? "test" : "training"
 const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
 const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, CLFOLDER)
 
 # Replay source folder containing classifier artifacts and prediction outputs.
 const REPLAY_SOURCE_SUBFOLDER = begin
-    raw = strip(get(ENV, "TRADESIM_REPLAY_SOURCE", "Trend-046-test"))
-    isempty(raw) ? "Trend-046-test" : raw
+    raw = strip(get(ENV, "TRADESIM_REPLAY_SOURCE", ""))
+    isempty(raw) ? "Trend-$(CONFIG_NAME)-$(CLFOLDER)" : raw
 end
 
 # Log subfolder under EnvConfig.logfolder().
@@ -117,14 +206,11 @@ function filled_orders_df(xc::Xch.XchCache)::DataFrame
 end
 
 function backtest_bounds_from_env(default_start::Union{Nothing, DateTime}, default_end::Union{Nothing, DateTime})
-    sraw = strip(get(ENV, "TRADESIM_STARTDT", ""))
-    eraw = strip(get(ENV, "TRADESIM_ENDDT", ""))
-    sdt = isempty(sraw) ? default_start : DateTime(sraw)
-    edt = isempty(eraw) ? default_end : DateTime(eraw)
-    if !isnothing(sdt) && !isnothing(edt)
-        @assert sdt <= edt "TRADESIM_STARTDT must be <= TRADESIM_ENDDT; got start=$(sdt), end=$(edt)"
+    # startdt/enddt are already resolved from CLI args and env vars into BACKTEST_STARTDT/BACKTEST_ENDDT.
+    if !isnothing(default_start) && !isnothing(default_end)
+        @assert default_start <= default_end "startdt=$(default_start) must be <= enddt=$(default_end)"
     end
-    return sdt, edt
+    return default_start, default_end
 end
 
 "Seed the simulation quote-currency balance in the exchange backend cache."
@@ -801,7 +887,7 @@ end
 # SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
-EnvConfig.init(test)  # test mode → cryptoxchsim, no live credentials needed
+EnvConfig.init(TESTMODE ? test : training)  # test mode → cryptoxchsim, no live credentials needed
 EnvConfig.setpairquote!(QUOTE_COIN)
 EnvConfig.setlogpath(LOG_SUBFOLDER)
 
@@ -809,7 +895,7 @@ Xch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 3
 
-println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME")
+println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES")
 # println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 println("$(EnvConfig.now()): replay source folder=$REPLAY_SOURCE_SUBFOLDER")
@@ -873,14 +959,17 @@ replay_reportdf = TSM.gainsreport(instem=replay_gains_stem, stem=replay_report_s
 saved_gains = EnvConfig.tablepath(replay_gains_stem; folderpath=replay_out_folder, format=:auto)
 saved_gainsreport = EnvConfig.tablepath(replay_report_stem; folderpath=replay_out_folder, format=:auto)
 println("$(EnvConfig.now()): replay gains report")
-println(replay_gainsdf)
+println(replay_gainsdf[begin:begin+10, :])
+println(replay_gainsdf[end-10:end, :])
 println(replay_reportdf)
 println("$(EnvConfig.now()): saved replay trades to $saved_trades rows=$(nrow(alltrades)) $(nrow(alltrades) > 0 ? (string(alltrades[begin, :opentime]) * " - " * string(alltrades[end, :opentime])) : nothing)")
-println(alltrades)
+# println(alltrades)
 println("$(EnvConfig.now()): saved replay fills to $saved_fills rows=$(nrow(allfills))")
-println(allfills)
+# println(allfills)
 println("$(EnvConfig.now()): saved replay gains to $saved_gains rows=$(nrow(replay_gainsdf))")
+# println(replay_gainsdf)
 println("$(EnvConfig.now()): saved replay gains report to $saved_gainsreport rows=$(nrow(replay_reportdf))")
+# println(replay_reportdf)
 
 # replay_compare_root = joinpath(dirname(EnvConfig.logfolder()), REPLAY_SOURCE_SUBFOLDER)
 # trades_td = EnvConfig.readdf("trades-td"; folderpath=replay_compare_root)

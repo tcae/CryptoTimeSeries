@@ -450,7 +450,8 @@ mk033config() = trendmkconfig("033", trendf6config09(), targetconfig01(), Classi
 mk034config() = trendmkconfig("034", trendf6config09(), targetconfig07(), Classify.model002, tradingstrategy02(); classbalancing=true)
 mk035config() = trendmkconfig("035", trendf6config10(), targetconfig14(), Classify.model002, tradingstrategy02(); classbalancing=true)
 mk037config() = trendmkconfig("037", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk038config() = trendmkconfig("038", trendf6config09(), targetconfig16(), Classify.model002, tradingstrategy02(); classbalancing=true)
+mk038config() = trendmkconfig("038", trendf6config09(), targetconfig16(), Classify.model002, tradingstrategy03(); classbalancing=true)
+mk038bconfig() = trendmkconfig("038b", trendf6config09(), targetconfig16(), Classify.model002, tradingstrategy03(); classbalancing=true)
 
 mk036config() = trendmkconfig("036", trendf6config11(), targetconfig15(), Classify.model002, tradingstrategy02(); classbalancing=true)
 mk040config() = trendmkconfig("040", trendf6config12(), targetconfig18(), Classify.model002, tradingstrategy02(); classbalancing=true)
@@ -494,7 +495,7 @@ const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg fo
     mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
     mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
     mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
-    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk039config(), mk040config(), 
+    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk038bconfig(), mk039config(), mk040config(), 
     mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(), mk048config(), mk049config(),
 ])
 
