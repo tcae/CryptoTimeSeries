@@ -881,7 +881,7 @@ function Base.iterate(of::OhlcvFiles, state=1)
     end
     pairparts = split(of.filenames[state], "-")
     basecoin = pairparts[1]
-    quotecoin = length(pairparts) >= 2 ? pairparts[2] : EnvConfig.pairquote
+    quotecoin = length(pairparts) >= 2 ? String(pairparts[2]) : EnvConfig.pairquote
     ohlcv = defaultohlcv(basecoin, "1m")
     setquotesymbol!(ohlcv, quotecoin)
     read!(ohlcv)

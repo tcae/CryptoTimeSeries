@@ -19,7 +19,7 @@ import Dash: dash, callback!, run_server, Output, Input, State, callback_context
 import Dash: dcc_graph, html_h1, html_div, dcc_checklist, html_button, dcc_dropdown, dash_datatable
 import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, bar, heatmap
 using Dates, DataFrames, Logging
-using EnvConfig, Ohlcv, Features, Targets, Classify, Xch, Trade, TradingStrategy
+using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, Classify, Xch, Trade, TradingStrategy
 
 const COCKPIT_TREND_REF = "025"
 const COCKPIT_BOUNDS_REF = "001"
@@ -61,6 +61,7 @@ const DIAGNOSTIC_STATUS_COLOR = Dict(
     "pending" => "#9aa0a6",
 )
 const COCKPIT_DIAGNOSTIC_CACHE = Dict{String, Any}()
+const COCKPIT_DATA_LOCK = ReentrantLock()
 
 _cfgget(cfg, key::Symbol, default=nothing) = (cfg isa NamedTuple && (key in keys(cfg))) ? getfield(cfg, key) : (hasproperty(cfg, key) ? getproperty(cfg, key) : default)
 
@@ -135,9 +136,9 @@ end
 
 function _available_configrefs(kind::Symbol)
     if kind == :trend
-        return sort!(collect(keys(TREND_DETECTOR_CONFIGS)); by=lowercase)
+        return sort!(collect(keys(TradingStrategy.TREND_DETECTOR_CONFIGS)); by=lowercase)
     elseif kind == :bounds
-        return sort!(collect(keys(BOUNDS_ESTIMATOR_CONFIGS)); by=lowercase)
+        return sort!(collect(keys(TradingStrategy.BOUNDS_ESTIMATOR_CONFIGS)); by=lowercase)
     end
     error("unsupported config kind=$(kind)")
 end
@@ -221,10 +222,10 @@ function _cockpit_contracts(; trendref::AbstractString=COCKPIT_TREND_REF, bounds
     return (trendcfg=trendcfg, boundscfg=boundscfg, trendref=trendref, boundsref=boundsref)
 end
 
-function loadohlcv!(cp, base, interval)
+function _loadohlcv!(cp, base, interval)
     if !(base in keys(cp.coin))
         ohlcv = Xch.getohlcv(cp.tc.xc, base)
-        cp.coin[base] = CoinData(Dict(), nothing)
+        cp.coin[base] = CoinData(Dict{String, Ohlcv.OhlcvData}(), nothing)
         cp.coin[base].ohlcv["1m"] = ohlcv
         cp.coin[base].f4 = _load_cockpit_f4(ohlcv)
     elseif isnothing(cp.coin[base].f4) || isempty(cp.coin[base].f4.rw)
@@ -232,7 +233,7 @@ function loadohlcv!(cp, base, interval)
     end
     if !(interval in keys(cp.coin[base].ohlcv))
         @assert interval in ["5m", "1h", "1d", "3d"] "$interval not in [5m, 1h, 1d, 3d]"
-        Threads.@threads for iv in ["5m", "1h", "1d", "3d"]
+        for iv in ["5m", "1h", "1d", "3d"]
             ohlcv = Ohlcv.defaultohlcv(base)
             Ohlcv.setinterval!(ohlcv, iv)
             Ohlcv.setdataframe!(ohlcv, Ohlcv.accumulate(Ohlcv.dataframe(cp.coin[base].ohlcv["1m"]), iv))
@@ -242,70 +243,79 @@ function loadohlcv!(cp, base, interval)
     return cp.coin[base].ohlcv[interval]
 end
 
+function loadohlcv!(cp, base, interval)
+    return lock(COCKPIT_DATA_LOCK) do
+        _loadohlcv!(cp, base, interval)
+    end
+end
+
+"""
+Populate `cp.tc.cfg` from the OHLCV data already cached on disk (no live market
+screening/trade selection: cryptocockpit is a visualization tool, not a trading tool).
+When `download` is true, each cached base is supplemented with new candles up to the
+current minute and the refreshed cache is persisted back to disk.
+"""
 function updateassets!(cp, download=false)
-    function _selection_datetimes(nowdt::DateTime)
-        dt = floor(nowdt, Minute(1))
-        offsets = [0, 1, 7, 30, 90, 180, 365, 730]
-        dts = DateTime[]
-        for d in offsets
-            cand = dt - Day(d)
-            cand in dts || push!(dts, cand)
-        end
-        return dts
-    end
+    return lock(COCKPIT_DATA_LOCK) do
+        cp.coin = Dict()
+        quotecoin = uppercase(EnvConfig.pairquote)
 
-    assets = DataFrame((coin=String[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], usdtprice=Float32[], usdtvalue=Float32[])) # Xch.portfolio!(cp.tc.xc)
-    cp.coin = Dict()
-    if download || (size(cp.tc.cfg, 1) == 0)
-        selecteddt = nothing
-        simmode = get(cp.tc.xc.mc, :simmode, Xch.nosimulation)
-        for dt in _selection_datetimes(Dates.now(UTC))
-            Trade.tradeselection!(cp.tc, assets[!, :coin]; datetime=dt, updatecache=true)
-            if size(cp.tc.cfg, 1) > 0
-                selecteddt = dt
-                break
+        cachedbases = String[]
+        if EnvConfig.configmode == EnvConfig.test
+            nowdt = floor(Dates.now(UTC), Minute(1))
+            startdt = nowdt - Day(30)
+            for base in TestOhlcv.testbasecoin()
+                base = uppercase(String(base))
+                cp.tc.xc.bases[base] = TestOhlcv.testohlcv(base, startdt, nowdt, "1m", quotecoin)
+                push!(cachedbases, base)
             end
-            simmode == Xch.nosimulation && break
+        else
+            for ohlcv in Ohlcv.OhlcvFiles()
+                base = uppercase(ohlcv.base)
+                push!(cachedbases, base)
+                cp.tc.xc.bases[base] = ohlcv
+            end
         end
-        if isnothing(selecteddt) && (simmode != Xch.nosimulation)
-            @warn "no tradable coins found for simulated market snapshots in tested datetime probe window" probe_datetimes=_selection_datetimes(Dates.now(UTC))
-        elseif !isnothing(selecteddt)
-            println("$(EnvConfig.now()) cockpit tradeselection datetime=$(selecteddt)")
-        end
-    end
-    Trade.filtertradeconfig!(cp.tc; mode=:tradeloop)
-    # cp.update = Dates.now(UTC)
-    # select!(cp.tc.cfg, Not(:update))
-    if !isnothing(cp.tc.cfg) && (size(cp.tc.cfg, 1) > 0)
-        cp.update = cp.tc.cfg[begin, :datetime]
-        cp.tc.cfg.id = cp.tc.cfg[!, :basecoin]
-        println("config + assets: $(cp.tc.cfg)")
-        # println("updating table data of size: $(size(adf))")
-        rows = size(cp.tc.cfg, 1)
-        xcbases = Xch.bases(cp.tc.xc)
+        sort!(unique!(cachedbases))
 
-        # # initial delay but quick switching between coins
-        # for (ix, base) in enumerate(cp.tc.cfg[!, :basecoin])
-        #     println("$(EnvConfig.now()) ($ix of $rows) loading $base")
-        #     @assert base in xcbases "base=$base not in xcbases=$xcbases"
-        #     ohlcv = loadohlcv!(cp, base, "1m")
-        #     if size(ohlcv.df, 1) == 0
-        #         println("skipping empty $(ohlcv.base)")
-        #         continue
-        #     end
-        #     # if cp.update > ohlcv.df[end, :opentime] cp.update = ohlcv.df[end, :opentime] end
-        #     Threads.@threads for interval in ["5m", "1h", "1d", "3d"]
-        #         loadohlcv!(cp, base, interval)
-        #     end
-        #     # loadohlcv!(cp, base, "5m")
-        #     # loadohlcv!(cp, base, "1h")
-        #     # loadohlcv!(cp, base, "1d")
-        # end
-        println("$(EnvConfig.now()) all $rows coins loaded")
-    else
-        @warn "no config + assets found"
+        if isempty(cachedbases)
+            @warn "no cached OHLCV data found on disk" coinspath=EnvConfig.coinspath()
+            cp.tc.cfg = DataFrame(basecoin=String[], pair=String[], datetime=DateTime[])
+            cp.update = nothing
+            return cp.tc.cfg
+        end
+
+        nowdt = floor(Dates.now(UTC), Minute(1))
+        if download && EnvConfig.configmode != EnvConfig.test
+            skipped = String[]
+            for (ix, base) in enumerate(cachedbases)
+                print("\r$(EnvConfig.now()) updating $base ($ix of $(length(cachedbases))) to current minute                    ")
+                ohlcv = Xch.ohlcv(cp.tc.xc, base)
+                df = Ohlcv.dataframe(ohlcv)
+                startdt = size(df, 1) > 0 ? df[begin, :opentime] : (nowdt - Day(1))
+                try
+                    Xch.cryptoupdate!(cp.tc.xc, ohlcv, startdt, nowdt)
+                    Ohlcv.write(ohlcv)
+                catch err
+                    err isa InterruptException && rethrow(err)
+                    push!(skipped, base)
+                    @warn "skipping update for $(base); keeping cached data" exception=(err, catch_backtrace())
+                end
+            end
+            println()
+            isempty(skipped) || println("$(EnvConfig.now()) skipped update for $(length(skipped)) unavailable pair(s): $(join(skipped, ", "))")
+        end
+
+        cp.tc.cfg = DataFrame(
+            basecoin=cachedbases,
+            pair=[Xch.tradingpairkey(b, quotecoin) for b in cachedbases],
+            datetime=fill(nowdt, length(cachedbases)),
+        )
+        cp.tc.cfg.id = cp.tc.cfg[!, :basecoin]
+        cp.update = nowdt
+        println("$(EnvConfig.now()) loaded $(length(cachedbases)) cached bases from disk$(download ? " (refreshed to current minute)" : "")")
+        return cp.tc.cfg
     end
-    return cp.tc.cfg
 end
 
 mutable struct CoinData
@@ -325,6 +335,7 @@ mutable struct CockpitData
         dtf = "yyyy-mm-dd HH:MM"
         cssdir = EnvConfig.setprojectdir()  * "/scripts/"
         xc = Xch.XchCache()
+        # notrade default: cryptocockpit never calls Trade.trade!, TradeCache is only a container for xc/cfg here.
         cp = new(Trade.TradeCache(xc=xc), nothing, nothing, true, dtf, cssdir)
         updateassets!(cp, false)
         return cp
@@ -345,6 +356,12 @@ app = dash(external_stylesheets = ["dashboard.css"], assets_folder=CP.cssdir)
 println("last assetsconfig update: $(CP.update)")
 focus_options = _basecoin_options(CP.tc.cfg)
 focus_value = _first_basecoin(CP.tc.cfg)
+exchange_options = [
+    (label = "Bybit Sim", value = Xch.EXCHANGE_BYBITSIM),
+    (label = "Bybit", value = Xch.EXCHANGE_BYBIT),
+    (label = "Kraken Spot", value = Xch.EXCHANGE_KRAKENSPOT),
+    (label = "Kraken Futures", value = Xch.EXCHANGE_KRAKENFUTURES),
+]
 app.layout = html_div() do
     html_div(id="leftside", [
         html_div(id="select_buttons", [
@@ -352,7 +369,13 @@ app.layout = html_div() do
             html_button("select none", id="none_button"),
             html_button("update data", id="update_data"),
             # html_button("reload data", id="reload_data"),
-            html_button("reset selection", id="reset_selection")
+            html_button("reset selection", id="reset_selection"),
+            dcc_dropdown(
+                id="exchange_select",
+                options=exchange_options,
+                value=Xch.exchange(CP.tc.xc),
+                clearable=false,
+                style=Dict("width" => "180px", "display" => "inline-block")),
         ]),
         html_div(id="graph1day_endtime", children=CP.update),
         dcc_graph(id="graph1day"),
@@ -397,7 +420,6 @@ app.layout = html_div() do
         dash_datatable(id="kpi_table", editable=false,
             columns=[Dict("name" =>i, "id" => i, "hideable" => true) for i in names(CP.tc.cfg) if !(i in ["id", "update"])],  # exclude "id" to not display it
             data = Dict.(pairs.(eachrow(CP.tc.cfg))),
-            style_data_conditional=discrete_background_color_bins(CP.tc.cfg, n_bins=length(names(CP.tc.cfg)), columns="pricechangepercent"),
             filter_action="native",
             row_selectable="multi",
             sort_action="native",
@@ -549,6 +571,7 @@ These coordinates are retunred as normalized percentage values related to `normr
 """
 function regressionline(cp, equiy, normref)
     regrwindow = size(equiy, 1)
+    regrwindow == 1 && return normpercent(cp, [equiy[begin], equiy[begin]], normref)
     regry, grad = Features.rollingregression(equiy, regrwindow)
     regrliney = [regry[end] - grad[end] * (regrwindow - 1), regry[end]]
     return normpercent(cp, regrliney, normref)
@@ -1064,10 +1087,17 @@ function candlestickgraph(cp, traces, base, interval, period, enddt, regression,
     if base === nothing
         return fig
     end
+    if !(base in Xch.bases(cp.tc.xc))
+        return fig
+    end
     ohlcv = loadohlcv!(cp, base, interval)
     df = Ohlcv.dataframe(ohlcv)
     if !("opentime" in names(df))
         println("candlestickgraph $base len(df): $(size(df,1)) names: $(names(df))")
+        return fig
+    end
+    if isempty(df)
+        println("candlestickgraph $base has no rows for interval $interval")
         return fig
     end
     startdt = enddt - period
@@ -1231,18 +1261,24 @@ callback!(
         Output("crypto_focus", "options"),
         Input("kpi_table", "active_cell"),
         Input("update_data", "n_clicks"),
+        Input("exchange_select", "value"),
         Input("indicator_select", "value"),
         State("kpi_table", "data"),
         State("crypto_focus", "value"),
         State("crypto_focus", "options")
         # prevent_initial_call=true
-    ) do active_cell, update, indicator, olddata, currentfocus, options
+    ) do active_cell, update, exchange, indicator, olddata, currentfocus, options
 
         ctx = callback_context()
         button_id = length(ctx.triggered) > 0 ? split(ctx.triggered[1].prop_id, ".")[1] : "nothing"
         # println("trigger: $(button_id)  currentfocus $currentfocus  #options: $options")
         active_row_id = _active_row_id(active_cell, olddata, currentfocus)
         CP.donormalize = "normalize" in indicator
+        if button_id == "exchange_select"
+            CP.tc = Trade.TradeCache(xc=Xch.XchCache(exchange=String(exchange)))
+            updateassets!(CP, false)
+            active_row_id = _first_basecoin(CP.tc.cfg)
+        end
         # if button_id == "indicator_select"
             if (EnvConfig.configmode == EnvConfig.production) && ("test" in indicator)  # switch from prodcution to test data
                 EnvConfig.init(EnvConfig.test)
@@ -1320,7 +1356,7 @@ function _env_int(name::AbstractString, default::Int)
     return isnothing(parsed) ? default : parsed
 end
 
-function _run_cockpit_server(app; host::String="0.0.0.0", default_port::Int=8050, max_port_tries::Int=20)
+function _run_cockpit_server(app; host::String="127.0.0.1", default_port::Int=8050, max_port_tries::Int=20)
     base_port = _env_int("CTS_COCKPIT_PORT", default_port)
     for offset in 0:(max_port_tries - 1)
         port = base_port + offset

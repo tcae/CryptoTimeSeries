@@ -67,7 +67,7 @@ function log_private_call_summary!(xc)
 end
 
 mutable struct XchCache
-    bases  # ::Dict{String, Ohlcv.OhlcvData}
+    bases::Dict{String, Ohlcv.OhlcvData}
     tsm::TSM.TsmCache  # owns the pair-state Trades DataFrames and template cache
     bc::XchAdapterCache  # typed adapter cache wrapper
     startdt::Dates.DateTime
@@ -77,7 +77,7 @@ mutable struct XchCache
     function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        xc = new(Dict(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict())
+        xc = new(Dict{String, Ohlcv.OhlcvData}(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict())
         syminfodf = if hasproperty(rawcache(xc.bc), :syminfodf)
             getproperty(rawcache(xc.bc), :syminfodf)
         else
@@ -520,7 +520,7 @@ validbase(xc::XchCache, base::AbstractString) =
     validsymbol(xc, symboltoken(xc, base, EnvConfig.pairquote))
 
 removebase!(xc::XchCache, base) = delete!(xc.bases, base)
-removeallbases(xc::XchCache) = xc.bases = Dict()
+removeallbases(xc::XchCache) = xc.bases = Dict{String, Ohlcv.OhlcvData}()
 
 function addbase!(xc::XchCache, ohlcv::Ohlcv.OhlcvData)
     xc.bases[ohlcv.base] = ohlcv

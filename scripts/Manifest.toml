@@ -1,8 +1,8 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.12.6"
+julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "6d9fc777abe27f21caaeb840e2e1c0ce15cec2df"
+project_hash = "0afbf1770559cb8f140d26a2268661c591049410"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -199,12 +199,6 @@ git-tree-sha1 = "aebf55e6d7795e02ca500a689d326ac979aaf89e"
 uuid = "9718e550-a3fa-408a-8086-8db961cd8217"
 version = "0.1.1"
 
-[[deps.BinDeps]]
-deps = ["Libdl", "Pkg", "SHA", "URIParser", "Unicode"]
-git-tree-sha1 = "1289b57e8cf019aede076edab0587eb9644175bd"
-uuid = "9e28174c-4ba2-5203-b857-d8d62c4213ee"
-version = "1.0.2"
-
 [[deps.BitFlags]]
 git-tree-sha1 = "0691e34b3bb8be9307330f88d1a3c3f25466c24d"
 uuid = "d1d4a3ce-64b1-5f1a-9ba4-7e7e69966f35"
@@ -217,10 +211,10 @@ uuid = "c3b6d118-76ef-56ca-8cc7-ebb389d030a1"
 version = "0.3.7"
 
 [[deps.Blink]]
-deps = ["Base64", "BinDeps", "Distributed", "JSExpr", "JSON", "Lazy", "Logging", "MacroTools", "Mustache", "Mux", "Reexport", "Sockets", "WebIO", "WebSockets"]
-git-tree-sha1 = "08d0b679fd7caa49e2bca9214b131289e19808c0"
+deps = ["Base64", "Distributed", "HTTP", "JSExpr", "JSON", "Lazy", "Logging", "MacroTools", "Mustache", "Mux", "Pkg", "Reexport", "Sockets", "WebIO"]
+git-tree-sha1 = "bc93511973d1f949d45b0ea17878e6cb0ad484a1"
 uuid = "ad839575-38b3-5650-b840-f874b8c74a25"
-version = "0.12.5"
+version = "0.12.9"
 
 [[deps.Blosc]]
 deps = ["Blosc_jll"]
@@ -240,10 +234,26 @@ uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
 [[deps.Bybit]]
-deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "../Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.2.6"
+version = "4.2.8"
+
+    [deps.Bybit.deps]
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    Format = "1fa38f19-a742-5d3f-a2b9-30dd87b9d5f8"
+    HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+    InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
+    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+    SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
+    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -334,10 +344,43 @@ uuid = "55437552-ac27-4d47-9aa3-63184e8fd398"
 version = "1.0.0"
 
 [[deps.Classify]]
-deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
 path = "../Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.27.10"
+version = "0.28.10"
+
+    [deps.Classify.deps]
+    BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
+    CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+    CategoricalDistributions = "af321ab8-2d2e-40a6-b165-3d674595d28e"
+    Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
+    Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    Features = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
+    Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
+    JLSO = "9da8a3cd-07a3-59c0-a743-3fdc52c30d11"
+    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    MLUtils = "f1d291b0-491e-4a28-83b9-f70985020b54"
+    NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    PlotlyJS = "f0f68f2c-4968-5e81-91da-67840de0976a"
+    PrettyPrinting = "54e16d92-306c-5ea0-a30b-337be88ac337"
+    PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
+    Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
+    ProfileView = "c46f51b8-102a-5cf2-8d2c-8597cb0e0da7"
+    ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
+    Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+    StatisticalMeasures = "a19d573c-0a75-4610-95b3-7071388c7541"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+    Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 
 [[deps.CodecLz4]]
 deps = ["Lz4_jll", "TranscodingStreams"]
@@ -413,7 +456,7 @@ weakdeps = ["Dates", "LinearAlgebra"]
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
-version = "1.3.0+1"
+version = "1.3.1+2"
 
 [[deps.CompositionsBase]]
 git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
@@ -476,9 +519,9 @@ version = "4.1.1"
 
 [[deps.Dash]]
 deps = ["Base64", "CodecZlib", "DashBase", "DashCoreComponents", "DashHtmlComponents", "DashTable", "DataStructures", "HTTP", "JSON", "JSON3", "MD5", "Pkg", "PlotlyBase", "Requires", "Sockets", "Test", "UUIDs", "YAML"]
-git-tree-sha1 = "aa8047f62a64bf20bab954c5a1ece7f38c8edb3e"
+git-tree-sha1 = "37c42f2a72a38c8141f1b39def8cfcc5b48bacea"
 uuid = "1b08a953-4be3-4667-9a23-3db579824955"
-version = "1.1.2"
+version = "1.2.1"
 
 [[deps.DashBase]]
 deps = ["JSON2", "Test"]
@@ -674,6 +717,11 @@ deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Lo
 path = "../EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 version = "0.2.15"
+[[deps.EnvConfig]]
+deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
+path = "../EnvConfig"
+uuid = "a6e3057b-65d6-4318-a48d-0e21dbb2f5df"
+version = "0.2.15"
 
 [[deps.EnzymeCore]]
 git-tree-sha1 = "c6ee69ee502060982d12dbaaf3d8fcb4e835a0d1"
@@ -690,6 +738,12 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "8a4be429317c42cfae6a7fc03c31bad1970c310d"
 uuid = "2702e6a9-849d-5ed8-8c21-79e8b8f9ee43"
 version = "0.0.20230411+1"
+
+[[deps.ExceptionUnwrapping]]
+deps = ["Test"]
+git-tree-sha1 = "d36f682e590a83d63d1c7dbd287573764682d12a"
+uuid = "460bff9d-24e4-43bc-9d9f-a8973cb893f4"
+version = "0.1.11"
 
 [[deps.Expat_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -727,10 +781,26 @@ uuid = "b9860ae5-e623-471e-878b-f6a53c775ea6"
 version = "0.1.1"
 
 [[deps.Features]]
-deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
 version = "1.8.8"
+
+    [deps.Features.deps]
+    Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+    Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
+    LinearRegression = "92481ed7-9fb7-40fd-80f2-46fd0f076581"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    PlotlyJS = "f0f68f2c-4968-5e81-91da-67840de0976a"
+    RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
+    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -976,10 +1046,10 @@ uuid = "8710efd8-4ad6-11eb-33ea-2d5ceb25a41c"
 version = "2.2.2"
 
 [[deps.HTTP]]
-deps = ["Base64", "Dates", "IniFile", "Logging", "MbedTLS", "NetworkOptions", "Sockets", "URIs"]
-git-tree-sha1 = "0fa77022fe4b511826b39c894c90daf5fce3334a"
+deps = ["Base64", "CodecZlib", "ConcurrentUtilities", "Dates", "ExceptionUnwrapping", "Logging", "LoggingExtras", "MbedTLS", "NetworkOptions", "OpenSSL", "PrecompileTools", "Random", "SimpleBufferStream", "Sockets", "URIs", "UUIDs"]
+git-tree-sha1 = "51059d23c8bb67911a2e6fd5130229113735fc7e"
 uuid = "cd3eb016-35fb-5094-929b-558a96fad6f3"
-version = "0.9.17"
+version = "1.11.0"
 
 [[deps.HarfBuzz_jll]]
 deps = ["Artifacts", "Cairo_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "Graphite2_jll", "JLLWrappers", "Libdl", "Libffi_jll"]
@@ -1028,11 +1098,6 @@ version = "0.4.15"
 git-tree-sha1 = "012e604e1c7458645cb8b436f8fba789a51b257f"
 uuid = "9b13fd28-a010-5f03-acff-a1bbcff69959"
 version = "1.0.0"
-
-[[deps.IniFile]]
-git-tree-sha1 = "f550e6e32074c939295eb5ea6de31849ac2c9625"
-uuid = "83e8ac13-25f8-5344-8a64-a9f2b223428f"
-version = "0.5.1"
 
 [[deps.InitialValues]]
 git-tree-sha1 = "4da0f88e9a39111c2fa3add390ab15f3a44f3ca3"
@@ -1210,16 +1275,40 @@ weakdeps = ["EnzymeCore", "LinearAlgebra", "SparseArrays"]
     SparseArraysExt = "SparseArrays"
 
 [[deps.KrakenFutures]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "../KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.7"
+version = "0.1.8"
+
+    [deps.KrakenFutures.deps]
+    Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
 
 [[deps.KrakenSpot]]
-deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "../KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.7"
+version = "0.1.8"
+
+    [deps.KrakenSpot.deps]
+    Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
 
 [[deps.LAME_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1689,10 +1778,10 @@ uuid = "ffc61752-8dc7-55ee-8c37-f3e9cdd09e70"
 version = "1.0.21"
 
 [[deps.Mux]]
-deps = ["AssetRegistry", "Base64", "HTTP", "Hiccup", "Pkg", "Sockets", "WebSockets"]
-git-tree-sha1 = "82dfb2cead9895e10ee1b0ca37a01088456c4364"
+deps = ["AssetRegistry", "Base64", "HTTP", "Hiccup", "MbedTLS", "Pkg", "Sockets"]
+git-tree-sha1 = "7295d849103ac4fcbe3b2e439f229c5cc77b9b69"
 uuid = "a975b10e-0019-58db-a62f-e48ff68538c9"
-version = "0.7.6"
+version = "1.0.2"
 
 [[deps.NLSolversBase]]
 deps = ["ADTypes", "DifferentiationInterface", "Distributed", "FiniteDiff", "ForwardDiff"]
@@ -1754,10 +1843,24 @@ uuid = "e7412a2a-1a6e-54c0-be00-318e2571c051"
 version = "1.3.6+0"
 
 [[deps.Ohlcv]]
-deps = ["Arrow", "CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
 path = "../Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
 version = "1.7.3"
+
+    [deps.Ohlcv.deps]
+    Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+    CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
+    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
 
 [[deps.OneHotArrays]]
 deps = ["Adapt", "ChainRulesCore", "Compat", "GPUArraysCore", "LinearAlgebra", "NNlib"]
@@ -1781,10 +1884,16 @@ git-tree-sha1 = "44e5ecbe634d6dcb6a32328eecd83ea97853eb59"
 uuid = "8b6db2d4-7670-4922-a472-f9537c81ab66"
 version = "0.3.3"
 
+[[deps.OpenSSL]]
+deps = ["BitFlags", "Dates", "MozillaCACerts_jll", "NetworkOptions", "OpenSSL_jll", "Sockets"]
+git-tree-sha1 = "1d1aaa7d449b58415f97d2839c318b70ffb525a0"
+uuid = "4d8831e6-92b7-49fb-bdf8-b643e874388c"
+version = "1.6.1"
+
 [[deps.OpenSSL_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
-version = "3.5.4+0"
+version = "3.5.6+0"
 
 [[deps.OpenSpecFun_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
@@ -2240,6 +2349,11 @@ git-tree-sha1 = "91eddf657aca81df9ae6ceb20b959ae5653ad1de"
 uuid = "992d4aef-0814-514b-bc4d-f2e9a6c4116f"
 version = "1.0.3"
 
+[[deps.SimpleBufferStream]]
+git-tree-sha1 = "f305871d2f381d21527c770d4788c06c097c9bc1"
+uuid = "777ac1f9-54b0-4bf8-805c-2214025038e7"
+version = "1.2.0"
+
 [[deps.SimpleTraits]]
 deps = ["InteractiveUtils", "MacroTools"]
 git-tree-sha1 = "be8eeac05ec97d379347584fa9fe2f5f76795bcb"
@@ -2422,6 +2536,20 @@ deps = ["Dates"]
 uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 version = "1.0.3"
 
+[[deps.TSM]]
+path = "../TSM"
+uuid = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
+version = "0.1.0"
+
+    [deps.TSM.deps]
+    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-65d6-4318-a48d-0e21dbb2f5df"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
 [[deps.TZJData]]
 deps = ["Artifacts"]
 git-tree-sha1 = "72df96b3a595b7aab1e101eb07d2a435963a97e2"
@@ -2446,10 +2574,24 @@ uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
 
 [[deps.Targets]]
-deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "../Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 version = "0.2.6"
+
+    [deps.Targets.deps]
+    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+    Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    Features = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    LoggingExtras = "e6f89c97-d47a-5376-807f-9c37f3926c36"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
+    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
@@ -2463,10 +2605,19 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 version = "1.11.0"
 
 [[deps.TestOhlcv]]
-deps = ["DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "PlotlyJS", "SortingAlgorithms", "Test"]
 path = "../TestOhlcv"
 uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 version = "0.1.4"
+
+    [deps.TestOhlcv.deps]
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    PlotlyJS = "f0f68f2c-4968-5e81-91da-67840de0976a"
+    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [[deps.TimeZones]]
 deps = ["Artifacts", "Dates", "Downloads", "InlineStrings", "Mocking", "Printf", "Scratch", "TZJData", "Unicode", "p7zip_jll"]
@@ -2479,16 +2630,54 @@ weakdeps = ["RecipesBase"]
     TimeZonesRecipesBaseExt = "RecipesBase"
 
 [[deps.Trade]]
-deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
 path = "../Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.19.4"
+version = "0.19.5"
+
+    [deps.Trade.deps]
+    Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
+    CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+    Classify = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    Features = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
+    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
+    JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    LoggingExtras = "e6f89c97-d47a-5376-807f-9c37f3926c36"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    PrettyTables = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
+    Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+    TSM = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
+    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
+    TradingStrategy = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
+    Xch = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 
 [[deps.TradingStrategy]]
-deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "../TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
 version = "0.8.3"
+
+    [deps.TradingStrategy.deps]
+    Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
+    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+    Classify = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    Features = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
+    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    TSM = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
+    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
+    Xch = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
@@ -2516,12 +2705,6 @@ version = "0.4.85"
     LazyArrays = "5078a376-72f3-5289-bfd5-ec5146d43c02"
     OnlineStatsBase = "925886fa-5bf2-5e8e-b522-a9147a512338"
     Referenceables = "42d2dcc6-99eb-4e98-b66c-637b7d73030e"
-
-[[deps.URIParser]]
-deps = ["Unicode"]
-git-tree-sha1 = "53a9f49546b8d2dd2e688d216421d050c9a31d0d"
-uuid = "30578b45-9adc-5946-b283-645ec420af67"
-version = "0.4.1"
 
 [[deps.URIs]]
 git-tree-sha1 = "bef26fb046d031353ef97a82e3fdb6afe7f21b1a"
@@ -2604,9 +2787,9 @@ version = "0.8.21"
 
 [[deps.WebSockets]]
 deps = ["Base64", "Dates", "HTTP", "Logging", "Sockets"]
-git-tree-sha1 = "f91a602e25fe6b89afc93cf02a4ae18ee9384ce3"
+git-tree-sha1 = "4162e95e05e79922e44b9952ccbc262832e4ad07"
 uuid = "104b5d7c-a370-577a-8038-80a2059c5097"
-version = "1.5.9"
+version = "1.6.0"
 
 [[deps.Widgets]]
 deps = ["Colors", "Dates", "Observables", "OrderedCollections"]
@@ -2632,16 +2815,38 @@ uuid = "ffd25f8a-64ca-5728-b0f7-c24cf3aae800"
 version = "5.8.3+0"
 
 [[deps.Xch]]
-deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "../Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.6"
+version = "1.6.11"
+
+    [deps.Xch.deps]
+    Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+    Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
+    CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+    DataAPI = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+    InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
+    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+    KrakenFutures = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
+    KrakenSpot = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
+    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
+    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+    TSM = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
+    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
+    UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]
 path = "../XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.2.4"
+version = "0.2.5"
 
 [[deps.Xorg_libICE_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

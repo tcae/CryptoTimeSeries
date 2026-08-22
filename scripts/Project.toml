@@ -49,4 +49,8 @@ TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
 Trade = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 TradingStrategy = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-WebIO = "0f1e0344-ec1d-5b48-a673-e5cf874b6c29"
+
+[compat]
+# Align with HTTP 1.11.0 already used by Bybit/KrakenSpot/KrakenFutures (see docs/http-dependency-assessment-2026-06-24.md).
+# Dash 1.1.2 pins HTTP to 0.8.10/0.9 (pre-Memory{UInt8} Julia arrays), which crashes on Julia 1.11+; Dash 1.5.0 allows HTTP "1".
+HTTP = "1"
