@@ -1185,8 +1185,13 @@ function _ensureholdingrow!(bc::BybitCache, coin::AbstractString, side::Abstract
     return ix
 end
 
-"Reserve balances for one pending BybitSim order."
-function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real; lane::AbstractString)
+"""Reserve balances for one pending BybitSim order.
+
+Returns `true` once reserved. For an opening order, returns `false` (no state changed)
+when free quote is insufficient - insufficient buying power is a normal, recoverable
+exchange rejection, not a bookkeeping bug, so callers must reject the order/amend instead
+of crashing the trading loop."""
+function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real; lane::AbstractString)::Bool
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.pairquote)
     qix = _ensureholdingrow!(bc, quote_coin, "quote")
@@ -1194,12 +1199,12 @@ function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::Abstrac
     is_close = reduceonly || _iscloseintent(positionside, side)
     if is_close
         # Both bracket legs cover the same position, so only the first one reserves it.
-        _sim_hasopenbracketsibling(bc, symbol, lane) && return nothing
+        _sim_hasopenbracketsibling(bc, symbol, lane) && return true
         pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
         @assert bc.assets[pix, :free] >= basequantity "BybitSim reserve close requires free position >= quantity; free=$(bc.assets[pix, :free]) quantity=$(basequantity) symbol=$(symbol) positionside=$(positionside)"
         bc.assets[pix, :free] -= basequantity
         bc.assets[pix, :locked] += basequantity
-        return nothing
+        return true
     end
 
     cost = basequantity * limitprice
@@ -1208,10 +1213,10 @@ function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::Abstrac
     # shorts, or reservations for other pending orders); it is not spare capacity. A new
     # open order must be backed by genuinely free quote, or the reservation would silently
     # overcommit the shared pool beyond actual capital.
-    @assert avail_free >= cost "BybitSim reserve open requires free quote >= cost; free=$(avail_free) cost=$(cost) symbol=$(symbol) positionside=$(positionside)"
+    avail_free >= cost || return false
     bc.assets[qix, :free] -= cost
     bc.assets[qix, :locked] += cost
-    return nothing
+    return true
 end
 
 "Release the reservation of one pending BybitSim order without filling it."
@@ -1693,16 +1698,20 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             # can then evaluate the first newly visible candle whose `opentime`
             # became observable after `dt`.
             row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-            _simreserveorder!(bc, symbol, orderside, spec.side, reduceonly, basequantity, limitprice; lane=orderlane)
+            # Insufficient buying power is a normal exchange rejection (e.g. account
+            # already committed elsewhere), not a bookkeeping bug - reject like any other
+            # order-creation failure instead of crashing the trading loop.
+            _simreserveorder!(bc, symbol, orderside, spec.side, reduceonly, basequantity, limitprice; lane=orderlane) || return nothing
             push!(bc.orders, row)
         else # taker
-            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-            push!(bc.closedorders, row)
-            if reduceonly
+            reserved = if reduceonly
                 _simreserveorder!(bc, symbol, orderside, spec.side, true, basequantity, limitprice; lane=orderlane)
             else
                 _simreserveorder!(bc, symbol, orderside, spec.side, false, basequantity, limitprice; lane=orderlane)
             end
+            reserved || return nothing
+            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+            push!(bc.closedorders, row)
             _simapplypendingfill!(bc, row, limitprice)
         end
         return row
@@ -1957,12 +1966,13 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         oldlane = String(orderatentry.lane)
 
         assetsbackup = copy(bc.assets)
-        try
-            _simreleaseorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, oldqty, oldlimit; lane=oldlane)
-            _simreserveorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, changedqty, changedprice; lane=oldlane)
-        catch err
+        _simreleaseorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, oldqty, oldlimit; lane=oldlane)
+        # Insufficient buying power for the larger/repriced amend is a normal exchange
+        # rejection, not a bookkeeping bug - restore the released reservation and leave
+        # the order resting unchanged instead of crashing the trading loop.
+        if !_simreserveorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, changedqty, changedprice; lane=oldlane)
             bc.assets = assetsbackup
-            rethrow(err)
+            return nothing
         end
 
         bc.orders[ix, :baseqty] = changedqty

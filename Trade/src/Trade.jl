@@ -594,7 +594,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
     equity = acct.equity
 
     maxbudgetquote = get(cache.mc, :maxbudgetquote, nothing)
-    availablequote = freemargin + closequote + posquote
+    availablequote = freemargin # too optimistic: + closequote + posquote
     cappedquote = isnothing(maxbudgetquote) ? min(availablequote, equity) : min(availablequote, equity, maxbudgetquote)
     max_servable_orders = floor(Int, cappedquote / cache.mc[:minorderquote])
     ordercount = min(max_servable_orders, opencount)

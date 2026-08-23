@@ -101,7 +101,7 @@ end
         openhit = TradingStrategy._open_hit_spec(probe, 1)
         @test !isnothing(openhit)
         TradingStrategy._rowtakeover!(probe, 2)
-        TradingStrategy._apply_open_hit!(probe, 2, openhit.side, openhit.limitprice, openhit.amount)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, openhit.side, openhit.limitprice, openhit.amount)
         @test ismissing(probe[1, :lastopentrade])
         @test probe[2, :lastopentrade] == probe[2, :opentime]
         @test probe[2, :lp_amount] == openhit.amount
@@ -121,7 +121,7 @@ end
         probe[2, :lol_pavg] = 98f0
         probe[2, :lastopentrade] = probe[1, :opentime]
         openhit = (side=:long, limitprice=99f0, amount=25f0)
-        TradingStrategy._apply_open_hit!(probe, 2, openhit.side, openhit.limitprice, openhit.amount)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, openhit.side, openhit.limitprice, openhit.amount)
         @test probe[2, :lp_amount] == 125f0
         @test isapprox(probe[2, :lol_pavg], 98.2f0; atol=1f-4)
         @test probe[2, :lastopentrade] == probe[1, :opentime]
@@ -195,7 +195,7 @@ end
         @test last_openix == 0
         @test probe[2, :sp_amount] == 0f0
 
-        TradingStrategy._apply_open_hit!(probe, 2, openhit.side, openhit.limitprice, openhit.amount)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, openhit.side, openhit.limitprice, openhit.amount)
         @test probe[2, :lp_amount] == openhit.amount
         @test probe[2, :sp_amount] == 0f0
         @test probe[2, :lastopentrade] == probe[2, :opentime]
