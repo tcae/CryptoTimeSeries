@@ -28,7 +28,7 @@ using EnvConfig, Trade, Xch, Ohlcv
 
     xc = Xch.XchCache(startdt=startdt, enddt=dt)
     Xch.addbase!(xc, ohlcv)
-    tc = Trade.TradeCache(xc=xc, trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=xc, trademode=Trade.notrade, stoplosspct=0.05)
 
     mdf = Trade._simulated_usdtmarketview(tc, dt, Set(["BTC"]), startdt)
     @test nrow(mdf) == 1
@@ -40,6 +40,6 @@ using EnvConfig, Trade, Xch, Ohlcv
     @test Trade._uses_simulated_marketview(tc)
 
     xc_live = Xch.XchCache(startdt=startdt, enddt=nothing)
-    tc_live = Trade.TradeCache(xc=xc_live, trademode=Trade.notrade)
+    tc_live = Trade.TradeCache(xc=xc_live, trademode=Trade.notrade, stoplosspct=0.05)
     @test !Trade._uses_simulated_marketview(tc_live)
 end

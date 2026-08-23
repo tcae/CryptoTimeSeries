@@ -116,7 +116,7 @@ end
 @testset "Blacklisted base removal stays outside runtime until prepare" begin
     EnvConfig.init(EnvConfig.test)
 
-    tc = Trade.TradeCache(xc=Xch.XchCache(), strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=Xch.XchCache(), strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade, stoplosspct=0.05)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
@@ -136,7 +136,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade, stoplosspct=0.05)
 
     @test !isnothing(Trade._strategyruntime(tc))
 
@@ -178,7 +178,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade)
+    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade, stoplosspct=0.05)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")

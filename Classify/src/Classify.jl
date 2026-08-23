@@ -2153,7 +2153,7 @@ function savelosses(nn::NN)
     end
 end
 
-nnfilename(fileprefix::String) = EnvConfig.logpath(splitext(fileprefix)[1] * ".bson")
+nnfilename(fileprefix::AbstractString; folderpath::AbstractString=EnvConfig.logfolder()) = joinpath(String(folderpath), splitext(String(fileprefix))[1] * ".bson")
 
 function compresslosses(losses)
     if length(losses) <= 1000
@@ -2168,25 +2168,29 @@ function compresslosses(losses)
     return closses
 end
 
-function savenn(nn::NN)
-    (verbosity >= 4) && println("saving classifier $(nn.fileprefix) to $(nnfilename(nn.fileprefix))")
+function savenn(nn::NN; folderpath::AbstractString=EnvConfig.logfolder(), fileprefix::AbstractString=nn.fileprefix, save_lastepoch::Bool=true, save_result::Bool=false)
+    (verbosity >= 4) && println("saving classifier $(fileprefix) to $(nnfilename(fileprefix; folderpath=folderpath))")
     # nn.losses = compresslosses(nn.losses)
-    BSON.@save nnfilename(nn.fileprefix * "-lastepoch") nn
-    if nn.losses[end] == minimum(nn.losses)
-        BSON.@save nnfilename(nn.fileprefix) nn
+    if save_lastepoch
+        BSON.@save nnfilename(String(fileprefix) * "-lastepoch"; folderpath=folderpath) nn
+    else
+        rm(nnfilename(String(fileprefix) * "-lastepoch"; folderpath=folderpath); force=true)
+    end
+    if save_result || (nn.losses[end] == minimum(nn.losses))
+        BSON.@save nnfilename(fileprefix; folderpath=folderpath) nn
     end
     # @error "save machine to be implemented for pure flux" filename
     # smach = serializable(mach)
     # JLSO.save(filename, :machine => smach)
 end
 
-function loadnn(filename)
-    (verbosity >= 2) && println("loading classifier $filename from $(nnfilename(filename))")
+function loadnn(filename; folderpath::AbstractString=EnvConfig.logfolder())
+    (verbosity >= 2) && println("loading classifier $filename from $(nnfilename(filename; folderpath=folderpath))")
     nn = model001(1, ["dummy1", "dummy2"], "dummy menmonic")  # dummy data struct
     try
-        BSON.@load nnfilename(filename) nn
+        BSON.@load nnfilename(filename; folderpath=folderpath) nn
     catch err
-        nn = _loadnn_with_legacy_enum_compat(filename)
+        nn = _loadnn_with_legacy_enum_compat(filename; folderpath=folderpath)
     end
     # loadlosses!(nn)
     return nn

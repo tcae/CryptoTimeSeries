@@ -2297,7 +2297,7 @@ end
 _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
 
 "Upsert one close leg independent from any open leg handling."
-function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true)
+function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
 	existing = nothing
 	if !isnothing(existing_orderid)
 		probe = order(bc, String(existing_orderid))
@@ -2320,7 +2320,7 @@ function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside:
 end
 
 "Upsert one open leg independent from any close leg handling."
-function upsertopenorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false)
+function upsertopenorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing)
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Buy" : "Sell"
@@ -2410,7 +2410,7 @@ function amendorder(bc::KrakenFuturesCache, symbol::String, orderid::String; bas
 	isnothing(cancelled) && return nothing
 	recreated = createorder(bc, symbol, current.side, qty, prc, current.timeinforce == "PostOnly")
 	isnothing(recreated) && return nothing
-	return (recreated..., status="Replaced", rejectreason=string("Replaced order ", orderid))
+	return (recreated..., status="Replaced", rejectreason="Replaced order")
 end
 
 """

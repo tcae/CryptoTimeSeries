@@ -73,7 +73,8 @@ mutable struct TradeCache
     mc::Dict # MC = module constants
     looplock::ReentrantLock
     loopcond::Threads.Condition
-    function TradeCache(; xc=Xch.XchCache(), strategy=TradingStrategy.TsCache("046"; source="default"), trademode=notrade)
+    function TradeCache(; xc=Xch.XchCache(), strategy=TradingStrategy.TsCache("046"; source="default"), trademode=notrade, stoplosspct)
+        @assert 0 < stoplosspct < 1 "stoplosspct=$(stoplosspct) must be a fraction between 0 and 1"
         looplock = ReentrantLock()
         ts = strategy isa TradingStrategy.TsCache ? strategy : strategy isa AbstractString ? TradingStrategy.TsCache(strategy; source="default") : strategy isa TradingStrategy.StrategyConfig ? TradingStrategy.TsCache(strategy=strategy, source="default") : throw(ArgumentError("strategy must be TradingStrategy.TsCache, TradingStrategy.StrategyConfig, or a config ref string"))
         cache = new(xc, DataFrame(), ts, Dict(), looplock, Threads.Condition(looplock))
@@ -81,11 +82,12 @@ mutable struct TradeCache
         cache.mc[:maxassetfraction] = 0.1f0 # defines the maximum ratio of (a specific asset) / ( total assets) - only close trades, if this is exceeded
         cache.mc[:maxbudgetquote] = nothing # optional overall quote budget cap; if set, trading uses min(totalusdt, maxbudgetquote)
         cache.mc[:minorderquote] = 10f0
+        cache.mc[:stoplosspct] = Float32(stoplosspct) # mandatory stop-loss distance from each open order's price
         cache.mc[:reloadtimes] = [Time("04:00:00")]
         cache.mc[:last_traderefresh_dt] = nothing
         cache.mc[:trademode] = trademode  # see TradeMode definition above
         cache.mc[:loop_state] = loop_idle
-        (verbosity >= 4) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), maxbudgetquote = $(cache.mc[:maxbudgetquote]), reloadtimes = $(cache.mc[:reloadtimes]), blacklistbases = $(cache.mc[:blacklistbases])")
+        (verbosity >= 4) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), maxbudgetquote = $(cache.mc[:maxbudgetquote]), stoplosspct = $(cache.mc[:stoplosspct]), reloadtimes = $(cache.mc[:reloadtimes]), blacklistbases = $(cache.mc[:blacklistbases])")
         return cache
     end
 end
@@ -525,10 +527,15 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 end
 
 function trade!(cache::TradeCache, tradesdfdict::Dict)
+    isempty(tradesdfdict) && return nothing # every configured pair is data-gapped this tick
     opencount = 0
     closequote = posquote = 0f0
     for basecfg in eachrow(cache.cfg)
         base = uppercase(String(basecfg.basecoin))
+        # A pair absent from tradesdfdict had no fresh candle this tick (data gap or exchange
+        # downtime): leave its resting orders/position untouched rather than reprocessing a
+        # stale row.
+        haskey(tradesdfdict, base) || continue
         tradesix = tradesdfdict[base].rowix
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
@@ -597,36 +604,37 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
 
     for basecfg in eachrow(cache.cfg)
         base = uppercase(String(basecfg.basecoin))
+        haskey(tradesdfdict, base) || continue
         tradesix = tradesdfdict[base].rowix
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
+
+        # Keep the close bracket standing for as long as a position is held. Xch issues and
+        # amends it from these amounts every tick, independent of this tick's label.
+        (tradesrow.lp_amount > 0f0) && TSM.settrades_amount!(tradesdf, tradesix, longclose, tradesrow.lp_amount)
+        (tradesrow.sp_amount > 0f0) && TSM.settrades_amount!(tradesdf, tradesix, shortclose, tradesrow.sp_amount)
+
         if tradesrow.label in [longopen, longstrongopen]
             if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
                 TSM.settrades_amount!(tradesdf, tradesix, longopen, min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close))
                 if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.lo_amount * tradesrow.close
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "already all assigned")
+                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "lo ignore: already all assigned")
                     TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
                     TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
-                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "open position disabled")
+                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "lo ignore: open position disabled")
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "free insufficient")
+                    TSM.settrades_msg!(tradesdf, tradesix, longopen, "lo ignore: free insufficient")
                 end
                 TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
                 TSM.settrades_label!(tradesdf, tradesix, ignore)
             end
-            if tradesrow.sp_amount > 0f0
-                TSM.settrades_amount!(tradesdf, tradesix, shortclose, tradesrow.sp_amount)
-                if tradesrow.label == ignore
-                    TSM.settrades_label!(tradesdf, tradesix, shortclose)
-                end
-            end
-            if tradesrow.label != ignore
-                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            if (tradesrow.sp_amount > 0f0) && (tradesrow.label == ignore)
+                TSM.settrades_label!(tradesdf, tradesix, shortclose)
             end
         elseif tradesrow.label in [shortstrongopen, shortopen]
             if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
@@ -634,45 +642,25 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
                 if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
                     cappedquote -= tradesrow.so_amount * tradesrow.close
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "already all assigned")
+                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "so ignore: already all assigned")
                     TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
                     TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
-                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "open position disabled")
+                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "so ignore: open position disabled")
                 else
-                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "free insufficient")
+                    TSM.settrades_msg!(tradesdf, tradesix, shortopen, "so ignore: free insufficient")
                 end
                 TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
                 TSM.settrades_label!(tradesdf, tradesix, ignore)
             end
-            if tradesrow.lp_amount > 0f0
-                TSM.settrades_amount!(tradesdf, tradesix, longclose, tradesrow.lp_amount)
-                if tradesrow.label == ignore
-                    TSM.settrades_label!(tradesdf, tradesix, longclose)
-                end
-            end
-            if tradesrow.label != ignore
-                Xch.process_order_request(cache.xc, tradesdf, tradesix)
-            end
-        elseif tradesrow.label in [shortstrongclose, shortclose]
-            if tradesrow.sp_amount > 0f0
-                TSM.settrades_amount!(tradesdf, tradesix, shortclose, tradesrow.sp_amount)
-                Xch.process_order_request(cache.xc, tradesdf, tradesix)
-            end
-        elseif tradesrow.label in [longstrongclose, longclose]
-            if tradesrow.lp_amount > 0f0
-                TSM.settrades_amount!(tradesdf, tradesix, longclose, tradesrow.lp_amount)
-                Xch.process_order_request(cache.xc, tradesdf, tradesix)
-            end
-        elseif tradesrow.label in [allclose]
-            if (tradesrow.sp_amount + tradesrow.lp_amount) > 0f0
-                TSM.settrades_amount!(tradesdf, tradesix, shortclose, tradesrow.sp_amount)
-                TSM.settrades_amount!(tradesdf, tradesix, longclose, tradesrow.lp_amount)
-                Xch.process_order_request(cache.xc, tradesdf, tradesix)
+            if (tradesrow.lp_amount > 0f0) && (tradesrow.label == ignore)
+                TSM.settrades_label!(tradesdf, tradesix, longclose)
             end
         end
+
+        Xch.process_order_request(cache.xc, tradesdf, tradesix)
     end
 
 end

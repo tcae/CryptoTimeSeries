@@ -186,7 +186,7 @@ EnvConfig.init(production)  # test production
     @test b_lock_end[qix_end, :locked] == 0f0
     @test b_lock_end[qix_end, :free] == 1_000f0
 
-    # Explicit short-open trigger semantics: pending short sell fills on low<=limit.
+    # Explicit short-open trigger semantics: a non-stop sell only fills once price rises to the limit.
     bc_short_open = Bybit.BybitCache()
     Bybit._init_simulation!(bc_short_open)
     Bybit.seedportfolio!(bc_short_open, EnvConfig.pairquote, 1_000f0)
@@ -194,11 +194,12 @@ EnvConfig.init(production)  # test production
     short_open_limit = Bybit.get24h(bc_short_open, "SINEUSDT").lastprice * 2f0
     so = Bybit.createorder(bc_short_open, "SINEUSDT", "Sell", 0.5f0, short_open_limit, true; configside=:short)
     @test so.status == "New"
+    @test String(so.lane) == "so"
     bc_short_open.simtime = bc_short_open.simtime + Minute(2)
     _ = Bybit.balances(bc_short_open)
     so_filled = Bybit.order(bc_short_open, String(so.orderid))
     @test !isnothing(so_filled)
-    @test so_filled.status == "Filled"
+    @test so_filled.status == "New"
     short_open_balances = Bybit.balances(bc_short_open)
     quoteix = findfirst(==(EnvConfig.pairquote), short_open_balances[!, :coin])
     @test !isnothing(quoteix)
@@ -206,7 +207,7 @@ EnvConfig.init(production)  # test production
     @test short_open_balances[quoteix, :free] <= short_open_cap.equity_quote + 1f-6
     @test short_open_cap.available_opening_quote <= short_open_cap.equity_quote + 1f-6
 
-    # Explicit short-close trigger semantics: pending short buy fills on high>=limit.
+    # Explicit short-close trigger semantics: a non-stop buy only fills once price falls to the limit.
     bc_short_close = Bybit.BybitCache()
     Bybit._init_simulation!(bc_short_close)
     Bybit.seedportfolio!(bc_short_close, EnvConfig.pairquote, 1_000f0)
@@ -216,11 +217,121 @@ EnvConfig.init(production)  # test production
     short_close_limit = Bybit.get24h(bc_short_close, "SINEUSDT").lastprice * 0.01f0
     sc = Bybit.createorder(bc_short_close, "SINEUSDT", "Buy", 0.4f0, short_close_limit, true; configside=:short, reduceonly=true)
     @test sc.status == "New"
+    @test String(sc.lane) == "sc"
     bc_short_close.simtime = bc_short_close.simtime + Minute(2)
     _ = Bybit.balances(bc_short_close)
     sc_filled = Bybit.order(bc_short_close, String(sc.orderid))
     @test !isnothing(sc_filled)
-    @test sc_filled.status == "Filled"
+    @test sc_filled.status == "New"
+
+    # A short stop-loss (lane scsl, buy priced above market) waits for an adverse rise.
+    bc_short_stoploss = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_short_stoploss)
+    Bybit.seedportfolio!(bc_short_stoploss, EnvConfig.pairquote, 1_000f0)
+    bc_short_stoploss.simtime = DateTime("2025-01-05T00:40:00")
+    opened_short_sl = Bybit.createorder(bc_short_stoploss, "SINEUSDT", "Sell", 0.4f0, nothing, false; configside=:short)
+    @test opened_short_sl.status == "Filled"
+    short_stop_limit = Bybit.get24h(bc_short_stoploss, "SINEUSDT").lastprice * 2f0
+    ss = Bybit.createorder(bc_short_stoploss, "SINEUSDT", "Buy", 0.4f0, short_stop_limit, true; configside=:short, reduceonly=true, lane="scsl")
+    @test ss.status == "New"
+    @test String(ss.lane) == "scsl"
+    bc_short_stoploss.simtime = bc_short_stoploss.simtime + Minute(2)
+    _ = Bybit.balances(bc_short_stoploss)
+    ss_pending = Bybit.order(bc_short_stoploss, String(ss.orderid))
+    @test !isnothing(ss_pending)
+    @test ss_pending.status == "New"
+
+    # A long stop-loss (lane lcsl, sell priced below market) must not fill immediately like a
+    # marketable order; it should only trigger once price actually falls to reach it.
+    bc_long_stoploss = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_long_stoploss)
+    Bybit.seedportfolio!(bc_long_stoploss, EnvConfig.pairquote, 1_000f0)
+    bc_long_stoploss.simtime = DateTime("2025-01-05T00:45:00")
+    opened_long = Bybit.createorder(bc_long_stoploss, "SINEUSDT", "Buy", 0.4f0, nothing, false)
+    @test opened_long.status == "Filled"
+    stoploss_limit = Bybit.get24h(bc_long_stoploss, "SINEUSDT").lastprice * 0.5f0
+    ls = Bybit.createorder(bc_long_stoploss, "SINEUSDT", "Sell", 0.4f0, stoploss_limit, true; configside=:long, reduceonly=true, lane="lcsl")
+    @test ls.status == "New"
+    @test String(ls.lane) == "lcsl"
+    bc_long_stoploss.simtime = bc_long_stoploss.simtime + Minute(2)
+    _ = Bybit.balances(bc_long_stoploss)
+    ls_pending = Bybit.order(bc_long_stoploss, String(ls.orderid))
+    @test !isnothing(ls_pending)
+    @test ls_pending.status == "New"
+
+    # A long take-profit (reduce-only sell priced above market at creation) keeps the
+    # standard direction and still fills once price rises to reach it.
+    bc_long_takeprofit = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_long_takeprofit)
+    Bybit.seedportfolio!(bc_long_takeprofit, EnvConfig.pairquote, 1_000f0)
+    bc_long_takeprofit.simtime = DateTime("2025-01-05T00:45:00")
+    opened_long_tp = Bybit.createorder(bc_long_takeprofit, "SINEUSDT", "Buy", 0.4f0, nothing, false)
+    @test opened_long_tp.status == "Filled"
+    lt = Bybit.createorder(bc_long_takeprofit, "SINEUSDT", "Sell", 0.4f0, Bybit.get24h(bc_long_takeprofit, "SINEUSDT").lastprice * 100f0, true; configside=:long, reduceonly=true)
+    @test lt.status == "New"
+
+    # A close bracket reserves the position once: both legs cover the same quantity.
+    bc_bracket = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_bracket)
+    Bybit.seedportfolio!(bc_bracket, EnvConfig.pairquote, 1_000f0)
+    bc_bracket.simtime = DateTime("2025-01-05T00:45:00")
+    br_open = Bybit.createorder(bc_bracket, "SINEUSDT", "Buy", 0.4f0, nothing, false)
+    @test br_open.status == "Filled"
+    br_price = Bybit.get24h(bc_bracket, "SINEUSDT").lastprice
+    br_tp = Bybit.createorder(bc_bracket, "SINEUSDT", "Sell", 0.4f0, br_price * 100f0, true; configside=:long, reduceonly=true, lane="lc")
+    br_sl = Bybit.createorder(bc_bracket, "SINEUSDT", "Sell", 0.4f0, br_price * 0.5f0, true; configside=:long, reduceonly=true, lane="lcsl")
+    @test br_tp.status == "New"
+    @test br_sl.status == "New"
+    br_assets = bc_bracket.assets
+    br_pix = findfirst((br_assets[!, :coin] .== "SINE") .& (br_assets[!, :side] .== "long"))
+    @test !isnothing(br_pix)
+    # Without sharing, two reduce-only legs would have locked 0.8 of a 0.4 position.
+    @test br_assets[br_pix, :locked] == 0.4f0
+    @test br_assets[br_pix, :free] == 0f0
+
+    # Cancelling one leg leaves the shared reservation with the surviving leg.
+    Bybit.cancelorder(bc_bracket, "SINEUSDT", String(br_tp.orderid))
+    @test br_assets[br_pix, :locked] == 0.4f0
+    Bybit.cancelorder(bc_bracket, "SINEUSDT", String(br_sl.orderid))
+    @test br_assets[br_pix, :locked] == 0f0
+    @test br_assets[br_pix, :free] == 0.4f0
+
+    # When one bracket leg fills, its sibling is cancelled rather than left resting.
+    bc_oco = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_oco)
+    Bybit.seedportfolio!(bc_oco, EnvConfig.pairquote, 1_000f0)
+    bc_oco.simtime = DateTime("2025-01-05T00:45:00")
+    oco_open = Bybit.createorder(bc_oco, "SINEUSDT", "Buy", 0.4f0, nothing, false)
+    @test oco_open.status == "Filled"
+    oco_price = Bybit.get24h(bc_oco, "SINEUSDT").lastprice
+    # take-profit just below market fills on the next candle, stop far away stays untriggered
+    oco_tp = Bybit.createorder(bc_oco, "SINEUSDT", "Sell", 0.4f0, oco_price * 0.9f0, true; configside=:long, reduceonly=true, lane="lc")
+    oco_sl = Bybit.createorder(bc_oco, "SINEUSDT", "Sell", 0.4f0, oco_price * 0.5f0, true; configside=:long, reduceonly=true, lane="lcsl")
+    bc_oco.simtime = bc_oco.simtime + Minute(2)
+    _ = Bybit.balances(bc_oco)
+    oco_tp_after = Bybit.order(bc_oco, String(oco_tp.orderid))
+    oco_sl_after = Bybit.order(bc_oco, String(oco_sl.orderid))
+    @test oco_tp_after.status == "Filled"
+    @test oco_sl_after.status == "Cancelled"
+    @test String(oco_sl_after.rejectreason) == "bracket sibling filled"
+
+    # Both legs triggering in the same candle resolves to the protective stop.
+    bc_tie = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_tie)
+    Bybit.seedportfolio!(bc_tie, EnvConfig.pairquote, 1_000f0)
+    bc_tie.simtime = DateTime("2025-01-05T00:45:00")
+    tie_open = Bybit.createorder(bc_tie, "SINEUSDT", "Buy", 0.4f0, nothing, false)
+    @test tie_open.status == "Filled"
+    tie_price = Bybit.get24h(bc_tie, "SINEUSDT").lastprice
+    # both priced so the very next candle reaches them: sell tp below market, stop above low
+    tie_tp = Bybit.createorder(bc_tie, "SINEUSDT", "Sell", 0.4f0, tie_price * 0.9f0, true; configside=:long, reduceonly=true, lane="lc")
+    tie_sl = Bybit.createorder(bc_tie, "SINEUSDT", "Sell", 0.4f0, tie_price * 1.1f0, true; configside=:long, reduceonly=true, lane="lcsl")
+    bc_tie.simtime = bc_tie.simtime + Minute(2)
+    _ = Bybit.balances(bc_tie)
+    tie_tp_after = Bybit.order(bc_tie, String(tie_tp.orderid))
+    tie_sl_after = Bybit.order(bc_tie, String(tie_sl.orderid))
+    @test tie_sl_after.status == "Filled"
+    @test tie_tp_after.status == "Cancelled"
 
     # Adaptive maker limitprice=nothing should refresh around market spread each amend.
     bc_adaptive = Bybit.BybitCache()
@@ -297,5 +408,46 @@ EnvConfig.init(production)  # test production
     # wb = Bybit.balances(bc)
     # @test isa(wb, AbstractDataFrame)
     # @test size(wb, 2) == 3
+
+    # Margin-call liquidation must cancel the stale pending close/stop-loss order (it never
+    # filled at its own price) and record the forced close as a separate "Filled" order plus
+    # a queued liquidation event, so Xch/TSM sync can reflect lc_status=cancelled alongside
+    # lcl_status=closed/lcl_pavg/lcl_filled for the same position.
+    bc_liquidate = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_liquidate)
+    Bybit.seedportfolio!(bc_liquidate, EnvConfig.pairquote, 1_000f0)
+    bc_liquidate.simtime = DateTime("2025-01-05T00:45:00")
+    opened_liquidate = Bybit.createorder(bc_liquidate, "SINEUSDT", "Sell", 0.4f0, nothing, false; configside=:short)
+    @test opened_liquidate.status == "Filled"
+    liquidate_close_limit = Bybit.get24h(bc_liquidate, "SINEUSDT").lastprice * 0.01f0
+    pending_close = Bybit.createorder(bc_liquidate, "SINEUSDT", "Buy", 0.4f0, liquidate_close_limit, true; configside=:short, reduceonly=true)
+    @test pending_close.status == "New"
+    pending_close_oid = String(pending_close.orderid)
+
+    liquidate_price = Bybit.get24h(bc_liquidate, "SINEUSDT").lastprice
+    liquidated = Bybit._simforceliquidateposition!(bc_liquidate, "SINEUSDT", :short, liquidate_price, bc_liquidate.simtime)
+    @test liquidated
+
+    liquidated_balances = Bybit.balances(bc_liquidate)
+    sineix_liquidated = findfirst((liquidated_balances.coin .== "SINE") .& (liquidated_balances.side .== "short"))
+    @test !isnothing(sineix_liquidated)
+    @test liquidated_balances[sineix_liquidated, :free] == 0f0
+    @test liquidated_balances[sineix_liquidated, :locked] == 0f0
+
+    @test size(Bybit.openorders(bc_liquidate; orderid=pending_close_oid), 1) == 0
+    cancelled_pending = Bybit.order(bc_liquidate, pending_close_oid)
+    @test !isnothing(cancelled_pending)
+    @test cancelled_pending.status == "Cancelled"
+
+    liquidation_events = Bybit.drainliquidations!(bc_liquidate)
+    @test length(liquidation_events) == 1
+    liquidation_event = liquidation_events[1]
+    @test liquidation_event.symbol == "SINEUSDT"
+    @test liquidation_event.positionside == :short
+    @test liquidation_event.qty == 0.4f0
+    @test liquidation_event.price == Float32(liquidate_price)
+    @test liquidation_event.hadpendingorder
+    @test liquidation_event.reason == "liquidation"
+    @test isempty(Bybit.drainliquidations!(bc_liquidate))
 
 end

@@ -58,12 +58,19 @@ function readtradesdf(; stem::AbstractString="trades", folderpath::AbstractStrin
     return isnothing(loaded) ? DataFrame() : loaded
 end
 
-"""Return the grouping columns used to compile gains from concatenated Trades rows."""
-function _compilegains_groupcols(tradesdf::AbstractDataFrame)::Vector{Symbol}
+"""Return the grouping columns used to compile gains from concatenated Trades rows.
+
+`set`/`rangeid` are only included when `grouppartitions` is true; positions from a
+continuous replay can span set/rangeid boundaries (the underlying classifier data source
+switches train/test partitions mid-position), so grouping by them there would falsely
+split one position's open and close across groups."""
+function _compilegains_groupcols(tradesdf::AbstractDataFrame; grouppartitions::Bool=true)::Vector{Symbol}
     @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair to compile gains; names=$(names(tradesdf))"
     cols = Symbol[:pair]
-    (:set in propertynames(tradesdf)) && push!(cols, :set)
-    (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
+    if grouppartitions
+        (:set in propertynames(tradesdf)) && push!(cols, :set)
+        (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
+    end
     return cols
 end
 
@@ -110,12 +117,22 @@ function _compilegainstime(tradesdf::AbstractDataFrame, ix::Integer)::DateTime
     return tradesdf[ix - 1, :opentime]
 end
 
-"""Return the execution price stored on the position-change row for one order lane."""
+"""Return the execution price stored on the position-change row for one order lane.
+
+Falls back to this row's `close` price when the lane price is missing or zero: a genuine
+data gap (classifier-partition boundary, simulated exchange downtime) can close a position
+without ever recording its own fill/liquidation price, and gains compilation must still
+produce a usable (if approximate) gain rather than abort the whole run."""
 function _compilegainsprice(tradesdf::AbstractDataFrame, ix::Integer, pricecol::Symbol)::Float32
     @assert pricecol in propertynames(tradesdf) "tradesdf must contain $(pricecol) to compile gains; names=$(names(tradesdf))"
     price = tradesdf[ix, pricecol]
-    @assert !ismissing(price) && !isnothing(price) && (price > 0f0) "Expected positive $(pricecol) on position change at ix=$(ix), opentime=$(_compilegainstime(tradesdf, ix)), pair=$(tradesdf[ix, :pair]); got $(price)"
-    return price
+    (!ismissing(price) && !isnothing(price) && (price > 0f0)) && return price
+
+    @assert :close in propertynames(tradesdf) "tradesdf must contain :close to fall back for $(pricecol); names=$(names(tradesdf))"
+    fallback = Float32(tradesdf[ix, :close])
+    @assert fallback > 0f0 "Expected positive $(pricecol) or fallback :close on position change at ix=$(ix), opentime=$(_compilegainstime(tradesdf, ix)), pair=$(tradesdf[ix, :pair]); got $(pricecol)=$(price), close=$(fallback)"
+    @warn "gains compilation: $(pricecol) unavailable (likely a data gap), falling back to close price" ix pair=tradesdf[ix, :pair] opentime=_compilegainstime(tradesdf, ix) fallback
+    return fallback
 end
 
 """Append one compiled gain row, mirroring optional `set` and `rangeid` columns from `tradesdf`."""
@@ -242,20 +259,21 @@ function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFra
 end
 
 """
-    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder())
+    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), grouprangeid=true)
 
 Compile open/close gain pairs from one Trades DataFrame, scoping matching by
 `pair` plus optional `set` and `rangeid`, then persist the result in the current
-log folder as `<stem>.arrow`.
+log folder as `<stem>.arrow`. Set `grouppartitions=false` for continuous replay data
+where one position can span set/rangeid boundaries.
 """
-function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
+function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), grouppartitions::Bool=true)::DataFrame
     gainsdf = _emptygainsdf(tradesdf)
     if nrow(tradesdf) == 0
         EnvConfig.savedf(gainsdf, String(stem); folderpath=String(folderpath))
         return gainsdf
     end
 
-    groupcols = _compilegains_groupcols(tradesdf)
+    groupcols = _compilegains_groupcols(tradesdf; grouppartitions=grouppartitions)
     for tradesview in groupby(DataFrame(tradesdf; copycols=false), groupcols; sort=false)
         _compilegainspartition!(gainsdf, tradesview)
     end
@@ -270,13 +288,13 @@ function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmga
 end
 
 """
-    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder())
+    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder(), grouppartitions=true)
 
 Collect the combined Trades DataFrame from one `TsmCache`, compile gain pairs,
 and persist the result in the current log folder as `<stem>.arrow`.
 """
-function compilegainsdf(tsm::TsmCache; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
-    return compilegainsdf(collecttradesdf(tsm); stem=stem, folderpath=folderpath)
+function compilegainsdf(tsm::TsmCache; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), grouppartitions::Bool=true)::DataFrame
+    return compilegainsdf(collecttradesdf(tsm); stem=stem, folderpath=folderpath, grouppartitions=grouppartitions)
 end
 
 """Return one gain-segment duration in minutes, inclusive of open and close rows."""

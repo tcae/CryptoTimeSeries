@@ -10,7 +10,7 @@ Provides
 module EnvConfig
 using Logging, Dates, Pkg
 import JSON3, JDF, Arrow, DataFrames, CategoricalArrays
-export test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, setcoinspath!, coinfolderpath, coinfile, setdebugpath, tradingfolder, pairquote, setpairquote!
+export test, production, training, now, timestr, AbstractConfiguration, configuration, configurationid, readconfigurations!, tablepath, tableexists, dfformat, setdfformat!, coinspath, setcoinspath!, coinfolderpath, coinfile, setdebugpath, tradingfolder, pairquote, setpairquote!, neuralnetspath, neuralnetfile
 
 """
 verbosity =
@@ -405,6 +405,12 @@ defaultdebugfilespath = normpath(joinpath(homedir(), "crypto", debugfilesfolder)
 defaultcoinspath = normpath(joinpath(dirname(defaultlogfilespath), coinsfolder))
 activecoinspath = defaultcoinspath
 logfilespath = defaultlogfilespath
+function neuralnetspath()
+    path = normpath(joinpath(dirname(defaultlogfilespath), "neuralnets"))
+    isdir(path) || mkpath(path)
+    return path
+end
+neuralnetfile(fileprefix::AbstractString) = joinpath(neuralnetspath(), splitext(String(fileprefix))[1] * ".bson")
 
 function _setbasepath!(basepath::AbstractString, folder)
     global logfilespath
@@ -894,7 +900,7 @@ end
 
 """
 Provides a facility to write a configuration into 1 row of a DataFrame and retrieve it for configuring types, e.g. Features, Targets, Classiifers.
-The subtype shall implement a property `cfg` to longhold the DataFrame of all configurations of that subtype.
+The subtype shall implement a property `cfg` to maintain the DataFrame of all configurations of that subtype.
 `cfgid` is an Integer identifier of a configuration but also used as direct access row index within the `cfg` DataFrame.
 """
 abstract type AbstractConfiguration end

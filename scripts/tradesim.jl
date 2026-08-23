@@ -89,6 +89,14 @@ Key=value parameters:
       Override backtest trading pair bases as a comma-separated list.
       Example: `coins=SINE,BTC,ETH`
       Default: `TRADESIM_BASES` env var, or `SINE`
+
+  usepartitions=<bool>
+      When true, replay runs one independent tradeloop per (pair, set, rangeid)
+      group, resetting the portfolio between groups (legacy behaviour).
+      When false (default), set/rangeid are ignored and all configured pairs are
+      processed together minute by minute in a single continuous tradeloop,
+      resembling the live tradereal loop.
+      Default: `TRADESIM_USE_PARTITIONS` env var, or `false`
 """
 end
 
@@ -130,6 +138,14 @@ end
 
 const BACKTEST_BASES = env_bases(ARGS, ["SINE"])
 
+# When false (default), set/rangeid partitions are ignored and all pairs run together
+# in one continuous tradeloop (resembles tradereal). When true, replay one independent
+# tradeloop per (pair, set, rangeid) group with a portfolio reset between groups.
+const USE_PARTITIONS = begin
+    raw = _argvalue(ARGS, "usepartitions", get(ENV, "TRADESIM_USE_PARTITIONS", "false"))
+    lowercase(strip(String(raw))) in ("1", "true", "yes", "on")
+end
+
 # Trade mode during backtest: Trade.buysell, Trade.closeonly, Trade.notrade.
 const TRADE_MODE = Trade.buysell
 
@@ -143,6 +159,9 @@ const MAX_BUDGET_QUOTE = 500f0
 
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
+
+# Mandatory stop-loss distance from each open order's price, as a fraction (e.g. 0.05 = 5%).
+const STOPLOSSPCT = 0.05f0
 
 # Strategy parameters used by the backtest.
 const CONFIG_REF = _argvalue(ARGS, "config", get(ENV, "TRADESIM_CONFIG_REF", "046"))
@@ -700,8 +719,11 @@ function run_replay_from_artifacts!(cache::Trade.TradeCache;
     @assert effective_startdt <= effective_enddt "invalid replay bounds: start=$(effective_startdt), end=$(effective_enddt)"
 
     mask = (source_opentimes .>= effective_startdt) .& (source_opentimes .<= effective_enddt)
+    allowedcoins = Set(uppercase.(String.(BACKTEST_BASES)))
+    mask = mask .& [uppercase(String(c)) in allowedcoins for c in resultsdf[!, :coin]]
     resultsdf = resultsdf[mask, :]
     preddf = preddf[mask, :]
+    @assert nrow(resultsdf) > 0 "replay input is empty after coins filter; coins=$(BACKTEST_BASES)"
     replaydf = _build_replay_input(resultsdf, preddf, quotecoin)
     @assert nrow(replaydf) > 0 "replay input is empty after timestamp filter; startdt=$(effective_startdt), enddt=$(effective_enddt)"
 
@@ -725,6 +747,122 @@ function run_replay_from_artifacts!(cache::Trade.TradeCache;
     # and guarantees key-space parity with the source artifacts.
     replay_keys = unique(select(replaydf, [:pair, :set, :rangeid, :opentime]))
     alltrades = innerjoin(alltrades, replay_keys; on=[:pair, :set, :rangeid, :opentime])
+
+    return alltrades, allfills
+end
+
+"Build one continuous multi-pair replay run into Xch-owned Trades state, ignoring set/rangeid boundaries (resembles tradereal's continuous per-minute loop across all pairs)."
+function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFrame, quotecoin::AbstractString)
+    overall_startdt = minimum(replaydf[!, :opentime])
+    overall_enddt = maximum(replaydf[!, :opentime])
+    cache.xc.startdt = overall_startdt
+    cache.xc.enddt = overall_enddt
+    cache.xc.currentdt = nothing
+    cache.mc[:reloadtimes] = Time[]
+
+    Xch.removeallbases(cache.xc)
+
+    pairs = String[]
+    basecoins = String[]
+    lastprices = Float32[]
+    for g in groupby(replaydf, :pair)
+        gdf = DataFrame(g)
+        pair = uppercase(String(gdf[1, :pair]))
+        bq = Xch.basequote(pair)
+        base = uppercase(String(bq.basecoin))
+
+        Xch.addbase!(cache.xc, base, overall_startdt, overall_enddt)
+        seeddf = select(gdf, :opentime, :pair, :set, :rangeid, :high, :low, :close, :label, :score)
+        TSM.settrades!(cache.xc.tsm, pair, seeddf)
+
+        push!(pairs, pair)
+        push!(basecoins, base)
+        push!(lastprices, Float32(gdf[nrow(gdf), :close]))
+    end
+
+    cache.cfg = DataFrame(
+        basecoin=basecoins,
+        pair=pairs,
+        quotevolume24h_M=fill(0f0, length(pairs)),
+        pricechangepercent=fill(0f0, length(pairs)),
+        lastprice=lastprices,
+        datetime=fill(overall_startdt, length(pairs)),
+        minquotevol=fill(true, length(pairs)),
+        continuousminvol=fill(true, length(pairs)),
+        inportfolio=fill(true, length(pairs)),
+        classifieraccepted=fill(true, length(pairs)),
+        openenabled=fill(true, length(pairs)),
+        closeenabled=fill(true, length(pairs)),
+        blacklisted=fill(false, length(pairs)),
+    )
+    return (pairs=pairs, startdt=overall_startdt, enddt=overall_enddt)
+end
+
+"""
+Run artifact-driven trades replay as ONE continuous multi-pair tradeloop that ignores
+set/rangeid boundaries: all configured pairs are synced and traded together minute by
+minute over the full timestamp range, resembling the live tradereal loop. Returns
+(tradesdf, fillsdf).
+"""
+function run_replay_continuous!(cache::Trade.TradeCache;
+    logsubfolder::AbstractString=REPLAY_SOURCE_SUBFOLDER,
+    quotecoin::AbstractString=QUOTE_COIN,
+    startdt::Union{Nothing, DateTime}=nothing,
+    enddt::Union{Nothing, DateTime}=nothing,
+)
+    resultsdf = _load_replay_df(logsubfolder, "results", "all")
+    preddf = _load_replay_df(logsubfolder, "predictions", "maxpredictions")
+    @assert nrow(resultsdf) > 0 "replay source results/all is empty"
+
+    source_opentimes = DateTime.(resultsdf[!, :opentime])
+    source_startdt = minimum(source_opentimes)
+    source_enddt = maximum(source_opentimes)
+    effective_startdt = isnothing(startdt) ? source_startdt : startdt
+    effective_enddt = isnothing(enddt) ? source_enddt : enddt
+    @assert effective_startdt <= effective_enddt "invalid replay bounds: start=$(effective_startdt), end=$(effective_enddt)"
+
+    mask = (source_opentimes .>= effective_startdt) .& (source_opentimes .<= effective_enddt)
+    allowedcoins = Set(uppercase.(String.(BACKTEST_BASES)))
+    mask = mask .& [uppercase(String(c)) in allowedcoins for c in resultsdf[!, :coin]]
+    resultsdf = resultsdf[mask, :]
+    preddf = preddf[mask, :]
+    @assert nrow(resultsdf) > 0 "replay input is empty after coins filter; coins=$(BACKTEST_BASES)"
+    replaydf = _build_replay_input(resultsdf, preddf, quotecoin)
+    @assert nrow(replaydf) > 0 "replay input is empty after timestamp filter; startdt=$(effective_startdt), enddt=$(effective_enddt)"
+
+    sort!(replaydf, [:pair, :opentime])
+    # Only per-pair opentime ordering matters for a continuous run; set/rangeid boundaries are ignored.
+    for g in groupby(replaydf, :pair)
+        nrow(g) == 0 && continue
+        prev = g[1, :opentime]
+        for ix in 2:nrow(g)
+            cur = g[ix, :opentime]
+            @assert prev < cur "invalid replay sequence for pair=$(g[ix, :pair]); expected opentime[ix-1] < opentime[ix], got $(prev) and $(cur)"
+            prev = cur
+        end
+    end
+
+    _reset_replay_runtime!(cache, quotecoin, INITIAL_QUOTE_BALANCE)
+    _prepare_replay_continuous!(cache, replaydf, quotecoin)
+
+    # skip_init=true keeps the replay-provided cfg and avoids tradeselection rebuild.
+    Trade.run_backtest!(cache; skip_init=true)
+    finaldt = cache.xc.currentdt
+
+    alltrades = _stringify_categorical_columns!(TSM.collecttradesdf(cache.xc.tsm))
+    allfills = _stringify_categorical_columns!(filled_orders_df(cache.xc))
+    (nrow(allfills) > 0) && (allfills[!, :pair] = allfills[!, :symbol])
+
+    # Drop rows pre-seeded from replaydf but never reached by the tick loop (e.g. one
+    # pair's OHLCV data ends before the shared overall_enddt): they still carry seeded
+    # label/high/low/close but no trading update, so a still-open position there shows a
+    # spurious flat position with no close price and breaks gains compilation.
+    !isnothing(finaldt) && filter!(:opentime => <=(finaldt), alltrades)
+
+    # Keep only rows that correspond to replay source keys (drops framework-introduced
+    # placeholder rows, e.g. minutes without a seeded replay row for that pair).
+    replay_keys = unique(select(replaydf, [:pair, :opentime]))
+    alltrades = innerjoin(alltrades, replay_keys; on=[:pair, :opentime])
 
     return alltrades, allfills
 end
@@ -895,7 +1033,7 @@ Xch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 3
 
-println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES")
+println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES usepartitions=$USE_PARTITIONS")
 # println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 println("$(EnvConfig.now()): replay source folder=$REPLAY_SOURCE_SUBFOLDER")
@@ -921,7 +1059,7 @@ xc = Xch.XchCache(bc;
 )
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-cache = Trade.TradeCache(xc=xc, strategy=strategy_runtime, trademode=TRADE_MODE)
+cache = Trade.TradeCache(xc=xc, strategy=strategy_runtime, trademode=TRADE_MODE, stoplosspct=STOPLOSSPCT)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
@@ -939,12 +1077,21 @@ println("$(EnvConfig.now()): blacklist ($(length(cache.mc[:blacklistbases])) bas
 # RUN BACKTEST
 # ─────────────────────────────────────────────────────────────────────────────
 
-alltrades, allfills = run_replay_from_artifacts!(cache;
-    logsubfolder=REPLAY_SOURCE_SUBFOLDER,
-    quotecoin=QUOTE_COIN,
-    startdt=run_startdt,
-    enddt=run_enddt,
-)
+alltrades, allfills = if USE_PARTITIONS
+    run_replay_from_artifacts!(cache;
+        logsubfolder=REPLAY_SOURCE_SUBFOLDER,
+        quotecoin=QUOTE_COIN,
+        startdt=run_startdt,
+        enddt=run_enddt,
+    )
+else
+    run_replay_continuous!(cache;
+        logsubfolder=REPLAY_SOURCE_SUBFOLDER,
+        quotecoin=QUOTE_COIN,
+        startdt=run_startdt,
+        enddt=run_enddt,
+    )
+end
 _validate_tradesim_replay_result!(alltrades)
 println("$(EnvConfig.now()): replay simulation finished, trades rows=$(nrow(alltrades)), fills rows=$(nrow(allfills))")
 
@@ -954,13 +1101,15 @@ saved_trades = EnvConfig.savedf(alltrades, "trades-replay"; folderpath=replay_ou
 saved_fills = EnvConfig.savedf(allfills, "fills-replay"; folderpath=replay_out_folder)
 replay_gains_stem = "xchgains-replay"
 replay_report_stem = "xchgainsreport-replay"
-replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpath=replay_out_folder)
+# Continuous replay (usepartitions=false, the default) can hold one position open across
+# set/rangeid boundaries; only the legacy partitioned mode has independent per-range runs.
+replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpath=replay_out_folder, grouppartitions=USE_PARTITIONS)
 replay_reportdf = TSM.gainsreport(instem=replay_gains_stem, stem=replay_report_stem, folderpath=replay_out_folder)
 saved_gains = EnvConfig.tablepath(replay_gains_stem; folderpath=replay_out_folder, format=:auto)
 saved_gainsreport = EnvConfig.tablepath(replay_report_stem; folderpath=replay_out_folder, format=:auto)
 println("$(EnvConfig.now()): replay gains report")
-println(replay_gainsdf[begin:begin+10, :])
-println(replay_gainsdf[end-10:end, :])
+println(replay_gainsdf[begin:min(begin + 10, end), :])
+println(replay_gainsdf[max(begin, end - 10):end, :])
 println(replay_reportdf)
 println("$(EnvConfig.now()): saved replay trades to $saved_trades rows=$(nrow(alltrades)) $(nrow(alltrades) > 0 ? (string(alltrades[begin, :opentime]) * " - " * string(alltrades[end, :opentime])) : nothing)")
 # println(alltrades)

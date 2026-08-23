@@ -38,6 +38,9 @@ const MAX_ASSET_FRACTION = 0.1f0
 # Maximum budget in quote coin allocated in total
 const MAX_BUDGET_QUOTE = 1000f0
 
+# Mandatory stop-loss distance from each open order's price, as a fraction (e.g. 0.05 = 5%).
+const STOPLOSSPCT = 0.05f0
+
 const CONFIG_REF = get(ENV, "TRADEREAL_CONFIG_REF", "046")
 const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
@@ -104,7 +107,7 @@ Xch.setstartdt(xc, Xch.tradetime(xc))
 
 TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="trenddetector:$CONFIG_NAME"), trademode=TRADE_MODE)
+cache = Trade.TradeCache(xc=xc, strategy=TradingStrategy.TsCache(CONFIG_REF; source="trenddetector:$CONFIG_NAME"), trademode=TRADE_MODE, stoplosspct=STOPLOSSPCT)
 
 # Override risk parameters.
 cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION

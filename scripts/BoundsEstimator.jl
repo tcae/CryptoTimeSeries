@@ -348,9 +348,11 @@ regressormenmonic(coins=nothing, coinix=nothing) = "mix_$(BOUNDS_RATIO_FORMAT)"
 
 function getlatestregressor(cfg::BoundsEstimatorConfig)
     nn = cfg.regressormodel(Features.featurecount(cfg.featconfig), BOUNDS_LABELS, regressormenmonic()) # to get correct filename
-    (verbosity >= 3) && println("getlatestregressor regressor file: $(Classify.nnfilename(nn.fileprefix)), isfile=$(isfile(Classify.nnfilename(nn.fileprefix)))")
-    if isfile(Classify.nnfilename(nn.fileprefix))
-        nn = Classify.loadnn(nn.fileprefix)
+    modelprefix = "$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
+    modelpath = EnvConfig.neuralnetfile(modelprefix)
+    (verbosity >= 3) && println("getlatestregressor regressor file: $(modelpath), isfile=$(isfile(modelpath))")
+    if isfile(modelpath)
+        nn = Classify.loadnn(modelprefix; folderpath=EnvConfig.neuralnetspath())
         (verbosity >= 3) && println("getlatestregressor loaded: nn=$(nn.fileprefix), labels=$(nn.labels) - regressor $(Classify.nnconverged(nn) ? "did" : "did not") converge")
     else
         (verbosity >= 3) && println("getlatestregressor new: nn=$(nn.fileprefix), labels=$(nn.labels)")
@@ -417,7 +419,8 @@ function getregressor(cfg::BoundsEstimatorConfig)
             return nothing
         else
             # EnvConfig.savebackup(Classify.nnfilename(nn.fileprefix))
-            Classify.savenn(nn)
+            modelprefix = "$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
+            Classify.savenn(nn; folderpath=EnvConfig.neuralnetspath(), fileprefix=modelprefix, save_lastepoch=false, save_result=true)
         end
         println("$(EnvConfig.now()) finished adapting mix regressor - regressor $(Classify.nnconverged(nn) ? "did" : "did not") converge")
     end

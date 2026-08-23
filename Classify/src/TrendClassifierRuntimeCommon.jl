@@ -45,11 +45,10 @@ function runtime_loadclassifier(
     search_folders::AbstractVector{<:AbstractString},
 )
     for folder in unique(String.(search_folders))
-        EnvConfig.setlogpath(folder)
-        nnpath = nnfilename(nn_fileprefix)
+        nnpath = nnfilename(nn_fileprefix; folderpath=folder)
         if isfile(nnpath)
             try
-                nn = loadnn(nn_fileprefix)
+                nn = loadnn(nn_fileprefix; folderpath=folder)
                 return build_classifier(nn, build_args...)
             catch err
                 shorterr = sprint(showerror, err)

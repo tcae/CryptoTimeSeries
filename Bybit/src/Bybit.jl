@@ -5,7 +5,7 @@ using EnvConfig
 using Ohlcv
 using TestOhlcv
 using XchAdapter
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!
 import XchAdapter: normalize_order_status
 
 # base URL of the ByBit API
@@ -87,6 +87,10 @@ end
 
 const _recvwindow = "5000000"  # "5000" extended by factor 1000 due to nanoseconds in julia
 const _sim_order_counter = IdDict{Any, Int64}()
+# Per-cache successor orderid => predecessor orderid registered via directsequence!.
+const _sim_sequencing = IdDict{Any, Dict{String, String}}()
+"Queued forced-liquidation events per simulation cache, drained by Xch into TSM trades rows."
+const _sim_liquidations = IdDict{Any, Vector{NamedTuple}}()
 const _bybitsim_test_basecoins = ("SINE", "DOUBLESINE")
 const _klineinterval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
 const interval2bybitinterval = Dict(
@@ -130,6 +134,24 @@ executionorderspec(bc::BybitCache, side::Symbol) = _executionorderspec(side)
 const BybitSimCache = BybitCache
 const BybitsimCache = BybitCache
 exchangeid(bc::BybitCache)::String = "Bybit"
+
+"Return (creating if needed) the successor=>predecessor sequencing map for one simulation cache."
+function _sim_sequencing_for(bc::BybitCache)::Dict{String, String}
+    return get!(() -> Dict{String, String}(), _sim_sequencing, bc)
+end
+
+"Return (creating if needed) the queued liquidation events for one simulation cache."
+function _sim_liquidations_for(bc::BybitCache)::Vector{NamedTuple}
+    return get!(() -> NamedTuple[], _sim_liquidations, bc)
+end
+
+"Return and clear the queued liquidation events for one simulation cache."
+function drainliquidations!(bc::BybitCache)::Vector{NamedTuple}
+    events = _sim_liquidations_for(bc)
+    drained = copy(events)
+    empty!(events)
+    return drained
+end
 
 """Normalize Bybit raw order status into Xch status vocabulary."""
 function normalize_order_status(bc::BybitCache, rawstatus::AbstractString)::String
@@ -181,8 +203,8 @@ end
 function _init_simulation!(bc::BybitCache)
     _ensure_sim_symboluniverse!(bc)
     if isnothing(bc.assets)
-        bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[])
-        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
+        bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[], collateral=Float32[])
+        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], lane=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
         bc.closedorders = similar(bc.orders)
     end
     haskey(_sim_order_counter, bc) || (_sim_order_counter[bc] = 0)
@@ -229,7 +251,8 @@ function seedportfolio!(bc::BybitCache, coin::AbstractString, free::Real; locked
 
     ix = findfirst(((bc.assets[!, :coin] .== coinup) .& (bc.assets[!, :side] .== String(laneside))))
     if isnothing(ix)
-        push!(bc.assets, (coin=coinup, side=String(laneside), free=(free), locked=(locked)))
+        row = (coin=coinup, side=String(laneside), free=(free), locked=(locked), collateral=0f0)
+        push!(bc.assets, row; cols=:intersect)
     else
         bc.assets[ix, :free] = (free)
         bc.assets[ix, :locked] = (locked)
@@ -1058,13 +1081,14 @@ function cancelorder(bc::BybitCache, symbol, orderid)
         ix = findfirst(==(String(orderid)), bc.orders[!, :orderid])
         if !isnothing(ix)
             row = bc.orders[ix, :]
-            _simreleaseorder!(bc, row.symbol, row.side, Symbol(lowercase(String(row.positionside))), Bool(row.reduceonly), row.baseqty, row.limitprice)
+            _simreleaseorder!(bc, row.symbol, row.side, Symbol(lowercase(String(row.positionside))), Bool(row.reduceonly), row.baseqty, row.limitprice; lane=String(row.lane))
             dt = isnothing(bc.simtime) ? Dates.now(Dates.UTC) : DateTime(bc.simtime)
             cancelled = (
                 orderid=String(row.orderid),
                 symbol=String(row.symbol),
                 side=String(row.side),
                 positionside=String(row.positionside),
+                lane=String(row.lane),
                 baseqty=(row.baseqty),
                 ordertype=String(row.ordertype),
                 isLeverage=Bool(row.isLeverage),
@@ -1082,6 +1106,7 @@ function cancelorder(bc::BybitCache, symbol, orderid)
             )
             push!(bc.closedorders, cancelled)
             deleteat!(bc.orders, ix)
+            delete!(_sim_sequencing_for(bc), String(orderid))
             return String(orderid)
         end
         return nothing
@@ -1101,6 +1126,46 @@ function _positionlane(side::Symbol)::String
     return String(side)
 end
 
+"""
+Trades-lane identity of one simulated order, matching the TSM lane vocabulary
+(`lo`/`lc`/`lcsl`/`so`/`sc`/`scsl`). Symbol plus lane pairs the two legs of a close
+bracket, so no separate group id is needed.
+"""
+const SIM_ORDER_LANES = ("lo", "lc", "lcsl", "so", "sc", "scsl")
+
+"Return the default (non-bracket) lane for one position side and close intent."
+function _orderlane(positionside::Symbol, reduceonly::Bool)::String
+    @assert positionside in (:long, :short) "_orderlane positionside=$(positionside) must be :long or :short"
+    return positionside == :long ? (reduceonly ? "lc" : "lo") : (reduceonly ? "sc" : "so")
+end
+
+"Return the stop-loss bracket leg lane for one position side."
+_stoporderlane(positionside::Symbol)::String = positionside == :long ? "lcsl" : "scsl"
+
+"Return the other leg's lane of the same close bracket, or `nothing` outside a bracket."
+function _bracketsiblinglane(lane::AbstractString)::Union{Nothing, String}
+    l = String(lane)
+    l == "lc" && return "lcsl"
+    l == "lcsl" && return "lc"
+    l == "sc" && return "scsl"
+    l == "scsl" && return "sc"
+    return nothing
+end
+
+"Return true when the other leg of this close bracket is still resting for the same symbol."
+function _sim_hasopenbracketsibling(bc::BybitCache, symbol::AbstractString, lane::AbstractString)::Bool
+    sibling = _bracketsiblinglane(lane)
+    isnothing(sibling) && return false
+    (isnothing(bc.orders) || (nrow(bc.orders) == 0)) && return false
+    sym = uppercase(String(symbol))
+    for row in eachrow(bc.orders)
+        (uppercase(String(row.symbol)) == sym) || continue
+        (String(row.lane) == sibling) || continue
+        _isopenstatus(String(row.status)) && return true
+    end
+    return false
+end
+
 function _iscloseintent(positionside::Symbol, orderside::AbstractString)::Bool
     os = lowercase(String(orderside))
     @assert os in ("buy", "sell") "orderside=$(orderside) must be Buy or Sell"
@@ -1113,20 +1178,23 @@ function _ensureholdingrow!(bc::BybitCache, coin::AbstractString, side::Abstract
     sideraw = String(side)
     ix = findfirst(((bc.assets[!, :coin] .== coinup) .& (bc.assets[!, :side] .== sideraw)))
     if isnothing(ix)
-        push!(bc.assets, (coin=coinup, side=sideraw, free=0f0, locked=0f0))
+        row = (coin=coinup, side=sideraw, free=0f0, locked=0f0, collateral=0f0)
+        push!(bc.assets, row; cols=:intersect)
         return lastindex(bc.assets[!, :coin])
     end
     return ix
 end
 
 "Reserve balances for one pending BybitSim order."
-function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real)
+function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real; lane::AbstractString)
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.pairquote)
     qix = _ensureholdingrow!(bc, quote_coin, "quote")
 
     is_close = reduceonly || _iscloseintent(positionside, side)
     if is_close
+        # Both bracket legs cover the same position, so only the first one reserves it.
+        _sim_hasopenbracketsibling(bc, symbol, lane) && return nothing
         pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
         @assert bc.assets[pix, :free] >= basequantity "BybitSim reserve close requires free position >= quantity; free=$(bc.assets[pix, :free]) quantity=$(basequantity) symbol=$(symbol) positionside=$(positionside)"
         bc.assets[pix, :free] -= basequantity
@@ -1136,26 +1204,26 @@ function _simreserveorder!(bc::BybitCache, symbol::AbstractString, side::Abstrac
 
     cost = basequantity * limitprice
     avail_free = bc.assets[qix, :free]
-    avail_locked = bc.assets[qix, :locked]
-    @assert (avail_free + avail_locked) >= cost "BybitSim reserve open requires quote collateral >= cost; free=$(avail_free) locked=$(avail_locked) cost=$(cost) symbol=$(symbol) positionside=$(positionside)"
-    consume_free = min(avail_free, cost)
-    residual = cost - consume_free
-    bc.assets[qix, :free] -= consume_free
-    if residual > 0f0
-        bc.assets[qix, :locked] -= residual
-    end
+    # Existing qix.locked is already earmarked (per-position collateral for other open
+    # shorts, or reservations for other pending orders); it is not spare capacity. A new
+    # open order must be backed by genuinely free quote, or the reservation would silently
+    # overcommit the shared pool beyond actual capital.
+    @assert avail_free >= cost "BybitSim reserve open requires free quote >= cost; free=$(avail_free) cost=$(cost) symbol=$(symbol) positionside=$(positionside)"
+    bc.assets[qix, :free] -= cost
     bc.assets[qix, :locked] += cost
     return nothing
 end
 
 "Release the reservation of one pending BybitSim order without filling it."
-function _simreleaseorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real)
+function _simreleaseorder!(bc::BybitCache, symbol::AbstractString, side::AbstractString, positionside::Symbol, reduceonly::Bool, basequantity::Real, limitprice::Real; lane::AbstractString)
     base = _basefromsymbol(symbol)
     quote_coin = uppercase(EnvConfig.pairquote)
     qix = _ensureholdingrow!(bc, quote_coin, "quote")
 
     is_close = reduceonly || _iscloseintent(positionside, side)
     if is_close
+        # The surviving bracket leg keeps the shared reservation.
+        _sim_hasopenbracketsibling(bc, symbol, lane) && return nothing
         pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
         release = min(bc.assets[pix, :locked], basequantity)
         bc.assets[pix, :locked] -= release
@@ -1186,17 +1254,30 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
     if is_close
         # Close: consume locked position quantity.
         # Long close realizes quote proceeds, short close pays quote to buy back.
+        haslane_qty = bc.assets[pix, :free] + bc.assets[pix, :locked]
         release = min(bc.assets[pix, :locked], baseqty)
         bc.assets[pix, :locked] -= release
         quote_flow = release * fillprice
         if positionside == :short
-            locked_use = min(bc.assets[qix, :locked], quote_flow)
+            # The pooled qix.locked backs every open short's collateral, not just this
+            # one. Release only this position's own tracked collateral share (kept
+            # mark-to-market by _simrebalancecollateral!) from the pool, then settle the
+            # realized P&L (collateral share vs actual buyback notional) via free. This
+            # keeps other still-open shorts' reserved collateral untouched.
+            released_collateral = if hasproperty(bc.assets, :collateral) && (haslane_qty > 0f0)
+                bc.assets[pix, :collateral] * (release / haslane_qty)
+            else
+                quote_flow
+            end
+            hasproperty(bc.assets, :collateral) && (bc.assets[pix, :collateral] -= released_collateral)
+            locked_use = min(bc.assets[qix, :locked], released_collateral)
             bc.assets[qix, :locked] -= locked_use
-            residual = quote_flow - locked_use
+            residual = released_collateral - locked_use
             if residual > 0f0
-                @assert bc.assets[qix, :free] >= residual "BybitSim short close requires free quote >= residual cover cost; free=$(bc.assets[qix, :free]) residual=$(residual) symbol=$(symbol)"
                 bc.assets[qix, :free] -= residual
             end
+            pnl = released_collateral - quote_flow
+            bc.assets[qix, :free] += pnl
         else
             bc.assets[qix, :free] += quote_flow
         end
@@ -1206,10 +1287,14 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
     # Open: add executed quantity to the position lane.
     cost = baseqty * fillprice
     if positionside == :short
-        # Short open keeps sale proceeds in locked quote collateral.
-        @assert bc.assets[qix, :locked] >= cost "BybitSim short open requires locked quote collateral >= fill cost; locked=$(bc.assets[qix, :locked]) cost=$(cost) symbol=$(symbol)"
+        # Short open releases the reservation made at order placement (which may
+        # differ from the fill-price notional), then credits the fill proceeds as
+        # quote collateral. Without the release this double-counted the notional.
+        release = min(bc.assets[qix, :locked], cost)
+        bc.assets[qix, :locked] -= release
         bc.assets[pix, :free] += baseqty
         bc.assets[qix, :locked] += cost
+        hasproperty(bc.assets, :collateral) && (bc.assets[pix, :collateral] += cost)
         return nothing
     end
 
@@ -1225,22 +1310,23 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
     return nothing
 end
 
-"Return true when one candle reaches the pending order's limit price."
+"""
+Return true when one candle reaches the pending order's trigger price.
+
+Direction follows the order side and whether the order is the stop-loss leg of a close
+bracket (lane `lcsl`/`scsl`). A normal limit fills when price comes to it (buy on a fall,
+sell on a rise); a protective stop is priced on the adverse side and must wait for price
+to move through it, so its direction is inverted.
+"""
 function _simordertriggered(orderrow, candle)::Bool
     os = lowercase(String(orderrow.side))
-    ps = Symbol(lowercase(String(orderrow.positionside)))
-    if ps == :short
-        # Reverse trigger direction for short lane intent.
-        if os == "buy"
-            return (candle.high) >= (orderrow.limitprice)
-        end
-        return (candle.low) <= (orderrow.limitprice)
-    end
+    isstop = String(orderrow.lane) in ("lcsl", "scsl")
+    limitprice = (orderrow.limitprice)
 
     if os == "buy"
-        return (candle.low) <= (orderrow.limitprice)
+        return isstop ? ((candle.high) >= limitprice) : ((candle.low) <= limitprice)
     end
-    return (candle.high) >= (orderrow.limitprice)
+    return isstop ? ((candle.low) <= limitprice) : ((candle.high) >= limitprice)
 end
 
 "Process pending BybitSim orders using candles from each order's `lastcheck` until current reference time."
@@ -1251,10 +1337,15 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     decisiondt = isnothing(atdt) ? bc.simtime : atdt
     decisiondt = isnothing(decisiondt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(decisiondt, Minute(1))
     refdt = decisiondt
-    closeix = Int[]
-    closerows = NamedTuple[]
 
-    for ix in eachindex(bc.orders[!, :orderid])
+    seq = _sim_sequencing_for(bc)
+    orderids = String.(bc.orders[!, :orderid])
+    pending_ids = Set(orderids)
+
+    # Detect fill candidates for every still-open order without applying yet, so a
+    # close->open flip pair (registered via directsequence!) can be sequenced below.
+    filldt_by_ix = Dict{Int, DateTime}()
+    for ix in eachindex(orderids)
         row = bc.orders[ix, :]
         !_isopenstatus(String(row.status)) && continue
 
@@ -1280,7 +1371,56 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
             bc.orders[ix, :updated] = decisiondt
             continue
         end
+        filldt_by_ix[ix] = filldt
+    end
 
+    # Both legs of a close bracket can trigger within the same pass. The earlier candle wins;
+    # on a tie the protective stop wins, so replay stays deterministic and conservative.
+    for ix in sort!(collect(keys(filldt_by_ix)))
+        haskey(filldt_by_ix, ix) || continue
+        lane = String(bc.orders[ix, :lane])
+        sibling = _bracketsiblinglane(lane)
+        isnothing(sibling) && continue
+        sym = uppercase(String(bc.orders[ix, :symbol]))
+        for jx in sort!(collect(keys(filldt_by_ix)))
+            (jx == ix) && continue
+            haskey(filldt_by_ix, jx) || continue
+            (uppercase(String(bc.orders[jx, :symbol])) == sym) || continue
+            (String(bc.orders[jx, :lane]) == sibling) || continue
+            loser = if filldt_by_ix[ix] < filldt_by_ix[jx]
+                jx
+            elseif filldt_by_ix[jx] < filldt_by_ix[ix]
+                ix
+            else
+                (lane in ("lcsl", "scsl")) ? jx : ix
+            end
+            delete!(filldt_by_ix, loser)
+            break
+        end
+    end
+
+    triggered_ids = Set(orderids[ix] for ix in keys(filldt_by_ix))
+
+    # A registered successor never fires ahead of its predecessor: if the
+    # predecessor is still open and did not resolve in this same pass, the
+    # successor stays pending and is retried on the next call untouched.
+    immediateix = Int[]
+    deferredix = Int[]
+    for ix in keys(filldt_by_ix)
+        orderid = orderids[ix]
+        predecessor = get(seq, orderid, nothing)
+        if isnothing(predecessor) || !(predecessor in pending_ids)
+            push!(immediateix, ix)
+        elseif predecessor in triggered_ids
+            push!(deferredix, ix)  # predecessor resolves in round A below; apply this after
+        end
+        # else: predecessor still open and unresolved this pass -> leave pending, retry later
+    end
+
+    closeix = Int[]
+    closerows = NamedTuple[]
+    _applysimfill!(ix) = begin
+        row = bc.orders[ix, :]
         _simapplypendingfill!(bc, row, row.limitprice)
         push!(closeix, ix)
         push!(closerows, (
@@ -1288,6 +1428,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
             symbol=String(row.symbol),
             side=String(row.side),
             positionside=String(row.positionside),
+            lane=String(row.lane),
             baseqty=(row.baseqty),
             ordertype=String(row.ordertype),
             isLeverage=Bool(row.isLeverage),
@@ -1297,12 +1438,23 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
             executedqty=(row.baseqty),
             status="Filled",
             created=DateTime(row.created),
-            updated=filldt,
+            updated=filldt_by_ix[ix],
             rejectreason="NO ERROR",
-            lastcheck=filldt,
+            lastcheck=filldt_by_ix[ix],
             marginleverage=Int32(row.marginleverage),
             reduceonly=Bool(row.reduceonly),
         ))
+        delete!(seq, String(row.orderid))
+        return nothing
+    end
+
+    # Round A: independent orders and predecessors resolve first.
+    for ix in immediateix
+        _applysimfill!(ix)
+    end
+    # Round B: successors whose predecessor just resolved above.
+    for ix in deferredix
+        _applysimfill!(ix)
     end
 
     for row in closerows
@@ -1311,7 +1463,201 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     if !isempty(closeix)
         deleteat!(bc.orders, sort!(unique!(closeix)))
     end
+    _simcancelbracketsiblings!(bc, closerows, decisiondt)
+    _simrebalancecollateral!(bc; atdt=decisiondt)
+    _simliquidatemargincall!(bc; atdt=decisiondt)
     return nothing
+end
+
+"""
+Cancel the surviving leg of every close bracket whose other leg just filled. The two legs
+share one position reservation, which the fill already consumed, so no release is due.
+"""
+function _simcancelbracketsiblings!(bc::BybitCache, filledrows, decisiondt::DateTime)
+    isempty(filledrows) && return nothing
+    (isnothing(bc.orders) || (nrow(bc.orders) == 0)) && return nothing
+
+    cancelix = Int[]
+    for frow in filledrows
+        sibling = _bracketsiblinglane(String(frow.lane))
+        isnothing(sibling) && continue
+        sym = uppercase(String(frow.symbol))
+        for ix in 1:nrow(bc.orders)
+            (ix in cancelix) && continue
+            row = bc.orders[ix, :]
+            (uppercase(String(row.symbol)) == sym) || continue
+            (String(row.lane) == sibling) || continue
+            _isopenstatus(String(row.status)) || continue
+            push!(bc.closedorders, (
+                orderid=String(row.orderid), symbol=String(row.symbol), side=String(row.side), positionside=String(row.positionside), lane=String(row.lane),
+                baseqty=(row.baseqty), ordertype=String(row.ordertype), isLeverage=Bool(row.isLeverage), timeinforce=String(row.timeinforce),
+                limitprice=(row.limitprice), avgprice=(row.avgprice), executedqty=(row.executedqty), status="Cancelled",
+                created=DateTime(row.created), updated=decisiondt, rejectreason="bracket sibling filled", lastcheck=decisiondt,
+                marginleverage=Int32(row.marginleverage), reduceonly=Bool(row.reduceonly),
+            ))
+            delete!(_sim_sequencing_for(bc), String(row.orderid))
+            push!(cancelix, ix)
+        end
+    end
+    isempty(cancelix) || deleteat!(bc.orders, sort!(unique!(cancelix)))
+    return nothing
+end
+
+"""
+Recompute quote collateral for each open short position at the current mark price, once per
+tick, moving the shortfall from free into locked (or releasing excess back to free) as price
+moves against or in favor of the trade. `:collateral` tracks per-position what is currently
+earmarked, so this only touches that position's own share of the pooled quote locked/free
+split and leaves other positions' or pending orders' reservations untouched.
+"""
+function _simrebalancecollateral!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing)
+    isnothing(bc.assets) && return nothing
+    !hasproperty(bc.assets, :collateral) && return nothing
+    decisiondt = isnothing(atdt) ? bc.simtime : atdt
+    isnothing(decisiondt) && return nothing
+
+    quotecoin = uppercase(EnvConfig.pairquote)
+    qix = findfirst(==(quotecoin), uppercase.(String.(bc.assets[!, :coin])))
+    isnothing(qix) && return nothing
+
+    for ix in 1:nrow(bc.assets)
+        (ix == qix) && continue
+        String(bc.assets[ix, :side]) != "short" && continue
+        qty = (bc.assets[ix, :free]) + (bc.assets[ix, :locked])
+        qty <= 0f0 && continue
+        coin = uppercase(String(bc.assets[ix, :coin]))
+        symbol = uppercase(string(coin, quotecoin))
+        price = _simcurrentprice(symbol, decisiondt)
+        isnothing(price) && continue
+
+        required = qty * price
+        delta = required - bc.assets[ix, :collateral]
+        if delta > 0f0
+            moved = min(delta, bc.assets[qix, :free])
+            bc.assets[qix, :free] -= moved
+            bc.assets[qix, :locked] += moved
+            bc.assets[ix, :collateral] += moved
+        elseif delta < 0f0
+            moved = min(-delta, bc.assets[qix, :locked])
+            bc.assets[qix, :locked] -= moved
+            bc.assets[qix, :free] += moved
+            bc.assets[ix, :collateral] -= moved
+        end
+    end
+    return nothing
+end
+"Return the latest simulated close price at or before `atdt` for one symbol, or `nothing` if unavailable."
+function _simcurrentprice(symbol::AbstractString, atdt::DateTime)::Union{Nothing, Float32}
+    candles = _sim_klines(symbol; startDateTime=atdt - Minute(5), endDateTime=atdt, interval="1m")
+    size(candles, 1) == 0 && return nothing
+    return Float32(candles[end, :close])
+end
+
+"""
+Force-close all open BybitSim positions at current market price when total account
+equity has dropped to zero or below (maintenance-margin breach), mirroring an
+exchange margin call. Without this, an unmonitored short/long can accumulate an
+unbounded unrealized loss since simulated fills never trigger a liquidation.
+"""
+function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing)
+    isnothing(bc.assets) && return nothing
+    decisiondt = isnothing(atdt) ? bc.simtime : atdt
+    isnothing(decisiondt) && return nothing
+
+    quotecoin = uppercase(EnvConfig.pairquote)
+    equity = 0.0
+    pricebyix = Dict{Int, Float32}()
+    for ix in 1:nrow(bc.assets)
+        coin = uppercase(String(bc.assets[ix, :coin]))
+        free = (bc.assets[ix, :free])
+        locked = (bc.assets[ix, :locked])
+        if coin == quotecoin
+            equity += free + locked
+            continue
+        end
+        qty = free + locked
+        qty <= 0f0 && continue
+        side = String(bc.assets[ix, :side])
+        symbol = uppercase(string(coin, quotecoin))
+        price = _simcurrentprice(symbol, decisiondt)
+        isnothing(price) && continue
+        pricebyix[ix] = price
+        signedqty = side == "short" ? -qty : qty
+        equity += signedqty * price
+    end
+
+    equity > 0.0 && return nothing
+
+    liquidated = String[]
+    for (ix, price) in pricebyix
+        coin = String(bc.assets[ix, :coin])
+        side = String(bc.assets[ix, :side])
+        symbol = uppercase(string(uppercase(coin), quotecoin))
+        _simforceliquidateposition!(bc, symbol, Symbol(side), price, decisiondt) && push!(liquidated, "$(coin)/$(side)")
+    end
+    !isempty(liquidated) && (verbosity >= 1) && @warn "BybitSim margin call: liquidated underwater positions" liquidated equity at=decisiondt
+    return nothing
+end
+
+"""
+Force-close one underwater position at the liquidation mark price. Cancels any pending
+reduce-only close/stop-loss order for the position (it never filled at its own price) and
+queues a structured event for Xch to reconcile into TSM trades columns: `lcl_pavg`/
+`scl_pavg`, `lcl_filled`/`scl_filled`, `lcl_status`/`scl_status`, `lcl_msg`/`scl_msg`, plus
+resetting the cancelled order's own lane (`lc_id`/`sc_id`, `lc_status`/`sc_status`,
+`lc_amount`/`sc_amount`). Returns `true` when a position was actually liquidated.
+"""
+function _simforceliquidateposition!(bc::BybitCache, symbol::AbstractString, positionside::Symbol, price::Real, decisiondt::DateTime; reason::AbstractString="liquidation")::Bool
+    base = _basefromsymbol(symbol)
+    pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
+    qty = bc.assets[pix, :free] + bc.assets[pix, :locked]
+    qty <= 0f0 && return false
+
+    # The pending reduce-only close/stop-loss orders never filled at their own price; cancel
+    # them like any other cancellation instead of pretending they filled. A close bracket has
+    # two legs, so drain them one at a time - deleting each before the next lookup keeps the
+    # shared-reservation check accurate, and the last one releases back to :free.
+    hadpendingorder = false
+    if !isnothing(bc.orders) && (nrow(bc.orders) > 0)
+        while true
+            ix = findfirst(row -> (uppercase(String(row.symbol)) == uppercase(symbol)) && (Symbol(lowercase(String(row.positionside))) == positionside) && Bool(row.reduceonly), eachrow(bc.orders))
+            isnothing(ix) && break
+            hadpendingorder = true
+            row = bc.orders[ix, :]
+            cancelledorderid = String(row.orderid)
+            _simreleaseorder!(bc, row.symbol, row.side, positionside, true, row.baseqty, row.limitprice; lane=String(row.lane))
+            push!(bc.closedorders, (
+                orderid=cancelledorderid, symbol=String(row.symbol), side=String(row.side), positionside=String(row.positionside), lane=String(row.lane),
+                baseqty=(row.baseqty), ordertype=String(row.ordertype), isLeverage=Bool(row.isLeverage), timeinforce=String(row.timeinforce),
+                limitprice=(row.limitprice), avgprice=(row.avgprice), executedqty=(row.executedqty), status="Cancelled",
+                created=DateTime(row.created), updated=decisiondt, rejectreason=reason, lastcheck=decisiondt,
+                marginleverage=Int32(row.marginleverage), reduceonly=true,
+            ))
+            deleteat!(bc.orders, ix)
+            delete!(_sim_sequencing_for(bc), cancelledorderid)
+        end
+    end
+
+    # Reserve the full (now fully free) position into :locked so the close-fill logic
+    # below, which only ever consumes from :locked, covers the entire position.
+    freeportion = bc.assets[pix, :free]
+    if freeportion > 0f0
+        bc.assets[pix, :free] -= freeportion
+        bc.assets[pix, :locked] += freeportion
+    end
+
+    side = positionside == :short ? "Buy" : "Sell"
+    fillprice = Float32(price)
+    orderid = "SIM-Liquidate-$(symbol)-$(Int(round(Dates.datetime2unix(decisiondt))))"
+    _simapplypendingfill!(bc, (symbol=String(symbol), side=side, baseqty=qty, positionside=String(positionside), reduceonly=true), fillprice)
+    push!(bc.closedorders, (
+        orderid=orderid, symbol=String(symbol), side=side, positionside=String(positionside), lane=_orderlane(positionside, true), baseqty=qty,
+        ordertype="Market", isLeverage=true, timeinforce="IOC", limitprice=fillprice, avgprice=fillprice,
+        executedqty=qty, status="Filled", created=decisiondt, updated=decisiondt,
+        rejectreason=reason, lastcheck=decisiondt, marginleverage=Int32(2), reduceonly=true,
+    ))
+    push!(_sim_liquidations_for(bc), (symbol=String(symbol), positionside=positionside, qty=qty, price=fillprice, decisiondt=decisiondt, hadpendingorder=hadpendingorder, reason=String(reason)))
+    return true
 end
 
 """
@@ -1321,7 +1667,7 @@ If `price` is omitted and `maker=true`, the simulation and live adapters will
 choose a limit price as close as possible to the current spread while staying
 post-only so the order can qualify for maker fees.
 """
-function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false)
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing)
     spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside) : execution_spec
     effective_marginleverage = spec.instrument == "spot_margin" ? spec.leverage : 0
     if spec.instrument == "spot_margin"
@@ -1329,6 +1675,8 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     elseif spec.instrument != "spot"
         error("unsupported Bybit execution instrument $(spec.instrument) for symbol=$(symbol) configside=$(spec.side)")
     end
+    orderlane = isnothing(lane) ? _orderlane(spec.side, reduceonly) : String(lane)
+    @assert orderlane in SIM_ORDER_LANES "createorder lane=$(orderlane) must be one of $(SIM_ORDER_LANES)"
     # Check if in simulation mode
     if !isnothing(bc.orders)
         _simprocesspendingorders!(bc)
@@ -1344,17 +1692,16 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             # decision row already processed for this order. The next simulation row
             # can then evaluate the first newly visible candle whose `opentime`
             # became observable after `dt`.
-            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-            _simreserveorder!(bc, symbol, orderside, spec.side, reduceonly, basequantity, limitprice)
+            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="PostOnly", limitprice=limitprice, avgprice=0f0, executedqty=0f0, status="New", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+            _simreserveorder!(bc, symbol, orderside, spec.side, reduceonly, basequantity, limitprice; lane=orderlane)
             push!(bc.orders, row)
         else # taker
-            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
+            row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
             push!(bc.closedorders, row)
             if reduceonly
-                _simreserveorder!(bc, symbol, orderside, spec.side, true, basequantity, limitprice)
+                _simreserveorder!(bc, symbol, orderside, spec.side, true, basequantity, limitprice; lane=orderlane)
             else
-                _simreserveorder!(bc, symbol, orderside, spec.side, false, basequantity, limitprice)
+                _simreserveorder!(bc, symbol, orderside, spec.side, false, basequantity, limitprice; lane=orderlane)
             end
             _simapplypendingfill!(bc, row, limitprice)
         end
@@ -1476,17 +1823,17 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true)
+function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
     side = Symbol(lowercase(String(positionside)))
     @assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
     orderside = side == :long ? "Sell" : "Buy"
-    return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly)
+    return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, lane=lane)
 end
 
 _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
 
 "Upsert one close leg independent from any open leg handling."
-function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true)
+function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
     existing = nothing
     if !isnothing(existing_orderid)
         probe = order(bc, String(existing_orderid))
@@ -1495,7 +1842,7 @@ function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol,
         end
     end
     if isnothing(existing)
-        return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly)
+        return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, lane=lane)
     end
 
     remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
@@ -1509,7 +1856,7 @@ function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol,
 end
 
 "Upsert one open leg independent from any close leg handling."
-function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false)
+function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing)
     side = Symbol(lowercase(String(positionside)))
     @assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
     orderside = side == :long ? "Buy" : "Sell"
@@ -1521,7 +1868,7 @@ function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, 
         end
     end
     if isnothing(existing)
-        return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly)
+        return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, lane=lane)
     end
 
     remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
@@ -1541,6 +1888,7 @@ function directsequence!(bc::BybitCache, predecessor_orderid::AbstractString, su
     @assert !isnothing(predecessor) "directsequence! predecessor order missing predecessor_orderid=$(predecessor_orderid)"
     @assert !isnothing(successor) "directsequence! successor order missing successor_orderid=$(successor_orderid)"
     @assert String(predecessor.symbol) == String(successor.symbol) "directsequence! symbol mismatch predecessor_symbol=$(String(predecessor.symbol)) successor_symbol=$(String(successor.symbol)) predecessor_orderid=$(predecessor_orderid) successor_orderid=$(successor_orderid)"
+    _sim_sequencing_for(bc)[String(successor_orderid)] = String(predecessor_orderid)
     return (predecessor_orderid=String(predecessor_orderid), successor_orderid=String(successor_orderid), symbol=String(predecessor.symbol), acknowledged=true)
 end
 
@@ -1606,11 +1954,12 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         oldlimit = (orderatentry.limitprice)
         oldsidepos = Symbol(lowercase(String(orderatentry.positionside)))
         oldreduceonly = Bool(orderatentry.reduceonly)
+        oldlane = String(orderatentry.lane)
 
         assetsbackup = copy(bc.assets)
         try
-            _simreleaseorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, oldqty, oldlimit)
-            _simreserveorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, changedqty, changedprice)
+            _simreleaseorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, oldqty, oldlimit; lane=oldlane)
+            _simreserveorder!(bc, oldsymbol, oldside, oldsidepos, oldreduceonly, changedqty, changedprice; lane=oldlane)
         catch err
             bc.assets = assetsbackup
             rethrow(err)

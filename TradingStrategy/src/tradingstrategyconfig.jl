@@ -531,14 +531,15 @@ trendconfigfeaturefactory(cfg::NamedTuple)::Function = () -> cfg.featconfig
 
 "Load a runtime classifier for a TrendDetector config payload."
 function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::Classify.TrendClassifier001
-    nnstub = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), mnemonic)
+    modelphase = Classify.trend_runtime_load_phase(mode)
+    modelprefix = "$(cfg.configname)-$(modelphase)"
     required_minutes = max(Features.requiredminutes(cfg.featconfig), 2)
     spec = (
         config_ref=trendconfigref(cfg),
-        nn_fileprefix=nnstub.fileprefix,
+        nn_fileprefix=modelprefix,
         featconfig=trendconfigfeaturefactory(cfg),
         required_minutes=required_minutes,
     )
-    return Classify.load(Classify.TrendClassifier001, spec; mode=mode)
+    return Classify.load(Classify.TrendClassifier001, spec; mode=mode, folder=EnvConfig.neuralnetspath())
 end
 

@@ -1,4 +1,5 @@
 module TSM
+# akronym for Trade State Machine
 
 using DataFrames, CategoricalArrays, Dates
 using EnvConfig
@@ -11,9 +12,13 @@ mutable struct TsmCache
     pairstates::Dict{String, DataFrame}
     tradesrowtemplate::DataFrame
     schema_contributors::Vector{Function}
+    # Per-pair next-row-to-consume cursor (1-based). Both bulk-seeded replay rows and
+    # live ticks are strictly time-ordered, so a single forward cursor finds/creates the
+    # right row in O(1) without any per-timestamp index.
+    nextrowix::Dict{String, Int}
 
     function TsmCache(; schema_contributors::Vector{Function}=Function[])
-        return new(Dict{String, DataFrame}(), DataFrame(), Function[schema_contributors...])
+        return new(Dict{String, DataFrame}(), DataFrame(), Function[schema_contributors...], Dict{String, Int}())
     end
 end
 
@@ -25,8 +30,8 @@ const TSM_NO_CONFIG = "none"
 const TSM_NO_STATE = "none"
 const TSM_NO_SET = "none"
 const TSM_STATUS_LEVELS = ["none", "submitted", "closed", "cancelled", "rejected"]
-const TSM_CATEGORICAL_COLUMNS = Set([:pair, :set, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :config, :tsmstate])
-const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
+const TSM_CATEGORICAL_COLUMNS = Set([:pair, :set, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :lcsl_id, :lcsl_status, :lcsl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :scsl_id, :scsl_status, :scsl_msg, :config, :tsmstate])
+const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lcsl_limit, :scsl_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
 const TSM_INT_COLUMNS = Set([:rangeid])
 const TSM_TRADE_LANES = Set([:lo, :lc, :so, :sc])
 
@@ -50,6 +55,13 @@ function tradelane(label)::Symbol
     end
 
     @assert false "trade label $(tl) does not map to a lane; expected open/close labels"
+end
+
+"""Map one close label to the stop-loss bracket leg column for `suffix` (`:id`, `:status`, `:msg`, `:limit`, `:amount`). The stop leg shares the close lane (`lc`/`sc`) as the second leg of its bracket."""
+function _stoplanefield(label, suffix::Symbol)::Symbol
+    lane = tradelane(label)
+    @assert lane in (:lc, :sc) "stop-loss bracket leg requires a close lane, got lane=$(lane)"
+    return Symbol(lane, "sl_", suffix)
 end
 
 _nrows(df::AbstractDataFrame) = nrow(df)
@@ -106,14 +118,26 @@ function _tradesrowtemplate!(tsm::TsmCache)::DataFrame
     return tsm.tradesrowtemplate
 end
 
-function _appendtradesrow!(tsm::TsmCache, tdf::DataFrame, pairkey::AbstractString, opentime::DateTime)::Int
+function _appendtradesrow!(tsm::TsmCache, tdf::DataFrame, pairkey::AbstractString, opentime::DateTime)::DataFrame
     rowdf = DataFrame(_tradesrowtemplate!(tsm); copycols=true)
     rowdf[1, :opentime] = opentime
     if :pair in propertynames(rowdf)
         rowdf[1, :pair] = uppercase(String(pairkey))
     end
     push!(tdf, rowdf[1, :]; cols=:subset)
-    return nrow(tdf)
+    return tdf
+end
+
+"Insert one fresh row for `opentime` at position `at`, shifting later rows down, to keep tdf time-ordered when a live-loop gap falls before an already-seeded future row."
+function _inserttradesrow!(tsm::TsmCache, tdf::DataFrame, pairkey::AbstractString, opentime::DateTime, at::Integer)::DataFrame
+    rowdf = DataFrame(_tradesrowtemplate!(tsm); copycols=true)
+    rowdf[1, :opentime] = opentime
+    if :pair in propertynames(rowdf)
+        rowdf[1, :pair] = uppercase(String(pairkey))
+    end
+    newdf = vcat(tdf[1:(at - 1), :], rowdf, tdf[at:end, :]; cols=:setequal)
+    tsm.pairstates[pairkey] = newdf
+    return newdf
 end
 
 """Apply one contributor set to a Trades dataframe using the TSM cache schema."""
@@ -183,6 +207,7 @@ function settrades!(tsm::TsmCache, pair::AbstractString, df::AbstractDataFrame)
     pairkey = uppercase(String(pair))
     _ensuretradesidentity!(normalized, pairkey)
     tsm.pairstates[pairkey] = normalized
+    tsm.nextrowix[pairkey] = 1
     return tsm
 end
 
@@ -193,6 +218,7 @@ function settrades!(tsm::TsmCache, base::AbstractString, quotecoin::AbstractStri
     _applytradescontributors!(tsm, normalized)
     _ensuretradesidentity!(normalized, pairkey)
     tsm.pairstates[pairkey] = normalized
+    tsm.nextrowix[pairkey] = 1
     return tsm
 end
 
@@ -208,7 +234,9 @@ end
 
 """Drop one pair state entry from the TSM cache."""
 function droppair!(tsm::TsmCache, pair::AbstractString)::Nothing
-    delete!(tsm.pairstates, uppercase(String(pair)))
+    pairkey = uppercase(String(pair))
+    delete!(tsm.pairstates, pairkey)
+    delete!(tsm.nextrowix, pairkey)
     return nothing
 end
 
@@ -227,24 +255,29 @@ function ensuretradesrow!(tsm::TsmCache, base::AbstractString, quotecoin::Abstra
     basekey = uppercase(String(base))
     pairkey = tradingpairkey(basekey, quotecoin)
     tdf = trades(tsm, pairkey)
-
-    rowix = nothing
     n = nrow(tdf)
-    if n > 0
-        last_open = tdf[n, :opentime]
-        if last_open == opentime
-            rowix = n
-        elseif last_open < opentime
-            rowix = _appendtradesrow!(tsm, tdf, pairkey, opentime)
+
+    # Both bulk-seeded replay rows and live ticks are strictly time-ordered, so a single
+    # last-row cursor per pair suffices: repeat calls for the same opentime (e.g. a
+    # caller re-fetching the current row) reuse the cursor row itself; otherwise look at
+    # the next row to reuse an already-seeded match, insert-ahead for a live-loop gap, or
+    # append once the cursor runs past seeded data.
+    cursor = clamp(get(tsm.nextrowix, pairkey, 0), 0, n)
+    if (cursor >= 1) && (tdf[cursor, :opentime] == opentime)
+        rowix = cursor
+    else
+        nxt = cursor + 1
+        if (nxt <= n) && (tdf[nxt, :opentime] == opentime)
+            rowix = nxt
+        elseif (nxt <= n) && (tdf[nxt, :opentime] > opentime)
+            tdf = _inserttradesrow!(tsm, tdf, pairkey, opentime, nxt)
+            rowix = nxt
+        else
+            tdf = _appendtradesrow!(tsm, tdf, pairkey, opentime)
+            rowix = nrow(tdf)
         end
     end
-
-    if isnothing(rowix)
-        rowix = findlast(==(opentime), tdf[!, :opentime])
-    end
-    if isnothing(rowix)
-        rowix = _appendtradesrow!(tsm, tdf, pairkey, opentime)
-    end
+    tsm.nextrowix[pairkey] = rowix
 
     tdf[rowix, :opentime] = opentime
     tdf[rowix, :pair] = pairkey
@@ -258,11 +291,11 @@ function _defaultcolumn(field::Symbol, n::Integer)
         return Vector{Union{Missing, DateTime}}(missing, n)
     elseif field === :label
         return fill(ignore, n)
-    elseif field === :lo_status || field === :lol_status || field === :lc_status || field === :lcl_status || field === :so_status || field === :sol_status || field === :sc_status || field === :scl_status
+    elseif field === :lo_status || field === :lol_status || field === :lc_status || field === :lcl_status || field === :lcsl_status || field === :so_status || field === :sol_status || field === :sc_status || field === :scl_status || field === :scsl_status
         return _compressedcategorical(fill("none", n); levels=TSM_STATUS_LEVELS)
-    elseif field === :lo_id || field === :lol_id || field === :lc_id || field === :lcl_id || field === :so_id || field === :sol_id || field === :sc_id || field === :scl_id
+    elseif field === :lo_id || field === :lol_id || field === :lc_id || field === :lcl_id || field === :lcsl_id || field === :so_id || field === :sol_id || field === :sc_id || field === :scl_id || field === :scsl_id
         return _compressedcategorical(fill(TSM_NO_ORDER_ID, n); levels=[TSM_NO_ORDER_ID])
-    elseif field === :lo_msg || field === :lol_msg || field === :lc_msg || field === :lcl_msg || field === :so_msg || field === :sol_msg || field === :sc_msg || field === :scl_msg
+    elseif field === :lo_msg || field === :lol_msg || field === :lc_msg || field === :lcl_msg || field === :lcsl_msg || field === :so_msg || field === :sol_msg || field === :sc_msg || field === :scl_msg || field === :scsl_msg
         return _compressedcategorical(fill(TSM_NO_ORDER_MSG, n); levels=[TSM_NO_ORDER_MSG])
     elseif field === :pair || field === :set || field === :config || field === :tsmstate
         default = field === :pair ? "none" : field === :set ? TSM_NO_SET : field === :config ? TSM_NO_CONFIG : TSM_NO_STATE
@@ -352,6 +385,16 @@ function gettrades_lastlanefield(tradesdf::AbstractDataFrame, ix::Integer, label
     return gettradesfield(tradesdf, ix, field)
 end
 
+"""Get one stop-loss bracket leg field cell of a close lane using a close label and suffix."""
+function gettrades_stoplanefield(tradesdf::AbstractDataFrame, ix::Integer, label, suffix::Symbol)
+    return gettradesfield(tradesdf, ix, _stoplanefield(label, suffix))
+end
+
+"""Set one stop-loss bracket leg field cell of a close lane using a close label and suffix."""
+function settrades_stoplanefield!(tradesdf::DataFrame, ix::Integer, label, suffix::Symbol, value)
+    return settradesfield!(tradesdf, ix, _stoplanefield(label, suffix), value)
+end
+
 """Set one last-lane trades field cell using a trade label and suffix (for example `:id`, `:status`, `:msg`)."""
 function settrades_lastlanefield!(tradesdf::DataFrame, ix::Integer, label, suffix::Symbol, value)
     field = Symbol(tradelane(label), "l_", suffix)
@@ -408,7 +451,7 @@ gettrades_last_pavg(tradesdf::AbstractDataFrame, ix::Integer, label) = gettrades
 """Set last-lane average fill price (`lol/lcl/sol/scl`) addressed via a trade label."""
 settrades_last_pavg!(tradesdf::DataFrame, ix::Integer, label, value) = settrades_lastlanefield!(tradesdf, ix, label, :pavg, value)
 
-for field in (:opentime, :lastopentrade, :pair, :set, :rangeid, :lo_id, :lo_status, :lol_id, :lol_status, :lol_filled, :lol_pavg, :lo_msg, :lol_msg, :lc_id, :lc_status, :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lc_msg, :lcl_msg, :so_id, :so_status, :sol_id, :sol_status, :sol_filled, :sol_pavg, :so_msg, :sol_msg, :sc_id, :sc_status, :scl_id, :scl_status, :scl_filled, :scl_pavg, :sc_msg, :scl_msg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
+for field in (:opentime, :lastopentrade, :pair, :set, :rangeid, :lo_id, :lo_status, :lol_id, :lol_status, :lol_filled, :lol_pavg, :lo_msg, :lol_msg, :lc_id, :lc_status, :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lc_msg, :lcl_msg, :lcsl_id, :lcsl_status, :lcsl_msg, :lcsl_limit, :so_id, :so_status, :sol_id, :sol_status, :sol_filled, :sol_pavg, :so_msg, :sol_msg, :sc_id, :sc_status, :scl_id, :scl_status, :scl_filled, :scl_pavg, :sc_msg, :scl_msg, :scsl_id, :scsl_status, :scsl_msg, :scsl_limit, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
     ensurefn = Symbol("ensuretrades_", field, "!")
     getfn = Symbol("gettrades_", field)
     setfn = Symbol("settrades_", field, "!")
@@ -534,6 +577,12 @@ function xch_tradesdf_contributors()::Vector{Function}
         df -> xch_tradesdf_last_pavg(df, shortclose),
         df -> xch_tradesdf_msg(df, shortclose),
         df -> xch_tradesdf_last_msg(df, shortclose),
+        df -> xch_tradesdf_stop_id(df, longclose),
+        df -> xch_tradesdf_stop_status(df, longclose),
+        df -> xch_tradesdf_stop_msg(df, longclose),
+        df -> xch_tradesdf_stop_id(df, shortclose),
+        df -> xch_tradesdf_stop_status(df, shortclose),
+        df -> xch_tradesdf_stop_msg(df, shortclose),
         xch_tradesdf_lp_amount,
         xch_tradesdf_sp_amount,
         xch_tradesdf_close,
@@ -554,6 +603,8 @@ function tradingstrategy_tradesdf_contributors()::Vector{Function}
         df -> tradingstrategy_tradesdf_limit(df, longclose),
         df -> tradingstrategy_tradesdf_limit(df, shortopen),
         df -> tradingstrategy_tradesdf_limit(df, shortclose),
+        df -> tradingstrategy_tradesdf_stop_limit(df, longclose),
+        df -> tradingstrategy_tradesdf_stop_limit(df, shortclose),
     ]
 end
 
@@ -647,6 +698,26 @@ function xch_tradesdf_lp_amount(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :lp_amount)
 end
 
+"""Ensure Trades close-bracket stop column `<lcsl|scsl>_id` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: exchange provided id of the resting stop-loss leg of the close bracket; otherwise TSM_NO_ORDER_ID."""
+function xch_tradesdf_stop_id(df::DataFrame, label)::DataFrame
+    return _ensurecolumn!(df, _stoplanefield(label, :id))
+end
+
+"""Ensure Trades close-bracket stop column `<lcsl|scsl>_status` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: order status of the resting stop-loss leg of the close bracket."""
+function xch_tradesdf_stop_status(df::DataFrame, label)::DataFrame
+    return _ensurecolumn!(df, _stoplanefield(label, :status))
+end
+
+"""Ensure Trades close-bracket stop column `<lcsl|scsl>_msg` exists. Owner: Xch. Eltype: `CategoricalVector{String}`. Note: rejection/error message text for the stop-loss leg of the close bracket."""
+function xch_tradesdf_stop_msg(df::DataFrame, label)::DataFrame
+    return _ensurecolumn!(df, _stoplanefield(label, :msg))
+end
+
+"""Ensure Trades close-bracket stop column `<lcsl|scsl>_limit` exists. Owner: TradingStrategy. Eltype: `Float32` with `0f0` as the default. Note: stop-loss limit price of the close bracket; `0f0` means no stop-loss leg is requested. Both bracket legs cover the same quantity, tracked by `<lc|sc>_amount`."""
+function tradingstrategy_tradesdf_stop_limit(df::DataFrame, label)::DataFrame
+    return _ensurecolumn!(df, _stoplanefield(label, :limit))
+end
+
 """Ensure Trades column `sp_amount` exists. Owner: Xch. Eltype: `Float32` with `0f0` as the default. Note: Short position amount of trading pair holdings."""
 function xch_tradesdf_sp_amount(df::DataFrame)::DataFrame
     return _ensurecolumn!(df, :sp_amount)
@@ -697,7 +768,7 @@ function tradingstrategy_tradesdf_limit(tradesdf::DataFrame, label)::DataFrame
     return _ensurecolumn!(tradesdf, Symbol(tradelane(label), "_limit"))
 end
 
-"""Ensure Trades lane column `<lane>_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: if order amount > 0 then order shall be placed, otherwise not."""
+"""Ensure Trades lane column `<lane>_amount` exists. Owner: Trade. Eltype: `Float32` with `0f0` as the default. Note: if order amount > 0 then order shall be placed, otherwise not. If a close order amount > 0 then a close order shall be placed """
 function trade_tradesdf_amount(tradesdf::DataFrame, label)::DataFrame
     return _ensurecolumn!(tradesdf, Symbol(tradelane(label), "_amount"))
 end
@@ -759,6 +830,14 @@ function gettradesfield(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
         return gettrades_lc_msg(tradesdf, ix)
     elseif field === :lcl_msg
         return gettrades_lcl_msg(tradesdf, ix)
+    elseif field === :lcsl_id
+        return gettrades_lcsl_id(tradesdf, ix)
+    elseif field === :lcsl_status
+        return gettrades_lcsl_status(tradesdf, ix)
+    elseif field === :lcsl_msg
+        return gettrades_lcsl_msg(tradesdf, ix)
+    elseif field === :lcsl_limit
+        return gettrades_lcsl_limit(tradesdf, ix)
     elseif field === :so_id
         return gettrades_so_id(tradesdf, ix)
     elseif field === :so_status
@@ -791,6 +870,14 @@ function gettradesfield(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
         return gettrades_sc_msg(tradesdf, ix)
     elseif field === :scl_msg
         return gettrades_scl_msg(tradesdf, ix)
+    elseif field === :scsl_id
+        return gettrades_scsl_id(tradesdf, ix)
+    elseif field === :scsl_status
+        return gettrades_scsl_status(tradesdf, ix)
+    elseif field === :scsl_msg
+        return gettrades_scsl_msg(tradesdf, ix)
+    elseif field === :scsl_limit
+        return gettrades_scsl_limit(tradesdf, ix)
     elseif field === :lp_amount
         return gettrades_lp_amount(tradesdf, ix)
     elseif field === :sp_amount
@@ -878,6 +965,14 @@ function settradesfield!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
         return settrades_lc_msg!(tradesdf, ix, value)
     elseif field === :lcl_msg
         return settrades_lcl_msg!(tradesdf, ix, value)
+    elseif field === :lcsl_id
+        return settrades_lcsl_id!(tradesdf, ix, value)
+    elseif field === :lcsl_status
+        return settrades_lcsl_status!(tradesdf, ix, value)
+    elseif field === :lcsl_msg
+        return settrades_lcsl_msg!(tradesdf, ix, value)
+    elseif field === :lcsl_limit
+        return settrades_lcsl_limit!(tradesdf, ix, value)
     elseif field === :so_id
         return settrades_so_id!(tradesdf, ix, value)
     elseif field === :so_status
@@ -910,6 +1005,14 @@ function settradesfield!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
         return settrades_sc_msg!(tradesdf, ix, value)
     elseif field === :scl_msg
         return settrades_scl_msg!(tradesdf, ix, value)
+    elseif field === :scsl_id
+        return settrades_scsl_id!(tradesdf, ix, value)
+    elseif field === :scsl_status
+        return settrades_scsl_status!(tradesdf, ix, value)
+    elseif field === :scsl_msg
+        return settrades_scsl_msg!(tradesdf, ix, value)
+    elseif field === :scsl_limit
+        return settrades_scsl_limit!(tradesdf, ix, value)
     elseif field === :lp_amount
         return settrades_lp_amount!(tradesdf, ix, value)
     elseif field === :sp_amount

@@ -372,8 +372,7 @@ function loadorbuild(
     targetconfig = _targetconfig_from_spec(spec)
 
     nntmp = classifiermodel(featurecount, labels, String(mnemonic))
-    EnvConfig.setlogpath(target_folder)
-    if isfile(nnfilename(nntmp.fileprefix))
+    if isfile(nnfilename(nntmp.fileprefix; folderpath=target_folder))
         loadspec = merge(spec, (nn_fileprefix=nntmp.fileprefix,))
         try
             return load(TrendClassifier001, loadspec; mode=mode, folder=target_folder, cfgid=cfgid)
@@ -399,8 +398,7 @@ end
 function save(cl::TrendClassifier001; mode=EnvConfig.configmode, folder::Union{Nothing, AbstractString}=nothing)
     isnothing(folder) && error("missing folder for TrendClassifier001 save; pass folder explicitly")
     target_folder = String(folder)
-    EnvConfig.setlogpath(target_folder)
-    savenn(cl.nn)
+    savenn(cl.nn; folderpath=target_folder)
     return cl
 end
 

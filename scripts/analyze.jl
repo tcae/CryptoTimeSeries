@@ -100,7 +100,7 @@ function _daily_aggregate(pairdf::AbstractDataFrame)::DataFrame
         :high => maximum => :dayhigh,
         :low => minimum => :daylow,
         :equity => first => :equitystart,
-        :equity => last => :equityend,
+        :equity => last => :equitylatest,
         nrow => :rows,
     )
     sort!(agg, :date)
@@ -112,8 +112,18 @@ function _daily_figure(agg::AbstractDataFrame, pair::AbstractString)
         return Plot([scatter(x=[], y=[], mode="lines", name="no data")])
     end
     trace = candlestick(x=agg[!, :date], open=agg[!, :dayopen], high=agg[!, :dayhigh], low=agg[!, :daylow], close=agg[!, :dayclose], name=pair)
-    return Plot([trace], Layout(xaxis_rangeslider_visible=false, title="$(pair) daily candles (click a candle to inspect the day)"))
+    equity = Float64.(agg[!, :equitylatest])
+    equitystart = equity[begin] > 0.0 ? equity[begin] : 1.0
+    gainpct = (equity ./ equitystart .- 1.0) .* 100.0
+    equitytrace = scatter(x=agg[!, :date], y=gainpct, mode="lines+markers", name="gain %", yaxis="y2", line=attr(color="rgb(230,140,0)", width=2))
+    graphwidth = max(800, 10 * nrow(agg) + 120)
+    layout = Layout(width=graphwidth, xaxis_rangeslider_visible=false,
+        yaxis2=attr(title="gain %", overlaying="y", side="right"),
+        title="$(pair) daily candles (click a candle to inspect the day)")
+    return Plot([trace, equitytrace], layout)
 end
+
+_graphwidth(barcount::Integer) = max(800, 7.5 * barcount + 120)
 
 "Return the short hover text for one minute bar; the full row is shown in the details table below the chart instead."
 function _row_hovertext(row)::String
@@ -210,7 +220,7 @@ const _LANE_MARKER_SPEC = Dict(
     (:short, :close) => (symbol="triangle-down", color="red", name="short close"),
 )
 
-function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Date)
+function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Date; selected_ix=nothing)
     if nrow(daydf) == 0
         return Plot([scatter(x=[], y=[], mode="lines", name="no data")])
     end
@@ -223,8 +233,9 @@ function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Da
     gainpct = (equity ./ equitystart .- 1.0) .* 100.0
     hovertext = [_row_hovertext(daydf[ix, :]) for ix in 1:nrow(daydf)]
 
+    barcolors = [ix == selected_ix ? "rgba(255, 170, 40, 0.85)" : "rgba(100,120,200,0.35)" for ix in 1:nrow(daydf)]
     bartrace = bar(x=x, y=(high .- low), base=low, text=hovertext, hoverinfo="text",
-        marker=attr(color="rgba(100,120,200,0.35)"), name="minute range")
+        marker=attr(color=barcolors), name="minute range")
     gaintrace = scatter(x=x, y=gainpct, mode="lines", name="gain %", yaxis="y2", line=attr(color="rgb(230,140,0)", width=2))
 
     pricerange = max(maximum(high) - minimum(low), 1e-6)
@@ -248,7 +259,9 @@ function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Da
 
     traces = PlotlyBase.AbstractTrace[bartrace, lanetraces..., gaintrace]
     layout = Layout(
+        width=_graphwidth(nrow(daydf)),
         title="$(pair) minute detail $(date)",
+        bargap=0,
         xaxis=attr(title="time"),
         yaxis=attr(title="price", side="left"),
         yaxis2=attr(title="gain %", overlaying="y", side="right"),
@@ -273,17 +286,22 @@ app.layout = html_div() do
             html_button("refresh files", id="refresh_files_button"),
         ], style=Dict("display" => "flex", "alignItems" => "center", "gap" => "8px", "marginBottom" => "6px")),
         html_div([
+            html_div("full path", style=Dict("minWidth" => "110px", "fontWeight" => "600")),
+            html_div(id="file_path_display", children="", style=Dict("flex" => "1", "fontFamily" => "monospace", "userSelect" => "text", "cursor" => "text", "whiteSpace" => "nowrap", "overflowX" => "auto", "border" => "1px solid #ccc", "padding" => "4px 6px", "borderRadius" => "3px")),
+        ], style=Dict("display" => "flex", "alignItems" => "center", "gap" => "8px", "marginBottom" => "6px")),
+        html_div([
             html_div("pair", style=Dict("minWidth" => "110px", "fontWeight" => "600")),
             dcc_dropdown(id="pair_select", options=[], placeholder="select a trading pair", style=Dict("flex" => "1")),
         ], style=Dict("display" => "flex", "alignItems" => "center", "gap" => "8px", "marginBottom" => "10px")),
-        dcc_graph(id="daily_chart"),
+        html_div([dcc_graph(id="daily_chart")], style=Dict("overflowX" => "auto", "width" => "100%")),
         html_div(id="selected_date_label", children="click a daily candle to inspect minute detail", style=Dict("margin" => "8px 0", "fontWeight" => "600")),
-        dcc_graph(id="minute_chart"),
+        html_div([dcc_graph(id="minute_chart")], style=Dict("overflowX" => "auto", "width" => "100%")),
         dash_datatable(id="minute_table", columns=_placeholder_table_columns_data()[1], data=_placeholder_table_columns_data()[2],
             tooltip_data=_placeholder_table_tooltip_data(), tooltip_delay=0, tooltip_duration=nothing,
             row_selectable="single", selected_rows=[],
-            filter_action="native", sort_action="native", fixed_rows=Dict("headers" => true),
+            page_action="none", filter_action="native", sort_action="native", fixed_rows=Dict("headers" => true),
             style_table=Dict("height" => "400px", "overflowY" => "auto", "overflowX" => "auto"),
+            style_cell_conditional=[Dict("if" => Dict("column_id" => [c for c in TRADES_V1_COLUMNS if occursin("_id", c) || occursin("_msg", c)]), "width" => "10ch", "maxWidth" => "10ch", "overflow" => "hidden", "textOverflow" => "ellipsis", "whiteSpace" => "nowrap")],
             style_data_conditional=[]),
         html_div(id="scroll_sync", style=Dict("display" => "none")),
     ])
@@ -325,6 +343,10 @@ callback!(app, [Output("pair_select", "options"), Output("pair_select", "value")
     return [(label=p, value=p) for p in pairs], AS.pair
 end
 
+callback!(app, [Output("file_path_display", "children")], [Input("file_select", "value")]) do filepath
+    return [isnothing(filepath) ? "" : String(filepath)]
+end
+
 callback!(app, [Output("daily_chart", "figure")], [Input("pair_select", "value")]) do pair
     if isnothing(pair) || isempty(String(pair)) || (nrow(AS.rawdf) == 0)
         return (Plot([scatter(x=[], y=[], mode="lines", name="no data")]),)
@@ -335,53 +357,82 @@ callback!(app, [Output("daily_chart", "figure")], [Input("pair_select", "value")
 end
 
 callback!(app, [Output("minute_chart", "figure"), Output("selected_date_label", "children"),
-        Output("minute_table", "columns"), Output("minute_table", "data"), Output("minute_table", "tooltip_data")], [Input("daily_chart", "clickData")]) do clickdata
+        Output("minute_table", "columns"), Output("minute_table", "data"), Output("minute_table", "tooltip_data"),
+        Output("minute_table", "selected_rows")], [Input("daily_chart", "clickData"),
+        Input("minute_chart", "clickData"), Input("minute_table", "active_cell")]) do daily_clickdata, minute_clickdata, active_cell
     placeholder_columns, placeholder_data = _placeholder_table_columns_data()
-    fallback = (Plot([scatter(x=[], y=[], mode="lines", name="no selection")]), "click a daily candle to inspect minute detail", placeholder_columns, placeholder_data, _placeholder_table_tooltip_data())
-    (isnothing(clickdata) || isnothing(AS.pair) || (nrow(AS.rawdf) == 0)) && return fallback
+    fallback = (Plot([scatter(x=[], y=[], mode="lines", name="no selection")]), "click a daily candle to inspect minute detail", placeholder_columns, placeholder_data, _placeholder_table_tooltip_data(), [])
+    (isnothing(daily_clickdata) && nrow(AS.daydf) == 0) && return fallback
+    (isnothing(AS.pair) || (nrow(AS.rawdf) == 0)) && return fallback
 
-    points = _cfgget(clickdata, :points, nothing)
-    (isnothing(points) || isempty(points)) && return fallback
-    xval = _cfgget(points[1], :x, nothing)
-    isnothing(xval) && return fallback
+    triggered = callback_context()
+    trigger_id = length(triggered.triggered) > 0 ? split(triggered.triggered[1].prop_id, ".")[1] : ""
+    selected_ix = nothing
+    if trigger_id == "daily_chart"
+        points = _cfgget(daily_clickdata, :points, nothing)
+        (isnothing(points) || isempty(points)) && return fallback
+        xval = _cfgget(points[1], :x, nothing)
+        isnothing(xval) && return fallback
+        date = Date(String(xval)[1:10])
+    elseif trigger_id == "minute_chart"
+        date = Dates.Date(AS.daydf[begin, :opentime])
+        points = _cfgget(minute_clickdata, :points, nothing)
+        if !isnothing(points) && !isempty(points)
+            pt = points[1]
+            curveix = _cfgget(pt, :curveNumber, nothing)
+            pointix = _cfgget(pt, :pointNumber, nothing)
+            if !isnothing(curveix) && Int(curveix) == 0 && !isnothing(pointix)
+                selected_ix = Int(pointix)
+            end
+        end
+    else
+        rowix = _cfgget(active_cell, :row, nothing)
+        (isnothing(rowix) || nrow(AS.daydf) == 0) && return fallback
+        selected_ix = Int(rowix)
+        date = Dates.Date(AS.daydf[begin, :opentime])
+    end
 
-    date = Date(String(xval)[1:10])
     pairdf = @view AS.rawdf[AS.rawdf[!, :pair] .== AS.pair, :]
     daydf = sort(DataFrame(pairdf[Dates.Date.(pairdf[!, :opentime]) .== date, :]), :opentime)
     AS.daydf = daydf
-    fig = _minute_figure(daydf, AS.pair, date)
+    if !isnothing(selected_ix) && !(0 <= selected_ix < nrow(daydf))
+        selected_ix = nothing
+    end
+    fig = _minute_figure(daydf, AS.pair, date; selected_ix=selected_ix)
     label = "$(AS.pair) — $(date) ($(nrow(daydf)) minutes)"
     if (nrow(daydf) > 0) && all(==(0f0), daydf[!, :equity])
         label *= " ⚠ equity is flat/zero for this file — likely a TrendDetector gains-only replay (trades-td.arrow) that bypasses Xch account bookkeeping; load a tradesim-replay/trades-replay.arrow or trades-ts.arrow file for a populated equity/gain line"
     end
     tablecolumns, tabledata = _table_columns_data(daydf)
     tooltipdata = _table_tooltip_data(daydf)
-    return fig, label, tablecolumns, tabledata, tooltipdata
-end
-
-callback!(app, [Output("minute_table", "selected_rows")], [Input("minute_chart", "hoverData")]) do hoverdata
-    isnothing(hoverdata) && return ([],)
-    points = _cfgget(hoverdata, :points, nothing)
-    (isnothing(points) || isempty(points)) && return ([],)
-    pt = points[1]
-    # only the minute-range bar trace (curveNumber 0) drives table row selection
-    curveix = _cfgget(pt, :curveNumber, nothing)
-    (isnothing(curveix) || (Int(curveix) != 0)) && return ([],)
-    pointix = _cfgget(pt, :pointNumber, nothing)
-    isnothing(pointix) && return ([],)
-    ix = Int(pointix)
-    return ((0 <= ix < nrow(AS.daydf)) ? [ix] : [],)
+    selected_rows = isnothing(selected_ix) ? [] : [selected_ix]
+    return fig, label, tablecolumns, tabledata, tooltipdata, selected_rows
 end
 
 # `style_data_conditional`'s `state: selected` only matches cell click-drag selection, not
 # row_selectable rows, so the active row highlight has to be recomputed from row_index instead.
-callback!(app, [Output("minute_table", "style_data_conditional")], [Input("minute_table", "selected_rows")]) do selected_rows
+callback!(app, [Output("minute_table", "style_data_conditional")], [Input("minute_table", "selected_rows"), Input("minute_chart", "hoverData")]) do selected_rows, hoverdata
     rows = isnothing(selected_rows) ? Int[] : collect(selected_rows)
-    return ([Dict("if" => Dict("row_index" => idx), "backgroundColor" => "rgba(255, 210, 110, 0.55)", "border" => "1px solid rgb(200, 140, 0)") for idx in rows],)
+    hoverrows = Int[]
+    if !isnothing(hoverdata)
+        points = _cfgget(hoverdata, :points, nothing)
+        if !isnothing(points) && !isempty(points)
+            pt = points[1]
+            curveix = _cfgget(pt, :curveNumber, nothing)
+            pointix = _cfgget(pt, :pointNumber, nothing)
+            if !isnothing(curveix) && Int(curveix) == 0 && !isnothing(pointix)
+                push!(hoverrows, Int(pointix))
+            end
+        end
+    end
+    styles = Dict{String, Any}[]
+    append!(styles, [Dict("if" => Dict("row_index" => idx), "backgroundColor" => "rgba(255, 210, 110, 0.55)", "border" => "1px solid rgb(200, 140, 0)") for idx in rows])
+    append!(styles, [Dict("if" => Dict("row_index" => idx), "backgroundColor" => "rgba(150, 210, 255, 0.4)") for idx in hoverrows if !(idx in rows)])
+    return (styles,)
 end
 
-"Always serve on 127.0.0.1:8060."
-function _run_analyze_server(app; host::String="127.0.0.1", port::Int=8060)
+"Always serve on 127.0.0.1:8050."
+function _run_analyze_server(app; host::String="127.0.0.1", port::Int=8050)
     println("$(EnvConfig.now()) starting analyze server on $(host):$(port)")
     run_server(app, host, port, debug=false)
 end

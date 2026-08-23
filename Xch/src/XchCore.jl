@@ -9,7 +9,7 @@ using Dates, DataFrames, DataAPI, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets, TSM
 using XchAdapter: XchAdapterCache
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!
 import XchAdapter: normalize_order_status
 import Ohlcv: intervalperiod
 
@@ -74,10 +74,11 @@ mutable struct XchCache
     currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mc::Dict # MC = module constants
+    lastsyncedopentime::Dict{String, Dates.DateTime}  # per-base opentime last processed by sync_latest_trades_rows!
     function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        xc = new(Dict{String, Ohlcv.OhlcvData}(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict())
+        xc = new(Dict{String, Ohlcv.OhlcvData}(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict(), Dict{String, Dates.DateTime}())
         syminfodf = if hasproperty(rawcache(xc.bc), :syminfodf)
             getproperty(rawcache(xc.bc), :syminfodf)
         else
@@ -286,6 +287,26 @@ end
 "Return latest adapter websocket balances heartbeat timestamp when available."
 function wsbalancesheartbeat(xc::XchCache)
     return wsbalancesheartbeat(xc.bc)
+end
+
+"""
+Return true when `orderid` is still open, preferring a fresh websocket order
+snapshot and falling back to a direct (HTTP) order lookup when the websocket
+snapshot carries no data for this order (adapter has no websocket support, is
+disconnected, or the order predates the current snapshot).
+"""
+function _orderstillopen(xc::XchCache, orderid::AbstractString)::Bool
+    if !isnothing(wsordersheartbeat(xc))
+        wsdf = wsordersnapshot(xc)
+        if "orderid" in names(wsdf)
+            wsix = findfirst(==(String(orderid)), String.(wsdf[!, :orderid]))
+            if !isnothing(wsix)
+                return openstatus(String(wsdf[wsix, :status]))
+            end
+        end
+    end
+    info = order(xc.bc, orderid)
+    return !isnothing(info) && hasproperty(info, :status) && openstatus(String(info.status))
 end
 
 """
@@ -1178,8 +1199,13 @@ function _assetssnapshot_from_balances_positions(xc::XchCache, balancesdf::Abstr
             end
             lqty = max(0f0, (prow.long_qty))
             sqty = max(0f0, (prow.short_qty))
-            if lqty > assets[qix, :free]
-                assets[qix, :free] = lqty
+            # positionsnapshot reports the TOTAL exposure (free+locked combined, e.g. once
+            # part of a position is reserved for a pending reduce-only order). Only top up
+            # the shortfall against the existing free+locked total; comparing against
+            # :free alone double-counted the already-reserved (:locked) portion.
+            existingtotal = assets[qix, :free] + assets[qix, :locked]
+            if lqty > existingtotal
+                assets[qix, :free] += lqty - existingtotal
             end
             if sqty > assets[qix, :short]
                 assets[qix, :short] = sqty
@@ -1363,7 +1389,11 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
         end
     end
     freequote = max(0.0, freequote)
-    @assert freequote <= capacity.equity_quote + 1e-6 "account_status freequote=$(freequote) exceeds equity_quote=$(capacity.equity_quote) source=$(capacity.source)"
+    # bc.assets is Float32-backed; tolerate Float32 rounding noise (~1e-5 relative) that
+    # accumulates across many fills/rebalances, while still catching genuine invariant
+    # violations (which are orders of magnitude larger in practice).
+    tolerance = max(1e-6, 1e-4 * abs(capacity.equity_quote))
+    @assert freequote <= capacity.equity_quote + tolerance "account_status freequote=$(freequote) exceeds equity_quote=$(capacity.equity_quote) source=$(capacity.source)"
     freemargin = min(max(0.0, capacity.available_opening_quote), capacity.equity_quote)
     return (
         balances=balancesdf,
@@ -1417,19 +1447,14 @@ end
 " tradesdf limit price == 0f0 means adaptive maker price that follows the market price "
 _rowlimitprice(value)::Union{Nothing, Real} = value == 0 ? nothing : value
 
-function _implicitflipplan(tradesdf::DataFrame, ix::Integer, action::Symbol, open_limitprice)
+"""Return the opposite position side's close lane info for `action`, or `needed=false` if none is held."""
+function _oppositeclosestate(tradesdf::DataFrame, ix::Integer, action::Symbol)
     if action == :long_open
-        closeqty = tradesdf[ix, :sp_amount]
-        closelimit = (tradesdf[ix, :sc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : min(tradesdf[ix, :sc_limit], open_limitprice)
-        # closelimit = 0f0 means adaptive maker price that follows the market price
-        return (needed=closeqty > 0.0, positionside=:short, closeqty=closeqty, closelimit=closelimit, close_id_col=:sc_id, close_status_col=:sc_status, close_filled_col=:scl_filled, close_pavg_col=:scl_pavg)
+        return (needed=(tradesdf[ix, :sp_amount] > 0f0), close_id_col=:sc_id)
     elseif action == :short_open
-        closeqty = tradesdf[ix, :lp_amount]
-        closelimit = (tradesdf[ix, :lc_limit] == 0f0) || (open_limitprice == 0f0) ? nothing : max(tradesdf[ix, :lc_limit], open_limitprice)
-        # closelimit = 0f0 means adaptive maker price that follows the market price
-        return (needed=closeqty > 0.0, positionside=:long, closeqty=closeqty, closelimit=closelimit, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lcl_filled, close_pavg_col=:lcl_pavg)
+        return (needed=(tradesdf[ix, :lp_amount] > 0f0), close_id_col=:lc_id)
     end
-    return (needed=false, positionside=:long, closeqty=0.0, closelimit=open_limitprice, close_id_col=:lc_id, close_status_col=:lc_status, close_filled_col=:lcl_filled, close_pavg_col=:lcl_pavg)
+    return (needed=false, close_id_col=:lc_id)
 end
 
 function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, action::Symbol, message::AbstractString)
@@ -1448,10 +1473,6 @@ function _rejectedrequest!(xc::XchCache, tradesdf::DataFrame, ix::Integer, actio
         TSM.settrades_msg!(tradesdf, ix, shortclose, logged)
     end
     return logged
-end
-
-@inline function _is_open_label(label)::Bool
-    return label in (longopen, longstrongopen, shortopen, shortstrongopen)
 end
 
 function _row_has_position_amount(tradesdf::DataFrame, ix::Integer)::Bool
@@ -1488,11 +1509,30 @@ function _carry_lastopentrade_from_previous!(tradesdf::DataFrame, ix::Integer)
     return 
 end
 
+"""
+Carry `lol_pavg`/`sol_pavg` forward from the previous row while a position stays open.
+Unlike `lcl_pavg`/`scl_pavg` (last close, valid only for the tick a close fills), the open
+price must remain readable for as long as `lp_amount`/`sp_amount` stays positive - closes
+and gains compilation both read it as the position's entry price, not just this tick's fill.
+"""
+function _carry_openpavg_from_previous!(tradesdf::DataFrame, ix::Integer)
+    if ix <= 1
+        return nothing
+    end
+    if (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :lol_pavg] <= 0f0)
+        prevpavg = tradesdf[ix - 1, :lol_pavg]
+        (prevpavg > 0f0) && TSM.settrades_last_pavg!(tradesdf, ix, longopen, prevpavg)
+    end
+    if (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :sol_pavg] <= 0f0)
+        prevpavg = tradesdf[ix - 1, :sol_pavg]
+        (prevpavg > 0f0) && TSM.settrades_last_pavg!(tradesdf, ix, shortopen, prevpavg)
+    end
+    return nothing
+end
+
 "Synchronize one trades row's exchange feedback columns from current order ids."
 function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent::Bool=true)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-
-    row_is_open_intent = _is_open_label(tradesdf[ix, :label])
 
     _lane_orderid(v) = begin
         if ismissing(v) || isnothing(v)
@@ -1504,16 +1544,25 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
 
     _isopenstatuslabel(s::AbstractString) = lowercase(strip(String(s))) in ("submitted", "new", "partiallyfilled", "untriggered", "open")
 
-    for (idcol, stcol, filledcol, avgcol, msgcol, amountcol, poscol) in [
-        (:lo_id, :lo_status, :lol_filled, :lol_pavg, :lo_msg, :lo_amount, :lp_amount),
-        (:lc_id, :lc_status, :lcl_filled, :lcl_pavg, :lc_msg, :lc_amount, :lp_amount),
-        (:so_id, :so_status, :sol_filled, :sol_pavg, :so_msg, :so_amount, :sp_amount),
-        (:sc_id, :sc_status, :scl_filled, :scl_pavg, :sc_msg, :sc_amount, :sp_amount),
+    # Both legs of a close bracket report their fill into the shared last-close columns, so
+    # `lastidcol` records which leg produced it.
+    for (idcol, stcol, filledcol, avgcol, msgcol, amountcol, poscol, lastidcol, laststcol) in [
+        (:lo_id, :lo_status, :lol_filled, :lol_pavg, :lo_msg, :lo_amount, :lp_amount, :lol_id, :lol_status),
+        (:lc_id, :lc_status, :lcl_filled, :lcl_pavg, :lc_msg, :lc_amount, :lp_amount, :lcl_id, :lcl_status),
+        (:lcsl_id, :lcsl_status, :lcl_filled, :lcl_pavg, :lcsl_msg, :lc_amount, :lp_amount, :lcl_id, :lcl_status),
+        (:so_id, :so_status, :sol_filled, :sol_pavg, :so_msg, :so_amount, :sp_amount, :sol_id, :sol_status),
+        (:sc_id, :sc_status, :scl_filled, :scl_pavg, :sc_msg, :sc_amount, :sp_amount, :scl_id, :scl_status),
+        (:scsl_id, :scsl_status, :scl_filled, :scl_pavg, :scsl_msg, :sc_amount, :sp_amount, :scl_id, :scl_status),
     ]
         oid = _lane_orderid(tradesdf[ix, idcol])
 
         # For a new row, lane id can be defaulted to `none`; reconcile from previous open lane state.
-        if isnothing(oid) && (ix > 1)
+        # Skip this once this row already recorded its own close (normal fill or forced
+        # liquidation): a row can be revisited many times while OHLCV data for this pair is
+        # gapped (ensuretradesrow! reuses the same row until the next candle arrives), and
+        # `ix-1` then reflects the state *before* this row's close, not the previous tick -
+        # resurrecting that stale open id would clobber the close just recorded on this row.
+        if isnothing(oid) && (ix > 1) && (String(tradesdf[ix, laststcol]) != "closed")
             previd = _lane_orderid(tradesdf[ix - 1, idcol])
             prevstatus_raw = tradesdf[ix - 1, stcol]
             @assert !ismissing(prevstatus_raw) && !isnothing(prevstatus_raw) "Schema violation: $(stcol) must be non-missing at ix=$(ix-1), pair=$(tradesdf[ix - 1, :pair]), opentime=$(tradesdf[ix - 1, :opentime])"
@@ -1551,7 +1600,8 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             executed = (info.executedqty)
             @assert !ismissing(executed) && !isnothing(executed) "Schema violation: adapter executedqty is missing for orderid=$(oid), lane=$(idcol), ix=$(ix), pair=$(tradesdf[ix, :pair])"
             TSM.settradesfield!(tradesdf, ix, filledcol, max(0.0, executed))
-            if row_is_open_intent && (executed > 0.0)
+            # An open lane fill is what dates the position, independent of this tick's label.
+            if (idcol in (:lo_id, :so_id)) && (executed > 0.0)
                 TSM.settrades_lastopentrade!(tradesdf, ix, tradesdf[ix, :opentime])
             end
 
@@ -1577,6 +1627,10 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             end
         end
 
+        if status in ("closed", "rejected")
+            TSM.settradesfield!(tradesdf, ix, lastidcol, oid)
+            TSM.settradesfield!(tradesdf, ix, laststcol, status)
+        end
         if status in ("closed", "cancelled", "rejected", "none")
             TSM.settradesfield!(tradesdf, ix, idcol, NO_ORDER_ID)
             if amountcol in propertynames(tradesdf)
@@ -1585,6 +1639,27 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
         end
     end
     return tradesdf
+end
+
+"""
+Reflect one adapter-reported forced-close event (`drainliquidations!`) into the close lane
+columns of one Trades row: the superseded resting close/stop order (if any) is cancelled
+(`lc_id`/`sc_id`, `lc_status`/`sc_status`, `lc_amount`/`sc_amount`), while the last-lane
+columns record the actual execution (`lcl_status`/`scl_status`, `lcl_filled`/`scl_filled`,
+`lcl_pavg`/`scl_pavg`, `lcl_msg`/`scl_msg`).
+"""
+function _applyliquidationevent!(tradesdf::DataFrame, ix::Integer, ev::NamedTuple)::Nothing
+    long = ev.positionside == :long
+    if ev.hadpendingorder
+        TSM.settradesfield!(tradesdf, ix, long ? :lc_id : :sc_id, NO_ORDER_ID)
+        TSM.settradesfield!(tradesdf, ix, long ? :lc_status : :sc_status, "cancelled")
+        TSM.settradesfield!(tradesdf, ix, long ? :lc_amount : :sc_amount, 0f0)
+    end
+    TSM.settradesfield!(tradesdf, ix, long ? :lcl_status : :scl_status, "closed")
+    TSM.settradesfield!(tradesdf, ix, long ? :lcl_filled : :scl_filled, Float32(ev.qty))
+    TSM.settradesfield!(tradesdf, ix, long ? :lcl_pavg : :scl_pavg, Float32(ev.price))
+    TSM.settradesfield!(tradesdf, ix, long ? :lcl_msg : :scl_msg, String(ev.reason))
+    return nothing
 end
 
 """
@@ -1638,6 +1713,13 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         end
     end
 
+    liquidations_by_base = Dict{String, Vector{NamedTuple}}()
+    for ev in drainliquidations!(xc.bc)
+        bq = basequote(String(ev.symbol))
+        isnothing(bq) && continue
+        push!(get!(() -> NamedTuple[], liquidations_by_base, uppercase(String(bq.basecoin))), ev)
+    end
+
     rowsbybase = Dict{String, NamedTuple}()
 
     for base in bases_to_sync
@@ -1648,6 +1730,18 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             size(odf, 1) > 0 ? odf[Ohlcv.ix(o), :opentime] : (isnothing(xc.currentdt) ? xc.startdt : xc.currentdt)
         else
             isnothing(xc.currentdt) ? xc.startdt : xc.currentdt
+        end
+
+        # No candle advanced for this pair since the last time this function synced it (a
+        # genuine data gap, e.g. a classifier-partition boundary or exchange downtime): treat
+        # this tick as "no contact" for this pair and leave its resting orders/position
+        # completely untouched rather than re-processing the same stale row - repeated
+        # reprocessing can otherwise resurrect stale order state and corrupt the eventual
+        # close price once data resumes.
+        # A drained liquidation event must still be applied even while frozen, or it is lost -
+        # drainliquidations! above already removed it from the shared adapter-side queue.
+        if (get(xc.lastsyncedopentime, base, nothing) == currentdt) && !haskey(liquidations_by_base, base)
+            continue
         end
 
         tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt) # add a new row to trades df
@@ -1669,23 +1763,48 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         # Sync order statuses for all lanes
         order_status(xc, tdf, rowix; auditevent=false)
 
+        # Reflect any forced closes (margin-call liquidation, exchange-side stop) since a
+        # forced close never fills our own tracked resting order, so order_status alone
+        # cannot report its execution.
+        explicitliquidationsides = Set{Symbol}()
+        for ev in get(liquidations_by_base, base, NamedTuple[])
+            _applyliquidationevent!(tdf, rowix, ev)
+            push!(explicitliquidationsides, ev.positionside)
+        end
+
+        prevlqty = rowix > 1 ? tdf[rowix - 1, :lp_amount] : 0f0
+        prevsqty = rowix > 1 ? tdf[rowix - 1, :sp_amount] : 0f0
+
         # Position amounts from portfolio snapshot
-        if haskey(pos_by_coin, base)
-            lqty, sqty = pos_by_coin[base]
-            TSM.settrades_lp_amount!(tdf, rowix, lqty)
-            TSM.settrades_sp_amount!(tdf, rowix, sqty)
+        newlqty, newsqty = if haskey(pos_by_coin, base)
+            pos_by_coin[base]
         else
             bix = _hascol(balancesdf, :coin) ? findfirst(==(base), uppercase.(String.(balancesdf[!, :coin]))) : nothing
             if !isnothing(bix)
                 # Fallback when adapter positionsnapshot is unavailable.
                 # No-liability policy: treat base inventory as long-only.
                 free_val  = _hascol(balancesdf, :free) ? (balancesdf[bix, :free]) : 0f0
-                TSM.settrades_lp_amount!(tdf, rowix, max(0f0, free_val))
-                TSM.settrades_sp_amount!(tdf, rowix, 0f0)
+                (max(0f0, free_val), 0f0)
+            else
+                (tdf[rowix, :lp_amount], tdf[rowix, :sp_amount])
             end
+        end
+        TSM.settrades_lp_amount!(tdf, rowix, newlqty)
+        TSM.settrades_sp_amount!(tdf, rowix, newsqty)
+
+        # A position that vanished without our own tracked close order having closed it
+        # (and without an adapter-reported liquidation event) was force-closed by the
+        # exchange; approximate its execution with the current mark price.
+        markprice = tdf[rowix, :close]
+        if !(:long in explicitliquidationsides) && (prevlqty > 0f0) && (newlqty == 0f0) && (String(tdf[rowix, :lc_status]) != "closed") && (markprice > 0f0)
+            _applyliquidationevent!(tdf, rowix, (positionside=:long, qty=prevlqty, price=markprice, hadpendingorder=String(tdf[rowix, :lc_id]) != NO_ORDER_ID, reason="liquidation"))
+        end
+        if !(:short in explicitliquidationsides) && (prevsqty > 0f0) && (newsqty == 0f0) && (String(tdf[rowix, :sc_status]) != "closed") && (markprice > 0f0)
+            _applyliquidationevent!(tdf, rowix, (positionside=:short, qty=prevsqty, price=markprice, hadpendingorder=String(tdf[rowix, :sc_id]) != NO_ORDER_ID, reason="liquidation"))
         end
 
         _carry_lastopentrade_from_previous!(tdf, rowix)
+        _carry_openpavg_from_previous!(tdf, rowix)
 
         # Account snapshot columns
         TSM.settrades_equity!(tdf, rowix, acct.equity_quote)
@@ -1693,9 +1812,77 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         TSM.settrades_freequote!(tdf, rowix, acct.free_quote)
 
         rowsbybase[base] = (tradesdf=tdf, rowix=rowix)
+        xc.lastsyncedopentime[base] = currentdt
     end
 
     return rowsbybase
+end
+
+"""
+Maintain the resting close bracket of one position side from the Trades row.
+
+Xch does not read the trade label for closes: `<lane>_amount > 0` is the request to hold a
+resting close, and a positive `<lane>sl_limit` upgrades it into a bracket whose second leg
+is the protective stop. Both legs cover the same quantity and share one exchange-side
+reservation, so the stop leg carries no amount of its own. `<lane>_limit == 0` keeps the
+close leg at an adaptive maker price, while `<lane>sl_limit == 0` means no stop is wanted.
+"""
+function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer, symbol::AbstractString, positionside::Symbol)
+    long = positionside == :long
+    posamount = tradesdf[ix, long ? :lp_amount : :sp_amount]
+    closeamount = tradesdf[ix, long ? :lc_amount : :sc_amount]
+    ((posamount > 0f0) && (closeamount > 0f0)) || return nothing
+    qty = min(closeamount, posamount)
+    qty > 0f0 || return nothing
+
+    bq = _pairfromtradesrow(tradesdf, ix)
+    minqty = minimumbasequantity(xc, bq.basecoin, tradesdf[ix, :close])
+    closeaction = long ? :long_close : :short_close
+    if isnothing(minqty)
+        _rejectedrequest!(xc, tradesdf, ix, closeaction, "minimum base quantity unavailable")
+        return nothing
+    end
+    if qty < minqty
+        _rejectedrequest!(xc, tradesdf, ix, closeaction, "base amount below minimum quantity")
+        return nothing
+    end
+
+    _laneorderid(raw) = let sid = strip(String(raw))
+        (isempty(sid) || (lowercase(sid) == NO_ORDER_ID)) ? nothing : sid
+    end
+    _resolvedid(raw) = raw isa AbstractString ? String(raw) : String(getproperty(raw, :orderid))
+
+    closeidcol = long ? :lc_id : :sc_id
+    closestcol = long ? :lc_status : :sc_status
+    closelane = long ? "lc" : "sc"
+    closelimit = _rowlimitprice(tradesdf[ix, long ? :lc_limit : :sc_limit])
+    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane)
+    if isnothing(oid)
+        _rejectedrequest!(xc, tradesdf, ix, long ? :long_close : :short_close, "exchange returned no close order id")
+    else
+        tradesdf[ix, closeidcol] = _resolvedid(oid)
+        tradesdf[ix, closestcol] = "submitted"
+    end
+
+    stopidcol = long ? :lcsl_id : :scsl_id
+    stopstcol = long ? :lcsl_status : :scsl_status
+    stoplimit = tradesdf[ix, long ? :lcsl_limit : :scsl_limit]
+    stoplimit > 0f0 || return nothing
+    soid = upsertcloseorder!(xc.bc, symbol, positionside, qty, Float32(stoplimit); existing_orderid=_laneorderid(tradesdf[ix, stopidcol]), maker=true, reduceonly=true, lane=long ? "lcsl" : "scsl")
+    if isnothing(soid)
+        (verbosity >= 1) && @warn "stop-loss bracket leg rejected" symbol positionside
+        return nothing
+    end
+    tradesdf[ix, stopidcol] = _resolvedid(soid)
+    tradesdf[ix, stopstcol] = "submitted"
+    return nothing
+end
+
+"Maintain the resting close bracket of both position sides from the Trades row."
+function _ensureclosebracket!(xc::XchCache, tradesdf::DataFrame, ix::Integer, symbol::AbstractString)
+    _ensureclosebracketside!(xc, tradesdf, ix, symbol, :long)
+    _ensureclosebracketside!(xc, tradesdf, ix, symbol, :short)
+    return nothing
 end
 
 "Evaluate and execute one row-level order request from the Trades DataFrame."
@@ -1706,70 +1893,26 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     base = pair.basecoin
     quotecoin = pair.quotecoin
     symbol = symboltoken(xc, base, quotecoin)
-    labelval = tradesdf[ix, :label]
-    action = if labelval in (longopen, longstrongopen)
+    # Xch reads amounts and limits only; trade labels stay Trade/TradingStrategy vocabulary.
+    _ensureclosebracket!(xc, tradesdf, ix, symbol)
+    longopenamount = tradesdf[ix, :lo_amount]
+    shortopenamount = tradesdf[ix, :so_amount]
+    @assert !((longopenamount > 0f0) && (shortopenamount > 0f0)) "opposite open requests in one row: lo_amount=$(longopenamount), so_amount=$(shortopenamount), pair=$(tradesdf[ix, :pair]), opentime=$(tradesdf[ix, :opentime])"
+    action = if longopenamount > 0f0
         :long_open
-    elseif (labelval in (longclose, longstrongclose)) && (tradesdf[ix, :lp_amount] > 0f0)
-        :long_close
-    elseif labelval in (shortopen, shortstrongopen)
+    elseif shortopenamount > 0f0
         :short_open
-    elseif (labelval in (shortclose, shortstrongclose)) && (tradesdf[ix, :sp_amount] > 0f0)
-        :short_close
     else
         :none
     end
-    action == :none && return (accepted=false, action=:none, reason="no actionable label")
+    action == :none && return (accepted=false, action=:none, reason="no open amount requested")
 
-    limitcol = if action == :long_open
-        :lo_limit
-    elseif action == :long_close
-        :lc_limit
-    elseif action == :short_open
-        :so_limit
-    else  # :short_close
-        :sc_limit
-    end
-    orderamountcol = if action in [:long_open, :long_close]
-        action == :long_open ? :lo_amount : :lc_amount
-    else
-        action == :short_open ? :so_amount : :sc_amount
-    end
-    idcol = if action == :long_open
-        :lo_id
-    elseif action == :long_close
-        :lc_id
-    elseif action == :short_open
-        :so_id
-    else  # :short_close
-        :sc_id
-    end
-    stcol = if action == :long_open
-        :lo_status
-    elseif action == :long_close
-        :lc_status
-    elseif action == :short_open
-        :so_status
-    else  # :short_close
-        :sc_status
-    end
-    filledcol = if action == :long_open
-        :lol_filled
-    elseif action == :long_close
-        :lcl_filled
-    elseif action == :short_open
-        :sol_filled
-    else  # :short_close
-        :scl_filled
-    end
-    avgcol = if action == :long_open
-        :lol_pavg
-    elseif action == :long_close
-        :lcl_pavg
-    elseif action == :short_open
-        :sol_pavg
-    else  # :short_close
-        :scl_pavg
-    end
+    limitcol = action == :long_open ? :lo_limit : :so_limit
+    orderamountcol = action == :long_open ? :lo_amount : :so_amount
+    idcol = action == :long_open ? :lo_id : :so_id
+    stcol = action == :long_open ? :lo_status : :so_status
+    filledcol = action == :long_open ? :lol_filled : :sol_filled
+    avgcol = action == :long_open ? :lol_pavg : :sol_pavg
 
     limitprice = _rowlimitprice(tradesdf[ix, limitcol])
     orderamount = tradesdf[ix, orderamountcol]
@@ -1780,6 +1923,10 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     end
 
     minqty = minimumbasequantity(xc, base, tradesdf[ix, :close])
+    if isnothing(minqty)
+        _rejectedrequest!(xc, tradesdf, ix, action, "minimum base quantity unavailable")
+        return (accepted=false, action=action, reason="minimum_qty_unavailable")
+    end
     if orderamount < minqty
         _rejectedrequest!(xc, tradesdf, ix, action, "base amount below minimum quantity")
         # _rejectedrequest!(xc, tradesdf, ix, action, "base amount=$(orderamount) below minimum base qty $(minqty) for pair=$(base)-$(quotecoin)")
@@ -1806,81 +1953,33 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
     end
 
     oid = nothing
-    try
-        if action in [:long_open, :short_open]
-            flip = _implicitflipplan(tradesdf, ix, action, limitprice)
-            closeoid = nothing
-            if flip.needed
-                existing_closeid = _existing_orderid(tradesdf[ix, flip.close_id_col])
-                closeoid = upsertcloseorder!(xc.bc, symbol, flip.positionside, flip.closeqty, flip.closelimit; existing_orderid=existing_closeid, maker=true, reduceonly=true)
-
-                if isnothing(closeoid)
-                    _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no close order id")
-                    # return (accepted=false, action=action, reason="missing_close_orderid") # not applicable because the order can be executed in the meanwhile, the open order still need tobe placed 
-                else
-                    closeoid = _orderid(closeoid)
-                    @assert !isnothing(closeoid) "close order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin); result=$(flip.close_id_col)"
-                    tradesdf[ix, flip.close_id_col] = closeoid
-                    tradesdf[ix, flip.close_status_col] = "submitted"
-                end
-            end
-
-            existing_openid = _existing_orderid(tradesdf[ix, idcol])
-            openside = action == :long_open ? :long : :short
-            oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
-            if isnothing(oid)
-                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id")
-                return (accepted=false, action=action, reason="missing_open_orderid")
-            end
-            oid = _orderid(oid)
-            @assert !isnothing(oid) "open order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
-            tradesdf[ix, idcol] = oid
-            tradesdf[ix, stcol] = "submitted"
-            if flip.needed
-                _ = directsequence!(xc.bc, closeoid, oid)
-            end
-        elseif action == :long_close
-            existing_closeid = _existing_orderid(tradesdf[ix, idcol])
-            oid = upsertcloseorder!(xc.bc, symbol, :long, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
-            if isnothing(oid)
-                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for long close")
-                return (accepted=false, action=action, reason="missing_orderid")
-            end
-            oid = _orderid(oid)
-            @assert !isnothing(oid) "close order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
-            tradesdf[ix, idcol] = oid
-            tradesdf[ix, stcol] = "submitted"
-        elseif action == :short_close
-            existing_closeid = _existing_orderid(tradesdf[ix, idcol])
-            oid = upsertcloseorder!(xc.bc, symbol, :short, orderamount, limitprice; existing_orderid=existing_closeid, maker=true, reduceonly=true)
-            if isnothing(oid)
-                _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no order id for short close")
-                return (accepted=false, action=action, reason="missing_orderid")
-            end
-            oid = _orderid(oid)
-            @assert !isnothing(oid) "close order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
-            tradesdf[ix, idcol] = oid
-            tradesdf[ix, stcol] = "submitted"
-        else # no action
-            return (accepted=true, action=action, reason="no_action")
+    if action in [:long_open, :short_open]
+        # The one-position-at-a-time rule: an opposite position must be fully closed before
+        # this side opens. `_ensureclosebracket!` above already keeps that close resting;
+        # just gate on the lane id it maintains instead of resubmitting a second close here.
+        opposite = _oppositeclosestate(tradesdf, ix, action)
+        closeoid = opposite.needed ? _existing_orderid(tradesdf[ix, opposite.close_id_col]) : nothing
+        if !isnothing(closeoid) && _orderstillopen(xc, closeoid)
+            TSM.settrades_msg!(tradesdf, ix, action == :long_open ? longopen : shortopen, "awaiting opposite close before open")
+            return (accepted=false, action=action, reason="awaiting_close")
         end
-    catch err
-        err isa InterruptException && rethrow(err)
-        logged = log_trading_issue(xc, exchange(xc), sprint(showerror, err))
-        if action == :long_open
-            TSM.settrades_msg!(tradesdf, ix, longopen, logged)
-            TSM.settrades_status!(tradesdf, ix, longopen, "rejected")
-        elseif action == :long_close
-            TSM.settrades_msg!(tradesdf, ix, longclose, logged)
-            TSM.settrades_status!(tradesdf, ix, longclose, "rejected")
-        elseif action == :short_open
-            TSM.settrades_msg!(tradesdf, ix, shortopen, logged)
-            TSM.settrades_status!(tradesdf, ix, shortopen, "rejected")
-        else  # :short_close
-            TSM.settrades_msg!(tradesdf, ix, shortclose, logged)
-            TSM.settrades_status!(tradesdf, ix, shortclose, "rejected")
+
+        existing_openid = _existing_orderid(tradesdf[ix, idcol])
+        openside = action == :long_open ? :long : :short
+        oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
+        if isnothing(oid)
+            _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id")
+            return (accepted=false, action=action, reason="missing_open_orderid")
         end
-        return (accepted=false, action=action, reason="exchange_error", error=sprint(showerror, err))
+        oid = _orderid(oid)
+        @assert !isnothing(oid) "open order result must provide orderid for action=$(action), pair=$(base)-$(quotecoin)"
+        tradesdf[ix, idcol] = oid
+        tradesdf[ix, stcol] = "submitted"
+        if !isnothing(closeoid)
+            _ = directsequence!(xc.bc, closeoid, oid)
+        end
+    else # no action
+        return (accepted=true, action=action, reason="no_action")
     end
 
     return (accepted=true, action=action, orderid=oid)

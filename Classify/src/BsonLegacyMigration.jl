@@ -86,8 +86,8 @@ function _repair_legacy_enum_payloads!(obj)::Int
     return repaired
 end
 
-function _loadnn_with_legacy_enum_compat(filename::String)
-    path = nnfilename(filename)
+function _loadnn_with_legacy_enum_compat(filename::String; folderpath::AbstractString=EnvConfig.logfolder())
+    path = nnfilename(filename; folderpath=folderpath)
     raw = BSON.parse(path)
     repaired = _repair_legacy_enum_payloads!(raw)
     repaired > 0 || error("legacy enum payload repair not applicable")

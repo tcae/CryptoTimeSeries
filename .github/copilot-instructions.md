@@ -23,7 +23,7 @@ applyTo: '*.jl'
 - the following workspace local packages should be maintained and build the architecture of CryptoTimeSeries:
     - EnvConfig - for environment configuration management and utilities (e.g., loading environment variables, managing configuration files). It is not dependent from other packages of the workspace
     - Xch - exchange agnostic implementation of the Exchange interface tailored to serve the trading purpose of the CryptoTimeSeries project. It encapsulates exchange specific implementations like Bybit, KrakenSpot and KrakenFutures and provides a unified interface to the rest of the workspace.
-      - Only one order shall be open at a time for a trading pair. If an open trading request is issued, the opposite trading position shall be first closed, which shall be handled asynchronously per adapter websocket handling to avoid waiting for the minute trade loop.
+      - Only one order or bracket order shall be open at a time for a trading pair. If an open trading request is issued, the opposite trading position shall be first closed, which shall be handled asynchronously per adapter websocket handling to avoid waiting for the minute trade loop.
       - Only the available amount of equity shall be used for trading or any maxium budget constraint whatever is lower.
       - Leverages for futures and margin trading are defined in exchange specific configuration files and are static. 
       - Also defined in exchange specific configuration files is the maximum order size, which will be translated into an iceberg order sequence of maximum size orders if a Trade order exceeds such exchange specific maximum order size.
@@ -61,3 +61,4 @@ applyTo: '*.jl'
   - Experiment specific data is stored in the "logs" folder within "crypto"
   - test and debug data shall be stored in the "debug" folder within "crypto" including any unit test data of Github Copilot
 - Minimize fallbacks. No backward compatibility layer without clear need identified. Preference is instead to fail fast and have a clear error that will be fixed rather than implicit fallbacks.
+- run julia always from -project=. to avoid version incompatibilities of package dependencies.

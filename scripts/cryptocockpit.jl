@@ -336,7 +336,7 @@ mutable struct CockpitData
         cssdir = EnvConfig.setprojectdir()  * "/scripts/"
         xc = Xch.XchCache()
         # notrade default: cryptocockpit never calls Trade.trade!, TradeCache is only a container for xc/cfg here.
-        cp = new(Trade.TradeCache(xc=xc), nothing, nothing, true, dtf, cssdir)
+        cp = new(Trade.TradeCache(xc=xc, stoplosspct=0.05f0), nothing, nothing, true, dtf, cssdir)
         updateassets!(cp, false)
         return cp
     end
@@ -1275,7 +1275,7 @@ callback!(
         active_row_id = _active_row_id(active_cell, olddata, currentfocus)
         CP.donormalize = "normalize" in indicator
         if button_id == "exchange_select"
-            CP.tc = Trade.TradeCache(xc=Xch.XchCache(exchange=String(exchange)))
+            CP.tc = Trade.TradeCache(xc=Xch.XchCache(exchange=String(exchange)), stoplosspct=0.05f0)
             updateassets!(CP, false)
             active_row_id = _first_basecoin(CP.tc.cfg)
         end

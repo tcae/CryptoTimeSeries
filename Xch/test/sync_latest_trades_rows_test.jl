@@ -62,6 +62,7 @@ end
         symbol="BTCUSDT",
         side="Buy",
         positionside="long",
+        lane="lo",
         baseqty=1.0f0,
         ordertype="Limit",
         isLeverage=false,
@@ -82,6 +83,7 @@ end
         symbol="BTCUSDT",
         side="Sell",
         positionside="long",
+        lane="lc",
         baseqty=0.5f0,
         ordertype="Limit",
         isLeverage=false,
@@ -102,6 +104,7 @@ end
         symbol="BTCUSDT",
         side="Buy",
         positionside="short",
+        lane="sc",
         baseqty=0.3f0,
         ordertype="Limit",
         isLeverage=false,
@@ -230,6 +233,68 @@ end
     btcodf = Ohlcv.dataframe(btcohlcv)
     btcoix = Ohlcv.ix(btcohlcv)
     @test btcrow[btcrowix, :opentime] == btcodf[btcoix, :opentime]
+end
+
+@testset "Xch sync_latest_trades_rows! carries lol_pavg forward while position stays open" begin
+    EnvConfig.init(EnvConfig.test)
+
+    startdt = DateTime("2025-01-01T00:00:00")
+    enddt = startdt + Dates.Day(1)
+    currentdt = startdt + Dates.Minute(3)
+
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    Xch.addbase!(xc, "BTC", startdt, enddt)
+    Xch.setcurrenttime!(xc, currentdt)
+
+    bc = Xch.rawcache(xc.bc)
+    bc.assets = DataFrame(
+        coin=String[EnvConfig.pairquote, "BTC"],
+        free=Float32[2_000f0, 0.5f0],
+        locked=Float32[0f0, 0f0],
+        borrowed=Float32[0f0, 0f0],
+        accruedinterest=Float32[0f0, 0f0],
+    )
+    empty!(bc.orders)
+
+    btcrow_prev = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
+    btcdf = btcrow_prev.tradesdf
+    btcdf[btcrow_prev.rowix, :lastopentrade] = currentdt - Dates.Minute(1)
+    TSM.settrades_lp_amount!(btcdf, btcrow_prev.rowix, 0.5f0)
+    TSM.settrades_last_pavg!(btcdf, btcrow_prev.rowix, Targets.longopen, 100.0f0)
+
+    rowsbybase = Xch.sync_latest_trades_rows!(xc)
+    btcrowix = rowsbybase["BTC"].rowix
+    btcrow = rowsbybase["BTC"].tradesdf
+    @test btcrow[btcrowix, :lp_amount] == 0.5f0
+    @test btcrow[btcrowix, :lol_pavg] == 100.0f0
+end
+
+@testset "Xch account_status does not double-count a fully-reserved long position" begin
+    EnvConfig.init(EnvConfig.test)
+
+    startdt = DateTime("2025-01-01T00:00:00")
+    enddt = startdt + Dates.Day(1)
+    currentdt = startdt + Dates.Minute(1)
+
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    Xch.addbase!(xc, "BTC", startdt, enddt)
+    Xch.setcurrenttime!(xc, currentdt)
+
+    bc = Xch.rawcache(xc.bc)
+    # The whole BTC position sits in :locked (e.g. fully reserved for a pending
+    # reduce-only stop-loss close order) - positionsnapshot's long_qty (free+locked)
+    # must not be added on top of the already-reserved :locked share again.
+    bc.assets = DataFrame(
+        coin=String[EnvConfig.pairquote, "BTC"],
+        side=String["quote", "long"],
+        free=Float32[500.5f0, 0f0],
+        locked=Float32[0f0, 0.5f0],
+    )
+    empty!(bc.orders)
+
+    price = Ohlcv.dataframe(Xch.getohlcv(xc, "BTC"))[Ohlcv.ix(Xch.getohlcv(xc, "BTC")), :close]
+    acct = Xch.account_status(xc; force_refresh=true, ttl_seconds=0)
+    @test isapprox(acct.equity_quote, 500.5 + 0.5 * price; rtol=1f-3)
 end
 
 @testset "Xch sync_latest_trades_rows! creates missing pair entry from requested pairs" begin

@@ -25,7 +25,7 @@ enddt = nothing  # DateTime("2024-03-30T10:03:00")
 # assets = Xch.portfolio!(xc)
 # tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=startdt, updatecache=true)
 
-tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), []; datetime=startdt, updatecache=true)
+tc = Trade.tradeselection!(Trade.TradeCache(xc=xc, stoplosspct=0.05), []; datetime=startdt, updatecache=true)
 
 
 # dummy = DateTime("2000-01-01T00:00:00")

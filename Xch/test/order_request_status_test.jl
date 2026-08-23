@@ -169,10 +169,11 @@ end
     end
     _apply_trade_amount_contributors!(close_req)
 
+    # Closes are amount-driven: the resting close is maintained from lc_amount, not the label.
     close_result = Xch.process_order_request(xc, close_req, 1)
-    @test close_result.accepted || close_result.reason == "below_minimum_qty"
-    if close_result.accepted
-        @test close_req[1, :lc_status] == "Submitted"
+    @test close_result.action == :none
+    if lowercase(String(close_req[1, :lc_status])) == "submitted"
+        @test String(close_req[1, :lc_id]) != "none"
         @test close_req[1, :lcl_filled] == 0f0
     else
         @test lowercase(String(close_req[1, :lc_status])) == "rejected"

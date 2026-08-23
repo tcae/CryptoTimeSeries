@@ -58,16 +58,20 @@ ws_balances(ac::XchAdapterCache) = nothing
 accountcapacity(ac::XchAdapterCache) = nothing
 closeorder(ac::XchAdapterCache, symbol::String, side::Symbol, basequantity, limitprice, maker::Bool; reduceonly::Bool=true) = nothing
 
-"upsert = update existing or insert new close order"
-upsertcloseorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true) = _required_method_error(ac, :upsertcloseorder!)
+"upsert = update existing or insert new close order. `lane` names the trades lane (`lc`/`lcsl`/`sc`/`scsl`) so adapters can pair the two legs of a close bracket."
+upsertcloseorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing) = _required_method_error(ac, :upsertcloseorder!)
 
 "upsert = update existing or insert new open order"
-upsertopenorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false) = _required_method_error(ac, :upsertopenorder!)
+upsertopenorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing) = _required_method_error(ac, :upsertopenorder!)
 
 "ensure order sequence: predecessor order must be submitted before successor order is submitted"
 directsequence!(ac::XchAdapterCache, predecessor_orderid::AbstractString, successor_orderid::AbstractString) = _required_method_error(ac, :directsequence!)
 
 " returns the last closed kline as NamedTuple (opentime::DateTime, open::Float32, high::Float32, low::Float32, close::Float32, basevolume::Float32) for a given symbol and interval, or nothing if not available "
 wsclosedkline(ac::XchAdapterCache, symbol::AbstractString, interval::AbstractString) = nothing
+
+"Return and clear queued forced-close events (margin-call liquidation or exchange-side stop) since the last drain. Default: no adapter-detected forced closes."
+drainliquidations!(ac::XchAdapterCache) = NamedTuple[]
+
 
 end

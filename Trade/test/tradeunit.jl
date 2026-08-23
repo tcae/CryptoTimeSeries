@@ -14,7 +14,7 @@ function prepcache()
     startdt = enddt - Day(30)  # DateTime("2025-01-03T16:09:00")
     coins = ["ADA"]
     xc=Xch.XchCache( startdt=startdt, enddt=enddt)
-    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc), coins, assetonly=true)
+    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc, stoplosspct=0.05), coins, assetonly=true)
     return cache
 end
 

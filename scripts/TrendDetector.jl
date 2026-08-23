@@ -496,6 +496,8 @@ function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassi
 
         (verbosity >= 3) && showlosses(model)
         println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(cl) ? "did" : "did not") converge")
+        modelprefix = "$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
+        Classify.savenn(cl.nn; folderpath=EnvConfig.neuralnetspath(), fileprefix=modelprefix, save_lastepoch=false, save_result=true)
     end
 
     return cl
