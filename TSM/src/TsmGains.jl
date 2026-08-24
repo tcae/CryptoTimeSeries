@@ -60,16 +60,21 @@ end
 
 """Return the grouping columns used to compile gains from concatenated Trades rows.
 
-`set`/`rangeid` are only included when `grouppartitions` is true; positions from a
-continuous replay can span set/rangeid boundaries (the underlying classifier data source
-switches train/test partitions mid-position), so grouping by them there would falsely
-split one position's open and close across groups."""
-function _compilegains_groupcols(tradesdf::AbstractDataFrame; grouppartitions::Bool=true)::Vector{Symbol}
+`set`/`rangeid` are only included when `setpartitions` is true; positions from a
+continuous replay can span set/rangeid subrange boundaries (the underlying classifier data
+source switches train/test partitions mid-position), so grouping by them there would
+falsely split one position's open and close across groups. When `setpartitions` is
+false (default), matching instead scopes to `:liquidityrangeid` (derived from `:rangeid`
+via `TSM.liquidityrangeid`) so a gain segment still never spans two distinct liquidity
+ranges, only the train/eval/test subranges within one."""
+function _compilegains_groupcols(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::Vector{Symbol}
     @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair to compile gains; names=$(names(tradesdf))"
     cols = Symbol[:pair]
-    if grouppartitions
+    if setpartitions
         (:set in propertynames(tradesdf)) && push!(cols, :set)
         (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
+    elseif :rangeid in propertynames(tradesdf)
+        push!(cols, :liquidityrangeid)
     end
     return cols
 end
@@ -259,22 +264,28 @@ function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFra
 end
 
 """
-    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), grouprangeid=true)
+    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false)
 
 Compile open/close gain pairs from one Trades DataFrame, scoping matching by
 `pair` plus optional `set` and `rangeid`, then persist the result in the current
-log folder as `<stem>.arrow`. Set `grouppartitions=false` for continuous replay data
-where one position can span set/rangeid boundaries.
+log folder as `<stem>.arrow`. `setpartitions=false` (default) is for continuous replay
+data where one position can span set/rangeid subrange boundaries; matching then scopes to
+`(pair, liquidityrangeid)` instead, so a position still cannot span two distinct
+liquidity ranges. `gainsreport` still aggregates across all liquidity ranges per set,
+i.e. reports out for the whole coin rather than per liquidity range. Set
+`setpartitions=true` to instead scope matching exactly to `(pair, set, rangeid)`.
 """
-function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), grouppartitions::Bool=true)::DataFrame
+function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), setpartitions::Bool=false)::DataFrame
     gainsdf = _emptygainsdf(tradesdf)
     if nrow(tradesdf) == 0
         EnvConfig.savedf(gainsdf, String(stem); folderpath=String(folderpath))
         return gainsdf
     end
 
-    groupcols = _compilegains_groupcols(tradesdf; grouppartitions=grouppartitions)
-    for tradesview in groupby(DataFrame(tradesdf; copycols=false), groupcols; sort=false)
+    working = DataFrame(tradesdf; copycols=false)
+    groupcols = _compilegains_groupcols(working; setpartitions=setpartitions)
+    (:liquidityrangeid in groupcols) && (working[!, :liquidityrangeid] = liquidityrangeid.(working[!, :rangeid]))
+    for tradesview in groupby(working, groupcols; sort=false)
         _compilegainspartition!(gainsdf, tradesview)
     end
 
@@ -288,13 +299,13 @@ function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmga
 end
 
 """
-    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder(), grouppartitions=true)
+    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false)
 
 Collect the combined Trades DataFrame from one `TsmCache`, compile gain pairs,
 and persist the result in the current log folder as `<stem>.arrow`.
 """
-function compilegainsdf(tsm::TsmCache; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), grouppartitions::Bool=true)::DataFrame
-    return compilegainsdf(collecttradesdf(tsm); stem=stem, folderpath=folderpath, grouppartitions=grouppartitions)
+function compilegainsdf(tsm::TsmCache; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), setpartitions::Bool=false)::DataFrame
+    return compilegainsdf(collecttradesdf(tsm); stem=stem, folderpath=folderpath, setpartitions=setpartitions)
 end
 
 """Return one gain-segment duration in minutes, inclusive of open and close rows."""

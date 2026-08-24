@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.12.6"
+julia_version = "1.12.7"
 manifest_format = "2.0"
 project_hash = "464c307870821e4a02ff4022083f9a0e0bf71ac5"
 
@@ -75,26 +75,10 @@ uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
 [[deps.Bybit]]
-path = "../Bybit"
+deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
+path = "/Users/torsten/github/CryptoTimeSeries/Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.2.6"
-
-    [deps.Bybit.deps]
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    Format = "1fa38f19-a742-5d3f-a2b9-30dd87b9d5f8"
-    HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
-    InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
-    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
-    Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-    SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
-    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "4.3.1"
 
 [[deps.CSV]]
 deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers", "PooledArrays", "PrecompileTools", "SentinelArrays", "Tables", "Unicode", "WeakRefStrings", "WorkerUtilities"]
@@ -192,7 +176,7 @@ weakdeps = ["Dates", "LinearAlgebra"]
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
-version = "1.3.0+1"
+version = "1.3.1+2"
 
 [[deps.ConcurrentUtilities]]
 deps = ["Serialization", "Sockets"]
@@ -260,14 +244,9 @@ version = "1.0.7"
 
 [[deps.EnvConfig]]
 deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
-path = "../EnvConfig"
+path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.2.15"
-[[deps.EnvConfig]]
-deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
-path = "../EnvConfig"
-uuid = "a6e3057b-65d6-4318-a48d-0e21dbb2f5df"
-version = "0.2.15"
+version = "0.2.16"
 
 [[deps.ExceptionUnwrapping]]
 deps = ["Test"]
@@ -281,26 +260,10 @@ uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
 version = "0.1.10"
 
 [[deps.Features]]
+deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
 version = "1.8.8"
-
-    [deps.Features.deps]
-    Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
-    Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
-    LinearRegression = "92481ed7-9fb7-40fd-80f2-46fd0f076581"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
-    PlotlyJS = "f0f68f2c-4968-5e81-91da-67840de0976a"
-    RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
-    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
-    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 
 [[deps.FilePathsBase]]
 deps = ["Compat", "Dates"]
@@ -432,40 +395,16 @@ uuid = "f7e6163d-2fa5-5f23-b69c-1db539e41963"
 version = "0.2.1+0"
 
 [[deps.KrakenFutures]]
-path = "../KrakenFutures"
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
+path = "/Users/torsten/github/CryptoTimeSeries/KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.7"
-
-    [deps.KrakenFutures.deps]
-    Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
-    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "0.1.8"
 
 [[deps.KrakenSpot]]
-path = "../KrakenSpot"
+deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
+path = "/Users/torsten/github/CryptoTimeSeries/KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.7"
-
-    [deps.KrakenSpot.deps]
-    Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
-    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "0.1.8"
 
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"
@@ -614,24 +553,10 @@ uuid = "510215fc-4207-5dde-b226-833fc4488ee2"
 version = "0.5.5"
 
 [[deps.Ohlcv]]
-path = "../Ohlcv"
+deps = ["Arrow", "CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
+path = "/Users/torsten/github/CryptoTimeSeries/Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
-version = "1.7.3"
-
-    [deps.Ohlcv.deps]
-    Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
-    CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
-    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    JDF = "babc3d20-cd49-4f60-a736-a8f9c08892d3"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
-    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
-    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    TimeZones = "f269a46b-ccf7-5d73-abea-4c690281aa53"
+version = "1.7.4"
 
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
@@ -647,7 +572,7 @@ version = "1.6.1"
 [[deps.OpenSSL_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
-version = "3.5.4+0"
+version = "3.5.6+0"
 
 [[deps.OrderedCollections]]
 git-tree-sha1 = "05868e21324cede2207c6f0f466b4bfef6d5e7ee"
@@ -890,18 +815,10 @@ uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 version = "1.0.3"
 
 [[deps.TSM]]
+deps = ["CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "Logging", "Targets", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/TSM"
 uuid = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
-version = "0.1.0"
-
-    [deps.TSM.deps]
-    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    EnvConfig = "a6e3057b-65d6-4318-a48d-0e21dbb2f5df"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+version = "0.2.1"
 
 [[deps.TZJData]]
 deps = ["Artifacts"]
@@ -927,24 +844,10 @@ uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 version = "1.10.0"
 
 [[deps.Targets]]
+deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 version = "0.2.6"
-
-    [deps.Targets.deps]
-    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
-    Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    Features = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    LoggingExtras = "e6f89c97-d47a-5376-807f-9c37f3926c36"
-    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
-    RollingFunctions = "b0e4dd01-7b14-53d8-9b45-175a3e362653"
-    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
@@ -958,19 +861,10 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 version = "1.11.0"
 
 [[deps.TestOhlcv]]
-path = "../TestOhlcv"
+deps = ["DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "PlotlyJS", "SortingAlgorithms", "Test"]
+path = "/Users/torsten/github/CryptoTimeSeries/TestOhlcv"
 uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 version = "0.1.4"
-
-    [deps.TestOhlcv.deps]
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
-    PlotlyJS = "f0f68f2c-4968-5e81-91da-67840de0976a"
-    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [[deps.TimeZones]]
 deps = ["Artifacts", "Dates", "Downloads", "InlineStrings", "Mocking", "Printf", "Scratch", "TZJData", "Unicode", "p7zip_jll"]
@@ -1038,38 +932,16 @@ uuid = "76eceee3-57b5-4d4a-8e66-0e911cebbf60"
 version = "1.6.1"
 
 [[deps.Xch]]
+deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "TSM", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "."
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.6.8"
-
-    [deps.Xch.deps]
-    Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
-    Bybit = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-    CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
-    CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
-    DataAPI = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
-    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
-    Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-    EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-    InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
-    JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
-    KrakenFutures = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-    KrakenSpot = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-    Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
-    Ohlcv = "e843396b-f821-40ae-bf3d-c761b4200810"
-    SortingAlgorithms = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
-    TSM = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
-    Targets = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-    TestOhlcv = "25367296-6685-45a3-8020-c7a9e6d5ef78"
-    UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
-    XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+version = "1.8.0"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]
 path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.2.4"
+version = "0.3.0"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

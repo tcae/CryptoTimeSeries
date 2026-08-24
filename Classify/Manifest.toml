@@ -439,7 +439,7 @@ version = "1.0.7"
 
 [[deps.EnvConfig]]
 deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
-path = "../EnvConfig"
+path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
 version = "0.2.16"
 
@@ -478,7 +478,7 @@ version = "0.1.10"
 
 [[deps.Features]]
 deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
-path = "../Features"
+path = "/Users/torsten/github/CryptoTimeSeries/Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
 version = "1.8.8"
 
@@ -1186,7 +1186,7 @@ version = "0.5.5"
 
 [[deps.Ohlcv]]
 deps = ["Arrow", "CSV", "CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "JDF", "Logging", "ProgressMeter", "SortingAlgorithms", "Statistics", "Test", "TimeZones"]
-path = "../Ohlcv"
+path = "/Users/torsten/github/CryptoTimeSeries/Ohlcv"
 uuid = "e843396b-f821-40ae-bf3d-c761b4200810"
 version = "1.7.4"
 
@@ -1743,7 +1743,7 @@ version = "1.10.0"
 
 [[deps.Targets]]
 deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
-path = "../Targets"
+path = "/Users/torsten/github/CryptoTimeSeries/Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
 version = "0.2.6"
 
@@ -1760,7 +1760,7 @@ version = "1.11.0"
 
 [[deps.TestOhlcv]]
 deps = ["DataFrames", "Dates", "EnvConfig", "Logging", "Ohlcv", "PlotlyJS", "SortingAlgorithms", "Test"]
-path = "../TestOhlcv"
+path = "/Users/torsten/github/CryptoTimeSeries/TestOhlcv"
 uuid = "25367296-6685-45a3-8020-c7a9e6d5ef78"
 version = "0.1.4"
 

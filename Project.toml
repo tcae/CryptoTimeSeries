@@ -68,19 +68,19 @@ Xch = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
 XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
 
 [sources]
-Bybit = {path = "Bybit"}
-Classify = {path = "Classify"}
-EnvConfig = {path = "EnvConfig"}
-Features = {path = "Features"}
-KrakenFutures = {path = "KrakenFutures"}
-KrakenSpot = {path = "KrakenSpot"}
-Ohlcv = {path = "Ohlcv"}
-Targets = {path = "Targets"}
-TestOhlcv = {path = "TestOhlcv"}
-Trade = {path = "Trade"}
-TSM = {path = "TSM"}
-TradingStrategy = {path = "TradingStrategy"}
-Xch = {path = "Xch"}
+Bybit = {path = "/Users/torsten/github/CryptoTimeSeries/Bybit"}
+Classify = {path = "/Users/torsten/github/CryptoTimeSeries/Classify"}
+EnvConfig = {path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"}
+Features = {path = "/Users/torsten/github/CryptoTimeSeries/Features"}
+KrakenFutures = {path = "/Users/torsten/github/CryptoTimeSeries/KrakenFutures"}
+KrakenSpot = {path = "/Users/torsten/github/CryptoTimeSeries/KrakenSpot"}
+Ohlcv = {path = "/Users/torsten/github/CryptoTimeSeries/Ohlcv"}
+TSM = {path = "/Users/torsten/github/CryptoTimeSeries/TSM"}
+Targets = {path = "/Users/torsten/github/CryptoTimeSeries/Targets"}
+TestOhlcv = {path = "/Users/torsten/github/CryptoTimeSeries/TestOhlcv"}
+Trade = {path = "/Users/torsten/github/CryptoTimeSeries/Trade"}
+TradingStrategy = {path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"}
+Xch = {path = "/Users/torsten/github/CryptoTimeSeries/Xch"}
 
 [compat]
 Arrow = "2.8.1"

@@ -25,6 +25,7 @@
 - what is the log semantic of opened/closed? Is it order placed or order filled?
 - why are so many warnings? I don't believe those are all race conditions
 - liquidity check too relaxed?
+- Boundsestimator does not adhere to teh rangeid numbering scheme that applies 10000 steps to liquidity range and subranges to sets ranges within teh liquidity range
 
 # To be observed
 

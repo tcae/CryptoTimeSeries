@@ -29,6 +29,16 @@ symbolseperator = "_"  # symbol seperator
 bases = String[]
 trainingbases = String[]
 
+"""
+`:rangeid` encodes `liquidityrangeid + subrangeindex`: `liquidityrangeid` is a
+multiple of `RANGEID_SUBRANGE_SPAN` reserved for one liquidity range (Classify
+mints one per contiguous, sufficiently liquid OHLCV window), while
+`subrangeindex in 1:RANGEID_SUBRANGE_SPAN-1` identifies one train/eval/test
+subrange within it (TSM recovers the owning liquidity range via
+`fld(rangeid, RANGEID_SUBRANGE_SPAN) * RANGEID_SUBRANGE_SPAN`).
+"""
+const RANGEID_SUBRANGE_SPAN = UInt32(10_000)
+
 function setpairquote!(quotecoin::AbstractString)
     global pairquote = uppercase(String(quotecoin))
     return pairquote

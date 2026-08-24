@@ -48,7 +48,7 @@ using EnvConfig, TSM
         )
 
         tradepath = TSM.savetradesdf(tradesdf; stem="trades-compilegainsdf", folderpath=tmpdir)
-        gainsdf = TSM.compilegainsdf(tradesdf; stem="tsmgains", folderpath=tmpdir)
+        gainsdf = TSM.compilegainsdf(tradesdf; stem="tsmgains", folderpath=tmpdir, setpartitions=true)
 
         @test isfile(tradepath)
         @test isfile(EnvConfig.tablepath("tsmgains"; folderpath=tmpdir, format=:arrow))
@@ -129,7 +129,7 @@ end
             scl_pavg=Float32[0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 80f0, 70f0, 0f0, 0f0, 0f0],
         )
 
-        TSM.compilegainsdf(tradesdf; stem="tsmgains", folderpath=tmpdir)
+        TSM.compilegainsdf(tradesdf; stem="tsmgains", folderpath=tmpdir, setpartitions=true)
         report = TSM.gainsreport(instem="tsmgains", stem="xchgainsreport", folderpath=tmpdir)
 
         @test isfile(EnvConfig.tablepath("xchgainsreport"; folderpath=tmpdir, format=:arrow))

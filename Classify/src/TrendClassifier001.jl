@@ -152,7 +152,10 @@ end
 
 Create aligned feature and target tables for one OHLCV sequence.
 When `partitionconfig` is provided (NamedTuple from TrendDetector), rows are split
-into train/eval/test sets using `setpartitions`.
+into train/eval/test sets using `setpartitions`. `rangeid_start` must be one
+liquidity range's reserved base id (a multiple of `RANGEID_SUBRANGE_SPAN`); each
+subrange then gets `rangeid_start + 1`, `rangeid_start + 2`, ... so that the
+owning liquidity range can be recovered from any subrange's `rangeid`.
 """
 function featurestargetsdf(
     cl::TrendClassifier001,
@@ -162,7 +165,7 @@ function featurestargetsdf(
     enddt::Union{Nothing, DateTime}=nothing,
     partitionconfig=nothing,
     coin::AbstractString=ohlcv.base,
-    rangeid_start::UInt16=UInt16(1),
+    rangeid_start::UInt32=RANGEID_SUBRANGE_SPAN,
 )
     featcfg = cl.featconfig()
     Features.setbase!(featcfg, ohlcv, usecache=true)
@@ -238,6 +241,7 @@ function featurestargetsdf(
             minpartitionsize=partitionconfig.minpartitionsize,
             maxpartitionsize=partitionconfig.maxpartitionsize,
         )
+        @assert length(psets) < RANGEID_SUBRANGE_SPAN "liquidity range starting at rangeid_start=$(rangeid_start) produced $(length(psets)) subranges, which does not fit below RANGEID_SUBRANGE_SPAN=$(RANGEID_SUBRANGE_SPAN)"
         rid = Int(rangeid_start)
         for (pssettype, psrng) in psets
             rdf[psrng, :rangeid] .= rid

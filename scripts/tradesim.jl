@@ -92,10 +92,13 @@ Key=value parameters:
 
   usepartitions=<bool>
       When true, replay runs one independent tradeloop per (pair, set, rangeid)
-      group, resetting the portfolio between groups (legacy behaviour).
-      When false (default), set/rangeid are ignored and all configured pairs are
-      processed together minute by minute in a single continuous tradeloop,
-      resembling the live tradereal loop.
+      group, resetting the portfolio between groups (legacy behaviour); gains
+      are reported at set (train/eval/test subrange) granularity.
+      When false (default), set/rangeid subrange boundaries are ignored and all
+      configured pairs are processed together minute by minute in a single
+      continuous tradeloop, resembling the live tradereal loop; gains are still
+      matched within (never across) one liquidity range per pair, but the
+      report aggregates across all liquidity ranges for the whole coin.
       Default: `TRADESIM_USE_PARTITIONS` env var, or `false`
 """
 end
@@ -1103,7 +1106,7 @@ replay_gains_stem = "xchgains-replay"
 replay_report_stem = "xchgainsreport-replay"
 # Continuous replay (usepartitions=false, the default) can hold one position open across
 # set/rangeid boundaries; only the legacy partitioned mode has independent per-range runs.
-replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpath=replay_out_folder, grouppartitions=USE_PARTITIONS)
+replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpath=replay_out_folder, setpartitions=USE_PARTITIONS)
 replay_reportdf = TSM.gainsreport(instem=replay_gains_stem, stem=replay_report_stem, folderpath=replay_out_folder)
 saved_gains = EnvConfig.tablepath(replay_gains_stem; folderpath=replay_out_folder, format=:auto)
 saved_gainsreport = EnvConfig.tablepath(replay_report_stem; folderpath=replay_out_folder, format=:auto)

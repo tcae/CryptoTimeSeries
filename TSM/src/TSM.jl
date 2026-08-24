@@ -35,6 +35,11 @@ const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :
 const TSM_INT_COLUMNS = Set([:rangeid])
 const TSM_TRADE_LANES = Set([:lo, :lc, :so, :sc])
 
+const RANGEID_SUBRANGE_SPAN = EnvConfig.RANGEID_SUBRANGE_SPAN
+
+"Return the liquidity range id owning subrange `rangeid` (see `EnvConfig.RANGEID_SUBRANGE_SPAN`)."
+liquidityrangeid(rangeid::Integer) = fld(rangeid, RANGEID_SUBRANGE_SPAN) * RANGEID_SUBRANGE_SPAN
+
 """Map one trade label (or lane symbol) to its canonical lane symbol (`:lo`, `:lc`, `:so`, `:sc`)."""
 function tradelane(label)::Symbol
     if label isa Symbol

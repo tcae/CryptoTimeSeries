@@ -14,6 +14,14 @@ const PREDICTIONLISTFILE = "predictionlist.csv"
 DEBUG = false
 
 """
+`featurestargetsdf` assigns one `rangeid` per train/eval/test subrange within a
+liquidity range, starting at `rangeid_start` (a multiple of
+`EnvConfig.RANGEID_SUBRANGE_SPAN`) and incrementing by 1; the number of
+subranges within one liquidity range must stay below that span.
+"""
+const RANGEID_SUBRANGE_SPAN = EnvConfig.RANGEID_SUBRANGE_SPAN
+
+"""
 verbosity =
 - 0: suppress all output if not an error
 - 1: log warnings

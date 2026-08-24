@@ -210,7 +210,15 @@ function _concat_coin_featuretarget_caches(cfg::TrendDetectorConfig, coins::Abst
         resultsdf, featuresdf = _load_featuretarget_pair(nothing)
         cachedcoins = string.(unique(resultsdf[!, :coin]))
         @assert size(resultsdf, 1) == size(featuresdf, 1) "unexpected mismatch of concatenated results/features size with resultsdf size $(size(resultsdf, 1)) and featuresdf size $(size(featuresdf, 1))"
-        return resultsdf, featuresdf, cachedcoins
+        if Set(cachedcoins) == Set(coins)
+            return resultsdf, featuresdf, cachedcoins
+        end
+        # A previous run can be interrupted after only some coins were processed, leaving a
+        # stale results/all + features/all cache that covers a strict subset of cfg.coins.
+        # Trusting it here would silently pin every future "from scratch" run to that subset.
+        @warn "ignoring stale results/all + features/all cache: covers $(length(cachedcoins)) coins but $(length(coins)) are requested; recomputing all coins" cachedcoins=cachedcoins missingcoins=setdiff(coins, cachedcoins)
+        resultsdf = featuresdf = nothing
+        cachedcoins = String[]
     end
     for coin in coins
         hasresults = EnvConfig.isfolder(TradingStrategy.resultsfilename(coin))
@@ -226,7 +234,9 @@ function _concat_coin_featuretarget_caches(cfg::TrendDetectorConfig, coins::Abst
         end
     end
 
-    if isempty(resultparts)
+    if isempty(resultparts) || (Set(cachedcoins) != Set(coins))
+        # Same reasoning as above: only reuse per-coin caches when every requested coin has one,
+        # otherwise fall through so getfeaturestargetsdf! recomputes the full requested coin set.
         return nothing, nothing, String[]
     end
 
@@ -246,7 +256,7 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
         (verbosity >= 2) && println("$(EnvConfig.now()) calculating features and targets                             ")
 
         cl = _trendclassifierseed(cfg)
-        rangeid = UInt16(1) # shall be unique across coins
+        rangeid = Classify.RANGEID_SUBRANGE_SPAN # liquidity range base id; unique across coins
         skippedcoins = String[]
         processedcoins = String[]
         targetissuesdf = DataFrame()
@@ -304,7 +314,7 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
                     end
                 end
                 if size(rngresults, 1) > 0
-                    rangeid = UInt16(maximum(rngresults[!, :rangeid]) + 1)
+                    rangeid += Classify.RANGEID_SUBRANGE_SPAN
                 end
                 coinresultsdf = isnothing(coinresultsdf) ? rngresults : vcat(coinresultsdf, rngresults)
                 coinfeaturesdf = isnothing(coinfeaturesdf) ? rngfeatures : vcat(coinfeaturesdf, rngfeatures)
@@ -361,7 +371,7 @@ function getfeaturestargetsdf!(cfg::TrendDetectorConfig)
                             end
                         end
                         if size(rngresults, 1) > 0
-                            rangeid = UInt16(maximum(rngresults[!, :rangeid]) + 1)
+                            rangeid += Classify.RANGEID_SUBRANGE_SPAN
                         end
                         coinresultsdf = isnothing(coinresultsdf) ? rngresults : vcat(coinresultsdf, rngresults)
                         coinfeaturesdf = isnothing(coinfeaturesdf) ? rngfeatures : vcat(coinfeaturesdf, rngfeatures)
@@ -414,13 +424,17 @@ classifiermenmonic(coins=nothing, coinix=nothing) = "mix"
 function _classifierfolder(cfg::TrendDetectorConfig)::String
     override = strip(get(ENV, "TRENDDETECTOR_CLASSIFIER_FOLDER", ""))
     if !isempty(override)
-        return override
+        return isabspath(override) ? override : normpath(joinpath(EnvConfig.logfolder(), override))
     end
     if cfg.opmode == gain
-        # Gain mode performs inference-only and must reuse the phase artifact folder.
-        return "Trend-$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
+        # Gain mode reuses the configured phase artifact folder, but it must still be
+        # resolved as an absolute log-path so loading works from any working directory.
+        phasefolder = "Trend-$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
+        return normpath(joinpath(dirname(EnvConfig.logfolder()), phasefolder))
     end
-    return cfg.folder
+    # Training and execution artifacts live in the current run log folder; this is
+    # where the classifier is created and therefore where it must be found again.
+    return EnvConfig.logfolder()
 end
 
 function _trendclassifierspec(cfg::TrendDetectorConfig)
@@ -497,7 +511,9 @@ function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassi
         (verbosity >= 3) && showlosses(model)
         println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(cl) ? "did" : "did not") converge")
         modelprefix = "$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
-        Classify.savenn(cl.nn; folderpath=EnvConfig.neuralnetspath(), fileprefix=modelprefix, save_lastepoch=false, save_result=true)
+        Classify.savenn(cl.nn; folderpath=EnvConfig.logfolder(), fileprefix=modelprefix, save_lastepoch=false, save_result=true)
+        # Keep the reviewed/classification-export artifacts in neuralnets, but do not
+        # force the runtime training loop to read/write there before evaluation.
     end
 
     return cl
@@ -1467,7 +1483,7 @@ function main(args::Vector{String}=ARGS)
         Ohlcv.verbosity = 1
         Features.verbosity = 1
         Targets.verbosity = 1
-        EnvConfig.verbosity = 3
+        EnvConfig.verbosity = 1
         Classify.verbosity = 1
         EnvConfig.init(training)
         allowedcoins = TradingStrategy.traincoins()
