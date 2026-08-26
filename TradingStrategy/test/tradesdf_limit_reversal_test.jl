@@ -231,6 +231,151 @@ end
         @test isapprox(gaindf_probe[1, :gain], 0.05f0; atol=1f-6)
     end
 
+    @testset "close bracket re-anchors after position close" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[121f0, 101f0],
+            low=Float32[99f0, 99f0],
+            close=Float32[120f0, 100f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[longopen, longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        # row 1 state of a position that closed at its take profit: limits are still resting
+        probe[1, :lc_limit] = 121f0
+        probe[1, :lcsl_limit] = 114f0
+        probe[1, :lo_limit] = 119.88f0
+
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 2)
+        @test isapprox(probe[2, :lc_limit], 101f0; atol=1f-4)
+        @test probe[2, :lcsl_limit] == 0f0
+    end
+
+    @testset "held long refreshes target from current close and stop follows close" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 101f0],
+            low=Float32[99f0, 99f0],
+            close=Float32[100f0, 100f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[longopen, longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :lc_limit] = 105f0
+        probe[2, :lp_amount] = 100f0
+        probe[2, :lol_pavg] = 98f0
+        probe[2, :lastopentrade] = probe[1, :opentime]
+
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 2)
+        @test isapprox(probe[2, :lc_limit], 101f0; atol=1f-4)
+        @test isapprox(probe[2, :lcsl_limit], 100f0 * 0.95f0; atol=1f-4)
+    end
+
+    @testset "short close bracket is symmetric" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 101f0],
+            low=Float32[99f0, 99f0],
+            close=Float32[80f0, 100f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[shortopen, shortopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :sc_limit] = 79.2f0
+        probe[1, :scsl_limit] = 84f0
+        probe[2, :sp_amount] = 100f0
+        probe[2, :sol_pavg] = 80f0
+        probe[2, :lastopentrade] = probe[1, :opentime]
+
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 2)
+        @test isapprox(probe[2, :sc_limit], 99f0; atol=1f-4)
+        @test isapprox(probe[2, :scsl_limit], 105f0; atol=1f-4)
+    end
+
+    @testset "zero close limit keeps the stop leg" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :lp_amount] = 100f0
+        probe[1, :lol_pavg] = 98f0
+        probe[1, :lastopentrade] = probe[1, :opentime]
+
+        TradingStrategy._setclosebracket!(limit_reversal_strategy(), probe, 1, longclose, probe[1, :close], 0f0)
+        @test probe[1, :lc_limit] == 0f0
+        @test isapprox(probe[1, :lcsl_limit], 95f0; atol=1f-4)
+    end
+
+    @testset "open fill anchors both bracket legs on last close" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 101f0],
+            low=Float32[99f0, 99f0],
+            close=Float32[100f0, 100f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[longopen, longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, :long, 99.9f0, 100f0)
+        @test isapprox(probe[2, :lc_limit], 101f0; atol=1f-4)
+        @test isapprox(probe[2, :lcsl_limit], 95f0; atol=1f-4)
+    end
+
+    @testset "long stop loss materializes a loss and clears the bracket" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 100f0],
+            low=Float32[99f0, 94f0],
+            close=Float32[100f0, 95f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[longopen, longhold],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[2, :lp_amount] = 100f0
+        probe[2, :lol_pavg] = 100f0
+        probe[2, :lastopentrade] = probe[1, :opentime]
+        probe[2, :lc_limit] = 101f0
+        probe[2, :lcsl_limit] = 95f0
+
+        gaindf_stop = TradingStrategy.emptygaindf()
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_stop, probe, 2, 1)
+        @test last_openix == 0
+        @test nrow(gaindf_stop) == 1
+        @test isapprox(gaindf_stop[1, :gain], -0.05f0; atol=1f-6)
+        @test probe[2, :lc_limit] == 0f0
+        @test probe[2, :lcsl_limit] == 0f0
+    end
+
+    @testset "short stop loss materializes a loss" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 106f0],
+            low=Float32[99f0, 100f0],
+            close=Float32[100f0, 105f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[shortopen, shorthold],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[2, :sp_amount] = 100f0
+        probe[2, :sol_pavg] = 100f0
+        probe[2, :lastopentrade] = probe[1, :opentime]
+        probe[2, :sc_limit] = 99f0
+        probe[2, :scsl_limit] = 105f0
+
+        gaindf_stop = TradingStrategy.emptygaindf()
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_stop, probe, 2, 1)
+        @test last_openix == 0
+        @test nrow(gaindf_stop) == 1
+        @test isapprox(gaindf_stop[1, :gain], -0.05f0; atol=1f-6)
+        @test probe[2, :sc_limit] == 0f0
+        @test probe[2, :scsl_limit] == 0f0
+    end
+
     tp = TradingStrategy.TsTp(
         pair="BTCUSDT",
         tradesdf=DataFrame(

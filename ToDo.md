@@ -1,4 +1,14 @@
 
+# next to do
+
+- implement alternative 1 to gain_limit_reversal! that
+	- buys long only below 4h regression
+	- does not renew limit with new open signal
+	- intent to harvest more high frequent the 1% gains
+- implement alternative 2 to gain_limit_reversal! that
+	- hlds on to renew concept but falls back to ASAP close if above pavg + target gain and x minutes no supporting open signal
+	- intent to follow an upswing but materialize gain quickly when it comes to an end 
+
 # Known issues
 
 - always set a OCO bracket order for an open amount in trade!

@@ -91,6 +91,9 @@ const _sim_order_counter = IdDict{Any, Int64}()
 const _sim_sequencing = IdDict{Any, Dict{String, String}}()
 "Queued forced-liquidation events per simulation cache, drained by Xch into TSM trades rows."
 const _sim_liquidations = IdDict{Any, Vector{NamedTuple}}()
+"Persisted OHLCV per (base, interval), loaded once from disk and reused by every BybitSim kline/price lookup instead of re-reading on every tick."
+const _sim_ohlcv_cache = Dict{Tuple{String,String}, Ohlcv.OhlcvData}()
+
 const _bybitsim_test_basecoins = ("SINE", "DOUBLESINE")
 const _klineinterval = ["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W"]
 const interval2bybitinterval = Dict(
@@ -128,6 +131,9 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     assets::Union{Nothing, DataFrame}
     orders::Union{Nothing, DataFrame}
     closedorders::Union{Nothing, DataFrame}
+    # Shared reference to the owning XchCache's per-base OHLCV cache (duck-typed wiring via
+    # Xch.setcurrenttime!, mirrors `simtime`). Same Dict object, no per-simulation copy.
+    ohlcvcache::Union{Nothing, Dict{String, Ohlcv.OhlcvData}}
 end
 
 executionorderspec(bc::BybitCache, side::Symbol) = _executionorderspec(side)
@@ -186,11 +192,11 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
         pk = String(publickey)
         sk = String(secretkey)
     end
-    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing, nothing)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing, nothing)
     EnvConfig.setcoinspath!(exchangeid(bc))
 	EnvConfig.setpairquote!("USDT")
     if EnvConfig.configmode == EnvConfig.test
@@ -648,8 +654,7 @@ function _sim_lastprice(bc::BybitCache, symbol::AbstractString; atdt::Union{Noth
         return (testdf[ix, :close])
     end
 
-    cached = Ohlcv.defaultohlcv(base, "1m")
-    Ohlcv.read!(cached)
+    cached = _sim_cached_ohlcv(bc, base, "1m")
     size(cached.df, 1) > 0 || error("BybitSim missing cached OHLCV for base=$(base), symbol=$(sym).")
     ix = Ohlcv.rowix(cached, refdt)
     ix > 0 || error("BybitSim OHLCV row lookup failed for base=$(base), symbol=$(sym), refdt=$(refdt).")
@@ -854,7 +859,26 @@ function _intervalperiod(interval::AbstractString)
     return Week(n)
 end
 
-function _sim_klines(symbol::AbstractString; startDateTime=nothing, endDateTime=nothing, interval::AbstractString="1m")
+"""
+Return the cached OHLCV data for `base`/`interval`. Prefers `bc.ohlcvcache` (the owning
+XchCache's own `xc.bases`, wired in by `Xch.setcurrenttime!`, shared by reference so no
+duplicate copy is held) when it already has the base loaded; otherwise falls back to
+Bybit's own disk-loaded cache, e.g. for standalone `BybitCache()` use without Xch, or for
+bases not (yet) added to the driving `XchCache` (market-wide screening).
+"""
+function _sim_cached_ohlcv(bc::BybitCache, base::AbstractString, interval::AbstractString)::Ohlcv.OhlcvData
+    key = (uppercase(String(base)), interval)
+    if !isnothing(bc.ohlcvcache) && (interval == "1m") && haskey(bc.ohlcvcache, key[1])
+        return bc.ohlcvcache[key[1]]
+    end
+    return get!(_sim_ohlcv_cache, key) do
+        ohlcv = Ohlcv.defaultohlcv(key[1], interval)
+        Ohlcv.read!(ohlcv)
+        ohlcv
+    end
+end
+
+function _sim_klines(bc::BybitCache, symbol::AbstractString; startDateTime=nothing, endDateTime=nothing, interval::AbstractString="1m")
     p = _intervalperiod(interval)
     enddt = isnothing(endDateTime) ? floor(Dates.now(Dates.UTC), p) : floor(endDateTime, p)
     startdt = isnothing(startDateTime) ? floor(enddt - (999 * p), p) : floor(startDateTime, p)
@@ -872,13 +896,14 @@ function _sim_klines(symbol::AbstractString; startDateTime=nothing, endDateTime=
     end
 
     # Prefer persisted OHLCV cache for normal symbols to keep BybitSim prices realistic
-    # (e.g., BTC around market magnitude instead of synthetic fallback waves).
-    cached = Ohlcv.defaultohlcv(base, interval)
-    Ohlcv.read!(cached)
+    # (e.g., BTC around market magnitude instead of synthetic fallback waves). The cache is
+    # loaded once and never mutated in place here, so timerangecut! must not be applied to it.
+    cached = _sim_cached_ohlcv(bc, base, interval)
     if size(cached.df, 1) > 0
-        Ohlcv.timerangecut!(cached, startdt, enddt)
-        if size(cached.df, 1) > 0
-            return select(cached.df, :opentime, :open, :high, :low, :close, :basevolume)
+        startix = Ohlcv.rowix(cached, startdt)
+        endix = Ohlcv.rowix(cached, enddt)
+        if (startix > 0) && (endix > 0) && (startix <= endix)
+            return select(cached.df[startix:endix, :], :opentime, :open, :high, :low, :close, :basevolume)
         end
     end
 
@@ -896,7 +921,7 @@ Returns ohlcv/klines data as DataFrame with oldest first rows (which is compatib
 """
 function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
     if !isnothing(bc.orders)
-        return _sim_klines(symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
+        return _sim_klines(bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
     end
 
     @assert interval in keys(interval2bybitinterval) "$interval is unknown Bybit interval"
@@ -1360,7 +1385,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         end
 
         startdt = floor(lastcheck, Minute(1))
-        candles = _sim_klines(String(row.symbol); startDateTime=startdt, endDateTime=refdt, interval="1m")
+        candles = _sim_klines(bc, String(row.symbol); startDateTime=startdt, endDateTime=refdt, interval="1m")
         filldt = nothing
         for candle in eachrow(candles)
             candledt = DateTime(candle.opentime) + Minute(1)
@@ -1532,7 +1557,7 @@ function _simrebalancecollateral!(bc::BybitCache; atdt::Union{Nothing, DateTime}
         qty <= 0f0 && continue
         coin = uppercase(String(bc.assets[ix, :coin]))
         symbol = uppercase(string(coin, quotecoin))
-        price = _simcurrentprice(symbol, decisiondt)
+        price = _simcurrentprice(bc, symbol, decisiondt)
         isnothing(price) && continue
 
         required = qty * price
@@ -1552,8 +1577,8 @@ function _simrebalancecollateral!(bc::BybitCache; atdt::Union{Nothing, DateTime}
     return nothing
 end
 "Return the latest simulated close price at or before `atdt` for one symbol, or `nothing` if unavailable."
-function _simcurrentprice(symbol::AbstractString, atdt::DateTime)::Union{Nothing, Float32}
-    candles = _sim_klines(symbol; startDateTime=atdt - Minute(5), endDateTime=atdt, interval="1m")
+function _simcurrentprice(bc::BybitCache, symbol::AbstractString, atdt::DateTime)::Union{Nothing, Float32}
+    candles = _sim_klines(bc, symbol; startDateTime=atdt - Minute(5), endDateTime=atdt, interval="1m")
     size(candles, 1) == 0 && return nothing
     return Float32(candles[end, :close])
 end
@@ -1584,7 +1609,7 @@ function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}
         qty <= 0f0 && continue
         side = String(bc.assets[ix, :side])
         symbol = uppercase(string(coin, quotecoin))
-        price = _simcurrentprice(symbol, decisiondt)
+        price = _simcurrentprice(bc, symbol, decisiondt)
         isnothing(price) && continue
         pricebyix[ix] = price
         signedqty = side == "short" ? -qty : qty

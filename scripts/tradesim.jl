@@ -272,6 +272,108 @@ function _load_replay_df(logsubfolder::AbstractString, subdir::AbstractString, s
     return DataFrame(df)
 end
 
+"""
+Load results+predictions for `coins`, preferring the per-coin cache files
+(`results/<coin>.arrow`, `predictions/<coin>.arrow`) written by `TrendDetector` when every
+requested coin has one, since those are orders of magnitude smaller than the combined
+`results/all` + `predictions/maxpredictions` files covering the whole training universe.
+Falls back to the combined files (then filtered by caller) when any requested coin lacks a
+per-coin cache, e.g. older replay-source folders generated before the per-coin split existed.
+"""
+function _load_replay_source(logsubfolder::AbstractString, coins::AbstractVector{<:AbstractString})
+    logsroot = dirname(EnvConfig.logfolder())
+    resultsfolderpath = joinpath(logsroot, String(logsubfolder), "results")
+    predictionsfolderpath = joinpath(logsroot, String(logsubfolder), "predictions")
+    coinids = uppercase.(String.(coins))
+    havepercoin = !isempty(coinids) && all(coinids) do coin
+        EnvConfig.tableexists(coin; folderpath=resultsfolderpath, format=:auto) &&
+        EnvConfig.tableexists(coin; folderpath=predictionsfolderpath, format=:auto)
+    end
+    if havepercoin
+        resultparts = [DataFrame(EnvConfig.readdf(coin; folderpath=resultsfolderpath)) for coin in coinids]
+        predparts = [DataFrame(EnvConfig.readdf(coin; folderpath=predictionsfolderpath)) for coin in coinids]
+        resultsdf = length(resultparts) == 1 ? resultparts[1] : vcat(resultparts...; cols=:union)
+        preddf = length(predparts) == 1 ? predparts[1] : vcat(predparts...; cols=:union)
+        return resultsdf, preddf
+    end
+    return _load_replay_df(logsubfolder, "results", "all"), _load_replay_df(logsubfolder, "predictions", "maxpredictions")
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRADESIM CHECKPOINT — resume an interrupted replay run
+# ─────────────────────────────────────────────────────────────────────────────
+# Per pair, the full trades dataframe (tsmstate included) is persisted under
+# coins/<BASE-QUOTE>/tradesim/; the Bybit simulation ledger (assets/orders/
+# closedorders + sim order counter/sequencing map), shared across all pairs, is
+# persisted once under the current run's log folder. On restart, rows strictly
+# before the last row with tsmstate != TSM_NO_STATE are restored as-is; that last
+# row itself is reprocessed from scratch because the interruption most likely
+# happened mid-processing of it.
+
+const TRADESIM_CHECKPOINT_LOG_SUBFOLDER = "tradesim-checkpoint"
+const TRADESIM_CHECKPOINT_PAIR_SUBFOLDER = "tradesim"
+const TRADESIM_CHECKPOINT_TRADES_STEM = "trades_checkpoint"
+
+_tradesim_ledger_folderpath() = joinpath(EnvConfig.logfolder(), TRADESIM_CHECKPOINT_LOG_SUBFOLDER)
+_tradesim_pair_checkpoint_folderpath(base::AbstractString, quotecoin::AbstractString) = EnvConfig.coinfolderpath(base, quotecoin, TRADESIM_CHECKPOINT_PAIR_SUBFOLDER)
+
+"Persist one pair's full trades dataframe (all TSM contract columns, including tsmstate progress)."
+function _save_pair_checkpoint!(tsm::TSM.TsmCache, pair::AbstractString)
+    tdf = TSM.trades(tsm, pair)
+    nrow(tdf) == 0 && return nothing
+    bq = Xch.basequote(pair)
+    folderpath = _tradesim_pair_checkpoint_folderpath(String(bq.basecoin), String(bq.quotecoin))
+    EnvConfig.savedf(_stringify_categorical_columns!(DataFrame(tdf)), TRADESIM_CHECKPOINT_TRADES_STEM; folderpath=folderpath, format=:arrow)
+    return nothing
+end
+
+"Load one pair's previously persisted trades checkpoint, or `nothing` if none exists."
+function _load_pair_checkpoint(base::AbstractString, quotecoin::AbstractString)::Union{Nothing, DataFrame}
+    folderpath = _tradesim_pair_checkpoint_folderpath(base, quotecoin)
+    isfile(joinpath(folderpath, TRADESIM_CHECKPOINT_TRADES_STEM * ".arrow")) || return nothing
+    return DataFrame(EnvConfig.readdf(TRADESIM_CHECKPOINT_TRADES_STEM; folderpath=folderpath, format=:arrow, copycols=true))
+end
+
+"Persist the shared Bybit simulation ledger so a resumed run continues from the same simulated account state."
+function _save_ledger_checkpoint!(bc::Bybit.BybitCache)
+    (isnothing(bc.assets) || isnothing(bc.orders) || isnothing(bc.closedorders)) && return nothing
+    folderpath = _tradesim_ledger_folderpath()
+    EnvConfig.savedf(DataFrame(bc.assets), "assets"; folderpath=folderpath, format=:arrow)
+    EnvConfig.savedf(DataFrame(bc.orders), "orders"; folderpath=folderpath, format=:arrow)
+    EnvConfig.savedf(DataFrame(bc.closedorders), "closedorders"; folderpath=folderpath, format=:arrow)
+    seq = Bybit._sim_sequencing_for(bc)
+    EnvConfig.savedf(DataFrame(successor_orderid=collect(keys(seq)), predecessor_orderid=collect(values(seq))), "sequencing"; folderpath=folderpath, format=:arrow)
+    EnvConfig.savedf(DataFrame(ordercounter=[get(Bybit._sim_order_counter, bc, 0)]), "manifest"; folderpath=folderpath, format=:arrow)
+    return nothing
+end
+
+"Restore a previously persisted Bybit simulation ledger into `bc`. Returns `true` when a checkpoint was found."
+function _restore_ledger_checkpoint!(bc::Bybit.BybitCache)::Bool
+    folderpath = _tradesim_ledger_folderpath()
+    isfile(joinpath(folderpath, "manifest.arrow")) || return false
+    bc.assets = DataFrame(EnvConfig.readdf("assets"; folderpath=folderpath, format=:arrow, copycols=true))
+    bc.orders = DataFrame(EnvConfig.readdf("orders"; folderpath=folderpath, format=:arrow, copycols=true))
+    bc.closedorders = DataFrame(EnvConfig.readdf("closedorders"; folderpath=folderpath, format=:arrow, copycols=true))
+    seqdf = DataFrame(EnvConfig.readdf("sequencing"; folderpath=folderpath, format=:arrow, copycols=true))
+    seq = Bybit._sim_sequencing_for(bc)
+    empty!(seq)
+    for row in eachrow(seqdf)
+        seq[String(row.successor_orderid)] = String(row.predecessor_orderid)
+    end
+    manifest = DataFrame(EnvConfig.readdf("manifest"; folderpath=folderpath, format=:arrow, copycols=true))
+    Bybit._sim_order_counter[bc] = Int64(manifest[1, :ordercounter])
+    return true
+end
+
+"Persist per-pair trades and the shared ledger for every pair currently tracked by `cache`."
+function _save_tradesim_checkpoint!(cache::Trade.TradeCache)
+    for pair in TSM.tradingpairs(cache.xc.tsm)
+        _save_pair_checkpoint!(cache.xc.tsm, pair)
+    end
+    (cache.xc.bc isa Bybit.BybitCache) && _save_ledger_checkpoint!(cache.xc.bc)
+    return nothing
+end
+
 "Build replay trades input from result and prediction artifacts."
 function _build_replay_input(resultsdf::DataFrame, preddf::DataFrame, quotecoin::AbstractString)::DataFrame
     required_result = (:opentime, :coin, :set, :rangeid, :high, :low, :close)
@@ -710,8 +812,7 @@ function run_replay_from_artifacts!(cache::Trade.TradeCache;
     startdt::Union{Nothing, DateTime}=nothing,
     enddt::Union{Nothing, DateTime}=nothing,
 )
-    resultsdf = _load_replay_df(logsubfolder, "results", "all")
-    preddf = _load_replay_df(logsubfolder, "predictions", "maxpredictions")
+    resultsdf, preddf = _load_replay_source(logsubfolder, BACKTEST_BASES)
     @assert nrow(resultsdf) > 0 "replay source results/all is empty"
 
     source_opentimes = DateTime.(resultsdf[!, :opentime])
@@ -754,8 +855,8 @@ function run_replay_from_artifacts!(cache::Trade.TradeCache;
     return alltrades, allfills
 end
 
-"Build one continuous multi-pair replay run into Xch-owned Trades state, ignoring set/rangeid boundaries (resembles tradereal's continuous per-minute loop across all pairs)."
-function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFrame, quotecoin::AbstractString)
+"Build one continuous multi-pair replay run into Xch-owned Trades state, ignoring set/rangeid boundaries (resembles tradereal's continuous per-minute loop across all pairs). Returns the resume startdt (== overall_startdt when no checkpoint applies)."
+function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFrame, quotecoin::AbstractString; resume::Bool=true)
     overall_startdt = minimum(replaydf[!, :opentime])
     overall_enddt = maximum(replaydf[!, :opentime])
     cache.xc.startdt = overall_startdt
@@ -768,6 +869,7 @@ function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFram
     pairs = String[]
     basecoins = String[]
     lastprices = Float32[]
+    resumepoints = DateTime[]  # per-pair opentime of the row to reprocess (== first unprocessed row)
     for g in groupby(replaydf, :pair)
         gdf = DataFrame(g)
         pair = uppercase(String(gdf[1, :pair]))
@@ -778,10 +880,25 @@ function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFram
         seeddf = select(gdf, :opentime, :pair, :set, :rangeid, :high, :low, :close, :label, :score)
         TSM.settrades!(cache.xc.tsm, pair, seeddf)
 
+        checkpoint = resume ? _load_pair_checkpoint(base, quotecoin) : nothing
+        if !isnothing(checkpoint)
+            tdf = TSM.trades(cache.xc.tsm, pair)
+            checkpointrowix = TSM.lastcheckpointedrowindex(checkpoint)
+            prefixn = checkpointrowix > 0 ? checkpointrowix - 1 : 0
+            if prefixn > 0
+                @assert (prefixn <= nrow(tdf)) && (tdf[prefixn, :opentime] == checkpoint[prefixn, :opentime]) "checkpoint/seed opentime mismatch for pair=$(pair) at row=$(prefixn)"
+                TSM.restorecheckpointrows!(tdf, checkpoint, prefixn)
+                TSM.primenextrowix!(cache.xc.tsm, base, quotecoin, tdf[prefixn + 1, :opentime])
+                push!(resumepoints, tdf[prefixn + 1, :opentime])
+            end
+        end
+
         push!(pairs, pair)
         push!(basecoins, base)
         push!(lastprices, Float32(gdf[nrow(gdf), :close]))
     end
+
+    isempty(resumepoints) || (cache.xc.startdt = minimum(resumepoints))
 
     cache.cfg = DataFrame(
         basecoin=basecoins,
@@ -812,9 +929,9 @@ function run_replay_continuous!(cache::Trade.TradeCache;
     quotecoin::AbstractString=QUOTE_COIN,
     startdt::Union{Nothing, DateTime}=nothing,
     enddt::Union{Nothing, DateTime}=nothing,
+    resume::Bool=true,
 )
-    resultsdf = _load_replay_df(logsubfolder, "results", "all")
-    preddf = _load_replay_df(logsubfolder, "predictions", "maxpredictions")
+    resultsdf, preddf = _load_replay_source(logsubfolder, BACKTEST_BASES)
     @assert nrow(resultsdf) > 0 "replay source results/all is empty"
 
     source_opentimes = DateTime.(resultsdf[!, :opentime])
@@ -846,10 +963,15 @@ function run_replay_continuous!(cache::Trade.TradeCache;
     end
 
     _reset_replay_runtime!(cache, quotecoin, INITIAL_QUOTE_BALANCE)
-    _prepare_replay_continuous!(cache, replaydf, quotecoin)
+    resume && (cache.xc.bc isa Bybit.BybitCache) && _restore_ledger_checkpoint!(cache.xc.bc)
+    _prepare_replay_continuous!(cache, replaydf, quotecoin; resume=resume)
 
     # skip_init=true keeps the replay-provided cfg and avoids tradeselection rebuild.
-    Trade.run_backtest!(cache; skip_init=true)
+    try
+        Trade.run_backtest!(cache; skip_init=true)
+    finally
+        _save_tradesim_checkpoint!(cache)
+    end
     finaldt = cache.xc.currentdt
 
     alltrades = _stringify_categorical_columns!(TSM.collecttradesdf(cache.xc.tsm))
@@ -1043,11 +1165,18 @@ println("$(EnvConfig.now()): replay source folder=$REPLAY_SOURCE_SUBFOLDER")
 
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
 run_startdt, run_enddt = effective_startdt, effective_enddt
-resultsdf_window = _load_replay_df(REPLAY_SOURCE_SUBFOLDER, "results", "all")
-@assert nrow(resultsdf_window) > 0 "replay source results/all is empty"
-source_opentimes_window = DateTime.(resultsdf_window[!, :opentime])
-cache_startdt = isnothing(run_startdt) ? minimum(source_opentimes_window) : run_startdt
-cache_enddt = isnothing(run_enddt) ? maximum(source_opentimes_window) : run_enddt
+# Only the overall replay source's min/max opentime are needed here, and only when a bound
+# wasn't given explicitly - skip loading results altogether when both are already known.
+if isnothing(run_startdt) || isnothing(run_enddt)
+    resultsdf_window, _ = _load_replay_source(REPLAY_SOURCE_SUBFOLDER, BACKTEST_BASES)
+    @assert nrow(resultsdf_window) > 0 "replay source results/all is empty"
+    source_opentimes_window = DateTime.(resultsdf_window[!, :opentime])
+    cache_startdt = isnothing(run_startdt) ? minimum(source_opentimes_window) : run_startdt
+    cache_enddt = isnothing(run_enddt) ? maximum(source_opentimes_window) : run_enddt
+else
+    cache_startdt = run_startdt
+    cache_enddt = run_enddt
+end
 strategy_runtime = TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME")
 
 # ─────────────────────────────────────────────────────────────────────────────

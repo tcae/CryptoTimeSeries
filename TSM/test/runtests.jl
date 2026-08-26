@@ -25,6 +25,36 @@ using TSM
     @test TSM.gettrades_label(df, 1) == longopen
 end
 
+@testset "TSM uncompressed id categoricals" begin
+    tsm = TSM.TsmCache()
+    tdf = TSM.trades(tsm, "BTCUSDT")
+    @test eltype(CategoricalArrays.refs(tdf[!, :lo_id])) == UInt32
+    TSM.ensuretradesrow!(tsm, "BTC", "USDT", DateTime(2026, 1, 1))
+    tdf = TSM.trades(tsm, "BTCUSDT")
+    @test String(tdf[1, :tsmstate]) == "sync"
+end
+
+@testset "TSM checkpoint resume helpers" begin
+    checkpoint = DataFrame(
+        opentime=[DateTime(2026, 1, 1) + Minute(i) for i in 0:3],
+        close=Float32[1f0, 2f0, 3f0, 4f0],
+        tsmstate=categorical(["xch", "xch", "request", "none"]),
+    )
+    @test TSM.lastcheckpointedrowindex(checkpoint) == 3
+
+    fresh = DataFrame(
+        opentime=checkpoint[!, :opentime],
+        close=Float32[0f0, 0f0, 0f0, 0f0],
+        tsmstate=categorical(fill("none", 4)),
+    )
+    TSM.restorecheckpointrows!(fresh, checkpoint, 2)
+    @test fresh[1, :close] == 1f0
+    @test fresh[2, :close] == 2f0
+    @test fresh[3, :close] == 0f0
+    @test String(fresh[1, :tsmstate]) == "xch"
+    @test String(fresh[3, :tsmstate]) == "none"
+end
+
 @testset "TSM normalizes legacy label column" begin
     df = DataFrame(
         opentime=[DateTime(2026, 1, 1), DateTime(2026, 1, 1, 0, 1)],

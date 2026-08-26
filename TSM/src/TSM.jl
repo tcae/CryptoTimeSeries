@@ -34,6 +34,8 @@ const TSM_CATEGORICAL_COLUMNS = Set([:pair, :set, :lo_id, :lo_status, :lo_msg, :
 const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lcsl_limit, :scsl_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
 const TSM_INT_COLUMNS = Set([:rangeid])
 const TSM_TRADE_LANES = Set([:lo, :lc, :so, :sc])
+"Order id columns; unbounded cardinality requires uncompressed categoricals (see `_uncompressedcategorical`)."
+const TSM_ID_COLUMNS = Set([:lo_id, :lol_id, :lc_id, :lcl_id, :lcsl_id, :so_id, :sol_id, :sc_id, :scl_id, :scsl_id])
 
 const RANGEID_SUBRANGE_SPAN = EnvConfig.RANGEID_SUBRANGE_SPAN
 
@@ -86,6 +88,14 @@ function _compressedcategorical(values; levels=nothing)
         return categorical(values; compress=true)
     end
     return categorical(values; levels=levels, compress=true)
+end
+
+"Order id columns carry unbounded cardinality (one level per exchange order id), so they must stay uncompressed to avoid the compressed pool reftype overflowing during long runs."
+function _uncompressedcategorical(values; levels=nothing)
+    if isnothing(levels)
+        return categorical(values; compress=false)
+    end
+    return categorical(values; levels=levels, compress=false)
 end
 
 function _ensurecategoricallevel!(col, value::AbstractString)
@@ -232,6 +242,56 @@ function tradingpairs(tsm::TsmCache)::Vector{String}
     return sort!(collect(keys(tsm.pairstates)))
 end
 
+"""
+Prime the per-pair row cursor to the row matching `opentime` in an already-seeded pair
+dataframe, so the next `ensuretradesrow!` call resumes there instead of restarting from
+row 1. Used to resume an interrupted tradesim run mid-dataframe.
+"""
+function primenextrowix!(tsm::TsmCache, base::AbstractString, quotecoin::AbstractString, opentime::DateTime)::Int
+    pairkey = tradingpairkey(uppercase(String(base)), quotecoin)
+    tdf = trades(tsm, pairkey)
+    ix = findfirst(==(opentime), tdf[!, :opentime])
+    @assert !isnothing(ix) "cannot prime cursor: opentime=$(opentime) not found in seeded trades for pair=$(pairkey)"
+    tsm.nextrowix[pairkey] = ix - 1
+    return ix
+end
+
+"""
+Row index (1-based) of the last row whose `tsmstate` differs from `TSM_NO_STATE`,
+or `0` when no row was ever visited. Used to resume an interrupted run: everything
+strictly before this row is fully processed; this row itself is reprocessed because
+an interruption most likely happened mid-processing of it.
+"""
+function lastcheckpointedrowindex(checkpoint::AbstractDataFrame)::Int
+    (:tsmstate in propertynames(checkpoint)) || return 0
+    ix = findlast(!=(TSM_NO_STATE), String.(checkpoint[!, :tsmstate]))
+    return isnothing(ix) ? 0 : ix
+end
+
+"""
+Overwrite rows `1:prefixn` of a freshly schema-normalized `tradesdf` with the matching
+rows of a previously persisted `checkpoint` dataframe (same row order/opentimes
+assumed), restoring exchange/account/strategy state for rows already fully processed
+in an earlier, interrupted tradesim run.
+"""
+function restorecheckpointrows!(tradesdf::DataFrame, checkpoint::AbstractDataFrame, prefixn::Integer)::DataFrame
+    prefixn <= 0 && return tradesdf
+    @assert prefixn <= nrow(tradesdf) "prefixn=$(prefixn) exceeds nrow(tradesdf)=$(nrow(tradesdf))"
+    @assert prefixn <= nrow(checkpoint) "prefixn=$(prefixn) exceeds nrow(checkpoint)=$(nrow(checkpoint))"
+    for col in propertynames(checkpoint)
+        (col in propertynames(tradesdf)) || continue
+        srccol = checkpoint[!, col]
+        if tradesdf[!, col] isa CategoricalArray
+            for ix in 1:prefixn
+                _setcategoricalcell!(tradesdf, col, ix, srccol[ix])
+            end
+        else
+            tradesdf[1:prefixn, col] = srccol[1:prefixn]
+        end
+    end
+    return tradesdf
+end
+
 """Return true when the TSM cache already tracks one pair state entry."""
 function haspairstate(tsm::TsmCache, pair::AbstractString)::Bool
     return haskey(tsm.pairstates, uppercase(String(pair)))
@@ -286,6 +346,7 @@ function ensuretradesrow!(tsm::TsmCache, base::AbstractString, quotecoin::Abstra
 
     tdf[rowix, :opentime] = opentime
     tdf[rowix, :pair] = pairkey
+    (:tsmstate in propertynames(tdf)) && settrades_tsmstate!(tdf, rowix, "sync")
     return (tradesdf=tdf, rowix=Int(rowix))
 end
 
@@ -299,7 +360,7 @@ function _defaultcolumn(field::Symbol, n::Integer)
     elseif field === :lo_status || field === :lol_status || field === :lc_status || field === :lcl_status || field === :lcsl_status || field === :so_status || field === :sol_status || field === :sc_status || field === :scl_status || field === :scsl_status
         return _compressedcategorical(fill("none", n); levels=TSM_STATUS_LEVELS)
     elseif field === :lo_id || field === :lol_id || field === :lc_id || field === :lcl_id || field === :lcsl_id || field === :so_id || field === :sol_id || field === :sc_id || field === :scl_id || field === :scsl_id
-        return _compressedcategorical(fill(TSM_NO_ORDER_ID, n); levels=[TSM_NO_ORDER_ID])
+        return _uncompressedcategorical(fill(TSM_NO_ORDER_ID, n); levels=[TSM_NO_ORDER_ID])
     elseif field === :lo_msg || field === :lol_msg || field === :lc_msg || field === :lcl_msg || field === :lcsl_msg || field === :so_msg || field === :sol_msg || field === :sc_msg || field === :scl_msg || field === :scsl_msg
         return _compressedcategorical(fill(TSM_NO_ORDER_MSG, n); levels=[TSM_NO_ORDER_MSG])
     elseif field === :pair || field === :set || field === :config || field === :tsmstate
@@ -321,6 +382,11 @@ function _ensurecolumn!(tradesdf::DataFrame, field::Symbol)
         if !(eltype(col) <: TradeLabel)
             @assert all(!ismissing(v) for v in col) "tradesdf[:label] contains missing values and cannot be normalized to TradeLabel"
             tradesdf[!, :label] = [v isa TradeLabel ? v : Targets.tradelabel(String(v)) for v in col]
+        end
+    elseif field in TSM_ID_COLUMNS
+        col = tradesdf[!, field]
+        if (col isa CategoricalArray) && (eltype(CategoricalArrays.refs(col)) != UInt32)
+            tradesdf[!, field] = _uncompressedcategorical(String.(col); levels=levels(col))
         end
     end
     return tradesdf
@@ -783,10 +849,11 @@ function tsm_tradesdf_config(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :config)
 end
 
-"""Ensure Trades column `tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`.  
-- *sync*: execution and price changes of the most recent minute are updated in the current row fields; next is *request*
-- *request*: based on data of the previous minute order requests are defined; next is *xch*
-- *xch*: order requests are submitted to the exchange; next is *sync*
+"""Ensure Trades column `tsmstate` exists. Owner: TSM. Eltype: `CategoricalVector{String}`.
+Per-row progression (each row is visited once per minute, `TSM_NO_STATE` default until visited):
+- *sync*: the row becomes the active row for its minute; price/execution fields are synced; next is *request*
+- *request*: TradingStrategy and `Trade.trade!` evaluate the row before handing it to Xch; next is *xch*
+- *xch*: the row is handed to Xch for order request processing; terminal state, the row does not revisit *sync*
 """
 function tsm_tradesdf_tsmstate(tradesdf::DataFrame)::DataFrame
     return _ensurecolumn!(tradesdf, :tsmstate)

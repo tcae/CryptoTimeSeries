@@ -561,6 +561,45 @@ function checkpredictionsdf(predictionsdf::Union{AbstractDataFrame, Nothing}, re
 end
 
 """
+Split and persist `predictionsdf` per coin (mirrors the `results/features` per-coin caches),
+so downstream single/few-coin readers (e.g. `tradesim.jl`) can load a coin's predictions
+without loading the full multi-coin `predictions/maxpredictions` file. `resultsdf` and
+`predictionsdf` must be row-aligned (same order, same length) - `predictionsdf` itself carries
+no coin/opentime identity of its own. Skips coins that already have a cache unless `force`.
+"""
+function _persist_coin_predictions_cache!(resultsdf::AbstractDataFrame, predictionsdf::AbstractDataFrame; force::Bool=false)
+    @assert :coin in propertynames(resultsdf) "resultsdf missing :coin column required for per-coin predictions split"
+    n = size(resultsdf, 1)
+    @assert n == size(predictionsdf, 1) "resultsdf/predictionsdf row count mismatch: $(n) != $(size(predictionsdf, 1))"
+    coins = string.(resultsdf[!, :coin])
+    coinixs = Dict{String, Vector{Int}}()
+    for ix in 1:n
+        push!(get!(() -> Int[], coinixs, coins[ix]), ix)
+    end
+    for (coin, ixs) in coinixs
+        if !force && EnvConfig.isfolder(TradingStrategy.predictionsfilename(coin))
+            continue
+        end
+        EnvConfig.savedf(predictionsdf[ixs, :], TradingStrategy.predictionsfilename(coin))
+    end
+    return nothing
+end
+
+"""
+Rebuild per-coin prediction caches from an already-generated combined `results/all` +
+`predictions/maxpredictions` pair, e.g. for a replay-source folder created before the
+per-coin split existed. Overwrites any existing per-coin cache.
+"""
+function backfillcoinpredictions!()
+    resultsdf = DataFrame(EnvConfig.readdf(TradingStrategy.resultsfilename()))
+    predictionsdf = DataFrame(EnvConfig.readdf(TradingStrategy.predictionsfilename()))
+    @assert nrow(resultsdf) > 0 "missing or empty $(TradingStrategy.resultsfilename())"
+    @assert nrow(predictionsdf) > 0 "missing or empty $(TradingStrategy.predictionsfilename())"
+    _persist_coin_predictions_cache!(resultsdf, predictionsdf; force=true)
+    return nothing
+end
+
+"""
 Returns the max prediction with its corresponding trade label for the samples of all coins. 
 The returned DataFrame provides one score::Float32 column and one label::TradeLabel column representing the best sample prediction + the original targets::TradeLabel and set::CategoricalVector.
 """
@@ -580,6 +619,7 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
         end
     end
     resultsdf = featuresdf = nothing
+    freshlycomputed = false
     # predictions are stored in a predictionsdf to avoid loading every time also features bu eventually you want the whole resultdf with predictions
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
         cl = getruntimeclassifier(cfg)
@@ -593,12 +633,14 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
         if (size(resultsdf, 1) > 0)
             EnvConfig.savedf(predictionsdf, TradingStrategy.predictionsfilename())
         end
+        freshlycomputed = true
     end
     if !isnothing(predictionsdf) && (size(predictionsdf, 1) > 0)
         if isnothing(resultsdf)
             resultsdf, _ = getfeaturestargetsdf!(cfg)
         end
         checkpredictionsdf(predictionsdf, resultsdf)
+        _persist_coin_predictions_cache!(resultsdf, predictionsdf; force=freshlycomputed)
         resultsdf[:, :score] = predictionsdf[!, :score]
         resultsdf[:, :label] = predictionsdf[!, :label]
         badix, badreason = _first_invalid_score(resultsdf[!, :score])

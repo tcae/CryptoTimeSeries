@@ -764,8 +764,20 @@ function setcurrenttime!(xc::XchCache, datetime::Union{DateTime, Nothing})
         return nothing
     end
 
+    # Share xc.bases by reference (not a copy) with adapters that simulate order matching
+    # against OHLCV candles, so they read the same already-loaded data instead of holding
+    # their own duplicate cache. Adapters without this concept (e.g. KrakenSpot/Futures) are
+    # left untouched.
+    function _setohlcvcache!(bc, bases)
+        if !isnothing(bc) && hasproperty(bc, :ohlcvcache)
+            setproperty!(bc, :ohlcvcache, bases)
+        end
+        return nothing
+    end
+
     xc.currentdt = datetime
     _setsimtime!(rawcache(xc.bc), datetime)
+    _setohlcvcache!(rawcache(xc.bc), xc.bases)
     if !isnothing(datetime)
         for base in keys(xc.bases)
             try
@@ -1990,15 +2002,15 @@ function _adapterbalances(xc::XchCache)::DataFrame
     if isnothing(bdf)
         return DataFrame()
     end
-    out = DataFrame(bdf; copycols=true)
-    cols = propertynames(out)
+    cols = propertynames(bdf)
 
     # Normalize side-lane adapter balances (coin/side/free/locked) to the
-    # canonical Xch balances schema with explicit short exposure.
+    # canonical Xch balances schema with explicit short exposure. Reads `bdf` directly
+    # (no upfront copy) since only `Xch.balances` calls this, and it already copies the
+    # result again before any in-place filtering.
     if (:side in cols) && (:coin in cols) && (:free in cols) && (:locked in cols)
-        canon = DataFrame(coin=String[], free=Float32[], locked=Float32[], short=Float32[])
         bycoin = Dict{String, Tuple{Float32, Float32, Float32}}()
-        for row in eachrow(out)
+        for row in eachrow(bdf)
             coin = uppercase(String(row.coin))
             side = lowercase(String(row.side))
             freev = max(0f0, (row.free))
@@ -2010,13 +2022,16 @@ function _adapterbalances(xc::XchCache)::DataFrame
                 bycoin[coin] = (prev[1] + freev, prev[2] + lockedv, prev[3])
             end
         end
-        for (coin, vals) in bycoin
-            push!(canon, (coin=coin, free=vals[1], locked=vals[2], short=vals[3]))
-        end
-        return canon
+        coins = collect(keys(bycoin))
+        return DataFrame(
+            coin=coins,
+            free=Float32[bycoin[c][1] for c in coins],
+            locked=Float32[bycoin[c][2] for c in coins],
+            short=Float32[bycoin[c][3] for c in coins],
+        )
     end
 
-    return out
+    return bdf
 end
 
 function _filterbalances!(xc::XchCache, bdf::DataFrame; ignoresmallvolume::Bool=true)::DataFrame

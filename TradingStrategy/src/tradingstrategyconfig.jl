@@ -9,7 +9,7 @@ partitionconfig02() =(samplesets = ["train", "test", "train", "train", "eval", "
 
 resultsfilename(coin=nothing) = isnothing(coin) ? joinpath("results", "all") : joinpath("results", String(coin)) # includes hlcp, sets, ranges, targets
 featuresfilename(coin=nothing) = isnothing(coin) ? joinpath("features", "all") : joinpath("features", String(coin))
-predictionsfilename() = joinpath("predictions", "maxpredictions")
+predictionsfilename(coin=nothing) = isnothing(coin) ? joinpath("predictions", "maxpredictions") : joinpath("predictions", String(coin))
 confusionfilename() = joinpath("predictions", "confusion")
 xconfusionfilename() = joinpath("predictions", "xconfusion")
 distancesfilename() = joinpath("trades", "distances")

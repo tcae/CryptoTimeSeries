@@ -539,6 +539,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
         tradesix = tradesdfdict[base].rowix
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
+        TSM.settrades_tsmstate!(tradesdf, tradesix, "request")
         if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:blacklistbases])
             TSM.settrades_label!(tradesdf, tradesix, allclose)
             TSM.settrades_limit!(tradesdf, tradesix, longopen, 0f0)
@@ -660,6 +661,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
             end
         end
 
+        TSM.settrades_tsmstate!(tradesdf, tradesix, "xch")
         Xch.process_order_request(cache.xc, tradesdf, tradesix)
     end
 
