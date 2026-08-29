@@ -212,6 +212,9 @@ Base.@kwdef struct StrategyConfig
     # up while its invested quote stays below this; equal-to-one-open budget yields exactly
     # one open per gain segment.
     maxbudgetquote::Float32 = 200f0
+    # Smallest order the exchange accepts. Without it, a lane sitting at its budget posts
+    # float-residue dust orders that pollute position and gain accounting.
+    minorderquote::Float32 = 10f0
 end
 
 """Per-trading-pair runtime state holder used by `TsCache`.
@@ -254,6 +257,7 @@ end
         minpricedelta=spec.minpricedelta,
         max_classify_staleness_minutes=spec.max_classify_staleness_minutes,
         maxbudgetquote=spec.maxbudgetquote,
+        minorderquote=spec.minorderquote,
     )
 end
 
@@ -979,7 +983,7 @@ fund. `limitprice` converts the resulting quote amount into a base amount."""
     limitprice > 0f0 || return 0f0
     remaining = strategy.maxbudgetquote - invested_amount * invested_pavg
     available = min(remaining, freequote)
-    available > 0f0 || return 0f0
+    available >= strategy.minorderquote || return 0f0
     return available / limitprice
 end
 

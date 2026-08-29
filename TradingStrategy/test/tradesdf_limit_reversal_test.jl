@@ -187,6 +187,26 @@ end
         @test isnothing(TradingStrategy._open_hit_spec(tcols(probe), 1))
     end
 
+    @testset "advice row posts no dust order when the lane sits at its budget" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        strategy = limit_reversal_strategy()
+        # lane invested to just under the budget, leaving far less than one minimum order
+        probe[1, :lol_pavg] = 0.0102697f0
+        probe[1, :lp_amount] = (strategy.maxbudgetquote - 1f-3) / probe[1, :lol_pavg]
+        TradingStrategy.gain_limit_reversal!(strategy, tcols(probe), 1)
+        TradingStrategy._process_advice_row!(strategy, tcols(probe), 1)
+        @test probe[1, :lo_amount] == 0f0
+        @test isnothing(TradingStrategy._open_hit_spec(tcols(probe), 1))
+    end
+
     @testset "advice row tops up a lane that is below its budget" begin
         probe = DataFrame(
             opentime=[dt],

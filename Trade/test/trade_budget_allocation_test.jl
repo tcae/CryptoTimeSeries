@@ -24,7 +24,9 @@ function build_case(bases::Vector{String}; equity::Float32, closeprice::Float32,
     xc = Xch.XchCache(startdt=DT, enddt=DT)
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-    strategy = TradingStrategy.StrategyConfig(algorithm=contract_algorithm!)
+    # Reuse a resolved config for its classifier, but drive the documented algorithm contract.
+    resolved = TradingStrategy.strategyconfig("046")
+    strategy = TradingStrategy.StrategyConfig(classifier=resolved.classifier, algorithm=contract_algorithm!)
     tc = Trade.TradeCache(xc=xc, strategy=strategy, trademode=Trade.buysell, stoplosspct=0.05)
     tc.cfg = DataFrame(basecoin=bases, openenabled=fill(true, length(bases)), closeenabled=fill(true, length(bases)))
     tc.mc[:minorderquote] = minorderquote

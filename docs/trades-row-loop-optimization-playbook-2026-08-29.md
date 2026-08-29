@@ -127,6 +127,16 @@ Sequence that worked:
   wrongly-added score carry was invisible. Give every cell a unique value per (column, row).
 - **Passing tests prove nothing about an untested path.** The `SubDataFrame` bug (§7) survived
   a green suite because no test ever passed a `SubDataFrame`.
+- **A stale output cache makes verification vacuous.** I "verified" a refactor across several
+  runs that never executed the changed code: `TradingStrategy.gainsfilename()` resolves to
+  `trades/gains_all`, but I was deleting a `gains/` folder that does not hold it. The run
+  returned the cached frame, printed identical numbers, and I reported "bit-identical". Before
+  claiming a refactor is result-neutral, **prove the code ran** — delete the real artifact
+  (resolve the path from the code, do not guess it), or assert on a fresh in-run marker.
+  `tradesim` has per-pair checkpoints and a ledger folder, so this trap is worse there.
+- **Freshness is mtime-based, so touching an input silently rebuilds downstream artifacts.**
+  `isfreshcache` compares mtimes; a `touch` on one results file rebuilt predictions and
+  overwrote them. Diagnostic commands can destroy the baseline you are comparing against.
 
 ### Grep list for the next module
 ```
@@ -150,6 +160,28 @@ The third one initially passed — which is how I found the constant-probe weakn
 
 Do the same for `tradesim`: pin the per-minute state transition against a reference before
 touching it, and prove the pin fails when the implementation is perturbed.
+
+### Choose a comparison metric that survives the refactor
+
+After switching gain collection from event-level to volume-level FIFO segments, `gain_sum`
+moved 278 -> 10,520 with no behaviour change: it is a **sum of relative gains**, so it scales
+with segmentation granularity. Segment counts and mean gain moved for the same reason.
+
+Before/after comparisons must use a granularity-invariant quantity — `gainquote` (volume
+weighted), realized quote per pair, or the position/`lp_amount` trajectory. Pick it *before*
+refactoring, otherwise every comparison is unfalsifiable.
+
+### Uncovered call sites break silently on a signature change
+
+Changing the plugin contract to `algorithm(cfg, cols::TradesColumns, ix)` left
+`Trade.trade!` still passing a `DataFrame` — a latent `MethodError` that no test caught,
+because every `Trade` test runs with `trademode=notrade` and returns before the call. Grep
+for **all** call sites of anything whose signature changes, and check the mode/branch guard
+above each one; a green suite says nothing about a branch it never enters.
+
+When adding coverage for such a seam, give the stub a **typed** signature
+(`::TSM.TradesColumns`) so the contract is enforced by dispatch. An untyped stub accepts the
+wrong argument and re-hides the bug.
 
 ## 7. Schema enforcement — the bug class this exposed
 
@@ -196,7 +228,34 @@ Note on the aliasing case: only writes sourced from a *fresh* array propagate ba
 `x .= same_view` is a no-op, which is why `close`/`high`/`low` were never corrupted while
 `:label` and truth-pass `:score` were.
 
-## 8. Open items
+## 8. Gain compilation reuse — three traps
+
+`TSM.compilegains` reconstructs positions from per-row `lp_amount`/`sp_amount` deltas and
+FIFO-matches opens against closes. Reusing it for `tradesim` means inheriting these.
+
+**Partition scope must match replay independence.** Default `setpartitions=false` scopes
+matching to `(pair, liquidityrangeid)` so a position may span train/test/eval subranges.
+TrendDetector replays each range independently and drops pair state in between, so a
+cross-range amount step was read as a close against a fresh row with `pavg == 0` — 181 bogus
+"data gap" warnings. Use `setpartitions=true` wherever each partition is an independent
+replay. A position still open at partition end is then simply dropped by
+`_compilegainspartition!`, which is the intended semantics.
+
+**Float32 delta accumulation drifts by ULPs.** Opens are queued from per-row `Float32`
+deltas, so the queue sum diverges from the stored position by roughly one ULP per open. The
+final close then requests marginally more than the queue holds and the unmatched-close assert
+fires — observed as `volume=0.00024414062`, exactly one ULP in [2048, 4096). Matching now
+stops below `64 * eps(Float32) * closevolume`. Non-round position sizes make this far more
+likely, so it will resurface in `tradesim` wherever amounts are budget/price derived.
+
+**Snapshot at the right point when a buffer is replayed twice.** `preparereplaytrades!`
+reuses the same `tradesdf` for the predicted and truth passes. The snapshot was taken after
+the second pass, so the persisted Trades rows — and every compiled gain — represented truth
+only; the predicted pass was silently absent. Copy the buffer immediately after each pass,
+and compile the passes as separate partitions, or an open of one pass matches a close of the
+other.
+
+## 9. Open items
 
 - **255-level cap on compressed categoricals.** `*_msg`, `:config`, `:set`, `:tsmstate` use
   `compress=true` -> `UInt8` refs. `_ensurecategoricallevel!` aborts past 255 levels and the
@@ -209,7 +268,7 @@ Note on the aliasing case: only writes sourced from a *fresh* array propagate ba
 - **`lastrow`/`newrow` struct port** was considered and deferred. Measured benefit over hoisted
   columns is small; its real value would be unifying the live-append and replay-mutate paths.
 
-## 9. Applying this to tradesim / Trade / Xch
+## 10. Applying this to tradesim / Trade / Xch
 
 - The per-cell cost is identical — `Trade` and `Xch` use the same `TSM.settrades_*!` accessors
   (~27 `settrades_msg!` call sites alone), so items 1-3 of §2 apply unchanged and are already
@@ -222,3 +281,22 @@ Note on the aliasing case: only writes sourced from a *fresh* array propagate ba
   before assuming the cost is in the row logic.
 - Expect more schema violations (§7) as soon as typed handles are introduced there — each one
   is a pre-existing silent bug, not a regression.
+
+### Before starting, establish a falsifiable baseline
+1. Resolve the **actual** output artifact paths from code (`gainsfilename()`, the tradesim
+   ledger/checkpoint folders) and delete them, so the first run cannot be served from cache.
+2. Record a granularity-invariant baseline (§6) plus wall time and allocation.
+3. Confirm the baseline run really executed the target loop — a progress marker or row count,
+   not just an exit code.
+4. Only then refactor, re-measuring after each step as in §5.
+
+### Two seams worth checking first in tradesim
+- `Trade.trade!` is a **two-pass** function: pass 1 runs the algorithm and counts open
+  signals, then the budget is divided equally, then pass 2 assigns and decrements. Any
+  hoisting must preserve that ordering; the invariant (sum of assigned quote never exceeds
+  `min(freemargin, equity, maxbudgetquote)`) is pinned by
+  `Trade/test/trade_budget_allocation_test.jl`.
+- `_process_advice_row!` sizes opens from `maxbudgetquote` minus the lane's invested quote,
+  capped by `freequote`. Both operands are read per row from the frame, so this stays cheap
+  under hoisting — but it means `freequote`/`freemargin` must be populated, otherwise every
+  open is suppressed. Replay supplies them as constants from TrendDetector.
