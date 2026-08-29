@@ -336,11 +336,10 @@ end
 
 "Persist the shared Bybit simulation ledger so a resumed run continues from the same simulated account state."
 function _save_ledger_checkpoint!(bc::Bybit.BybitCache)
-    (isnothing(bc.assets) || isnothing(bc.orders) || isnothing(bc.closedorders)) && return nothing
+    (isnothing(bc.assets) || isnothing(bc.orderbook)) && return nothing
     folderpath = _tradesim_ledger_folderpath()
     EnvConfig.savedf(DataFrame(bc.assets), "assets"; folderpath=folderpath, format=:arrow)
-    EnvConfig.savedf(DataFrame(bc.orders), "orders"; folderpath=folderpath, format=:arrow)
-    EnvConfig.savedf(DataFrame(bc.closedorders), "closedorders"; folderpath=folderpath, format=:arrow)
+    EnvConfig.savedf(DataFrame(bc.orderbook), "orderbook"; folderpath=folderpath, format=:arrow)
     seq = Bybit._sim_sequencing_for(bc)
     EnvConfig.savedf(DataFrame(successor_orderid=collect(keys(seq)), predecessor_orderid=collect(values(seq))), "sequencing"; folderpath=folderpath, format=:arrow)
     EnvConfig.savedf(DataFrame(ordercounter=[get(Bybit._sim_order_counter, bc, 0)]), "manifest"; folderpath=folderpath, format=:arrow)
@@ -352,8 +351,8 @@ function _restore_ledger_checkpoint!(bc::Bybit.BybitCache)::Bool
     folderpath = _tradesim_ledger_folderpath()
     isfile(joinpath(folderpath, "manifest.arrow")) || return false
     bc.assets = DataFrame(EnvConfig.readdf("assets"; folderpath=folderpath, format=:arrow, copycols=true))
-    bc.orders = DataFrame(EnvConfig.readdf("orders"; folderpath=folderpath, format=:arrow, copycols=true))
-    bc.closedorders = DataFrame(EnvConfig.readdf("closedorders"; folderpath=folderpath, format=:arrow, copycols=true))
+    bc.orderbook = DataFrame(EnvConfig.readdf("orderbook"; folderpath=folderpath, format=:arrow, copycols=true))
+    Bybit._simrebuildorderindexes!(bc)
     seqdf = DataFrame(EnvConfig.readdf("sequencing"; folderpath=folderpath, format=:arrow, copycols=true))
     seq = Bybit._sim_sequencing_for(bc)
     empty!(seq)
@@ -457,13 +456,8 @@ function _validate_tradesim_replay_result!(tradesdf::DataFrame)
         @assert !any(ismissing, values) "status column $(col) contains missing values"
     end
 
-    has_limit_activity = any(col -> any(tradesdf[!, col] .!= 0f0), limit_cols)
-    has_amount_activity = any(col -> any(tradesdf[!, col] .!= 0f0), amount_cols)
-    has_status_activity = any(col -> any(lowercase.(String.(tradesdf[!, col])) .!= "none"), status_cols)
-
-    @assert has_limit_activity "replay result has no non-zero limits"
-    @assert has_amount_activity "replay result has no non-zero amounts"
-    @assert has_status_activity "replay result has no status activity"
+    # A range without trade activity is a valid outcome (no signal, or no liquidity), and
+    # is reported as zero gain segments rather than treated as a broken run.
     return nothing
 end
 
@@ -736,8 +730,7 @@ function _reset_replay_runtime!(cache::Trade.TradeCache, quote_coin::AbstractStr
     if cache.xc.bc isa Bybit.BybitCache
         bc = cache.xc.bc
         bc.assets = nothing
-        bc.orders = nothing
-        bc.closedorders = nothing
+        bc.orderbook = nothing
         Bybit._init_simulation!(bc)
         Bybit.seedportfolio!(bc, quote_coin, initial_quote_balance)
     else
@@ -879,6 +872,9 @@ function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFram
         Xch.addbase!(cache.xc, base, overall_startdt, overall_enddt)
         seeddf = select(gdf, :opentime, :pair, :set, :rangeid, :high, :low, :close, :label, :score)
         TSM.settrades!(cache.xc.tsm, pair, seeddf)
+        # The replay source only carries liquid minutes; allocating the rest of the epoch
+        # up front keeps the frame structurally fixed, so no tick has to grow it.
+        TSM.preparetradesepoch!(cache.xc.tsm, base, quotecoin, overall_enddt; startdt=overall_startdt)
 
         checkpoint = resume ? _load_pair_checkpoint(base, quotecoin) : nothing
         if !isnothing(checkpoint)

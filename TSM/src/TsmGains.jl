@@ -159,10 +159,9 @@ end
 
 """Return the execution price stored on the position-change row for one order lane.
 
-Falls back to this row's `close` price when the lane price is zero: a genuine
-data gap (classifier-partition boundary, simulated exchange downtime) can close a position
-without ever recording its own fill/liquidation price, and gains compilation must still
-produce a usable (if approximate) gain rather than abort the whole run."""
+Falls back to this row's `close` price when the lane price is zero. A genuine data gap
+can close a position without ever recording its own fill/liquidation price, and gains
+compilation still needs a usable (if approximate) result rather than aborting the run."""
 function _compilegainsprice(part::GainPartition, ix::Integer, prices::Vector{Float32}, pricecol::Symbol)::Float32
     price = prices[ix]
     (price > 0f0) && return price
@@ -170,7 +169,6 @@ function _compilegainsprice(part::GainPartition, ix::Integer, prices::Vector{Flo
     @assert :close in propertynames(part.rows) "tradesdf must contain :close to fall back for $(pricecol); names=$(names(part.rows))"
     fallback = part.rows[ix, :close]::Float32
     @assert fallback > 0f0 "Expected positive $(pricecol) or fallback :close on position change at ix=$(ix), opentime=$(_compilegainstime(part, ix)), pair=$(part.rows[ix, :pair]); got $(pricecol)=$(price), close=$(fallback)"
-    @warn "gains compilation: $(pricecol) unavailable (likely a data gap), falling back to close price" ix pair=part.rows[ix, :pair] opentime=_compilegainstime(part, ix) fallback
     return fallback
 end
 

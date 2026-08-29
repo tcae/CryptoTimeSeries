@@ -196,6 +196,77 @@ function _inserttradesrow!(tsm::TsmCache, tdf::DataFrame, pairkey::AbstractStrin
     return newdf
 end
 
+"""Extend one pair's Trades frame so every minute up to `enddt` already has a row.
+
+A scheduled `tradeselection!` defines an epoch, so the rows of that epoch can be allocated
+once instead of being grown per tick: growing mid-loop either copies the whole frame
+(`_inserttradesrow!`) or invalidates held `TradesColumns`. Rows added here keep their
+schema defaults, so `score == 0f0` and `tsmstate == TSM_NO_STATE` mark a minute the loop
+never processed - a data gap, exchange downtime, or simply a not-yet-reached minute.
+
+`enddt === nothing` is the live case (`XchCache.enddt` is open ended): the epoch then spans
+`epochminutes` beyond the last stored row, and the next scheduled `tradeselection!` extends
+it again. Minutes missing *inside* the stored range are filled too, because a seeded replay
+source only carries liquid minutes. Existing row values are preserved. Returns the frame so
+callers can build their column handles from it."""
+function preparetradesepoch!(tsm::TsmCache, base::AbstractString, quotecoin::AbstractString, enddt::Union{Nothing, DateTime}; startdt::Union{Nothing, DateTime}=nothing, epochminutes::Integer=0)::DataFrame
+    pairkey = tradingpairkey(base, quotecoin)
+    tdf = trades(tsm, pairkey)
+    lastdt = nrow(tdf) > 0 ? tdf[nrow(tdf), :opentime] : nothing
+    epochend = if isnothing(enddt)
+        @assert epochminutes > 0 "preparetradesepoch! needs epochminutes>0 for live (enddt===nothing) pair=$(pairkey)"
+        anchor = isnothing(lastdt) ? startdt : lastdt
+        @assert !isnothing(anchor) "preparetradesepoch! needs startdt for the empty pair=$(pairkey)"
+        floor(anchor, Minute(1)) + Minute(epochminutes)
+    else
+        floor(enddt, Minute(1))
+    end
+    # An epoch only ever extends; a shorter enddt must not drop already stored rows.
+    isnothing(lastdt) || (epochend = max(epochend, lastdt))
+    gridstart = if nrow(tdf) > 0
+        tdf[1, :opentime]
+    else
+        @assert !isnothing(startdt) "preparetradesepoch! needs startdt for the empty pair=$(pairkey)"
+        floor(startdt, Minute(1))
+    end
+    grid = collect(gridstart:Minute(1):epochend)
+    (length(grid) == nrow(tdf)) && (nrow(tdf) == 0 || tdf[!, :opentime] == grid) && return tdf
+
+    if nrow(tdf) == 0
+        for opentime in grid
+            _appendtradesrow!(tsm, tdf, pairkey, opentime)
+        end
+        return tdf
+    end
+
+    # Rows are missing inside the stored range, so the frame is rebuilt once on the full
+    # grid; per-tick insertion would copy the whole frame for every missing minute.
+    # Columns are built from `_defaultcolumn` and the stored values scattered in, because a
+    # join would collapse the eltype of columns whose default is `missing`.
+    gridpos = Dict{DateTime, Int}(dt => i for (i, dt) in enumerate(grid))
+    target = [gridpos[dt] for dt in tdf[!, :opentime]]
+    rebuilt = DataFrame(opentime=grid)
+    for field in propertynames(tdf)
+        field === :opentime && continue
+        newcol = _defaultcolumn(field, length(grid))
+        oldcol = tdf[!, field]
+        for (source, dest) in enumerate(target)
+            newcol[dest] = oldcol[source]
+        end
+        rebuilt[!, field] = newcol
+    end
+    settrades!(tsm, pairkey, rebuilt)
+    return trades(tsm, pairkey)
+end
+
+"""Extend every pair of `pairs` to cover the epoch ending at `enddt`."""
+function preparetradesepoch!(tsm::TsmCache, pairs, quotecoin::AbstractString, enddt::Union{Nothing, DateTime}; startdt::Union{Nothing, DateTime}=nothing, epochminutes::Integer=0)::Nothing
+    for base in pairs
+        preparetradesepoch!(tsm, String(base), quotecoin, enddt; startdt=startdt, epochminutes=epochminutes)
+    end
+    return nothing
+end
+
 """Apply one contributor set to a Trades dataframe using the TSM cache schema."""
 function _applytradescontributors!(tsm::TsmCache, df::DataFrame=DataFrame())::DataFrame
     return _applytradescontributors!(tsm, df, _schema_contributors(tsm))
@@ -337,6 +408,11 @@ function restorecheckpointrows!(tradesdf::DataFrame, checkpoint::AbstractDataFra
     for col in propertynames(checkpoint)
         (col in propertynames(tradesdf)) || continue
         srccol = checkpoint[!, col]
+        if col === :label
+            restored = [v isa TradeLabel ? v : Targets.tradelabel(String(v)) for v in srccol[1:prefixn]]
+            tradesdf[1:prefixn, col] = restored
+            continue
+        end
         if tradesdf[!, col] isa CategoricalArray
             for ix in 1:prefixn
                 _setcategoricalcell!(tradesdf, col, ix, srccol[ix])

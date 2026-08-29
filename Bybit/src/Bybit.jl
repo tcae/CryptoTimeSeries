@@ -89,6 +89,12 @@ const _recvwindow = "5000000"  # "5000" extended by factor 1000 due to nanosecon
 const _sim_order_counter = IdDict{Any, Int64}()
 # Per-cache successor orderid => predecessor orderid registered via directsequence!.
 const _sim_sequencing = IdDict{Any, Dict{String, String}}()
+"Per-cache orderid => row index mapping for the simulation order book."
+const _sim_order_index = IdDict{Any, Dict{String, Int}}()
+"Per-cache open order row indices, updated lazily from the simulation order book."
+const _sim_open_order_index = IdDict{Any, Vector{Int}}()
+"Resolved trading pair symbol per cache, keyed by the caller supplied base*quote spelling."
+const _symboltoken_memo = IdDict{Any, Dict{String, String}}()
 "Queued forced-liquidation events per simulation cache, drained by Xch into TSM trades rows."
 const _sim_liquidations = IdDict{Any, Vector{NamedTuple}}()
 "Persisted OHLCV per (base, interval), loaded once from disk and reused by every BybitSim kline/price lookup instead of re-reading on every tick."
@@ -119,7 +125,7 @@ const _balance_cache_time = Ref{Union{Nothing, DateTime}}(nothing)
 const BALANCE_CACHE_TTL = Dates.Second(5)
 
 "Bybit exchange cache supporting both production API and simulation mode (BybitSim).
-When used in BybitSim mode, assets/orders/closedorders track simulated bookkeeping."
+When used in BybitSim mode, assets and orderbook track simulated bookkeeping."
 mutable struct BybitCache <: XchAdapter.XchAdapterCache
     syminfodf::Union{Nothing, DataFrame}
     apirest::String
@@ -129,8 +135,7 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     # Simulation state (populated only in BybitSim mode, nil in production).
     # Rows represent holdings lanes with side in {quote,long,short}.
     assets::Union{Nothing, DataFrame}
-    orders::Union{Nothing, DataFrame}
-    closedorders::Union{Nothing, DataFrame}
+    orderbook::Union{Nothing, DataFrame}
     # Shared reference to the owning XchCache's per-base OHLCV cache (duck-typed wiring via
     # Xch.setcurrenttime!, mirrors `simtime`). Same Dict object, no per-simulation copy.
     ohlcvcache::Union{Nothing, Dict{String, Ohlcv.OhlcvData}}
@@ -144,6 +149,73 @@ exchangeid(bc::BybitCache)::String = "Bybit"
 "Return (creating if needed) the successor=>predecessor sequencing map for one simulation cache."
 function _sim_sequencing_for(bc::BybitCache)::Dict{String, String}
     return get!(() -> Dict{String, String}(), _sim_sequencing, bc)
+end
+
+"Return the incrementally maintained orderid => row-index map for the simulation orderbook."
+function _sim_orderindex_for(bc::BybitCache)::Dict{String, Int}
+    idx = get!(() -> Dict{String, Int}(), _sim_order_index, bc)
+    isnothing(bc.orderbook) && (empty!(idx); return idx)
+    @assert length(idx) == nrow(bc.orderbook) "BybitSim order index length=$(length(idx)) must match orderbook rows=$(nrow(bc.orderbook))"
+    return idx
+end
+
+"Return the incrementally maintained open-order row indices for a simulation cache."
+function _sim_openorderindex_for(bc::BybitCache)::Vector{Int}
+    openix = get!(() -> Int[], _sim_open_order_index, bc)
+    isnothing(bc.orderbook) && (empty!(openix); return openix)
+    return openix
+end
+
+"Rebuild simulation indexes after initialization or restoring a persisted orderbook."
+function _simrebuildorderindexes!(bc::BybitCache)
+    book = bc.orderbook
+    @assert !isnothing(book) "BybitSim orderbook must exist when rebuilding indexes"
+    orderidx = get!(() -> Dict{String, Int}(), _sim_order_index, bc)
+    openix = get!(() -> Int[], _sim_open_order_index, bc)
+    empty!(orderidx)
+    empty!(openix)
+    for ix in 1:nrow(book)
+        orderid = String(book[ix, :orderid])
+        @assert !haskey(orderidx, orderid) "BybitSim orderbook contains duplicate orderid=$(orderid)"
+        orderidx[orderid] = ix
+        _isopenstatus(String(book[ix, :status])) && push!(openix, ix)
+    end
+    return nothing
+end
+
+"Append one simulation orderbook row and update its indexes without rescanning the ledger."
+function _simappendorder!(bc::BybitCache, row)
+    book = bc.orderbook
+    @assert !isnothing(book) "BybitSim orderbook must exist when appending order"
+    orderidx = _sim_orderindex_for(bc)
+    openix = _sim_openorderindex_for(bc)
+    orderid = String(row.orderid)
+    @assert !haskey(orderidx, orderid) "BybitSim orderbook already contains orderid=$(orderid)"
+    push!(book, row)
+    ix = nrow(book)
+    orderidx[orderid] = ix
+    if _isopenstatus(String(row.status))
+        isempty(openix) || @assert last(openix) < ix "BybitSim open-order indices must be ascending: last=$(last(openix)) appended=$(ix)"
+        push!(openix, ix)
+    end
+    return book[ix, :]
+end
+
+"Mark one orderbook row terminal while retaining it for order-id lookup and replay audit."
+function _simfinalizeorder!(bc::BybitCache, ix::Int, status::String, updated::DateTime; rejectreason::String="NO ERROR", avgprice=nothing, executedqty=nothing)
+    book = bc.orderbook
+    @assert !isnothing(book) "BybitSim orderbook must exist when finalizing order index=$(ix)"
+    openix = _sim_openorderindex_for(bc)
+    openpos = findfirst(==(ix), openix)
+    @assert !isnothing(openpos) "BybitSim terminal order index=$(ix) is missing from open-order index=$(openix)"
+    deleteat!(openix, openpos)
+    book[ix, :status] = status
+    book[ix, :updated] = updated
+    book[ix, :lastcheck] = updated
+    book[ix, :rejectreason] = rejectreason
+    isnothing(avgprice) || (book[ix, :avgprice] = avgprice)
+    isnothing(executedqty) || (book[ix, :executedqty] = executedqty)
+    return book[ix, :]
 end
 
 "Return (creating if needed) the queued liquidation events for one simulation cache."
@@ -192,11 +264,11 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
         pk = String(publickey)
         sk = String(secretkey)
     end
-    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing, nothing)
+    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing, nothing)
+    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
     EnvConfig.setcoinspath!(exchangeid(bc))
 	EnvConfig.setpairquote!("USDT")
     if EnvConfig.configmode == EnvConfig.test
@@ -205,13 +277,13 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
     return bc
 end
 
-"Initialize simulation state (assets, orders, closedorders) for BybitSim mode"
+"Initialize simulation state (assets and orderbook) for BybitSim mode"
 function _init_simulation!(bc::BybitCache)
     _ensure_sim_symboluniverse!(bc)
     if isnothing(bc.assets)
         bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[], collateral=Float32[])
-        bc.orders = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], lane=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
-        bc.closedorders = similar(bc.orders)
+        bc.orderbook = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], lane=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
+        _simrebuildorderindexes!(bc)
     end
     haskey(_sim_order_counter, bc) || (_sim_order_counter[bc] = 0)
     return bc
@@ -713,7 +785,7 @@ end
 
 function get24h(bc::BybitCache, symbol=nothing)
     # BybitSim/offline mode: synthesize stable market snapshot from symbol universe.
-    if !isnothing(bc.orders)
+    if !isnothing(bc.orderbook)
         return _sim_get24h(bc, symbol)
     end
 
@@ -813,15 +885,26 @@ end
 Resolve the normalized internal symbol for a `(basecoin, quotecoin)` pair.
 """
 function symboltoken(bc::BybitCache, basecoin::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)::String
+    # The symbol of a pair is fixed for the run, but resolving it scans syminfodf row by row
+    # and uppercases each candidate, so it is memoized per cache. The raw argument is cached
+    # too, which keeps the hot path free of the (always allocating) uppercase call.
+    memo = get!(() -> Dict{String, String}(), _symboltoken_memo, bc)
+    rawkey = String(basecoin) * String(quotecoin)
+    cached = get(memo, rawkey, nothing)
+    isnothing(cached) || return cached
+
     base = uppercase(basecoin)
     qtoken = uppercase(quotecoin)
+    resolved = uppercase(base * qtoken)
     if !isnothing(bc.syminfodf) && (size(bc.syminfodf, 1) > 0)
         matchix = findfirst(row -> (uppercase(String(row.basecoin)) == base) && (uppercase(String(row.quotecoin)) == qtoken), eachrow(bc.syminfodf))
         if !isnothing(matchix)
-            return uppercase(String(bc.syminfodf[matchix, :symbol]))
+            resolved = uppercase(String(bc.syminfodf[matchix, :symbol]))
         end
     end
-    return uppercase(base * qtoken)
+    memo[rawkey] = resolved
+    memo[base * qtoken] = resolved
+    return resolved
 end
 
 validsymbol(bc::BybitCache, sym::Union{Nothing, DataFrameRow}) = !isnothing(sym) && (sym.quotecoin == EnvConfig.pairquote) && (sym.innovation == 0) && (sym.status == "Trading") # no Bybit innovation coins
@@ -920,7 +1003,7 @@ Returns ohlcv/klines data as DataFrame with oldest first rows (which is compatib
     1 │ 2024-01-14T12:59:00  42758.0  42758.0  42735.1  42744.0  2.71146
 """
 function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
-    if !isnothing(bc.orders)
+    if !isnothing(bc.orderbook)
         return _sim_klines(bc, symbol; startDateTime=startDateTime, endDateTime=endDateTime, interval=interval)
     end
 
@@ -969,14 +1052,29 @@ Returns a DataFrame of open **spot** orders with columns:
 """
 function openorders(bc::BybitCache; symbol=nothing, orderid=nothing, orderLinkId=nothing)
     # Check if in simulation mode
-    if !isnothing(bc.orders)
+    if !isnothing(bc.orderbook)
         _simprocesspendingorders!(bc)
-        df = copy(bc.orders)
+        book = bc.orderbook
+        openix = _sim_openorderindex_for(bc)
+        if isnothing(orderid) && isnothing(symbol) && isnothing(orderLinkId)
+            isempty(openix) && return DataFrame()
+            return book[openix, :]
+        end
+
+        if !isnothing(orderid)
+            idx = get(_sim_orderindex_for(bc), String(orderid), nothing)
+            isnothing(idx) && return DataFrame()
+            row = book[idx, :]
+            if !isnothing(symbol) && uppercase(String(row.symbol)) != uppercase(String(symbol))
+                return DataFrame()
+            end
+            _isopenstatus(String(row.status)) || return DataFrame()
+            return row[1:1, :]
+        end
+
+        df = book[openix, :]
         if !isnothing(symbol)
             df = df[df[!, :symbol] .== uppercase(String(symbol)), :]
-        end
-        if !isnothing(orderid)
-            df = df[df[!, :orderid] .== String(orderid), :]
         end
         return df
     end
@@ -1076,24 +1174,26 @@ function alltransactions(bc::BybitCache; symbol=nothing, orderid=nothing, orderL
     return df
 end
 
+"Return the matching simulation orderbook row by `orderid` without the extra public wrapper indirection."
+function _simorderrow(bc::BybitCache, orderid)
+    oid = String(orderid)
+    if !isnothing(bc.orderbook)
+        _simprocesspendingorders!(bc)
+        idx = get(_sim_orderindex_for(bc), oid, nothing)
+        isnothing(idx) && return nothing
+        return bc.orderbook[idx, :]
+    end
+    return nothing
+end
+
 "Returns a named tuple of the identified order or `nothing` if order is not found"
 function order(bc::BybitCache, orderid)
     if isnothing(orderid)
         return nothing
     end
-
-    oo = openorders(bc, orderid=orderid)
-    if size(oo, 1) > 0
-        return oo[1, :]
-    end
-
-    # BybitSim keeps immediately-filled/cancelled orders in `closedorders`.
-    # Expose them via order(id) so callers can still reconcile status after close.
-    if !isnothing(bc.closedorders)
-        co = bc.closedorders[bc.closedorders[!, :orderid] .== String(orderid), :]
-        if size(co, 1) > 0
-            return co[end, :]
-        end
+    row = _simorderrow(bc, orderid)
+    if !isnothing(row)
+        return row
     end
     return nothing
 end
@@ -1101,36 +1201,15 @@ end
 """Cancels an open spot order and returns the cancelled orderid"""
 function cancelorder(bc::BybitCache, symbol, orderid)
     # Check if in simulation mode
-    if !isnothing(bc.orders)
+    if !isnothing(bc.orderbook)
         _simprocesspendingorders!(bc)
-        ix = findfirst(==(String(orderid)), bc.orders[!, :orderid])
+        ix = get(_sim_orderindex_for(bc), String(orderid), nothing)
         if !isnothing(ix)
-            row = bc.orders[ix, :]
+            row = bc.orderbook[ix, :]
+            _isopenstatus(String(row.status)) || return nothing
             _simreleaseorder!(bc, row.symbol, row.side, Symbol(lowercase(String(row.positionside))), Bool(row.reduceonly), row.baseqty, row.limitprice; lane=String(row.lane))
             dt = isnothing(bc.simtime) ? Dates.now(Dates.UTC) : DateTime(bc.simtime)
-            cancelled = (
-                orderid=String(row.orderid),
-                symbol=String(row.symbol),
-                side=String(row.side),
-                positionside=String(row.positionside),
-                lane=String(row.lane),
-                baseqty=(row.baseqty),
-                ordertype=String(row.ordertype),
-                isLeverage=Bool(row.isLeverage),
-                timeinforce=String(row.timeinforce),
-                limitprice=(row.limitprice),
-                avgprice=(row.avgprice),
-                executedqty=(row.executedqty),
-                status="Cancelled",
-                created=DateTime(row.created),
-                updated=dt,
-                rejectreason="NO ERROR",
-                lastcheck=dt,
-                marginleverage=Int32(row.marginleverage),
-                reduceonly=Bool(row.reduceonly),
-            )
-            push!(bc.closedorders, cancelled)
-            deleteat!(bc.orders, ix)
+            _simfinalizeorder!(bc, ix, "Cancelled", dt)
             delete!(_sim_sequencing_for(bc), String(orderid))
             return String(orderid)
         end
@@ -1181,9 +1260,9 @@ end
 function _sim_hasopenbracketsibling(bc::BybitCache, symbol::AbstractString, lane::AbstractString)::Bool
     sibling = _bracketsiblinglane(lane)
     isnothing(sibling) && return false
-    (isnothing(bc.orders) || (nrow(bc.orders) == 0)) && return false
+    (isnothing(bc.orderbook) || (nrow(bc.orderbook) == 0)) && return false
     sym = uppercase(String(symbol))
-    for row in eachrow(bc.orders)
+    for row in eachrow(bc.orderbook)
         (uppercase(String(row.symbol)) == sym) || continue
         (String(row.lane) == sibling) || continue
         _isopenstatus(String(row.status)) && return true
@@ -1361,22 +1440,22 @@ end
 
 "Process pending BybitSim orders using candles from each order's `lastcheck` until current reference time."
 function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing)
-    isnothing(bc.orders) && return nothing
-    size(bc.orders, 1) == 0 && return nothing
+    isnothing(bc.orderbook) && return nothing
+    size(bc.orderbook, 1) == 0 && return nothing
 
     decisiondt = isnothing(atdt) ? bc.simtime : atdt
     decisiondt = isnothing(decisiondt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(decisiondt, Minute(1))
     refdt = decisiondt
 
     seq = _sim_sequencing_for(bc)
-    orderids = String.(bc.orders[!, :orderid])
-    pending_ids = Set(orderids)
+    openix = _sim_openorderindex_for(bc)
+    pending_ids = Set(String(bc.orderbook[ix, :orderid]) for ix in openix)
 
     # Detect fill candidates for every still-open order without applying yet, so a
     # close->open flip pair (registered via directsequence!) can be sequenced below.
     filldt_by_ix = Dict{Int, DateTime}()
-    for ix in eachindex(orderids)
-        row = bc.orders[ix, :]
+    for ix in openix
+        row = bc.orderbook[ix, :]
         !_isopenstatus(String(row.status)) && continue
 
         lastcheck = DateTime(row.lastcheck)
@@ -1397,8 +1476,8 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         end
 
         if isnothing(filldt)
-            bc.orders[ix, :lastcheck] = decisiondt
-            bc.orders[ix, :updated] = decisiondt
+            bc.orderbook[ix, :lastcheck] = decisiondt
+            bc.orderbook[ix, :updated] = decisiondt
             continue
         end
         filldt_by_ix[ix] = filldt
@@ -1408,15 +1487,15 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     # on a tie the protective stop wins, so replay stays deterministic and conservative.
     for ix in sort!(collect(keys(filldt_by_ix)))
         haskey(filldt_by_ix, ix) || continue
-        lane = String(bc.orders[ix, :lane])
+        lane = String(bc.orderbook[ix, :lane])
         sibling = _bracketsiblinglane(lane)
         isnothing(sibling) && continue
-        sym = uppercase(String(bc.orders[ix, :symbol]))
+        sym = uppercase(String(bc.orderbook[ix, :symbol]))
         for jx in sort!(collect(keys(filldt_by_ix)))
             (jx == ix) && continue
             haskey(filldt_by_ix, jx) || continue
-            (uppercase(String(bc.orders[jx, :symbol])) == sym) || continue
-            (String(bc.orders[jx, :lane]) == sibling) || continue
+            (uppercase(String(bc.orderbook[jx, :symbol])) == sym) || continue
+            (String(bc.orderbook[jx, :lane]) == sibling) || continue
             loser = if filldt_by_ix[ix] < filldt_by_ix[jx]
                 jx
             elseif filldt_by_ix[jx] < filldt_by_ix[ix]
@@ -1429,7 +1508,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         end
     end
 
-    triggered_ids = Set(orderids[ix] for ix in keys(filldt_by_ix))
+    triggered_ids = Set(String(bc.orderbook[ix, :orderid]) for ix in keys(filldt_by_ix))
 
     # A registered successor never fires ahead of its predecessor: if the
     # predecessor is still open and did not resolve in this same pass, the
@@ -1437,7 +1516,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     immediateix = Int[]
     deferredix = Int[]
     for ix in keys(filldt_by_ix)
-        orderid = orderids[ix]
+        orderid = String(bc.orderbook[ix, :orderid])
         predecessor = get(seq, orderid, nothing)
         if isnothing(predecessor) || !(predecessor in pending_ids)
             push!(immediateix, ix)
@@ -1447,12 +1526,10 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         # else: predecessor still open and unresolved this pass -> leave pending, retry later
     end
 
-    closeix = Int[]
     closerows = NamedTuple[]
     _applysimfill!(ix) = begin
-        row = bc.orders[ix, :]
+        row = bc.orderbook[ix, :]
         _simapplypendingfill!(bc, row, row.limitprice)
-        push!(closeix, ix)
         push!(closerows, (
             orderid=String(row.orderid),
             symbol=String(row.symbol),
@@ -1474,6 +1551,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
             marginleverage=Int32(row.marginleverage),
             reduceonly=Bool(row.reduceonly),
         ))
+        _simfinalizeorder!(bc, ix, "Filled", filldt_by_ix[ix]; avgprice=row.limitprice, executedqty=row.baseqty)
         delete!(seq, String(row.orderid))
         return nothing
     end
@@ -1487,12 +1565,6 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
         _applysimfill!(ix)
     end
 
-    for row in closerows
-        push!(bc.closedorders, row)
-    end
-    if !isempty(closeix)
-        deleteat!(bc.orders, sort!(unique!(closeix)))
-    end
     _simcancelbracketsiblings!(bc, closerows, decisiondt)
     _simrebalancecollateral!(bc; atdt=decisiondt)
     _simliquidatemargincall!(bc; atdt=decisiondt)
@@ -1505,31 +1577,21 @@ share one position reservation, which the fill already consumed, so no release i
 """
 function _simcancelbracketsiblings!(bc::BybitCache, filledrows, decisiondt::DateTime)
     isempty(filledrows) && return nothing
-    (isnothing(bc.orders) || (nrow(bc.orders) == 0)) && return nothing
+    (isnothing(bc.orderbook) || (nrow(bc.orderbook) == 0)) && return nothing
 
-    cancelix = Int[]
     for frow in filledrows
         sibling = _bracketsiblinglane(String(frow.lane))
         isnothing(sibling) && continue
         sym = uppercase(String(frow.symbol))
-        for ix in 1:nrow(bc.orders)
-            (ix in cancelix) && continue
-            row = bc.orders[ix, :]
+        for ix in _sim_openorderindex_for(bc)
+            row = bc.orderbook[ix, :]
             (uppercase(String(row.symbol)) == sym) || continue
             (String(row.lane) == sibling) || continue
             _isopenstatus(String(row.status)) || continue
-            push!(bc.closedorders, (
-                orderid=String(row.orderid), symbol=String(row.symbol), side=String(row.side), positionside=String(row.positionside), lane=String(row.lane),
-                baseqty=(row.baseqty), ordertype=String(row.ordertype), isLeverage=Bool(row.isLeverage), timeinforce=String(row.timeinforce),
-                limitprice=(row.limitprice), avgprice=(row.avgprice), executedqty=(row.executedqty), status="Cancelled",
-                created=DateTime(row.created), updated=decisiondt, rejectreason="bracket sibling filled", lastcheck=decisiondt,
-                marginleverage=Int32(row.marginleverage), reduceonly=Bool(row.reduceonly),
-            ))
+            _simfinalizeorder!(bc, ix, "Cancelled", decisiondt; rejectreason="bracket sibling filled")
             delete!(_sim_sequencing_for(bc), String(row.orderid))
-            push!(cancelix, ix)
         end
     end
-    isempty(cancelix) || deleteat!(bc.orders, sort!(unique!(cancelix)))
     return nothing
 end
 
@@ -1648,22 +1710,15 @@ function _simforceliquidateposition!(bc::BybitCache, symbol::AbstractString, pos
     # two legs, so drain them one at a time - deleting each before the next lookup keeps the
     # shared-reservation check accurate, and the last one releases back to :free.
     hadpendingorder = false
-    if !isnothing(bc.orders) && (nrow(bc.orders) > 0)
+    if !isnothing(bc.orderbook) && (nrow(bc.orderbook) > 0)
         while true
-            ix = findfirst(row -> (uppercase(String(row.symbol)) == uppercase(symbol)) && (Symbol(lowercase(String(row.positionside))) == positionside) && Bool(row.reduceonly), eachrow(bc.orders))
+            ix = findfirst(row -> (uppercase(String(row.symbol)) == uppercase(symbol)) && (Symbol(lowercase(String(row.positionside))) == positionside) && Bool(row.reduceonly) && _isopenstatus(String(row.status)), eachrow(bc.orderbook))
             isnothing(ix) && break
             hadpendingorder = true
-            row = bc.orders[ix, :]
+            row = bc.orderbook[ix, :]
             cancelledorderid = String(row.orderid)
             _simreleaseorder!(bc, row.symbol, row.side, positionside, true, row.baseqty, row.limitprice; lane=String(row.lane))
-            push!(bc.closedorders, (
-                orderid=cancelledorderid, symbol=String(row.symbol), side=String(row.side), positionside=String(row.positionside), lane=String(row.lane),
-                baseqty=(row.baseqty), ordertype=String(row.ordertype), isLeverage=Bool(row.isLeverage), timeinforce=String(row.timeinforce),
-                limitprice=(row.limitprice), avgprice=(row.avgprice), executedqty=(row.executedqty), status="Cancelled",
-                created=DateTime(row.created), updated=decisiondt, rejectreason=reason, lastcheck=decisiondt,
-                marginleverage=Int32(row.marginleverage), reduceonly=true,
-            ))
-            deleteat!(bc.orders, ix)
+            _simfinalizeorder!(bc, ix, "Cancelled", decisiondt; rejectreason=String(reason))
             delete!(_sim_sequencing_for(bc), cancelledorderid)
         end
     end
@@ -1680,7 +1735,7 @@ function _simforceliquidateposition!(bc::BybitCache, symbol::AbstractString, pos
     fillprice = Float32(price)
     orderid = "SIM-Liquidate-$(symbol)-$(Int(round(Dates.datetime2unix(decisiondt))))"
     _simapplypendingfill!(bc, (symbol=String(symbol), side=side, baseqty=qty, positionside=String(positionside), reduceonly=true), fillprice)
-    push!(bc.closedorders, (
+    _simappendorder!(bc, (
         orderid=orderid, symbol=String(symbol), side=side, positionside=String(positionside), lane=_orderlane(positionside, true), baseqty=qty,
         ordertype="Market", isLeverage=true, timeinforce="IOC", limitprice=fillprice, avgprice=fillprice,
         executedqty=qty, status="Filled", created=decisiondt, updated=decisiondt,
@@ -1708,7 +1763,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     orderlane = isnothing(lane) ? _orderlane(spec.side, reduceonly) : String(lane)
     @assert orderlane in SIM_ORDER_LANES "createorder lane=$(orderlane) must be one of $(SIM_ORDER_LANES)"
     # Check if in simulation mode
-    if !isnothing(bc.orders)
+    if !isnothing(bc.orderbook)
         _simprocesspendingorders!(bc)
         syminfo = symbolinfo(bc, symbol)
         if isnothing(syminfo)
@@ -1727,7 +1782,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             # already committed elsewhere), not a bookkeeping bug - reject like any other
             # order-creation failure instead of crashing the trading loop.
             _simreserveorder!(bc, symbol, orderside, spec.side, reduceonly, basequantity, limitprice; lane=orderlane) || return nothing
-            push!(bc.orders, row)
+            _simappendorder!(bc, row)
         else # taker
             reserved = if reduceonly
                 _simreserveorder!(bc, symbol, orderside, spec.side, true, basequantity, limitprice; lane=orderlane)
@@ -1736,7 +1791,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             end
             reserved || return nothing
             row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
-            push!(bc.closedorders, row)
+            _simappendorder!(bc, row)
             _simapplypendingfill!(bc, row, limitprice)
         end
         return row
@@ -1870,7 +1925,7 @@ _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) i
 function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
     existing = nothing
     if !isnothing(existing_orderid)
-        probe = order(bc, String(existing_orderid))
+        probe = _simorderrow(bc, String(existing_orderid))
         if !isnothing(probe) && hasproperty(probe, :status) && _isopenstatus(String(probe.status))
             existing = probe
         end
@@ -1896,7 +1951,7 @@ function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, 
     orderside = side == :long ? "Buy" : "Sell"
     existing = nothing
     if !isnothing(existing_orderid)
-        probe = order(bc, String(existing_orderid))
+        probe = _simorderrow(bc, String(existing_orderid))
         if !isnothing(probe) && hasproperty(probe, :status) && _isopenstatus(String(probe.status))
             existing = probe
         end
@@ -1956,15 +2011,19 @@ end
 function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
     @assert isnothing(basequantity) ? true : basequantity > 0.0 "amendorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
-    if !isnothing(bc.orders)
+    if !isnothing(bc.orderbook)
         _simprocesspendingorders!(bc)
-        ix = findfirst(==(String(orderid)), bc.orders[!, :orderid])
+        ix = get(_sim_orderindex_for(bc), String(orderid), nothing)
         if isnothing(ix)
             @warn "cannot amend order because orderid $orderid not found"
             return nothing
         end
 
-        orderatentry = bc.orders[ix, :]
+        orderatentry = bc.orderbook[ix, :]
+        if !_isopenstatus(String(orderatentry.status))
+            @warn "cannot amend terminal order because orderid $orderid status=$(orderatentry.status)"
+            return nothing
+        end
         syminfo = symbolinfo(bc, symbol)
         if isnothing(syminfo)
             @warn "no instrument info for $symbol"
@@ -2000,12 +2059,12 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
             return nothing
         end
 
-        bc.orders[ix, :baseqty] = changedqty
-        bc.orders[ix, :limitprice] = changedprice
+        bc.orderbook[ix, :baseqty] = changedqty
+        bc.orderbook[ix, :limitprice] = changedprice
         dt = isnothing(bc.simtime) ? Dates.now(Dates.UTC) : DateTime(bc.simtime)
-        bc.orders[ix, :updated] = dt
-        bc.orders[ix, :lastcheck] = dt
-        return bc.orders[ix, :]
+        bc.orderbook[ix, :updated] = dt
+        bc.orderbook[ix, :lastcheck] = dt
+        return bc.orderbook[ix, :]
     end
 
     syminfo = symbolinfo(bc, symbol)
@@ -2189,7 +2248,7 @@ function accountcapacity(bc::BybitCache)
     quotecoin = uppercase(String(EnvConfig.pairquote))
     cols = propertynames(bdf)
     quotefree = 0.0
-    equity_quote = 0.0
+    wallet_quote = 0.0
     if (:coin in cols) && (:free in cols)
         for row in eachrow(bdf)
             coin = uppercase(String(row.coin))
@@ -2197,11 +2256,12 @@ function accountcapacity(bc::BybitCache)
             locked = (:locked in cols) ? max(0.0, (row.locked)) : 0.0
             if coin == quotecoin
                 quotefree += free
-                equity_quote += free + locked
+                wallet_quote += free + locked
             end
         end
     end
 
+    position_quote = 0.0
     posdf = positionsnapshot(bc)
     if (:coin in propertynames(posdf)) && (:long_qty in propertynames(posdf)) && (:short_qty in propertynames(posdf))
         for prow in eachrow(posdf)
@@ -2214,10 +2274,15 @@ function accountcapacity(bc::BybitCache)
             end
             longqty = max(0.0, (prow.long_qty))
             shortqty = max(0.0, (prow.short_qty))
-            equity_quote += (longqty - shortqty) * price
+            position_quote += (longqty - shortqty) * price
         end
     end
 
+    # Equity is wallet cash plus the current position mark-to-market. This keeps the
+    # simulation aligned with the usual account view: short positions show up as a negative
+    # mark-to-market contribution rather than as an immediate deduction of the entire notional
+    # from the free quote bucket.
+    equity_quote = wallet_quote + position_quote
     # Keep equity conservative but not below immediately available quote cash.
     equity_quote = max(equity_quote, quotefree)
 

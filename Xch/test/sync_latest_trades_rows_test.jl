@@ -4,7 +4,7 @@ using Dates
 using DataFrames
 using CategoricalArrays: CategoricalVector
 
-using EnvConfig, Ohlcv, Xch, Targets
+using Bybit, EnvConfig, Ohlcv, Xch, Targets
 using TSM
 
 function _trade_lo_amount(df::DataFrame)::DataFrame
@@ -37,7 +37,6 @@ end
 
 @testset "Xch sync_latest_trades_rows! uses current cache snapshots" begin
     EnvConfig.init(EnvConfig.test)
-
     startdt = DateTime("2025-01-01T00:00:00")
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
@@ -56,8 +55,9 @@ end
         locked=Float32[0f0, 0f0, 0f0, 0f0],
     )
 
-    empty!(bc.orders)
-    push!(bc.orders, (
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
+    Bybit._simappendorder!(bc, (
         orderid="oid-lo-filled",
         symbol="BTCUSDT",
         side="Buy",
@@ -78,7 +78,7 @@ end
         marginleverage=Int32(0),
         reduceonly=false,
     ))
-    push!(bc.orders, (
+    Bybit._simappendorder!(bc, (
         orderid="oid-lc-open",
         symbol="BTCUSDT",
         side="Sell",
@@ -99,7 +99,7 @@ end
         marginleverage=Int32(0),
         reduceonly=true,
     ))
-    push!(bc.orders, (
+    Bybit._simappendorder!(bc, (
         orderid="oid-sc-rejected",
         symbol="BTCUSDT",
         side="Buy",
@@ -214,7 +214,8 @@ end
         borrowed=Float32[0f0, 0f0],
         accruedinterest=Float32[0f0, 0f0],
     )
-    empty!(bc.orders)
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
 
     btcrow_prev = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     btcdf = btcrow_prev.tradesdf
@@ -254,7 +255,8 @@ end
         borrowed=Float32[0f0, 0f0],
         accruedinterest=Float32[0f0, 0f0],
     )
-    empty!(bc.orders)
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
 
     btcrow_prev = TSM.ensuretradesrow!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt - Dates.Minute(1))
     btcdf = btcrow_prev.tradesdf
@@ -290,7 +292,8 @@ end
         free=Float32[500.5f0, 0f0],
         locked=Float32[0f0, 0.5f0],
     )
-    empty!(bc.orders)
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
 
     price = Ohlcv.dataframe(Xch.getohlcv(xc, "BTC"))[Ohlcv.ix(Xch.getohlcv(xc, "BTC")), :close]
     acct = Xch.account_status(xc; force_refresh=true, ttl_seconds=0)
@@ -317,7 +320,8 @@ end
         borrowed=Float32[0f0, 0f0],
         accruedinterest=Float32[0f0, 0f0],
     )
-    empty!(bc.orders)
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
 
     @test TSM.haspairstate(xc.tsm, "BTCUSDT")
     rowsbybase = Xch.sync_latest_trades_rows!(xc, ["BTCUSDT"])
@@ -357,7 +361,8 @@ end
         borrowed=Float32[0f0, 0f0],
         accruedinterest=Float32[0f0, 0f0],
     )
-    empty!(bc.orders)
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
 
     pairs = CategoricalVector(["BTCUSDT"])
     rowsbybase = Xch.sync_latest_trades_rows!(xc, pairs)
@@ -387,7 +392,8 @@ end
         borrowed=Float32[0f0, 249.40323f0],
         accruedinterest=Float32[0f0, 0f0],
     )
-    empty!(bc.orders)
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
 
     rowsbybase = Xch.sync_latest_trades_rows!(xc, ["DOUBLESINEUSDT"])
     @test haskey(rowsbybase, "DOUBLESINE")

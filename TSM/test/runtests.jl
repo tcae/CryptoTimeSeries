@@ -53,6 +53,20 @@ end
     @test fresh[3, :close] == 0f0
     @test String(fresh[1, :tsmstate]) == "xch"
     @test String(fresh[3, :tsmstate]) == "none"
+
+    label_checkpoint = DataFrame(
+        opentime=[DateTime(2026, 1, 1), DateTime(2026, 1, 1, 0, 1)],
+        label=categorical(["longopen", "shortclose"]),
+    )
+    label_fresh = DataFrame(
+        opentime=label_checkpoint[!, :opentime],
+        label=Vector{TradeLabel}(undef, 2),
+    )
+    label_fresh[1, :label] = longopen
+    label_fresh[2, :label] = shortclose
+    TSM.restorecheckpointrows!(label_fresh, label_checkpoint, 2)
+    @test label_fresh[1, :label] == longopen
+    @test label_fresh[2, :label] == shortclose
 end
 
 @testset "TSM normalizes legacy label column" begin
@@ -78,4 +92,5 @@ end
 
 include("trades_schema_contract_test.jl")
 include("settrades_ownership_test.jl")
+include("trades_epoch_allocation_test.jl")
 include("compilegainsdf_test.jl")

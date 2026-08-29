@@ -108,6 +108,8 @@ EnvConfig.init(production)  # test production
     @test !isnothing(fast_filled)
     @test fast_filled.status == "Filled"
     @test size(Bybit.openorders(bc_pending_fast), 1) == 0
+    @test size(bc_pending_fast.orderbook, 1) == 1
+    @test Bybit._sim_orderindex_for(bc_pending_fast)[String(fast_pending.orderid)] == 1
 
     # Move time forward and amend to a guaranteed trigger level; processing should
     # sweep candles since lastcheck and fill the pending order.
@@ -204,6 +206,17 @@ EnvConfig.init(production)  # test production
     quoteix = findfirst(==(EnvConfig.pairquote), short_open_balances[!, :coin])
     @test !isnothing(quoteix)
     short_open_cap = Bybit.accountcapacity(bc_short_open)
+    posdf = Bybit.positionsnapshot(bc_short_open)
+    pos_row = findfirst(==("SINE"), uppercase.(String.(posdf[!, :coin])))
+    wallet_quote = short_open_balances[quoteix, :free] + short_open_balances[quoteix, :locked]
+    if !isnothing(pos_row)
+        short_qty = posdf[pos_row, :short_qty]
+        short_price = Bybit.get24h(bc_short_open, "SINEUSDT").lastprice
+        expected_equity = wallet_quote + (0f0 - short_qty * short_price)
+        @test isapprox(short_open_cap.equity_quote, expected_equity; atol=1f-4)
+    else
+        @test isapprox(short_open_cap.equity_quote, wallet_quote; atol=1f-4)
+    end
     @test short_open_balances[quoteix, :free] <= short_open_cap.equity_quote + 1f-6
     @test short_open_cap.available_opening_quote <= short_open_cap.equity_quote + 1f-6
 

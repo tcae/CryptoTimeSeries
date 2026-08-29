@@ -327,6 +327,21 @@ function _normalize_basecoin_token(token, quotecoin::AbstractString)::Union{Noth
     return t
 end
 
+"""Return the epoch length in minutes covered by one `tradeselection!`.
+
+The epoch ends at the next configured reload time, because that is when the next
+`tradeselection!` runs and extends it again. Without a reload schedule (backtests set
+`reloadtimes = Time[]`) a full day is allocated."""
+function _tradeselection_epochminutes(tc::TradeCache, datetime::DateTime)::Int
+    reloadtimes = get(tc.mc, :reloadtimes, Time[])
+    isempty(reloadtimes) && return 24 * 60
+    now_t = Time(floor(datetime, Minute(1)))
+    aheads = [Int(Dates.value(Minute(t - now_t))) for t in reloadtimes if t > now_t]
+    # all reload times already passed today: the next one is tomorrow
+    minutes = isempty(aheads) ? (24 * 60 - Int(Dates.value(Minute(now_t - minimum(reloadtimes))))) : minimum(aheads)
+    return max(1, minutes)
+end
+
 """
 Loads all USDT coins, checks liquidity volume criteria, removes risk coins.
 If isnothing(datetime) or datetime > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
@@ -522,6 +537,13 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
 
     if !assetonly
         (verbosity >= 2) && println("\r$(Xch.ttstr(tc.xc)) trained trade config on the fly including $(size(tc.cfg, 1)) base classifier (ohlcv, features) data      ")
+    end
+
+    # The pair set is fixed here, so each pair's rows for this epoch are allocated once:
+    # growing the frame per tick copies it and invalidates any held TradesColumns.
+    if size(tc.cfg, 1) > 0
+        TSM.preparetradesepoch!(tc.xc.tsm, tc.cfg[!, :basecoin], quotecoin, tc.xc.enddt;
+            startdt=datetime, epochminutes=_tradeselection_epochminutes(tc, datetime))
     end
     return tc
 end
