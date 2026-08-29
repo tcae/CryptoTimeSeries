@@ -23,7 +23,7 @@ function collecttradesdf(tsm::TsmCache)::DataFrame
     tradesdf = reduce(vcat, parts; cols=:union)
     sortcols = Symbol[]
     for col in (:coin, :set, :rangeid, :pair, :opentime)
-        (col in names(tradesdf)) && push!(sortcols, col)
+        (col in propertynames(tradesdf)) && push!(sortcols, col)
     end
     !isempty(sortcols) && sort!(tradesdf, sortcols)
     return tradesdf
@@ -102,13 +102,49 @@ function _emptygainsdf(tradesdf::AbstractDataFrame)::DataFrame
     return gainsdf
 end
 
-"""Return one numeric Trades column value, defaulting to `0f0` for missing rows."""
-function _compilegainsvalue(tradesdf::AbstractDataFrame, ix::Integer, col::Symbol)
-    if !(col in propertynames(tradesdf))
-        return 0f0
+"""Per-row Trades columns read while compiling gains; all are mandatory."""
+const _COMPILEGAINS_HOTCOLUMNS = Symbol[:opentime, :lp_amount, :sp_amount, :lol_pavg, :lcl_pavg, :sol_pavg, :scl_pavg]
+
+"""One opentime-ordered, pair-scoped partition with typed handles to its hot columns.
+
+Gain compilation touches every row of every partition, so the hot columns are resolved
+once here; `df[ix, :col]` would instead cost a column lookup plus a dynamic dispatch per
+cell because `DataFrame` erases its column types."""
+struct GainPartition
+    rows::DataFrame
+    opentime::Vector{DateTime}
+    lp_amount::Vector{Float32}
+    sp_amount::Vector{Float32}
+    lol_pavg::Vector{Float32}
+    lcl_pavg::Vector{Float32}
+    sol_pavg::Vector{Float32}
+    scl_pavg::Vector{Float32}
+end
+
+"""Project `tradesview` onto the columns gain compilation reads and order it by `opentime`."""
+function GainPartition(tradesview::AbstractDataFrame)
+    available = propertynames(tradesview)
+    absent = Symbol[col for col in _COMPILEGAINS_HOTCOLUMNS if !(col in available)]
+    @assert isempty(absent) "tradesdf must contain $(absent) to compile gains; names=$(names(tradesview))"
+    @assert :pair in available "tradesdf must contain :pair to compile gains; names=$(names(tradesview))"
+
+    keep = vcat(_COMPILEGAINS_HOTCOLUMNS, Symbol[:pair])
+    for col in (:close, :set, :rangeid)
+        (col in available) && push!(keep, col)
     end
-    value = tradesdf[ix, col]
-    return (ismissing(value) || isnothing(value)) ? 0f0 : value
+    rows = select(tradesview, keep)
+    issorted(rows[!, :opentime]) || sort!(rows, :opentime)
+
+    return GainPartition(
+        rows,
+        rows[!, :opentime]::Vector{DateTime},
+        rows[!, :lp_amount]::Vector{Float32},
+        rows[!, :sp_amount]::Vector{Float32},
+        rows[!, :lol_pavg]::Vector{Float32},
+        rows[!, :lcl_pavg]::Vector{Float32},
+        rows[!, :sol_pavg]::Vector{Float32},
+        rows[!, :scl_pavg]::Vector{Float32},
+    )
 end
 
 """Return the execution timestamp for one reflected position change row.
@@ -116,40 +152,39 @@ end
 The position snapshot change is observed on row `ix`, but the execution
 itself happened on the previous minute row whose bar triggered the fill.
 """
-function _compilegainstime(tradesdf::AbstractDataFrame, ix::Integer)::DateTime
-    @assert :opentime in propertynames(tradesdf) "tradesdf must contain :opentime to compile gains; names=$(names(tradesdf))"
+function _compilegainstime(part::GainPartition, ix::Integer)::DateTime
     @assert ix > 1 "compile gain timestamps require a previous row; got ix=$(ix)"
-    return tradesdf[ix - 1, :opentime]
+    return part.opentime[ix - 1]
 end
 
 """Return the execution price stored on the position-change row for one order lane.
 
-Falls back to this row's `close` price when the lane price is missing or zero: a genuine
+Falls back to this row's `close` price when the lane price is zero: a genuine
 data gap (classifier-partition boundary, simulated exchange downtime) can close a position
 without ever recording its own fill/liquidation price, and gains compilation must still
 produce a usable (if approximate) gain rather than abort the whole run."""
-function _compilegainsprice(tradesdf::AbstractDataFrame, ix::Integer, pricecol::Symbol)::Float32
-    @assert pricecol in propertynames(tradesdf) "tradesdf must contain $(pricecol) to compile gains; names=$(names(tradesdf))"
-    price = tradesdf[ix, pricecol]
-    (!ismissing(price) && !isnothing(price) && (price > 0f0)) && return price
+function _compilegainsprice(part::GainPartition, ix::Integer, prices::Vector{Float32}, pricecol::Symbol)::Float32
+    price = prices[ix]
+    (price > 0f0) && return price
 
-    @assert :close in propertynames(tradesdf) "tradesdf must contain :close to fall back for $(pricecol); names=$(names(tradesdf))"
-    fallback = Float32(tradesdf[ix, :close])
-    @assert fallback > 0f0 "Expected positive $(pricecol) or fallback :close on position change at ix=$(ix), opentime=$(_compilegainstime(tradesdf, ix)), pair=$(tradesdf[ix, :pair]); got $(pricecol)=$(price), close=$(fallback)"
-    @warn "gains compilation: $(pricecol) unavailable (likely a data gap), falling back to close price" ix pair=tradesdf[ix, :pair] opentime=_compilegainstime(tradesdf, ix) fallback
+    @assert :close in propertynames(part.rows) "tradesdf must contain :close to fall back for $(pricecol); names=$(names(part.rows))"
+    fallback = part.rows[ix, :close]::Float32
+    @assert fallback > 0f0 "Expected positive $(pricecol) or fallback :close on position change at ix=$(ix), opentime=$(_compilegainstime(part, ix)), pair=$(part.rows[ix, :pair]); got $(pricecol)=$(price), close=$(fallback)"
+    @warn "gains compilation: $(pricecol) unavailable (likely a data gap), falling back to close price" ix pair=part.rows[ix, :pair] opentime=_compilegainstime(part, ix) fallback
     return fallback
 end
 
-"""Append one compiled gain row, mirroring optional `set` and `rangeid` columns from `tradesdf`."""
-function _pushcompiledgain!(gainsdf::DataFrame, tradesdf::AbstractDataFrame, ix::Integer, opentime::DateTime, openprice::Float32, closetime::DateTime, closeprice::Float32, volume::Float32, side::Symbol)::Nothing
+"""Append one compiled gain row, mirroring optional `set` and `rangeid` columns from the partition."""
+function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer, opentime::DateTime, openprice::Float32, closetime::DateTime, closeprice::Float32, volume::Float32, side::Symbol)::Nothing
     gain = side == :long ? (closeprice - openprice) / openprice : (openprice - closeprice) / openprice
     gainquote = side == :long ? volume * (closeprice - openprice) : volume * (openprice - closeprice)
+    rows = part.rows
 
     if (:set in propertynames(gainsdf)) && (:rangeid in propertynames(gainsdf))
         push!(gainsdf, (
-            pair=String(tradesdf[ix, :pair]),
-            set=tradesdf[ix, :set],
-            rangeid=tradesdf[ix, :rangeid],
+            pair=String(rows[ix, :pair]),
+            set=rows[ix, :set],
+            rangeid=rows[ix, :rangeid],
             opentime=opentime,
             closetime=closetime,
             openprice=openprice,
@@ -161,8 +196,8 @@ function _pushcompiledgain!(gainsdf::DataFrame, tradesdf::AbstractDataFrame, ix:
         ))
     elseif :set in propertynames(gainsdf)
         push!(gainsdf, (
-            pair=String(tradesdf[ix, :pair]),
-            set=tradesdf[ix, :set],
+            pair=String(rows[ix, :pair]),
+            set=rows[ix, :set],
             opentime=opentime,
             closetime=closetime,
             openprice=openprice,
@@ -174,8 +209,8 @@ function _pushcompiledgain!(gainsdf::DataFrame, tradesdf::AbstractDataFrame, ix:
         ))
     elseif :rangeid in propertynames(gainsdf)
         push!(gainsdf, (
-            pair=String(tradesdf[ix, :pair]),
-            rangeid=tradesdf[ix, :rangeid],
+            pair=String(rows[ix, :pair]),
+            rangeid=rows[ix, :rangeid],
             opentime=opentime,
             closetime=closetime,
             openprice=openprice,
@@ -187,7 +222,7 @@ function _pushcompiledgain!(gainsdf::DataFrame, tradesdf::AbstractDataFrame, ix:
         ))
     else
         push!(gainsdf, (
-            pair=String(tradesdf[ix, :pair]),
+            pair=String(rows[ix, :pair]),
             opentime=opentime,
             closetime=closetime,
             openprice=openprice,
@@ -201,22 +236,24 @@ function _pushcompiledgain!(gainsdf::DataFrame, tradesdf::AbstractDataFrame, ix:
     return nothing
 end
 
+const _OpenTrade = NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}
+
 """Queue one open execution for later FIFO close matching."""
-function _enqueuecompiledopen!(openqueue::Vector{NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}}, opentime::DateTime, openprice::Float32, volume::Float32)::Nothing
+function _enqueuecompiledopen!(openqueue::Vector{_OpenTrade}, opentime::DateTime, openprice::Float32, volume::Float32)::Nothing
     volume > 0f0 || return nothing
     push!(openqueue, (opentime=opentime, openprice=openprice, remaining=volume))
     return nothing
 end
 
 """Consume one close execution against queued opens in FIFO order and emit gain rows."""
-function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}}, tradesdf::AbstractDataFrame, ix::Integer, closeprice::Float32, closevolume::Float32, side::Symbol)::Nothing
+function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{_OpenTrade}, part::GainPartition, ix::Integer, closeprice::Float32, closevolume::Float32, side::Symbol)::Nothing
     remaining = closevolume
-    closetime = _compilegainstime(tradesdf, ix)
+    closetime = _compilegainstime(part, ix)
     while remaining > 0f0
-        @assert !isempty(openqueue) "Encountered unmatched $(side) close volume=$(remaining) at ix=$(ix), opentime=$(closetime), pair=$(tradesdf[ix, :pair])"
+        @assert !isempty(openqueue) "Encountered unmatched $(side) close volume=$(remaining) at ix=$(ix), opentime=$(closetime), pair=$(part.rows[ix, :pair])"
         opentrade = first(openqueue)
         matched = min(opentrade.remaining, remaining)
-        _pushcompiledgain!(gainsdf, tradesdf, ix, opentrade.opentime, opentrade.openprice, closetime, closeprice, matched, side)
+        _pushcompiledgain!(gainsdf, part, ix, opentrade.opentime, opentrade.openprice, closetime, closeprice, matched, side)
         remaining -= matched
         if matched == opentrade.remaining
             popfirst!(openqueue)
@@ -230,57 +267,56 @@ end
 """Compile gain rows for one pair-scoped Trades partition."""
 function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFrame)::Nothing
     nrow(tradesview) == 0 && return nothing
-    ordered = sort(DataFrame(tradesview; copycols=false), :opentime)
+    part = GainPartition(tradesview)
+    longamounts = part.lp_amount
+    shortamounts = part.sp_amount
 
-    longopens = NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}[]
-    shortopens = NamedTuple{(:opentime, :openprice, :remaining), Tuple{DateTime, Float32, Float32}}[]
+    longopens = _OpenTrade[]
+    shortopens = _OpenTrade[]
 
-    for ix in 1:nrow(ordered)
-        longamount = _compilegainsvalue(ordered, ix, :lp_amount)
-        shortamount = _compilegainsvalue(ordered, ix, :sp_amount)
-        @assert !((longamount > 0f0) && (shortamount > 0f0)) "Expected at most one open position side per row while compiling gains at ix=$(ix), opentime=$(_compilegainstime(ordered, ix)), pair=$(ordered[ix, :pair]); got lp_amount=$(longamount), sp_amount=$(shortamount)"
+    for ix in eachindex(longamounts)
+        longamount = longamounts[ix]
+        shortamount = shortamounts[ix]
+        @assert !((longamount > 0f0) && (shortamount > 0f0)) "Expected at most one open position side per row while compiling gains at ix=$(ix), opentime=$(part.opentime[ix]), pair=$(part.rows[ix, :pair]); got lp_amount=$(longamount), sp_amount=$(shortamount)"
 
         ix == 1 && continue
 
-        prevlong = _compilegainsvalue(ordered, ix - 1, :lp_amount)
-        prevshort = _compilegainsvalue(ordered, ix - 1, :sp_amount)
-        longdelta = longamount - prevlong
-        shortdelta = shortamount - prevshort
+        longdelta = longamount - longamounts[ix - 1]
+        shortdelta = shortamount - shortamounts[ix - 1]
 
         # Position changes on row `ix` indicate executions that happened in the prior minute.
         if longdelta > 0f0
-            _enqueuecompiledopen!(longopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :lol_pavg), longdelta)
+            _enqueuecompiledopen!(longopens, _compilegainstime(part, ix), _compilegainsprice(part, ix, part.lol_pavg, :lol_pavg), longdelta)
         elseif longdelta < 0f0
-            _matchcompiledclose!(gainsdf, longopens, ordered, ix, _compilegainsprice(ordered, ix, :lcl_pavg), -longdelta, :long)
+            _matchcompiledclose!(gainsdf, longopens, part, ix, _compilegainsprice(part, ix, part.lcl_pavg, :lcl_pavg), -longdelta, :long)
         end
 
         if shortdelta > 0f0
-            _enqueuecompiledopen!(shortopens, _compilegainstime(ordered, ix), _compilegainsprice(ordered, ix, :sol_pavg), shortdelta)
+            _enqueuecompiledopen!(shortopens, _compilegainstime(part, ix), _compilegainsprice(part, ix, part.sol_pavg, :sol_pavg), shortdelta)
         elseif shortdelta < 0f0
-            _matchcompiledclose!(gainsdf, shortopens, ordered, ix, _compilegainsprice(ordered, ix, :scl_pavg), -shortdelta, :short)
+            _matchcompiledclose!(gainsdf, shortopens, part, ix, _compilegainsprice(part, ix, part.scl_pavg, :scl_pavg), -shortdelta, :short)
         end
     end
     return nothing
 end
 
 """
-    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false)
+    compilegains(tradesdf; setpartitions=false)
 
-Compile open/close gain pairs from one Trades DataFrame, scoping matching by
-`pair` plus optional `set` and `rangeid`, then persist the result in the current
-log folder as `<stem>.arrow`. `setpartitions=false` (default) is for continuous replay
-data where one position can span set/rangeid subrange boundaries; matching then scopes to
-`(pair, liquidityrangeid)` instead, so a position still cannot span two distinct
-liquidity ranges. `gainsreport` still aggregates across all liquidity ranges per set,
-i.e. reports out for the whole coin rather than per liquidity range. Set
+Compile open/close gain pairs from one Trades DataFrame without persisting them, scoping
+matching by `pair` plus optional `set` and `rangeid`. `setpartitions=false` (default) is
+for continuous replay data where one position can span set/rangeid subrange boundaries;
+matching then scopes to `(pair, liquidityrangeid)` instead, so a position still cannot
+span two distinct liquidity ranges. `gainsreport` still aggregates across all liquidity
+ranges per set, i.e. reports out for the whole coin rather than per liquidity range. Set
 `setpartitions=true` to instead scope matching exactly to `(pair, set, rangeid)`.
+
+Use this when compiling per pair and concatenating afterwards; `compilegainsdf` wraps it
+with persistence.
 """
-function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), setpartitions::Bool=false)::DataFrame
+function compilegains(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::DataFrame
     gainsdf = _emptygainsdf(tradesdf)
-    if nrow(tradesdf) == 0
-        EnvConfig.savedf(gainsdf, String(stem); folderpath=String(folderpath))
-        return gainsdf
-    end
+    nrow(tradesdf) == 0 && return gainsdf
 
     working = DataFrame(tradesdf; copycols=false)
     groupcols = _compilegains_groupcols(working; setpartitions=setpartitions)
@@ -293,7 +329,31 @@ function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmga
     (:set in propertynames(gainsdf)) && push!(sortcols, :set)
     (:rangeid in propertynames(gainsdf)) && push!(sortcols, :rangeid)
     append!(sortcols, [:pair, :opentime, :closetime])
-    !isempty(sortcols) && sort!(gainsdf, sortcols)
+    sort!(gainsdf, sortcols)
+    return gainsdf
+end
+
+"""
+    sortgainsdf!(gainsdf)
+
+Order compiled gain rows by the canonical `set`/`rangeid`/`pair`/time key. Needed when
+gain rows from several per-pair `compilegains` calls are concatenated.
+"""
+function sortgainsdf!(gainsdf::DataFrame)::DataFrame
+    sortcols = Symbol[]
+    (:set in propertynames(gainsdf)) && push!(sortcols, :set)
+    (:rangeid in propertynames(gainsdf)) && push!(sortcols, :rangeid)
+    append!(sortcols, [:pair, :opentime, :closetime])
+    return sort!(gainsdf, sortcols)
+end
+
+"""
+    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false)
+
+Compile gain pairs via `compilegains` and persist them as `<stem>.arrow` in `folderpath`.
+"""
+function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), setpartitions::Bool=false)::DataFrame
+    gainsdf = compilegains(tradesdf; setpartitions=setpartitions)
     EnvConfig.savedf(gainsdf, String(stem); folderpath=String(folderpath))
     return gainsdf
 end

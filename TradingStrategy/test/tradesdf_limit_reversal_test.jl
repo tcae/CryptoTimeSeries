@@ -43,7 +43,7 @@ end
         high=Float32[101f0, 102f0, 103f0],
         low=Float32[99f0, 100f0, 101f0],
         close=Float32[100f0, 101f0, 101f0],
-        score=Float32[0.9f0, 0f0, 0.9f0],
+        score=Float32[0.9f0, 0.9f0, 0.9f0],
         label=TradeLabel[longopen, allclose, shortopen],
     )
     init_limit_reversal_columns!(tradesdf)
@@ -77,10 +77,10 @@ end
             label=TradeLabel[longopen],
         )
         init_limit_reversal_columns!(probe)
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
-        @test isnothing(TradingStrategy._open_hit_spec(probe, 1))
-        TradingStrategy._process_advice_row!(limit_reversal_strategy(), probe, 1)
-        openhit = TradingStrategy._open_hit_spec(probe, 1)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
+        @test isnothing(TradingStrategy._open_hit_spec(tcols(probe), 1))
+        TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
+        openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
         @test !isnothing(openhit)
         @test openhit.side == :long
         @test openhit.amount == 100f0
@@ -96,12 +96,12 @@ end
             label=TradeLabel[longopen, allclose],
         )
         init_limit_reversal_columns!(probe)
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
-        TradingStrategy._process_advice_row!(limit_reversal_strategy(), probe, 1)
-        openhit = TradingStrategy._open_hit_spec(probe, 1)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
+        TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
+        openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
         @test !isnothing(openhit)
-        TradingStrategy._rowtakeover!(probe, 2)
-        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, openhit.side, openhit.limitprice, openhit.amount)
+        TradingStrategy._rowtakeover!(TSM.TradesColumns(probe), 2)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), tcols(probe), 2, openhit.side, openhit.limitprice, openhit.amount)
         @test ismissing(probe[1, :lastopentrade])
         @test probe[2, :lastopentrade] == probe[2, :opentime]
         @test probe[2, :lp_amount] == openhit.amount
@@ -121,7 +121,7 @@ end
         probe[2, :lol_pavg] = 98f0
         probe[2, :lastopentrade] = probe[1, :opentime]
         openhit = (side=:long, limitprice=99f0, amount=25f0)
-        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, openhit.side, openhit.limitprice, openhit.amount)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), tcols(probe), 2, openhit.side, openhit.limitprice, openhit.amount)
         @test probe[2, :lp_amount] == 125f0
         @test isapprox(probe[2, :lol_pavg], 98.2f0; atol=1f-4)
         @test probe[2, :lastopentrade] == probe[1, :opentime]
@@ -139,11 +139,11 @@ end
         init_limit_reversal_columns!(probe)
         probe[1, :sp_amount] = 100f0
         probe[1, :sol_pavg] = 2.28228f0
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
-        TradingStrategy._process_advice_row!(limit_reversal_strategy(), probe, 1)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
+        TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
         @test probe[1, :so_amount] == 100f0
         @test probe[1, :sol_pavg] == 2.28228f0
-        openhit = TradingStrategy._open_hit_spec(probe, 1)
+        openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
         @test !isnothing(openhit)
         @test openhit.side == :short
         @test openhit.amount == 100f0
@@ -162,8 +162,8 @@ end
         probe[1, :lp_amount] = 100f0
         probe[1, :lol_pavg] = 98f0
         probe[1, :so_amount] = 100f0
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 1)
-        TradingStrategy._process_advice_row!(limit_reversal_strategy(), probe, 1)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
+        TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
         @test probe[1, :so_amount] == 0f0
         @test probe[1, :lo_amount] == 100f0
     end
@@ -186,16 +186,16 @@ end
         probe[1, :lo_limit] = 99f0
         probe[1, :lo_amount] = 100f0
 
-        openhit = TradingStrategy._open_hit_spec(probe, 1)
+        openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
         @test !isnothing(openhit)
 
-        TradingStrategy._rowtakeover!(probe, 2)
+        TradingStrategy._rowtakeover!(TSM.TradesColumns(probe), 2)
         gaindf_flip = TradingStrategy.emptygaindf()
-        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_flip, probe, 2, 1; lastix=2)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_flip, tcols(probe), 2, 1; lastix=2)
         @test last_openix == 0
         @test probe[2, :sp_amount] == 0f0
 
-        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, openhit.side, openhit.limitprice, openhit.amount)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), tcols(probe), 2, openhit.side, openhit.limitprice, openhit.amount)
         @test probe[2, :lp_amount] == openhit.amount
         @test probe[2, :sp_amount] == 0f0
         @test probe[2, :lastopentrade] == probe[2, :opentime]
@@ -224,7 +224,7 @@ end
         probe[3, :high] = 2.05f0
 
         gaindf_probe = TradingStrategy.emptygaindf()
-        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_probe, probe, 3, 1; lastix=3)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_probe, tcols(probe), 3, 1; lastix=3)
         @test last_openix == 0
         @test nrow(gaindf_probe) == 1
         @test isfinite(gaindf_probe[1, :gain])
@@ -246,7 +246,7 @@ end
         probe[1, :lcsl_limit] = 114f0
         probe[1, :lo_limit] = 119.88f0
 
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 2)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 2)
         @test isapprox(probe[2, :lc_limit], 101f0; atol=1f-4)
         @test probe[2, :lcsl_limit] == 0f0
     end
@@ -266,7 +266,7 @@ end
         probe[2, :lol_pavg] = 98f0
         probe[2, :lastopentrade] = probe[1, :opentime]
 
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 2)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 2)
         @test isapprox(probe[2, :lc_limit], 101f0; atol=1f-4)
         @test isapprox(probe[2, :lcsl_limit], 100f0 * 0.95f0; atol=1f-4)
     end
@@ -287,7 +287,7 @@ end
         probe[2, :sol_pavg] = 80f0
         probe[2, :lastopentrade] = probe[1, :opentime]
 
-        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), probe, 2)
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 2)
         @test isapprox(probe[2, :sc_limit], 99f0; atol=1f-4)
         @test isapprox(probe[2, :scsl_limit], 105f0; atol=1f-4)
     end
@@ -306,7 +306,7 @@ end
         probe[1, :lol_pavg] = 98f0
         probe[1, :lastopentrade] = probe[1, :opentime]
 
-        TradingStrategy._setclosebracket!(limit_reversal_strategy(), probe, 1, longclose, probe[1, :close], 0f0)
+        TradingStrategy._setclosebracket!(limit_reversal_strategy(), tcols(probe), 1, longclose, probe[1, :close], 0f0)
         @test probe[1, :lc_limit] == 0f0
         @test isapprox(probe[1, :lcsl_limit], 95f0; atol=1f-4)
     end
@@ -321,7 +321,7 @@ end
             label=TradeLabel[longopen, longopen],
         )
         init_limit_reversal_columns!(probe)
-        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), probe, 2, :long, 99.9f0, 100f0)
+        TradingStrategy._apply_open_hit!(limit_reversal_strategy(), tcols(probe), 2, :long, 99.9f0, 100f0)
         @test isapprox(probe[2, :lc_limit], 101f0; atol=1f-4)
         @test isapprox(probe[2, :lcsl_limit], 95f0; atol=1f-4)
     end
@@ -343,7 +343,7 @@ end
         probe[2, :lcsl_limit] = 95f0
 
         gaindf_stop = TradingStrategy.emptygaindf()
-        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_stop, probe, 2, 1)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_stop, tcols(probe), 2, 1)
         @test last_openix == 0
         @test nrow(gaindf_stop) == 1
         @test isapprox(gaindf_stop[1, :gain], -0.05f0; atol=1f-6)
@@ -368,7 +368,7 @@ end
         probe[2, :scsl_limit] = 105f0
 
         gaindf_stop = TradingStrategy.emptygaindf()
-        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_stop, probe, 2, 1)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_stop, tcols(probe), 2, 1)
         @test last_openix == 0
         @test nrow(gaindf_stop) == 1
         @test isapprox(gaindf_stop[1, :gain], -0.05f0; atol=1f-6)

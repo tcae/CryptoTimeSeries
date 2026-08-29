@@ -97,7 +97,10 @@ end
 
 """
 Return `(ix, reason)` for the first invalid score where valid scores are finite
-numbers within `[0.0, 1.0]`. Returns `(nothing, "")` when all scores are valid.
+numbers within `(0.0, 1.0]`. Returns `(nothing, "")` when all scores are valid.
+
+Zero is excluded: it is the live-path "not yet classified" sentinel that
+`gain_limit_reversal!` acts on, so it must never appear in prediction output.
 """
 function _first_invalid_score(scores)
     for ix in eachindex(scores)
@@ -108,7 +111,7 @@ function _first_invalid_score(scores)
             return ix, "NaN"
         elseif !isfinite(value)
             return ix, "non-finite"
-        elseif (value < 0.0) || (value > 1.0)
+        elseif (value <= 0.0) || (value > 1.0)
             return ix, "out-of-range"
         end
     end
@@ -682,16 +685,32 @@ end
 const GAIN_THRESHOLDS = Tuple((openthreshold, closethreshold) for openthreshold in TradingStrategy.default_openthresholds() for closethreshold in TradingStrategy.default_closethresholds() if closethreshold <= openthreshold)
 const TRUE_GAIN_THRESHOLD = (0.9f0, 0.9f0)
 
+"""Columns kept in the per-range Trades snapshot accumulated by `getgainsdf`.
+
+These are exactly what `TSM.compilegainsdf` and `TradeAdviceCompare` consume. The
+remaining ~45 Trades columns are order id/status/msg and account placeholders that stay
+constant during gain replay; carrying them would roughly triple the snapshot memory that
+accumulates over all range groups."""
+const TRADES_SNAPSHOT_COLUMNS = Symbol[
+    :opentime, :pair, :set, :rangeid, :lastopentrade,
+    :close, :high, :low, :label, :score,
+    :lp_amount, :sp_amount,
+    :lol_pavg, :lcl_pavg, :sol_pavg, :scl_pavg,
+    :lo_limit, :lc_limit, :so_limit, :sc_limit,
+]
+
 """Return one finite mean gain value or `missing` when no finite values exist."""
 function _meangain_or_missing(values)::Union{Missing, Float64}
     filtered = [value for value in skipmissing(values) if isfinite(value)]
     return isempty(filtered) ? missing : mean(filtered)
 end
 
-"""Collect Xch-compiled gains and corresponding gain report from `tradesdf`."""
-function _collectxchgains(tradesdf::AbstractDataFrame; gainsstem::AbstractString="tsmgains-td", reportstem::AbstractString="xchgainsreport-td")
+"""Concatenate per-pair compiled gains, persist them and derive the gain report."""
+function _collectxchgains(gainparts::Vector{DataFrame}; gainsstem::AbstractString="tsmgains-td", reportstem::AbstractString="xchgainsreport-td")
     folderpath = EnvConfig.logfolder()
-    xchgainsdf = TSM.compilegainsdf(tradesdf; stem=gainsstem, folderpath=folderpath)
+    xchgainsdf = isempty(gainparts) ? DataFrame() : TSM.sortgainsdf!(reduce(vcat, gainparts))
+    empty!(gainparts)
+    EnvConfig.savedf(xchgainsdf, String(gainsstem); folderpath=folderpath)
     xchreportdf = TSM.gainsreport(instem=gainsstem, stem=reportstem, folderpath=folderpath)
     return xchgainsdf, xchreportdf
 end
@@ -699,7 +718,7 @@ end
 """Return predicted legacy gains used to compare against compiled Xch gains."""
 function _legacytruthgains(gaindf::AbstractDataFrame)::AbstractDataFrame
     required = (:predicted, :openthreshold, :closethreshold)
-    if !all(col -> col in names(gaindf), required)
+    if !all(col -> col in propertynames(gaindf), required)
         return gaindf
     end
     true_open, true_close = TRUE_GAIN_THRESHOLD
@@ -743,14 +762,18 @@ end
 
 """Restrict both gain tables to the common time window they share."""
 function _common_time_window(legacydf::AbstractDataFrame, compileddf::AbstractDataFrame)
-    @assert nrow(legacydf) > 0 && nrow(compileddf) > 0 "common time window requires non-empty gain tables"
+    if nrow(legacydf) == 0 || nrow(compileddf) == 0
+        return DataFrame(), DataFrame(), missing, missing
+    end
     legacy_start = minimum(legacydf[!, :startdt])
     legacy_end = maximum(legacydf[!, :enddt])
     compiled_start = minimum(compileddf[!, :startdt])
     compiled_end = maximum(compileddf[!, :enddt])
     common_start = max(legacy_start, compiled_start)
     common_end = min(legacy_end, compiled_end)
-    @assert common_start <= common_end "no common time window between legacy ($(legacy_start) → $(legacy_end)) and compiled ($(compiled_start) → $(compiled_end)) gains"
+    if common_start > common_end
+        return DataFrame(), DataFrame(), common_start, common_end
+    end
     legacymask = (legacydf[!, :startdt] .>= common_start) .&& (legacydf[!, :enddt] .<= common_end)
     compiledmask = (compileddf[!, :startdt] .>= common_start) .&& (compileddf[!, :enddt] .<= common_end)
     return DataFrame(legacydf[legacymask, :]), DataFrame(compileddf[compiledmask, :]), common_start, common_end
@@ -802,6 +825,11 @@ function _report_gain_collection_comparison(gaindf::Union{AbstractDataFrame, Not
     legacynorm = _normalize_gain_segments(legacypred; source="legacy")
     compilednorm = _normalize_gain_segments(xchgainsdf; source="compiled")
     legacywindow, compiledwindow, common_start, common_end = _common_time_window(legacynorm, compilednorm)
+    if nrow(legacywindow) == 0 || nrow(compiledwindow) == 0
+        println("$(EnvConfig.now()) gain comparison skipped: no common time window between legacy and compiled gains (legacy=$(nrow(legacynorm)), compiled=$(nrow(compilednorm)), common_start=$(common_start), common_end=$(common_end))")
+        return nothing
+    end
+
     joined, legacy_only, compiled_only = _compare_gain_segments(legacywindow, compiledwindow)
 
     legacyrows = size(legacywindow, 1)
@@ -824,7 +852,7 @@ function _report_gain_collection_comparison(gaindf::Union{AbstractDataFrame, Not
         println("$(EnvConfig.now()) compiled gains report: $xchreportdf")
     end
 
-    if (:set in names(legacywindow)) && (:gain in names(legacywindow)) && (legacyrows > 0)
+    if (:set in propertynames(legacywindow)) && (:gain in propertynames(legacywindow)) && (legacyrows > 0)
         legacyreport = combine(groupby(DataFrame(legacywindow), :set), :gain => _meangain_or_missing => :legacy_avggain, nrow => :legacy_segments)
         sort!(legacyreport, :set)
         println("$(EnvConfig.now()) legacy predicted gains report: $legacyreport")
@@ -832,7 +860,31 @@ function _report_gain_collection_comparison(gaindf::Union{AbstractDataFrame, Not
     return nothing
 end
 
+"""Subfolder of the run log folder holding one Trades artifact per trading pair."""
+const TRADES_TD_SUBFOLDER = "trades-td"
+
+"""Return the per-pair Trades artifact folder of the current run."""
+tradestdfolder(folderpath::AbstractString=EnvConfig.logfolder())::String = joinpath(String(folderpath), TRADES_TD_SUBFOLDER)
+
+"""Persist one pair's accumulated Trades snapshots and compile its gain segments.
+
+Consumes `tradeparts`. Range groups of one pair are produced in liquidity-range order and
+each range is cut from opentime-sorted OHLCV, so the concatenation is already time
+ordered; gain compilation depends on that and the assert guards it."""
+function _flushpairtrades!(gainparts::Vector{DataFrame}, tradeparts::Vector{DataFrame}, folderpath::AbstractString)
+    isempty(tradeparts) && return nothing
+    pairdf = reduce(vcat, tradeparts)
+    empty!(tradeparts)
+    pair = String(pairdf[1, :pair])
+    opentimes = pairdf[!, :opentime]
+    @assert issorted(opentimes) "expected opentime ordered Trades rows for pair=$(pair); rows=$(nrow(pairdf)), first=$(first(opentimes)), last=$(last(opentimes))"
+    EnvConfig.savedf(pairdf, pair; folderpath=folderpath)
+    push!(gainparts, TSM.compilegains(pairdf))
+    return nothing
+end
+
 function getgainsdf(cfg::TrendDetectorConfig)
+    EnvConfig.setlogpath(cfg.folder)
     gaindeps = vcat(_featuretarget_cachefiles(cfg; include_features=false), [TradingStrategy.predictionsfilename()])
     if isfreshcache(TradingStrategy.gainsfilename(), gaindeps)
         gaindf = TradingStrategy.loadtrades(; stem="gains")
@@ -845,6 +897,9 @@ function getgainsdf(cfg::TrendDetectorConfig)
     if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
         return nothing
     end
+    # getmaxpredictionsdf resolves the classifier, which repoints the log path.
+    EnvConfig.setlogpath(cfg.folder)
+    tradesfolderpath = tradestdfolder()
 
     ts = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(cfg.configname), source="trenddetector:$(cfg.configname)")
     replay_startdt = minimum(resultsdf[!, :opentime])
@@ -852,13 +907,19 @@ function getgainsdf(cfg::TrendDetectorConfig)
     xc = Xch.XchCache(Bybit.BybitCache(); startdt=replay_startdt, enddt=replay_enddt)
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
+    # Assembly order matters: process replay ranges in strict chronological order per coin
+    # and set so the resulting pair snapshot is already built from the beginning of time.
+    # We do not reorder the accumulated pair snapshot at flush time; the source result rows
+    # are ordered before range grouping so downstream replay sees the correct sequence.
+    resultsdf = sort(resultsdf, [:coin, :opentime, :set, :rangeid])
     # Range ids can collide across independently cached coins/runs. Replay must
     # stay scoped to coin+set+rangeid to avoid mixing samples across ranges.
     rangegroups = groupby(resultsdf, [:coin, :set, :rangeid])
     gainparts = DataFrame[]
+    xchgainparts = DataFrame[]
     tradeparts = DataFrame[]
     sizehint!(gainparts, (length(GAIN_THRESHOLDS) + 1) * length(rangegroups))
-    sizehint!(tradeparts, length(rangegroups))
+    currentpair = ""
 
     for (rngix, resultsview) in enumerate(rangegroups)
         rng = resultsview[begin, :rangeid]
@@ -896,6 +957,12 @@ function getgainsdf(cfg::TrendDetectorConfig)
             push!(gainparts, gdf)
         end
 
+        # Flush the previous pair before its first successor range overwrites the cache.
+        if tp.pair != currentpair
+            _flushpairtrades!(xchgainparts, tradeparts, tradesfolderpath)
+            currentpair = tp.pair
+        end
+
         # Process labeled truth gains using TRUE_GAIN_THRESHOLD
         true_open, true_close = TRUE_GAIN_THRESHOLD
         tp = TradingStrategy.preparereplaytrades!(
@@ -914,19 +981,26 @@ function getgainsdf(cfg::TrendDetectorConfig)
         )
         # Keep one Trades snapshot per range/set; replay state in `xc` is
         # overwritten on each loop iteration, so we must collect snapshots.
-        push!(tradeparts, DataFrame(tp.tradesdf; copycols=true))
+        push!(tradeparts, select(tp.tradesdf, TRADES_SNAPSHOT_COLUMNS))
         if size(gdf, 1) > 0
             addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close; pair=tp.pair)
             push!(gainparts, gdf)
         end
+
+        # Release the full-width replay Trades DataFrame of this range; otherwise both
+        # caches keep one per coin alive until the end of the run.
+        TradingStrategy.droppair!(ts, tp.pair)
+        TSM.droppair!(xc.tsm, tp.pair)
     end
+    _flushpairtrades!(xchgainparts, tradeparts, tradesfolderpath)
 
     gaindf = isempty(gainparts) ? nothing : reduce(vcat, gainparts)
+    empty!(gainparts)
     if !isnothing(gaindf) && (size(gaindf, 1) > 0)
         gaindf = gaindf[.!ismissing.(gaindf[!, :set]), :] # exclude gaps between set partitions
         if size(gaindf, 1) > 0
             keycols = Symbol[:coin, :set, :predicted, :rangeid, :openthreshold, :closethreshold, :trend, :startdt, :enddt]
-            if all(col -> col in names(gaindf), keycols)
+            if all(col -> col in propertynames(gaindf), keycols)
                 keycounts = combine(groupby(gaindf, keycols), nrow => :rows)
                 dupmask = keycounts[!, :rows] .> 1
                 @assert !any(dupmask) "duplicate gain segments detected per key $(keycols); duplicates=$(sum(dupmask))"
@@ -942,18 +1016,7 @@ function getgainsdf(cfg::TrendDetectorConfig)
         end
     end
 
-    EnvConfig.setlogpath(cfg.folder)
-    tradesdf = isempty(tradeparts) ? DataFrame() : reduce(vcat, tradeparts; cols=:union)
-    if nrow(tradesdf) > 0
-        sortcols = Symbol[]
-        for col in (:set, :rangeid, :pair, :opentime)
-            (col in names(tradesdf)) && push!(sortcols, col)
-        end
-        !isempty(sortcols) && sort!(tradesdf, sortcols)
-    end
-    TSM.savetradesdf(tradesdf; stem="trades-td", folderpath=EnvConfig.logfolder())
-
-    xchgainsdf, xchreportdf = _collectxchgains(tradesdf)
+    xchgainsdf, xchreportdf = _collectxchgains(xchgainparts)
     _report_gain_collection_comparison(gaindf, xchgainsdf, xchreportdf)
 
     (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")

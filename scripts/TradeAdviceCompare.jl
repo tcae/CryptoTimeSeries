@@ -2,7 +2,7 @@
 TradeAdviceCompare.jl
 
 Run TrendDetector and tradesim with aligned configuration, then compare
-trade-advice columns between TrendDetector (`trades-td.arrow`) and tradesim
+trade-advice columns between TrendDetector (`trades-td/<PAIR>.arrow`) and tradesim
 (`trades.arrow`).
 
 Usage:
@@ -134,6 +134,25 @@ function _has_table(folderpath::AbstractString, stem::AbstractString)::Bool
     end
 end
 
+"""Subfolder of a TrendDetector run holding one Trades artifact per trading pair."""
+const TRADES_TD_SUBFOLDER = "trades-td"
+
+"""Return the trading pair keys of `coins` under the configured quote coin."""
+_trades_td_pairs(coins::Vector{String})::Vector{String} = [uppercase(coin) * uppercase(EnvConfig.pairquote) for coin in coins]
+
+"""Load and concatenate the per-pair TrendDetector Trades artifacts of `coins`."""
+function _load_trades_td(folderpath::AbstractString, coins::Vector{String})::DataFrame
+    tdfolder = joinpath(String(folderpath), TRADES_TD_SUBFOLDER)
+    parts = [_load_arrow_df(tdfolder, pair) for pair in _trades_td_pairs(coins)]
+    return reduce(vcat, parts)
+end
+
+"""Return true when every requested coin has a per-pair Trades artifact in `folderpath`."""
+function _has_trades_td(folderpath::AbstractString, coins::Vector{String})::Bool
+    tdfolder = joinpath(String(folderpath), TRADES_TD_SUBFOLDER)
+    return all(pair -> _has_table(tdfolder, pair), _trades_td_pairs(coins))
+end
+
 function _resolve_artifact_folder(subfolder::AbstractString, stem::AbstractString, roots::Vector{String})::String
     for root in roots
         folder = joinpath(root, String(subfolder))
@@ -158,7 +177,7 @@ function main()
 
     trend_folder = "tradeadvicecompare-td-$(config_ref)"
     sim_folder = "tradeadvicecompare-sim-$(config_ref)"
-    trend_folderpath = _resolve_artifact_folder(trend_folder, "trades-td", [trend_root])
+    trend_folderpath = joinpath(trend_root, trend_folder)
     sim_folderpath = _resolve_artifact_folder(sim_folder, "trades-ts", unique([sim_root, legacy_logs_root]))
 
     trend_args = [
@@ -171,7 +190,7 @@ function main()
         "coins=$(join(coins, ","))",
     ]
 
-    if _has_table(trend_folderpath, "trades-td")
+    if _has_trades_td(trend_folderpath, coins)
         println("Reusing existing TrendDetector artifact in ", trend_folderpath)
     else
         trend_cmd = addenv(
@@ -202,7 +221,7 @@ function main()
         Base.invokelatest(_run_or_fail, sim_cmd)
     end
 
-    tddf = _load_arrow_df(trend_folderpath, "trades-td")
+    tddf = _load_trades_td(trend_folderpath, coins)
     simdf = _load_arrow_df(sim_folderpath, "trades-ts")
 
     cmp = _comparison_df(tddf, simdf)

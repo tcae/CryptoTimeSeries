@@ -77,4 +77,5 @@ end
 end
 
 include("trades_schema_contract_test.jl")
+include("settrades_ownership_test.jl")
 include("compilegainsdf_test.jl")

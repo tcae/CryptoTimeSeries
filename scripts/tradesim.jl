@@ -303,19 +303,19 @@ end
 # TRADESIM CHECKPOINT — resume an interrupted replay run
 # ─────────────────────────────────────────────────────────────────────────────
 # Per pair, the full trades dataframe (tsmstate included) is persisted under
-# coins/<BASE-QUOTE>/tradesim/; the Bybit simulation ledger (assets/orders/
-# closedorders + sim order counter/sequencing map), shared across all pairs, is
-# persisted once under the current run's log folder. On restart, rows strictly
-# before the last row with tsmstate != TSM_NO_STATE are restored as-is; that last
-# row itself is reprocessed from scratch because the interruption most likely
-# happened mid-processing of it.
+# <logfolder>/tradesim-checkpoint/<BASE>-<QUOTE>/; the Bybit simulation ledger
+# (assets/orders/closedorders + sim order counter/sequencing map), shared across all
+# pairs, is persisted alongside it. On restart, rows strictly before the last row with
+# tsmstate != TSM_NO_STATE are restored as-is; that last row itself is reprocessed from
+# scratch because the interruption most likely happened mid-processing of it.
 
 const TRADESIM_CHECKPOINT_LOG_SUBFOLDER = "tradesim-checkpoint"
-const TRADESIM_CHECKPOINT_PAIR_SUBFOLDER = "tradesim"
 const TRADESIM_CHECKPOINT_TRADES_STEM = "trades_checkpoint"
 
 _tradesim_ledger_folderpath() = joinpath(EnvConfig.logfolder(), TRADESIM_CHECKPOINT_LOG_SUBFOLDER)
-_tradesim_pair_checkpoint_folderpath(base::AbstractString, quotecoin::AbstractString) = EnvConfig.coinfolderpath(base, quotecoin, TRADESIM_CHECKPOINT_PAIR_SUBFOLDER)
+# Checkpoints belong to one experiment run, so they live under its log folder rather than
+# in the cross-experiment per-coin data tree.
+_tradesim_pair_checkpoint_folderpath(base::AbstractString, quotecoin::AbstractString) = joinpath(_tradesim_ledger_folderpath(), uppercase(String(base)) * "-" * uppercase(String(quotecoin)))
 
 "Persist one pair's full trades dataframe (all TSM contract columns, including tsmstate progress)."
 function _save_pair_checkpoint!(tsm::TSM.TsmCache, pair::AbstractString)

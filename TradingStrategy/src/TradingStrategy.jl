@@ -166,26 +166,26 @@ end
     return _relpricedelta(candidate, current) > minpricedelta
 end
 
-function _enforce_reversal_limit_ordering!(tradesdf::DataFrame, ix::Integer)
-    if (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :so_amount] > 0f0)
-        lc_limit = tradesdf[ix, :lc_limit]
-        so_limit = tradesdf[ix, :so_limit]
+function _enforce_reversal_limit_ordering!(cols::TSM.TradesColumns, ix::Integer)
+    if (cols.lp_amount[ix] > 0f0) && (cols.so_amount[ix] > 0f0)
+        lc_limit = cols.lc_limit[ix]
+        so_limit = cols.so_limit[ix]
         if (lc_limit == 0f0) || (so_limit == 0f0)
-            TSM.settrades_limit!(tradesdf, ix, longclose, 0f0)
-            TSM.settrades_limit!(tradesdf, ix, shortopen, 0f0)
+            cols.lc_limit[ix] = 0f0
+            cols.so_limit[ix] = 0f0
         else
-            TSM.settrades_limit!(tradesdf, ix, longclose, min(lc_limit, so_limit))
+            cols.lc_limit[ix] = min(lc_limit, so_limit)
         end
     end
 
-    if (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :lo_amount] > 0f0)
-        sc_limit = tradesdf[ix, :sc_limit]
-        lo_limit = tradesdf[ix, :lo_limit]
+    if (cols.sp_amount[ix] > 0f0) && (cols.lo_amount[ix] > 0f0)
+        sc_limit = cols.sc_limit[ix]
+        lo_limit = cols.lo_limit[ix]
         if (sc_limit == 0f0) || (lo_limit == 0f0)
-            TSM.settrades_limit!(tradesdf, ix, shortclose, 0f0)
-            TSM.settrades_limit!(tradesdf, ix, longopen, 0f0)
+            cols.sc_limit[ix] = 0f0
+            cols.lo_limit[ix] = 0f0
         else
-            TSM.settrades_limit!(tradesdf, ix, shortclose, max(sc_limit, lo_limit))
+            cols.sc_limit[ix] = max(sc_limit, lo_limit)
         end
     end
     return nothing
@@ -562,7 +562,9 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
     TSM.settrades_score!(tdf, trowix, 0f0)
     TSM.settrades_close!(tdf, trowix, closeprice)
 
-    spec.algorithm(spec, tdf, trowix)
+    # One tick per minute, so resolving handles here costs nothing and keeps live and
+    # replay on the same strategy implementation.
+    spec.algorithm(spec, TSM.TradesColumns(tdf), trowix)
 
     return (
         base=basekey,
@@ -591,11 +593,11 @@ end
 @inline _openlimitactive(openlimit) = openlimit > 0
 
 " number of minutes exceeding cfg.maxwindow since lastopentrade; 0 if within maxwindow or no lastopentrade"
-function _limitreductionminutes(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer)
-    if (tradesdf[ix, :label] in (longopen, longstrongopen, shortopen, shortstrongopen)) || ismissing(tradesdf[ix, :lastopentrade])
+function _limitreductionminutes(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+    if (cols.label[ix] in (longopen, longstrongopen, shortopen, shortstrongopen)) || ismissing(cols.lastopentrade[ix])
         return 0
     else
-        elapsed_minutes = Int(div(Dates.value(DateTime(tradesdf[ix, :opentime]) - DateTime(tradesdf[ix, :lastopentrade])), 60000)) # DateTime difference is in milliseconds
+        elapsed_minutes = Int(div(Dates.value(cols.opentime[ix] - cols.lastopentrade[ix]), 60000)) # DateTime difference is in milliseconds
         return elapsed_minutes - Int(cfg.maxwindow)
     end
 end
@@ -638,36 +640,39 @@ derived from the same `refprice`, keeping both legs at a consistent distance fro
 
 A zero `closelimit` requests an immediate maker close and keeps the stop leg in place; the stop
 is only dropped when no position is held on that side."""
-function _setclosebracket!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer, label, refprice::Float32, closelimit::Float32)
-    TSM.settrades_limit!(tradesdf, ix, label, closelimit)
+function _setclosebracket!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, label, refprice::Float32, closelimit::Float32)
     long = label == longclose
-    hasposition = long ? (tradesdf[ix, :lp_amount] > 0f0) : (tradesdf[ix, :sp_amount] > 0f0)
+    hasposition = long ? (cols.lp_amount[ix] > 0f0) : (cols.sp_amount[ix] > 0f0)
     stoplimit = hasposition ? _stopprice(cfg, refprice, long ? up : down) : 0f0
-    TSM.settrades_stoplanefield!(tradesdf, ix, label, :limit, stoplimit)
+    if long
+        cols.lc_limit[ix] = closelimit
+        cols.lcsl_limit[ix] = stoplimit
+    else
+        cols.sc_limit[ix] = closelimit
+        cols.scsl_limit[ix] = stoplimit
+    end
     return nothing
 end
 
-function _get_classifier_result!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer)
+function _get_classifier_result!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
     classifier = cfg.classifier
     @assert !isnothing(classifier) "StrategyConfig.classifier must be configured for classifier fallback at ix=$(ix)"
-    @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair for classifier fallback; names=$(names(tradesdf))"
-    @assert :opentime in propertynames(tradesdf) "tradesdf must contain :opentime for classifier fallback; names=$(names(tradesdf))"
 
-    pair = tradesdf[ix, :pair]
+    pair = cols.pair[ix]
     @assert !ismissing(pair) "tradesdf[ix=$ix, :pair] must be non-missing for classifier fallback"
     bq = Xch.basequote(String(pair))
     basekey = uppercase(String(bq.basecoin))
-    datetime = DateTime(tradesdf[ix, :opentime])
+    datetime = cols.opentime[ix]
 
     advice = Classify.advice(classifier, basekey, datetime, investment=nothing)
     if isnothing(advice)
-        TSM.settrades_label!(tradesdf, ix, ignore)
-        TSM.settrades_score!(tradesdf, ix, 0f0)
+        cols.label[ix] = ignore
+        cols.score[ix] = 0f0
         return nothing
     end
 
-    TSM.settrades_label!(tradesdf, ix, advice.tradelabel)
-    TSM.settrades_score!(tradesdf, ix, advice.probability)
+    cols.label[ix] = advice.tradelabel
+    cols.score[ix] = advice.probability
     return advice
 end
 
@@ -682,110 +687,133 @@ keep whatever `lc_limit` was carried over from a previous, unrelated position -
 `applyreduction=false` forces the plain (unreduced) target: a tick whose incoming label
 was still `longopen`/`shortopen` (score just dipped below threshold) is not an aged
 position in the `limitreduction` sense, even if `lastopentrade` happens to be old."""
-function _refresh_close_limits!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer; applyreduction::Bool=true)
-    lrm = applyreduction ? max(_limitreductionminutes(cfg, tradesdf, ix), 0) : 0
-    closeprice = tradesdf[ix, :close]
-    if tradesdf[ix, :lp_amount] > 0f0
+function _refresh_close_limits!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer; applyreduction::Bool=true)
+    lrm = applyreduction ? max(_limitreductionminutes(cfg, cols, ix), 0) : 0
+    closeprice = cols.close[ix]
+    if cols.lp_amount[ix] > 0f0
         lc_candidate = _closeprice(cfg, lrm, closeprice, up)
-        lc_new = _should_update_price(tradesdf[ix, :lc_limit], lc_candidate, cfg.minpricedelta) ? lc_candidate : tradesdf[ix, :lc_limit]
-        _setclosebracket!(cfg, tradesdf, ix, longclose, closeprice, lc_new)
+        lc_new = _should_update_price(cols.lc_limit[ix], lc_candidate, cfg.minpricedelta) ? lc_candidate : cols.lc_limit[ix]
+        _setclosebracket!(cfg, cols, ix, longclose, closeprice, lc_new)
     end
-    if tradesdf[ix, :sp_amount] > 0f0
+    if cols.sp_amount[ix] > 0f0
         sc_candidate = _closeprice(cfg, lrm, closeprice, down)
-        sc_new = _should_update_price(tradesdf[ix, :sc_limit], sc_candidate, cfg.minpricedelta) ? sc_candidate : tradesdf[ix, :sc_limit]
-        _setclosebracket!(cfg, tradesdf, ix, shortclose, closeprice, sc_new)
+        sc_new = _should_update_price(cols.sc_limit[ix], sc_candidate, cfg.minpricedelta) ? sc_candidate : cols.sc_limit[ix]
+        _setclosebracket!(cfg, cols, ix, shortclose, closeprice, sc_new)
     end
     return nothing
 end
 
 """
-    gain_limit_reversal!(strategy, tradesdf, ix)
+    gain_limit_reversal!(strategy, cols, ix)
 
-DataFrame-based limit-reversal lane update that writes one sample row state.
+Limit-reversal lane update that writes one sample row state through typed column handles.
 """
-function gain_limit_reversal!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer)
-    @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
-    if tradesdf[ix, :score] == 0f0
-        _get_classifier_result!(cfg, tradesdf, ix)
+function gain_limit_reversal!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+    @assert 1 <= ix <= TSM.tradesrows(cols) "ix=$(ix) out of bounds for trades rows=$(TSM.tradesrows(cols))"
+    if cols.score[ix] == 0f0
+        _get_classifier_result!(cfg, cols, ix)
     end
 
-    TSM.settrades_limit!(tradesdf, ix, longopen, ix > 1 ? tradesdf[ix-1, :lo_limit] : 0f0)
-    TSM.settrades_limit!(tradesdf, ix, longclose, ix > 1 ? tradesdf[ix-1, :lc_limit] : 0f0)
-    TSM.settrades_limit!(tradesdf, ix, shortopen, ix > 1 ? tradesdf[ix-1, :so_limit] : 0f0)
-    TSM.settrades_limit!(tradesdf, ix, shortclose, ix > 1 ? tradesdf[ix-1, :sc_limit] : 0f0)
-    TSM.settrades_stoplanefield!(tradesdf, ix, longclose, :limit, ix > 1 ? tradesdf[ix-1, :lcsl_limit] : 0f0)
-    TSM.settrades_stoplanefield!(tradesdf, ix, shortclose, :limit, ix > 1 ? tradesdf[ix-1, :scsl_limit] : 0f0)
+    prev = ix - 1
+    cols.lo_limit[ix] = ix > 1 ? cols.lo_limit[prev] : 0f0
+    cols.lc_limit[ix] = ix > 1 ? cols.lc_limit[prev] : 0f0
+    cols.so_limit[ix] = ix > 1 ? cols.so_limit[prev] : 0f0
+    cols.sc_limit[ix] = ix > 1 ? cols.sc_limit[prev] : 0f0
+    cols.lcsl_limit[ix] = ix > 1 ? cols.lcsl_limit[prev] : 0f0
+    cols.scsl_limit[ix] = ix > 1 ? cols.scsl_limit[prev] : 0f0
 
-    if (tradesdf[ix, :label] in (longopen, longstrongopen)) 
-        if (tradesdf[ix, :score] >= cfg.openthreshold)
-            lo_candidate = tradesdf[ix, :close] * (1f0 - (cfg.buygain))
-            if _should_update_price(tradesdf[ix, :lo_limit], lo_candidate, cfg.minpricedelta)
-                TSM.settrades_limit!(tradesdf, ix, longopen, lo_candidate)
+    closeprice = cols.close[ix]
+    if (cols.label[ix] in (longopen, longstrongopen))
+        if (cols.score[ix] >= cfg.openthreshold)
+            lo_candidate = closeprice * (1f0 - (cfg.buygain))
+            if _should_update_price(cols.lo_limit[ix], lo_candidate, cfg.minpricedelta)
+                cols.lo_limit[ix] = lo_candidate
             end
             # both bracket legs are anchored at the last close price
-            lc_candidate = _closeprice(cfg, 0, tradesdf[ix, :close], up)
-            lc_new = _should_update_price(tradesdf[ix, :lc_limit], lc_candidate, cfg.minpricedelta) ? lc_candidate : tradesdf[ix, :lc_limit]
-            _setclosebracket!(cfg, tradesdf, ix, longclose, tradesdf[ix, :close], lc_new)
-            TSM.settrades_limit!(tradesdf, ix, shortopen, 0f0)
-            _setclosebracket!(cfg, tradesdf, ix, shortclose, tradesdf[ix, :close], tradesdf[ix, :sp_amount] > 0f0 ? tradesdf[ix, :lo_limit] : 0f0)
+            lc_candidate = _closeprice(cfg, 0, closeprice, up)
+            lc_new = _should_update_price(cols.lc_limit[ix], lc_candidate, cfg.minpricedelta) ? lc_candidate : cols.lc_limit[ix]
+            _setclosebracket!(cfg, cols, ix, longclose, closeprice, lc_new)
+            cols.so_limit[ix] = 0f0
+            _setclosebracket!(cfg, cols, ix, shortclose, closeprice, cols.sp_amount[ix] > 0f0 ? cols.lo_limit[ix] : 0f0)
         else # label below threshold
-            TSM.settrades_label!(tradesdf, ix, longhold)
-            _refresh_close_limits!(cfg, tradesdf, ix; applyreduction=false)
+            cols.label[ix] = longhold
+            _refresh_close_limits!(cfg, cols, ix; applyreduction=false)
         end
-    elseif (tradesdf[ix, :label] in (shortopen, shortstrongopen)) 
-        if (tradesdf[ix, :score] >= cfg.openthreshold)
-            so_candidate = tradesdf[ix, :close] * (1f0 + (cfg.buygain))
-            if _should_update_price(tradesdf[ix, :so_limit], so_candidate, cfg.minpricedelta)
-                TSM.settrades_limit!(tradesdf, ix, shortopen, so_candidate)
+    elseif (cols.label[ix] in (shortopen, shortstrongopen))
+        if (cols.score[ix] >= cfg.openthreshold)
+            so_candidate = closeprice * (1f0 + (cfg.buygain))
+            if _should_update_price(cols.so_limit[ix], so_candidate, cfg.minpricedelta)
+                cols.so_limit[ix] = so_candidate
             end
-            sc_candidate = _closeprice(cfg, 0, tradesdf[ix, :close], down)
-            sc_new = _should_update_price(tradesdf[ix, :sc_limit], sc_candidate, cfg.minpricedelta) ? sc_candidate : tradesdf[ix, :sc_limit]
-            _setclosebracket!(cfg, tradesdf, ix, shortclose, tradesdf[ix, :close], sc_new)
-            TSM.settrades_limit!(tradesdf, ix, longopen, 0f0)
-            _setclosebracket!(cfg, tradesdf, ix, longclose, tradesdf[ix, :close], tradesdf[ix, :lp_amount] > 0f0 ? tradesdf[ix, :so_limit] : 0f0)
+            sc_candidate = _closeprice(cfg, 0, closeprice, down)
+            sc_new = _should_update_price(cols.sc_limit[ix], sc_candidate, cfg.minpricedelta) ? sc_candidate : cols.sc_limit[ix]
+            _setclosebracket!(cfg, cols, ix, shortclose, closeprice, sc_new)
+            cols.lo_limit[ix] = 0f0
+            _setclosebracket!(cfg, cols, ix, longclose, closeprice, cols.lp_amount[ix] > 0f0 ? cols.so_limit[ix] : 0f0)
         else # label below threshold
-            TSM.settrades_label!(tradesdf, ix, shorthold)
-            _refresh_close_limits!(cfg, tradesdf, ix; applyreduction=false)
+            cols.label[ix] = shorthold
+            _refresh_close_limits!(cfg, cols, ix; applyreduction=false)
         end
     else
-        _refresh_close_limits!(cfg, tradesdf, ix)
+        _refresh_close_limits!(cfg, cols, ix)
     end
 
-    _enforce_reversal_limit_ordering!(tradesdf, ix)
+    _enforce_reversal_limit_ordering!(cols, ix)
 
     return
 end
 
-function _resetorder(tradesdf::DataFrame, ix::Integer, ordertype::String; reset_pavg::Bool)
-    function _ro(tradesdf::DataFrame, ix::Integer, ordertype::String)
-        fillprefix = ordertype == "lo" ? "lol" : ordertype == "lc" ? "lcl" : ordertype == "so" ? "sol" : ordertype == "sc" ? "scl" : error("unsupported ordertype=$(ordertype)")
-        tradesdf[ix, Symbol(ordertype * "_limit")] = 0f0
-        tradesdf[ix, Symbol(ordertype * "_amount")] = 0f0
-        tradesdf[ix, Symbol(ordertype * "_status")] = "closed"
-        tradesdf[ix, Symbol(fillprefix * "_filled")] = 0f0
-        tradesdf[ix, Symbol(ordertype * "_id")] = "none"
-        if ordertype in ("lc", "sc")
-            # the stop leg only exists as the second leg of the close bracket
-            tradesdf[ix, Symbol(ordertype * "sl_limit")] = 0f0
-            tradesdf[ix, Symbol(ordertype * "sl_status")] = "closed"
-            tradesdf[ix, Symbol(ordertype * "sl_id")] = "none"
-        end
-        if reset_pavg
-            tradesdf[ix, Symbol(fillprefix * "_pavg")] = 0f0
-        end
+"""Clear one order lane, and for close lanes its stop-loss bracket leg as well."""
+function _resetorder(cols::TSM.TradesColumns, ix::Integer, lane::Symbol; reset_pavg::Bool)
+    if lane === :lo
+        cols.lo_limit[ix] = 0f0
+        cols.lo_amount[ix] = 0f0
+        TSM.setcategorical!(cols.lo_status, ix, "closed")
+        cols.lol_filled[ix] = 0f0
+        TSM.setcategorical!(cols.lo_id, ix, "none")
+        reset_pavg && (cols.lol_pavg[ix] = 0f0)
+    elseif lane === :lc
+        cols.lc_limit[ix] = 0f0
+        cols.lc_amount[ix] = 0f0
+        TSM.setcategorical!(cols.lc_status, ix, "closed")
+        cols.lcl_filled[ix] = 0f0
+        TSM.setcategorical!(cols.lc_id, ix, "none")
+        # the stop leg only exists as the second leg of the close bracket
+        cols.lcsl_limit[ix] = 0f0
+        TSM.setcategorical!(cols.lcsl_status, ix, "closed")
+        TSM.setcategorical!(cols.lcsl_id, ix, "none")
+        reset_pavg && (cols.lcl_pavg[ix] = 0f0)
+    elseif lane === :so
+        cols.so_limit[ix] = 0f0
+        cols.so_amount[ix] = 0f0
+        TSM.setcategorical!(cols.so_status, ix, "closed")
+        cols.sol_filled[ix] = 0f0
+        TSM.setcategorical!(cols.so_id, ix, "none")
+        reset_pavg && (cols.sol_pavg[ix] = 0f0)
+    elseif lane === :sc
+        cols.sc_limit[ix] = 0f0
+        cols.sc_amount[ix] = 0f0
+        TSM.setcategorical!(cols.sc_status, ix, "closed")
+        cols.scl_filled[ix] = 0f0
+        TSM.setcategorical!(cols.sc_id, ix, "none")
+        cols.scsl_limit[ix] = 0f0
+        TSM.setcategorical!(cols.scsl_status, ix, "closed")
+        TSM.setcategorical!(cols.scsl_id, ix, "none")
+        reset_pavg && (cols.scl_pavg[ix] = 0f0)
+    else
+        error("unsupported order lane=$(lane)")
     end
-
-    _ro(tradesdf, ix, ordertype)
+    return nothing
 end
 
-function _open_hit_spec(tradesdf::DataFrame, ix::Integer)
-    label = tradesdf[ix, :label]
-    lo_limit = tradesdf[ix, :lo_limit]
-    lo_amount = tradesdf[ix, :lo_amount]
-    so_limit = tradesdf[ix, :so_limit]
-    so_amount = tradesdf[ix, :so_amount]
-    high = tradesdf[ix, :high]
-    low = tradesdf[ix, :low]
+function _open_hit_spec(cols::TSM.TradesColumns, ix::Integer)
+    label = cols.label[ix]
+    lo_limit = cols.lo_limit[ix]
+    lo_amount = cols.lo_amount[ix]
+    so_limit = cols.so_limit[ix]
+    so_amount = cols.so_amount[ix]
+    high = cols.high[ix]
+    low = cols.low[ix]
     long_open_hit = islongopenlabel(label) && (lo_amount > 0f0) && _openlimitactive(lo_limit) && _price_in_bar((lo_limit), low, high, :low)
     short_open_hit = isshortopenlabel(label) && (so_amount > 0f0) && _openlimitactive(so_limit) && _price_in_bar((so_limit), low, high, :high)
     @assert !(long_open_hit && short_open_hit) "Both long and short open limits matched same bar at ix=$(ix): lo=$(lo_limit), so=$(so_limit), low=$(low), high=$(high)"
@@ -797,79 +825,83 @@ function _open_hit_spec(tradesdf::DataFrame, ix::Integer)
     return nothing
 end
 
-function _apply_open_hit!(cfg::StrategyConfig, tradesdf::DataFrame, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32)
+function _apply_open_hit!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32)
+    closeprice = cols.close[ix]
     if side == :long
-        @assert tradesdf[ix, :sp_amount] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(tradesdf[ix, :sp_amount]) is not zero"
-        prior_amount = tradesdf[ix, :lp_amount]
-        prior_pavg = tradesdf[ix, :lol_pavg]
+        @assert cols.sp_amount[ix] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(cols.sp_amount[ix]) is not zero"
+        prior_amount = cols.lp_amount[ix]
+        prior_pavg = cols.lol_pavg[ix]
         total_amount = prior_amount + amount
         entryprice = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
-        TSM.settrades_lastopentrade!(tradesdf, ix, ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade])
-        TSM.settrades_lp_amount!(tradesdf, ix, total_amount)
-        TSM.settrades_last_pavg!(tradesdf, ix, longopen, entryprice)
-        _resetorder(tradesdf, ix, "lo", reset_pavg=false)
-        TSM.settrades_amount!(tradesdf, ix, longclose, tradesdf[ix, :lp_amount])
-        TSM.settrades_last_filled!(tradesdf, ix, longclose, 0f0)
-        TSM.settrades_status!(tradesdf, ix, longclose, "submitted")
+        ismissing(cols.lastopentrade[ix]) && (cols.lastopentrade[ix] = cols.opentime[ix])
+        cols.lp_amount[ix] = total_amount
+        cols.lol_pavg[ix] = entryprice
+        _resetorder(cols, ix, :lo, reset_pavg=false)
+        cols.lc_amount[ix] = cols.lp_amount[ix]
+        cols.lcl_filled[ix] = 0f0
+        TSM.setcategorical!(cols.lc_status, ix, "submitted")
         # lc_limit may still carry a stale value from a previously closed position; anchor the
         # bracket at the last close price now that the fill is known.
-        _setclosebracket!(cfg, tradesdf, ix, longclose, tradesdf[ix, :close], _closeprice(cfg, 0, tradesdf[ix, :close], up))
+        _setclosebracket!(cfg, cols, ix, longclose, closeprice, _closeprice(cfg, 0, closeprice, up))
     elseif side == :short
-        @assert tradesdf[ix, :lp_amount] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(tradesdf[ix, :lp_amount]) is not zero"
-        prior_amount = tradesdf[ix, :sp_amount]
-        prior_pavg = tradesdf[ix, :sol_pavg]
+        @assert cols.lp_amount[ix] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(cols.lp_amount[ix]) is not zero"
+        prior_amount = cols.sp_amount[ix]
+        prior_pavg = cols.sol_pavg[ix]
         total_amount = prior_amount + amount
         entryprice = (prior_amount > 0f0) && (prior_pavg > 0f0) ? ((prior_amount * prior_pavg + amount * limitprice) / total_amount) : limitprice
-        TSM.settrades_lastopentrade!(tradesdf, ix, ismissing(tradesdf[ix, :lastopentrade]) ? tradesdf[ix, :opentime] : tradesdf[ix, :lastopentrade])
-        TSM.settrades_sp_amount!(tradesdf, ix, total_amount)
-        TSM.settrades_last_pavg!(tradesdf, ix, shortopen, entryprice)
-        _resetorder(tradesdf, ix, "so", reset_pavg=false)
-        TSM.settrades_amount!(tradesdf, ix, shortclose, tradesdf[ix, :sp_amount])
-        TSM.settrades_last_filled!(tradesdf, ix, shortclose, 0f0)
-        TSM.settrades_status!(tradesdf, ix, shortclose, "submitted")
-        _setclosebracket!(cfg, tradesdf, ix, shortclose, tradesdf[ix, :close], _closeprice(cfg, 0, tradesdf[ix, :close], down))
+        ismissing(cols.lastopentrade[ix]) && (cols.lastopentrade[ix] = cols.opentime[ix])
+        cols.sp_amount[ix] = total_amount
+        cols.sol_pavg[ix] = entryprice
+        _resetorder(cols, ix, :so, reset_pavg=false)
+        cols.sc_amount[ix] = cols.sp_amount[ix]
+        cols.scl_filled[ix] = 0f0
+        TSM.setcategorical!(cols.sc_status, ix, "submitted")
+        _setclosebracket!(cfg, cols, ix, shortclose, closeprice, _closeprice(cfg, 0, closeprice, down))
     else
         error("unsupported open hit side=$(side)")
     end
     return nothing
 end
 
-function _rowtakeover!(tdf::DataFrame, ix::Integer)
-    if ix > 1
-        if tdf[ix, :score] == 0f0
-            TSM.settrades_score!(tdf, ix, tdf[ix-1, :score])
-            TSM.settrades_label!(tdf, ix, tdf[ix-1, :label])
-        end
-        TSM.settrades_limit!(tdf, ix, longopen, tdf[ix-1, :lo_limit])
-        TSM.settrades_limit!(tdf, ix, longclose, tdf[ix-1, :lc_limit])
-        TSM.settrades_limit!(tdf, ix, shortopen, tdf[ix-1, :so_limit])
-        TSM.settrades_limit!(tdf, ix, shortclose, tdf[ix-1, :sc_limit])
-        TSM.settrades_stoplanefield!(tdf, ix, longclose, :limit, tdf[ix-1, :lcsl_limit])
-        TSM.settrades_stoplanefield!(tdf, ix, shortclose, :limit, tdf[ix-1, :scsl_limit])
-        TSM.settrades_amount!(tdf, ix, longopen, tdf[ix-1, :lo_amount])
-        TSM.settrades_amount!(tdf, ix, longclose, tdf[ix-1, :lc_amount])
-        TSM.settrades_amount!(tdf, ix, shortopen, tdf[ix-1, :so_amount])
-        TSM.settrades_amount!(tdf, ix, shortclose, tdf[ix-1, :sc_amount])
-        TSM.settrades_status!(tdf, ix, longopen, tdf[ix-1, :lo_status])
-        TSM.settrades_status!(tdf, ix, longclose, tdf[ix-1, :lc_status])
-        TSM.settrades_status!(tdf, ix, shortopen, tdf[ix-1, :so_status])
-        TSM.settrades_status!(tdf, ix, shortclose, tdf[ix-1, :sc_status])
-        TSM.settrades_last_filled!(tdf, ix, longopen, tdf[ix-1, :lol_filled])
-        TSM.settrades_last_filled!(tdf, ix, longclose, tdf[ix-1, :lcl_filled])
-        TSM.settrades_last_filled!(tdf, ix, shortopen, tdf[ix-1, :sol_filled])
-        TSM.settrades_last_filled!(tdf, ix, shortclose, tdf[ix-1, :scl_filled])
-        TSM.settrades_id!(tdf, ix, longopen, tdf[ix-1, :lo_id])
-        TSM.settrades_id!(tdf, ix, longclose, tdf[ix-1, :lc_id])
-        TSM.settrades_id!(tdf, ix, shortopen, tdf[ix-1, :so_id])
-        TSM.settrades_id!(tdf, ix, shortclose, tdf[ix-1, :sc_id])
-        TSM.settrades_last_pavg!(tdf, ix, longopen, tdf[ix-1, :lol_pavg])
-        TSM.settrades_last_pavg!(tdf, ix, longclose, tdf[ix-1, :lcl_pavg])
-        TSM.settrades_last_pavg!(tdf, ix, shortopen, tdf[ix-1, :sol_pavg])
-        TSM.settrades_last_pavg!(tdf, ix, shortclose, tdf[ix-1, :scl_pavg])
-        TSM.settrades_lastopentrade!(tdf, ix, tdf[ix-1, :lastopentrade])
-        TSM.settrades_lp_amount!(tdf, ix, tdf[ix-1, :lp_amount])
-        TSM.settrades_sp_amount!(tdf, ix, tdf[ix-1, :sp_amount])
+"""Carry the resting order and position state of row `ix-1` into row `ix`.
+
+Only order/position state is carried. `opentime`, `high`, `low`, `close`, `score` and
+`label` are prepopulated per row by the replay input and must never be overwritten here."""
+function _rowtakeover!(cols::TSM.TradesColumns, ix::Integer)
+    ix > 1 || return nothing
+    prev = ix - 1
+    @inbounds begin
+        cols.lo_limit[ix] = cols.lo_limit[prev]
+        cols.lc_limit[ix] = cols.lc_limit[prev]
+        cols.so_limit[ix] = cols.so_limit[prev]
+        cols.sc_limit[ix] = cols.sc_limit[prev]
+        cols.lcsl_limit[ix] = cols.lcsl_limit[prev]
+        cols.scsl_limit[ix] = cols.scsl_limit[prev]
+        cols.lo_amount[ix] = cols.lo_amount[prev]
+        cols.lc_amount[ix] = cols.lc_amount[prev]
+        cols.so_amount[ix] = cols.so_amount[prev]
+        cols.sc_amount[ix] = cols.sc_amount[prev]
+        cols.lo_status[ix] = cols.lo_status[prev]
+        cols.lc_status[ix] = cols.lc_status[prev]
+        cols.so_status[ix] = cols.so_status[prev]
+        cols.sc_status[ix] = cols.sc_status[prev]
+        cols.lol_filled[ix] = cols.lol_filled[prev]
+        cols.lcl_filled[ix] = cols.lcl_filled[prev]
+        cols.sol_filled[ix] = cols.sol_filled[prev]
+        cols.scl_filled[ix] = cols.scl_filled[prev]
+        cols.lo_id[ix] = cols.lo_id[prev]
+        cols.lc_id[ix] = cols.lc_id[prev]
+        cols.so_id[ix] = cols.so_id[prev]
+        cols.sc_id[ix] = cols.sc_id[prev]
+        cols.lol_pavg[ix] = cols.lol_pavg[prev]
+        cols.lcl_pavg[ix] = cols.lcl_pavg[prev]
+        cols.sol_pavg[ix] = cols.sol_pavg[prev]
+        cols.scl_pavg[ix] = cols.scl_pavg[prev]
+        cols.lastopentrade[ix] = cols.lastopentrade[prev]
+        cols.lp_amount[ix] = cols.lp_amount[prev]
+        cols.sp_amount[ix] = cols.sp_amount[prev]
     end
+    return nothing
 end
 
 """Execute per-sample strategy updates and gain materialization outside the algorithm implementation."""
@@ -877,33 +909,46 @@ function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf:
     lastix <= 0 && return tp
     @assert !isnothing(gaindf) "expeting gaindf to be a DataFrame when gain materialization is requested"
 
+    # Resolved once: the replay frame is prepopulated, so no column is added or replaced
+    # while the loop runs and the handles stay valid throughout.
+    cols = TSM.TradesColumns(tp.tradesdf)
+    # Function barrier: `StrategyConfig.algorithm` is typed `Function`, so calling it per row
+    # would dispatch dynamically and box every argument - 544 bytes per row for `cols` alone.
+    _simulate_gains_rows!(cfg.algorithm, cfg, tp, cols, lastix, gaindf)
+
+    tp.last_update_dt = cols.opentime[lastix]
+    return tp
+end
+
+"""Run the replay row loop with `algorithm` resolved to a concrete type."""
+function _simulate_gains_rows!(algorithm::F, cfg::StrategyConfig, tp::TsTp, cols::TSM.TradesColumns, lastix::Integer, gaindf::DataFrame) where {F}
     last_openix = 0
     pending_open = nothing
     for ix in 1:lastix
         try
-            _rowtakeover!(tp.tradesdf, ix)
-            last_openix = _materialize_gains_sample_from_trades!(gaindf, tp.tradesdf, ix, last_openix; makerfee=cfg.makerfee, lastix=lastix)
+            _rowtakeover!(cols, ix)
+            last_openix = _materialize_gains_sample_from_trades!(gaindf, cols, ix, last_openix; makerfee=cfg.makerfee, lastix=lastix)
             if !isnothing(pending_open)
                 # Replay row `ix` is the first decision row that can observe the
                 # prior row's candle hit. Close materialization must run first so
                 # same-row flip cases can flatten the old side before opening the
                 # new side.
                 pending_side, pending_limitprice, pending_amount = pending_open
-                can_apply = pending_side == :long ? (tp.tradesdf[ix, :sp_amount] == 0f0) : (tp.tradesdf[ix, :lp_amount] == 0f0)
+                can_apply = pending_side == :long ? (cols.sp_amount[ix] == 0f0) : (cols.lp_amount[ix] == 0f0)
                 if can_apply
-                    _apply_open_hit!(cfg, tp.tradesdf, ix, pending_side, pending_limitprice, pending_amount)
+                    _apply_open_hit!(cfg, cols, ix, pending_side, pending_limitprice, pending_amount)
                     last_openix = ix
                 end
                 pending_open = nothing
             end
             # algorithm after materialization because label and order limits are set on the basis of the last minute (ix is the last complete minute sample in the past) and prices can hit these limits from the next ix+1 minute
-            cfg.algorithm(cfg, tp.tradesdf, ix)
-            _process_advice_row!(cfg, tp.tradesdf, ix)
-            _validate_row_consistency(tp.tradesdf, ix)
+            algorithm(cfg, cols, ix)
+            _process_advice_row!(cfg, cols, ix)
+            _validate_row_consistency(cols, ix)
             # Any open hit detected on row `ix` is only actionable from row
             # `ix+1`, matching the replay convention that row `ix` just made the
             # candle visible and decided whether the limit matched.
-            openhit = _open_hit_spec(tp.tradesdf, ix)
+            openhit = _open_hit_spec(cols, ix)
             if !isnothing(openhit)
                 pending_open = openhit
             end
@@ -917,141 +962,137 @@ function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf:
             rethrow(err)
         end
     end
-
-    if (lastix > 0)
-        tp.last_update_dt = tp.tradesdf[lastix, :opentime]
-    end
-    return tp
+    return nothing
 end
 
 "Input is :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit. Output is :lo_status, :so_status, :lo_amount, :so_amount."
-function _process_advice_row!(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer)
-    if islongopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :sp_amount] == 0f0)
-        TSM.settrades_amount!(tradesdf, ix, shortopen, 0f0)
-        TSM.settrades_status!(tradesdf, ix, longopen, "submitted")
-        TSM.settrades_amount!(tradesdf, ix, longopen, 100f0)
-        if tradesdf[ix, :lp_amount] == 0f0
-            TSM.settrades_last_pavg!(tradesdf, ix, longopen, 0f0)
+function _process_advice_row!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+    if islongopenlabel(cols.label[ix]) && (cols.sp_amount[ix] == 0f0)
+        cols.so_amount[ix] = 0f0
+        TSM.setcategorical!(cols.lo_status, ix, "submitted")
+        cols.lo_amount[ix] = 100f0
+        if cols.lp_amount[ix] == 0f0
+            cols.lol_pavg[ix] = 0f0
         end
-        TSM.settrades_last_filled!(tradesdf, ix, longopen, 0f0)
+        cols.lol_filled[ix] = 0f0
     end
-    if isshortopenlabel(tradesdf[ix, :label]) && (tradesdf[ix, :lp_amount] == 0f0)
-        TSM.settrades_amount!(tradesdf, ix, longopen, 0f0)
-        TSM.settrades_status!(tradesdf, ix, shortopen, "submitted")
-        TSM.settrades_amount!(tradesdf, ix, shortopen, 100f0)
-        if tradesdf[ix, :sp_amount] == 0f0
-            TSM.settrades_last_pavg!(tradesdf, ix, shortopen, 0f0)
+    if isshortopenlabel(cols.label[ix]) && (cols.lp_amount[ix] == 0f0)
+        cols.lo_amount[ix] = 0f0
+        TSM.setcategorical!(cols.so_status, ix, "submitted")
+        cols.so_amount[ix] = 100f0
+        if cols.sp_amount[ix] == 0f0
+            cols.sol_pavg[ix] = 0f0
         end
-        TSM.settrades_last_filled!(tradesdf, ix, shortopen, 0f0)
+        cols.sol_filled[ix] = 0f0
     end
 end
 
-function _validate_row_consistency(tradesdf::DataFrame, ix::Integer)::Nothing
-    @assert !((tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :sp_amount] > 0f0)) "Invalid overlap at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount]). A row cannot hold long and short position amounts at the same time."
+function _validate_row_consistency(cols::TSM.TradesColumns, ix::Integer)::Nothing
+    @assert !((cols.lp_amount[ix] > 0f0) && (cols.sp_amount[ix] > 0f0)) "Invalid overlap at ix=$(ix): lp_amount=$(cols.lp_amount[ix]), sp_amount=$(cols.sp_amount[ix]). A row cannot hold long and short position amounts at the same time."
 
-    coupled_short_reversal = (tradesdf[ix, :lp_amount] > 0f0) && (tradesdf[ix, :so_amount] > 0f0)
+    coupled_short_reversal = (cols.lp_amount[ix] > 0f0) && (cols.so_amount[ix] > 0f0)
     if coupled_short_reversal
-        lc_limit = tradesdf[ix, :lc_limit]
-        so_limit = tradesdf[ix, :so_limit]
-        @assert ((lc_limit == 0f0) && (so_limit == 0f0)) || ((lc_limit > 0f0) && (so_limit > 0f0) && (lc_limit <= so_limit)) "Expected long-close limit to match no later than short-open limit at ix=$(ix): lc_limit=$(lc_limit), so_limit=$(so_limit), lp_amount=$(tradesdf[ix, :lp_amount]), so_amount=$(tradesdf[ix, :so_amount])"
+        lc_limit = cols.lc_limit[ix]
+        so_limit = cols.so_limit[ix]
+        @assert ((lc_limit == 0f0) && (so_limit == 0f0)) || ((lc_limit > 0f0) && (so_limit > 0f0) && (lc_limit <= so_limit)) "Expected long-close limit to match no later than short-open limit at ix=$(ix): lc_limit=$(lc_limit), so_limit=$(so_limit), lp_amount=$(cols.lp_amount[ix]), so_amount=$(cols.so_amount[ix])"
     end
 
-    coupled_long_reversal = (tradesdf[ix, :sp_amount] > 0f0) && (tradesdf[ix, :lo_amount] > 0f0)
+    coupled_long_reversal = (cols.sp_amount[ix] > 0f0) && (cols.lo_amount[ix] > 0f0)
     if coupled_long_reversal
-        sc_limit = tradesdf[ix, :sc_limit]
-        lo_limit = tradesdf[ix, :lo_limit]
-        @assert ((sc_limit == 0f0) && (lo_limit == 0f0)) || ((sc_limit > 0f0) && (lo_limit > 0f0) && (sc_limit >= lo_limit)) "Expected short-close limit to match no later than long-open limit at ix=$(ix): sc_limit=$(sc_limit), lo_limit=$(lo_limit), sp_amount=$(tradesdf[ix, :sp_amount]), lo_amount=$(tradesdf[ix, :lo_amount])"
+        sc_limit = cols.sc_limit[ix]
+        lo_limit = cols.lo_limit[ix]
+        @assert ((sc_limit == 0f0) && (lo_limit == 0f0)) || ((sc_limit > 0f0) && (lo_limit > 0f0) && (sc_limit >= lo_limit)) "Expected short-close limit to match no later than long-open limit at ix=$(ix): sc_limit=$(sc_limit), lo_limit=$(lo_limit), sp_amount=$(cols.sp_amount[ix]), lo_amount=$(cols.lo_amount[ix])"
     end
 
-    if islongopenlabel(tradesdf[ix, :label])
-        @assert _hasguidance(tradesdf[ix, :lo_limit], tradesdf[ix, :lc_limit]) "Missing long guidance for long open signal at ix=$(ix): lo=$(tradesdf[ix, :lo_limit]), lc=$(tradesdf[ix, :lc_limit])"
-        @assert tradesdf[ix, :so_limit] == 0f0 "Expected zero so_limit for long open orders at ix=$(ix):, so_limit=$(tradesdf[ix, :so_limit])"
+    if islongopenlabel(cols.label[ix])
+        @assert _hasguidance(cols.lo_limit[ix], cols.lc_limit[ix]) "Missing long guidance for long open signal at ix=$(ix): lo=$(cols.lo_limit[ix]), lc=$(cols.lc_limit[ix])"
+        @assert cols.so_limit[ix] == 0f0 "Expected zero so_limit for long open orders at ix=$(ix):, so_limit=$(cols.so_limit[ix])"
     end
-    if isshortopenlabel(tradesdf[ix, :label])
-        @assert _hasguidance(tradesdf[ix, :so_limit], tradesdf[ix, :sc_limit]) "Missing short guidance for short open signal at ix=$(ix): so=$(tradesdf[ix, :so_limit]), sc=$(tradesdf[ix, :sc_limit])"
-        @assert tradesdf[ix, :lo_limit] == 0f0 "Expected zero lo_limit for short open orders at ix=$(ix):, lo_limit=$(tradesdf[ix, :lo_limit])"
+    if isshortopenlabel(cols.label[ix])
+        @assert _hasguidance(cols.so_limit[ix], cols.sc_limit[ix]) "Missing short guidance for short open signal at ix=$(ix): so=$(cols.so_limit[ix]), sc=$(cols.sc_limit[ix])"
+        @assert cols.lo_limit[ix] == 0f0 "Expected zero lo_limit for short open orders at ix=$(ix):, lo_limit=$(cols.lo_limit[ix])"
     end
-    @assert (ismissing(tradesdf[ix, :lastopentrade])  || (tradesdf[1, :opentime] <= tradesdf[ix, :lastopentrade] <= tradesdf[ix, :opentime])) "$(tradesdf[1, :opentime]) <= lastopentrade[ix=$ix]=$(tradesdf[ix, :lastopentrade]) <= $(tradesdf[ix, :opentime])"
-    if (tradesdf[ix, :lp_amount] > 0f0)
-        @assert tradesdf[ix, :sp_amount] == 0f0 "Expected zero sp_amount for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount])"
-        @assert tradesdf[ix, :lol_pavg] > 0f0 "Expected positive lo_pavg for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), lo_pavg=$(tradesdf[ix, :lol_pavg])"
-        @assert tradesdf[ix, :lc_limit] > 0f0 "Expected positive lc_limit for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), lc_limit=$(tradesdf[ix, :lc_limit])"
-        @assert !ismissing(tradesdf[ix, :lastopentrade]) "Expected non-missing lastopentrade for long positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), lastopentrade=$(tradesdf[ix, :lastopentrade])"
-    elseif (tradesdf[ix, :sp_amount] > 0f0)
-        @assert tradesdf[ix, :lp_amount] == 0f0 "Expected zero lp_amount for short positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount]), sp_amount=$(tradesdf[ix, :sp_amount])"
-        @assert tradesdf[ix, :sol_pavg] > 0f0 "Expected positive so_pavg for short positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount]), so_pavg=$(tradesdf[ix, :sol_pavg])"
-        @assert tradesdf[ix, :sc_limit] > 0f0 "Expected positive sc_limit for short positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount]), sc_limit=$(tradesdf[ix, :sc_limit])"
-        @assert !ismissing(tradesdf[ix, :lastopentrade]) "Expected non-missing lastopentrade for short positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount]), lastopentrade=$(tradesdf[ix, :lastopentrade])"
+    @assert (ismissing(cols.lastopentrade[ix]) || (cols.opentime[1] <= cols.lastopentrade[ix] <= cols.opentime[ix])) "$(cols.opentime[1]) <= lastopentrade[ix=$ix]=$(cols.lastopentrade[ix]) <= $(cols.opentime[ix])"
+    if (cols.lp_amount[ix] > 0f0)
+        @assert cols.sp_amount[ix] == 0f0 "Expected zero sp_amount for long positions at ix=$(ix): lp_amount=$(cols.lp_amount[ix]), sp_amount=$(cols.sp_amount[ix])"
+        @assert cols.lol_pavg[ix] > 0f0 "Expected positive lo_pavg for long positions at ix=$(ix): lp_amount=$(cols.lp_amount[ix]), lo_pavg=$(cols.lol_pavg[ix])"
+        @assert cols.lc_limit[ix] > 0f0 "Expected positive lc_limit for long positions at ix=$(ix): lp_amount=$(cols.lp_amount[ix]), lc_limit=$(cols.lc_limit[ix])"
+        @assert !ismissing(cols.lastopentrade[ix]) "Expected non-missing lastopentrade for long positions at ix=$(ix): lp_amount=$(cols.lp_amount[ix]), lastopentrade=$(cols.lastopentrade[ix])"
+    elseif (cols.sp_amount[ix] > 0f0)
+        @assert cols.lp_amount[ix] == 0f0 "Expected zero lp_amount for short positions at ix=$(ix): lp_amount=$(cols.lp_amount[ix]), sp_amount=$(cols.sp_amount[ix])"
+        @assert cols.sol_pavg[ix] > 0f0 "Expected positive so_pavg for short positions at ix=$(ix): sp_amount=$(cols.sp_amount[ix]), so_pavg=$(cols.sol_pavg[ix])"
+        @assert cols.sc_limit[ix] > 0f0 "Expected positive sc_limit for short positions at ix=$(ix): sp_amount=$(cols.sp_amount[ix]), sc_limit=$(cols.sc_limit[ix])"
+        @assert !ismissing(cols.lastopentrade[ix]) "Expected non-missing lastopentrade for short positions at ix=$(ix): sp_amount=$(cols.sp_amount[ix]), lastopentrade=$(cols.lastopentrade[ix])"
     else
-        @assert tradesdf[ix, :lp_amount] == 0f0 "Expected zero lp_amount for flat positions at ix=$(ix): lp_amount=$(tradesdf[ix, :lp_amount])"
-        @assert tradesdf[ix, :sp_amount] == 0f0 "Expected zero sp_amount for flat positions at ix=$(ix): sp_amount=$(tradesdf[ix, :sp_amount])"
-        @assert tradesdf[ix, :sol_pavg] == 0f0 "Expected zero so_pavg for flat positions at ix=$(ix): so_pavg=$(tradesdf[ix, :sol_pavg])"
-        @assert tradesdf[ix, :lol_pavg] == 0f0 "Expected zero lo_pavg for flat positions at ix=$(ix): lo_pavg=$(tradesdf[ix, :lol_pavg])"
-        @assert ismissing(tradesdf[ix, :lastopentrade]) "Expected missing lastopentrade for flat positions at ix=$(ix): lastopentrade=$(tradesdf[ix, :lastopentrade])"
+        @assert cols.lp_amount[ix] == 0f0 "Expected zero lp_amount for flat positions at ix=$(ix): lp_amount=$(cols.lp_amount[ix])"
+        @assert cols.sp_amount[ix] == 0f0 "Expected zero sp_amount for flat positions at ix=$(ix): sp_amount=$(cols.sp_amount[ix])"
+        @assert cols.sol_pavg[ix] == 0f0 "Expected zero so_pavg for flat positions at ix=$(ix): so_pavg=$(cols.sol_pavg[ix])"
+        @assert cols.lol_pavg[ix] == 0f0 "Expected zero lo_pavg for flat positions at ix=$(ix): lo_pavg=$(cols.lol_pavg[ix])"
+        @assert ismissing(cols.lastopentrade[ix]) "Expected missing lastopentrade for flat positions at ix=$(ix): lastopentrade=$(cols.lastopentrade[ix])"
     end
     return nothing
 end
 
-function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, tradesdf::DataFrame, ix::Integer, last_openix::Int; makerfee::Float32=0f0, lastix::Integer=0)::Int
+function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, cols::TSM.TradesColumns, ix::Integer, last_openix::Int; makerfee::Float32=0f0, lastix::Integer=0)::Int
 
-    if tradesdf[ix, :lp_amount] > 0f0
-        openprice = tradesdf[ix, :lol_pavg]
-        @assert openprice > 0f0 "Expected positive long openprice at ix=$(ix): openprice=$(openprice), last_openix=$(last_openix), lo_pavg=$(tradesdf[ix, :lol_pavg]), lo_limit[last_openix]=$(last_openix > 0 ? tradesdf[last_openix, :lo_limit] : missing)"
-        minutes = Int(div(Dates.value(tradesdf[ix, :opentime] - tradesdf[ix, :lastopentrade]), 60000)) + 1
-        stoplimit = tradesdf[ix, :lcsl_limit]
+    if cols.lp_amount[ix] > 0f0
+        openprice = cols.lol_pavg[ix]
+        @assert openprice > 0f0 "Expected positive long openprice at ix=$(ix): openprice=$(openprice), last_openix=$(last_openix), lo_pavg=$(cols.lol_pavg[ix]), lo_limit[last_openix]=$(last_openix > 0 ? cols.lo_limit[last_openix] : missing)"
+        minutes = Int(div(Dates.value(cols.opentime[ix] - cols.lastopentrade[ix]), 60000)) + 1
+        stoplimit = cols.lcsl_limit[ix]
         # stop before take profit: a bar covering both legs cannot tell which executed first, so the adverse leg wins
-        if (stoplimit > 0f0) && _price_in_bar(stoplimit, tradesdf[ix, :low], tradesdf[ix, :high], :low)
+        if (stoplimit > 0f0) && _price_in_bar(stoplimit, cols.low[ix], cols.high[ix], :low)
             gain = (stoplimit - openprice) / openprice
-            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
-            TSM.settrades_last_pavg!(tradesdf, ix, longclose, stoplimit)
-            _resetorder(tradesdf, ix, "lc", reset_pavg=false)
+            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
+            cols.lcl_pavg[ix] = stoplimit
+            _resetorder(cols, ix, :lc, reset_pavg=false)
             last_openix = 0
-        elseif _price_in_bar(tradesdf[ix, :lc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :high)
-            gain = (tradesdf[ix, :lc_limit] - openprice) / openprice
-            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
-            TSM.settrades_last_pavg!(tradesdf, ix, longclose, tradesdf[ix, :lc_limit])
-            _resetorder(tradesdf, ix, "lc", reset_pavg=false)
+        elseif _price_in_bar(cols.lc_limit[ix], cols.low[ix], cols.high[ix], :high)
+            gain = (cols.lc_limit[ix] - openprice) / openprice
+            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
+            cols.lcl_pavg[ix] = cols.lc_limit[ix]
+            _resetorder(cols, ix, :lc, reset_pavg=false)
             last_openix = 0
         elseif (ix == lastix) && (last_openix > 0)
             # Force-close any open gain segment at range boundary using close price at lastix
-            gain = (tradesdf[lastix, :close] - openprice) / openprice
-            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[lastix, :lastopentrade], tradesdf[lastix, :opentime], last_openix, lastix))
-            TSM.settrades_last_pavg!(tradesdf, ix, longclose, tradesdf[ix, :close])
-            _resetorder(tradesdf, ix, "lc", reset_pavg=false)
+            gain = (cols.close[lastix] - openprice) / openprice
+            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[lastix], cols.opentime[lastix], last_openix, lastix))
+            cols.lcl_pavg[ix] = cols.close[ix]
+            _resetorder(cols, ix, :lc, reset_pavg=false)
             last_openix = 0
         end
-    elseif tradesdf[ix, :sp_amount] > 0f0
-        openprice = tradesdf[ix, :sol_pavg]
-        @assert openprice > 0f0 "Expected positive short openprice at ix=$(ix): openprice=$(openprice), last_openix=$(last_openix), so_pavg=$(tradesdf[ix, :sol_pavg]), so_limit[last_openix]=$(last_openix > 0 ? tradesdf[last_openix, :so_limit] : missing)"
-        minutes = Int(div(Dates.value(tradesdf[ix, :opentime] - tradesdf[ix, :lastopentrade]), 60000)) + 1
-        stoplimit = tradesdf[ix, :scsl_limit]
-        if (stoplimit > 0f0) && _price_in_bar(stoplimit, tradesdf[ix, :low], tradesdf[ix, :high], :high)
+    elseif cols.sp_amount[ix] > 0f0
+        openprice = cols.sol_pavg[ix]
+        @assert openprice > 0f0 "Expected positive short openprice at ix=$(ix): openprice=$(openprice), last_openix=$(last_openix), so_pavg=$(cols.sol_pavg[ix]), so_limit[last_openix]=$(last_openix > 0 ? cols.so_limit[last_openix] : missing)"
+        minutes = Int(div(Dates.value(cols.opentime[ix] - cols.lastopentrade[ix]), 60000)) + 1
+        stoplimit = cols.scsl_limit[ix]
+        if (stoplimit > 0f0) && _price_in_bar(stoplimit, cols.low[ix], cols.high[ix], :high)
             gain = -(stoplimit - openprice) / openprice
-            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
-            TSM.settrades_last_pavg!(tradesdf, ix, shortclose, stoplimit)
-            _resetorder(tradesdf, ix, "sc", reset_pavg=false)
+            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
+            cols.scl_pavg[ix] = stoplimit
+            _resetorder(cols, ix, :sc, reset_pavg=false)
             last_openix = 0
-        elseif _price_in_bar(tradesdf[ix, :sc_limit], tradesdf[ix, :low], tradesdf[ix, :high], :low)
-            gain = -(tradesdf[ix, :sc_limit] - openprice) / openprice
-            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[ix, :lastopentrade], tradesdf[ix, :opentime], last_openix, ix))
-            TSM.settrades_last_pavg!(tradesdf, ix, shortclose, tradesdf[ix, :sc_limit])
-            _resetorder(tradesdf, ix, "sc", reset_pavg=false)
+        elseif _price_in_bar(cols.sc_limit[ix], cols.low[ix], cols.high[ix], :low)
+            gain = -(cols.sc_limit[ix] - openprice) / openprice
+            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
+            cols.scl_pavg[ix] = cols.sc_limit[ix]
+            _resetorder(cols, ix, :sc, reset_pavg=false)
             last_openix = 0
         elseif (ix == lastix) && (last_openix > 0)
             # Force-close any open gain segment at range boundary using close price at lastix
-            gain = -(tradesdf[lastix, :close] - openprice) / openprice
-            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), tradesdf[lastix, :lastopentrade], tradesdf[lastix, :opentime], last_openix, lastix))
-            TSM.settrades_last_pavg!(tradesdf, ix, shortclose, tradesdf[ix, :close])
-            _resetorder(tradesdf, ix, "sc", reset_pavg=false)
+            gain = -(cols.close[lastix] - openprice) / openprice
+            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[lastix], cols.opentime[lastix], last_openix, lastix))
+            cols.scl_pavg[ix] = cols.close[ix]
+            _resetorder(cols, ix, :sc, reset_pavg=false)
             last_openix = 0
         end
     end
     if last_openix == 0
-        TSM.settrades_lastopentrade!(tradesdf, ix, missing)
-        TSM.settrades_lp_amount!(tradesdf, ix, 0f0)
-        TSM.settrades_sp_amount!(tradesdf, ix, 0f0)
-        TSM.settrades_last_pavg!(tradesdf, ix, longopen, 0f0)
-        TSM.settrades_last_pavg!(tradesdf, ix, shortopen, 0f0)
+        cols.lastopentrade[ix] = missing
+        cols.lp_amount[ix] = 0f0
+        cols.sp_amount[ix] = 0f0
+        cols.lol_pavg[ix] = 0f0
+        cols.sol_pavg[ix] = 0f0
     end
 
     return last_openix
@@ -1086,7 +1127,9 @@ function preparereplaytrades!(ts::TsCache, xc::Xch.XchCache, base::AbstractStrin
     end
 
     if rebuild
-        tradesdf = DataFrame(resultsdf; copycols=false)
+        # Must copy: `resultsdf` is a group view of the shared results table, and the replay
+        # writes :score/:label per row - aliasing it would mutate the predictions.
+        tradesdf = DataFrame(resultsdf)
         ohlcv_cols = filter(col -> col in propertynames(tradesdf), [:open, :basevolume, :pivot, :coin, :target])
         !isempty(ohlcv_cols) && select!(tradesdf, Not(ohlcv_cols))
         TSM.settrades!(xc.tsm, base, quotecoin, tradesdf)
@@ -1143,6 +1186,11 @@ function _validatereplayprepared!(tp::TsTp, lastix::Integer)::Nothing
             rowpair = uppercase(String(tp.tradesdf[1, :pair]))
             @assert rowpair == uppercase(tp.pair) "Replay state pair mismatch for pair=$(tp.pair): tradesdf pair=$(rowpair)"
         end
+        # 0f0 is the live-path "not yet classified" sentinel; replay rows are prepopulated
+        # with classifier output, so it must never appear here.
+        scores = tp.tradesdf[!, :score]
+        badix = findfirst(ix -> !(scores[ix] > 0f0), 1:lastix)
+        @assert isnothing(badix) "Replay score must be positive for pair=$(tp.pair); got score=$(isnothing(badix) ? "" : scores[badix]) at ix=$(badix)"
     end
     return nothing
 end
@@ -1165,7 +1213,7 @@ function processreplaygains!(tp::TsTp;
             simulate_gains!(strategy, tp, lastix, gaindf)
         catch err
             if (err isa MethodError) && (getfield(err, :f) === strategy.algorithm)
-                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(strategy::StrategyConfig, tradesdf::DataFrame, ix::Integer)."))
+                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)."))
             end
             rethrow(err)
         end

@@ -54,7 +54,7 @@ end
         init_strategy_columns!(tdf)
         TradingStrategy.gain_limit_reversal!(
             test_strategy(),
-            tdf,
+            tcols(tdf),
             1,
         )
         @test tdf[1, :label] == longopen
@@ -75,7 +75,7 @@ end
         init_strategy_columns!(tdf)
         TradingStrategy.gain_limit_reversal!(
             test_strategy(),
-            tdf,
+            tcols(tdf),
             1,
         )
         @test tdf[1, :label] == shortopen
@@ -96,12 +96,12 @@ end
         init_strategy_columns!(tdf)
         TradingStrategy.gain_limit_reversal!(
             test_strategy(minpricedelta=0.01f0),
-            tdf,
+            tcols(tdf),
             1,
         )
         TradingStrategy.gain_limit_reversal!(
             test_strategy(minpricedelta=0.01f0),
-            tdf,
+            tcols(tdf),
             2,
         )
         @test isapprox(tdf[2, :lo_limit], tdf[1, :lo_limit]; atol=1f-6)
@@ -124,10 +124,10 @@ end
         tdf[1, :so_amount] = 100f0
         tdf[1, :so_limit] = 100.5f0
         tdf[1, :lc_limit] = 101f0
-        TradingStrategy._rowtakeover!(tdf, 2)
-        TradingStrategy.gain_limit_reversal!(test_strategy(limitreduction=1f0), tdf, 2)
+        TradingStrategy._rowtakeover!(TSM.TradesColumns(tdf), 2)
+        TradingStrategy.gain_limit_reversal!(test_strategy(limitreduction=1f0), tcols(tdf), 2)
         @test tdf[2, :lc_limit] <= tdf[2, :so_limit]
-        TradingStrategy._validate_row_consistency(tdf, 2)
+        TradingStrategy._validate_row_consistency(tcols(tdf), 2)
     end
 
     @testset "short to long reversal keeps close before open" begin
@@ -146,9 +146,9 @@ end
         tdf[1, :lo_amount] = 100f0
         tdf[1, :lo_limit] = 99.5f0
         tdf[1, :sc_limit] = 99f0
-        TradingStrategy._rowtakeover!(tdf, 2)
-        TradingStrategy.gain_limit_reversal!(test_strategy(limitreduction=1f0), tdf, 2)
+        TradingStrategy._rowtakeover!(TSM.TradesColumns(tdf), 2)
+        TradingStrategy.gain_limit_reversal!(test_strategy(limitreduction=1f0), tcols(tdf), 2)
         @test tdf[2, :sc_limit] >= tdf[2, :lo_limit]
-        TradingStrategy._validate_row_consistency(tdf, 2)
+        TradingStrategy._validate_row_consistency(tcols(tdf), 2)
     end
 end

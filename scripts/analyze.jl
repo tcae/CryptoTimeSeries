@@ -401,7 +401,7 @@ callback!(app, [Output("minute_chart", "figure"), Output("selected_date_label", 
     fig = _minute_figure(daydf, AS.pair, date; selected_ix=selected_ix)
     label = "$(AS.pair) — $(date) ($(nrow(daydf)) minutes)"
     if (nrow(daydf) > 0) && all(==(0f0), daydf[!, :equity])
-        label *= " ⚠ equity is flat/zero for this file — likely a TrendDetector gains-only replay (trades-td.arrow) that bypasses Xch account bookkeeping; load a tradesim-replay/trades-replay.arrow or trades-ts.arrow file for a populated equity/gain line"
+        label *= " ⚠ equity is flat/zero for this file — likely a TrendDetector gains-only replay (trades-td/<PAIR>.arrow) that bypasses Xch account bookkeeping; load a tradesim-replay/trades-replay.arrow or trades-ts.arrow file for a populated equity/gain line"
     end
     tablecolumns, tabledata = _table_columns_data(daydf)
     tooltipdata = _table_tooltip_data(daydf)
