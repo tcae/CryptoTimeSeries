@@ -571,7 +571,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
             TSM.settrades_msg!(tradesdf, tradesix, shortopen, logged)
             TSM.settrades_msg!(tradesdf, tradesix, shortclose, logged)
         else
-            cache.ts.cfg.algorithm(cache.ts.cfg, tradesdf, tradesix)
+            cache.ts.cfg.algorithm(cache.ts.cfg, TSM.TradesColumns(tradesdf), tradesix)
             if tradesrow.label in [shortstrongopen, shortopen, allclose, longstrongclose, longclose]
                 closequote += (tradesrow.lp_amount) * tradesrow.close
                 if tradesrow.label in [shortstrongopen, shortopen]

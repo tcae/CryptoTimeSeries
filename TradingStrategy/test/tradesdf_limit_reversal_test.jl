@@ -22,6 +22,9 @@ function init_limit_reversal_columns!(tdf::DataFrame)
     if :sc_amount ∉ propertynames(tdf)
         tdf[!, :sc_amount] = fill(0f0, nrow(tdf))
     end
+    # Opens are funded from freequote, so probes need an account that can pay for them.
+    tdf[!, :freequote] = fill(1f6, nrow(tdf))
+    tdf[!, :freemargin] = fill(1f6, nrow(tdf))
     return tdf
 end
 
@@ -83,7 +86,8 @@ end
         openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
         @test !isnothing(openhit)
         @test openhit.side == :long
-        @test openhit.amount == 100f0
+        # flat lane: the full quote budget is spent at the open limit
+        @test isapprox(openhit.amount, limit_reversal_strategy().maxbudgetquote / openhit.limitprice; atol=1f-4)
     end
 
     @testset "scheduled open materializes on next row" begin
@@ -127,7 +131,7 @@ end
         @test probe[2, :lastopentrade] == probe[1, :opentime]
     end
 
-    @testset "advice row enables same-side short extension" begin
+    @testset "advice row suppresses same-side extension once budget is spent" begin
         probe = DataFrame(
             opentime=[dt],
             high=Float32[101f0],
@@ -141,12 +145,69 @@ end
         probe[1, :sol_pavg] = 2.28228f0
         TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
         TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
-        @test probe[1, :so_amount] == 100f0
+        @test probe[1, :so_amount] == 0f0
         @test probe[1, :sol_pavg] == 2.28228f0
+        @test isnothing(TradingStrategy._open_hit_spec(tcols(probe), 1))
+    end
+
+    @testset "advice row caps the open by available freequote" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        strategy = limit_reversal_strategy()
+        # less free quote than the lane budget, so equity is the binding constraint
+        probe[1, :freequote] = strategy.maxbudgetquote / 5f0
+        TradingStrategy.gain_limit_reversal!(strategy, tcols(probe), 1)
+        TradingStrategy._process_advice_row!(strategy, tcols(probe), 1)
+        openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
+        @test !isnothing(openhit)
+        @test isapprox(openhit.amount, probe[1, :freequote] / openhit.limitprice; atol=1f-4)
+    end
+
+    @testset "advice row posts no open without free quote" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :freequote] = 0f0
+        TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
+        TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
+        @test probe[1, :lo_amount] == 0f0
+        @test isnothing(TradingStrategy._open_hit_spec(tcols(probe), 1))
+    end
+
+    @testset "advice row tops up a lane that is below its budget" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[101f0],
+            low=Float32[99f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[shortopen],
+        )
+        init_limit_reversal_columns!(probe)
+        strategy = limit_reversal_strategy()
+        # invest a quarter of the lane budget, so three quarters remain available
+        invested_quote = strategy.maxbudgetquote / 4f0
+        probe[1, :sol_pavg] = 2.28228f0
+        probe[1, :sp_amount] = invested_quote / probe[1, :sol_pavg]
+        TradingStrategy.gain_limit_reversal!(strategy, tcols(probe), 1)
+        TradingStrategy._process_advice_row!(strategy, tcols(probe), 1)
         openhit = TradingStrategy._open_hit_spec(tcols(probe), 1)
         @test !isnothing(openhit)
         @test openhit.side == :short
-        @test openhit.amount == 100f0
+        @test isapprox(openhit.amount, (strategy.maxbudgetquote - invested_quote) / openhit.limitprice; atol=1f-3)
     end
 
     @testset "advice row clears stale opposite open amount" begin
@@ -165,7 +226,8 @@ end
         TradingStrategy.gain_limit_reversal!(limit_reversal_strategy(), tcols(probe), 1)
         TradingStrategy._process_advice_row!(limit_reversal_strategy(), tcols(probe), 1)
         @test probe[1, :so_amount] == 0f0
-        @test probe[1, :lo_amount] == 100f0
+        # the long lane already holds more than its budget, so no additional open is posted
+        @test probe[1, :lo_amount] == 0f0
     end
 
     @testset "flip row closes before queued open" begin
@@ -191,7 +253,7 @@ end
 
         TradingStrategy._rowtakeover!(TSM.TradesColumns(probe), 2)
         gaindf_flip = TradingStrategy.emptygaindf()
-        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_flip, tcols(probe), 2, 1; lastix=2)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_flip, tcols(probe), 2, 1)
         @test last_openix == 0
         @test probe[2, :sp_amount] == 0f0
 
@@ -224,11 +286,39 @@ end
         probe[3, :high] = 2.05f0
 
         gaindf_probe = TradingStrategy.emptygaindf()
-        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_probe, tcols(probe), 3, 1; lastix=3)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_probe, tcols(probe), 3, 1)
         @test last_openix == 0
         @test nrow(gaindf_probe) == 1
         @test isfinite(gaindf_probe[1, :gain])
         @test isapprox(gaindf_probe[1, :gain], 0.05f0; atol=1f-6)
+    end
+
+    @testset "gain segment open at range end is dropped, not closed at close price" begin
+        # No limit is ever hit, so the position is still open when the range ends.
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 101f0],
+            low=Float32[99f0, 99f0],
+            close=Float32[100f0, 100f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[longopen, longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :lp_amount] = 100f0
+        probe[1, :lol_pavg] = 98f0
+        probe[1, :lastopentrade] = probe[1, :opentime]
+        probe[1, :lc_limit] = 150f0     # unreachable within the bar
+        probe[1, :lcsl_limit] = 50f0    # unreachable within the bar
+        probe[2, :] = probe[1, :]
+        probe[2, :opentime] = dt + Minute(1)
+
+        gaindf_probe = TradingStrategy.emptygaindf()
+        lastix = nrow(probe)
+        last_openix = TradingStrategy._materialize_gains_sample_from_trades!(gaindf_probe, tcols(probe), lastix, 1)
+        @test nrow(gaindf_probe) == 0
+        @test last_openix == 1
+        @test probe[lastix, :lp_amount] == 100f0
+        @test probe[lastix, :lcl_pavg] == 0f0
     end
 
     @testset "close bracket re-anchors after position close" begin

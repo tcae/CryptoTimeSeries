@@ -249,7 +249,11 @@ end
 function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{_OpenTrade}, part::GainPartition, ix::Integer, closeprice::Float32, closevolume::Float32, side::Symbol)::Nothing
     remaining = closevolume
     closetime = _compilegainstime(part, ix)
-    while remaining > 0f0
+    # Opens are queued from per-row Float32 deltas, so their sum drifts from the stored
+    # position by a few ULPs per open. A residue at that scale is rounding, not a missing
+    # open, and must not be matched or asserted on.
+    tolerance = 64f0 * eps(Float32) * max(closevolume, 1f0)
+    while remaining > tolerance
         @assert !isempty(openqueue) "Encountered unmatched $(side) close volume=$(remaining) at ix=$(ix), opentime=$(closetime), pair=$(part.rows[ix, :pair])"
         opentrade = first(openqueue)
         matched = min(opentrade.remaining, remaining)

@@ -654,18 +654,6 @@ function getmaxpredictionsdf(cfg::TrendDetectorConfig)
     return resultsdf
 end
 
-function addgainadmin!(gdf, coin, sampleset, predicted, rangeid, openthreshold, closethreshold; pair=nothing)
-    coinstr = String(coin)
-    pairstr = isnothing(pair) ? Xch.tradingpairkey(coinstr, EnvConfig.pairquote) : String(pair)
-    gdf[!, :coin] = CategoricalVector(fill(coinstr, size(gdf, 1)))
-    gdf[!, :pair] = fill(pairstr, size(gdf, 1))
-    gdf[!, :set] = fill(sampleset, size(gdf, 1))
-    gdf[!, :predicted] = fill(predicted, size(gdf, 1))
-    gdf[!, :rangeid] = fill(rangeid, size(gdf, 1))
-    gdf[!, :openthreshold] = fill(openthreshold, size(gdf, 1))
-    gdf[!, :closethreshold] = fill(closethreshold, size(gdf, 1))
-end
-
 function isfreshcache(cachefile::AbstractString, dependencyfiles::AbstractVector{<:AbstractString})
     EnvConfig.tableexists(cachefile) || return false
     isempty(dependencyfiles) && return false
@@ -682,7 +670,6 @@ function isfreshcache(cachefile::AbstractString, dependencyfiles::AbstractVector
     return true
 end
 
-const GAIN_THRESHOLDS = Tuple((openthreshold, closethreshold) for openthreshold in TradingStrategy.default_openthresholds() for closethreshold in TradingStrategy.default_closethresholds() if closethreshold <= openthreshold)
 const TRUE_GAIN_THRESHOLD = (0.9f0, 0.9f0)
 
 """Columns kept in the per-range Trades snapshot accumulated by `getgainsdf`.
@@ -699,14 +686,82 @@ const TRADES_SNAPSHOT_COLUMNS = Symbol[
     :lo_limit, :lc_limit, :so_limit, :sc_limit,
 ]
 
-"""Return one finite mean gain value or `missing` when no finite values exist."""
-function _meangain_or_missing(values)::Union{Missing, Float64}
-    filtered = [value for value in skipmissing(values) if isfinite(value)]
-    return isempty(filtered) ? missing : mean(filtered)
+"""Result columns replay needs for gain compilation.
+
+The per-coin results cache also carries `pivot` and the full feature-side payload, which
+replay drops again; projecting here keeps the loaded frame small."""
+const GAIN_RESULT_COLUMNS = Symbol[:opentime, :high, :low, :close, :coin, :rangeid, :set, :target]
+
+"""Return the coins that have a per-coin results and predictions cache.
+
+Predictions are deliberately reused regardless of age so `algorithm` variants can be
+compared without recomputing them; `_load_coin_gaininput` asserts row alignment, which is
+the property gain compilation actually depends on."""
+function _gaininputcoins(cfg::TrendDetectorConfig)::Vector{String}
+    coins = String[]
+    for coin in cfg.coins
+        coinstr = String(coin)
+        if EnvConfig.isfolder(TradingStrategy.resultsfilename(coinstr)) && EnvConfig.isfolder(TradingStrategy.predictionsfilename(coinstr))
+            push!(coins, coinstr)
+        end
+    end
+    return coins
 end
 
+"""Return the replay window spanning every gain-input coin.
+
+Only the `opentime` column is touched, so the Arrow payload stays unread."""
+function _gainreplaywindow(coins::AbstractVector{<:AbstractString})
+    startdt = nothing
+    enddt = nothing
+    for coin in coins
+        table = EnvConfig.readtable(TradingStrategy.resultsfilename(coin); materialize=false)
+        @assert !isnothing(table) "missing results cache for coin=$(coin)"
+        opentimes = DataFrame(table; copycols=false)[!, :opentime]
+        isempty(opentimes) && continue
+        lo, hi = extrema(opentimes)
+        startdt = isnothing(startdt) ? lo : min(startdt, lo)
+        enddt = isnothing(enddt) ? hi : max(enddt, hi)
+    end
+    return startdt, enddt
+end
+
+"""Load one coin's replay input by joining its per-coin results and predictions caches.
+
+Both caches are row aligned by construction (`_persist_coin_predictions_cache!`), so the
+score/label columns are taken over positionally."""
+function _load_coin_gaininput(coin::AbstractString)::DataFrame
+    resultstable = EnvConfig.readtable(TradingStrategy.resultsfilename(coin); materialize=false)
+    predictionstable = EnvConfig.readtable(TradingStrategy.predictionsfilename(coin); materialize=false)
+    @assert !isnothing(resultstable) "missing results cache for coin=$(coin)"
+    @assert !isnothing(predictionstable) "missing predictions cache for coin=$(coin)"
+
+    # Arrow columns are lazy until materialized, so wrapping first and projecting second
+    # only reads the columns replay actually needs.
+    lazyresults = DataFrame(resultstable; copycols=false)
+    available = propertynames(lazyresults)
+    projected = Symbol[col for col in GAIN_RESULT_COLUMNS if col in available]
+    @assert :opentime in projected "results cache for coin=$(coin) misses :opentime; available=$(available)"
+    resultsdf = DataFrame(lazyresults[!, projected])
+
+    predictionsdf = DataFrame(predictionstable; copycols=false)
+    @assert nrow(resultsdf) == nrow(predictionsdf) "results/predictions row mismatch for coin=$(coin): $(nrow(resultsdf)) != $(nrow(predictionsdf))"
+    resultsdf[!, :score] = collect(predictionsdf[!, :score])
+    resultsdf[!, :label] = collect(predictionsdf[!, :label])
+
+    if :target in propertynames(resultsdf)
+        resultsdf[!, :target] = [_normalize_tradelabel(value) for value in resultsdf[!, :target]]
+    end
+    badix, badreason = _first_invalid_score(resultsdf[!, :score])
+    @assert isnothing(badix) "invalid score in gain input for coin=$(coin) at row $(badix) due to $(badreason)"
+    return resultsdf
+end
+
+"""Stem of the compiled gain segments produced by gain replay."""
+const COMPILED_GAINS_STEM = "tsmgains-td"
+
 """Concatenate per-pair compiled gains, persist them and derive the gain report."""
-function _collectxchgains(gainparts::Vector{DataFrame}; gainsstem::AbstractString="tsmgains-td", reportstem::AbstractString="xchgainsreport-td")
+function _collectxchgains(gainparts::Vector{DataFrame}; gainsstem::AbstractString=COMPILED_GAINS_STEM, reportstem::AbstractString="xchgainsreport-td")
     folderpath = EnvConfig.logfolder()
     xchgainsdf = isempty(gainparts) ? DataFrame() : TSM.sortgainsdf!(reduce(vcat, gainparts))
     empty!(gainparts)
@@ -715,147 +770,10 @@ function _collectxchgains(gainparts::Vector{DataFrame}; gainsstem::AbstractStrin
     return xchgainsdf, xchreportdf
 end
 
-"""Return predicted legacy gains used to compare against compiled Xch gains."""
-function _legacytruthgains(gaindf::AbstractDataFrame)::AbstractDataFrame
-    required = (:predicted, :openthreshold, :closethreshold)
-    if !all(col -> col in propertynames(gaindf), required)
-        return gaindf
-    end
-    true_open, true_close = TRUE_GAIN_THRESHOLD
-    mask = (gaindf[!, :predicted] .== true) .&& (gaindf[!, :openthreshold] .== true_open) .&& (gaindf[!, :closethreshold] .== true_close)
-    return DataFrame(gaindf[mask, :])
-end
-
-"""Return one normalized gain segment table with a common comparison schema."""
-function _normalize_gain_segments(gainsdf::AbstractDataFrame; source::AbstractString)
-    if nrow(gainsdf) == 0
-        return DataFrame(source=String[], pair=String[], set=String[], trend=String[], startdt=DateTime[], enddt=DateTime[], gain=Float64[])
-    end
-
-    if source == "legacy"
-        @assert all(col -> col in propertynames(gainsdf), [:pair, :set, :trend, :startdt, :enddt, :gain]) "legacy gainsdf missing required columns; names=$(names(gainsdf))"
-        normalized = DataFrame(
-            source=fill(source, nrow(gainsdf)),
-            pair=String.(gainsdf[!, :pair]),
-            set=String.(gainsdf[!, :set]),
-            trend=string.(gainsdf[!, :trend]),
-            startdt=gainsdf[!, :startdt],
-            enddt=gainsdf[!, :enddt],
-            gain=Float64.(gainsdf[!, :gain]),
-        )
-    else
-        @assert all(col -> col in propertynames(gainsdf), [:pair, :set, :side, :opentime, :closetime, :gain]) "compiled gainsdf missing required columns; names=$(names(gainsdf))"
-        side_to_trend(side) = String(side) == "long" ? string(up) : string(down)
-        normalized = DataFrame(
-            source=fill(source, nrow(gainsdf)),
-            pair=String.(gainsdf[!, :pair]),
-            set=String.(gainsdf[!, :set]),
-            trend=side_to_trend.(gainsdf[!, :side]),
-            startdt=gainsdf[!, :opentime],
-            enddt=gainsdf[!, :closetime],
-            gain=Float64.(gainsdf[!, :gain]),
-        )
-    end
-
-    return normalized
-end
-
-"""Restrict both gain tables to the common time window they share."""
-function _common_time_window(legacydf::AbstractDataFrame, compileddf::AbstractDataFrame)
-    if nrow(legacydf) == 0 || nrow(compileddf) == 0
-        return DataFrame(), DataFrame(), missing, missing
-    end
-    legacy_start = minimum(legacydf[!, :startdt])
-    legacy_end = maximum(legacydf[!, :enddt])
-    compiled_start = minimum(compileddf[!, :startdt])
-    compiled_end = maximum(compileddf[!, :enddt])
-    common_start = max(legacy_start, compiled_start)
-    common_end = min(legacy_end, compiled_end)
-    if common_start > common_end
-        return DataFrame(), DataFrame(), common_start, common_end
-    end
-    legacymask = (legacydf[!, :startdt] .>= common_start) .&& (legacydf[!, :enddt] .<= common_end)
-    compiledmask = (compileddf[!, :startdt] .>= common_start) .&& (compileddf[!, :enddt] .<= common_end)
-    return DataFrame(legacydf[legacymask, :]), DataFrame(compileddf[compiledmask, :]), common_start, common_end
-end
-
-"""Compare predicted legacy gains against compiled gains on exact gain-segment keys."""
-function _collapse_gain_segments(gainsdf::AbstractDataFrame)
-    keycols = [:pair, :set, :trend, :startdt, :enddt]
-    @assert all(col -> col in propertynames(gainsdf), keycols) "gain table missing key columns; names=$(names(gainsdf))"
-    grouped = groupby(DataFrame(gainsdf), keycols; sort=true)
-    return combine(grouped, :gain => mean => :gain, nrow => :segments)
-end
-
-"""Compare predicted legacy gains against compiled gains on exact gain-segment keys."""
-function _compare_gain_segments(legacydf::AbstractDataFrame, compileddf::AbstractDataFrame)
-    keycols = [:pair, :set, :trend, :startdt, :enddt]
-    @assert all(col -> col in propertynames(legacydf), keycols) "legacy comparison table missing key columns; names=$(names(legacydf))"
-    @assert all(col -> col in propertynames(compileddf), keycols) "compiled comparison table missing key columns; names=$(names(compileddf))"
-
-    legacycmp = _collapse_gain_segments(legacydf)
-    rename!(legacycmp, :gain => :legacy_gain, :segments => :legacy_segments)
-    compiledcmp = _collapse_gain_segments(compileddf)
-    rename!(compiledcmp, :gain => :compiled_gain, :segments => :compiled_segments)
-    joined = innerjoin(legacycmp, compiledcmp; on=keycols, makeunique=true)
-    if nrow(joined) == 0
-        return joined, DataFrame(), DataFrame()
-    end
-
-    joined[!, :gain_delta] = joined[!, :compiled_gain] .- joined[!, :legacy_gain]
-    joined[!, :abs_gain_delta] = abs.(joined[!, :gain_delta])
-
-    legacy_only = antijoin(legacycmp, compiledcmp; on=keycols)
-    compiled_only = antijoin(compiledcmp, legacycmp; on=keycols)
-    return joined, legacy_only, compiled_only
-end
-
-"""Compare legacy gains from `getgainsdf` with Xch-compiled gains and log summary metrics."""
-function _report_gain_collection_comparison(gaindf::Union{AbstractDataFrame, Nothing}, xchgainsdf::Union{AbstractDataFrame, Nothing}, xchreportdf::Union{AbstractDataFrame, Nothing})
-    if isnothing(gaindf) || (size(gaindf, 1) == 0)
-        (verbosity >= 2) && println("$(EnvConfig.now()) gain comparison skipped: missing legacy gains")
-        return nothing
-    end
-    if isnothing(xchgainsdf) || (size(xchgainsdf, 1) == 0)
-        (verbosity >= 2) && println("$(EnvConfig.now()) gain comparison skipped: missing compiled tsmgains")
-        return nothing
-    end
-
-    legacypred = _legacytruthgains(gaindf)
-    legacynorm = _normalize_gain_segments(legacypred; source="legacy")
-    compilednorm = _normalize_gain_segments(xchgainsdf; source="compiled")
-    legacywindow, compiledwindow, common_start, common_end = _common_time_window(legacynorm, compilednorm)
-    if nrow(legacywindow) == 0 || nrow(compiledwindow) == 0
-        println("$(EnvConfig.now()) gain comparison skipped: no common time window between legacy and compiled gains (legacy=$(nrow(legacynorm)), compiled=$(nrow(compilednorm)), common_start=$(common_start), common_end=$(common_end))")
-        return nothing
-    end
-
-    joined, legacy_only, compiled_only = _compare_gain_segments(legacywindow, compiledwindow)
-
-    legacyrows = size(legacywindow, 1)
-    compiledrows = size(compiledwindow, 1)
-    matchedrows = size(joined, 1)
-    legacyavg = _meangain_or_missing(legacywindow[!, :gain])
-    compiledavg = _meangain_or_missing(compiledwindow[!, :gain])
-    avgdelta = (ismissing(legacyavg) || ismissing(compiledavg)) ? missing : (compiledavg - legacyavg)
-    mean_abs_delta = matchedrows == 0 ? missing : mean(joined[!, :abs_gain_delta])
-    max_abs_delta = matchedrows == 0 ? missing : maximum(joined[!, :abs_gain_delta])
-
-    println("$(EnvConfig.now()) gain comparison window=$(common_start)→$(common_end) legacy_rows=$(legacyrows), compiled_rows=$(compiledrows), matched_segments=$(matchedrows), legacy_avg_gain=$(legacyavg), compiled_avg_gain=$(compiledavg), avg_delta_compiled_minus_legacy=$(avgdelta), mean_abs_segment_delta=$(mean_abs_delta), max_abs_segment_delta=$(max_abs_delta), legacy_only=$(size(legacy_only, 1)), compiled_only=$(size(compiled_only, 1))")
-
-    if nrow(joined) > 0
-        sort!(joined, [:pair, :set, :trend, :startdt])
-        println("$(EnvConfig.now()) gain segment deviation sample: $(first(joined, min(10, nrow(joined))))")
-    end
-
+"""Log the compiled gains report of the current run."""
+function _report_compiled_gains(xchreportdf::Union{AbstractDataFrame, Nothing})
     if !isnothing(xchreportdf) && (size(xchreportdf, 1) > 0)
         println("$(EnvConfig.now()) compiled gains report: $xchreportdf")
-    end
-
-    if (:set in propertynames(legacywindow)) && (:gain in propertynames(legacywindow)) && (legacyrows > 0)
-        legacyreport = combine(groupby(DataFrame(legacywindow), :set), :gain => _meangain_or_missing => :legacy_avggain, nrow => :legacy_segments)
-        sort!(legacyreport, :set)
-        println("$(EnvConfig.now()) legacy predicted gains report: $legacyreport")
     end
     return nothing
 end
@@ -866,324 +784,176 @@ const TRADES_TD_SUBFOLDER = "trades-td"
 """Return the per-pair Trades artifact folder of the current run."""
 tradestdfolder(folderpath::AbstractString=EnvConfig.logfolder())::String = joinpath(String(folderpath), TRADES_TD_SUBFOLDER)
 
-"""Persist one pair's accumulated Trades snapshots and compile its gain segments.
+"""Persist one pair's accumulated Trades snapshots of one replay pass and compile its gains.
 
-Consumes `tradeparts`. Range groups of one pair are produced in liquidity-range order and
-each range is cut from opentime-sorted OHLCV, so the concatenation is already time
-ordered; gain compilation depends on that and the assert guards it."""
-function _flushpairtrades!(gainparts::Vector{DataFrame}, tradeparts::Vector{DataFrame}, folderpath::AbstractString)
+Consumes `tradeparts`. Each pass is stored and compiled separately because both replay the
+same minutes with different scores/labels; mixing them in one partition would match an open
+of one pass against a close of the other."""
+function _flushpairtrades!(gainparts::Vector{DataFrame}, tradeparts::Vector{DataFrame}, folderpath::AbstractString, pass::AbstractString, predicted::Bool, openthreshold::Float32, closethreshold::Float32)
     isempty(tradeparts) && return nothing
     pairdf = reduce(vcat, tradeparts)
     empty!(tradeparts)
     pair = String(pairdf[1, :pair])
     opentimes = pairdf[!, :opentime]
-    @assert issorted(opentimes) "expected opentime ordered Trades rows for pair=$(pair); rows=$(nrow(pairdf)), first=$(first(opentimes)), last=$(last(opentimes))"
-    EnvConfig.savedf(pairdf, pair; folderpath=folderpath)
-    push!(gainparts, TSM.compilegains(pairdf))
+    @assert issorted(opentimes) "expected opentime ordered Trades rows for pair=$(pair), pass=$(pass); rows=$(nrow(pairdf)), first=$(first(opentimes)), last=$(last(opentimes))"
+    EnvConfig.savedf(pairdf, "$(pair)-$(pass)"; folderpath=folderpath)
+    # Each range is replayed independently, so a position still open at a range end has no
+    # close of its own; scoping to (set, rangeid) drops it instead of matching it against
+    # the next range's first row.
+    gdf = TSM.compilegains(pairdf; setpartitions=true)
+    if nrow(gdf) > 0
+        gdf[!, :predicted] = fill(predicted, nrow(gdf))
+        gdf[!, :openthreshold] = fill(openthreshold, nrow(gdf))
+        gdf[!, :closethreshold] = fill(closethreshold, nrow(gdf))
+        push!(gainparts, gdf)
+    end
     return nothing
 end
 
 function getgainsdf(cfg::TrendDetectorConfig)
     EnvConfig.setlogpath(cfg.folder)
     gaindeps = vcat(_featuretarget_cachefiles(cfg; include_features=false), [TradingStrategy.predictionsfilename()])
-    if isfreshcache(TradingStrategy.gainsfilename(), gaindeps)
-        gaindf = TradingStrategy.loadtrades(; stem="gains")
-        if size(gaindf, 1) > 0
-            return gaindf
+    if isfreshcache(COMPILED_GAINS_STEM, gaindeps)
+        gaindf = EnvConfig.readdf(COMPILED_GAINS_STEM)
+        if !isnothing(gaindf) && (size(gaindf, 1) > 0)
+            return DataFrame(gaindf)
         end
     end
 
-    resultsdf = getmaxpredictionsdf(cfg) # DataFrame with columns: target, opentime, high, low, close, pivot, coin, rangeid, set, score, label
-    if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
+    # Per-coin results/predictions caches are the gain-compilation input. Build them once if
+    # they are missing; loading them per coin avoids materializing every coin (and the far
+    # larger features cache) before the first range is processed.
+    gaincoins = _gaininputcoins(cfg)
+    if length(gaincoins) != length(cfg.coins)
+        resultsdf = getmaxpredictionsdf(cfg)
+        if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
+            return nothing
+        end
+        resultsdf = nothing
+        # getmaxpredictionsdf resolves the classifier, which repoints the log path.
+        EnvConfig.setlogpath(cfg.folder)
+        gaincoins = _gaininputcoins(cfg)
+    end
+    if isempty(gaincoins)
         return nothing
     end
-    # getmaxpredictionsdf resolves the classifier, which repoints the log path.
-    EnvConfig.setlogpath(cfg.folder)
     tradesfolderpath = tradestdfolder()
 
     ts = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(cfg.configname), source="trenddetector:$(cfg.configname)")
-    replay_startdt = minimum(resultsdf[!, :opentime])
-    replay_enddt = maximum(resultsdf[!, :opentime])
+    replay_startdt, replay_enddt = _gainreplaywindow(gaincoins)
     xc = Xch.XchCache(Bybit.BybitCache(); startdt=replay_startdt, enddt=replay_enddt)
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-    # Assembly order matters: process replay ranges in strict chronological order per coin
-    # and set so the resulting pair snapshot is already built from the beginning of time.
-    # We do not reorder the accumulated pair snapshot at flush time; the source result rows
-    # are ordered before range grouping so downstream replay sees the correct sequence.
-    resultsdf = sort(resultsdf, [:coin, :opentime, :set, :rangeid])
-    # Range ids can collide across independently cached coins/runs. Replay must
-    # stay scoped to coin+set+rangeid to avoid mixing samples across ranges.
-    rangegroups = groupby(resultsdf, [:coin, :set, :rangeid])
-    gainparts = DataFrame[]
     xchgainparts = DataFrame[]
-    tradeparts = DataFrame[]
-    sizehint!(gainparts, (length(GAIN_THRESHOLDS) + 1) * length(rangegroups))
-    currentpair = ""
+    predparts = DataFrame[]
+    truthparts = DataFrame[]
+    totalranges = 0
 
-    for (rngix, resultsview) in enumerate(rangegroups)
-        rng = resultsview[begin, :rangeid]
-        (verbosity >= 2) && print("$(EnvConfig.now()) calculating gains for range ($rngix/$(length(rangegroups))) $rng                             \r")
-        (verbosity >= 3) && println()
-        @assert size(resultsview, 1) > 0 "unexpected empty resultsview for rangeid $rng"
-
-        coin = resultsview[begin, :coin]
-        sampleset = resultsview[begin, :set]
-        scores = resultsview[!, :score]
-        labels = [_normalize_tradelabel(value) for value in resultsview[!, :label]]
-        targets = [_normalize_tradelabel(value) for value in resultsview[!, :target]]
-        truescores = fill(1f0, size(resultsview, 1))
-        evaldt = resultsview[end, :opentime]
-
-        # Process predicted gains using strategy config thresholds
-        open_threshold = cfg.tradingstrategy.openthreshold
-        close_threshold = cfg.tradingstrategy.closethreshold
-        tp = TradingStrategy.preparereplaytrades!(
-            ts,
-            xc,
-            String(coin),
-            resultsview,
-            scores,
-            labels,
-            metadata=Dict{Symbol, Any}(:set => String(sampleset), :rangeid => Int(rng)),
-            datetime=evaldt,
-        )
-        gdf = TradingStrategy.processreplaygains!(
-            tp;
-            strategy=cfg.tradingstrategy,
-        )
-        if size(gdf, 1) > 0
-            addgainadmin!(gdf, coin, sampleset, true, rng, open_threshold, close_threshold; pair=tp.pair)
-            push!(gainparts, gdf)
-        end
-
-        # Flush the previous pair before its first successor range overwrites the cache.
-        if tp.pair != currentpair
-            _flushpairtrades!(xchgainparts, tradeparts, tradesfolderpath)
-            currentpair = tp.pair
-        end
-
-        # Process labeled truth gains using TRUE_GAIN_THRESHOLD
-        true_open, true_close = TRUE_GAIN_THRESHOLD
-        tp = TradingStrategy.preparereplaytrades!(
-            ts,
-            xc,
-            String(coin),
-            resultsview,
-            truescores,
-            targets,
-            metadata=Dict{Symbol, Any}(:set => String(sampleset), :rangeid => Int(rng)),
-            datetime=evaldt,
-        )
-        gdf = TradingStrategy.processreplaygains!(
-            tp;
-            strategy=cfg.tradingstrategy,
-        )
-        # Keep one Trades snapshot per range/set; replay state in `xc` is
-        # overwritten on each loop iteration, so we must collect snapshots.
-        push!(tradeparts, select(tp.tradesdf, TRADES_SNAPSHOT_COLUMNS))
-        if size(gdf, 1) > 0
-            addgainadmin!(gdf, coin, sampleset, false, rng, true_open, true_close; pair=tp.pair)
-            push!(gainparts, gdf)
-        end
-
-        # Release the full-width replay Trades DataFrame of this range; otherwise both
-        # caches keep one per coin alive until the end of the run.
-        TradingStrategy.droppair!(ts, tp.pair)
-        TSM.droppair!(xc.tsm, tp.pair)
-    end
-    _flushpairtrades!(xchgainparts, tradeparts, tradesfolderpath)
-
-    gaindf = isempty(gainparts) ? nothing : reduce(vcat, gainparts)
-    empty!(gainparts)
-    if !isnothing(gaindf) && (size(gaindf, 1) > 0)
-        gaindf = gaindf[.!ismissing.(gaindf[!, :set]), :] # exclude gaps between set partitions
-        if size(gaindf, 1) > 0
-            keycols = Symbol[:coin, :set, :predicted, :rangeid, :openthreshold, :closethreshold, :trend, :startdt, :enddt]
-            if all(col -> col in propertynames(gaindf), keycols)
-                keycounts = combine(groupby(gaindf, keycols), nrow => :rows)
-                dupmask = keycounts[!, :rows] .> 1
-                @assert !any(dupmask) "duplicate gain segments detected per key $(keycols); duplicates=$(sum(dupmask))"
-            end
-            sort!(gaindf, [:coin, :predicted, :openthreshold, :closethreshold, :startdt, :trend])
-            TradingStrategy.savetrades(gaindf; stem="gains")
-
-            present = Set(String.(unique(gaindf[!, :coin])))
-            missing_coins = [coin for coin in cfg.coins if !(String(coin) in present)]
-            if !isempty(missing_coins)
-                @warn "missing coins in gains output" missing_coins present_coins=collect(present)
-            end
-        end
-    end
-
-    xchgainsdf, xchreportdf = _collectxchgains(xchgainparts)
-    _report_gain_collection_comparison(gaindf, xchgainsdf, xchreportdf)
-
-    (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(length(rangegroups)) ranges")
-    return gaindf
-end
-
-
-"""
-Provides distance information between neighboring predicted gain segments in form of one data frame row for each precited positive segment with the following columns:  
-- :coin and :set as taken over from gains
-- :trend is the predicted trend
-- :tpdistnext = in case the predicted segment does overlap with a labeled segment (= true positive) and the next segment is also a true positive segment of the same labeled segment, distance to the next true positive predicted segment
-- :fpdistnext = in case the predicted segment does not overlap with a labeled segment (= false positive), distance to the next predicted segment
-- :distfirst = in case of the first true positive predicted segment of a labeled segment, distance to the beginning of the labeled  sgement to see how long the prediction needs to detect a true positive situation
-- :distlast - in case of the last true positive predcited segment, distance to the end of the labelled segment
-- :startdt, :enddt provide the timestamps of the predicted segment
-- :truestartdt, :trueenddt provide the timestamps of the labelled segment
-"""
-function getdistances(cfg::TrendDetectorConfig)
-    if isfreshcache(TradingStrategy.distancesfilename(), [TradingStrategy.gainsfilename()])
-        distdf = EnvConfig.readdf(TradingStrategy.distancesfilename())
-        if !isnothing(distdf) && (size(distdf, 1) > 0)
-            return distdf
-        end
-    end
-
-    gaindf = getgainsdf(cfg)
-    if isnothing(gaindf) || (size(gaindf, 1) == 0)
-        (verbosity >= 1) && println("skipping distances collection due to missing gains")
-        return DataFrame()
-    end
-
-    predmask = gaindf[!, :predicted] .== true
-    if !any(predmask)
-        (verbosity >= 1) && println("skipping distances collection due to missing predicted gains")
-        return DataFrame()
-    end
-
-    # Limit predicted gains to the best threshold pair, but keep all labeled truth gains.
-    openmin = minimum(gaindf[predmask, :openthreshold])
-    closemin = minimum(gaindf[predmask, :closethreshold])
-    usemask = (gaindf[!, :predicted] .== false) .|| ((gaindf[!, :predicted] .== true) .&& (gaindf[!, :openthreshold] .== openmin) .&& (gaindf[!, :closethreshold] .== closemin))
-    gaindf1 = @view gaindf[usemask, :]
-    trendlevels = unique(gaindf1[!, :trend])
-
-    coinvals = String[]
-    setvals = String[]
-    trendvals = eltype(gaindf1[!, :trend])[]
-    tpdistnextvals = Union{Missing, Int64}[]
-    fpdistnextvals = Union{Missing, Int64}[]
-    distfirstvals = Union{Missing, Int64}[]
-    distlastvals = Union{Missing, Int64}[]
-    startdtvals = DateTime[]
-    enddtvals = DateTime[]
-    truestartdtvals = Union{Missing, DateTime}[]
-    trueenddtvals = Union{Missing, DateTime}[]
-
-    for coinix in eachindex(cfg.coins)
-        coin = cfg.coins[coinix]
-        (verbosity >= 2) && print("$(EnvConfig.now()) calculating distances for $coin ($coinix/$(length(cfg.coins)))                             \r")
-        (verbosity >= 3) && println()
-
-        coingaindf = @view gaindf1[gaindf1[!, :coin] .== coin, :]
-        if size(coingaindf, 1) == 0
+    for (coinix, coin) in enumerate(gaincoins)
+        coinresultsdf = _load_coin_gaininput(coin)
+        if nrow(coinresultsdf) == 0
             continue
         end
-        
-        gaindfgrp = groupby(coingaindf, [:predicted, :trend])
-        haspredictions = false
 
-        for trend in trendlevels
-            cpgaindf = get(gaindfgrp, (true, trend), DataFrame())   # predicted gains of one trend
-            if size(cpgaindf, 1) == 0
-                continue
-            end
-            haspredictions = true
-            ctgaindf = get(gaindfgrp, (false, trend), DataFrame())  # labeled gains of the same trend
+        # Assembly order matters: replay ranges are processed in chronological order so the
+        # accumulated pair snapshot is built from the beginning of time without reordering.
+        sort!(coinresultsdf, [:opentime, :set, :rangeid])
+        # Range ids can collide across independently cached coins/runs. Replay must stay
+        # scoped to set+rangeid within one coin to avoid mixing samples across ranges.
+        # Grouping yields set-major order, but sets partition the timeline into interleaved
+        # blocks, so the groups are resequenced by their first opentime.
+        rangegroups = groupby(coinresultsdf, [:set, :rangeid])
+        grouporder = sortperm([first(group[!, :opentime]) for group in rangegroups])
+        totalranges += length(grouporder)
 
-            if (size(cpgaindf, 1) > 1) && !issorted(cpgaindf[!, :startdt])
-                cpgaindf = sort(cpgaindf, :startdt)
-            end
-            if (size(ctgaindf, 1) > 1) && !issorted(ctgaindf[!, :startdt])
-                ctgaindf = sort(ctgaindf, :startdt)
-            end
+        for (rngix, groupix) in enumerate(grouporder)
+            resultsview = rangegroups[groupix]
+            rng = resultsview[begin, :rangeid]
+            (verbosity >= 2) && print("$(EnvConfig.now()) calculating gains for $coin ($coinix/$(length(gaincoins))) range ($rngix/$(length(rangegroups))) $rng                             \r")
+            (verbosity >= 3) && println()
+            @assert size(resultsview, 1) > 0 "unexpected empty resultsview for rangeid $rng"
 
-            cpstart = cpgaindf[!, :startdt]
-            cpend = cpgaindf[!, :enddt]
-            cpset = cpgaindf[!, :set]
+            sampleset = resultsview[begin, :set]
+            scores = resultsview[!, :score]
+            labels = [_normalize_tradelabel(value) for value in resultsview[!, :label]]
+            targets = [_normalize_tradelabel(value) for value in resultsview[!, :target]]
+            truescores = fill(1f0, size(resultsview, 1))
+            evaldt = resultsview[end, :opentime]
+            # Replay has no account, so equity is a constant: one lane budget is always
+            # fundable and repeated opens are prevented by the lane position amount.
+            replaybudget = Dict{Symbol, Any}(
+                :set => String(sampleset),
+                :rangeid => Int(rng),
+                :freequote => cfg.tradingstrategy.maxbudgetquote,
+                :freemargin => cfg.tradingstrategy.maxbudgetquote,
+            )
 
-            if size(ctgaindf, 1) > 0
-                ctstart = ctgaindf[!, :startdt]
-                ctend = ctgaindf[!, :enddt]
-                ctix = firstindex(ctstart)
-            else
-                ctix = 0
-            end
+            # Process predicted gains using strategy config thresholds
+            open_threshold = cfg.tradingstrategy.openthreshold
+            close_threshold = cfg.tradingstrategy.closethreshold
+            tp = TradingStrategy.preparereplaytrades!(
+                ts,
+                xc,
+                coin,
+                resultsview,
+                scores,
+                labels,
+                metadata=replaybudget,
+                datetime=evaldt,
+            )
+            gdf = TradingStrategy.processreplaygains!(
+                tp;
+                strategy=cfg.tradingstrategy,
+            )
+            # Snapshot before the truth pass reuses and overwrites this same tradesdf.
+            push!(predparts, select(tp.tradesdf, TRADES_SNAPSHOT_COLUMNS))
 
-            for cpix in eachindex(cpstart)
-                cpnix = cpix < lastindex(cpstart) ? cpix + 1 : 0
-                distnext = cpnix == 0 ? missing : Minute(cpstart[cpnix] - cpend[cpix]).value
-                @assert (cpnix == 0) || (cpend[cpix] < cpstart[cpnix]) "cpgaindf[cpix=$cpix, :]=$(cpgaindf[cpix, :]), cpgaindf[cpnix=$cpnix, :]=$(cpgaindf[cpnix, :])"
+            # Process labeled truth gains using TRUE_GAIN_THRESHOLD
+            true_open, true_close = TRUE_GAIN_THRESHOLD
+            tp = TradingStrategy.preparereplaytrades!(
+                ts,
+                xc,
+                coin,
+                resultsview,
+                truescores,
+                targets,
+                metadata=replaybudget,
+                datetime=evaldt,
+            )
+            gdf = TradingStrategy.processreplaygains!(
+                tp;
+                strategy=cfg.tradingstrategy,
+            )
+            # Keep one Trades snapshot per range/set; replay state in `xc` is
+            # overwritten on each loop iteration, so we must collect snapshots.
+            push!(truthparts, select(tp.tradesdf, TRADES_SNAPSHOT_COLUMNS))
 
-                while (ctix != 0) && (cpstart[cpix] > ctend[ctix])
-                    ctix = ctix < lastindex(ctend) ? ctix + 1 : 0
-                end
-
-                tpdistnext = fpdistnext = distfirst = distlast = missing
-                truestartdt = trueenddt = missing
-
-                if ctix == 0
-                    fpdistnext = distnext
-                else
-                    truestartdt = ctstart[ctix]
-                    trueenddt = ctend[ctix]
-                    if cpend[cpix] < truestartdt
-                        fpdistnext = distnext
-                    else
-                        prev_same_true = (cpix > firstindex(cpstart)) && (cpend[cpix - 1] >= truestartdt)
-                        distfirst = prev_same_true ? missing : Minute(cpstart[cpix] - truestartdt).value
-                        next_same_true = (cpnix != 0) && !(trueenddt < cpstart[cpnix])
-                        distlast = next_same_true ? missing : Minute(cpend[cpix] - trueenddt).value
-                        if next_same_true
-                            tpdistnext = distnext
-                        else
-                            fpdistnext = distnext
-                        end
-                    end
-                end
-
-                push!(coinvals, coin)
-                push!(setvals, string(cpset[cpix]))
-                push!(trendvals, trend)
-                push!(tpdistnextvals, tpdistnext)
-                push!(fpdistnextvals, fpdistnext)
-                push!(distfirstvals, distfirst)
-                push!(distlastvals, distlast)
-                push!(startdtvals, cpstart[cpix])
-                push!(enddtvals, cpend[cpix])
-                push!(truestartdtvals, truestartdt)
-                push!(trueenddtvals, trueenddt)
-            end
+            # Release the full-width replay Trades DataFrame of this range; otherwise both
+            # caches keep one per coin alive until the end of the run.
+            TradingStrategy.droppair!(ts, tp.pair)
+            TSM.droppair!(xc.tsm, tp.pair)
         end
+        rangegroups = nothing
+        coinresultsdf = nothing
+        # One coin is one pair, so its snapshots are complete once its ranges are processed.
+        _flushpairtrades!(xchgainparts, predparts, tradesfolderpath, "predicted", true, cfg.tradingstrategy.openthreshold, cfg.tradingstrategy.closethreshold)
+        _flushpairtrades!(xchgainparts, truthparts, tradesfolderpath, "truth", false, TRUE_GAIN_THRESHOLD[1], TRUE_GAIN_THRESHOLD[2])
+    end
 
-        if !haspredictions
-            (verbosity >= 1) && println("skipping distances collection of $(coin) due to missing gain predictions")
+    gaindf, xchreportdf = _collectxchgains(xchgainparts)
+    _report_compiled_gains(xchreportdf)
+
+    if size(gaindf, 1) > 0
+        expected = Set(Xch.tradingpairkey(String(coin), EnvConfig.pairquote) for coin in cfg.coins)
+        present = Set(String.(unique(gaindf[!, :pair])))
+        missing_pairs = sort(collect(setdiff(expected, present)))
+        if !isempty(missing_pairs)
+            @warn "missing pairs in gains output" missing_pairs present_pairs=sort(collect(present))
         end
     end
 
-    distdf = DataFrame(
-        coin=coinvals,
-        set=setvals,
-        trend=trendvals,
-        tpdistnext=tpdistnextvals,
-        fpdistnext=fpdistnextvals,
-        distfirst=distfirstvals,
-        distlast=distlastvals,
-        startdt=startdtvals,
-        enddt=enddtvals,
-        truestartdt=truestartdtvals,
-        trueenddt=trueenddtvals,
-    )
-    if size(distdf, 1) > 0
-        EnvConfig.savedf(distdf, TradingStrategy.distancesfilename())
-    end
-    (verbosity >= 2) && print("$(EnvConfig.now()) calculated distances for $(length(cfg.coins)) coins                             \r")
-    (verbosity >= 3) && println()
-    return distdf
+    (verbosity >= 2) && println("$(EnvConfig.now()) calculated gains for $(totalranges) ranges")
+    return gaindf
 end
 
 function getconfusionmatrices(cfg::TrendDetectorConfig)
@@ -1276,28 +1046,11 @@ function gainspipeline(cfg)
     end
     gaindf = getgainsdf(cfg)
     if !isnothing(gaindf) && (size(gaindf, 1) > 0)
-        # println(describe(gaindf))
-        # println(gaindf[1:2,:])
-        gaindfgroup = groupby(gaindf, [:set, :trend, :predicted, :openthreshold, :closethreshold])
-        # cgaindf = combine(gaindfgroup, [:truth_longbuy, :truth_allclose] => ((lb, ac) -> sum(lb) / (sum(lb) + sum(ac)) * 100) => "longbuy_ppv%")
-        cgaindf = combine(gaindfgroup, :gain => mean, :samplecount => mean, nrow, :gain => sum, :gainfee => sum)
-        sort!(cgaindf, [:set, :trend, :openthreshold, :closethreshold])
+        gaindfgroup = groupby(gaindf, [:set, :side, :predicted, :openthreshold, :closethreshold])
+        cgaindf = combine(gaindfgroup, :gain => mean, nrow, :gain => sum, :gainquote => sum)
+        sort!(cgaindf, [:set, :side, :openthreshold, :closethreshold])
         println("$(EnvConfig.now()) cgaindf=$cgaindf")
     end
-
-    # distdf = getdistances(cfg)
-    # if !isnothing(distdf) && (size(distdf, 1) > 0)
-    #     println("size(distdf)=$(size(distdf))")
-    #     println("describe(distdf)=$(describe(distdf))")
-    #     # println(distdf[.!ismissing.(distdf[!, :tpdistnext]),:])
-    #     distdfgroup = groupby(distdf, [:set, :trend])
-    #     # println(distdfgroup)
-    #     # diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :tpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :tpdistnext_pct, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :fpdistnext => (x -> (safe(count, x; default=0) / nrow)) => :fpdistnext_pct, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distfirst => (x -> (safe(count, x; default=0) / nrow)) => :distfirst_pct, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(std, x)) => :distlast_std, :distlast => (x -> (safe(count, x; default=0) / nrow)) => :distlast_pct)
-    #     diststatdf = combine(distdfgroup, :tpdistnext => (x -> safe(mean, x)) => :tpdistnext_mean, :tpdistnext => (x -> safe(median, x)) => :tpdistnext_median, :tpdistnext => (x -> safe(std, x)) => :tpdistnext_std, :fpdistnext => (x -> safe(mean, x)) => :fpdistnext_mean, :fpdistnext => (x -> safe(median, x)) => :fpdistnext_median, :fpdistnext => (x -> safe(std, x)) => :fpdistnext_std, :distfirst => (x -> safe(mean, x)) => :distfirst_mean, :distfirst => (x -> safe(median, x)) => :distfirst_median, :distfirst => (x -> safe(std, x)) => :distfirst_std, :distlast => (x -> safe(mean, x)) => :distlast_mean, :distlast => (x -> safe(median, x)) => :distlast_median, :distlast => (x -> safe(std, x)) => :distlast_std)
-    #     println("$(EnvConfig.now()) Distances: $(diststatdf)")
-    # else
-    #     println("$(EnvConfig.now()) no distance data available")
-    # end
 end
 
 function safe(f, v; default=missing)

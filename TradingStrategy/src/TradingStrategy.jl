@@ -208,6 +208,10 @@ Base.@kwdef struct StrategyConfig
     limitreduction::Float32 = 0f0
     minpricedelta::Float32 = 0.001f0
     max_classify_staleness_minutes::Int = 5
+    # Quote budget per lane. An open lane position consumes it, so a lane can only be topped
+    # up while its invested quote stays below this; equal-to-one-open budget yields exactly
+    # one open per gain segment.
+    maxbudgetquote::Float32 = 200f0
 end
 
 """Per-trading-pair runtime state holder used by `TsCache`.
@@ -249,6 +253,7 @@ end
         limitreduction=spec.limitreduction,
         minpricedelta=spec.minpricedelta,
         max_classify_staleness_minutes=spec.max_classify_staleness_minutes,
+        maxbudgetquote=spec.maxbudgetquote,
     )
 end
 
@@ -927,7 +932,7 @@ function _simulate_gains_rows!(algorithm::F, cfg::StrategyConfig, tp::TsTp, cols
     for ix in 1:lastix
         try
             _rowtakeover!(cols, ix)
-            last_openix = _materialize_gains_sample_from_trades!(gaindf, cols, ix, last_openix; makerfee=cfg.makerfee, lastix=lastix)
+            last_openix = _materialize_gains_sample_from_trades!(gaindf, cols, ix, last_openix; makerfee=cfg.makerfee)
             if !isnothing(pending_open)
                 # Replay row `ix` is the first decision row that can observe the
                 # prior row's candle hit. Close materialization must run first so
@@ -965,12 +970,28 @@ function _simulate_gains_rows!(algorithm::F, cfg::StrategyConfig, tp::TsTp, cols
     return nothing
 end
 
+"""Return the base amount a lane may still open, sized by budget and available equity.
+
+Two independent caps, both read from row `ix` so no ledger is needed: the lane's own open
+position consumes `maxbudgetquote`, and `freequote` limits what the account can actually
+fund. `limitprice` converts the resulting quote amount into a base amount."""
+@inline function _laneopenamount(strategy::StrategyConfig, invested_amount::Float32, invested_pavg::Float32, limitprice::Float32, freequote::Float32)::Float32
+    limitprice > 0f0 || return 0f0
+    remaining = strategy.maxbudgetquote - invested_amount * invested_pavg
+    available = min(remaining, freequote)
+    available > 0f0 || return 0f0
+    return available / limitprice
+end
+
 "Input is :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit. Output is :lo_status, :so_status, :lo_amount, :so_amount."
 function _process_advice_row!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+    freequote = cols.freequote[ix]
     if islongopenlabel(cols.label[ix]) && (cols.sp_amount[ix] == 0f0)
         cols.so_amount[ix] = 0f0
+        lo_limit = cols.lo_limit[ix]
+        amount = _laneopenamount(strategy, cols.lp_amount[ix], cols.lol_pavg[ix], lo_limit > 0f0 ? lo_limit : cols.close[ix], freequote)
         TSM.setcategorical!(cols.lo_status, ix, "submitted")
-        cols.lo_amount[ix] = 100f0
+        cols.lo_amount[ix] = amount
         if cols.lp_amount[ix] == 0f0
             cols.lol_pavg[ix] = 0f0
         end
@@ -978,8 +999,10 @@ function _process_advice_row!(strategy::StrategyConfig, cols::TSM.TradesColumns,
     end
     if isshortopenlabel(cols.label[ix]) && (cols.lp_amount[ix] == 0f0)
         cols.lo_amount[ix] = 0f0
+        so_limit = cols.so_limit[ix]
+        amount = _laneopenamount(strategy, cols.sp_amount[ix], cols.sol_pavg[ix], so_limit > 0f0 ? so_limit : cols.close[ix], freequote)
         TSM.setcategorical!(cols.so_status, ix, "submitted")
-        cols.so_amount[ix] = 100f0
+        cols.so_amount[ix] = amount
         if cols.sp_amount[ix] == 0f0
             cols.sol_pavg[ix] = 0f0
         end
@@ -1033,7 +1056,7 @@ function _validate_row_consistency(cols::TSM.TradesColumns, ix::Integer)::Nothin
     return nothing
 end
 
-function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, cols::TSM.TradesColumns, ix::Integer, last_openix::Int; makerfee::Float32=0f0, lastix::Integer=0)::Int
+function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame}, cols::TSM.TradesColumns, ix::Integer, last_openix::Int; makerfee::Float32=0f0)::Int
 
     if cols.lp_amount[ix] > 0f0
         openprice = cols.lol_pavg[ix]
@@ -1053,13 +1076,6 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
             cols.lcl_pavg[ix] = cols.lc_limit[ix]
             _resetorder(cols, ix, :lc, reset_pavg=false)
             last_openix = 0
-        elseif (ix == lastix) && (last_openix > 0)
-            # Force-close any open gain segment at range boundary using close price at lastix
-            gain = (cols.close[lastix] - openprice) / openprice
-            push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[lastix], cols.opentime[lastix], last_openix, lastix))
-            cols.lcl_pavg[ix] = cols.close[ix]
-            _resetorder(cols, ix, :lc, reset_pavg=false)
-            last_openix = 0
         end
     elseif cols.sp_amount[ix] > 0f0
         openprice = cols.sol_pavg[ix]
@@ -1076,13 +1092,6 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
             gain = -(cols.sc_limit[ix] - openprice) / openprice
             push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
             cols.scl_pavg[ix] = cols.sc_limit[ix]
-            _resetorder(cols, ix, :sc, reset_pavg=false)
-            last_openix = 0
-        elseif (ix == lastix) && (last_openix > 0)
-            # Force-close any open gain segment at range boundary using close price at lastix
-            gain = -(cols.close[lastix] - openprice) / openprice
-            push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[lastix], cols.opentime[lastix], last_openix, lastix))
-            cols.scl_pavg[ix] = cols.close[ix]
             _resetorder(cols, ix, :sc, reset_pavg=false)
             last_openix = 0
         end
@@ -1199,7 +1208,7 @@ end
 
 Thresholds are taken from the strategy config, not from parameters. The strategy.openthreshold
 and strategy.closethreshold determine which trades pass the confidence filter during gain materialization.
-Any open gain segment at lastix is force-closed using the close price at that row.
+A gain segment still open at lastix is dropped, matching `TSM.compilegains` with `setpartitions=true`.
 """
 function processreplaygains!(tp::TsTp;
     strategy::StrategyConfig,
