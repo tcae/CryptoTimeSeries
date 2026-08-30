@@ -8,8 +8,8 @@ module Xch
 using Dates, DataFrames, DataAPI, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
 using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets, TSM
-using XchAdapter: XchAdapterCache
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!
+using XchAdapter: XchAdapterCache, TradingPairRef
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, accountsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!, preparetradingpairs!
 import XchAdapter: normalize_order_status
 import Ohlcv: intervalperiod
 
@@ -75,10 +75,13 @@ mutable struct XchCache
     enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
     mc::Dict # MC = module constants
     lastsyncedopentime::Dict{String, Dates.DateTime}  # per-base opentime last processed by sync_latest_trades_rows!
+    tradingpairepoch::UInt
+    tradingpairrefs::Vector{TradingPairRef}
+    tradingpairinfo::Vector{NamedTuple}
     function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        xc = new(Dict{String, Ohlcv.OhlcvData}(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict(), Dict{String, Dates.DateTime}())
+        xc = new(Dict{String, Ohlcv.OhlcvData}(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict(), Dict{String, Dates.DateTime}(), UInt(0), TradingPairRef[], NamedTuple[])
         syminfodf = if hasproperty(rawcache(xc.bc), :syminfodf)
             getproperty(rawcache(xc.bc), :syminfodf)
         else
@@ -130,6 +133,67 @@ Phase 2 stores Trades DataFrames by uppercase concatenated base and quote.
 """
 function tradingpairkey(base::AbstractString, quotecoin::AbstractString)::String
     return uppercase(String(base)) * uppercase(String(quotecoin))
+end
+
+"Prepare canonical pair metadata for one Trade configuration epoch."
+function preparetradingpairs!(xc::XchCache, pairs::Vector{String})::Vector{TradingPairRef}
+    epoch = xc.tradingpairepoch + UInt(1)
+    refs = TradingPairRef[]
+    info = NamedTuple[]
+    sizehint!(refs, length(pairs))
+    sizehint!(info, length(pairs))
+    quote_coin = String(EnvConfig.pairquote)
+    for (ix, pair) in enumerate(pairs)
+        @assert pair == uppercase(pair) "trading pair must be canonical uppercase: pair=$(pair)"
+        @assert endswith(pair, quote_coin) && (length(pair) > length(quote_coin)) "trading pair must end with configured quote=$(quote_coin): pair=$(pair)"
+        base = pair[begin:end - length(quote_coin)]
+        symbol = symboltoken(xc.bc, base, quote_coin)
+        syminfo = symbolinfo(xc.bc, symbol)
+        @assert !isnothing(syminfo) "exchange metadata missing trading pair=$(pair) adapter_symbol=$(symbol)"
+        ref = TradingPairRef(pair, UInt(ix), epoch)
+        push!(refs, ref)
+        push!(info, (pair=pair, basecoin=base, quotecoin=quote_coin, symbol=symbol, minbaseqty=syminfo.minbaseqty, minquoteqty=syminfo.minquoteqty))
+    end
+    xc.tradingpairepoch = epoch
+    xc.tradingpairrefs = refs
+    xc.tradingpairinfo = info
+    preparetradingpairs!(xc.bc, refs)
+    return refs
+end
+
+"Return the current epoch pair reference for one one-based Trade cfg index."
+function tradingpairref(xc::XchCache, cfgindex::UInt)::TradingPairRef
+    @assert xc.tradingpairepoch > 0 "trading pair epoch is not initialized"
+    @assert cfgindex > 0 && cfgindex <= length(xc.tradingpairrefs) "cfgindex=$(cfgindex) is outside active pair references=$(length(xc.tradingpairrefs))"
+    return xc.tradingpairrefs[cfgindex]
+end
+
+"Return the active reference for one cfg pair, or the zero-sentinel fallback before epoch preparation."
+function tradingpairref(xc::XchCache, pair::String, cfgindex::UInt)::TradingPairRef
+    if xc.tradingpairepoch == 0
+        return TradingPairRef(pair, UInt(0), UInt(0))
+    end
+    ref = tradingpairref(xc, cfgindex)
+    @assert ref.pair == pair "Trade cfg pair/index mismatch: pair=$(pair) cfgindex=$(cfgindex) indexed.pair=$(ref.pair)"
+    return ref
+end
+
+"Return the current Xch pair record for a prepared reference, or `nothing` for its zero sentinel."
+function _preparedtradingpairinfo(xc::XchCache, pairref::TradingPairRef)
+    pairref.epoch == 0 && return nothing
+    @assert pairref.epoch == xc.tradingpairepoch "Xch pair epoch mismatch: pair=$(pairref.pair) ref.epoch=$(pairref.epoch) xch.epoch=$(xc.tradingpairepoch)"
+    @assert pairref.cfgindex > 0 "Xch prepared pair reference requires cfgindex > 0: pair=$(pairref.pair) epoch=$(pairref.epoch)"
+    @assert pairref.cfgindex <= length(xc.tradingpairinfo) "Xch pair cfgindex=$(pairref.cfgindex) exceeds prepared pairs=$(length(xc.tradingpairinfo))"
+    info = xc.tradingpairinfo[pairref.cfgindex]
+    @assert info.pair == pairref.pair "Xch pair index mismatch: ref.pair=$(pairref.pair) cfgindex=$(pairref.cfgindex) indexed.pair=$(info.pair)"
+    return info
+end
+
+"Return the prepared metadata for one active trading pair reference."
+function tradingpairinfo(xc::XchCache, pairref::TradingPairRef)
+    info = _preparedtradingpairinfo(xc, pairref)
+    @assert !isnothing(info) "tradingpairinfo requires an active prepared pair reference: pair=$(pairref.pair) cfgindex=$(pairref.cfgindex) epoch=$(pairref.epoch)"
+    return info
 end
 
 "Log a trading issue and return the normalized message text for direct storage in Trades columns."
@@ -1181,7 +1245,7 @@ function _pricefrombases(xc::XchCache, coin::AbstractString)::Union{Nothing, Flo
 end
 
 "Merge explicit adapter position amounts into balances and compute quote valuation in Xch."
-function _assetssnapshot_from_balances_positions(xc::XchCache, balancesdf::AbstractDataFrame; resolve_missing_prices::Bool=true)::DataFrame
+function _assetssnapshot_from_balances_positions(xc::XchCache, balancesdf::AbstractDataFrame; positionsdf=nothing, resolve_missing_prices::Bool=true)::DataFrame
     assets = DataFrame(balancesdf; copycols=true)
     cols = propertynames(assets)
     if !(:coin in cols)
@@ -1193,12 +1257,16 @@ function _assetssnapshot_from_balances_positions(xc::XchCache, balancesdf::Abstr
 
     # Some adapters report position exposure separate from wallet balances.
     # We merge those quantities here so valuation can be done centrally in Xch.
-    posdf = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
-    try
-        posdf = positionsnapshot(xc.bc)
-    catch err
-        err isa InterruptException && rethrow(err)
-        (verbosity >= 2) && @warn "positionsnapshot unavailable; falling back to balances-only valuation" exchange=exchange(xc) exception=sprint(showerror, err)
+    posdf = if isnothing(positionsdf)
+        try
+            positionsnapshot(xc.bc)
+        catch err
+            err isa InterruptException && rethrow(err)
+            (verbosity >= 2) && @warn "positionsnapshot unavailable; falling back to balances-only valuation" exchange=exchange(xc) exception=sprint(showerror, err)
+            DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+        end
+    else
+        positionsdf
     end
 
     if (:coin in propertynames(posdf)) && (:long_qty in propertynames(posdf)) && (:short_qty in propertynames(posdf))
@@ -1377,10 +1445,10 @@ function _issimulationassetcache(xc::XchCache)::Bool
 end
 
 "Return the current account snapshot used by Trade loop orchestration."
-function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, assetsdf=nothing, require_holding_valuation::Bool=false)
-    balancesdf = isnothing(balancesdf) ? balances(xc; ignoresmallvolume=false) : DataFrame(balancesdf; copycols=true)
+function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5, balancesdf=nothing, positionsdf=nothing, assetsdf=nothing, require_holding_valuation::Bool=false)
+    balancesdf = isnothing(balancesdf) ? balances(xc; ignoresmallvolume=false) : balancesdf
     assetsdf = if isnothing(assetsdf)
-        _assetssnapshot_from_balances_positions(xc, balancesdf; resolve_missing_prices=require_holding_valuation || timesimulation(xc))
+        _assetssnapshot_from_balances_positions(xc, balancesdf; positionsdf=positionsdf, resolve_missing_prices=require_holding_valuation || timesimulation(xc))
     else
         DataFrame(assetsdf; copycols=true)
     end
@@ -1416,6 +1484,19 @@ function account_status(xc::XchCache; force_refresh::Bool=false, ttl_seconds::In
         free_margin_quote=freemargin,
         maintenance_margin_quote=capacity.maintenance_margin_quote,
     )
+end
+
+"Capture one coherent adapter account state and derive the Xch account status for the current tick."
+function refreshaccountstatus!(xc::XchCache; ignoresmallvolume::Bool=false, require_holding_valuation::Bool=false)
+    adaptersnapshot = accountsnapshot(xc.bc)
+    balancesdf = isnothing(adaptersnapshot) ? _adapterbalances(xc) : _normalizeadapterbalances(adaptersnapshot.balances)
+    _filterbalances!(xc, balancesdf; ignoresmallvolume=ignoresmallvolume)
+    positionsdf = isnothing(adaptersnapshot) ? positionsnapshot(xc.bc) : adaptersnapshot.positions
+    snapshotdt = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
+    xc.mc[:exchange_balances_snapshot] = balancesdf
+    xc.mc[:exchange_balances_snapshot_dt] = snapshotdt
+    status = account_status(xc; force_refresh=true, ttl_seconds=0, balancesdf=balancesdf, positionsdf=positionsdf, require_holding_valuation=require_holding_valuation)
+    return (status..., positions=positionsdf, datetime=snapshotdt)
 end
 
 "Return the current order state for one order id."
@@ -1674,6 +1755,75 @@ function _applyliquidationevent!(tradesdf::DataFrame, ix::Integer, ev::NamedTupl
     return nothing
 end
 
+function _sync_basekeys(syncpairs, quotecoin::AbstractString)::Vector{String}
+    if isnothing(syncpairs)
+        return String[]
+    end
+    seen = Set{String}()
+    bases = String[]
+    for token in syncpairs
+        candidate = uppercase(strip(String(token)))
+        isempty(candidate) && continue
+        if candidate in (quotecoin, "QUOTE")
+            continue
+        end
+        pair = if occursin('/', candidate)
+            candidate
+        elseif endswith(candidate, quotecoin) && (length(candidate) > length(quotecoin))
+            candidate
+        else
+            uppercase(String(candidate)) * quotecoin
+        end
+        bq = basequote(pair)
+        isnothing(bq) && continue
+        base = uppercase(String(bq.basecoin))
+        base == quotecoin && continue
+        if base in seen
+            continue
+        end
+        push!(bases, base)
+        push!(seen, base)
+    end
+    return bases
+end
+
+"Return deduplicated base keys from active prepared pair references."
+function _sync_basekeys(xc::XchCache, pairrefs::AbstractVector{<:TradingPairRef})::Vector{String}
+    seen = Set{String}()
+    bases = String[]
+    sizehint!(bases, length(pairrefs))
+    for pairref in pairrefs
+        base = tradingpairinfo(xc, pairref).basecoin
+        if !(base in seen)
+            push!(bases, base)
+            push!(seen, base)
+        end
+    end
+    return bases
+end
+
+function _sync_positions_by_coin(positionsdf)
+    pos_by_coin = Dict{String, Tuple{Float32, Float32}}()
+    if (:coin in propertynames(positionsdf)) && (:long_qty in propertynames(positionsdf)) && (:short_qty in propertynames(positionsdf))
+        for row in eachrow(positionsdf)
+            coin = uppercase(String(row.coin))
+            pos_by_coin[coin] = (max(0f0, (row.long_qty)), max(0f0, (row.short_qty)))
+        end
+    end
+    return pos_by_coin
+end
+
+"Index available long-only balance inventory once for the current account snapshot."
+function _sync_balances_by_coin(balancesdf)
+    balances_by_coin = Dict{String, Float32}()
+    if _hascol(balancesdf, :coin) && _hascol(balancesdf, :free)
+        for row in eachrow(balancesdf)
+            balances_by_coin[uppercase(String(row.coin))] = max(0f0, row.free)
+        end
+    end
+    return balances_by_coin
+end
+
 """
     sync_latest_trades_rows!(xc, syncpairs=nothing)
 
@@ -1686,42 +1836,35 @@ currently in `xc.bases` are synced.
 
 Returns `Dict{String, NamedTuple{(:tradesdf, :rowix)}}` keyed by uppercase base.
 """
-function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
+function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing, positionsdf=nothing)
     quotecoin = uppercase(String(EnvConfig.pairquote))
-
-    bases_to_sync = String[]
-    if isnothing(syncpairs)
-        for base in keys(xc.bases)
-            uppercase(String(base)) == quotecoin && continue
-            push!(bases_to_sync, uppercase(String(base)))
-        end
+    bases_to_sync = if isnothing(syncpairs)
+        String[uppercase(String(base)) for base in keys(xc.bases) if uppercase(String(base)) != quotecoin]
+    elseif syncpairs isa AbstractVector{<:TradingPairRef}
+        _sync_basekeys(xc, syncpairs)
     else
-        for pair in syncpairs
-            bq = basequote(String(pair))
-            isnothing(bq) && continue
-            base = uppercase(String(bq.basecoin))
-            base == quotecoin && continue
-            base in bases_to_sync || push!(bases_to_sync, base)
-        end
+        _sync_basekeys(syncpairs, quotecoin)
     end
 
     for base in bases_to_sync
         @assert base in keys(xc.bases) "sync_latest_trades_rows! missing base=$(base) in xc.bases; addbase! and iterator-driven setcurrenttime! must prepare all synced bases"
     end
 
-    acct = isnothing(acct) ? account_status(xc; force_refresh=true, ttl_seconds=0) : acct
+    acct = isnothing(acct) ? refreshaccountstatus!(xc; ignoresmallvolume=false, require_holding_valuation=false) : acct
     balancesdf = acct.assets
-    posdf = try
-        positionsnapshot(xc.bc)
-    catch err
-        err isa InterruptException && rethrow(err)
-        DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+    posdf = if isnothing(positionsdf)
+        acct.positions
+    else
+        positionsdf
     end
-    pos_by_coin = Dict{String, Tuple{Float32, Float32}}()
-    if (:coin in propertynames(posdf)) && (:long_qty in propertynames(posdf)) && (:short_qty in propertynames(posdf))
-        for row in eachrow(posdf)
-            coin = uppercase(String(row.coin))
-            pos_by_coin[coin] = (max(0f0, (row.long_qty)), max(0f0, (row.short_qty)))
+    pos_by_coin = _sync_positions_by_coin(posdf)
+    balances_by_coin = _sync_balances_by_coin(balancesdf)
+
+    pairkeys_by_base = Dict{String, String}()
+    if syncpairs isa AbstractVector{<:TradingPairRef}
+        for pairref in syncpairs
+            pairinfo = tradingpairinfo(xc, pairref)
+            pairkeys_by_base[pairinfo.basecoin] = pairinfo.pair
         end
     end
 
@@ -1735,7 +1878,9 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
     rowsbybase = Dict{String, NamedTuple}()
 
     for base in bases_to_sync
-        pairkey = tradingpairkey(base, quotecoin)
+        pairkey = get!(pairkeys_by_base, base) do
+            tradingpairkey(base, quotecoin)
+        end
         currentdt = if base in keys(xc.bases)
             o = ohlcv(xc, base)
             odf = Ohlcv.dataframe(o)
@@ -1756,9 +1901,15 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
             continue
         end
 
-        tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt) # add a new row to trades df
-        tdf = tdf_rowix.tradesdf
-        rowix = tdf_rowix.rowix
+        existing_rowix = TSM.tradesrowindex(xc.tsm, base, quotecoin, currentdt)
+        if isnothing(existing_rowix)
+            tdf_rowix = TSM.ensuretradesrow!(xc.tsm, base, quotecoin, currentdt)
+            tdf = tdf_rowix.tradesdf
+            rowix = tdf_rowix.rowix
+        else
+            tdf = TSM.trades(xc.tsm, tradingpairkey(base, quotecoin))
+            rowix = existing_rowix
+        end
 
         # OHLCV columns
         if base in keys(xc.bases)
@@ -1790,16 +1941,12 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing)
         # Position amounts from portfolio snapshot
         newlqty, newsqty = if haskey(pos_by_coin, base)
             pos_by_coin[base]
+        elseif haskey(balances_by_coin, base)
+            # Fallback when adapter positionsnapshot is unavailable.
+            # No-liability policy: treat base inventory as long-only.
+            (balances_by_coin[base], 0f0)
         else
-            bix = _hascol(balancesdf, :coin) ? findfirst(==(base), uppercase.(String.(balancesdf[!, :coin]))) : nothing
-            if !isnothing(bix)
-                # Fallback when adapter positionsnapshot is unavailable.
-                # No-liability policy: treat base inventory as long-only.
-                free_val  = _hascol(balancesdf, :free) ? (balancesdf[bix, :free]) : 0f0
-                (max(0f0, free_val), 0f0)
-            else
-                (tdf[rowix, :lp_amount], tdf[rowix, :sp_amount])
-            end
+            (tdf[rowix, :lp_amount], tdf[rowix, :sp_amount])
         end
         TSM.settrades_lp_amount!(tdf, rowix, newlqty)
         TSM.settrades_sp_amount!(tdf, rowix, newsqty)
@@ -1839,7 +1986,7 @@ is the protective stop. Both legs cover the same quantity and share one exchange
 reservation, so the stop leg carries no amount of its own. `<lane>_limit == 0` keeps the
 close leg at an adaptive maker price, while `<lane>sl_limit == 0` means no stop is wanted.
 """
-function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer, symbol::AbstractString, positionside::Symbol)
+function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer, symbol::AbstractString, positionside::Symbol; pairref::Union{Nothing, TradingPairRef}=nothing, pairinfo=nothing)
     long = positionside == :long
     posamount = tradesdf[ix, long ? :lp_amount : :sp_amount]
     closeamount = tradesdf[ix, long ? :lc_amount : :sc_amount]
@@ -1847,8 +1994,12 @@ function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer
     qty = min(closeamount, posamount)
     qty > 0f0 || return nothing
 
-    bq = _pairfromtradesrow(tradesdf, ix)
-    minqty = minimumbasequantity(xc, bq.basecoin, tradesdf[ix, :close])
+    minqty = if isnothing(pairinfo)
+        bq = _pairfromtradesrow(tradesdf, ix)
+        minimumbasequantity(xc, bq.basecoin, tradesdf[ix, :close])
+    else
+        1.01 * max(pairinfo.minbaseqty, pairinfo.minquoteqty / tradesdf[ix, :close])
+    end
     closeaction = long ? :long_close : :short_close
     if isnothing(minqty)
         _rejectedrequest!(xc, tradesdf, ix, closeaction, "minimum base quantity unavailable")
@@ -1868,7 +2019,7 @@ function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer
     closestcol = long ? :lc_status : :sc_status
     closelane = long ? "lc" : "sc"
     closelimit = _rowlimitprice(tradesdf[ix, long ? :lc_limit : :sc_limit])
-    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane)
+    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane, pairref=pairref)
     if isnothing(oid)
         _rejectedrequest!(xc, tradesdf, ix, long ? :long_close : :short_close, "exchange returned no close order id")
     else
@@ -1880,7 +2031,7 @@ function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer
     stopstcol = long ? :lcsl_status : :scsl_status
     stoplimit = tradesdf[ix, long ? :lcsl_limit : :scsl_limit]
     stoplimit > 0f0 || return nothing
-    soid = upsertcloseorder!(xc.bc, symbol, positionside, qty, Float32(stoplimit); existing_orderid=_laneorderid(tradesdf[ix, stopidcol]), maker=true, reduceonly=true, lane=long ? "lcsl" : "scsl")
+    soid = upsertcloseorder!(xc.bc, symbol, positionside, qty, Float32(stoplimit); existing_orderid=_laneorderid(tradesdf[ix, stopidcol]), maker=true, reduceonly=true, lane=long ? "lcsl" : "scsl", pairref=pairref)
     if isnothing(soid)
         (verbosity >= 1) && @warn "stop-loss bracket leg rejected" symbol positionside
         return nothing
@@ -1891,22 +2042,29 @@ function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer
 end
 
 "Maintain the resting close bracket of both position sides from the Trades row."
-function _ensureclosebracket!(xc::XchCache, tradesdf::DataFrame, ix::Integer, symbol::AbstractString)
-    _ensureclosebracketside!(xc, tradesdf, ix, symbol, :long)
-    _ensureclosebracketside!(xc, tradesdf, ix, symbol, :short)
+function _ensureclosebracket!(xc::XchCache, tradesdf::DataFrame, ix::Integer, symbol::AbstractString; pairref::Union{Nothing, TradingPairRef}=nothing, pairinfo=nothing)
+    _ensureclosebracketside!(xc, tradesdf, ix, symbol, :long; pairref=pairref, pairinfo=pairinfo)
+    _ensureclosebracketside!(xc, tradesdf, ix, symbol, :short; pairref=pairref, pairinfo=pairinfo)
     return nothing
 end
 
 "Evaluate and execute one row-level order request from the Trades DataFrame."
-function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
+function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer; pairref::Union{Nothing, TradingPairRef}=nothing)
     @assert 1 <= ix <= nrow(tradesdf) "ix=$(ix) out of bounds for trades rows=$(nrow(tradesdf))"
 
-    pair = _pairfromtradesrow(tradesdf, ix)
-    base = pair.basecoin
-    quotecoin = pair.quotecoin
-    symbol = symboltoken(xc, base, quotecoin)
+    pairinfo = isnothing(pairref) ? nothing : _preparedtradingpairinfo(xc, pairref)
+    if isnothing(pairinfo)
+        pair = _pairfromtradesrow(tradesdf, ix)
+        base = pair.basecoin
+        quotecoin = pair.quotecoin
+        symbol = symboltoken(xc, base, quotecoin)
+    else
+        base = pairinfo.basecoin
+        quotecoin = pairinfo.quotecoin
+        symbol = pairinfo.symbol
+    end
     # Xch reads amounts and limits only; trade labels stay Trade/TradingStrategy vocabulary.
-    _ensureclosebracket!(xc, tradesdf, ix, symbol)
+    _ensureclosebracket!(xc, tradesdf, ix, symbol; pairref=pairref, pairinfo=pairinfo)
     longopenamount = tradesdf[ix, :lo_amount]
     shortopenamount = tradesdf[ix, :so_amount]
     @assert !((longopenamount > 0f0) && (shortopenamount > 0f0)) "opposite open requests in one row: lo_amount=$(longopenamount), so_amount=$(shortopenamount), pair=$(tradesdf[ix, :pair]), opentime=$(tradesdf[ix, :opentime])"
@@ -1934,7 +2092,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
         return (accepted=false, action=action, reason="amount_not_positive")
     end
 
-    minqty = minimumbasequantity(xc, base, tradesdf[ix, :close])
+    minqty = isnothing(pairinfo) ? minimumbasequantity(xc, base, tradesdf[ix, :close]) : 1.01 * max(pairinfo.minbaseqty, pairinfo.minquoteqty / tradesdf[ix, :close])
     if isnothing(minqty)
         _rejectedrequest!(xc, tradesdf, ix, action, "minimum base quantity unavailable")
         return (accepted=false, action=action, reason="minimum_qty_unavailable")
@@ -1998,7 +2156,11 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer)
 end
 
 function _adapterbalances(xc::XchCache)::DataFrame
-    bdf = balances(xc.bc)
+    return _normalizeadapterbalances(balances(xc.bc))
+end
+
+"Normalize one adapter balances response into Xch's canonical balance schema."
+function _normalizeadapterbalances(bdf)::DataFrame
     if isnothing(bdf)
         return DataFrame()
     end

@@ -201,7 +201,7 @@ version = "1.2.2"
 deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.3.1"
+version = "4.3.4"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -1798,7 +1798,7 @@ version = "1.0.3"
 deps = ["CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "Logging", "Targets", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/TSM"
 uuid = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
-version = "0.2.1"
+version = "0.3.4"
 
 [[deps.TZJData]]
 deps = ["Artifacts"]
@@ -1862,13 +1862,13 @@ version = "1.22.2"
 deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "TSM", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
 path = "."
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.19.5"
+version = "0.19.7"
 
 [[deps.TradingStrategy]]
 deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "TSM", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.8.7"
+version = "0.11.0"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
@@ -1988,13 +1988,13 @@ version = "5.8.3+0"
 deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "TSM", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.8.0"
+version = "1.8.3"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]
 path = "../XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.3.0"
+version = "0.3.1"
 
 [[deps.Xorg_libX11_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libxcb_jll", "Xorg_xtrans_jll"]

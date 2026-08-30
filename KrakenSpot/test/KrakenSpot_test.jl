@@ -32,6 +32,12 @@ using DataFrames, Dates, KrakenSpot, Test
     ); cols=:subset)
 
     cache = KrakenSpot.KrakenSpotCache(syminfo, KrakenSpot.KRAKEN_APIREST, "", "")
+    ref = KrakenSpot.XchAdapter.TradingPairRef("BTCUSD", UInt(1), UInt(1))
+    KrakenSpot.preparetradingpairs!(cache, [ref])
+    @test cache.tradingpairepoch == UInt(1)
+    @test KrakenSpot._preparedpairinfo(cache, ref).krakenpairname == "XBTUSD"
+    @test isnothing(KrakenSpot._preparedpairinfo(cache, KrakenSpot.XchAdapter.TradingPairRef("BTCUSD", UInt(0), UInt(0))))
+    @test_throws AssertionError KrakenSpot._preparedpairinfo(cache, KrakenSpot.XchAdapter.TradingPairRef("BTCUSD", UInt(1), UInt(2)))
 
     positions = Dict(
         "tx1" => Dict("type" => "sell", "pair" => "XBTUSD", "vol" => "0.25"),

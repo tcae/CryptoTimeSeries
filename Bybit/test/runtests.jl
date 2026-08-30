@@ -107,6 +107,10 @@ EnvConfig.init(production)  # test production
     fast_filled = Bybit.order(bc_pending_fast, String(fast_pending.orderid))
     @test !isnothing(fast_filled)
     @test fast_filled.status == "Filled"
+    processed_dt = bc_pending_fast.lastpendingdecisiondt
+    Bybit._simprocesspendingorders!(bc_pending_fast)
+    @test bc_pending_fast.lastpendingdecisiondt == processed_dt == bc_pending_fast.simtime
+    @test Bybit.order(bc_pending_fast, String(fast_pending.orderid)).status == "Filled"
     @test size(Bybit.openorders(bc_pending_fast), 1) == 0
     @test size(bc_pending_fast.orderbook, 1) == 1
     @test Bybit._sim_orderindex_for(bc_pending_fast)[String(fast_pending.orderid)] == 1

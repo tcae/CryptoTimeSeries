@@ -447,6 +447,14 @@ function getpairstate!(tsm::TsmCache, base::AbstractString, quotecoin::AbstractS
     return trades(tsm, base, quotecoin)
 end
 
+"""Return the row index for one sample timestamp if it already exists in the pair state."""
+function tradesrowindex(tsm::TsmCache, base::AbstractString, quotecoin::AbstractString, opentime::DateTime)::Union{Nothing, Int}
+    pairkey = tradingpairkey(uppercase(String(base)), quotecoin)
+    tdf = trades(tsm, pairkey)
+    ix = findfirst(==(opentime), tdf[!, :opentime])
+    return isnothing(ix) ? nothing : Int(ix)
+end
+
 """Return the writable pair row for one sample timestamp, creating a row when needed."""
 function ensuretradesrow!(tsm::TsmCache, base::AbstractString, quotecoin::AbstractString, opentime::DateTime)
     basekey = uppercase(String(base))

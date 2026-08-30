@@ -5,7 +5,7 @@ using EnvConfig
 using Ohlcv
 using TestOhlcv
 using XchAdapter
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!
+import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, accountsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!, preparetradingpairs!
 import XchAdapter: normalize_order_status
 
 # base URL of the ByBit API
@@ -89,10 +89,6 @@ const _recvwindow = "5000000"  # "5000" extended by factor 1000 due to nanosecon
 const _sim_order_counter = IdDict{Any, Int64}()
 # Per-cache successor orderid => predecessor orderid registered via directsequence!.
 const _sim_sequencing = IdDict{Any, Dict{String, String}}()
-"Per-cache orderid => row index mapping for the simulation order book."
-const _sim_order_index = IdDict{Any, Dict{String, Int}}()
-"Per-cache open order row indices, updated lazily from the simulation order book."
-const _sim_open_order_index = IdDict{Any, Vector{Int}}()
 "Resolved trading pair symbol per cache, keyed by the caller supplied base*quote spelling."
 const _symboltoken_memo = IdDict{Any, Dict{String, String}}()
 "Queued forced-liquidation events per simulation cache, drained by Xch into TSM trades rows."
@@ -132,10 +128,15 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     publickey
     secretkey
     simtime::Union{Nothing, DateTime}
+    lastpendingdecisiondt::Union{Nothing, DateTime}
     # Simulation state (populated only in BybitSim mode, nil in production).
     # Rows represent holdings lanes with side in {quote,long,short}.
     assets::Union{Nothing, DataFrame}
     orderbook::Union{Nothing, DataFrame}
+    orderindex::Dict{String, Int}
+    openorderindex::Vector{Int}
+    tradingpairepoch::UInt
+    tradingpairinfo::Vector{NamedTuple}
     # Shared reference to the owning XchCache's per-base OHLCV cache (duck-typed wiring via
     # Xch.setcurrenttime!, mirrors `simtime`). Same Dict object, no per-simulation copy.
     ohlcvcache::Union{Nothing, Dict{String, Ohlcv.OhlcvData}}
@@ -146,6 +147,38 @@ const BybitSimCache = BybitCache
 const BybitsimCache = BybitCache
 exchangeid(bc::BybitCache)::String = "Bybit"
 
+"Prepare direct Bybit exchange-info access for one Xch trading-pair epoch."
+function preparetradingpairs!(bc::BybitCache, pairrefs::Vector{XchAdapter.TradingPairRef})
+    isempty(pairrefs) && (bc.tradingpairepoch = UInt(0); empty!(bc.tradingpairinfo); return nothing)
+    epoch = pairrefs[1].epoch
+    info = NamedTuple[]
+    sizehint!(info, length(pairrefs))
+    for ref in pairrefs
+        @assert ref.epoch == epoch && ref.cfgindex > 0 "Bybit pair reference must have matching nonzero epoch/index: pair=$(ref.pair) cfgindex=$(ref.cfgindex) epoch=$(ref.epoch)"
+        @assert ref.cfgindex == length(info) + 1 "Bybit pair references must be ordered by cfgindex: pair=$(ref.pair) cfgindex=$(ref.cfgindex) expected=$(length(info) + 1)"
+        ix = findfirst(==(ref.pair), bc.syminfodf[!, :symbol])
+        @assert !isnothing(ix) "Bybit exchange info missing canonical trading pair=$(ref.pair)"
+        row = bc.syminfodf[ix, :]
+        push!(info, (pair=ref.pair, symbol=String(row.symbol), syminfoix=UInt(ix), ticksize=row.ticksize, baseprecision=row.baseprecision, quoteprecision=row.quoteprecision, minbaseqty=row.minbaseqty, minquoteqty=row.minquoteqty))
+    end
+    bc.tradingpairepoch = epoch
+    bc.tradingpairinfo = info
+    return nothing
+end
+
+"Return prepared Bybit metadata for a current epoch pair reference."
+function _preparedpairinfo(bc::BybitCache, pairref::XchAdapter.TradingPairRef)
+    if pairref.epoch == 0
+        return nothing
+    end
+    @assert pairref.epoch == bc.tradingpairepoch "Bybit pair epoch mismatch: pair=$(pairref.pair) ref.epoch=$(pairref.epoch) adapter.epoch=$(bc.tradingpairepoch)"
+    @assert pairref.cfgindex > 0 "Bybit prepared pair reference requires cfgindex > 0: pair=$(pairref.pair) epoch=$(pairref.epoch)"
+    @assert pairref.cfgindex <= length(bc.tradingpairinfo) "Bybit pair cfgindex=$(pairref.cfgindex) exceeds prepared pairs=$(length(bc.tradingpairinfo))"
+    info = bc.tradingpairinfo[pairref.cfgindex]
+    @assert info.pair == pairref.pair "Bybit pair index mismatch: ref.pair=$(pairref.pair) cfgindex=$(pairref.cfgindex) indexed.pair=$(info.pair)"
+    return info
+end
+
 "Return (creating if needed) the successor=>predecessor sequencing map for one simulation cache."
 function _sim_sequencing_for(bc::BybitCache)::Dict{String, String}
     return get!(() -> Dict{String, String}(), _sim_sequencing, bc)
@@ -153,25 +186,23 @@ end
 
 "Return the incrementally maintained orderid => row-index map for the simulation orderbook."
 function _sim_orderindex_for(bc::BybitCache)::Dict{String, Int}
-    idx = get!(() -> Dict{String, Int}(), _sim_order_index, bc)
-    isnothing(bc.orderbook) && (empty!(idx); return idx)
-    @assert length(idx) == nrow(bc.orderbook) "BybitSim order index length=$(length(idx)) must match orderbook rows=$(nrow(bc.orderbook))"
-    return idx
+    isnothing(bc.orderbook) && (empty!(bc.orderindex); return bc.orderindex)
+    @assert length(bc.orderindex) == nrow(bc.orderbook) "BybitSim order index length=$(length(bc.orderindex)) must match orderbook rows=$(nrow(bc.orderbook))"
+    return bc.orderindex
 end
 
 "Return the incrementally maintained open-order row indices for a simulation cache."
 function _sim_openorderindex_for(bc::BybitCache)::Vector{Int}
-    openix = get!(() -> Int[], _sim_open_order_index, bc)
-    isnothing(bc.orderbook) && (empty!(openix); return openix)
-    return openix
+    isnothing(bc.orderbook) && (empty!(bc.openorderindex); return bc.openorderindex)
+    return bc.openorderindex
 end
 
 "Rebuild simulation indexes after initialization or restoring a persisted orderbook."
 function _simrebuildorderindexes!(bc::BybitCache)
     book = bc.orderbook
     @assert !isnothing(book) "BybitSim orderbook must exist when rebuilding indexes"
-    orderidx = get!(() -> Dict{String, Int}(), _sim_order_index, bc)
-    openix = get!(() -> Int[], _sim_open_order_index, bc)
+    orderidx = bc.orderindex
+    openix = bc.openorderindex
     empty!(orderidx)
     empty!(openix)
     for ix in 1:nrow(book)
@@ -264,11 +295,11 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
         pk = String(publickey)
         sk = String(secretkey)
     end
-    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing, Dict{String, Int}(), Int[], UInt(0), NamedTuple[], nothing)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing)
+    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing, Dict{String, Int}(), Int[], UInt(0), NamedTuple[], nothing)
     EnvConfig.setcoinspath!(exchangeid(bc))
 	EnvConfig.setpairquote!("USDT")
     if EnvConfig.configmode == EnvConfig.test
@@ -280,6 +311,7 @@ end
 "Initialize simulation state (assets and orderbook) for BybitSim mode"
 function _init_simulation!(bc::BybitCache)
     _ensure_sim_symboluniverse!(bc)
+    bc.lastpendingdecisiondt = nothing
     if isnothing(bc.assets)
         bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[], collateral=Float32[])
         bc.orderbook = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], lane=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
@@ -818,6 +850,14 @@ function get24h(bc::BybitCache, symbol=nothing)
     end
 end
 
+"Return one simulated ticker using prepared epoch pair metadata."
+function get24h(bc::BybitCache, pairref::XchAdapter.TradingPairRef)
+    info = _preparedpairinfo(bc, pairref)
+    isnothing(info) && return get24h(bc, pairref.pair)
+    price = _sim_lastprice(bc, info.symbol)
+    return (symbol=info.symbol, quotevolume24h=50_000_000f0, pricechangepercent=0f0, lastprice=price, askprice=price * 1.0001f0, bidprice=price * 0.9999f0)
+end
+
 """
 Returns a DataFrame with trading constraints one row per symbol. If symbol is provided the returned DataFrame is limited to that symbol.
 
@@ -1262,10 +1302,11 @@ function _sim_hasopenbracketsibling(bc::BybitCache, symbol::AbstractString, lane
     isnothing(sibling) && return false
     (isnothing(bc.orderbook) || (nrow(bc.orderbook) == 0)) && return false
     sym = uppercase(String(symbol))
-    for row in eachrow(bc.orderbook)
+    for ix in _sim_openorderindex_for(bc)
+        row = bc.orderbook[ix, :]
         (uppercase(String(row.symbol)) == sym) || continue
         (String(row.lane) == sibling) || continue
-        _isopenstatus(String(row.status)) && return true
+        return true
     end
     return false
 end
@@ -1441,10 +1482,11 @@ end
 "Process pending BybitSim orders using candles from each order's `lastcheck` until current reference time."
 function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing)
     isnothing(bc.orderbook) && return nothing
-    size(bc.orderbook, 1) == 0 && return nothing
 
     decisiondt = isnothing(atdt) ? bc.simtime : atdt
     decisiondt = isnothing(decisiondt) ? floor(Dates.now(Dates.UTC), Minute(1)) : floor(decisiondt, Minute(1))
+    bc.lastpendingdecisiondt == decisiondt && return nothing
+    size(bc.orderbook, 1) == 0 && (bc.lastpendingdecisiondt = decisiondt; return nothing)
     refdt = decisiondt
 
     seq = _sim_sequencing_for(bc)
@@ -1566,8 +1608,10 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     end
 
     _simcancelbracketsiblings!(bc, closerows, decisiondt)
-    _simrebalancecollateral!(bc; atdt=decisiondt)
-    _simliquidatemargincall!(bc; atdt=decisiondt)
+    price_by_symbol = Dict{String, Union{Nothing, Float32}}()
+    _simrebalancecollateral!(bc; atdt=decisiondt, price_by_symbol=price_by_symbol)
+    _simliquidatemargincall!(bc; atdt=decisiondt, price_by_symbol=price_by_symbol)
+    bc.lastpendingdecisiondt = decisiondt
     return nothing
 end
 
@@ -1579,6 +1623,7 @@ function _simcancelbracketsiblings!(bc::BybitCache, filledrows, decisiondt::Date
     isempty(filledrows) && return nothing
     (isnothing(bc.orderbook) || (nrow(bc.orderbook) == 0)) && return nothing
 
+    cancelix = Int[]
     for frow in filledrows
         sibling = _bracketsiblinglane(String(frow.lane))
         isnothing(sibling) && continue
@@ -1587,10 +1632,13 @@ function _simcancelbracketsiblings!(bc::BybitCache, filledrows, decisiondt::Date
             row = bc.orderbook[ix, :]
             (uppercase(String(row.symbol)) == sym) || continue
             (String(row.lane) == sibling) || continue
-            _isopenstatus(String(row.status)) || continue
-            _simfinalizeorder!(bc, ix, "Cancelled", decisiondt; rejectreason="bracket sibling filled")
-            delete!(_sim_sequencing_for(bc), String(row.orderid))
+            (ix in cancelix) || push!(cancelix, ix)
         end
+    end
+    for ix in cancelix
+        row = bc.orderbook[ix, :]
+        _simfinalizeorder!(bc, ix, "Cancelled", decisiondt; rejectreason="bracket sibling filled")
+        delete!(_sim_sequencing_for(bc), String(row.orderid))
     end
     return nothing
 end
@@ -1602,7 +1650,12 @@ moves against or in favor of the trade. `:collateral` tracks per-position what i
 earmarked, so this only touches that position's own share of the pooled quote locked/free
 split and leaves other positions' or pending orders' reservations untouched.
 """
-function _simrebalancecollateral!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing)
+function _simcurrentprice!(bc::BybitCache, price_by_symbol::Dict{String, Union{Nothing, Float32}}, symbol::AbstractString, atdt::DateTime)::Union{Nothing, Float32}
+    key = uppercase(String(symbol))
+    return get!(() -> _simcurrentprice(bc, key, atdt), price_by_symbol, key)
+end
+
+function _simrebalancecollateral!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing, price_by_symbol::Dict{String, Union{Nothing, Float32}}=Dict{String, Union{Nothing, Float32}}())
     isnothing(bc.assets) && return nothing
     !hasproperty(bc.assets, :collateral) && return nothing
     decisiondt = isnothing(atdt) ? bc.simtime : atdt
@@ -1619,7 +1672,7 @@ function _simrebalancecollateral!(bc::BybitCache; atdt::Union{Nothing, DateTime}
         qty <= 0f0 && continue
         coin = uppercase(String(bc.assets[ix, :coin]))
         symbol = uppercase(string(coin, quotecoin))
-        price = _simcurrentprice(bc, symbol, decisiondt)
+        price = _simcurrentprice!(bc, price_by_symbol, symbol, decisiondt)
         isnothing(price) && continue
 
         required = qty * price
@@ -1651,7 +1704,7 @@ equity has dropped to zero or below (maintenance-margin breach), mirroring an
 exchange margin call. Without this, an unmonitored short/long can accumulate an
 unbounded unrealized loss since simulated fills never trigger a liquidation.
 """
-function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing)
+function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}=nothing, price_by_symbol::Dict{String, Union{Nothing, Float32}}=Dict{String, Union{Nothing, Float32}}())
     isnothing(bc.assets) && return nothing
     decisiondt = isnothing(atdt) ? bc.simtime : atdt
     isnothing(decisiondt) && return nothing
@@ -1671,7 +1724,7 @@ function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}
         qty <= 0f0 && continue
         side = String(bc.assets[ix, :side])
         symbol = uppercase(string(coin, quotecoin))
-        price = _simcurrentprice(bc, symbol, decisiondt)
+        price = _simcurrentprice!(bc, price_by_symbol, symbol, decisiondt)
         isnothing(price) && continue
         pricebyix[ix] = price
         signedqty = side == "short" ? -qty : qty
@@ -1712,13 +1765,20 @@ function _simforceliquidateposition!(bc::BybitCache, symbol::AbstractString, pos
     hadpendingorder = false
     if !isnothing(bc.orderbook) && (nrow(bc.orderbook) > 0)
         while true
-            ix = findfirst(row -> (uppercase(String(row.symbol)) == uppercase(symbol)) && (Symbol(lowercase(String(row.positionside))) == positionside) && Bool(row.reduceonly) && _isopenstatus(String(row.status)), eachrow(bc.orderbook))
-            isnothing(ix) && break
+            orderix = nothing
+            for ix in _sim_openorderindex_for(bc)
+                row = bc.orderbook[ix, :]
+                if (uppercase(String(row.symbol)) == uppercase(symbol)) && (Symbol(lowercase(String(row.positionside))) == positionside) && Bool(row.reduceonly)
+                    orderix = ix
+                    break
+                end
+            end
+            isnothing(orderix) && break
             hadpendingorder = true
-            row = bc.orderbook[ix, :]
+            row = bc.orderbook[orderix, :]
             cancelledorderid = String(row.orderid)
             _simreleaseorder!(bc, row.symbol, row.side, positionside, true, row.baseqty, row.limitprice; lane=String(row.lane))
-            _simfinalizeorder!(bc, ix, "Cancelled", decisiondt; rejectreason=String(reason))
+            _simfinalizeorder!(bc, orderix, "Cancelled", decisiondt; rejectreason=String(reason))
             delete!(_sim_sequencing_for(bc), cancelledorderid)
         end
     end
@@ -1922,7 +1982,7 @@ end
 _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
 
 "Upsert one close leg independent from any open leg handling."
-function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
+function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
     existing = nothing
     if !isnothing(existing_orderid)
         probe = _simorderrow(bc, String(existing_orderid))
@@ -1939,13 +1999,13 @@ function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol,
     qtychanged = remaining != basequantity
     limitchanged = (isnothing(currentlimit) && !isnothing(limitprice)) || (!isnothing(currentlimit) && isnothing(limitprice)) || (!isnothing(currentlimit) && !isnothing(limitprice) && (currentlimit != limitprice))
     if qtychanged || limitchanged
-        return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice)
+        return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice, pairref=pairref)
     end
     return String(existing.orderid)
 end
 
 "Upsert one open leg independent from any close leg handling."
-function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing)
+function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
     side = Symbol(lowercase(String(positionside)))
     @assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
     orderside = side == :long ? "Buy" : "Sell"
@@ -1965,7 +2025,7 @@ function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, 
     qtychanged = remaining != basequantity
     limitchanged = (isnothing(currentlimit) && !isnothing(limitprice)) || (!isnothing(currentlimit) && isnothing(limitprice)) || (!isnothing(currentlimit) && !isnothing(limitprice) && (currentlimit != limitprice))
     if qtychanged || limitchanged
-        return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice)
+        return amendorder(bc, String(existing.symbol), String(existing.orderid); basequantity=basequantity, limitprice=limitprice, pairref=pairref)
     end
     return String(existing.orderid)
 end
@@ -2008,7 +2068,7 @@ function amendorder(bc::BybitCache, orderid::String; basequantity::Union{Nothing
     return amendorder(bc, String(orderatentry.symbol), orderid; basequantity=basequantity, limitprice=limitprice)
 end
 
-function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing)
+function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantity::Union{Nothing, Real}=nothing, limitprice::Union{Nothing, Real}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
     @assert isnothing(basequantity) ? true : basequantity > 0.0 "amendorder $symbol basequantity of $basequantity cannot be <=0 for order type Limit"
     @assert isnothing(limitprice) ? true : limitprice > 0.0 "amendorder $symbol limitprice of $limitprice cannot be <=0 for order type Limit"
     if !isnothing(bc.orderbook)
@@ -2031,7 +2091,7 @@ function amendorder(bc::BybitCache, symbol::String, orderid::String; basequantit
         end
 
         maker = orderatentry.timeinforce == "PostOnly"
-        now = Bybit.get24h(bc, symbol)
+        now = isnothing(pairref) ? Bybit.get24h(bc, symbol) : Bybit.get24h(bc, pairref)
         changedprice = if maker && isnothing(limitprice)
             orderatentry.side == "Buy" ? now.askprice - syminfo.ticksize : now.bidprice + syminfo.ticksize
         elseif !isnothing(limitprice)
@@ -2226,6 +2286,13 @@ function balances(bc::BybitCache)
     end
 
     return df
+end
+
+"Return one coherent BybitSim balance and position snapshot after pending-order processing."
+function accountsnapshot(bc::BybitCache)
+    isnothing(bc.assets) && return nothing
+    _simprocesspendingorders!(bc)
+    return (balances=_balancescolumnsdf(bc.assets), positions=positionsnapshot(bc))
 end
 
 """

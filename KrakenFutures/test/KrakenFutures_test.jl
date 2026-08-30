@@ -36,6 +36,12 @@ using DataFrames, Dates, EnvConfig, KrakenFutures, Test
     ))
 
     cache = KrakenFutures.KrakenFuturesCache(syminfo, KrakenFutures.KRAKEN_FUTURES_APIREST, "", "")
+    ref = KrakenFutures.XchAdapter.TradingPairRef(testsymbol, UInt(1), UInt(1))
+    KrakenFutures.preparetradingpairs!(cache, [ref])
+    @test cache.tradingpairepoch == UInt(1)
+    @test KrakenFutures._preparedpairinfo(cache, ref).krakenpairname == wssymbol
+    @test isnothing(KrakenFutures._preparedpairinfo(cache, KrakenFutures.XchAdapter.TradingPairRef(testsymbol, UInt(0), UInt(0))))
+    @test_throws AssertionError KrakenFutures._preparedpairinfo(cache, KrakenFutures.XchAdapter.TradingPairRef(testsymbol, UInt(1), UInt(2)))
 
     info = KrakenFutures.symbolinfo(cache, testsymbol)
     @test !isnothing(info)

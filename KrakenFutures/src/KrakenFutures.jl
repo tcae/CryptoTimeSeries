@@ -1,8 +1,8 @@
 module KrakenFutures
 
 using Base64, DataFrames, Dates, Downloads, EnvConfig, HTTP, JSON3, Logging, SHA
-using XchAdapter
-import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
+	using XchAdapter
+	import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, accountsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline
 import XchAdapter: normalize_order_status
 
 # Use HTTP.jl 1.x built-in WebSockets (compatible with Julia 1.11+ Memory-backed buffers).
@@ -423,12 +423,16 @@ const BALANCE_CACHE_TTL = Dates.Second(5)
 """
 Cached KrakenFutures state used by higher-level trading modules.
 """
-struct KrakenFuturesCache <: XchAdapter.XchAdapterCache
+mutable struct KrakenFuturesCache <: XchAdapter.XchAdapterCache
 	syminfodf::Union{Nothing, DataFrame}
 	apirest::String
 	publickey::String
 	secretkey::String
+	tradingpairepoch::UInt
+	tradingpairinfo::Vector{NamedTuple}
 end
+
+KrakenFuturesCache(syminfodf::Union{Nothing, DataFrame}, apirest::String, publickey::String, secretkey::String) = KrakenFuturesCache(syminfodf, apirest, publickey, secretkey, UInt(0), NamedTuple[])
 
 """
 Build a new `KrakenFuturesCache` and optionally preload symbol metadata.
@@ -460,6 +464,34 @@ end
 
 executionorderspec(bc::KrakenFuturesCache, side::Symbol) = _executionorderspec(side)
 exchangeid(bc::KrakenFuturesCache)::String = "KrakenFutures"
+
+"Prepare direct Kraken Futures pair metadata for one Xch trading-pair epoch."
+function preparetradingpairs!(bc::KrakenFuturesCache, pairrefs::Vector{XchAdapter.TradingPairRef})
+	isempty(pairrefs) && (bc.tradingpairepoch = UInt(0); empty!(bc.tradingpairinfo); return nothing)
+	epoch = pairrefs[1].epoch
+	info = NamedTuple[]
+	for ref in pairrefs
+		@assert ref.epoch == epoch && ref.cfgindex > 0 "KrakenFutures pair reference must have matching nonzero epoch/index: pair=$(ref.pair) cfgindex=$(ref.cfgindex) epoch=$(ref.epoch)"
+		@assert ref.cfgindex == length(info) + 1 "KrakenFutures pair references must be ordered by cfgindex: pair=$(ref.pair) cfgindex=$(ref.cfgindex) expected=$(length(info) + 1)"
+		ix = findfirst(==(ref.pair), bc.syminfodf[!, :symbol])
+		@assert !isnothing(ix) "KrakenFutures exchange info missing canonical trading pair=$(ref.pair)"
+		row = bc.syminfodf[ix, :]
+		push!(info, (pair=ref.pair, symbol=String(row.symbol), krakenpairname=String(row.krakenpairname), wsname=String(row.wsname), ticksize=row.ticksize, baseprecision=row.baseprecision, quoteprecision=row.quoteprecision, minbaseqty=row.minbaseqty, minquoteqty=row.minquoteqty, maxleveragebuy=row.maxleveragebuy, maxleveragesell=row.maxleveragesell))
+	end
+	bc.tradingpairepoch = epoch
+	bc.tradingpairinfo = info
+	return nothing
+end
+
+"Return prepared Kraken Futures metadata for a current pair reference."
+function _preparedpairinfo(bc::KrakenFuturesCache, pairref::Union{Nothing, XchAdapter.TradingPairRef})
+	isnothing(pairref) || pairref.epoch == 0 && return nothing
+	@assert pairref.epoch == bc.tradingpairepoch "KrakenFutures pair epoch mismatch: pair=$(pairref.pair) ref.epoch=$(pairref.epoch) adapter.epoch=$(bc.tradingpairepoch)"
+	@assert pairref.cfgindex > 0 && pairref.cfgindex <= length(bc.tradingpairinfo) "KrakenFutures invalid prepared pair index=$(pairref.cfgindex) for pair=$(pairref.pair) prepared=$(length(bc.tradingpairinfo))"
+	info = bc.tradingpairinfo[pairref.cfgindex]
+	@assert info.pair == pairref.pair "KrakenFutures pair index mismatch: ref.pair=$(pairref.pair) cfgindex=$(pairref.cfgindex) indexed.pair=$(info.pair)"
+	return info
+end
 
 "Return latest websocket order snapshot using a cache handle."
 function wsordersnapshot(bc::KrakenFuturesCache)
@@ -2071,7 +2103,7 @@ If `price` is omitted and `maker=true`, the adapter will choose a limit price
 as close as possible to the current spread while remaining post-only so the
 order can qualify for maker fees.
 """
-function _createorder_single!(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, orderLinkId::Union{Nothing, AbstractString}=nothing)
+function _createorder_single!(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, orderLinkId::Union{Nothing, AbstractString}=nothing, venuepair::Union{Nothing, AbstractString}=nothing)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(price) || (price > 0.0) "createorder symbol=$(symbol) price=$(price) must be > 0"
 	@assert lowercase(orderside) in ["buy", "sell"] "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
@@ -2091,7 +2123,7 @@ function _createorder_single!(bc::KrakenFuturesCache, symbol::String, orderside:
 		return nothing
 	end
 
-	pairname = _symbol2pairname(bc, symbol)
+	pairname = isnothing(venuepair) ? _symbol2pairname(bc, symbol) : String(venuepair)
 	if effective_marginleverage > 0
 		limits = marginlimits(bc, symbol)
 		if !marginpermitted(bc, symbol, orderside, effective_marginleverage)
@@ -2253,14 +2285,14 @@ function _advanceicebergsequences!(bc::KrakenFuturesCache, openordersdf::Abstrac
 	return advanced
 end
 
-function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false)
+function createorder(bc::KrakenFuturesCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, venuepair::Union{Nothing, AbstractString}=nothing)
 	spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside) : execution_spec
 	syminfo = symbolinfo(bc, symbol)
-	isnothing(syminfo) && return _createorder_single!(bc, symbol, orderside, basequantity, price, maker; configside=configside, execution_spec=spec, reduceonly=reduceonly)
+	isnothing(syminfo) && return _createorder_single!(bc, symbol, orderside, basequantity, price, maker; configside=configside, execution_spec=spec, reduceonly=reduceonly, venuepair=venuepair)
 	refprice = isnothing(price) ? (maker ? _makerlimitprice(syminfo, get24h(bc, symbol), orderside) : get24h(bc, symbol).lastprice) : price
 	minqty = max((syminfo.minbaseqty), (syminfo.minquoteqty) / max((refprice), 1e-9))
 	chunk, split = _icebergchunkamount(basequantity, refprice, minqty, spec.max_quote)
-	first_order = _createorder_single!(bc, symbol, orderside, chunk, price, maker; configside=configside, execution_spec=spec, reduceonly=reduceonly)
+	first_order = _createorder_single!(bc, symbol, orderside, chunk, price, maker; configside=configside, execution_spec=spec, reduceonly=reduceonly, venuepair=venuepair)
 	if !isnothing(first_order) && split
 		_seticebergstate!(String(first_order.orderid), Dict{Symbol, Any}(
 			:current_order_id => String(first_order.orderid),
@@ -2287,17 +2319,22 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true)
+function closeorder(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, venuepair::Union{Nothing, AbstractString}=nothing)
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Sell" : "Buy"
-	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly)
+	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, venuepair=venuepair)
 end
 
 _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
 
 "Upsert one close leg independent from any open leg handling."
-function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
+function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
+	prepared = _preparedpairinfo(bc, pairref)
+	if !isnothing(prepared)
+		@assert symbol == prepared.symbol "KrakenFutures prepared pair symbol mismatch: provided=$(symbol) indexed=$(prepared.symbol) pair=$(prepared.pair)"
+		symbol = prepared.symbol
+	end
 	existing = nothing
 	if !isnothing(existing_orderid)
 		probe = order(bc, String(existing_orderid))
@@ -2306,7 +2343,7 @@ function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside:
 		end
 	end
 	if isnothing(existing)
-		return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly)
+		return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, venuepair=isnothing(prepared) ? nothing : prepared.krakenpairname)
 	end
 
 	remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
@@ -2320,7 +2357,12 @@ function upsertcloseorder!(bc::KrakenFuturesCache, symbol::String, positionside:
 end
 
 "Upsert one open leg independent from any close leg handling."
-function upsertopenorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing)
+function upsertopenorder!(bc::KrakenFuturesCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
+	prepared = _preparedpairinfo(bc, pairref)
+	if !isnothing(prepared)
+		@assert symbol == prepared.symbol "KrakenFutures prepared pair symbol mismatch: provided=$(symbol) indexed=$(prepared.symbol) pair=$(prepared.pair)"
+		symbol = prepared.symbol
+	end
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Buy" : "Sell"
@@ -2332,7 +2374,7 @@ function upsertopenorder!(bc::KrakenFuturesCache, symbol::String, positionside::
 		end
 	end
 	if isnothing(existing)
-		return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly)
+		return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, venuepair=isnothing(prepared) ? nothing : prepared.krakenpairname)
 	end
 
 	remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
@@ -2423,8 +2465,8 @@ Parses the Kraken Futures `/accounts` response which has a nested Dict structure
 
 The function aggregates cash account balances and adds flex margin info.
 """
-function balances(bc::KrakenFuturesCache)
-	df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[])
+function _balanceswithpositions(bc::KrakenFuturesCache)
+	df = DataFrame(coin=AbstractString[], locked=Float32[], free=Float32[], borrowed=Float32[], accruedinterest=Float32[], position=Bool[])
 	!_hascredentials(bc) && return df
 
 	# WS balances are intentionally disabled for KrakenFutures for now.
@@ -2458,7 +2500,7 @@ function balances(bc::KrakenFuturesCache)
 			for (coin, val) in balmap
 				free = _num(val, 0f0)
 				free == 0f0 && continue
-				push!(df, (coin=_normalizeasset(uppercase(String(coin))), locked=0f0, free=free, borrowed=0f0, accruedinterest=0f0))
+				push!(df, (coin=_normalizeasset(uppercase(String(coin))), locked=0f0, free=free, borrowed=0f0, accruedinterest=0f0, position=false))
 			end
 		end
 	end
@@ -2470,7 +2512,7 @@ function balances(bc::KrakenFuturesCache)
 		locked = _num(_tryget(flex, ["initialMargin", "initialMarginWithOrders"], 0), 0f0)
 		total = available + locked
 		if total > 0f0
-			push!(df, (coin="USD", locked=locked, free=available, borrowed=0f0, accruedinterest=0f0))
+			push!(df, (coin="USD", locked=locked, free=available, borrowed=0f0, accruedinterest=0f0, position=false))
 		end
 	end
 
@@ -2505,9 +2547,9 @@ function balances(bc::KrakenFuturesCache)
 				qty <= 0f0 && continue
 
 				if islong
-					push!(df, (coin=basecoin, locked=0f0, free=qty, borrowed=0f0, accruedinterest=0f0))
+					push!(df, (coin=basecoin, locked=0f0, free=qty, borrowed=0f0, accruedinterest=0f0, position=true))
 				elseif isshort
-					push!(df, (coin=basecoin, locked=0f0, free=0f0, borrowed=qty, accruedinterest=0f0))
+					push!(df, (coin=basecoin, locked=0f0, free=0f0, borrowed=qty, accruedinterest=0f0, position=true))
 				end
 			end
 		end
@@ -2522,6 +2564,25 @@ function balances(bc::KrakenFuturesCache)
 	end
 
 	return df
+end
+
+"Return one Kraken Futures account snapshot using position rows parsed during the balances refresh."
+function accountsnapshot(bc::KrakenFuturesCache)
+	balancesdf = _balanceswithpositions(bc)
+	positionsdf = DataFrame(coin=String[], long_qty=Float32[], short_qty=Float32[])
+	if :position in propertynames(balancesdf)
+		for row in eachrow(balancesdf)
+			Bool(row.position) || continue
+			push!(positionsdf, (coin=String(row.coin), long_qty=max(0f0, (row.free)), short_qty=max(0f0, (row.borrowed))))
+		end
+		return (balances=select(balancesdf, Not(:position)), positions=positionsdf)
+	end
+	return (balances=balancesdf, positions=positionsdf)
+end
+
+"Return Kraken Futures balances without internal position-row markers."
+function balances(bc::KrakenFuturesCache)
+	return select(_balanceswithpositions(bc), Not(:position))
 end
 
 """

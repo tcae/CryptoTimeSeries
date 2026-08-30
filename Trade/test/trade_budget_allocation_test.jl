@@ -28,7 +28,7 @@ function build_case(bases::Vector{String}; equity::Float32, closeprice::Float32,
     resolved = TradingStrategy.strategyconfig("046")
     strategy = TradingStrategy.StrategyConfig(classifier=resolved.classifier, algorithm=contract_algorithm!)
     tc = Trade.TradeCache(xc=xc, strategy=strategy, trademode=Trade.buysell, stoplosspct=0.05)
-    tc.cfg = DataFrame(basecoin=bases, openenabled=fill(true, length(bases)), closeenabled=fill(true, length(bases)))
+    tc.cfg = DataFrame(basecoin=bases, pair=[Xch.tradingpairkey(base, QUOTE) for base in bases], openenabled=fill(true, length(bases)), closeenabled=fill(true, length(bases)))
     tc.mc[:minorderquote] = minorderquote
     tc.mc[:maxbudgetquote] = maxbudgetquote
 

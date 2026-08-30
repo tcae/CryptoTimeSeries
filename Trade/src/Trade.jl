@@ -548,12 +548,37 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     return tc
 end
 
-function trade!(cache::TradeCache, tradesdfdict::Dict)
+"Build the canonical pair metadata plan shared by one trading tick."
+function _tradingtickpairplans(cache::TradeCache)
+    plans = NamedTuple{(:cfgindex, :base, :pairref), Tuple{Int, String, Xch.TradingPairRef}}[]
+    sizehint!(plans, size(cache.cfg, 1))
+    for cfgindex in 1:size(cache.cfg, 1)
+        pairref = Xch.tradingpairref(cache.xc, UInt(cfgindex))
+        pairinfo = Xch.tradingpairinfo(cache.xc, pairref)
+        push!(plans, (cfgindex=cfgindex, base=pairinfo.basecoin, pairref=pairref))
+    end
+    return plans
+end
+
+"Build a compatibility plan for direct `trade!` callers without prepared pair metadata."
+function _tradingtickpairplans(cache::TradeCache, ::Nothing)
+    plans = NamedTuple{(:cfgindex, :base, :pairref), Tuple{Int, String, Nothing}}[]
+    sizehint!(plans, size(cache.cfg, 1))
+    for cfgindex in 1:size(cache.cfg, 1)
+        push!(plans, (cfgindex=cfgindex, base=uppercase(String(cache.cfg[cfgindex, :basecoin])), pairref=nothing))
+    end
+    return plans
+end
+
+function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
     isempty(tradesdfdict) && return nothing # every configured pair is data-gapped this tick
+    plans = isnothing(pairplans) ? _tradingtickpairplans(cache, nothing) : pairplans
     opencount = 0
     closequote = posquote = 0f0
-    for basecfg in eachrow(cache.cfg)
-        base = uppercase(String(basecfg.basecoin))
+    for plan in plans
+        cfgix = plan.cfgindex
+        basecfg = cache.cfg[cfgix, :]
+        base = plan.base
         # A pair absent from tradesdfdict had no fresh candle this tick (data gap or exchange
         # downtime): leave its resting orders/position untouched rather than reprocessing a
         # stale row.
@@ -625,8 +650,10 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
     tradeamount = opencount > 0 ? (cappedquote / ordercount) : 0f0
     # (verbosity >= 3) && println("$(tradetime(cache)) trade sizing: opencount=$(opencount), freequote=$(round(freequote, digits=4)), freemargin=$(round(freemargin, digits=4)), closequote=$(round(closequote, digits=4)), equity=$(round(equity, digits=4)), cappedquote=$(round(cappedquote, digits=4)), tradeamount=$(round(tradeamount, digits=4))")
 
-    for basecfg in eachrow(cache.cfg)
-        base = uppercase(String(basecfg.basecoin))
+    for plan in plans
+        cfgix = plan.cfgindex
+        basecfg = cache.cfg[cfgix, :]
+        base = plan.base
         haskey(tradesdfdict, base) || continue
         tradesix = tradesdfdict[base].rowix
         tradesdf = tradesdfdict[base].tradesdf
@@ -684,7 +711,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict)
         end
 
         TSM.settrades_tsmstate!(tradesdf, tradesix, "xch")
-        Xch.process_order_request(cache.xc, tradesdf, tradesix)
+        Xch.process_order_request(cache.xc, tradesdf, tradesix; pairref=plan.pairref)
     end
 
 end
@@ -775,6 +802,7 @@ function _maybe_refresh_tradeselection!(cache::TradeCache; assets::Union{Nothing
     (verbosity >= 2) && println("\n$(tradetime(cache)): start reassessing trading strategy")
     tradeselection!(cache, assets_df[!, :coin]; datetime=cache.xc.currentdt, updatecache=true)
     cache.cfg = cache.cfg[(cache.cfg[!, :openenabled] .|| cache.cfg[!, :closeenabled]), :]
+    Xch.preparetradingpairs!(cache.xc, String.(cache.cfg[!, :pair]))
     _mark_tradeselection_refreshed!(cache)
     (verbosity >= 2) && @info "$(tradetime(cache)) reassessed trading strategy: $(_summarize_cfg(cache.cfg))"
     return true
@@ -790,14 +818,16 @@ Called by the loop runners once per iterate step.
 function _tradestep!(cache::TradeCache)
     (verbosity > 3) && println("startdt=$(cache.xc.startdt), currentdt=$(cache.xc.currentdt), enddt=$(cache.xc.enddt)")
 
-    bal = Xch.balancessnapshot(cache.xc; force_refresh=true, max_age=Minute(0), ignoresmallvolume=false)
-    acct = Xch.account_status(cache.xc; force_refresh=true, ttl_seconds=0, balancesdf=bal.snapshot, require_holding_valuation=false)
-    syncpairs = String.(cache.cfg[!, :pair])
-    rowsbybase = Xch.sync_latest_trades_rows!(cache.xc, syncpairs; acct=acct)
+    pairplans = _tradingtickpairplans(cache)
+    pairrefs = Xch.TradingPairRef[plan.pairref for plan in pairplans]
+    rowsbybase = Xch.sync_latest_trades_rows!(cache.xc, pairrefs)
     # rowsbybase is a Dict[base] => (tradesdf, rowix, ohlcv) where rowix is the index of the current trade row.
+    # The sync function owns the per-tick account/position snapshot and uses it for both
+    # order-status reconciliation and trade-row materialization. Only a scheduled strategy
+    # refresh pulls additional portfolio assets explicitly, because that happens once per epoch.
 
-    trade!(cache, rowsbybase)
-    _maybe_refresh_tradeselection!(cache; assets=acct.assets)
+    trade!(cache, rowsbybase; pairplans=pairplans)
+    _maybe_refresh_tradeselection!(cache)
     return nothing
 end
 
@@ -808,6 +838,7 @@ function _ensure_tradeloop_initialized!(cache::TradeCache)
         (verbosity >= 2) && print("\r$(tradetime(cache)): start calculating trading strategy on the fly")
         tradeselection!(cache, assets[!, :coin]; datetime=cache.xc.startdt)
         cache.cfg = cache.cfg[(cache.cfg[!, :openenabled] .|| cache.cfg[!, :closeenabled]), :]
+        Xch.preparetradingpairs!(cache.xc, String.(cache.cfg[!, :pair]))
         (verbosity > 2) && @info "$(tradetime(cache)) initial trading strategy: $(cache.cfg)"
     end
 end
@@ -833,11 +864,18 @@ Respects `pause!`/`resume!`/`stop!` loop control requests.
 """
 function _run_tradeloop!(cache::TradeCache)
     _setloopstate!(cache, loop_running)
+    lastprogressdate = nothing
     try
         for c in cache.xc
             st = _waitforactive_loopstate!(cache)
             (st == loop_stopping) && break
-            print("\r$(tradetime(cache))             ")
+            currentdt = cache.xc.currentdt
+            @assert !isnothing(currentdt) "trading loop progress requires an initialized current datetime"
+            currentdate = Date(currentdt)
+            if isnothing(lastprogressdate) || (currentdate != lastprogressdate)
+                print("\r$(tradetime(cache))")
+                lastprogressdate = currentdate
+            end
             _tradestep!(cache)
         end
     catch ex

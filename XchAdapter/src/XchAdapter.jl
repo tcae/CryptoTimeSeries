@@ -5,6 +5,13 @@ using Dates
 "Defines the shared exchange-cache interface root type used across adapters and Xch."
 abstract type XchAdapterCache end
 
+"Reference to one Trade configuration row during a prepared trading-pair epoch."
+struct TradingPairRef
+	pair::String
+	cfgindex::UInt
+	epoch::UInt
+end
+
 function _required_method_error(ac::XchAdapterCache, methodname::Symbol)
 	throw(ArgumentError("adapter type $(typeof(ac)) must implement $(methodname)"))
 end
@@ -19,6 +26,8 @@ get24h(ac::XchAdapterCache) = _required_method_error(ac, :get24h)
 get24h(ac::XchAdapterCache, symbol) = _required_method_error(ac, :get24h)
 balances(ac::XchAdapterCache) = _required_method_error(ac, :balances)
 positionsnapshot(ac::XchAdapterCache) = _required_method_error(ac, :positionsnapshot)
+"Return an atomic `(balances, positions)` adapter snapshot when supported, otherwise `nothing`."
+accountsnapshot(ac::XchAdapterCache) = nothing
 emptyorders(ac::XchAdapterCache) = _required_method_error(ac, :emptyorders)
 
 openorders(ac::XchAdapterCache; symbol=nothing, orderid=nothing, orderLinkId=nothing) = _required_method_error(ac, :openorders)
@@ -36,6 +45,7 @@ amendorder(ac::XchAdapterCache, orderid::String; basequantity::Union{Nothing, Re
 servertime(ac::XchAdapterCache) = _required_method_error(ac, :servertime)
 symboltoken(ac::XchAdapterCache, basecoin::AbstractString, quotecoin::AbstractString) = _required_method_error(ac, :symboltoken)
 executionorderspec(ac::XchAdapterCache, side::Symbol) = _required_method_error(ac, :executionorderspec)
+preparetradingpairs!(ac::XchAdapterCache, pairrefs::Vector{TradingPairRef}) = nothing
 
 """
 Normalize a raw adapter order status into Xch status vocabulary.
@@ -59,10 +69,10 @@ accountcapacity(ac::XchAdapterCache) = nothing
 closeorder(ac::XchAdapterCache, symbol::String, side::Symbol, basequantity, limitprice, maker::Bool; reduceonly::Bool=true) = nothing
 
 "upsert = update existing or insert new close order. `lane` names the trades lane (`lc`/`lcsl`/`sc`/`scsl`) so adapters can pair the two legs of a close bracket."
-upsertcloseorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing) = _required_method_error(ac, :upsertcloseorder!)
+upsertcloseorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, TradingPairRef}=nothing) = _required_method_error(ac, :upsertcloseorder!)
 
 "upsert = update existing or insert new open order"
-upsertopenorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing) = _required_method_error(ac, :upsertopenorder!)
+upsertopenorder!(ac::XchAdapterCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, TradingPairRef}=nothing) = _required_method_error(ac, :upsertopenorder!)
 
 "ensure order sequence: predecessor order must be submitted before successor order is submitted"
 directsequence!(ac::XchAdapterCache, predecessor_orderid::AbstractString, successor_orderid::AbstractString) = _required_method_error(ac, :directsequence!)

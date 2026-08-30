@@ -12,7 +12,7 @@ Usage:
 import Pkg
 Pkg.activate(joinpath(@__DIR__, ".."), io=devnull)
 
-using Dates, Statistics, Printf, Logging
+using Dates, Statistics, Printf, Logging, Profile
 using DataFrames
 using CategoricalArrays
 using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, Targets, TSM
@@ -112,6 +112,8 @@ const HAS_TEST = "test" in ARGS
 const HAS_TRAIN = "train" in ARGS
 @assert !(HAS_TEST && HAS_TRAIN) "mode flags are exclusive; use only one of test or train"
 const TESTMODE = !HAS_TRAIN  # default true (test), matches previous hardcoded behavior
+const PROFILE_TRADE_LOOP = lowercase(strip(get(ENV, "TRADESIM_PROFILE_TRADE_LOOP", "false"))) in ("1", "true", "yes", "on")
+const MEASURE_TRADE_LOOP = lowercase(strip(get(ENV, "TRADESIM_MEASURE_TRADE_LOOP", "false"))) in ("1", "true", "yes", "on")
 
 # Backtest time range (UTC).
 const BACKTEST_STARTDT = begin
@@ -726,6 +728,7 @@ end
 function _reset_replay_runtime!(cache::Trade.TradeCache, quote_coin::AbstractString, initial_quote_balance::Real)
     cache.xc.tsm = TSM.TsmCache()
     TSM.ensuretradesschema!(cache.xc.tsm, TSM.tradesdf_all_contributors())
+    empty!(cache.xc.lastsyncedopentime)
 
     if cache.xc.bc isa Bybit.BybitCache
         bc = cache.xc.bc
@@ -772,6 +775,7 @@ function _prepare_replay_group!(cache::Trade.TradeCache, groupdf::DataFrame, quo
         closeenabled=Bool[true],
         blacklisted=Bool[false],
     )
+    Xch.preparetradingpairs!(cache.xc, String.(cache.cfg[!, :pair]))
 
     seeddf = select(groupdf, :opentime, :pair, :set, :rangeid, :high, :low, :close, :label, :score)
     TSM.settrades!(cache.xc.tsm, pair, seeddf)
@@ -911,6 +915,7 @@ function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFram
         closeenabled=fill(true, length(pairs)),
         blacklisted=fill(false, length(pairs)),
     )
+    Xch.preparetradingpairs!(cache.xc, String.(cache.cfg[!, :pair]))
     return (pairs=pairs, startdt=overall_startdt, enddt=overall_enddt)
 end
 
@@ -926,6 +931,7 @@ function run_replay_continuous!(cache::Trade.TradeCache;
     startdt::Union{Nothing, DateTime}=nothing,
     enddt::Union{Nothing, DateTime}=nothing,
     resume::Bool=true,
+    profile_trade_loop::Bool=false,
 )
     resultsdf, preddf = _load_replay_source(logsubfolder, BACKTEST_BASES)
     @assert nrow(resultsdf) > 0 "replay source results/all is empty"
@@ -964,7 +970,16 @@ function run_replay_continuous!(cache::Trade.TradeCache;
 
     # skip_init=true keeps the replay-provided cfg and avoids tradeselection rebuild.
     try
-        Trade.run_backtest!(cache; skip_init=true)
+        if profile_trade_loop
+            Profile.clear()
+            @profile Trade.run_backtest!(cache; skip_init=true)
+            Profile.print(format=:flat, C=true, sortedby=:count, maxdepth=12)
+        elseif MEASURE_TRADE_LOOP
+            measurement = @timed Trade.run_backtest!(cache; skip_init=true)
+            println("trade loop measurement: elapsed_seconds=$(round(measurement.time, digits=3)) allocated_bytes=$(measurement.bytes) gc_seconds=$(round(measurement.gctime, digits=3))")
+        else
+            Trade.run_backtest!(cache; skip_init=true)
+        end
     finally
         _save_tradesim_checkpoint!(cache)
     end
@@ -1213,11 +1228,22 @@ alltrades, allfills = if USE_PARTITIONS
         enddt=run_enddt,
     )
 else
+    if PROFILE_TRADE_LOOP
+        run_replay_continuous!(cache;
+            logsubfolder=REPLAY_SOURCE_SUBFOLDER,
+            quotecoin=QUOTE_COIN,
+            startdt=run_startdt,
+            enddt=run_enddt,
+            resume=false,
+        )
+    end
     run_replay_continuous!(cache;
         logsubfolder=REPLAY_SOURCE_SUBFOLDER,
         quotecoin=QUOTE_COIN,
         startdt=run_startdt,
         enddt=run_enddt,
+        resume=!(PROFILE_TRADE_LOOP || MEASURE_TRADE_LOOP),
+        profile_trade_loop=PROFILE_TRADE_LOOP,
     )
 end
 _validate_tradesim_replay_result!(alltrades)

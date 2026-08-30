@@ -4,7 +4,7 @@ using Dates
 using DataFrames
 using CategoricalArrays: CategoricalVector
 
-using Bybit, EnvConfig, Ohlcv, Xch, Targets
+using Bybit, EnvConfig, Ohlcv, Xch, XchAdapter, Targets
 using TSM
 
 function _trade_lo_amount(df::DataFrame)::DataFrame
@@ -33,6 +33,61 @@ function _trade_sc_amount(df::DataFrame)::DataFrame
         df[!, :sc_amount] = fill(0f0, nrow(df))
     end
     return df
+end
+
+@testset "Xch sync base planning normalizes canonical pairs once" begin
+    quotecoin = uppercase(String(EnvConfig.pairquote))
+    bases = Xch._sync_basekeys(["btcusdt", "ETHUSDT", "BTCUSDT", "QUOTE", "  "], quotecoin)
+    @test bases == ["BTC", "ETH"]
+    @test Xch._sync_basekeys(nothing, quotecoin) == String[]
+end
+
+@testset "Xch prepared trading-pair references enforce epoch identity" begin
+    EnvConfig.init(EnvConfig.test)
+    xc = Xch.XchCache(exchange=Xch.EXCHANGE_BYBITSIM)
+    refs = Xch.preparetradingpairs!(xc, ["SINEUSDT"])
+    ref = only(refs)
+    bc = Xch.rawcache(xc.bc)
+
+    @test ref.cfgindex == UInt(1)
+    @test ref.epoch == xc.tradingpairepoch == bc.tradingpairepoch
+    @test bc.tradingpairinfo[ref.cfgindex].pair == ref.pair
+    @test isnothing(Bybit._preparedpairinfo(bc, XchAdapter.TradingPairRef("SINEUSDT", UInt(0), UInt(0))))
+
+    Xch.preparetradingpairs!(xc, ["SINEUSDT"])
+    @test_throws AssertionError Bybit._preparedpairinfo(bc, ref)
+end
+
+@testset "Xch sync_latest_trades_rows! accepts prepared pair references" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime("2025-01-01T00:00:00")
+    enddt = startdt + Dates.Day(1)
+    currentdt = startdt + Dates.Minute(2)
+
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote)
+    Xch.addbase!(xc, "SINE", startdt, enddt)
+    refs = Xch.preparetradingpairs!(xc, ["SINEUSDT"])
+    pairinfo = Xch.tradingpairinfo(xc, only(refs))
+    Xch.setcurrenttime!(xc, currentdt)
+
+    bc = Xch.rawcache(xc.bc)
+    bc.assets = DataFrame(
+        coin=String[EnvConfig.pairquote, "SINE"],
+        free=Float32[1_000f0, 0.25f0],
+        locked=Float32[0f0, 0f0],
+        borrowed=Float32[0f0, 0f0],
+        accruedinterest=Float32[0f0, 0f0],
+    )
+    empty!(bc.orderbook)
+    Bybit._simrebuildorderindexes!(bc)
+
+    rowsbybase = Xch.sync_latest_trades_rows!(xc, refs)
+
+    @test pairinfo.pair == "SINEUSDT"
+    @test pairinfo.basecoin == "SINE"
+    @test haskey(rowsbybase, pairinfo.basecoin)
+    @test rowsbybase["SINE"].tradesdf[rowsbybase["SINE"].rowix, :pair] == pairinfo.pair
 end
 
 @testset "Xch sync_latest_trades_rows! uses current cache snapshots" begin
@@ -193,6 +248,17 @@ end
     @test ethrow[ethrowix, :lp_amount] == 0.75f0
     @test ethrow[ethrowix, :sp_amount] == 0f0
     @test ethrow[ethrowix, :lastopentrade] == currentdt - Dates.Minute(1)
+end
+
+@testset "TSM trades row lookup reuses the prepared row without forced ensure" begin
+    EnvConfig.init(EnvConfig.test)
+    startdt = DateTime("2025-01-01T00:00:00")
+    xc = Xch.XchCache(startdt=startdt, enddt=startdt + Dates.Day(1), exchange=Xch.EXCHANGE_BYBITSIM)
+    currentdt = startdt + Dates.Minute(5)
+    TSM.preparetradesepoch!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt; startdt=startdt, epochminutes=30)
+    rowix = TSM.tradesrowindex(xc.tsm, "BTC", EnvConfig.pairquote, currentdt)
+    @test !isnothing(rowix)
+    @test rowix == findfirst(==(currentdt), TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)[!, :opentime])
 end
 
 @testset "Xch sync_latest_trades_rows! appends row when OHLCV advanced" begin
