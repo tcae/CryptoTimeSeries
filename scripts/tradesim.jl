@@ -981,7 +981,15 @@ function run_replay_continuous!(cache::Trade.TradeCache;
             Trade.run_backtest!(cache; skip_init=true)
         end
     finally
-        _save_tradesim_checkpoint!(cache)
+        # Never persist the state of a crashed loop: every later run would resume into the
+        # same failing minute. A user interrupt still checkpoints, since that is a clean
+        # between-tick stop and resuming from it is the point of the checkpoint.
+        looperror = get(cache.mc, :loop_error, nothing)
+        if isnothing(looperror)
+            _save_tradesim_checkpoint!(cache)
+        else
+            @warn "trade loop failed; keeping the previous checkpoint so the next run does not resume into the failure" error=sprint(showerror, looperror)
+        end
     end
     finaldt = cache.xc.currentdt
 

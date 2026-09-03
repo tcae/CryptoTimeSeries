@@ -313,7 +313,7 @@ function _init_simulation!(bc::BybitCache)
     _ensure_sim_symboluniverse!(bc)
     bc.lastpendingdecisiondt = nothing
     if isnothing(bc.assets)
-        bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[], collateral=Float32[])
+        bc.assets = DataFrame(coin=String31[], side=String7[], free=Float32[], locked=Float32[], collateral=Float32[], proceeds=Float32[])
         bc.orderbook = DataFrame(orderid=String[], symbol=String[], side=String[], positionside=String[], lane=String[], baseqty=Float32[], ordertype=String[], isLeverage=Bool[], timeinforce=String[], limitprice=Float32[], avgprice=Float32[], executedqty=Float32[], status=String[], created=DateTime[], updated=DateTime[], rejectreason=String[], lastcheck=DateTime[], marginleverage=Int32[], reduceonly=Bool[])
         _simrebuildorderindexes!(bc)
     end
@@ -361,7 +361,7 @@ function seedportfolio!(bc::BybitCache, coin::AbstractString, free::Real; locked
 
     ix = findfirst(((bc.assets[!, :coin] .== coinup) .& (bc.assets[!, :side] .== String(laneside))))
     if isnothing(ix)
-        row = (coin=coinup, side=String(laneside), free=(free), locked=(locked), collateral=0f0)
+        row = (coin=coinup, side=String(laneside), free=(free), locked=(locked), collateral=0f0, proceeds=0f0)
         push!(bc.assets, row; cols=:intersect)
     else
         bc.assets[ix, :free] = (free)
@@ -1323,7 +1323,7 @@ function _ensureholdingrow!(bc::BybitCache, coin::AbstractString, side::Abstract
     sideraw = String(side)
     ix = findfirst(((bc.assets[!, :coin] .== coinup) .& (bc.assets[!, :side] .== sideraw)))
     if isnothing(ix)
-        row = (coin=coinup, side=sideraw, free=0f0, locked=0f0, collateral=0f0)
+        row = (coin=coinup, side=sideraw, free=0f0, locked=0f0, collateral=0f0, proceeds=0f0)
         push!(bc.assets, row; cols=:intersect)
         return lastindex(bc.assets[!, :coin])
     end
@@ -1409,25 +1409,20 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
         bc.assets[pix, :locked] -= release
         quote_flow = release * fillprice
         if positionside == :short
-            # The pooled qix.locked backs every open short's collateral, not just this
-            # one. Release only this position's own tracked collateral share (kept
-            # mark-to-market by _simrebalancecollateral!) from the pool, then settle the
-            # realized P&L (collateral share vs actual buyback notional) via free. This
-            # keeps other still-open shorts' reserved collateral untouched.
-            released_collateral = if hasproperty(bc.assets, :collateral) && (haslane_qty > 0f0)
-                bc.assets[pix, :collateral] * (release / haslane_qty)
-            else
-                quote_flow
-            end
+            # Release this position's own share of the pooled quote lock - both its
+            # mark-to-market margin and the sale proceeds credited at open - back to free,
+            # then pay the buyback out of free. Net wallet change is the realized P&L
+            # (proceeds - buyback notional). Other positions' reservations stay untouched.
+            fraction = haslane_qty > 0f0 ? (release / haslane_qty) : 1f0
+            released_collateral = hasproperty(bc.assets, :collateral) ? bc.assets[pix, :collateral] * fraction : quote_flow
             hasproperty(bc.assets, :collateral) && (bc.assets[pix, :collateral] -= released_collateral)
-            locked_use = min(bc.assets[qix, :locked], released_collateral)
+            released_proceeds = hasproperty(bc.assets, :proceeds) ? bc.assets[pix, :proceeds] * fraction : 0f0
+            hasproperty(bc.assets, :proceeds) && (bc.assets[pix, :proceeds] -= released_proceeds)
+            unlock = released_collateral + released_proceeds
+            locked_use = min(bc.assets[qix, :locked], unlock)
             bc.assets[qix, :locked] -= locked_use
-            residual = released_collateral - locked_use
-            if residual > 0f0
-                bc.assets[qix, :free] -= residual
-            end
-            pnl = released_collateral - quote_flow
-            bc.assets[qix, :free] += pnl
+            bc.assets[qix, :free] += locked_use
+            bc.assets[qix, :free] -= quote_flow
         else
             bc.assets[qix, :free] += quote_flow
         end
@@ -1437,14 +1432,22 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
     # Open: add executed quantity to the position lane.
     cost = baseqty * fillprice
     if positionside == :short
-        # Short open releases the reservation made at order placement (which may
-        # differ from the fill-price notional), then credits the fill proceeds as
-        # quote collateral. Without the release this double-counted the notional.
+        # Short open releases the reservation made at order placement (which may differ from
+        # the fill-price notional), then locks the fill notional twice over: once as the
+        # mark-to-market margin (`:collateral`, kept current by _simrebalancecollateral!) and
+        # once as the sale proceeds (`:proceeds`) that the account receives for the borrowed
+        # base. Crediting the proceeds is what makes the position's value conserved: without
+        # it the buyback at close consumed cash that was never received, so every short
+        # permanently destroyed its own notional.
         release = min(bc.assets[qix, :locked], cost)
         bc.assets[qix, :locked] -= release
         bc.assets[pix, :free] += baseqty
         bc.assets[qix, :locked] += cost
         hasproperty(bc.assets, :collateral) && (bc.assets[pix, :collateral] += cost)
+        if hasproperty(bc.assets, :proceeds)
+            bc.assets[qix, :locked] += cost
+            bc.assets[pix, :proceeds] += cost
+        end
         return nothing
     end
 
@@ -2345,10 +2348,9 @@ function accountcapacity(bc::BybitCache)
         end
     end
 
-    # Equity is wallet cash plus the current position mark-to-market. This keeps the
-    # simulation aligned with the usual account view: short positions show up as a negative
-    # mark-to-market contribution rather than as an immediate deduction of the entire notional
-    # from the free quote bucket.
+    # Equity is wallet cash plus the current position mark-to-market. A short's sale proceeds
+    # are credited into the wallet at fill (see _simapplypendingfill!), so the borrowed
+    # quantity is subtracted here as the offsetting liability.
     equity_quote = wallet_quote + position_quote
     # Keep equity conservative but not below immediately available quote cash.
     equity_quote = max(equity_quote, quotefree)

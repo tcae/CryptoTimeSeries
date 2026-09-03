@@ -665,6 +665,9 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
         (tradesrow.sp_amount > 0f0) && TSM.settrades_amount!(tradesdf, tradesix, shortclose, tradesrow.sp_amount)
 
         if tradesrow.label in [longopen, longstrongopen]
+            # A resting short-open order from an earlier tick carries so_amount forward; this
+            # tick decided the opposite side, so that intent is stale.
+            TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
             if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
                 TSM.settrades_amount!(tradesdf, tradesix, longopen, min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close))
                 if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
@@ -687,6 +690,8 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
                 TSM.settrades_label!(tradesdf, tradesix, shortclose)
             end
         elseif tradesrow.label in [shortstrongopen, shortopen]
+            # Mirror of the long branch: drop a carried-forward long-open intent.
+            TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
             if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
                 TSM.settrades_amount!(tradesdf, tradesix, shortopen, min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close))
                 if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
@@ -864,6 +869,9 @@ Respects `pause!`/`resume!`/`stop!` loop control requests.
 """
 function _run_tradeloop!(cache::TradeCache)
     _setloopstate!(cache, loop_running)
+    # Cleared per run; set to the exception when a tick fails so callers can tell a completed
+    # run from an aborted one (the loop itself swallows the exception to still report a summary).
+    cache.mc[:loop_error] = nothing
     lastprogressdate = nothing
     try
         for c in cache.xc
@@ -882,6 +890,7 @@ function _run_tradeloop!(cache::TradeCache)
         if isa(ex, InterruptException)
             (verbosity >= 0) && println("\nCtrl+C pressed within tradeloop")
         else
+            cache.mc[:loop_error] = ex
             (verbosity >= 0) && @error "exception=$ex"
             bt = catch_backtrace()
             for ptr in bt

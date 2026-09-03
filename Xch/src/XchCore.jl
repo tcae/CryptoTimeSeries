@@ -2135,6 +2135,16 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer; p
         end
 
         existing_openid = _existing_orderid(tradesdf[ix, idcol])
+        # Only one open order per pair: a resting open order on the other side is a stale
+        # intent from an earlier tick and would otherwise still fill against this position.
+        oppositeopen = action == :long_open ? (:so_id, :so_status, :so_amount) : (:lo_id, :lo_status, :lo_amount)
+        staleopenid = _existing_orderid(tradesdf[ix, oppositeopen[1]])
+        if !isnothing(staleopenid) && _orderstillopen(xc, staleopenid)
+            cancelorder(xc, base, staleopenid)
+            tradesdf[ix, oppositeopen[1]] = NO_ORDER_ID
+            tradesdf[ix, oppositeopen[2]] = "none"
+            tradesdf[ix, oppositeopen[3]] = 0f0
+        end
         openside = action == :long_open ? :long : :short
         oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
         if isnothing(oid)

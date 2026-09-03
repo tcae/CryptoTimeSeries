@@ -224,6 +224,44 @@ EnvConfig.init(production)  # test production
     @test short_open_balances[quoteix, :free] <= short_open_cap.equity_quote + 1f-6
     @test short_open_cap.available_opening_quote <= short_open_cap.equity_quote + 1f-6
 
+    # A short must conserve account value: opening one leaves equity flat, holding it tracks
+    # price, and closing it realizes exactly qty*(entry-exit) into free quote. Before the
+    # sale proceeds were credited at open, the buyback at close spent cash the account had
+    # never received, so every short permanently destroyed its own notional.
+    bc_short_pnl = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_short_pnl)
+    Bybit.seedportfolio!(bc_short_pnl, EnvConfig.pairquote, 1_000f0)
+    pnl_start = DateTime("2025-01-27T20:55:00")
+    bc_short_pnl.simtime = pnl_start
+    pnl_qty = 125f0
+    pnl_entry = Bybit._simcurrentprice(bc_short_pnl, "DOUBLESINEUSDT", pnl_start)
+    @test !isnothing(pnl_entry)
+    Bybit.createorder(bc_short_pnl, "DOUBLESINEUSDT", "Sell", pnl_qty, pnl_entry, false; configside=:short)
+    bc_short_pnl.simtime = pnl_start + Minute(1)
+    _ = Bybit.balances(bc_short_pnl)
+    cap_open = Bybit.accountcapacity(bc_short_pnl)
+    @test isapprox(cap_open.equity_quote, 1_000f0; atol=0.2f0)  # flat at open, only the 1-minute price tick moves it
+
+    bc_short_pnl.simtime = pnl_start + Minute(45)
+    _ = Bybit.balances(bc_short_pnl)
+    pnl_exit = Bybit._simcurrentprice(bc_short_pnl, "DOUBLESINEUSDT", bc_short_pnl.simtime)
+    @test pnl_exit < pnl_entry  # the short is in profit here
+    cap_held = Bybit.accountcapacity(bc_short_pnl)
+    @test isapprox(cap_held.equity_quote, 1_000f0 + pnl_qty * (pnl_entry - pnl_exit); atol=0.5f0)
+
+    Bybit.createorder(bc_short_pnl, "DOUBLESINEUSDT", "Buy", pnl_qty, pnl_exit, false; configside=:short, reduceonly=true)
+    bc_short_pnl.simtime = bc_short_pnl.simtime + Minute(1)
+    _ = Bybit.balances(bc_short_pnl)
+    cap_closed = Bybit.accountcapacity(bc_short_pnl)
+    expected_pnl_equity = 1_000f0 + pnl_qty * (pnl_entry - pnl_exit)
+    @test isapprox(cap_closed.equity_quote, expected_pnl_equity; atol=0.5f0)
+    pnl_balances = Bybit.balances(bc_short_pnl)
+    pnl_quoteix = findfirst(==(uppercase(EnvConfig.pairquote)), uppercase.(String.(pnl_balances[!, :coin])))
+    @test !isnothing(pnl_quoteix)
+    # the gain is realized as free cash, not left stranded in locked collateral
+    @test isapprox(pnl_balances[pnl_quoteix, :free], expected_pnl_equity; atol=1f-1)
+    @test isapprox(pnl_balances[pnl_quoteix, :locked], 0f0; atol=1f-3)
+
     # Explicit short-close trigger semantics: a non-stop buy only fills once price falls to the limit.
     bc_short_close = Bybit.BybitCache()
     Bybit._init_simulation!(bc_short_close)
