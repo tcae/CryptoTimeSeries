@@ -607,7 +607,6 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
                 TSM.settrades_msg!(tradesdf, tradesix, shortclose, logged)
             end
         elseif cache.mc[:trademode] == notrade
-            TSM.settrades_label!(tradesdf, tradesix, ignore)
             TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
             TSM.settrades_amount!(tradesdf, tradesix, longclose, 0f0)
             TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
@@ -675,7 +674,6 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
                 else
                     TSM.settrades_msg!(tradesdf, tradesix, longopen, "lo ignore: already all assigned")
                     TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
-                    TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
@@ -684,9 +682,8 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
                     TSM.settrades_msg!(tradesdf, tradesix, longopen, "lo ignore: free insufficient")
                 end
                 TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
-                TSM.settrades_label!(tradesdf, tradesix, ignore)
             end
-            if (tradesrow.sp_amount > 0f0) && (tradesrow.label == ignore)
+            if (tradesrow.sp_amount > 0f0) && (tradesrow.lo_amount == 0f0)
                 TSM.settrades_label!(tradesdf, tradesix, shortclose)
             end
         elseif tradesrow.label in [shortstrongopen, shortopen]
@@ -699,7 +696,6 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
                 else
                     TSM.settrades_msg!(tradesdf, tradesix, shortopen, "so ignore: already all assigned")
                     TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
-                    TSM.settrades_label!(tradesdf, tradesix, ignore)
                 end
             else
                 if basecfg.openenabled == false
@@ -708,9 +704,8 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
                     TSM.settrades_msg!(tradesdf, tradesix, shortopen, "so ignore: free insufficient")
                 end
                 TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
-                TSM.settrades_label!(tradesdf, tradesix, ignore)
             end
-            if (tradesrow.lp_amount > 0f0) && (tradesrow.label == ignore)
+            if (tradesrow.lp_amount > 0f0) && (tradesrow.so_amount == 0f0)
                 TSM.settrades_label!(tradesdf, tradesix, longclose)
             end
         end

@@ -72,8 +72,9 @@ mutable struct AnalyzeState
     rawdf::DataFrame
     pair::Union{Nothing, String}
     daydf::DataFrame
+    barcurveindex::Int
 end
-const AS = AnalyzeState(nothing, DataFrame(), nothing, DataFrame())
+const AS = AnalyzeState(nothing, DataFrame(), nothing, DataFrame(), 0)
 
 "Best-effort field access for both NamedTuple and JSON3.Object callback payloads (JSON3.Object does not reliably support `hasproperty`)."
 function _cfgget(obj, key::Symbol, default=nothing)
@@ -130,33 +131,40 @@ function _row_hovertext(row)::String
     return "opentime=$(row[:opentime])<br>label=$(row[:label])<br>low=$(row[:low])<br>high=$(row[:high])"
 end
 
+"Canonical Trades v1 display column order for the details table: front context/balance columns, then lane groups (lo, lc, so, sc, with lc/sc's stop-loss leg appended), then config/tsmstate."
+const TRADES_V1_COLUMNS = let
+    cols = String["opentime", "pair", "close", "high", "low", "label", "score", "lastopentrade",
+        "lp_amount", "sp_amount", "equity", "freequote", "freemargin", "set", "rangeid"]
+    for lane in ("lo", "lc", "so", "sc")
+        append!(cols, ["$(lane)l_pavg", "$(lane)l_filled", "$(lane)l_status", "$(lane)l_id", "$(lane)l_msg",
+            "$(lane)_limit", "$(lane)_amount", "$(lane)_status", "$(lane)_id", "$(lane)_msg"])
+        if lane in ("lc", "sc")
+            append!(cols, ["$(lane)sl_limit", "$(lane)sl_status", "$(lane)sl_id", "$(lane)sl_msg"])
+        end
+    end
+    append!(cols, ["config", "tsmstate"])
+    cols
+end
+
 "Return DataTable `columns`/`data` for the full Trades v1 rows of one day, all values stringified for safe JSON serialization."
 function _table_columns_data(daydf::AbstractDataFrame)
-    cols = names(daydf)
+    present = names(daydf)
+    presentset = Set(present)
+    ordered = [c for c in TRADES_V1_COLUMNS if c in presentset]
+    leftover = [c for c in present if !(c in ordered)]
+    cols = vcat(ordered, leftover)
     columns = [Dict("name" => c, "id" => c) for c in cols]
     data = [Dict(c => string(daydf[ix, Symbol(c)]) for c in cols) for ix in 1:nrow(daydf)]
     return columns, data
 end
 
-"Return per-cell DataTable `tooltip_data`: hovering a cell shows opentime, column header, and cell content."
+"Return per-cell DataTable `tooltip_data`: hovering a cell shows opentime, column header, cell content, and the bar's high/low."
 function _table_tooltip_data(daydf::AbstractDataFrame)
     cols = names(daydf)
     return [
-        Dict(c => Dict("value" => "opentime=$(daydf[ix, :opentime])\ncolumn=$(c)\nvalue=$(daydf[ix, Symbol(c)])", "type" => "text") for c in cols)
+        Dict(c => Dict("value" => "opentime=$(daydf[ix, :opentime])\ncolumn=$(c)\nvalue=$(daydf[ix, Symbol(c)])\nhigh=$(daydf[ix, :high])\nlow=$(daydf[ix, :low])", "type" => "text") for c in cols)
         for ix in 1:nrow(daydf)
     ]
-end
-
-"Canonical Trades v1 schema column order, used to size the placeholder table before any file is loaded."
-const TRADES_V1_COLUMNS = let
-    cols = String["opentime", "pair", "close", "high", "low", "label", "score",
-        "lp_amount", "sp_amount", "equity", "freemargin", "freequote",
-        "lastopentrade", "set", "rangeid", "config", "tsmstate"]
-    for lane in ("lo", "lc", "so", "sc")
-        append!(cols, ["$(lane)_status", "$(lane)_id", "$(lane)_limit", "$(lane)_amount", "$(lane)_msg",
-            "$(lane)l_status", "$(lane)l_id", "$(lane)l_filled", "$(lane)l_pavg", "$(lane)l_msg"])
-    end
-    cols
 end
 
 "Placeholder DataTable content sized like a real Trades v1 day (all schema columns, 24*60 blank rows); the dash_table JS renderer crashes on zero columns/rows."
@@ -220,9 +228,9 @@ const _LANE_MARKER_SPEC = Dict(
     (:short, :close) => (symbol="triangle-down", color="red", name="short close"),
 )
 
-function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Date; selected_ix=nothing)
+function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Date; selected_ix=nothing)::Tuple{Plot, Int}
     if nrow(daydf) == 0
-        return Plot([scatter(x=[], y=[], mode="lines", name="no data")])
+        return Plot([scatter(x=[], y=[], mode="lines", name="no data")]), 0
     end
 
     x = daydf[!, :opentime]
@@ -233,7 +241,9 @@ function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Da
     gainpct = (equity ./ equitystart .- 1.0) .* 100.0
     hovertext = [_row_hovertext(daydf[ix, :]) for ix in 1:nrow(daydf)]
 
-    barcolors = [ix == selected_ix ? "rgba(255, 170, 40, 0.85)" : "rgba(100,120,200,0.35)" for ix in 1:nrow(daydf)]
+    # selected_ix (from dash active_cell.row / pointNumber) is 0-indexed; ix here is 1-indexed.
+    selected_ix_1based = isnothing(selected_ix) ? nothing : selected_ix + 1
+    barcolors = [ix == selected_ix_1based ? "rgba(255, 170, 40, 0.85)" : "rgba(100,120,200,0.35)" for ix in 1:nrow(daydf)]
     bartrace = bar(x=x, y=(high .- low), base=low, text=hovertext, hoverinfo="text",
         marker=attr(color=barcolors), name="minute range")
     gaintrace = scatter(x=x, y=gainpct, mode="lines", name="gain %", yaxis="y2", line=attr(color="rgb(230,140,0)", width=2))
@@ -257,7 +267,12 @@ function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Da
             marker=attr(symbol=spec.symbol, size=11, color=spec.color, line=attr(width=1, color="black"))))
     end
 
-    traces = PlotlyBase.AbstractTrace[bartrace, lanetraces..., gaintrace]
+    # Note: Plotly always draws `bar` traces behind all `scatter` traces (a fixed per-type
+    # layer), regardless of array order, so the bar cannot be made to render in front of the
+    # gain line or lane markers without converting it to per-minute scatter rectangles - too
+    # much overhead (up to 1440 extra traces/day) for this dev tool's chart to stay fast.
+    barcurveindex = length(lanetraces)
+    traces = PlotlyBase.AbstractTrace[lanetraces..., bartrace, gaintrace]
     layout = Layout(
         width=_graphwidth(nrow(daydf)),
         title="$(pair) minute detail $(date)",
@@ -267,7 +282,7 @@ function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Da
         yaxis2=attr(title="gain %", overlaying="y", side="right"),
         hovermode="closest",
     )
-    return Plot(traces, layout)
+    return Plot(traces, layout), barcurveindex
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -381,7 +396,7 @@ callback!(app, [Output("minute_chart", "figure"), Output("selected_date_label", 
             pt = points[1]
             curveix = _cfgget(pt, :curveNumber, nothing)
             pointix = _cfgget(pt, :pointNumber, nothing)
-            if !isnothing(curveix) && Int(curveix) == 0 && !isnothing(pointix)
+            if !isnothing(curveix) && Int(curveix) == AS.barcurveindex && !isnothing(pointix)
                 selected_ix = Int(pointix)
             end
         end
@@ -398,7 +413,8 @@ callback!(app, [Output("minute_chart", "figure"), Output("selected_date_label", 
     if !isnothing(selected_ix) && !(0 <= selected_ix < nrow(daydf))
         selected_ix = nothing
     end
-    fig = _minute_figure(daydf, AS.pair, date; selected_ix=selected_ix)
+    fig, barcurveindex = _minute_figure(daydf, AS.pair, date; selected_ix=selected_ix)
+    AS.barcurveindex = barcurveindex
     label = "$(AS.pair) — $(date) ($(nrow(daydf)) minutes)"
     if (nrow(daydf) > 0) && all(==(0f0), daydf[!, :equity])
         label *= " ⚠ equity is flat/zero for this file — likely a TrendDetector gains-only replay (trades-td/<PAIR>.arrow) that bypasses Xch account bookkeeping; load a tradesim-replay/trades-replay.arrow or trades-ts.arrow file for a populated equity/gain line"
@@ -420,7 +436,7 @@ callback!(app, [Output("minute_table", "style_data_conditional")], [Input("minut
             pt = points[1]
             curveix = _cfgget(pt, :curveNumber, nothing)
             pointix = _cfgget(pt, :pointNumber, nothing)
-            if !isnothing(curveix) && Int(curveix) == 0 && !isnothing(pointix)
+            if !isnothing(curveix) && Int(curveix) == AS.barcurveindex && !isnothing(pointix)
                 push!(hoverrows, Int(pointix))
             end
         end

@@ -181,11 +181,16 @@ const REPLAY_SOURCE_SUBFOLDER = begin
     isempty(raw) ? "Trend-$(CONFIG_NAME)-$(CLFOLDER)" : raw
 end
 
-# Log subfolder under EnvConfig.logfolder().
-const LOG_SUBFOLDER = begin
-    raw = strip(get(ENV, "TRADESIM_LOG_SUBFOLDER", ""))
-    isempty(raw) ? ("tradesim-" * CONFIG_NAME ) : raw
-    # isempty(raw) ? ("tradesim-" * CONFIG_NAME * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))) : raw
+# Log subfolder under EnvConfig.logfolder(); built once the effective backtest date range is
+# known (see `_tradesim_default_log_subfolder`), unless overridden via TRADESIM_LOG_SUBFOLDER.
+const LOG_SUBFOLDER_OVERRIDE = strip(get(ENV, "TRADESIM_LOG_SUBFOLDER", ""))
+
+"Default tradesim log subfolder name: config, test/train phase, coins (joined by `+` if <=3, else `MultipleCoins`), and the effective date range."
+function _tradesim_default_log_subfolder(configname::AbstractString, testmode::Bool, coins::AbstractVector{<:AbstractString}, startdt::DateTime, enddt::DateTime)::String
+    phase = testmode ? "test" : "train"
+    coinslabel = length(coins) <= 3 ? join(coins, "+") : "MultipleCoins"
+    daterange = "$(Dates.format(startdt, "yyyymmdd"))-$(Dates.format(enddt, "yyyymmdd"))"
+    return "tradesim-$(configname)-$(phase)-$(coinslabel)-$(daterange)"
 end
 
 "Return ORDER_FILLED events as a DataFrame."
@@ -267,7 +272,7 @@ end
 
 "Load one replay source dataframe from a configured log subfolder and subdirectory."
 function _load_replay_df(logsubfolder::AbstractString, subdir::AbstractString, stem::AbstractString)::DataFrame
-    logsroot = dirname(EnvConfig.logfolder())
+    logsroot = EnvConfig.defaultlogfilespath
     folderpath = joinpath(logsroot, String(logsubfolder), String(subdir))
     df = EnvConfig.readdf(String(stem); folderpath=folderpath)
     @assert !isnothing(df) "missing replay source $(subdir)/$(stem).arrow in $(folderpath)"
@@ -283,7 +288,7 @@ Falls back to the combined files (then filtered by caller) when any requested co
 per-coin cache, e.g. older replay-source folders generated before the per-coin split existed.
 """
 function _load_replay_source(logsubfolder::AbstractString, coins::AbstractVector{<:AbstractString})
-    logsroot = dirname(EnvConfig.logfolder())
+    logsroot = EnvConfig.defaultlogfilespath
     resultsfolderpath = joinpath(logsroot, String(logsubfolder), "results")
     predictionsfolderpath = joinpath(logsroot, String(logsubfolder), "predictions")
     coinids = uppercase.(String.(coins))
@@ -372,6 +377,13 @@ function _save_tradesim_checkpoint!(cache::Trade.TradeCache)
         _save_pair_checkpoint!(cache.xc.tsm, pair)
     end
     (cache.xc.bc isa Bybit.BybitCache) && _save_ledger_checkpoint!(cache.xc.bc)
+    return nothing
+end
+
+"Remove the tradesim checkpoint folder once a run has finalized successfully; there is nothing left to resume."
+function _delete_tradesim_checkpoint!()
+    folderpath = _tradesim_ledger_folderpath()
+    isdir(folderpath) && rm(folderpath; recursive=true, force=true)
     return nothing
 end
 
@@ -1171,7 +1183,6 @@ end
 
 EnvConfig.init(TESTMODE ? test : training)  # test mode → cryptoxchsim, no live credentials needed
 EnvConfig.setpairquote!(QUOTE_COIN)
-EnvConfig.setlogpath(LOG_SUBFOLDER)
 
 Xch.verbosity = 1
 Classify.verbosity  = 2
@@ -1196,6 +1207,11 @@ else
     cache_startdt = run_startdt
     cache_enddt = run_enddt
 end
+
+const LOG_SUBFOLDER = isempty(LOG_SUBFOLDER_OVERRIDE) ? _tradesim_default_log_subfolder(CONFIG_NAME, TESTMODE, BACKTEST_BASES, cache_startdt, cache_enddt) : LOG_SUBFOLDER_OVERRIDE
+EnvConfig.setlogpath(LOG_SUBFOLDER)
+println("$(EnvConfig.now()): log subfolder=$LOG_SUBFOLDER")
+
 strategy_runtime = TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1321,8 +1337,12 @@ if nrow(allfills) == 0
 else
     println("$(EnvConfig.now()): replay filled-order summary: rows=$(nrow(allfills))")
 end
-EnvConfig.setlogpath(LOG_SUBFOLDER)
 println("$(EnvConfig.now()): skipped trades-ts persistence; using tradesim-replay/trades-replay.arrow as canonical replay output")
 
 # Keep legacy log-path split for parity with previous script layout.
 println("$(EnvConfig.now()): order history report derived from xc.tsm.pairstates trades data")
+
+# The run finalized successfully (replay validated, all outputs saved above): nothing left to
+# resume, so the checkpoint would otherwise just be stale state for the next invocation.
+_delete_tradesim_checkpoint!()
+println("$(EnvConfig.now()): deleted tradesim checkpoint after successful finalization")
