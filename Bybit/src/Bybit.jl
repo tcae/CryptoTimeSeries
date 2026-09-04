@@ -140,6 +140,15 @@ mutable struct BybitCache <: XchAdapter.XchAdapterCache
     # Shared reference to the owning XchCache's per-base OHLCV cache (duck-typed wiring via
     # Xch.setcurrenttime!, mirrors `simtime`). Same Dict object, no per-simulation copy.
     ohlcvcache::Union{Nothing, Dict{String, Ohlcv.OhlcvData}}
+    makerfeerate::Float32
+    takerfeerate::Float32
+end
+
+"Set the simulated maker/taker fee rates (fractions, e.g. 0.001 = 0.1%) charged on every simulated fill."
+function setfeerates!(bc::BybitCache, makerfeerate::Real, takerfeerate::Real)
+    bc.makerfeerate = Float32(makerfeerate)
+    bc.takerfeerate = Float32(takerfeerate)
+    return nothing
 end
 
 executionorderspec(bc::BybitCache, side::Symbol) = _executionorderspec(side)
@@ -295,11 +304,11 @@ function BybitCache(testnet::Bool=EnvConfig.configmode == EnvConfig.test, public
         pk = String(publickey)
         sk = String(secretkey)
     end
-    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing, Dict{String, Int}(), Int[], UInt(0), NamedTuple[], nothing)
+    bc = BybitCache(nothing, apirest, pk, sk, nothing, nothing, nothing, nothing, Dict{String, Int}(), Int[], UInt(0), NamedTuple[], nothing, 0f0, 0f0)
     xchinfo = _exchangeinfo(bc)
     xchinfo = sort!(xchinfo[xchinfo.quotecoin .== EnvConfig.pairquote, :], :basecoin)
     @assert (!isnothing(xchinfo)) && (size(xchinfo, 1) > 0) "missing exchangeinfo isnothing(xchinfo)=$(isnothing(xchinfo)) size(xchinfo, 1)=$(size(xchinfo, 1))"
-    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing, Dict{String, Int}(), Int[], UInt(0), NamedTuple[], nothing)
+    bc = BybitCache(xchinfo, apirest, pk, sk, nothing, nothing, nothing, nothing, Dict{String, Int}(), Int[], UInt(0), NamedTuple[], nothing, bc.makerfeerate, bc.takerfeerate)
     EnvConfig.setcoinspath!(exchangeid(bc))
 	EnvConfig.setpairquote!("USDT")
     if EnvConfig.configmode == EnvConfig.test
@@ -1389,7 +1398,7 @@ function _simreleaseorder!(bc::BybitCache, symbol::AbstractString, side::Abstrac
 end
 
 "Apply one pending-order fill while consuming reserved balances."
-function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
+function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real; feerate::Real=0f0)
     symbol = String(orderrow.symbol)
     side = String(orderrow.side)
     baseqty = (orderrow.baseqty)
@@ -1399,6 +1408,7 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
     quote_coin = uppercase(EnvConfig.pairquote)
     qix = _ensureholdingrow!(bc, quote_coin, "quote")
     pix = _ensureholdingrow!(bc, base, _positionlane(positionside))
+    fee = Float32(baseqty) * Float32(fillprice) * Float32(feerate)
 
     is_close = reduceonly || _iscloseintent(positionside, side)
     if is_close
@@ -1426,6 +1436,7 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
         else
             bc.assets[qix, :free] += quote_flow
         end
+        bc.assets[qix, :free] -= fee
         return nothing
     end
 
@@ -1448,6 +1459,7 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
             bc.assets[qix, :locked] += cost
             bc.assets[pix, :proceeds] += cost
         end
+        bc.assets[qix, :free] -= fee
         return nothing
     end
 
@@ -1460,6 +1472,7 @@ function _simapplypendingfill!(bc::BybitCache, orderrow, fillprice::Real)
         bc.assets[qix, :free] -= residual
     end
     bc.assets[pix, :free] += baseqty
+    bc.assets[qix, :free] -= fee
     return nothing
 end
 
@@ -1574,7 +1587,7 @@ function _simprocesspendingorders!(bc::BybitCache; atdt::Union{Nothing, DateTime
     closerows = NamedTuple[]
     _applysimfill!(ix) = begin
         row = bc.orderbook[ix, :]
-        _simapplypendingfill!(bc, row, row.limitprice)
+        _simapplypendingfill!(bc, row, row.limitprice; feerate=bc.makerfeerate)
         push!(closerows, (
             orderid=String(row.orderid),
             symbol=String(row.symbol),
@@ -1797,7 +1810,7 @@ function _simforceliquidateposition!(bc::BybitCache, symbol::AbstractString, pos
     side = positionside == :short ? "Buy" : "Sell"
     fillprice = Float32(price)
     orderid = "SIM-Liquidate-$(symbol)-$(Int(round(Dates.datetime2unix(decisiondt))))"
-    _simapplypendingfill!(bc, (symbol=String(symbol), side=side, baseqty=qty, positionside=String(positionside), reduceonly=true), fillprice)
+    _simapplypendingfill!(bc, (symbol=String(symbol), side=side, baseqty=qty, positionside=String(positionside), reduceonly=true), fillprice; feerate=bc.takerfeerate)
     _simappendorder!(bc, (
         orderid=orderid, symbol=String(symbol), side=side, positionside=String(positionside), lane=_orderlane(positionside, true), baseqty=qty,
         ordertype="Market", isLeverage=true, timeinforce="IOC", limitprice=fillprice, avgprice=fillprice,
@@ -1815,7 +1828,7 @@ If `price` is omitted and `maker=true`, the simulation and live adapters will
 choose a limit price as close as possible to the current spread while staying
 post-only so the order can qualify for maker fees.
 """
-function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing)
+function createorder(bc::BybitCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, adaptivepost::Bool=false)
     spec = isnothing(execution_spec) ? _executionorderspec(configside, orderside) : execution_spec
     effective_marginleverage = spec.instrument == "spot_margin" ? spec.leverage : 0
     if spec.instrument == "spot_margin"
@@ -1836,6 +1849,26 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         dt = isnothing(bc.simtime) ? Dates.now(Dates.UTC) : DateTime(bc.simtime)
         orderid = string("SIM-", uppercasefirst(lowercase(orderside)), "-", uppercase(symbol), "-", _nextsimorderseq!(bc))
         if maker
+            # A real exchange rejects a post-only order whose limit would already execute as
+            # taker ("EOrder:Post only order would be taker" on Kraken). Simulate the same
+            # check here: with `adaptivepost` the limit is corrected to the nearest valid
+            # maker price instead (mitigation), otherwise the order is rejected like on a
+            # real exchange. Stop-loss legs are exempt: they are conditional/protective
+            # orders priced on the adverse side by design (`_simordertriggered` inverts their
+            # trigger direction), not plain post-only limits, and must always be able to
+            # guarantee the protective close.
+            if !(orderlane in ("lcsl", "scsl"))
+                quote24h = get24h(bc, symbol)
+                crossing = uppercasefirst(lowercase(orderside)) == "Buy" ? (limitprice >= quote24h.askprice) : (limitprice <= quote24h.bidprice)
+                if crossing
+                    if adaptivepost
+                        limitprice = uppercasefirst(lowercase(orderside)) == "Buy" ? quote24h.askprice - syminfo.ticksize : quote24h.bidprice + syminfo.ticksize
+                    else
+                        (verbosity >= 1) && @warn "post-only order rejected: would be taker" symbol orderside limitprice ask=quote24h.askprice bid=quote24h.bidprice
+                        return nothing
+                    end
+                end
+            end
             # `created=dt` is the order timestamp and `lastcheck=dt` is the last
             # decision row already processed for this order. The next simulation row
             # can then evaluate the first newly visible candle whose `opentime`
@@ -1855,7 +1888,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             reserved || return nothing
             row = (orderid=orderid, symbol=symbol, side=uppercasefirst(lowercase(orderside)), positionside=String(spec.side), lane=orderlane, baseqty=(basequantity), ordertype="Limit", isLeverage=(effective_marginleverage > 0), timeinforce="GTC", limitprice=limitprice, avgprice=limitprice, executedqty=(basequantity), status="Filled", created=dt, updated=dt, rejectreason="NO ERROR", lastcheck=dt, marginleverage=Int32(effective_marginleverage), reduceonly=reduceonly)
             _simappendorder!(bc, row)
-            _simapplypendingfill!(bc, row, limitprice)
+            _simapplypendingfill!(bc, row, limitprice; feerate=bc.takerfeerate)
         end
         return row
     end
@@ -1877,7 +1910,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
     if 2 <= effective_marginleverage <= 10
         HttpPrivateRequest(bc, "POST", "/v5/spot-margin-trade/set-leverage", Dict("leverage" => string(effective_marginleverage)), "set margin leverage")
     end
-    attempts = 5
+    attempts = maker ? ((adaptivepost || isnothing(price)) ? 5 : 1) : 1
     httpresponse = orderid = nothing
     limitprice = 0f0
     pricedigits = (round(Int, log(10, 1/syminfo.ticksize)))
@@ -1890,8 +1923,12 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         "price" => "undefined",
         "isLeverage" => (effective_marginleverage == 0 ? 0 : 1),
         "timeInForce" => "undefined")  # "PostOnly" "GTC
+    firstattempt = true
     while attempts > 0
-        if isnothing(price) # == market order
+        if isnothing(price) || (maker && adaptivepost && !firstattempt)
+            # Recompute against the current spread: either no price was given (adaptive
+            # maker/taker order) or a given maker limit was just rejected as taker and
+            # `adaptivepost` asks for it to be corrected instead of failing outright.
             now = get24h(bc, symbol)
             # devratio = round(abs(now.lastprice - price) / price * 100)
             # if devratio > 0.01
@@ -1911,7 +1948,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
             end
         else
             limitprice = round(price, digits=pricedigits)
-            attempts = 0
+            (maker && !adaptivepost) && (attempts = 0)
             params["timeinforce"] = maker ? "PostOnly" : "GTC"
         end
         basequantity = (basequantity * limitprice) < syminfo.minquoteqty ? syminfo.minquoteqty / limitprice : basequantity
@@ -1930,7 +1967,8 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
                 if !isnothing(order) && (order.status == "Rejected")
                     (verbosity >= 3) && println("$(attempts) PostOnly order for $symbol is rejected")
                     attempts = attempts - 1
-                    if attempts == 0
+                    if attempts <= 0
+                        attempts = 0
                         (verbosity >= 3) && @warn "exhausted retry attempts for PostOnly order $httpresponse with input price=$(isnothing(price) ? "marketprice" : price)"
                         orderid = nothing
                     end
@@ -1943,6 +1981,7 @@ function createorder(bc::BybitCache, symbol::String, orderside::String, basequan
         else
             attempts = 0
         end
+        firstattempt = false
     end
     """
     Returns a DataFrame of open **spot** orders with columns:
@@ -1975,17 +2014,17 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing)
+function closeorder(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, adaptivepost::Bool=false)
     side = Symbol(lowercase(String(positionside)))
     @assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
     orderside = side == :long ? "Sell" : "Buy"
-    return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, lane=lane)
+    return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, lane=lane, adaptivepost=adaptivepost)
 end
 
 _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
 
 "Upsert one close leg independent from any open leg handling."
-function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
+function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing, adaptivepost::Bool=false)
     existing = nothing
     if !isnothing(existing_orderid)
         probe = _simorderrow(bc, String(existing_orderid))
@@ -1994,7 +2033,7 @@ function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol,
         end
     end
     if isnothing(existing)
-        return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, lane=lane)
+        return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, lane=lane, adaptivepost=adaptivepost)
     end
 
     remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
@@ -2008,7 +2047,7 @@ function upsertcloseorder!(bc::BybitCache, symbol::String, positionside::Symbol,
 end
 
 "Upsert one open leg independent from any close leg handling."
-function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
+function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing, adaptivepost::Bool=false)
     side = Symbol(lowercase(String(positionside)))
     @assert side in [:long, :short] "upsertopenorder! positionside=$(positionside) must be :long or :short"
     orderside = side == :long ? "Buy" : "Sell"
@@ -2020,7 +2059,7 @@ function upsertopenorder!(bc::BybitCache, symbol::String, positionside::Symbol, 
         end
     end
     if isnothing(existing)
-        return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, lane=lane)
+        return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, lane=lane, adaptivepost=adaptivepost)
     end
 
     remaining = max(0.0, (existing.baseqty) - (existing.executedqty))

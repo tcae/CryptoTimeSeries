@@ -94,7 +94,9 @@ end
 
     entry = tradesdfdict["AAA"]
     @test entry.tradesdf[entry.rowix, :lo_amount] == 0f0
-    @test entry.tradesdf[entry.rowix, :label] == ignore
+    # label is no longer forced to `ignore`: Xch decides purely from *_amount, and the
+    # rejection reason is documented in lo_msg instead.
+    @test occursin("ignore", String(entry.tradesdf[entry.rowix, :lo_msg]))
 end
 
 @testset "trade! sizes short opens from the same budget" begin

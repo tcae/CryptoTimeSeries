@@ -1796,12 +1796,16 @@ Create one spot order and return an order row compatible named tuple.
 
 If `price` is omitted and `maker=true`, the adapter will choose a limit price
 as close as possible to the current spread while remaining post-only so the
-order can qualify for maker fees.
+order can qualify for maker fees. Pass `adaptivepost=true` to opt an explicit
+`price` into the same retry-and-correct behavior: if it would be rejected as a
+taker post-only order, subsequent attempts fall back to a fresh maker price
+instead of failing. `adaptivepost=nothing` (default) preserves prior behavior
+(only an omitted `price` retries).
 
 Set `validate=true` to ask Kraken Spot to validate order parameters without
 executing the order.
 """
-function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, validate::Bool=false, venuepair::Union{Nothing, AbstractString}=nothing)
+function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; configside::Union{Nothing, Symbol}=nothing, execution_spec=nothing, reduceonly::Bool=false, validate::Bool=false, venuepair::Union{Nothing, AbstractString}=nothing, adaptivepost::Union{Nothing, Bool}=nothing)
 	@assert basequantity > 0.0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
 	@assert isnothing(price) || (price > 0.0) "createorder symbol=$(symbol) price=$(price) must be > 0"
 	@assert lowercase(orderside) in ["buy", "sell"] "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
@@ -1832,17 +1836,21 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 			throw(ErrorException("Kraken spot margin not permitted for symbol=$(symbol) pair=$(pairname) side=$(orderside) requested_leverage=$(effective_marginleverage)x max_buy=$(limits.maxleveragebuy)x max_sell=$(limits.maxleveragesell)x status=$(syminfo.status)"))
 		end
 	end
-	adaptivepost = maker && isnothing(price)
-	attempts = adaptivepost ? 5 : 1
+	effective_adaptivepost = maker && (isnothing(adaptivepost) ? isnothing(price) : adaptivepost)
+	attempts = effective_adaptivepost ? 5 : 1
 	ordertype = (maker || !isnothing(price)) ? "limit" : "market"
 	chosenqty = (basequantity)
 	effectiveprice = isnothing(price) ? nothing : (price)
 	iceberg_displayqty = nothing
 	clientOrderId = _next_client_order_id()
 	txids = Any[]
+	firstattempt = true
 	while attempts > 0
 		if ordertype == "limit"
-			if adaptivepost
+			# Recompute against the current spread once no explicit price is left to try:
+			# either none was given, or a given price was just rejected as taker and
+			# `adaptivepost` asks for it to be corrected on retry instead of failing outright.
+			if isnothing(effectiveprice) || (effective_adaptivepost && !firstattempt)
 				snapshot = get24h(bc, symbol)
 				effectiveprice = isnothing(snapshot) ? nothing : _makerlimitprice(syminfo, snapshot, orderside)
 			end
@@ -1868,6 +1876,7 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 			reduceonly=reduceonly,
 			validate=validate,
 		)
+
 
 		try
 			response = HttpPrivateRequest(bc, "POST", "/0/private/AddOrder", params, "create order")
@@ -1907,11 +1916,12 @@ function createorder(bc::KrakenSpotCache, symbol::String, orderside::String, bas
 				return nothing
 			end
 			attempts -= 1
-			if !adaptivepost || !_ispostonlyrejection(err) || (attempts <= 0)
+			if !effective_adaptivepost || !_ispostonlyrejection(err) || (attempts <= 0)
 				rethrow(err)
 			end
 			(verbosity >= 2) && @info "retrying post-only order for $(symbol) after rejection" attempts_left=attempts
 		end
+		firstattempt = false
 	end
 
 	if !(txids isa AbstractVector) || isempty(txids)
@@ -1945,17 +1955,17 @@ Create one close order for an existing position side.
 - `positionside=:long` maps to a Sell close.
 - `positionside=:short` maps to a Buy close.
 """
-function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, validate::Bool=false, venuepair::Union{Nothing, AbstractString}=nothing)
+function closeorder(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, price::Union{Real, Nothing}, maker::Bool=true; execution_spec=nothing, reduceonly::Bool=true, validate::Bool=false, venuepair::Union{Nothing, AbstractString}=nothing, adaptivepost::Union{Nothing, Bool}=nothing)
 	side = Symbol(lowercase(String(positionside)))
 	@assert side in [:long, :short] "closeorder positionside=$(positionside) must be :long or :short"
 	orderside = side == :long ? "Sell" : "Buy"
-	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, validate=validate, venuepair=venuepair)
+	return createorder(bc, symbol, orderside, basequantity, price, maker; configside=side, execution_spec=execution_spec, reduceonly=reduceonly, validate=validate, venuepair=venuepair, adaptivepost=adaptivepost)
 end
 
 _isopenstatus(status::AbstractString)::Bool = lowercase(strip(String(status))) in ("new", "partiallyfilled", "untriggered", "open")
 
 "Upsert one close leg independent from any open leg handling."
-function upsertcloseorder!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
+function upsertcloseorder!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=true, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing, adaptivepost::Union{Nothing, Bool}=nothing)
 	prepared = _preparedpairinfo(bc, pairref)
 	if !isnothing(prepared)
 		@assert symbol == prepared.symbol "KrakenSpot prepared pair symbol mismatch: provided=$(symbol) indexed=$(prepared.symbol) pair=$(prepared.pair)"
@@ -1969,7 +1979,7 @@ function upsertcloseorder!(bc::KrakenSpotCache, symbol::String, positionside::Sy
 		end
 	end
 	if isnothing(existing)
-		return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, validate=false, venuepair=isnothing(prepared) ? nothing : prepared.krakenpairname)
+		return closeorder(bc, symbol, positionside, basequantity, limitprice, maker; reduceonly=reduceonly, validate=false, venuepair=isnothing(prepared) ? nothing : prepared.krakenpairname, adaptivepost=adaptivepost)
 	end
 
 	remaining = max(0.0, (existing.baseqty) - (existing.executedqty))
@@ -1983,7 +1993,7 @@ function upsertcloseorder!(bc::KrakenSpotCache, symbol::String, positionside::Sy
 end
 
 "Upsert one open leg independent from any close leg handling."
-function upsertopenorder!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing)
+function upsertopenorder!(bc::KrakenSpotCache, symbol::String, positionside::Symbol, basequantity::Real, limitprice::Union{Real, Nothing}; existing_orderid::Union{Nothing, AbstractString}=nothing, maker::Bool=true, reduceonly::Bool=false, lane::Union{Nothing, AbstractString}=nothing, pairref::Union{Nothing, XchAdapter.TradingPairRef}=nothing, adaptivepost::Union{Nothing, Bool}=nothing)
 	prepared = _preparedpairinfo(bc, pairref)
 	if !isnothing(prepared)
 		@assert symbol == prepared.symbol "KrakenSpot prepared pair symbol mismatch: provided=$(symbol) indexed=$(prepared.symbol) pair=$(prepared.pair)"
@@ -2000,7 +2010,7 @@ function upsertopenorder!(bc::KrakenSpotCache, symbol::String, positionside::Sym
 		end
 	end
 	if isnothing(existing)
-		return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, validate=false, venuepair=isnothing(prepared) ? nothing : prepared.krakenpairname)
+		return createorder(bc, symbol, orderside, basequantity, limitprice, maker; configside=side, reduceonly=reduceonly, validate=false, venuepair=isnothing(prepared) ? nothing : prepared.krakenpairname, adaptivepost=adaptivepost)
 	end
 
 	remaining = max(0.0, (existing.baseqty) - (existing.executedqty))

@@ -202,6 +202,10 @@ Base.@kwdef struct StrategyConfig
     closethreshold::Float32 = 0.5f0
     makerfee::Float32 = 0f0
     takerfee::Float32 = 0f0
+    # When true, open/close limit orders are submitted post-only: if the exchange would
+    # otherwise execute one as taker (price already crosses the market), the adapter
+    # corrects the limit to the nearest valid maker price instead of taking or rejecting it.
+    enforcemakerlimits::Bool = false
     buygain::Float32 = 0.001f0
     sellgain::Float32 = 0.01f0
     stoplossgain::Float32 = 0.05f0
@@ -250,6 +254,7 @@ end
         closethreshold=spec.closethreshold,
         makerfee=spec.makerfee,
         takerfee=spec.takerfee,
+        enforcemakerlimits=spec.enforcemakerlimits,
         buygain=spec.buygain,
         sellgain=spec.sellgain,
         stoplossgain=spec.stoplossgain,

@@ -100,7 +100,10 @@ EnvConfig.init(production)  # test production
     Bybit.seedportfolio!(bc_pending_fast, EnvConfig.pairquote, 1_000f0)
     bc_pending_fast.simtime = DateTime("2025-01-05T00:10:00")
     fast_lastpx = Bybit.get24h(bc_pending_fast, "SINEUSDT").lastprice
-    fast_pending = Bybit.createorder(bc_pending_fast, "SINEUSDT", "Buy", 1.0f0, 2f0 * fast_lastpx, true)
+    # 2x lastprice would be rejected as a crossing (taker) maker limit under the new
+    # post-only crossing check; adaptivepost corrects it to a valid resting maker price
+    # close to the ask, which still triggers on the very next tick for this test's purpose.
+    fast_pending = Bybit.createorder(bc_pending_fast, "SINEUSDT", "Buy", 1.0f0, 2f0 * fast_lastpx, true; adaptivepost=true)
     @test fast_pending.status == "New"
     bc_pending_fast.simtime = bc_pending_fast.simtime + Minute(1)
     _ = Bybit.balances(bc_pending_fast)
@@ -166,24 +169,24 @@ EnvConfig.init(production)  # test production
     Bybit.seedportfolio!(bc_amend_cancel, EnvConfig.pairquote, 1_000f0)
     bc_amend_cancel.simtime = DateTime("2025-01-05T00:25:00")
 
-    buy_pending = Bybit.createorder(bc_amend_cancel, "SINEUSDT", "Buy", 1f0, 100f0, true)
+    buy_pending = Bybit.createorder(bc_amend_cancel, "SINEUSDT", "Buy", 1f0, 1f0, true)
     @test buy_pending.status == "New"
     b_lock0 = Bybit.balances(bc_amend_cancel)
     qix0 = findfirst(==(uppercase(EnvConfig.pairquote)), String.(b_lock0.coin))
     @test !isnothing(qix0)
-    @test b_lock0[qix0, :locked] == 100f0
+    @test b_lock0[qix0, :locked] == 1f0
 
-    amended1 = Bybit.amendorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid); basequantity=1f0, limitprice=120f0)
+    amended1 = Bybit.amendorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid); basequantity=1f0, limitprice=1.2f0)
     @test !isnothing(amended1)
     b_lock1 = Bybit.balances(bc_amend_cancel)
     qix1 = findfirst(==(uppercase(EnvConfig.pairquote)), String.(b_lock1.coin))
-    @test b_lock1[qix1, :locked] == 120f0
+    @test b_lock1[qix1, :locked] == 1.2f0
 
-    amended2 = Bybit.amendorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid); basequantity=0.5f0, limitprice=80f0)
+    amended2 = Bybit.amendorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid); basequantity=0.5f0, limitprice=0.8f0)
     @test !isnothing(amended2)
     b_lock2 = Bybit.balances(bc_amend_cancel)
     qix2 = findfirst(==(uppercase(EnvConfig.pairquote)), String.(b_lock2.coin))
-    @test b_lock2[qix2, :locked] == 40f0
+    @test b_lock2[qix2, :locked] == 0.4f0
 
     cancelled_buy_oid = Bybit.cancelorder(bc_amend_cancel, "SINEUSDT", String(buy_pending.orderid))
     @test cancelled_buy_oid == String(buy_pending.orderid)
@@ -360,7 +363,7 @@ EnvConfig.init(production)  # test production
     @test oco_open.status == "Filled"
     oco_price = Bybit.get24h(bc_oco, "SINEUSDT").lastprice
     # take-profit just below market fills on the next candle, stop far away stays untriggered
-    oco_tp = Bybit.createorder(bc_oco, "SINEUSDT", "Sell", 0.4f0, oco_price * 0.9f0, true; configside=:long, reduceonly=true, lane="lc")
+    oco_tp = Bybit.createorder(bc_oco, "SINEUSDT", "Sell", 0.4f0, oco_price * 0.9f0, true; configside=:long, reduceonly=true, lane="lc", adaptivepost=true)
     oco_sl = Bybit.createorder(bc_oco, "SINEUSDT", "Sell", 0.4f0, oco_price * 0.5f0, true; configside=:long, reduceonly=true, lane="lcsl")
     bc_oco.simtime = bc_oco.simtime + Minute(2)
     _ = Bybit.balances(bc_oco)
@@ -379,7 +382,7 @@ EnvConfig.init(production)  # test production
     @test tie_open.status == "Filled"
     tie_price = Bybit.get24h(bc_tie, "SINEUSDT").lastprice
     # both priced so the very next candle reaches them: sell tp below market, stop above low
-    tie_tp = Bybit.createorder(bc_tie, "SINEUSDT", "Sell", 0.4f0, tie_price * 0.9f0, true; configside=:long, reduceonly=true, lane="lc")
+    tie_tp = Bybit.createorder(bc_tie, "SINEUSDT", "Sell", 0.4f0, tie_price * 0.9f0, true; configside=:long, reduceonly=true, lane="lc", adaptivepost=true)
     tie_sl = Bybit.createorder(bc_tie, "SINEUSDT", "Sell", 0.4f0, tie_price * 1.1f0, true; configside=:long, reduceonly=true, lane="lcsl")
     bc_tie.simtime = bc_tie.simtime + Minute(2)
     _ = Bybit.balances(bc_tie)
@@ -505,4 +508,39 @@ EnvConfig.init(production)  # test production
     @test liquidation_event.reason == "liquidation"
     @test isempty(Bybit.drainliquidations!(bc_liquidate))
 
+    # Post-only crossing check: a maker limit that would already execute as taker is
+    # rejected without adaptivepost, and corrected to a valid resting maker price with it.
+    bc_postonly = Bybit.BybitCache()
+    Bybit._init_simulation!(bc_postonly)
+    Bybit.seedportfolio!(bc_postonly, EnvConfig.pairquote, 1_000f0)
+    Bybit.seedportfolio!(bc_postonly, "SINE", 2f0)
+    bc_postonly.simtime = DateTime("2025-01-05T00:50:00")
+    postonly_quote = Bybit.get24h(bc_postonly, "SINEUSDT")
+
+    crossing_buy_rejected = Bybit.createorder(bc_postonly, "SINEUSDT", "Buy", 1f0, postonly_quote.askprice * 1.01f0, true)
+    @test isnothing(crossing_buy_rejected)
+    @test size(Bybit.openorders(bc_postonly), 1) == 0
+
+    syminfo_sine = Bybit.symbolinfo(bc_postonly, "SINEUSDT")
+    crossing_buy_corrected = Bybit.createorder(bc_postonly, "SINEUSDT", "Buy", 1f0, postonly_quote.askprice * 1.01f0, true; adaptivepost=true)
+    @test !isnothing(crossing_buy_corrected)
+    @test crossing_buy_corrected.status == "New"
+    @test crossing_buy_corrected.limitprice < postonly_quote.askprice
+    @test isapprox(crossing_buy_corrected.limitprice, postonly_quote.askprice - syminfo_sine.ticksize; atol=1f-6)
+
+    crossing_sell_rejected = Bybit.createorder(bc_postonly, "SINEUSDT", "Sell", 1f0, postonly_quote.bidprice * 0.99f0, true; configside=:long)
+    @test isnothing(crossing_sell_rejected)
+
+    crossing_sell_corrected = Bybit.createorder(bc_postonly, "SINEUSDT", "Sell", 1f0, postonly_quote.bidprice * 0.99f0, true; configside=:long, adaptivepost=true)
+    @test !isnothing(crossing_sell_corrected)
+    @test crossing_sell_corrected.status == "New"
+    @test crossing_sell_corrected.limitprice > postonly_quote.bidprice
+
+    # Stop-loss legs are exempt from the post-only crossing check: they are conditional
+    # protective orders priced on the adverse side by design, not plain post-only limits.
+    stop_crossing = Bybit.createorder(bc_postonly, "SINEUSDT", "Sell", 1f0, postonly_quote.bidprice * 0.99f0, true; configside=:long, reduceonly=true, lane="lcsl")
+    @test !isnothing(stop_crossing)
+    @test stop_crossing.status == "New"
+
 end
+

@@ -61,20 +61,19 @@ end
 """Return the grouping columns used to compile gains from concatenated Trades rows.
 
 `set`/`rangeid` are only included when `setpartitions` is true; positions from a
-continuous replay can span set/rangeid subrange boundaries (the underlying classifier data
-source switches train/test partitions mid-position), so grouping by them there would
-falsely split one position's open and close across groups. When `setpartitions` is
-false (default), matching instead scopes to `:liquidityrangeid` (derived from `:rangeid`
-via `TSM.liquidityrangeid`) so a gain segment still never spans two distinct liquidity
-ranges, only the train/eval/test subranges within one."""
+continuous replay can span set/rangeid subrange boundaries *and* liquidity-range
+boundaries (the continuous tradeloop only resets portfolio/position state once, at the
+start of the whole run - never at a liquidity-range or subrange transition), so grouping
+by anything finer than `:pair` there would falsely split one position's open and close
+across groups. When `setpartitions` is false (default), matching therefore scopes to
+`:pair` alone; individual gain rows still carry whatever `:set`/`:rangeid` was active at
+the close, so `gainsreport`'s aggregation is unaffected."""
 function _compilegains_groupcols(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::Vector{Symbol}
     @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair to compile gains; names=$(names(tradesdf))"
     cols = Symbol[:pair]
     if setpartitions
         (:set in propertynames(tradesdf)) && push!(cols, :set)
         (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
-    elseif :rangeid in propertynames(tradesdf)
-        push!(cols, :liquidityrangeid)
     end
     return cols
 end
@@ -322,7 +321,6 @@ function compilegains(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::D
 
     working = DataFrame(tradesdf; copycols=false)
     groupcols = _compilegains_groupcols(working; setpartitions=setpartitions)
-    (:liquidityrangeid in groupcols) && (working[!, :liquidityrangeid] = liquidityrangeid.(working[!, :rangeid]))
     for tradesview in groupby(working, groupcols; sort=false)
         _compilegainspartition!(gainsdf, tradesview)
     end

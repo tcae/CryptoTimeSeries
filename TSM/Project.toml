@@ -1,6 +1,6 @@
 name = "TSM"
 uuid = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
-version = "0.3.4"
+version = "0.3.5"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]

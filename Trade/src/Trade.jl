@@ -87,6 +87,8 @@ mutable struct TradeCache
         cache.mc[:last_traderefresh_dt] = nothing
         cache.mc[:trademode] = trademode  # see TradeMode definition above
         cache.mc[:loop_state] = loop_idle
+        Xch.setfeerates!(xc, ts.cfg.makerfee, ts.cfg.takerfee)
+        Xch.setmakerlimitenforcement!(xc, ts.cfg.enforcemakerlimits)
         (verbosity >= 4) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), maxbudgetquote = $(cache.mc[:maxbudgetquote]), stoplosspct = $(cache.mc[:stoplosspct]), reloadtimes = $(cache.mc[:reloadtimes]), blacklistbases = $(cache.mc[:blacklistbases])")
         return cache
     end

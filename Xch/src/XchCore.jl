@@ -2019,7 +2019,7 @@ function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer
     closestcol = long ? :lc_status : :sc_status
     closelane = long ? "lc" : "sc"
     closelimit = _rowlimitprice(tradesdf[ix, long ? :lc_limit : :sc_limit])
-    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane, pairref=pairref)
+    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane, pairref=pairref, adaptivepost=get(xc.mc, :enforcemakerlimits, false))
     if isnothing(oid)
         _rejectedrequest!(xc, tradesdf, ix, long ? :long_close : :short_close, "exchange returned no close order id")
     else
@@ -2146,7 +2146,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer; p
             tradesdf[ix, oppositeopen[3]] = 0f0
         end
         openside = action == :long_open ? :long : :short
-        oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false)
+        oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false, adaptivepost=get(xc.mc, :enforcemakerlimits, false))
         if isnothing(oid)
             _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id")
             return (accepted=false, action=action, reason="missing_open_orderid")
@@ -2618,6 +2618,23 @@ function _updateasset!(xc::XchCache, coin, amount)
     Bybit.seedportfolio!(bc, coin, amount)
     ix = findfirst(==(uppercase(String(coin))), bc.assets[!, :coin])
     return isnothing(ix) ? nothing : bc.assets[ix, :]
+end
+
+"Set the simulated maker/taker fee rates on adapters that support it (currently Bybit only); a no-op elsewhere."
+function setfeerates!(xc::XchCache, makerfee::Real, takerfee::Real)
+    (xc.bc isa Bybit.BybitCache) && Bybit.setfeerates!(xc.bc, makerfee, takerfee)
+    return nothing
+end
+
+"""
+When `enforce=true`, open/close limit orders are submitted post-only (`adaptivepost`):
+if the exchange would otherwise execute one as taker, the adapter corrects the limit to
+the nearest valid maker price instead. Stop-loss legs are never affected - they must be
+able to execute as taker to guarantee the protective close.
+"""
+function setmakerlimitenforcement!(xc::XchCache, enforce::Bool)
+    xc.mc[:enforcemakerlimits] = enforce
+    return nothing
 end
 
 
