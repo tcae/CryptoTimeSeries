@@ -52,6 +52,13 @@ end
     @test size(f6.fdfno, 1) == size(Ohlcv.dataframe(f6.ohlcv), 1)
     # println(names(Features.features(f6)))
 
+    # regryat returns the unnormalized regression end point of a window, keyed by opentime
+    lastdt = f6.fdfno[end, :opentime]
+    @test Features.regryat(f6, 5, lastdt) == f6.fdfno[end, Features.fdfnocol(f6, Features._regry(f6, window=5, offset=0))]
+    @test Features.regryat(f6, 10, f6.fdfno[begin, :opentime]) == f6.fdfno[begin, Features.fdfnocol(f6, Features._regry(f6, window=10, offset=0))]
+    @test isnothing(Features.regryat(f6, 5, lastdt + Hour(1)))
+    @test_throws AssertionError Features.regryat(f6, 7, lastdt)
+
     ohlcvshort = TestOhlcv.testohlcv("SINE", startdt, enddt-Hour(1))
     (verbosity >= 3) && println("stardt=$startdt enddt=$enddt ohlcvshort=$ohlcvshort")
     # Ohlcv.timerangecut!(ohlcvshort, startdt, enddt-Hour(1))

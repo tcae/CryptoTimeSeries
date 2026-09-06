@@ -856,6 +856,9 @@ function getgainsdf(cfg::TrendDetectorConfig)
         if nrow(coinresultsdf) == 0
             continue
         end
+        # Replay feeds prepopulated label/score rows and never calls the classifier, so the
+        # base has to be attached explicitly for algorithms reading classifier features.
+        TradingStrategy.addclassifierbase!(ts, Ohlcv.read(coin))
 
         # Assembly order matters: replay ranges are processed in chronological order so the
         # accumulated pair snapshot is built from the beginning of time without reordering.
@@ -937,6 +940,8 @@ function getgainsdf(cfg::TrendDetectorConfig)
         end
         rangegroups = nothing
         coinresultsdf = nothing
+        # Releases the classifier feature cache of this coin together with its pair state.
+        TradingStrategy.dropbase!(ts, coin)
         # One coin is one pair, so its snapshots are complete once its ranges are processed.
         _flushpairtrades!(xchgainparts, predparts, tradesfolderpath, "predicted", true, cfg.tradingstrategy.openthreshold, cfg.tradingstrategy.closethreshold)
         _flushpairtrades!(xchgainparts, truthparts, tradesfolderpath, "truth", false, TRUE_GAIN_THRESHOLD[1], TRUE_GAIN_THRESHOLD[2])

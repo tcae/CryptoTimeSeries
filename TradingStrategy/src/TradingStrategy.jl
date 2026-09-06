@@ -166,6 +166,30 @@ end
     return _relpricedelta(candidate, current) > minpricedelta
 end
 
+"""
+    _enforce_reversal_limit_ordering!(cols, ix)
+
+Make the two limits of a coupled reversal consistent on row `ix`.
+
+A reversal is a held position plus a pending open on the opposite side: long position +
+`so_amount`, or short position + `lo_amount`. Both legs can match within the same candle,
+and the bar gives no execution order, so the close leg must be placed such that it cannot
+match later than the open leg - otherwise the reversal would appear to hold both sides at
+once, which `_validate_row_consistency` rejects.
+
+- long position with pending short open: the price rises into both, so `lc_limit` is pulled
+  down to `min(lc_limit, so_limit)`.
+- short position with pending long open: the price falls into both, so `sc_limit` is pushed
+  up to `max(sc_limit, lo_limit)`.
+
+A pair with only one of the two limits set is incomplete guidance, so both are cleared
+rather than left half-armed. Rows without a coupled reversal are untouched.
+
+The order amounts are carried forward, not decided on this row: replay copies them in
+`_rowtakeover!` and live re-adopts them from the still-resting order during the Xch sync,
+both before the algorithm runs. So this fires from the tick *after* an open was requested;
+the requesting row itself is coupled directly by the open branch of `gain_limit_reversal!`.
+"""
 function _enforce_reversal_limit_ordering!(cols::TSM.TradesColumns, ix::Integer)
     if (cols.lp_amount[ix] > 0f0) && (cols.so_amount[ix] > 0f0)
         lc_limit = cols.lc_limit[ix]
@@ -372,6 +396,22 @@ acceptedbases(rt::TsCache)::Set{String} = copy(rt.accepted)
 "Return the classifier history requirement in minutes for runtime compatibility callers."
 function requiredhistoryminutes(rt::TsCache)::Int
     return Int(max(0, Classify.requiredminutes(_strategyclassifier(rt))))
+end
+
+"""Attach one base's OHLCV to the runtime classifier and bring its feature config current.
+
+The live path does this implicitly in `acceptbase!`, but the replay path feeds prepopulated
+label/score rows and never calls the classifier - so a strategy algorithm that reads
+classifier-derived features (e.g. the `maxwindow` regression) would find no base. Replay
+drivers call this per pair and release it again with `dropbase!`."""
+function addclassifierbase!(rt::TsCache, ohlcv::Ohlcv.OhlcvData)::Nothing
+    classifier = _strategyclassifier(rt)
+    basekey = uppercase(String(ohlcv.base))
+    if !(basekey in Set{String}(uppercase.(String.(Classify.bases(classifier)))))
+        Classify.addbase!(classifier, ohlcv)
+    end
+    Classify.supplement!(classifier)
+    return nothing
 end
 
 "Drop one base from TsCache, including classifier and cached pair state."
@@ -703,11 +743,141 @@ function _refresh_close_limits!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix
 end
 
 """
-    gain_limit_reversal!(strategy, cols, ix)
+    gain_limit_reversal!(cfg, cols, ix)
 
-Limit-reversal lane update that writes one sample row state through typed column handles.
+Limit-reversal lane update: decide the resting order limits of Trades row `ix` from that
+row's label/score and the limits carried over from row `ix-1`. Mutates row `ix` in place
+and returns `nothing`.
+
+Steps:
+
+1. **Classification.** A `score` of `0f0` is the "not yet classified" sentinel of the live
+   path, so `label`/`score` are filled from `cfg.classifier` first. Replay rows arrive
+   prepopulated and skip this.
+2. **Carry over.** `lo_limit`, `lc_limit`, `so_limit`, `sc_limit` and the two stop legs
+   `lcsl_limit`/`scsl_limit` are inherited from row `ix-1` (zero on the first row), so a
+   resting order survives ticks that decide nothing new.
+3. **Open branch** (label `longopen`/`longstrongopen`, mirrored for the short side):
+   - `score >= cfg.openthreshold`: place the open limit one `cfg.buygain` below (long) or
+     above (short) the last close, anchor the matching close bracket (take profit at
+     `cfg.sellgain`, stop at `cfg.stoplossgain`) at the same close, and clear the opposite
+     open limit. If an opposite position is still held, its close limit is coupled to this
+     open limit so the reversal closes and reopens at one price.
+   - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
+     only the close limits are refreshed - without `cfg.limitreduction` aging, because a
+     position whose score just dipped below the threshold is not an aged position.
+4. **Otherwise** (hold/close/ignore labels): close limits of held positions are refreshed
+   from the last close, with `cfg.limitreduction` widening the target the longer the
+   position has exceeded `cfg.maxwindow`.
+5. **Reversal ordering.** Coupled reversal pairs are made consistent: a long close must not
+   match later than the short open that replaces it (and mirrored). If one leg of a pair is
+   missing, both are cleared.
+
+All price updates pass `cfg.minpricedelta`, so a limit is only rewritten when it moves by
+more than that relative distance. Amounts and order status are not touched here; they are
+decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
 """
 function gain_limit_reversal!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+    @assert 1 <= ix <= TSM.tradesrows(cols) "ix=$(ix) out of bounds for trades rows=$(TSM.tradesrows(cols))"
+    if cols.score[ix] == 0f0
+        _get_classifier_result!(cfg, cols, ix)
+    end
+
+    prev = ix - 1
+    cols.lo_limit[ix] = ix > 1 ? cols.lo_limit[prev] : 0f0
+    cols.lc_limit[ix] = ix > 1 ? cols.lc_limit[prev] : 0f0
+    cols.so_limit[ix] = ix > 1 ? cols.so_limit[prev] : 0f0
+    cols.sc_limit[ix] = ix > 1 ? cols.sc_limit[prev] : 0f0
+    cols.lcsl_limit[ix] = ix > 1 ? cols.lcsl_limit[prev] : 0f0
+    cols.scsl_limit[ix] = ix > 1 ? cols.scsl_limit[prev] : 0f0
+
+    closeprice = cols.close[ix]
+    if (cols.label[ix] in (longopen, longstrongopen))
+        if (cols.score[ix] >= cfg.openthreshold)
+            lo_candidate = closeprice * (1f0 - (cfg.buygain))
+            if _should_update_price(cols.lo_limit[ix], lo_candidate, cfg.minpricedelta)
+                cols.lo_limit[ix] = lo_candidate
+            end
+            # both bracket legs are anchored at the last close price
+            lc_candidate = _closeprice(cfg, 0, closeprice, up)
+            lc_new = _should_update_price(cols.lc_limit[ix], lc_candidate, cfg.minpricedelta) ? lc_candidate : cols.lc_limit[ix]
+            _setclosebracket!(cfg, cols, ix, longclose, closeprice, lc_new)
+            cols.so_limit[ix] = 0f0
+            _setclosebracket!(cfg, cols, ix, shortclose, closeprice, cols.sp_amount[ix] > 0f0 ? cols.lo_limit[ix] : 0f0)
+        else # label below threshold
+            cols.label[ix] = longhold
+            _refresh_close_limits!(cfg, cols, ix; applyreduction=false)
+        end
+    elseif (cols.label[ix] in (shortopen, shortstrongopen))
+        if (cols.score[ix] >= cfg.openthreshold)
+            so_candidate = closeprice * (1f0 + (cfg.buygain))
+            if _should_update_price(cols.so_limit[ix], so_candidate, cfg.minpricedelta)
+                cols.so_limit[ix] = so_candidate
+            end
+            sc_candidate = _closeprice(cfg, 0, closeprice, down)
+            sc_new = _should_update_price(cols.sc_limit[ix], sc_candidate, cfg.minpricedelta) ? sc_candidate : cols.sc_limit[ix]
+            _setclosebracket!(cfg, cols, ix, shortclose, closeprice, sc_new)
+            cols.lo_limit[ix] = 0f0
+            _setclosebracket!(cfg, cols, ix, longclose, closeprice, cols.lp_amount[ix] > 0f0 ? cols.so_limit[ix] : 0f0)
+        else # label below threshold
+            cols.label[ix] = shorthold
+            _refresh_close_limits!(cfg, cols, ix; applyreduction=false)
+        end
+    else
+        _refresh_close_limits!(cfg, cols, ix)
+    end
+
+    _enforce_reversal_limit_ordering!(cols, ix)
+
+    return
+end
+
+"Relative distance of the row close to the cfg.maxwindow regression line; negative means below."
+function _relative_to_regression(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)::Float32
+    base = uppercase(String(Xch.basequote(String(cols.pair[ix])).basecoin))
+    cl = cfg.classifier
+    haskey(cl.bc, base) || return 0f0
+    regprice = Features.regryat(cl.bc[base].featcfg, cfg.maxwindow, cols.opentime[ix])
+    (isnothing(regprice) || regprice <= 0f0) && return 0f0
+    return (cols.close[ix] - regprice) / regprice
+end
+
+"""
+    gain_limit_reversal_below_regression!(cfg, cols, ix)
+
+Limit-reversal lane update: decide the resting order limits of Trades row `ix` from that
+row's label/score and the limits carried over from row `ix-1`. Mutates row `ix` in place
+and returns `nothing`.
+
+Steps:
+
+1. **Classification.** A `score` of `0f0` is the "not yet classified" sentinel of the live
+   path, so `label`/`score` are filled from `cfg.classifier` first. Replay rows arrive
+   prepopulated and skip this.
+2. **Carry over.** `lo_limit`, `lc_limit`, `so_limit`, `sc_limit` and the two stop legs
+   `lcsl_limit`/`scsl_limit` are inherited from row `ix-1` (zero on the first row), so a
+   resting order survives ticks that decide nothing new.
+3. **Open branch** (label `longopen`/`longstrongopen`, mirrored for the short side):
+   - `score >= cfg.openthreshold`: place the open limit one `cfg.buygain` below (long) or
+     above (short) the last close, anchor the matching close bracket (take profit at
+     `cfg.sellgain`, stop at `cfg.stoplossgain`) at the same close, and clear the opposite
+     open limit. If an opposite position is still held, its close limit is coupled to this
+     open limit so the reversal closes and reopens at one price.
+   - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
+     only the close limits are refreshed - without `cfg.limitreduction` aging, because a
+     position whose score just dipped below the threshold is not an aged position.
+4. **Otherwise** (hold/close/ignore labels): close limits of held positions are refreshed
+   from the last close, with `cfg.limitreduction` widening the target the longer the
+   position has exceeded `cfg.maxwindow`.
+5. **Reversal ordering.** Coupled reversal pairs are made consistent: a long close must not
+   match later than the short open that replaces it (and mirrored). If one leg of a pair is
+   missing, both are cleared.
+
+All price updates pass `cfg.minpricedelta`, so a limit is only rewritten when it moves by
+more than that relative distance. Amounts and order status are not touched here; they are
+decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
+"""
+function gain_limit_reversal_below_regression!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
     @assert 1 <= ix <= TSM.tradesrows(cols) "ix=$(ix) out of bounds for trades rows=$(TSM.tradesrows(cols))"
     if cols.score[ix] == 0f0
         _get_classifier_result!(cfg, cols, ix)
