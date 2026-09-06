@@ -14,6 +14,14 @@ function trend_runtime_load_phase(mode)::String
 end
 
 """
+    trend_nn_fileprefix(configname, phase) -> String
+
+Single naming convention for persisted trend classifier NN artifacts, shared by the
+training side (TrendDetector) and the runtime side (TradingStrategy/Trade).
+"""
+trend_nn_fileprefix(configname::AbstractString, phase::AbstractString)::String = "$(String(configname))-$(String(phase))"
+
+"""
     trend_runtime_folder_from_spec(spec, mode) -> String
 
 Resolve the artifact folder for runtime trend classifier loading. A literal

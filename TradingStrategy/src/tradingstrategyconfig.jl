@@ -19,12 +19,13 @@ targetissuesfilename() = joinpath("results", "targetissues")
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
 default_closethresholds() = Float32[0.1f0]
 
-tradingstrategy01() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0015)
-tradingstrategy02() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy03() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy04() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0015, buygain=0f0, limitreduction=0.05f0)
-tradingstrategy05() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
-tradingstrategy06() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
+tradingstrategy01() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, closethreshold=0.5, makerfee=0.0025)
+tradingstrategy02() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025)
+# original: tradingstrategy03() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
+tradingstrategy03() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true)
+tradingstrategy04() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0025, buygain=0f0, limitreduction=0.05f0)
+tradingstrategy05() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
+tradingstrategy06() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longopen=buy, longhold=hold, shorthold=-hold, shortopen=-buy)), holdbehaviormode=holdbehaviormode)
 
@@ -268,13 +269,12 @@ end
 #region TrendConfig
 
 """Return a one-step TrendDetector config payload."""
-function trendmkconfig(configname::AbstractString, featconfig, targetconfig, classifiermodel, tradingstrategy; classifiertype::Type{<:Classify.AbstractClassifier}=Classify.TrendClassifier001, classbalancing::Bool=true)
+function trendmkconfig(configname::AbstractString, featconfig, targetconfig, classifiermodel, tradingstrategy; classbalancing::Bool=true)
     return (
         configname=String(configname),
         featconfig=featconfig,
         targetconfig=targetconfig,
         classifiermodel=classifiermodel,
-        classifiertype=classifiertype,
         tradingstrategy=tradingstrategy,
         classbalancing=classbalancing,
     )
@@ -506,6 +506,58 @@ const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg 
 trenddetectorconfig(ref::AbstractString) = _config_from_dict(TREND_DETECTOR_CONFIGS, ref; label="trend", prefixes=("trenddetector", "trend", "mk"))
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
 
+#region TradingStrategyConfig
+
+# A trading strategy config decouples the traded strategy from the trend detector config:
+# `tdconfigname` supplies classifier, prediction results and featconfig, while `tradingstrategy`
+# replaces the `tradingstrategy` entry of that trend detector config.
+
+"""
+    ts001()
+
+Trading strategy config `001`: trend detector `046` classifier traded with `tradingstrategy03`.
+"""
+ts001() = (configname="001", tdconfigname="046", tradingstrategy=tradingstrategy03())
+
+"""
+    ts002()
+
+Trading strategy config `002`: trend detector `046` classifier traded with `tradingstrategy04`.
+"""
+ts002() = (configname="002", tdconfigname="046", tradingstrategy=tradingstrategy04())
+
+const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    ts001(), ts002(),
+])
+
+"Return the trading strategy config payload `(configname, tdconfigname, tradingstrategy)` for `ref`."
+tsconfig(ref::AbstractString) = _config_from_dict(TS_CONFIGS, ref; label="trading strategy", prefixes=("tradingstrategy", "ts"))
+
+"Return the TrendDetector config payload referenced by a trading strategy config payload."
+tstrendconfig(tscfg::NamedTuple)::NamedTuple = trenddetectorconfig(tscfg.tdconfigname)
+
+"Return the canonical config reference string for a trading strategy config payload."
+tsconfigref(tscfg::NamedTuple)::String = String(tscfg.configname)
+
+"Return the source tag used when wiring a trading strategy config into Trade."
+tsconfigsource(tscfg::NamedTuple; prefix::AbstractString="tradingstrategy")::String = "$(String(prefix)):$(tsconfigref(tscfg))/$(String(tscfg.tdconfigname))"
+
+"""
+Return a `StrategyConfig` for a trading strategy config payload: the classifier is loaded from
+the referenced TrendDetector config while all trading parameters stem from `tscfg.tradingstrategy`.
+"""
+function tsstrategyconfig(tscfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
+    classifier = loadtrendclassifier(tstrendconfig(tscfg); mnemonic=mnemonic, mode=mode)
+    return _strategy_with_classifier(tscfg.tradingstrategy, classifier)
+end
+
+"Return a `StrategyConfig` for a trading strategy config reference."
+function tsstrategyconfig(ref::AbstractString; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
+    return tsstrategyconfig(tsconfig(ref); mnemonic=mnemonic, mode=mode)
+end
+
+#endregion TradingStrategyConfig
+
 "Return a TradingStrategy.StrategyConfig with an instantiated classifier for a TrendDetector config payload."
 function strategyconfig(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
     classifier = loadtrendclassifier(cfg; mnemonic=mnemonic, mode=mode)
@@ -532,7 +584,7 @@ trendconfigfeaturefactory(cfg::NamedTuple)::Function = () -> cfg.featconfig
 "Load a runtime classifier for a TrendDetector config payload."
 function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::Classify.TrendClassifier001
     modelphase = Classify.trend_runtime_load_phase(mode)
-    modelprefix = "$(cfg.configname)-$(modelphase)"
+    modelprefix = Classify.trend_nn_fileprefix(cfg.configname, modelphase)
     required_minutes = max(Features.requiredminutes(cfg.featconfig), 2)
     spec = (
         config_ref=trendconfigref(cfg),

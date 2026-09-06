@@ -370,20 +370,20 @@ function loadorbuild(
     cfgid::Integer=1,
 )::TrendClassifier001
     hasproperty(spec, :featconfig) || error("missing featconfig in TrendClassifier001 spec")
+    hasproperty(spec, :nn_fileprefix) || error("missing nn_fileprefix in TrendClassifier001 spec")
 
     target_folder = isnothing(folder) ? trend_runtime_folder_from_spec(spec, mode) : String(folder)
     required_minutes = _required_minutes_from_spec(spec)
     targetconfig = _targetconfig_from_spec(spec)
 
-    nntmp = classifiermodel(featurecount, labels, String(mnemonic))
-    if isfile(nnfilename(nntmp.fileprefix; folderpath=target_folder))
-        loadspec = merge(spec, (nn_fileprefix=nntmp.fileprefix,))
+    fileprefix = String(getproperty(spec, :nn_fileprefix))
+    if isfile(nnfilename(fileprefix; folderpath=target_folder))
         try
-            return load(TrendClassifier001, loadspec; mode=mode, folder=target_folder, cfgid=cfgid)
+            return load(TrendClassifier001, spec; mode=mode, folder=target_folder, cfgid=cfgid)
         catch err
             # Legacy BSON artifacts may fail to deserialize after package/model schema changes.
             # Fall back to building a fresh runtime classifier so callers can retrain and resave.
-            @warn "failed to load persisted TrendClassifier001 artifact; rebuilding classifier" folder=target_folder fileprefix=nntmp.fileprefix exception=(err, catch_backtrace())
+            @warn "failed to load persisted TrendClassifier001 artifact; rebuilding classifier" folder=target_folder fileprefix=fileprefix exception=(err, catch_backtrace())
         end
     end
 

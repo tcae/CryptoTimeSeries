@@ -6,7 +6,7 @@ Configuration is defined in the CONFIG block below. Adjust the parameters
 to your requirements before running.
 
 Usage:
-    julia --project=scripts scripts/tradesim.jl [help] [test|train] [config=<name>] [startdt=<DateTime>] [enddt=<DateTime>] [coins=<CSV>]
+    julia --project=scripts scripts/tradesim.jl [help] [test|train] [config=<name>|strat=<name>] [startdt=<DateTime>] [enddt=<DateTime>] [coins=<CSV>]
 """
 
 import Pkg
@@ -73,7 +73,15 @@ Flag parameters:
 Key=value parameters:
   config=<configname>
       Trend preset from `TREND_DETECTOR_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`.
+      Mutually exclusive with `strat`.
       Default: `046`, or `TRADESIM_CONFIG_REF` env var when set
+
+  strat=<configname>
+      Trading strategy preset from `TS_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`.
+      Selects the trend detector config (classifier, prediction results, featconfig) via its
+      `tdconfigname` and replaces that trend config's own trading strategy.
+      Mutually exclusive with `config`.
+      Default: unset, or `TRADESIM_STRAT_REF` env var when set
 
   startdt=<DateTime>
       Override backtest start datetime (ISO-8601 format).
@@ -169,11 +177,19 @@ const MAX_ASSET_FRACTION = 0.1f0
 const STOPLOSSPCT = 0.05f0
 
 # Strategy parameters used by the backtest.
-const CONFIG_REF = _argvalue(ARGS, "config", get(ENV, "TRADESIM_CONFIG_REF", "046"))
+const STRAT_REF = begin
+    raw = strip(String(_argvalue(ARGS, "strat", get(ENV, "TRADESIM_STRAT_REF", ""))))
+    isempty(raw) ? nothing : raw
+end
+@assert isnothing(STRAT_REF) || isnothing(_argvalue(ARGS, "config", nothing)) "config and strat are mutually exclusive; got strat=$(STRAT_REF) and config=$(_argvalue(ARGS, "config", nothing))"
+const STRAT_CONFIG = isnothing(STRAT_REF) ? nothing : TradingStrategy.tsconfig(STRAT_REF)
+const CONFIG_REF = isnothing(STRAT_CONFIG) ? _argvalue(ARGS, "config", get(ENV, "TRADESIM_CONFIG_REF", "046")) : String(STRAT_CONFIG.tdconfigname)
 const CLFOLDER = TESTMODE ? "test" : "training"
 const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
 const CONFIG_NAME = String(CONFIG.configname)
 const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, CLFOLDER)
+# Run label distinguishing log output of different trading strategies applied to the same classifier.
+const RUN_LABEL = isnothing(STRAT_CONFIG) ? CONFIG_NAME : "$(CONFIG_NAME)-ts$(String(STRAT_CONFIG.configname))"
 
 # Replay source folder containing classifier artifacts and prediction outputs.
 const REPLAY_SOURCE_SUBFOLDER = begin
@@ -1045,7 +1061,7 @@ function backtest_report(cache::Trade.TradeCache, startdt::DateTime, enddt::Date
     co = filled_orders_df(cache.xc)
     println()
     println("=" ^ 60)
-    println("  BACKTEST PERFORMANCE REPORT — config $CONFIG_NAME")
+    println("  BACKTEST PERFORMANCE REPORT — config $RUN_LABEL")
     println("  Period : $(Dates.format(startdt, "yyyy-mm-dd")) → $(Dates.format(enddt, "yyyy-mm-dd"))")
     println("=" ^ 60)
 
@@ -1188,7 +1204,7 @@ Xch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 3
 
-println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES usepartitions=$USE_PARTITIONS")
+println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME strat=$(isnothing(STRAT_CONFIG) ? "none" : String(STRAT_CONFIG.configname)) phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES usepartitions=$USE_PARTITIONS")
 # println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
 println("$(EnvConfig.now()): replay source folder=$REPLAY_SOURCE_SUBFOLDER")
@@ -1208,11 +1224,13 @@ else
     cache_enddt = run_enddt
 end
 
-const LOG_SUBFOLDER = isempty(LOG_SUBFOLDER_OVERRIDE) ? _tradesim_default_log_subfolder(CONFIG_NAME, TESTMODE, BACKTEST_BASES, cache_startdt, cache_enddt) : LOG_SUBFOLDER_OVERRIDE
+const LOG_SUBFOLDER = isempty(LOG_SUBFOLDER_OVERRIDE) ? _tradesim_default_log_subfolder(RUN_LABEL, TESTMODE, BACKTEST_BASES, cache_startdt, cache_enddt) : LOG_SUBFOLDER_OVERRIDE
 EnvConfig.setlogpath(LOG_SUBFOLDER)
 println("$(EnvConfig.now()): log subfolder=$LOG_SUBFOLDER")
 
-strategy_runtime = TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME")
+strategy_runtime = isnothing(STRAT_CONFIG) ?
+    TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME") :
+    TradingStrategy.TsCache(strategy=TradingStrategy.tsstrategyconfig(STRAT_CONFIG), source="tradesim:$(TradingStrategy.tsconfigsource(STRAT_CONFIG))")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BUILD TRADE CACHE
@@ -1235,7 +1253,7 @@ cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
 cache.mc[:maxbudgetquote]   = MAX_BUDGET_QUOTE
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$CONFIG_NAME, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")
+println("$(EnvConfig.now()): strategy config=$RUN_LABEL, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): blacklist ($(length(cache.mc[:blacklistbases])) bases): $(cache.mc[:blacklistbases])")
 # println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")

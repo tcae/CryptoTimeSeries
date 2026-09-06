@@ -36,7 +36,6 @@ mutable struct TrendDetectorConfig
     featconfig::Features.AbstractFeatures
     targetconfig::Targets.AbstractTargets
     classifiermodel
-    classifiertype::Type{<:Classify.AbstractClassifier}
     tradingstrategy::TradingStrategy.StrategyConfig
     startdt::DateTime
     enddt::DateTime
@@ -44,7 +43,7 @@ mutable struct TrendDetectorConfig
     partitionconfig::NamedTuple
     coins::Vector{String}
     classbalancing::Bool
-    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, classifiertype::Type{<:Classify.AbstractClassifier}=Classify.TrendClassifier001, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=TradingStrategy.partitionconfig02(), coins, classbalancing=true)
+    function TrendDetectorConfig(;configname, folder="Trend-$configname-$(EnvConfig.configmode)", featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode=execute, partitionconfig=TradingStrategy.partitionconfig02(), coins, classbalancing=true)
         EnvConfig.setlogpath(folder)
         EnvConfig.setdfformat!(:arrow)
         (verbosity >= 2) && println("verbosity: $verbosity")
@@ -53,7 +52,7 @@ mutable struct TrendDetectorConfig
         (verbosity >= 2) && println("featuresconfig=$(Features.describe(featconfig))")
         (verbosity >= 2) && println("targetsconfig=$(Targets.describe(targetconfig))")
         (verbosity >= 2) && println("classbalancing=$(classbalancing)")
-        return new(configname, folder, featconfig, targetconfig, classifiermodel, classifiertype, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing)
+        return new(configname, folder, featconfig, targetconfig, classifiermodel, tradingstrategy, startdt, enddt, opmode, partitionconfig, coins, classbalancing)
     end
 end
 cfg = nothing # to be set to a TrendDetectorConfig instance in main
@@ -440,9 +439,13 @@ function _classifierfolder(cfg::TrendDetectorConfig)::String
     return EnvConfig.logfolder()
 end
 
+"Artifact phase of the classifier NN file; runtime and training must agree on it."
+_classifierphase() = Classify.trend_runtime_load_phase(EnvConfig.configmode)
+
 function _trendclassifierspec(cfg::TrendDetectorConfig)
     return (
         config_ref=cfg.configname,
+        nn_fileprefix=Classify.trend_nn_fileprefix(cfg.configname, _classifierphase()),
         featconfig=() -> cfg.featconfig,
         targetconfig=() -> cfg.targetconfig,
         folder=_classifierfolder(cfg),
@@ -457,18 +460,16 @@ function _trendclassifierseed(cfg::TrendDetectorConfig)::Classify.AbstractClassi
     spec = _trendclassifierspec(cfg)
 
     if cfg.opmode == gain
-        nntmp = cfg.classifiermodel(featurecount, labels, mnemonic)
-        loadspec = merge(spec, (nn_fileprefix=nntmp.fileprefix,))
         return Classify.load(
-            cfg.classifiertype,
-            loadspec;
+            Classify.TrendClassifier001,
+            spec;
             mode=EnvConfig.configmode,
             folder=classifierfolder,
         )
     end
 
     return Classify.loadorbuild(
-        cfg.classifiertype,
+        Classify.TrendClassifier001,
         spec,
         featurecount,
         labels,
@@ -492,6 +493,9 @@ function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassi
 
     if !Classify.isadapted(cl) || retrain
         println("$(EnvConfig.now()) adapting one mix classifier for all coins")
+        # adaptnn! checkpoints per epoch under nn.fileprefix, so it must already carry the
+        # runtime artifact name; otherwise best-loss checkpoint and runtime file diverge.
+        Classify.setmnemonic(cl.nn, Classify.trend_nn_fileprefix(cfg.configname, _classifierphase()))
         resultsdf, featuresdf = getfeaturestargetsdf!(cfg)
         if isnothing(resultsdf) || (size(resultsdf, 1) == 0)
             return cl
@@ -513,8 +517,6 @@ function getruntimeclassifier(cfg::TrendDetectorConfig)::Classify.AbstractClassi
 
         (verbosity >= 3) && showlosses(model)
         println("$(EnvConfig.now()) finished adapting mix classifier - classifier $(Classify.nnconverged(cl) ? "did" : "did not") converge")
-        modelprefix = "$(cfg.configname)-$(String(Symbol(EnvConfig.configmode)))"
-        Classify.savenn(cl.nn; folderpath=EnvConfig.logfolder(), fileprefix=modelprefix, save_lastepoch=false, save_result=true)
         # Keep the reviewed/classification-export artifacts in neuralnets, but do not
         # force the runtime training loop to read/write there before evaluation.
     end

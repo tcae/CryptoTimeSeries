@@ -208,9 +208,9 @@ Base.@kwdef struct StrategyConfig
     enforcemakerlimits::Bool = false
     buygain::Float32 = 0.001f0
     sellgain::Float32 = 0.01f0
-    stoplossgain::Float32 = 0.05f0
+    stoplossgain::Float32 = 0.05f0 # 5% stop loss
     limitreduction::Float32 = 0f0
-    minpricedelta::Float32 = 0.001f0
+    minpricedelta::Float32 = 0.001f0 # 0.1% abs(minimum price delta)
     max_classify_staleness_minutes::Int = 5
     # Quote budget per lane. An open lane position consumes it, so a lane can only be topped
     # up while its invested quote stays below this; equal-to-one-open budget yields exactly
@@ -246,24 +246,9 @@ mutable struct TsCache
 end
 
 @inline function _strategy_with_classifier(spec::StrategyConfig, classifier::Classify.AbstractClassifier)::StrategyConfig
-    return StrategyConfig(
-        classifier=classifier,
-        algorithm=spec.algorithm,
-        maxwindow=spec.maxwindow,
-        openthreshold=spec.openthreshold,
-        closethreshold=spec.closethreshold,
-        makerfee=spec.makerfee,
-        takerfee=spec.takerfee,
-        enforcemakerlimits=spec.enforcemakerlimits,
-        buygain=spec.buygain,
-        sellgain=spec.sellgain,
-        stoplossgain=spec.stoplossgain,
-        limitreduction=spec.limitreduction,
-        minpricedelta=spec.minpricedelta,
-        max_classify_staleness_minutes=spec.max_classify_staleness_minutes,
-        maxbudgetquote=spec.maxbudgetquote,
-        minorderquote=spec.minorderquote,
-    )
+    # Field-generic copy so a new StrategyConfig field is never silently dropped here.
+    fields = NamedTuple{fieldnames(StrategyConfig)}(map(f -> getfield(spec, f), fieldnames(StrategyConfig)))
+    return StrategyConfig(; merge(fields, (classifier=classifier,))...)
 end
 
 @inline function _strategyclassifier(rt::TsCache)::Classify.AbstractClassifier
