@@ -94,6 +94,18 @@ Return the warm-up horizon required before advice can be produced.
 """
 requiredminutes(cl::TrendClassifier001)::Integer = cl.required_minutes
 
+"""
+    featconfig(cl::TrendClassifier001, base::AbstractString)
+
+Return the feature configuration attached to `base`, or `nothing` when the base was not
+added. Gives strategies read access to the cached features (regressions, distances,
+relative volume) that were already computed for inference.
+"""
+function featconfig(cl::TrendClassifier001, base::AbstractString)
+    entry = get(cl.bc, uppercase(String(base)), nothing)
+    return isnothing(entry) ? nothing : entry.featcfg
+end
+
 function _required_minutes_from_spec(spec::NamedTuple)::Int
     if hasproperty(spec, :required_minutes)
         return Int(getproperty(spec, :required_minutes))

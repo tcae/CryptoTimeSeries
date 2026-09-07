@@ -832,14 +832,39 @@ function gain_limit_reversal!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::
     return
 end
 
+"""Return the classifier feature config of the row's base, or `nothing` when unavailable.
+
+Unavailable means the base was never attached to the classifier - the replay path only does
+that when its driver calls `addclassifierbase!`, so a strategy reading features must treat
+this as "no guidance" rather than as an error."""
+function _rowfeatconfig(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+    classifier = cfg.classifier
+    isnothing(classifier) && return nothing
+    pair = cols.pair[ix]
+    ismissing(pair) && return nothing
+    return Classify.featconfig(classifier, String(Xch.basequote(String(pair)).basecoin))
+end
+
 "Relative distance of the row close to the cfg.maxwindow regression line; negative means below."
-function _relative_to_regression(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)::Float32
-    base = uppercase(String(Xch.basequote(String(cols.pair[ix])).basecoin))
-    cl = cfg.classifier
-    haskey(cl.bc, base) || return 0f0
-    regprice = Features.regryat(cl.bc[base].featcfg, cfg.maxwindow, cols.opentime[ix])
+function _relative_to_regression(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+    featcfg = _rowfeatconfig(cfg, cols, ix)
+    isnothing(featcfg) && return 0f0
+    regprice = Features.regryat(featcfg, window, cols.opentime[ix])
     (isnothing(regprice) || regprice <= 0f0) && return 0f0
     return (cols.close[ix] - regprice) / regprice
+end
+
+"""Slope of the `window` regression at the row sample in percent per hour.
+
+Derived from the regression gradient rather than from two prices, so it is the trend of the
+fitted line and not a point-to-point difference. Returns `0f0` when the regression is
+unavailable for this row, which reads as "flat, no guidance"."""
+function _regression_slope_percent_per_hour(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+    featcfg = _rowfeatconfig(cfg, cols, ix)
+    isnothing(featcfg) && return 0f0
+    regr = Features.regressionat(featcfg, window, cols.opentime[ix])
+    (isnothing(regr) || (regr.regry <= 0f0)) && return 0f0
+    return Float32(Features.relativegain(regr.regry, regr.grad, 60) * 100f0)
 end
 
 """

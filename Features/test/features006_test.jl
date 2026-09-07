@@ -59,6 +59,14 @@ end
     @test isnothing(Features.regryat(f6, 5, lastdt + Hour(1)))
     @test_throws AssertionError Features.regryat(f6, 7, lastdt)
 
+    # regressionat adds the per minute gradient of the same sample
+    regr = Features.regressionat(f6, 5, lastdt)
+    @test regr.regry == Features.regryat(f6, 5, lastdt)
+    @test regr.grad == f6.fdfno[end, Features.fdfnocol(f6, Features._grad(f6, window=5, offset=0))]
+    @test isnothing(Features.regressionat(f6, 5, lastdt + Hour(1)))
+    # percent per hour derived from the fitted line
+    @test Features.relativegain(regr.regry, regr.grad, 60) * 100 ≈ (regr.grad * 59) / (regr.regry - regr.grad * 59) * 100
+
     ohlcvshort = TestOhlcv.testohlcv("SINE", startdt, enddt-Hour(1))
     (verbosity >= 3) && println("stardt=$startdt enddt=$enddt ohlcvshort=$ohlcvshort")
     # Ohlcv.timerangecut!(ohlcvshort, startdt, enddt-Hour(1))

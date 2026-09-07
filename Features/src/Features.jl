@@ -1585,24 +1585,31 @@ end
 opentime(f6::Features006) = isnothing(f6.fdf) ? DateTime[] : f6.fdf[!, :opentime]
 
 """
-    regryat(f6::Features006, window::Integer, dt::DateTime)
+    regressionat(f6::Features006, window::Integer, dt::DateTime)
 
-Return the rolling regression line value over `:pivot` for `window` at `dt`, or `nothing`
-when `dt` is not covered by the supplemented range.
+Return `(regry, grad)` of the rolling regression over `:pivot` for `window` at `dt`, or
+`nothing` when `dt` is not covered by the supplemented range. `regry` is the unnormalized
+regression end point and `grad` its slope per minute.
 
-This is the unnormalized regression end point kept in `fdfno`, which `addgrad!`, `addstd!`
-and `addregry!` all materialize for their window - in contrast to the requested feature
-column, which carries the pivot-relative residual. `offset` does not apply here: `fdfno`
-columns are keyed by window only and the offset is a lookback applied when the feature
-vector is built.
+Both come from `fdfno`, which `addgrad!`, `addstd!` and `addregry!` all materialize for
+their window - in contrast to the requested feature columns, which carry pivot-relative
+values. `offset` does not apply here: `fdfno` columns are keyed by window only and the
+offset is a lookback applied when the feature vector is built.
 """
-function regryat(f6::Features006, window::Integer, dt::DateTime)
+function regressionat(f6::Features006, window::Integer, dt::DateTime)
     (isnothing(f6.fdfno) || !(:opentime in propertynames(f6.fdfno)) || (size(f6.fdfno, 1) == 0)) && return nothing
-    col = fdfnocol(f6, _regry(f6, window=window, offset=0))
-    @assert col in names(f6.fdfno) "regression window=$(window) not configured for $(isnothing(f6.ohlcv) ? "unset base" : f6.ohlcv.base); available fdfno columns=$(names(f6.fdfno))"
+    rycol = fdfnocol(f6, _regry(f6, window=window, offset=0))
+    rgcol = fdfnocol(f6, _grad(f6, window=window, offset=0))
+    @assert (rycol in names(f6.fdfno)) && (rgcol in names(f6.fdfno)) "regression window=$(window) not configured for $(isnothing(f6.ohlcv) ? "unset base" : f6.ohlcv.base); available fdfno columns=$(names(f6.fdfno))"
     ot = f6.fdfno[!, :opentime]
     ix = Ohlcv.rowix(ot, dt)
-    return ot[ix] == dt ? f6.fdfno[ix, col] : nothing
+    return ot[ix] == dt ? (regry=f6.fdfno[ix, rycol], grad=f6.fdfno[ix, rgcol]) : nothing
+end
+
+"Return the rolling regression line value over `:pivot` for `window` at `dt`, or `nothing`; see `regressionat`."
+function regryat(f6::Features006, window::Integer, dt::DateTime)
+    regr = regressionat(f6, window, dt)
+    return isnothing(regr) ? nothing : regr.regry
 end
 
 #endregion Features006
