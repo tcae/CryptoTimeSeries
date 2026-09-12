@@ -109,7 +109,7 @@ Normalization policy:
 
 ## Runtime helper columns (outside Trades v1)
 
-`predicted`, `openthreshold`, and `closethreshold` are gaindf metadata columns written by TrendDetector gain post-processing (`addgainadmin!`), not Trades v1 columns.
+`predicted` is gaindf metadata written by TrendDetector gain post-processing, not a Trades v1 column.
 
 Ownership:
 - Primary writer: TrendDetector

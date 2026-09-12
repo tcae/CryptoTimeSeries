@@ -10,7 +10,7 @@ EnvConfig.setpairquote!("USDT")
 
 @testset "Xch USDT market intent APIs" begin
     dt = DateTime("2025-05-01T12:00:00")
-    xc = Xch.XchCache(startdt=dt, enddt=dt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=dt, enddt=dt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.setcurrenttime!(xc, dt)
     bc = Xch.rawcache(xc.bc)
 

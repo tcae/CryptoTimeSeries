@@ -26,7 +26,7 @@ end
 @enum TradeMode buysell closeonly quickexit notrade
 
 """
-Loop lifecycle states stored in `TradeCache.mc[:loop_state]`.
+Loop lifecycle state is stored in `TradeCache.loop_state`.
 - `loop_idle`: loop has not been started yet
 - `loop_running`: loop is executing ticks
 - `loop_paused`: loop is suspended between ticks
@@ -66,32 +66,27 @@ end
 + *baseconstraint* is an array of base crypto strings that constrains the crypto bases for trading else if *nothing* there is no constraint
 
 """
-mutable struct TradeCache
-    xc::Xch.XchCache  # required to connect to exchange
-    cfg::AbstractDataFrame    # maintains the bases to trade and their strategy acceptance state
-    ts::TradingStrategy.TsCache
-    mc::Dict # MC = module constants
-    looplock::ReentrantLock
-    loopcond::Threads.Condition
-    function TradeCache(; xc=Xch.XchCache(), strategy=TradingStrategy.TsCache("046"; source="default"), trademode=notrade, stoplosspct)
-        @assert 0 < stoplosspct < 1 "stoplosspct=$(stoplosspct) must be a fraction between 0 and 1"
-        looplock = ReentrantLock()
-        ts = strategy isa TradingStrategy.TsCache ? strategy : strategy isa AbstractString ? TradingStrategy.TsCache(strategy; source="default") : strategy isa TradingStrategy.StrategyConfig ? TradingStrategy.TsCache(strategy=strategy, source="default") : throw(ArgumentError("strategy must be TradingStrategy.TsCache, TradingStrategy.StrategyConfig, or a config ref string"))
-        cache = new(xc, DataFrame(), ts, Dict(), looplock, Threads.Condition(looplock))
-        cache.mc[:blacklistbases] = String[] # bases excluded from new trading; held positions may still be closed
-        cache.mc[:maxassetfraction] = 0.1f0 # defines the maximum ratio of (a specific asset) / ( total assets) - only close trades, if this is exceeded
-        cache.mc[:maxbudgetquote] = nothing # optional overall quote budget cap; if set, trading uses min(totalusdt, maxbudgetquote)
-        cache.mc[:minorderquote] = 10f0
-        cache.mc[:stoplosspct] = Float32(stoplosspct) # mandatory stop-loss distance from each open order's price
-        cache.mc[:reloadtimes] = [Time("04:00:00")]
-        cache.mc[:last_traderefresh_dt] = nothing
-        cache.mc[:trademode] = trademode  # see TradeMode definition above
-        cache.mc[:loop_state] = loop_idle
-        Xch.setfeerates!(xc, ts.cfg.makerfee, ts.cfg.takerfee)
-        Xch.setmakerlimitenforcement!(xc, ts.cfg.enforcemakerlimits)
-        (verbosity >= 4) && println("TradeCache trademode = $(cache.mc[:trademode]), maxassetfraction = $(cache.mc[:maxassetfraction]), maxbudgetquote = $(cache.mc[:maxbudgetquote]), stoplosspct = $(cache.mc[:stoplosspct]), reloadtimes = $(cache.mc[:reloadtimes]), blacklistbases = $(cache.mc[:blacklistbases])")
-        return cache
-    end
+Base.@kwdef mutable struct TradeCache
+    xc::Xch.XchCache = Xch.XchCache()  # required to connect to exchange
+    cfg::AbstractDataFrame = DataFrame()    # maintains the bases to trade and their strategy acceptance state
+    ts::TradingStrategy.TsCache = TradingStrategy.TsCache("046"; source="default")
+    blacklistbases::Vector{String} = String[]
+    reloadtimes::Vector{Time} = [Time("04:00:00")]
+    last_traderefresh_dt::Union{Nothing, DateTime} = nothing
+    trademode::TradeMode = notrade
+    loop_state::LoopState = loop_idle
+    loop_error::Any = nothing
+    looplock::ReentrantLock = ReentrantLock()
+    loopcond::Threads.Condition = Threads.Condition(looplock)
+end
+
+function TradeCache(strategy::Union{TradingStrategy.TsCache, AbstractString, TradingStrategy.StrategyConfig}; xc=Xch.XchCache(), trademode=notrade)
+    ts = strategy isa TradingStrategy.TsCache ? strategy : strategy isa AbstractString ? TradingStrategy.TsCache(strategy; source="default") : TradingStrategy.TsCache(strategy=strategy, source="default")
+    cache = TradeCache(xc=xc, ts=ts, trademode=trademode)
+    Xch.setfeerates!(xc, ts.cfg.makerfee, ts.cfg.takerfee)
+    Xch.setmakerlimitenforcement!(xc, ts.cfg.enforcemakerlimits)
+    (verbosity >= 4) && println("TradeCache trademode = $(cache.trademode), maxassetfraction = $(ts.cfg.maxassetfraction), maxbudgetquote = $(ts.cfg.maxbudgetquote), minorderquote = $(ts.cfg.minorderquote), stoploss = $(ts.cfg.stoploss), reloadtimes = $(cache.reloadtimes), blacklistbases = $(cache.blacklistbases)")
+    return cache
 end
 
 function _tradeselection_history_minutes(tc::TradeCache)::Int
@@ -290,10 +285,10 @@ end
 """Synchronize `openenabled` and `closeenabled` flags from the currently computed criteria columns."""
 function _sync_tradeflags!(tc::TradeCache; assetonly::Bool=false)
     if assetonly
-        tc.cfg[!, :openenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted] .&& .!tc.cfg[!, :blacklisted] .&& (tc.mc[:trademode] == buysell)
+        tc.cfg[!, :openenabled] .= tc.cfg[!, :inportfolio] .&& tc.cfg[!, :classifieraccepted] .&& .!tc.cfg[!, :blacklisted] .&& (tc.trademode == buysell)
         tc.cfg[!, :closeenabled] .= tc.cfg[!, :inportfolio]
     else
-        tc.cfg[!, :openenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :minquotevol] .&& tc.cfg[!, :continuousminvol] .&& .!tc.cfg[!, :blacklisted] .&& (tc.mc[:trademode] == buysell)
+        tc.cfg[!, :openenabled] .= tc.cfg[!, :classifieraccepted] .&& tc.cfg[!, :minquotevol] .&& tc.cfg[!, :continuousminvol] .&& .!tc.cfg[!, :blacklisted] .&& (tc.trademode == buysell)
         tc.cfg[!, :closeenabled] .= tc.cfg[!, :openenabled] .|| tc.cfg[!, :inportfolio]
     end
     return tc
@@ -301,7 +296,7 @@ end
 
 "Return normalized set of base coins excluded from new trading by runtime configuration."
 function _blacklistbaseset(tc::TradeCache, quotecoin::AbstractString)::Set{String}
-    tokens = get(tc.mc, :blacklistbases, String[])
+    tokens = tc.blacklistbases
     normalized = [_normalize_basecoin_token(x, quotecoin) for x in tokens]
     return Set(String.(filter(!isnothing, normalized)))
 end
@@ -335,7 +330,7 @@ The epoch ends at the next configured reload time, because that is when the next
 `tradeselection!` runs and extends it again. Without a reload schedule (backtests set
 `reloadtimes = Time[]`) a full day is allocated."""
 function _tradeselection_epochminutes(tc::TradeCache, datetime::DateTime)::Int
-    reloadtimes = get(tc.mc, :reloadtimes, Time[])
+    reloadtimes = tc.reloadtimes
     isempty(reloadtimes) && return 24 * 60
     now_t = Time(floor(datetime, Minute(1)))
     aheads = [Int(Dates.value(Minute(t - now_t))) for t in reloadtimes if t > now_t]
@@ -589,26 +584,26 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
         tradesdf = tradesdfdict[base].tradesdf
         tradesrow = tradesdf[tradesix, :]
         TSM.settrades_tsmstate!(tradesdf, tradesix, "request")
-        if (cache.mc[:trademode] == quickexit) || (base in cache.mc[:blacklistbases])
+        if (cache.trademode == quickexit) || (base in cache.blacklistbases)
             TSM.settrades_label!(tradesdf, tradesix, allclose)
             TSM.settrades_limit!(tradesdf, tradesix, longopen, 0f0)
             TSM.settrades_limit!(tradesdf, tradesix, longclose, 0f0)
             TSM.settrades_limit!(tradesdf, tradesix, shortopen, 0f0)
             TSM.settrades_limit!(tradesdf, tradesix, shortclose, 0f0)
-            if cache.mc[:trademode] == quickexit
+            if cache.trademode == quickexit
                 logged = Xch.log_trading_issue(cache.xc, "Trade", "quickexit mode")
                 TSM.settrades_msg!(tradesdf, tradesix, longopen, logged)
                 TSM.settrades_msg!(tradesdf, tradesix, longclose, logged)
                 TSM.settrades_msg!(tradesdf, tradesix, shortopen, logged)
                 TSM.settrades_msg!(tradesdf, tradesix, shortclose, logged)
-            elseif base in cache.mc[:blacklistbases]
+            elseif base in cache.blacklistbases
                 logged = Xch.log_trading_issue(cache.xc, "Trade", "blacklisted base")
                 TSM.settrades_msg!(tradesdf, tradesix, longopen, logged)
                 TSM.settrades_msg!(tradesdf, tradesix, longclose, logged)
                 TSM.settrades_msg!(tradesdf, tradesix, shortopen, logged)
                 TSM.settrades_msg!(tradesdf, tradesix, shortclose, logged)
             end
-        elseif cache.mc[:trademode] == notrade
+        elseif cache.trademode == notrade
             TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
             TSM.settrades_amount!(tradesdf, tradesix, longclose, 0f0)
             TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
@@ -642,10 +637,12 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
     freemargin = acct.freemargin
     equity = acct.equity
 
-    maxbudgetquote = get(cache.mc, :maxbudgetquote, nothing)
+    strategy = cache.ts.cfg
+    maxbudgetquote = strategy.maxbudgetquote
+    minorderquote = strategy.minorderquote
     availablequote = freemargin #* too optimistic: + closequote + posquote
-    cappedquote = isnothing(maxbudgetquote) ? min(availablequote, equity) : min(availablequote, equity, maxbudgetquote)
-    max_servable_orders = floor(Int, cappedquote / cache.mc[:minorderquote])
+    cappedquote = min(availablequote, equity, maxbudgetquote)
+    max_servable_orders = floor(Int, cappedquote / minorderquote)
     ordercount = min(max_servable_orders, opencount)
 
     tradeamount = opencount > 0 ? (cappedquote / ordercount) : 0f0
@@ -669,9 +666,9 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
             # A resting short-open order from an earlier tick carries so_amount forward; this
             # tick decided the opposite side, so that intent is stale.
             TSM.settrades_amount!(tradesdf, tradesix, shortopen, 0f0)
-            if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
+            if (cappedquote >= minorderquote) && (cache.trademode == buysell)
                 TSM.settrades_amount!(tradesdf, tradesix, longopen, min(max(tradeamount / tradesrow.close - tradesrow.lp_amount, 0f0), cappedquote / tradesrow.close))
-                if tradesrow.lo_amount * tradesrow.close >= cache.mc[:minorderquote]
+                if tradesrow.lo_amount * tradesrow.close >= minorderquote
                     cappedquote -= tradesrow.lo_amount * tradesrow.close
                 else
                     TSM.settrades_msg!(tradesdf, tradesix, longopen, "lo ignore: already all assigned")
@@ -691,9 +688,9 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
         elseif tradesrow.label in [shortstrongopen, shortopen]
             # Mirror of the long branch: drop a carried-forward long-open intent.
             TSM.settrades_amount!(tradesdf, tradesix, longopen, 0f0)
-            if (cappedquote >= cache.mc[:minorderquote]) && (cache.mc[:trademode] == buysell)
+            if (cappedquote >= minorderquote) && (cache.trademode == buysell)
                 TSM.settrades_amount!(tradesdf, tradesix, shortopen, min(max(tradeamount / tradesrow.close - tradesrow.sp_amount, 0f0), cappedquote / tradesrow.close))
-                if tradesrow.so_amount * tradesrow.close >= cache.mc[:minorderquote]
+                if tradesrow.so_amount * tradesrow.close >= minorderquote
                     cappedquote -= tradesrow.so_amount * tradesrow.close
                 else
                     TSM.settrades_msg!(tradesdf, tradesix, shortopen, "so ignore: already all assigned")
@@ -730,8 +727,8 @@ end
 # ── Loop control ────────────────────────────────────────────────────────────
 
 "Returns the current loop lifecycle state."
-_loopstate_nolock(cache::TradeCache) = LoopState(Int(cache.mc[:loop_state]))
-_setloopstate_nolock!(cache::TradeCache, s::LoopState) = (cache.mc[:loop_state] = s; nothing)
+_loopstate_nolock(cache::TradeCache) = cache.loop_state
+_setloopstate_nolock!(cache::TradeCache, s::LoopState) = (cache.loop_state = s; nothing)
 
 function _setloopstate!(cache::TradeCache, s::LoopState)
     lock(cache.looplock)
@@ -766,18 +763,18 @@ function _should_refresh_tradeselection(cache::TradeCache)::Bool
     if isnothing(currentdt)
         return false
     end
-    refresh_times = get(cache.mc, :reloadtimes, Time[])
+    refresh_times = cache.reloadtimes
     currentminute = floor(currentdt, Minute(1))
     if !(Time(currentminute) in refresh_times)
         return false
     end
-    lastrefresh = get(cache.mc, :last_traderefresh_dt, nothing)
+    lastrefresh = cache.last_traderefresh_dt
     return isnothing(lastrefresh) || (lastrefresh != currentminute)
 end
 
 function _mark_tradeselection_refreshed!(cache::TradeCache)
     currentdt = cache.xc.currentdt
-    cache.mc[:last_traderefresh_dt] = isnothing(currentdt) ? nothing : floor(currentdt, Minute(1))
+    cache.last_traderefresh_dt = isnothing(currentdt) ? nothing : floor(currentdt, Minute(1))
     return cache
 end
 
@@ -868,7 +865,7 @@ function _run_tradeloop!(cache::TradeCache)
     _setloopstate!(cache, loop_running)
     # Cleared per run; set to the exception when a tick fails so callers can tell a completed
     # run from an aborted one (the loop itself swallows the exception to still report a summary).
-    cache.mc[:loop_error] = nothing
+    cache.loop_error = nothing
     lastprogressdate = nothing
     try
         for c in cache.xc
@@ -887,7 +884,7 @@ function _run_tradeloop!(cache::TradeCache)
         if isa(ex, InterruptException)
             (verbosity >= 0) && println("\nCtrl+C pressed within tradeloop")
         else
-            cache.mc[:loop_error] = ex
+            cache.loop_error = ex
             (verbosity >= 0) && @error "exception=$ex"
             bt = catch_backtrace()
             for ptr in bt

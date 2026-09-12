@@ -223,7 +223,6 @@ Base.@kwdef struct StrategyConfig
     algorithm::Function = gain_limit_reversal!
     maxwindow::Int = 4 * 60
     openthreshold::Float32 = 0.6f0
-    closethreshold::Float32 = 0.5f0
     makerfee::Float32 = 0f0
     takerfee::Float32 = 0f0
     # When true, open/close limit orders are submitted post-only: if the exchange would
@@ -232,7 +231,7 @@ Base.@kwdef struct StrategyConfig
     enforcemakerlimits::Bool = false
     buygain::Float32 = 0.001f0
     sellgain::Float32 = 0.01f0
-    stoplossgain::Float32 = 0.05f0 # 5% stop loss
+    stoploss::Float32 = 0.05f0 # 5% stop loss
     limitreduction::Float32 = 0f0
     minpricedelta::Float32 = 0.001f0 # 0.1% abs(minimum price delta)
     max_classify_staleness_minutes::Int = 5
@@ -243,6 +242,8 @@ Base.@kwdef struct StrategyConfig
     # Smallest order the exchange accepts. Without it, a lane sitting at its budget posts
     # float-residue dust orders that pollute position and gain accounting.
     minorderquote::Float32 = 10f0
+    # Maximum ratio of one asset's value to the total portfolio value.
+    maxassetfraction::Float32 = 0.1f0
 end
 
 """Per-trading-pair runtime state holder used by `TsCache`.
@@ -664,11 +665,11 @@ end
 
 " stop-loss price of a close bracket relative to the same reference price as the take-profit leg"
 function _stopprice(cfg::StrategyConfig, refprice::Float32, updown::Targets.TrendPhase)
-    ((cfg.stoplossgain <= 0f0) || (refprice <= 0f0)) && return 0f0
+    ((cfg.stoploss <= 0f0) || (refprice <= 0f0)) && return 0f0
     if updown == up
-        return refprice * (1f0 - cfg.stoplossgain)
+        return refprice * (1f0 - cfg.stoploss)
     elseif updown == down
-        return refprice * (1f0 + cfg.stoplossgain)
+        return refprice * (1f0 + cfg.stoploss)
     else
         return 0f0
     end
@@ -760,7 +761,7 @@ Steps:
 3. **Open branch** (label `longopen`/`longstrongopen`, mirrored for the short side):
    - `score >= cfg.openthreshold`: place the open limit one `cfg.buygain` below (long) or
      above (short) the last close, anchor the matching close bracket (take profit at
-     `cfg.sellgain`, stop at `cfg.stoplossgain`) at the same close, and clear the opposite
+    `cfg.sellgain`, stop at `cfg.stoploss`) at the same close, and clear the opposite
      open limit. If an opposite position is still held, its close limit is coupled to this
      open limit so the reversal closes and reopens at one price.
    - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
@@ -885,7 +886,7 @@ Steps:
 3. **Open branch** (label `longopen`/`longstrongopen`, mirrored for the short side):
    - `score >= cfg.openthreshold`: place the open limit one `cfg.buygain` below (long) or
      above (short) the last close, anchor the matching close bracket (take profit at
-     `cfg.sellgain`, stop at `cfg.stoplossgain`) at the same close, and clear the opposite
+    `cfg.sellgain`, stop at `cfg.stoploss`) at the same close, and clear the opposite
      open limit. If an opposite position is still held, its close limit is coupled to this
      open limit so the reversal closes and reopens at one price.
    - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
@@ -1395,8 +1396,7 @@ end
 
 """Process gains for one replay pair after its Trades DataFrame has been prepared explicitly.
 
-Thresholds are taken from the strategy config, not from parameters. The strategy.openthreshold
-and strategy.closethreshold determine which trades pass the confidence filter during gain materialization.
+The strategy configuration is used for the replay algorithm and execution sizing.
 A gain segment still open at lastix is dropped, matching `TSM.compilegains` with `setpartitions=true`.
 """
 function processreplaygains!(tp::TsTp;

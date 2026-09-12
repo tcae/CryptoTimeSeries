@@ -66,22 +66,41 @@ function log_private_call_summary!(xc)
     return nothing
 end
 
-mutable struct XchCache
-    bases::Dict{String, Ohlcv.OhlcvData}
-    tsm::TSM.TsmCache  # owns the pair-state Trades DataFrames and template cache
-    bc::XchAdapterCache  # typed adapter cache wrapper
-    startdt::Dates.DateTime
-    currentdt::Union{Nothing, Dates.DateTime}  # current back testing time
-    enddt::Union{Nothing, Dates.DateTime}  # end time back testing; nothing == request life data without defined termination
-    mc::Dict # MC = module constants
-    lastsyncedopentime::Dict{String, Dates.DateTime}  # per-base opentime last processed by sync_latest_trades_rows!
-    tradingpairepoch::UInt
-    tradingpairrefs::Vector{TradingPairRef}
-    tradingpairinfo::Vector{NamedTuple}
-    function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
+Base.@kwdef mutable struct XchCache
+    bases::Dict{String, Ohlcv.OhlcvData} = Dict{String, Ohlcv.OhlcvData}()
+    tsm::TSM.TsmCache = TSM.TsmCache()  # owns the pair-state Trades DataFrames and template cache
+    bc::XchAdapterCache = _adaptercache(EXCHANGE_KRAKENSPOT)
+    startdt::Dates.DateTime = floor(Dates.now(UTC), Minute(1))
+    currentdt::Union{Nothing, Dates.DateTime} = nothing  # current back testing time
+    enddt::Union{Nothing, Dates.DateTime} = nothing  # end time back testing; nothing == request life data without defined termination
+    marketdata_ws_last_update_dt::Union{Nothing, Dates.DateTime} = nothing
+    marketdata_ws_last_update_by_symbol::Dict{String, Dates.DateTime} = Dict{String, Dates.DateTime}()
+    syminfo_cache::Dict{String, NamedTuple} = Dict{String, NamedTuple}()
+    adaptive_maker_orders::Set{String} = Set{String}()
+    account_capacity_snapshot::Union{Nothing, NamedTuple} = nothing
+    account_capacity_snapshot_dt::Union{Nothing, Dates.DateTime} = nothing
+    exchange_balances_snapshot::Union{Nothing, DataFrame} = nothing
+    exchange_balances_snapshot_dt::Union{Nothing, Dates.DateTime} = nothing
+    enforcemakerlimits::Bool = false
+    ws_primary_mode::Bool = false
+    ws_balances_enabled::Bool = false
+    ws_orders_enabled::Bool = false
+    lastsyncedopentime::Dict{String, Dates.DateTime} = Dict{String, Dates.DateTime}()  # per-base opentime last processed by sync_latest_trades_rows!
+    tradingpairepoch::UInt = UInt(0)
+    tradingpairrefs::Vector{TradingPairRef} = TradingPairRef[]
+    tradingpairinfo::Vector{NamedTuple} = NamedTuple[]
+end
+
+function XchCache(bc::XchAdapterCache; startdt::DateTime=Dates.now(UTC), enddt=nothing)
         startdt = floor(startdt, Minute(1))
         enddt = isnothing(enddt) ? nothing : floor(enddt, Minute(1))
-        xc = new(Dict{String, Ohlcv.OhlcvData}(), TSM.TsmCache(), bc, startdt, nothing, enddt, Dict(), Dict{String, Dates.DateTime}(), UInt(0), TradingPairRef[], NamedTuple[])
+        xc = XchCache(
+            bases=Dict{String, Ohlcv.OhlcvData}(),
+            tsm=TSM.TsmCache(),
+            bc=bc,
+            startdt=startdt,
+            enddt=enddt,
+        )
         syminfodf = if hasproperty(rawcache(xc.bc), :syminfodf)
             getproperty(rawcache(xc.bc), :syminfodf)
         else
@@ -102,8 +121,7 @@ mutable struct XchCache
                 ))
             end
         end
-        return xc
-    end
+    return xc
 end
 
 function _adaptercache(exchange::AbstractString)::XchAdapterCache
@@ -117,10 +135,6 @@ function _adaptercache(exchange::AbstractString)::XchAdapterCache
         return KrakenFutures.KrakenFuturesCache()
     end
     throw(ArgumentError("unsupported exchange=$(exchange), expected one of $(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_KRAKENSPOT), $(EXCHANGE_KRAKENFUTURES)"))
-end
-
-function XchCache(;startdt::DateTime=Dates.now(UTC), enddt=nothing, exchange::AbstractString=EXCHANGE_KRAKENSPOT)::XchCache
-    return XchCache(_adaptercache(exchange); startdt=startdt, enddt=enddt)
 end
 
 exchange(xc::XchCache)::String = exchangeid(xc.bc)
@@ -214,32 +228,26 @@ const NO_ORDER_MSG = "none"
     return (isempty(s) || lowercase(s) == "none") ? NO_ORDER_MSG : s
 end
 
-"Store one canonical websocket marketdata heartbeat timestamp in `xc.mc`."
+"Store one canonical websocket marketdata heartbeat timestamp in `xc`."
 function setmarketdataheartbeat!(xc::XchCache, dt::DateTime)
-    xc.mc[:marketdata_ws_last_update_dt] = dt
+    xc.marketdata_ws_last_update_dt = dt
     return dt
 end
 
-"Store one canonical websocket marketdata heartbeat timestamp for one symbol in `xc.mc`."
+"Store one canonical websocket marketdata heartbeat timestamp for one symbol in `xc`."
 function setmarketdataheartbeat!(xc::XchCache, symbol::AbstractString, dt::DateTime)
     key = uppercase(String(symbol))
-    if !haskey(xc.mc, :marketdata_ws_last_update_by_symbol)
-        xc.mc[:marketdata_ws_last_update_by_symbol] = Dict{String, DateTime}()
-    end
-    xc.mc[:marketdata_ws_last_update_by_symbol][key] = dt
-    localdt = get(xc.mc, :marketdata_ws_last_update_dt, nothing)
+    xc.marketdata_ws_last_update_by_symbol[key] = dt
+    localdt = xc.marketdata_ws_last_update_dt
     if isnothing(localdt) || (dt > DateTime(localdt))
-        xc.mc[:marketdata_ws_last_update_dt] = dt
+        xc.marketdata_ws_last_update_dt = dt
     end
     return dt
 end
 
 "Return canonical per-symbol websocket marketdata heartbeat map, merging latest adapter values when available."
 function marketdataheartbeats(xc::XchCache)
-    if !haskey(xc.mc, :marketdata_ws_last_update_by_symbol)
-        xc.mc[:marketdata_ws_last_update_by_symbol] = Dict{String, DateTime}()
-    end
-    localmap = xc.mc[:marketdata_ws_last_update_by_symbol]
+    localmap = xc.marketdata_ws_last_update_by_symbol
 
     moduledict = marketdataheartbeats(xc.bc)
     for (sym, dt) in moduledict
@@ -275,13 +283,13 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
         return latest
     end
 
-    localdt = get(xc.mc, :marketdata_ws_last_update_dt, nothing)
+    localdt = xc.marketdata_ws_last_update_dt
     moduledt = marketdataheartbeat(xc.bc)
 
     if isnothing(localdt)
         if !isnothing(moduledt)
-            xc.mc[:marketdata_ws_last_update_dt] = DateTime(moduledt)
-            return xc.mc[:marketdata_ws_last_update_dt]
+            xc.marketdata_ws_last_update_dt = DateTime(moduledt)
+            return xc.marketdata_ws_last_update_dt
         end
         return nothing
     end
@@ -289,12 +297,19 @@ function marketdataheartbeat(xc::XchCache; symbol::Union{Nothing, AbstractString
         return localdt
     end
     latest = DateTime(moduledt) > DateTime(localdt) ? DateTime(moduledt) : DateTime(localdt)
-    xc.mc[:marketdata_ws_last_update_dt] = latest
+    xc.marketdata_ws_last_update_dt = latest
     return latest
 end
 
 function _wsenabled(xc::XchCache, key::Symbol, default::Bool=false)::Bool
-    return Bool(get(xc.mc, key, default))
+    if key === :ws_primary_mode
+        return xc.ws_primary_mode
+    elseif key === :ws_balances_enabled
+        return xc.ws_balances_enabled
+    elseif key === :ws_orders_enabled
+        return xc.ws_orders_enabled
+    end
+    return default
 end
 
 
@@ -380,8 +395,8 @@ Falls back to `xc.bc` (the primary adapter) when no role override is configured.
 
 "Return the exchange module for the given adapter instance."
 
-"Return the syminfo cache dict, creating it lazily."
-_syminfocache(xc::XchCache) = get!(xc.mc, :syminfo_cache, Dict{String, NamedTuple}())
+"Return the local symbol-info cache."
+_syminfocache(xc::XchCache) = xc.syminfo_cache
 
 """
     setsymbolinfocache!(xc, symbol, info)
@@ -441,10 +456,7 @@ end
 Return the set of order ids that were created as adaptive maker orders with `limitprice=nothing`.
 """
 function _adaptiveordercache!(xc::XchCache)
-    if !haskey(xc.mc, :adaptive_maker_orders)
-        xc.mc[:adaptive_maker_orders] = Set{String}()
-    end
-    return xc.mc[:adaptive_maker_orders]
+    return xc.adaptive_maker_orders
 end
 
 """
@@ -729,7 +741,7 @@ end
 
 timesimulation(xc::XchCache)::Bool = !isnothing(xc.currentdt) && !isnothing(xc.enddt)
 tradetime(xc::XchCache) = isnothing(xc.currentdt) ? (isnothing(xc.enddt) ? floor(servertime(xc.bc), Minute(1)) : xc.enddt) : xc.currentdt
-# tradetime(xc::XchCache) = (xc.mc[:simmode] != bybitsim) ? servertime(xc.bc) : Dates.now(UTC)
+# Simulation time is selected by the adapter cache and XchCache date bounds.
 ttstr(dt::DateTime) = "LT" * EnvConfig.now() * "/TT" * Dates.format(dt, EnvConfig.datetimeformat)
 ttstr(xc::XchCache) = ttstr(tradetime(xc))
 
@@ -1394,10 +1406,10 @@ Fields:
 """
 function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::Int=5)
     if !force_refresh && !timesimulation(xc)
-        if haskey(xc.mc, :account_capacity_snapshot) && haskey(xc.mc, :account_capacity_snapshot_dt)
-            dt = xc.mc[:account_capacity_snapshot_dt]
+        if !isnothing(xc.account_capacity_snapshot) && !isnothing(xc.account_capacity_snapshot_dt)
+            dt = xc.account_capacity_snapshot_dt
             if (dt isa DateTime) && ((Dates.now(UTC) - dt) < Dates.Second(max(1, ttl_seconds)))
-                return xc.mc[:account_capacity_snapshot]
+                return xc.account_capacity_snapshot
             end
         end
     end
@@ -1412,8 +1424,8 @@ function accountcapacity(xc::XchCache; force_refresh::Bool=false, ttl_seconds::I
         snapshot = _fallbackaccountcapacity(xc)
     end
     normalized = _normalizeaccountcapacity(snapshot)
-    xc.mc[:account_capacity_snapshot] = normalized
-    xc.mc[:account_capacity_snapshot_dt] = Dates.now(UTC)
+    xc.account_capacity_snapshot = normalized
+    xc.account_capacity_snapshot_dt = Dates.now(UTC)
     return normalized
 end
 
@@ -1493,8 +1505,8 @@ function refreshaccountstatus!(xc::XchCache; ignoresmallvolume::Bool=false, requ
     _filterbalances!(xc, balancesdf; ignoresmallvolume=ignoresmallvolume)
     positionsdf = isnothing(adaptersnapshot) ? positionsnapshot(xc.bc) : adaptersnapshot.positions
     snapshotdt = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
-    xc.mc[:exchange_balances_snapshot] = balancesdf
-    xc.mc[:exchange_balances_snapshot_dt] = snapshotdt
+    xc.exchange_balances_snapshot = balancesdf
+    xc.exchange_balances_snapshot_dt = snapshotdt
     status = account_status(xc; force_refresh=true, ttl_seconds=0, balancesdf=balancesdf, positionsdf=positionsdf, require_holding_valuation=require_holding_valuation)
     return (status..., positions=positionsdf, datetime=snapshotdt)
 end
@@ -2019,7 +2031,7 @@ function _ensureclosebracketside!(xc::XchCache, tradesdf::DataFrame, ix::Integer
     closestcol = long ? :lc_status : :sc_status
     closelane = long ? "lc" : "sc"
     closelimit = _rowlimitprice(tradesdf[ix, long ? :lc_limit : :sc_limit])
-    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane, pairref=pairref, adaptivepost=get(xc.mc, :enforcemakerlimits, false))
+    oid = upsertcloseorder!(xc.bc, symbol, positionside, qty, closelimit; existing_orderid=_laneorderid(tradesdf[ix, closeidcol]), maker=true, reduceonly=true, lane=closelane, pairref=pairref, adaptivepost=xc.enforcemakerlimits)
     if isnothing(oid)
         _rejectedrequest!(xc, tradesdf, ix, long ? :long_close : :short_close, "exchange returned no close order id")
     else
@@ -2146,7 +2158,7 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer; p
             tradesdf[ix, oppositeopen[3]] = 0f0
         end
         openside = action == :long_open ? :long : :short
-        oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false, adaptivepost=get(xc.mc, :enforcemakerlimits, false))
+        oid = upsertopenorder!(xc.bc, symbol, openside, orderamount, limitprice; existing_orderid=existing_openid, maker=true, reduceonly=false, adaptivepost=xc.enforcemakerlimits)
         if isnothing(oid)
             _rejectedrequest!(xc, tradesdf, ix, action, "exchange returned no open order id")
             return (accepted=false, action=action, reason="missing_open_orderid")
@@ -2235,7 +2247,7 @@ function balances(xc::XchCache; ignoresmallvolume=true, prefer_websocket::Bool=t
     return _filterbalances!(xc, DataFrame(bdf; copycols=true); ignoresmallvolume=ignoresmallvolume)
 end
 
-"Capture one canonical exchange-owned balances snapshot and store it in `xc.mc`."
+"Capture one canonical exchange-owned balances snapshot and store it in `xc`."
 function refreshbalancessnapshot!(xc::XchCache; ignoresmallvolume::Bool=false)
     use_ws_primary = _wsenabled(xc, :ws_primary_mode, false) && _wsenabled(xc, :ws_balances_enabled, false)
     snapshot = if use_ws_primary
@@ -2253,20 +2265,20 @@ function refreshbalancessnapshot!(xc::XchCache; ignoresmallvolume::Bool=false)
     end
     snapshotdf = isnothing(snapshot) ? DataFrame() : DataFrame(snapshot; copycols=true)
     _filterbalances!(xc, snapshotdf; ignoresmallvolume=ignoresmallvolume)
-    xc.mc[:exchange_balances_snapshot] = deepcopy(snapshotdf)
-    xc.mc[:exchange_balances_snapshot_dt] = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
-    return (snapshot=xc.mc[:exchange_balances_snapshot], datetime=xc.mc[:exchange_balances_snapshot_dt], fresh=true)
+    xc.exchange_balances_snapshot = deepcopy(snapshotdf)
+    xc.exchange_balances_snapshot_dt = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
+    return (snapshot=xc.exchange_balances_snapshot, datetime=xc.exchange_balances_snapshot_dt, fresh=true)
 end
 
-"Return the canonical exchange-owned balances snapshot from `xc.mc`, refreshing on demand when requested or missing."
+"Return the canonical exchange-owned balances snapshot from `xc`, refreshing on demand when requested or missing."
 function balancessnapshot(xc::XchCache; force_refresh::Bool=false, max_age::Dates.Period=Minute(2), ignoresmallvolume::Bool=false)
-    has_snapshot = haskey(xc.mc, :exchange_balances_snapshot) && haskey(xc.mc, :exchange_balances_snapshot_dt)
+    has_snapshot = !isnothing(xc.exchange_balances_snapshot) && !isnothing(xc.exchange_balances_snapshot_dt)
     if force_refresh || !has_snapshot
         return refreshbalancessnapshot!(xc; ignoresmallvolume=ignoresmallvolume)
     end
 
-    snapshot = xc.mc[:exchange_balances_snapshot]
-    snapdt = xc.mc[:exchange_balances_snapshot_dt]
+    snapshot = xc.exchange_balances_snapshot
+    snapdt = xc.exchange_balances_snapshot_dt
     nowdt = isnothing(xc.currentdt) ? floor(Dates.now(Dates.UTC), Minute(1)) : xc.currentdt
     if isnothing(snapdt)
         return refreshbalancessnapshot!(xc; ignoresmallvolume=ignoresmallvolume)
@@ -2633,7 +2645,7 @@ the nearest valid maker price instead. Stop-loss legs are never affected - they 
 able to execute as taker to guarantee the protective close.
 """
 function setmakerlimitenforcement!(xc::XchCache, enforce::Bool)
-    xc.mc[:enforcemakerlimits] = enforce
+    xc.enforcemakerlimits = enforce
     return nothing
 end
 

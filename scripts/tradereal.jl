@@ -37,14 +37,6 @@ const TRADE_MODE = Trade.buysell
 const QUOTE_COIN = "USD"
 
 # Maximum fraction of total portfolio value allocated to a single asset.
-const MAX_ASSET_FRACTION = 0.1f0
-
-# Maximum budget in quote coin allocated in total
-const MAX_BUDGET_QUOTE = 1000f0
-
-# Mandatory stop-loss distance from each open order's price, as a fraction (e.g. 0.05 = 5%).
-const STOPLOSSPCT = 0.05f0
-
 const STRAT_REF = begin
     raw = strip(get(ENV, "TRADEREAL_STRAT_REF", ""))
     isempty(raw) ? nothing : String(raw)
@@ -122,16 +114,12 @@ strategy_runtime = isnothing(STRAT_CONFIG) ?
     TradingStrategy.TsCache(CONFIG_REF; source="trenddetector:$CONFIG_NAME") :
     TradingStrategy.TsCache(strategy=TradingStrategy.tsstrategyconfig(STRAT_CONFIG), source=TradingStrategy.tsconfigsource(STRAT_CONFIG))
 
-cache = Trade.TradeCache(xc=xc, strategy=strategy_runtime, trademode=TRADE_MODE, stoplosspct=STOPLOSSPCT)
-
-# Override risk parameters.
-cache.mc[:maxassetfraction]  = MAX_ASSET_FRACTION
-cache.mc[:maxbudgetquote]   = MAX_BUDGET_QUOTE
+cache = Trade.TradeCache(strategy_runtime, xc=xc, trademode=TRADE_MODE)
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$RUN_LABEL, engine=tradingstrategy")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
-println("$(EnvConfig.now()): blacklist ($(length(cache.mc[:blacklistbases])) bases): $(cache.mc[:blacklistbases])")
+println("$(EnvConfig.now()): blacklist ($(length(cache.blacklistbases)) bases): $(cache.blacklistbases)")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")
 
 # ─────────────────────────────────────────────────────────────────────────────

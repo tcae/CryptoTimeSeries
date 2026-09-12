@@ -32,18 +32,19 @@ Notes:
 | EnvConfig.tradingfolder | usually "$HOME/crypto" | Canonical shared runtime/data root folder | EnvConfig, KrakenFutures, scripts |
 | EnvConfig.pairquote / EnvConfig.setpairquote!(quote) | usually "USDT" | Canonical quote currency configuration for symbol/path helpers | EnvConfig, Trade, Xch, scripts |
 
-### 1.3 Trade runtime knobs (cache-level)
+### 1.3 Trade runtime knobs
 
-These are runtime options configured through Trade.TradeCache().mc and are relevant for operational behavior.
+These are runtime options configured through typed `Trade.TradeCache` fields and the selected `TradingStrategy.StrategyConfig`.
 
 | Option | Typical values | Intent | Used by modules |
 |---|---|---|---|
-| mc[:trademode] | Trade.buysell, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
+| TradeCache.trademode | Trade.buysell, Trade.closeonly, Trade.quickexit, Trade.notrade | Enables/disables opening/closing behaviors | Trade |
 | mc[:strategy_engine] | :getgainsalgo (legacy value still accepted) | Strategy source metadata; runtime API path is mandatory | Trade |
-| mc[:maxassetfraction] | Float | Exposure cap per asset | Trade |
-| mc[:maxbudgetquote] | Float or nothing | Global quote budget cap for sizing | Trade |
+| StrategyConfig.maxassetfraction | Float | Exposure cap per asset | TradingStrategy, Trade |
+| StrategyConfig.maxbudgetquote | Float | Global quote budget cap for sizing | TradingStrategy, Trade |
+| StrategyConfig.minorderquote | Float | Minimum quote value for an opening order | TradingStrategy, Trade |
 | mc[:budgetsafetymargin] | Float [0,1) | Safety discount on budget | Trade |
-| mc[:reloadtimes] | Time[] | Schedule for trade universe/config refresh | Trade |
+| TradeCache.reloadtimes | Time[] | Schedule for trade universe/config refresh | Trade |
 
 ### 1.4 Objective 7 runtime-only steady state (2026-06-01)
 
@@ -199,12 +200,12 @@ Legend:
 | EnvConfig.setdfformat! | production-safe | Storage format preference |
 | EnvConfig.setcoinspath! | production-safe | Path override for coin data |
 | EnvConfig.setdebugpath | test-only | Debug artifact redirection |
-| Trade mc[:trademode] | production-safe | Main runtime behavior selection |
+| TradeCache.trademode | production-safe | Main runtime behavior selection |
 | Trade mc[:strategy_engine] | production-safe | Runtime strategy source metadata (runtime API path is mandatory) |
-| Trade mc[:maxassetfraction] | production-safe | Risk/exposure guardrail |
+| StrategyConfig.maxassetfraction | production-safe | Risk/exposure guardrail |
 | Trade mc[:maxbudgetquote] | production-safe | Capital cap |
 | Trade mc[:budgetsafetymargin] | production-safe | Sizing safety margin |
-| Trade mc[:reloadtimes] | production-safe | Operational refresh schedule |
+| TradeCache.reloadtimes | production-safe | Operational refresh schedule |
 
 ## 5) Source index (primary read sites)
 

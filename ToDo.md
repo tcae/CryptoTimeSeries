@@ -8,6 +8,11 @@
 - implement alternative 2 to gain_limit_reversal! that
 	- hlds on to renew concept but falls back to ASAP close if above pavg + target gain and x minutes no supporting open signal
 	- intent to follow an upswing but materialize gain quickly when it comes to an end 
+- further ideas
+	- set stop loss at feegain if gain > 2x feegain
+	- sell at feegain if not above 2x feegain within feegainmaxminutes
+	- above targetgain set stoploss to targetgain and follow trend with incrementtargetgain
+	- above targetgain sell as soon as no open (or hold) support
 
 # Known issues
 

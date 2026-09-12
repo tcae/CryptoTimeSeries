@@ -5,9 +5,7 @@ using EnvConfig, Xch, Trade
 EnvConfig.init(test)
 
 @testset "Trade Bybit guardrail" begin
-    cache = Trade.TradeCache(stoplosspct=0.05)
-    cache.xc.mc[:simmode] = Xch.nosimulation
-
+    cache = Trade.TradeCache()
     Xch.setsymbolinfocache!(cache.xc, "BTCUSDT", (
         symbol="BTCUSDT",
         status="Trading",

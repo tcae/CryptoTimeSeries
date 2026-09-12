@@ -10,7 +10,7 @@ const RUN_PRODUCTION_TESTS = lowercase(get(ENV, "CTS_RUN_PRODUCTION_TESTS", "fal
 const RUN_KRAKEN_ORDER_TESTS = lowercase(get(ENV, "CTS_RUN_KRAKEN_ORDER_TESTS", "false")) in ("1", "true", "yes")
 
 function _run_kraken_order_lifecycle!(exchange::String)
-    xc = Xch.XchCache(exchange=exchange)
+    xc = Xch.XchCache(bc=Xch._adaptercache(exchange))
     mdf = Xch.getUSDTmarket(xc)
     @test nrow(mdf) > 0
 

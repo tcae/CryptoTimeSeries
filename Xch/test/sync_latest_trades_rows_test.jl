@@ -44,7 +44,7 @@ end
 
 @testset "Xch prepared trading-pair references enforce epoch identity" begin
     EnvConfig.init(EnvConfig.test)
-    xc = Xch.XchCache(exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     refs = Xch.preparetradingpairs!(xc, ["SINEUSDT"])
     ref = only(refs)
     bc = Xch.rawcache(xc.bc)
@@ -64,7 +64,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote)
     Xch.addbase!(xc, "SINE", startdt, enddt)
     refs = Xch.preparetradingpairs!(xc, ["SINEUSDT"])
@@ -96,7 +96,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.addbase!(xc, "ETH", startdt, enddt)
@@ -253,7 +253,7 @@ end
 @testset "TSM trades row lookup reuses the prepared row without forced ensure" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime("2025-01-01T00:00:00")
-    xc = Xch.XchCache(startdt=startdt, enddt=startdt + Dates.Day(1), exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=startdt + Dates.Day(1), bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     currentdt = startdt + Dates.Minute(5)
     TSM.preparetradesepoch!(xc.tsm, "BTC", EnvConfig.pairquote, currentdt; startdt=startdt, epochminutes=30)
     rowix = TSM.tradesrowindex(xc.tsm, "BTC", EnvConfig.pairquote, currentdt)
@@ -268,7 +268,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(3)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
@@ -309,7 +309,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(3)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
@@ -344,7 +344,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(1)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
 
@@ -373,7 +373,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
@@ -414,7 +414,7 @@ end
     enddt = startdt + Dates.Day(1)
     currentdt = startdt + Dates.Minute(2)
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     TSM.trades(xc.tsm, "BTC", EnvConfig.pairquote)
     Xch.addbase!(xc, "BTC", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)
@@ -445,7 +445,7 @@ end
     enddt = startdt + Dates.Hour(1)
     currentdt = DateTime("2025-07-01T08:32:00")
 
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     TSM.trades(xc.tsm, "DOUBLESINE", EnvConfig.pairquote)
     Xch.addbase!(xc, "DOUBLESINE", startdt, enddt)
     Xch.setcurrenttime!(xc, currentdt)

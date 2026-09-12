@@ -791,7 +791,7 @@ tradestdfolder(folderpath::AbstractString=EnvConfig.logfolder())::String = joinp
 Consumes `tradeparts`. Each pass is stored and compiled separately because both replay the
 same minutes with different scores/labels; mixing them in one partition would match an open
 of one pass against a close of the other."""
-function _flushpairtrades!(gainparts::Vector{DataFrame}, tradeparts::Vector{DataFrame}, folderpath::AbstractString, pass::AbstractString, predicted::Bool, openthreshold::Float32, closethreshold::Float32)
+function _flushpairtrades!(gainparts::Vector{DataFrame}, tradeparts::Vector{DataFrame}, folderpath::AbstractString, pass::AbstractString, predicted::Bool)
     isempty(tradeparts) && return nothing
     pairdf = reduce(vcat, tradeparts)
     empty!(tradeparts)
@@ -805,8 +805,6 @@ function _flushpairtrades!(gainparts::Vector{DataFrame}, tradeparts::Vector{Data
     gdf = TSM.compilegains(pairdf; setpartitions=true)
     if nrow(gdf) > 0
         gdf[!, :predicted] = fill(predicted, nrow(gdf))
-        gdf[!, :openthreshold] = fill(openthreshold, nrow(gdf))
-        gdf[!, :closethreshold] = fill(closethreshold, nrow(gdf))
         push!(gainparts, gdf)
     end
     return nothing
@@ -893,9 +891,6 @@ function getgainsdf(cfg::TrendDetectorConfig)
                 :freemargin => cfg.tradingstrategy.maxbudgetquote,
             )
 
-            # Process predicted gains using strategy config thresholds
-            open_threshold = cfg.tradingstrategy.openthreshold
-            close_threshold = cfg.tradingstrategy.closethreshold
             tp = TradingStrategy.preparereplaytrades!(
                 ts,
                 xc,
@@ -943,8 +938,8 @@ function getgainsdf(cfg::TrendDetectorConfig)
         # Releases the classifier feature cache of this coin together with its pair state.
         TradingStrategy.dropbase!(ts, coin)
         # One coin is one pair, so its snapshots are complete once its ranges are processed.
-        _flushpairtrades!(xchgainparts, predparts, tradesfolderpath, "predicted", true, cfg.tradingstrategy.openthreshold, cfg.tradingstrategy.closethreshold)
-        _flushpairtrades!(xchgainparts, truthparts, tradesfolderpath, "truth", false, TRUE_GAIN_THRESHOLD[1], TRUE_GAIN_THRESHOLD[2])
+        _flushpairtrades!(xchgainparts, predparts, tradesfolderpath, "predicted", true)
+        _flushpairtrades!(xchgainparts, truthparts, tradesfolderpath, "truth", false)
     end
 
     gaindf, xchreportdf = _collectxchgains(xchgainparts)
@@ -1053,9 +1048,9 @@ function gainspipeline(cfg)
     end
     gaindf = getgainsdf(cfg)
     if !isnothing(gaindf) && (size(gaindf, 1) > 0)
-        gaindfgroup = groupby(gaindf, [:set, :side, :predicted, :openthreshold, :closethreshold])
+        gaindfgroup = groupby(gaindf, [:set, :side, :predicted])
         cgaindf = combine(gaindfgroup, :gain => mean, nrow, :gain => sum, :gainquote => sum)
-        sort!(cgaindf, [:set, :side, :openthreshold, :closethreshold])
+        sort!(cgaindf, [:set, :side])
         println("$(EnvConfig.now()) cgaindf=$cgaindf")
     end
 end

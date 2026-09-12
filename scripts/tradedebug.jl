@@ -156,7 +156,7 @@ function main(args::Vector{String})
     println("$(EnvConfig.now()): tradedebug start (READ-ONLY)")
     println("$(EnvConfig.now()): exchange=$(exchange) quote=$(quote_coin) maxassetfraction=$(maxassetfraction) refresh=$(refresh)")
 
-    xc = Xch.XchCache(exchange=exchange)
+    xc = Xch.XchCache(bc=Xch._adaptercache(exchange))
 
     if refresh
         _invalidate_openorders_cache!(exchange)

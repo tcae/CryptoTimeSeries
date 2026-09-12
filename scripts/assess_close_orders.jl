@@ -66,7 +66,7 @@ function main(args::Vector{String})
     EnvConfig.init(EnvConfig.production)
     EnvConfig.setpairquote!(quote_coin)
 
-    xc = Xch.XchCache(exchange=exchange)
+    xc = Xch.XchCache(bc=Xch._adaptercache(exchange))
 
     if exchange == Xch.EXCHANGE_KRAKENSPOT
         Xch.KrakenSpot._invalidate_openorders_cache!()

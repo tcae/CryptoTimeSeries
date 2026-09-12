@@ -167,15 +167,10 @@ const QUOTE_COIN = "USDT"
 # Initial quote-asset balance used in simulation mode (cryptoxchsim).
 const INITIAL_QUOTE_BALANCE = 1000.0
 
-# Maximum budget in quote coin allocated in total
-const MAX_BUDGET_QUOTE = 500f0
-
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
 # Mandatory stop-loss distance from each open order's price, as a fraction (e.g. 0.05 = 5%).
-const STOPLOSSPCT = 0.05f0
-
 # Strategy parameters used by the backtest.
 const STRAT_REF = begin
     raw = strip(String(_argvalue(ARGS, "strat", get(ENV, "TRADESIM_STRAT_REF", ""))))
@@ -781,7 +776,7 @@ function _prepare_replay_group!(cache::Trade.TradeCache, groupdf::DataFrame, quo
     cache.xc.startdt = DateTime(groupdf[1, :opentime])
     cache.xc.enddt = DateTime(groupdf[nrow(groupdf), :opentime])
     cache.xc.currentdt = nothing
-    cache.mc[:reloadtimes] = Time[]
+    cache.reloadtimes = Time[]
 
     # Strict sync contract: every synced base must already exist in xc.bases
     # and be advanced only by the Xch iterator.
@@ -887,7 +882,7 @@ function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFram
     cache.xc.startdt = overall_startdt
     cache.xc.enddt = overall_enddt
     cache.xc.currentdt = nothing
-    cache.mc[:reloadtimes] = Time[]
+    cache.reloadtimes = Time[]
 
     Xch.removeallbases(cache.xc)
 
@@ -1012,7 +1007,7 @@ function run_replay_continuous!(cache::Trade.TradeCache;
         # Never persist the state of a crashed loop: every later run would resume into the
         # same failing minute. A user interrupt still checkpoints, since that is a clean
         # between-tick stop and resuming from it is the point of the checkpoint.
-        looperror = get(cache.mc, :loop_error, nothing)
+        looperror = cache.loop_error
         if isnothing(looperror)
             _save_tradesim_checkpoint!(cache)
         else
@@ -1244,18 +1239,14 @@ xc = Xch.XchCache(bc;
 )
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-cache = Trade.TradeCache(xc=xc, strategy=strategy_runtime, trademode=TRADE_MODE, stoplosspct=STOPLOSSPCT)
+cache = Trade.TradeCache(strategy_runtime, xc=xc, trademode=TRADE_MODE)
 seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
-
-# Override risk parameters.
-cache.mc[:maxassetfraction] = MAX_ASSET_FRACTION
-cache.mc[:maxbudgetquote]   = MAX_BUDGET_QUOTE
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
 println("$(EnvConfig.now()): strategy config=$RUN_LABEL, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
-println("$(EnvConfig.now()): blacklist ($(length(cache.mc[:blacklistbases])) bases): $(cache.mc[:blacklistbases])")
+println("$(EnvConfig.now()): blacklist ($(length(cache.blacklistbases)) bases): $(cache.blacklistbases)")
 # println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")
 
 # ─────────────────────────────────────────────────────────────────────────────

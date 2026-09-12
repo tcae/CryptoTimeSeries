@@ -89,7 +89,7 @@ end
 "Blacklist one base in the current runtime config to avoid repeated order attempts."
 function _blacklistbase!(cache::TradeCache, base::AbstractString, reason::AbstractString)::Nothing
     base_upper = uppercase(String(base))
-    blacklist = get!(cache.mc, :blacklistbases, String[])
+    blacklist = cache.blacklistbases
     !(base_upper in blacklist) && push!(blacklist, base_upper)
 
     if !hasproperty(cache.cfg, :basecoin)
@@ -116,7 +116,7 @@ end
 @testset "Blacklisted base removal stays outside runtime until prepare" begin
     EnvConfig.init(EnvConfig.test)
 
-    tc = Trade.TradeCache(xc=Xch.XchCache(), strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade, stoplosspct=0.05)
+    tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=Xch.XchCache(), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
@@ -127,7 +127,7 @@ end
     @test tc.ts.cfg == rt.cfg
 
     _blacklistbase!(tc, "BTC", "test")
-    @test tc.mc[:blacklistbases] == ["BTC"]
+    @test tc.blacklistbases == ["BTC"]
     @test tc.cfg[!, :basecoin] == ["ETH"]
     @test "BTC" in TradingStrategy.acceptedbases(rt)
 end
@@ -136,7 +136,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade, stoplosspct=0.05)
+    tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=xc, trademode=Trade.notrade)
 
     @test !isnothing(Trade._strategyruntime(tc))
 
@@ -178,7 +178,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(xc=xc, strategy=TradingStrategy.strategyconfig("046"), trademode=Trade.notrade, stoplosspct=0.05)
+    tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=xc, trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
@@ -205,7 +205,6 @@ end
         ;
         algorithm=TradingStrategy.gain_limit_reversal!,
         openthreshold=0.25f0,
-        closethreshold=0.35f0,
         buygain=0.45f0,
         sellgain=0.55f0,
         limitreduction=0.15f0,
@@ -217,7 +216,6 @@ end
     @test rt isa TradingStrategy.TsCache
     @test rt.cfg.algorithm == gs.algorithm
     @test rt.cfg.openthreshold == gs.openthreshold
-    @test rt.cfg.closethreshold == gs.closethreshold
     @test rt.cfg.buygain == gs.buygain
     @test rt.cfg.sellgain == gs.sellgain
     @test rt.cfg.limitreduction == gs.limitreduction
@@ -226,7 +224,6 @@ end
     @test !haskey(mc, :strategy_template)
     @test !haskey(mc, :strategy_source)
     @test !haskey(mc, :strategy_openthreshold)
-    @test !haskey(mc, :strategy_closethreshold)
     @test !haskey(mc, :strategy_buygain)
     @test !haskey(mc, :strategy_sellgain)
     @test !haskey(mc, :strategy_limitreduction)

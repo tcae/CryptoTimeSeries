@@ -11,13 +11,13 @@ This note summarizes the currently implemented runtime constraints for live trad
 ## Constraint Inputs
 
 - maxbudgetquote
-  - Source: Trade cache runtime config.
+  - Source: TradingStrategy.StrategyConfig.
   - Meaning: optional hard cap for overall budget in quote currency.
 - budgetsafetymargin
   - Source: Trade cache runtime config.
   - Meaning: reserve fraction on available opening capacity.
 - maxassetfraction
-  - Source: Trade cache runtime config.
+  - Source: TradingStrategy.StrategyConfig.
   - Meaning: per-symbol fraction cap relative to effective budget.
 - marginhealth_reduceonly_threshold
   - Source: Trade cache runtime config, env override supported.

@@ -46,7 +46,7 @@ end
 
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.addbase!(xc, "BTC", startdt, enddt)
     # Make acceptance deterministic: enforce simulation wallet quote buying power.
     bc = Xch.rawcache(xc.bc)
@@ -139,7 +139,7 @@ end
 @testset "Xch close amount rounds to holding when dust gap is tiny" begin
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.addbase!(xc, "BTC", startdt, enddt)
 
     bc = Xch.rawcache(xc.bc)
@@ -185,7 +185,7 @@ end
 
     startdt = DateTime("2022-01-01T01:00:00")
     enddt = startdt + Dates.Day(5)
-    xc = Xch.XchCache(startdt=startdt, enddt=enddt, exchange=Xch.EXCHANGE_BYBITSIM)
+    xc = Xch.XchCache(startdt=startdt, enddt=enddt, bc=Xch._adaptercache(Xch.EXCHANGE_BYBITSIM))
     Xch.addbase!(xc, "BTC", startdt, enddt)
 
     mdf = Xch.getUSDTmarket(xc)

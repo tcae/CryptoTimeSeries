@@ -20,17 +20,15 @@ function contract_algorithm!(cfg::TradingStrategy.StrategyConfig, cols::TSM.Trad
 end
 
 "Build a TradeCache in buysell mode plus the per-base trades rows `trade!` consumes."
-function build_case(bases::Vector{String}; equity::Float32, closeprice::Float32, label=longopen, minorderquote::Float32=10f0, maxbudgetquote=nothing)
+function build_case(bases::Vector{String}; equity::Float32, closeprice::Float32, label=longopen, minorderquote::Float32=10f0, maxbudgetquote::Float32=200f0)
     xc = Xch.XchCache(startdt=DT, enddt=DT)
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
     # Reuse a resolved config for its classifier, but drive the documented algorithm contract.
     resolved = TradingStrategy.strategyconfig("046")
-    strategy = TradingStrategy.StrategyConfig(classifier=resolved.classifier, algorithm=contract_algorithm!)
-    tc = Trade.TradeCache(xc=xc, strategy=strategy, trademode=Trade.buysell, stoplosspct=0.05)
+    strategy = TradingStrategy.StrategyConfig(classifier=resolved.classifier, algorithm=contract_algorithm!, minorderquote=minorderquote, maxbudgetquote=maxbudgetquote)
+    tc = Trade.TradeCache(strategy; xc=xc, trademode=Trade.buysell)
     tc.cfg = DataFrame(basecoin=bases, pair=[Xch.tradingpairkey(base, QUOTE) for base in bases], openenabled=fill(true, length(bases)), closeenabled=fill(true, length(bases)))
-    tc.mc[:minorderquote] = minorderquote
-    tc.mc[:maxbudgetquote] = maxbudgetquote
 
     tradesdfdict = Dict{String, NamedTuple}()
     for base in bases
@@ -60,7 +58,7 @@ end
     equity = 900f0
     closeprice = 3f0
     bases = ["AAA", "BBB", "CCC"]
-    tc, tradesdfdict = build_case(bases; equity=equity, closeprice=closeprice)
+    tc, tradesdfdict = build_case(bases; equity=equity, closeprice=closeprice, maxbudgetquote=equity)
 
     Trade.trade!(tc, tradesdfdict)
 
@@ -103,7 +101,7 @@ end
     equity = 600f0
     closeprice = 2f0
     bases = ["AAA", "BBB"]
-    tc, tradesdfdict = build_case(bases; equity=equity, closeprice=closeprice, label=shortopen)
+    tc, tradesdfdict = build_case(bases; equity=equity, closeprice=closeprice, label=shortopen, maxbudgetquote=equity)
 
     Trade.trade!(tc, tradesdfdict)
 
