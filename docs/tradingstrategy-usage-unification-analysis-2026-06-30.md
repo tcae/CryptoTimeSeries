@@ -264,12 +264,10 @@ This section documents how classifier call ordering is enforced across execution
     - `_collect_strategy_advices` calls `TradingStrategy.gettradesrows!`.
     - `gettradesrow!` runs `_classify_base_advice!` before `_apply_base_advice_row!`.
 
-### Re-classification gating to keep sequencing deterministic
+### Current classifier sequencing
 
-- `_should_skip_classifier` determines whether to reuse prior advice or call `Classify.advice` again, using:
-    - classify staleness interval, and
-    - relative price-delta trigger.
-- Gate state is tracked per base in `classifier_gate_state` and updated only on fresh classifier outputs.
+- Runtime algorithm evaluation calls `Classify.advice` directly when a row has not yet been classified.
+- Classifier output is evaluated once per runtime algorithm invocation; no stale-advice gate is applied.
 
 ### Sequence control in TrendDetector replay path
 

@@ -31,14 +31,10 @@ function init_strategy_columns!(tdf::DataFrame)
 end
 
 function test_strategy(; minpricedelta=0f0, limitreduction=0f0)
-    return TradingStrategy.StrategyConfig(
-        openthreshold=0.6f0,
-        buygain=0.001f0,
-        sellgain=0.01f0,
-        limitreduction=limitreduction,
-        maxwindow=4 * 60,
-        minpricedelta=minpricedelta,
-    )
+    return TradingStrategy.StrategyConfig(algorithmconfig=TradingStrategy.GainLimitReversalConfig(
+        openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0,
+        limitreduction=limitreduction, maxwindow=4 * 60, minpricedelta=minpricedelta,
+    ))
 end
 
 @testset "gain_limit_reversal direction" begin

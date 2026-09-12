@@ -14,7 +14,7 @@ const QUOTE = EnvConfig.pairquote
 const DT = DateTime(2026, 3, 2, 12, 0)
 
 "Algorithm stub that pins the plugin contract: replay and live must both pass column handles."
-function contract_algorithm!(cfg::TradingStrategy.StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+function contract_algorithm!(cfg, classifier, cols::TSM.TradesColumns, ix::Integer)
     @assert ix >= 1 "unexpected row index $(ix)"
     return nothing
 end

@@ -204,22 +204,24 @@ end
     gs = TradingStrategy.StrategyConfig(
         ;
         algorithm=TradingStrategy.gain_limit_reversal!,
-        openthreshold=0.25f0,
-        buygain=0.45f0,
-        sellgain=0.55f0,
-        limitreduction=0.15f0,
-        maxwindow=12,
+        algorithmconfig=TradingStrategy.GainLimitReversalConfig(
+            openthreshold=0.25f0,
+            buygain=0.45f0,
+            sellgain=0.55f0,
+            limitreduction=0.15f0,
+            maxwindow=12,
+        ),
     )
 
     TradingStrategy.apply_strategy!(rt, gs; source="test")
 
     @test rt isa TradingStrategy.TsCache
     @test rt.cfg.algorithm == gs.algorithm
-    @test rt.cfg.openthreshold == gs.openthreshold
-    @test rt.cfg.buygain == gs.buygain
-    @test rt.cfg.sellgain == gs.sellgain
-    @test rt.cfg.limitreduction == gs.limitreduction
-    @test rt.cfg.maxwindow == gs.maxwindow
+    @test rt.cfg.algorithmconfig.openthreshold == gs.algorithmconfig.openthreshold
+    @test rt.cfg.algorithmconfig.buygain == gs.algorithmconfig.buygain
+    @test rt.cfg.algorithmconfig.sellgain == gs.algorithmconfig.sellgain
+    @test rt.cfg.algorithmconfig.limitreduction == gs.algorithmconfig.limitreduction
+    @test rt.cfg.algorithmconfig.maxwindow == gs.algorithmconfig.maxwindow
     @test rt.source == "test"
     @test !haskey(mc, :strategy_template)
     @test !haskey(mc, :strategy_source)

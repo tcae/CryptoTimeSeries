@@ -43,14 +43,13 @@ function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::Dat
     )
 end
 
-@testset "TsCache classifier-call gating is variant scoped" begin
+@testset "TsCache classifier advice refreshes each invocation" begin
     EnvConfig.init(EnvConfig.test)
     startdt = DateTime(2026, 1, 11)
     enddt = startdt + Minute(240)
     xc = Xch.XchCache(startdt=startdt)
     xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
 
-    # Legacy algorithm keeps current behavior and classifies each snapshot call.
     cl_plain = MockClassifier()
     rt_plain = TradingStrategy.TsCache(classifier=cl_plain, strategy=TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!), source="test")
     TradingStrategy.preparebases!(rt_plain, xc, ["SINE"]; datetime=enddt, updatecache=false)
@@ -60,51 +59,6 @@ end
     _ = TradingStrategy.gettradesrow!(rt_plain, xc, "SINE", evaldt)
     @test cl_plain.advice_calls == 2
 
-    # Threshold settings do not gate runtime calls when classification happens in algorithm.
-    cl_gated = MockClassifier()
-    gs_gated = TradingStrategy.StrategyConfig(
-        algorithm=TradingStrategy.gain_limit_reversal!,
-        minpricedelta=0.001f0,
-        max_classify_staleness_minutes=1,
-    )
-    rt_gated = TradingStrategy.TsCache(classifier=cl_gated, strategy=gs_gated, source="test")
-    TradingStrategy.preparebases!(rt_gated, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
-    recon = merge(TradingStrategy.defaultreconciliationinput(), (has_long_open=true, long_avg_entry=100f0, long_open_ix=1))
-    rowmeta = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
-    rowmeta.tradesdf[rowmeta.rowix, :lastopentrade] = evaldt
-    _ = TradingStrategy.gettradesrow!(rt_gated, xc, "SINE", evaldt; reconciliation=recon)
-    @test cl_gated.advice_calls == 2
-end
-
-@testset "TsCache classifier-call gating reclassifies on interval OR price delta" begin
-    EnvConfig.init(EnvConfig.test)
-    startdt = DateTime(2026, 1, 11)
-    enddt = startdt + Minute(240)
-    xc = Xch.XchCache(startdt=startdt)
-    xc.bases["SINE"] = TestOhlcv.testohlcv("SINE", startdt, enddt)
-
-    cl = MockClassifier()
-    gs = TradingStrategy.StrategyConfig(
-        algorithm=TradingStrategy.gain_limit_reversal!,
-        minpricedelta=0.5f0,
-        max_classify_staleness_minutes=1,
-    )
-    rt = TradingStrategy.TsCache(classifier=cl, strategy=gs, source="test")
-    TradingStrategy.preparebases!(rt, xc, ["SINE"]; datetime=enddt, updatecache=false)
-    init_runtime_columns!(TSM.trades(xc.tsm, "SINE", EnvConfig.pairquote))
-
-    evaldt = enddt
-    _ = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt)
-    _ = TradingStrategy.gettradesrow!(rt, xc, "SINE", evaldt + Minute(1))
-    @test cl.advice_calls == 2
-end
-
-@testset "StrategyConfig max staleness naming" begin
-    gs_new = TradingStrategy.StrategyConfig(max_classify_staleness_minutes=3)
-
-    @test gs_new.max_classify_staleness_minutes == 3
-    @test TradingStrategy.max_classify_staleness_minutes(gs_new) == 3
 end
 
 @testset "Runtime API compatibility adapter" begin
@@ -119,11 +73,10 @@ end
     @test TradingStrategy.requiredhistoryminutes(rt) >= 0
     @test isempty(TradingStrategy.acceptedbases(rt))
 
-    gs = TradingStrategy.StrategyConfig(maxwindow=12)
+    gs = TradingStrategy.StrategyConfig(algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=12))
     push!(rt.accepted, "BTC")
     TradingStrategy.apply_strategy!(rt, gs; source="test")
     @test isempty(rt.pairs)
-    @test isempty(rt.classifier_gate_state)
     @test isempty(TradingStrategy.acceptedbases(rt))
 
     TradingStrategy.dropbase!(rt, "BTC")
@@ -230,7 +183,7 @@ end
     @test TradingStrategy.acceptedbases(rt) == Set(["DOUBLESINE"])
     @test Set(String.(Classify.bases(rt.cfg.classifier))) == Set(["DOUBLESINE"])
 
-    TradingStrategy.apply_strategy!(rt, TradingStrategy.StrategyConfig(maxwindow=60); source="reconfigured")
+    TradingStrategy.apply_strategy!(rt, TradingStrategy.StrategyConfig(algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=60)); source="reconfigured")
     @test isempty(TradingStrategy.acceptedbases(rt))
     @test isempty(Set(String.(Classify.bases(rt.cfg.classifier))))
 

@@ -85,7 +85,7 @@ function TradeCache(strategy::Union{TradingStrategy.TsCache, AbstractString, Tra
     cache = TradeCache(xc=xc, ts=ts, trademode=trademode)
     Xch.setfeerates!(xc, ts.cfg.makerfee, ts.cfg.takerfee)
     Xch.setmakerlimitenforcement!(xc, ts.cfg.enforcemakerlimits)
-    (verbosity >= 4) && println("TradeCache trademode = $(cache.trademode), maxassetfraction = $(ts.cfg.maxassetfraction), maxbudgetquote = $(ts.cfg.maxbudgetquote), minorderquote = $(ts.cfg.minorderquote), stoploss = $(ts.cfg.stoploss), reloadtimes = $(cache.reloadtimes), blacklistbases = $(cache.blacklistbases)")
+    (verbosity >= 4) && println("TradeCache trademode = $(cache.trademode), maxassetfraction = $(ts.cfg.maxassetfraction), maxbudgetquote = $(ts.cfg.maxbudgetquote), minorderquote = $(ts.cfg.minorderquote), algorithmconfig = $(typeof(ts.cfg.algorithmconfig)), reloadtimes = $(cache.reloadtimes), blacklistbases = $(cache.blacklistbases)")
     return cache
 end
 
@@ -614,7 +614,7 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
             TSM.settrades_msg!(tradesdf, tradesix, shortopen, logged)
             TSM.settrades_msg!(tradesdf, tradesix, shortclose, logged)
         else
-            cache.ts.cfg.algorithm(cache.ts.cfg, TSM.TradesColumns(tradesdf), tradesix)
+            cache.ts.cfg.algorithm(cache.ts.cfg.algorithmconfig, cache.ts.cfg.classifier, TSM.TradesColumns(tradesdf), tradesix)
             if tradesrow.label in [shortstrongopen, shortopen, allclose, longstrongclose, longclose]
                 closequote += (tradesrow.lp_amount) * tradesrow.close
                 if tradesrow.label in [shortstrongopen, shortopen]

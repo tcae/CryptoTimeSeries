@@ -29,14 +29,10 @@ function init_limit_reversal_columns!(tdf::DataFrame)
 end
 
 function limit_reversal_strategy(; maxwindow=4 * 60, minpricedelta=0f0)
-    return TradingStrategy.StrategyConfig(
-        openthreshold=0.6f0,
-        buygain=0.001f0,
-        sellgain=0.01f0,
-        limitreduction=1f0,
-        maxwindow=maxwindow,
-        minpricedelta=minpricedelta,
-    )
+    return TradingStrategy.StrategyConfig(algorithmconfig=TradingStrategy.GainLimitReversalConfig(
+        openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0,
+        limitreduction=1f0, maxwindow=maxwindow, minpricedelta=minpricedelta,
+    ))
 end
 
 @testset "TradesDF limit-reversal variants" begin

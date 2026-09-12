@@ -37,7 +37,7 @@ was the biggest surprise and the reason to measure before refactoring.
    re-derives `nrow` through a dynamic dispatch, and — on writes — `_drop_all_nonnote_metadata!`.
    Fix: resolve the column once (`df[!, field]::Vector{T}`), then `@inbounds col[ix]`.
 4. **Dynamic dispatch through an abstract field.** `StrategyConfig.algorithm::Function` is
-   abstract, so `cfg.algorithm(cfg, cols, ix)` boxed **every argument**: 640 bytes/row, of
+  abstract, so `cfg.algorithm(cfg.algorithmconfig, cfg.classifier, cols, ix)` boxed **every argument**: 640 bytes/row, of
    which 544 was the 65-field `TradesColumns` struct. Fix: function barrier — resolve once,
    run the loop in a helper specialized on the concrete function type (`where {F}`).
 

@@ -16,7 +16,7 @@
     @test occursin("001", TradingStrategy.tsconfigsource(cfg1))
     # same classifier source, different trading strategies
     @test cfg1.tdconfigname == cfg2.tdconfigname
-    @test cfg1.tradingstrategy.openthreshold != cfg2.tradingstrategy.openthreshold
+    @test cfg1.tradingstrategy.algorithmconfig.openthreshold != cfg2.tradingstrategy.algorithmconfig.openthreshold
 
     @test_throws AssertionError TradingStrategy.tsconfig("doesnotexist")
 end

@@ -1244,7 +1244,7 @@ seed_quote_balance!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 ensure_quote_budget!(xc, QUOTE_COIN, INITIAL_QUOTE_BALANCE)
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$RUN_LABEL, engine=tradingstrategy, openthreshold=$(cache.ts.cfg.openthreshold)")
+println("$(EnvConfig.now()): strategy config=$RUN_LABEL, engine=tradingstrategy, algorithmconfig=$(typeof(cache.ts.cfg.algorithmconfig))")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN, initial balance=$INITIAL_QUOTE_BALANCE")
 println("$(EnvConfig.now()): blacklist ($(length(cache.blacklistbases)) bases): $(cache.blacklistbases)")
 # println("$(EnvConfig.now()): running backtest over $run_startdt → $run_enddt")

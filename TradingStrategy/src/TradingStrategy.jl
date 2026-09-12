@@ -215,26 +215,30 @@ function _enforce_reversal_limit_ordering!(cols::TSM.TradesColumns, ix::Integer)
     return nothing
 end
 
-"""
-Immutable strategy configuration payload for runtime strategy execution.
-"""
+abstract type AbstractAlgorithmConfig end
+
+"""Configuration specific to the gain-limit reversal algorithms."""
+Base.@kwdef struct GainLimitReversalConfig <: AbstractAlgorithmConfig
+    maxwindow::Int = 4 * 60
+    openthreshold::Float32 = 0.6f0
+    buygain::Float32 = 0.001f0
+    sellgain::Float32 = 0.01f0
+    stoploss::Float32 = 0.05f0
+    limitreduction::Float32 = 0f0
+    minpricedelta::Float32 = 0.001f0
+end
+
+"""Immutable runtime, execution, and risk configuration shared by algorithms."""
 Base.@kwdef struct StrategyConfig
     classifier::Union{Nothing, Classify.AbstractClassifier} = nothing
     algorithm::Function = gain_limit_reversal!
-    maxwindow::Int = 4 * 60
-    openthreshold::Float32 = 0.6f0
     makerfee::Float32 = 0f0
     takerfee::Float32 = 0f0
     # When true, open/close limit orders are submitted post-only: if the exchange would
     # otherwise execute one as taker (price already crosses the market), the adapter
     # corrects the limit to the nearest valid maker price instead of taking or rejecting it.
     enforcemakerlimits::Bool = false
-    buygain::Float32 = 0.001f0
-    sellgain::Float32 = 0.01f0
-    stoploss::Float32 = 0.05f0 # 5% stop loss
-    limitreduction::Float32 = 0f0
-    minpricedelta::Float32 = 0.001f0 # 0.1% abs(minimum price delta)
-    max_classify_staleness_minutes::Int = 5
+    algorithmconfig::AbstractAlgorithmConfig = GainLimitReversalConfig()
     # Quote budget per lane. An open lane position consumes it, so a lane can only be topped
     # up while its invested quote stays below this; equal-to-one-open budget yields exactly
     # one open per gain segment.
@@ -264,7 +268,6 @@ mutable per-pair Trades DataFrames.
 """
 mutable struct TsCache
     pairs::Dict{String, TsTp}
-    classifier_gate_state::Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}
     accepted::Set{String}
     cfg::StrategyConfig
     source::String
@@ -289,7 +292,7 @@ function TsCache(; classifier::Union{Nothing, Classify.AbstractClassifier}=nothi
     resolved_classifier = !isnothing(classifier) ? classifier : resolved_template.classifier
     !isnothing(resolved_classifier) || throw(ArgumentError("TsCache requires a classifier via classifier keyword or strategy.classifier"))
     configured_strategy = _strategy_with_classifier(resolved_template, resolved_classifier)
-    return TsCache(Dict{String, TsTp}(), Dict{String, NamedTuple{(:last_advice, :last_classify_close), Tuple{Any, Float32}}}(), Set{String}(), configured_strategy, String(source))
+    return TsCache(Dict{String, TsTp}(), Set{String}(), configured_strategy, String(source))
 end
 
 "Build TsCache from a TrendDetector config reference, loading and compiling the strategy under the hood."
@@ -364,8 +367,6 @@ function emptygaindf()::DataFrame
     )
 end
 
-@inline max_classify_staleness_minutes(spec::StrategyConfig) = spec.max_classify_staleness_minutes
-
 "Return default execution-state reconciliation payload used by runtime strategy evaluation."
 function defaultreconciliationinput()
     return (
@@ -424,7 +425,6 @@ function dropbase!(rt::TsCache, base::AbstractString)::Nothing
     catch
     end
     droppair!(rt, tspairkey(basekey, EnvConfig.pairquote))
-    delete!(rt.classifier_gate_state, basekey)
     delete!(rt.accepted, basekey)
     return nothing
 end
@@ -432,7 +432,6 @@ end
 "Reset TsCache runtime, clearing accepted bases and cached classifier/gate state."
 function reset!(rt::TsCache)::Nothing
     empty!(rt.pairs)
-    empty!(rt.classifier_gate_state)
     empty!(rt.accepted)
     classifier = _strategyclassifier(rt)
     try
@@ -448,7 +447,6 @@ function apply_strategy!(rt::TsCache, strategy::StrategyConfig; source::Abstract
     rt.cfg = _strategy_with_classifier(strategy, classifier)
     rt.source = String(source)
     empty!(rt.pairs)
-    empty!(rt.classifier_gate_state)
     empty!(rt.accepted)
     try
         Classify.removebase!(classifier, nothing)
@@ -458,48 +456,6 @@ function apply_strategy!(rt::TsCache, strategy::StrategyConfig; source::Abstract
 end
 
 "Return the per-base classifier gate state, creating an empty one when needed."
-function _runtimegatestate!(rt::TsCache, base::AbstractString)
-    basekey = uppercase(String(base))
-    return get!(rt.classifier_gate_state, basekey) do
-        (last_advice=nothing, last_classify_close=0f0)
-    end
-end
-
-function _set_runtimegatestate!(rt::TsCache, base::AbstractString; last_advice, last_classify_close::Real)
-    basekey = uppercase(String(base))
-    rt.classifier_gate_state[basekey] = (
-        last_advice=last_advice,
-        last_classify_close=(last_classify_close),
-    )
-    return rt
-end
-
-@inline function _classification_triggered(spec::StrategyConfig, interval_ok::Bool, delta_ok::Bool)::Bool
-    interval_enabled = spec.max_classify_staleness_minutes > 0
-    delta_enabled = spec.minpricedelta > 0f0
-    !(interval_enabled || delta_enabled) && return true
-    return (interval_enabled && interval_ok) || (delta_enabled && delta_ok)
-end
-
-function _should_skip_classifier(spec::StrategyConfig, gate, datetime::DateTime, closeprice::Float32, last_open_dt::Union{Nothing, DateTime})::Bool
-    isnothing(gate.last_advice) && return false
-
-    interval_ok = true
-    if spec.max_classify_staleness_minutes > 0
-        isnothing(last_open_dt) && return false
-        elapsed_minutes = Int(div(Dates.value(datetime - last_open_dt), 60000))
-        interval_ok = elapsed_minutes >= spec.max_classify_staleness_minutes
-    end
-
-    delta_ok = true
-    if spec.minpricedelta > 0f0
-        gate.last_classify_close > 0f0 || return false
-        delta_ok = _relpricedelta(closeprice, gate.last_classify_close) >= spec.minpricedelta
-    end
-
-    return !_classification_triggered(spec, interval_ok, delta_ok)
-end
-
 function _lastopentrade_dt(tradesdf::AbstractDataFrame)::Union{Nothing, DateTime}
     (:lastopentrade in propertynames(tradesdf)) || return nothing
     for ix in nrow(tradesdf):-1:1
@@ -604,7 +560,7 @@ function gettradesrow!(rt::TsCache, xc::Xch.XchCache, base::AbstractString, date
 
     # One tick per minute, so resolving handles here costs nothing and keeps live and
     # replay on the same strategy implementation.
-    spec.algorithm(spec, TSM.TradesColumns(tdf), trowix)
+    spec.algorithm(spec.algorithmconfig, spec.classifier, TSM.TradesColumns(tdf), trowix)
 
     return (
         base=basekey,
@@ -633,7 +589,7 @@ end
 @inline _openlimitactive(openlimit) = openlimit > 0
 
 " number of minutes exceeding cfg.maxwindow since lastopentrade; 0 if within maxwindow or no lastopentrade"
-function _limitreductionminutes(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+function _limitreductionminutes(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer)
     if (cols.label[ix] in (longopen, longstrongopen, shortopen, shortstrongopen)) || ismissing(cols.lastopentrade[ix])
         return 0
     else
@@ -643,7 +599,7 @@ function _limitreductionminutes(cfg::StrategyConfig, cols::TSM.TradesColumns, ix
 end
 
 " closeprice relative to reference price, reduced by limitreductionminutes * cfg.limitreduction"
-function _closeprice(cfg::StrategyConfig, limitreductionminutes::Int, refprice::Float32, updown::Targets.TrendPhase)
+function _closeprice(cfg::GainLimitReversalConfig, limitreductionminutes::Int, refprice::Float32, updown::Targets.TrendPhase)
     closelimit = 0f0
     if updown == up
         closelimit = refprice * (1f0 + (cfg.sellgain))
@@ -664,7 +620,7 @@ function _closeprice(cfg::StrategyConfig, limitreductionminutes::Int, refprice::
 end
 
 " stop-loss price of a close bracket relative to the same reference price as the take-profit leg"
-function _stopprice(cfg::StrategyConfig, refprice::Float32, updown::Targets.TrendPhase)
+function _stopprice(cfg::GainLimitReversalConfig, refprice::Float32, updown::Targets.TrendPhase)
     ((cfg.stoploss <= 0f0) || (refprice <= 0f0)) && return 0f0
     if updown == up
         return refprice * (1f0 - cfg.stoploss)
@@ -680,7 +636,7 @@ derived from the same `refprice`, keeping both legs at a consistent distance fro
 
 A zero `closelimit` requests an immediate maker close and keeps the stop leg in place; the stop
 is only dropped when no position is held on that side."""
-function _setclosebracket!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, label, refprice::Float32, closelimit::Float32)
+function _setclosebracket!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer, label, refprice::Float32, closelimit::Float32)
     long = label == longclose
     hasposition = long ? (cols.lp_amount[ix] > 0f0) : (cols.sp_amount[ix] > 0f0)
     stoplimit = hasposition ? _stopprice(cfg, refprice, long ? up : down) : 0f0
@@ -694,9 +650,10 @@ function _setclosebracket!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Int
     return nothing
 end
 
-function _get_classifier_result!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
-    classifier = cfg.classifier
-    @assert !isnothing(classifier) "StrategyConfig.classifier must be configured for classifier fallback at ix=$(ix)"
+_setclosebracket!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, label, refprice::Float32, closelimit::Float32) = _setclosebracket!(strategy.algorithmconfig, cols, ix, label, refprice, closelimit)
+
+function _get_classifier_result!(classifier, cols::TSM.TradesColumns, ix::Integer)
+    @assert !isnothing(classifier) "classifier must be configured for classifier fallback at ix=$(ix)"
 
     pair = cols.pair[ix]
     @assert !ismissing(pair) "tradesdf[ix=$ix, :pair] must be non-missing for classifier fallback"
@@ -727,7 +684,7 @@ keep whatever `lc_limit` was carried over from a previous, unrelated position -
 `applyreduction=false` forces the plain (unreduced) target: a tick whose incoming label
 was still `longopen`/`shortopen` (score just dipped below threshold) is not an aged
 position in the `limitreduction` sense, even if `lastopentrade` happens to be old."""
-function _refresh_close_limits!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer; applyreduction::Bool=true)
+function _refresh_close_limits!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer; applyreduction::Bool=true)
     lrm = applyreduction ? max(_limitreductionminutes(cfg, cols, ix), 0) : 0
     closeprice = cols.close[ix]
     if cols.lp_amount[ix] > 0f0
@@ -778,10 +735,10 @@ All price updates pass `cfg.minpricedelta`, so a limit is only rewritten when it
 more than that relative distance. Amounts and order status are not touched here; they are
 decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
 """
-function gain_limit_reversal!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+function gain_limit_reversal!(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
     @assert 1 <= ix <= TSM.tradesrows(cols) "ix=$(ix) out of bounds for trades rows=$(TSM.tradesrows(cols))"
     if cols.score[ix] == 0f0
-        _get_classifier_result!(cfg, cols, ix)
+        _get_classifier_result!(classifier, cols, ix)
     end
 
     prev = ix - 1
@@ -833,13 +790,14 @@ function gain_limit_reversal!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::
     return
 end
 
+gain_limit_reversal!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer) = gain_limit_reversal!(strategy.algorithmconfig, strategy.classifier, cols, ix)
+
 """Return the classifier feature config of the row's base, or `nothing` when unavailable.
 
 Unavailable means the base was never attached to the classifier - the replay path only does
 that when its driver calls `addclassifierbase!`, so a strategy reading features must treat
 this as "no guidance" rather than as an error."""
-function _rowfeatconfig(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
-    classifier = cfg.classifier
+function _rowfeatconfig(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
     isnothing(classifier) && return nothing
     pair = cols.pair[ix]
     ismissing(pair) && return nothing
@@ -847,8 +805,8 @@ function _rowfeatconfig(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Intege
 end
 
 "Relative distance of the row close to the cfg.maxwindow regression line; negative means below."
-function _relative_to_regression(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
-    featcfg = _rowfeatconfig(cfg, cols, ix)
+function _relative_to_regression(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+    featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
     isnothing(featcfg) && return 0f0
     regprice = Features.regryat(featcfg, window, cols.opentime[ix])
     (isnothing(regprice) || regprice <= 0f0) && return 0f0
@@ -860,8 +818,8 @@ end
 Derived from the regression gradient rather than from two prices, so it is the trend of the
 fitted line and not a point-to-point difference. Returns `0f0` when the regression is
 unavailable for this row, which reads as "flat, no guidance"."""
-function _regression_slope_percent_per_hour(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
-    featcfg = _rowfeatconfig(cfg, cols, ix)
+function _regression_slope_percent_per_hour(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+    featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
     isnothing(featcfg) && return 0f0
     regr = Features.regressionat(featcfg, window, cols.opentime[ix])
     (isnothing(regr) || (regr.regry <= 0f0)) && return 0f0
@@ -903,10 +861,10 @@ All price updates pass `cfg.minpricedelta`, so a limit is only rewritten when it
 more than that relative distance. Amounts and order status are not touched here; they are
 decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
 """
-function gain_limit_reversal_below_regression!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)
+function gain_limit_reversal_below_regression!(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
     @assert 1 <= ix <= TSM.tradesrows(cols) "ix=$(ix) out of bounds for trades rows=$(TSM.tradesrows(cols))"
     if cols.score[ix] == 0f0
-        _get_classifier_result!(cfg, cols, ix)
+        _get_classifier_result!(classifier, cols, ix)
     end
 
     prev = ix - 1
@@ -957,6 +915,8 @@ function gain_limit_reversal_below_regression!(cfg::StrategyConfig, cols::TSM.Tr
 
     return
 end
+
+gain_limit_reversal_below_regression!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer) = gain_limit_reversal_below_regression!(strategy.algorithmconfig, strategy.classifier, cols, ix)
 
 """Clear one order lane, and for close lanes its stop-loss bracket leg as well."""
 function _resetorder(cols::TSM.TradesColumns, ix::Integer, lane::Symbol; reset_pavg::Bool)
@@ -1020,7 +980,7 @@ function _open_hit_spec(cols::TSM.TradesColumns, ix::Integer)
     return nothing
 end
 
-function _apply_open_hit!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32)
+function _apply_open_hit!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32)
     closeprice = cols.close[ix]
     if side == :long
         @assert cols.sp_amount[ix] == 0f0 "Long open hit at ix=$(ix) but sp_amount=$(cols.sp_amount[ix]) is not zero"
@@ -1057,6 +1017,8 @@ function _apply_open_hit!(cfg::StrategyConfig, cols::TSM.TradesColumns, ix::Inte
     end
     return nothing
 end
+
+_apply_open_hit!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32) = _apply_open_hit!(strategy.algorithmconfig, cols, ix, side, limitprice, amount)
 
 """Carry the resting order and position state of row `ix-1` into row `ix`.
 
@@ -1109,14 +1071,14 @@ function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf:
     cols = TSM.TradesColumns(tp.tradesdf)
     # Function barrier: `StrategyConfig.algorithm` is typed `Function`, so calling it per row
     # would dispatch dynamically and box every argument - 544 bytes per row for `cols` alone.
-    _simulate_gains_rows!(cfg.algorithm, cfg, tp, cols, lastix, gaindf)
+    _simulate_gains_rows!(cfg.algorithm, cfg.algorithmconfig, cfg.classifier, cfg, tp, cols, lastix, gaindf)
 
     tp.last_update_dt = cols.opentime[lastix]
     return tp
 end
 
 """Run the replay row loop with `algorithm` resolved to a concrete type."""
-function _simulate_gains_rows!(algorithm::F, cfg::StrategyConfig, tp::TsTp, cols::TSM.TradesColumns, lastix::Integer, gaindf::DataFrame) where {F}
+function _simulate_gains_rows!(algorithm::F, algorithmconfig::AbstractAlgorithmConfig, classifier, cfg::StrategyConfig, tp::TsTp, cols::TSM.TradesColumns, lastix::Integer, gaindf::DataFrame) where {F}
     last_openix = 0
     pending_open = nothing
     for ix in 1:lastix
@@ -1131,13 +1093,13 @@ function _simulate_gains_rows!(algorithm::F, cfg::StrategyConfig, tp::TsTp, cols
                 pending_side, pending_limitprice, pending_amount = pending_open
                 can_apply = pending_side == :long ? (cols.sp_amount[ix] == 0f0) : (cols.lp_amount[ix] == 0f0)
                 if can_apply
-                    _apply_open_hit!(cfg, cols, ix, pending_side, pending_limitprice, pending_amount)
+                    _apply_open_hit!(algorithmconfig, cols, ix, pending_side, pending_limitprice, pending_amount)
                     last_openix = ix
                 end
                 pending_open = nothing
             end
             # algorithm after materialization because label and order limits are set on the basis of the last minute (ix is the last complete minute sample in the past) and prices can hit these limits from the next ix+1 minute
-            algorithm(cfg, cols, ix)
+            algorithm(algorithmconfig, classifier, cols, ix)
             _process_advice_row!(cfg, cols, ix)
             _validate_row_consistency(cols, ix)
             # Any open hit detected on row `ix` is only actionable from row
@@ -1411,7 +1373,7 @@ function processreplaygains!(tp::TsTp;
             simulate_gains!(strategy, tp, lastix, gaindf)
         catch err
             if (err isa MethodError) && (getfield(err, :f) === strategy.algorithm)
-                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer)."))
+                throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(algorithmconfig, classifier, cols::TSM.TradesColumns, ix::Integer)."))
             end
             rethrow(err)
         end

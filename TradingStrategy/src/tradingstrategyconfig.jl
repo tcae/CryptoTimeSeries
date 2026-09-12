@@ -17,14 +17,14 @@ gainsfilename() = joinpath("trades", "gains_all")
 targetissuesfilename() = joinpath("results", "targetissues")
 
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
-tradingstrategy01() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025)
-tradingstrategy02() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025)
-# original: tradingstrategy03() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0015)
-tradingstrategy03() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true)
-tradingstrategy04() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.4, makerfee=0.0025, buygain=0f0, limitreduction=0.05f0)
-tradingstrategy05() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
-tradingstrategy06() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.6, makerfee=0.0025, minpricedelta=0.002f0, max_classify_staleness_minutes=5)
-tradingstrategy07() = TradingStrategy.StrategyConfig(maxwindow=4*60, algorithm=TradingStrategy.gain_limit_reversal!, openthreshold=0.3, makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true, buygain=0f0)
+tradingstrategy01() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025)
+tradingstrategy02() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025)
+# original: tradingstrategy03() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0015)
+tradingstrategy03() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true)
+tradingstrategy04() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, buygain=0f0, limitreduction=0.05f0), makerfee=0.0025)
+tradingstrategy05() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, minpricedelta=0.002f0), makerfee=0.0025)
+tradingstrategy06() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, minpricedelta=0.002f0), makerfee=0.0025)
+tradingstrategy07() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0f0), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true)
 
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longopen=buy, longhold=hold, shorthold=-hold, shortopen=-buy)), holdbehaviormode=holdbehaviormode)
