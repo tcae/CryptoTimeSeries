@@ -30,7 +30,7 @@ tradingstrategy02() = TradingStrategy.StrategyConfig(
 # original: tradingstrategy03() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0015)
 tradingstrategy03() = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal!, 
-    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, makerfee=0.0025, incrementgain=0.01f0, stoploss=0.05f0), 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, makerfee=0.0025, incrementgain=0.001f0, stoploss=0.05f0), 
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)

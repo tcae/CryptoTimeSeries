@@ -689,7 +689,6 @@ below it. `priorstop` (the stop already carried over from the previous row) keep
 locked in even on a later bar that no longer clears its threshold."""
 function _ratchet_stoploss(cfg::GainLimitReversalConfig, low::Float32, high::Float32, updown::Targets.TrendPhase, pavg::Float32, stoplimit::Float32, priorstop::Float32)::Float32
     ((cfg.makerfee > 0f0) && (pavg > 0f0)) || return stoplimit
-    return stoplimit # disabling function temporarily for regression test
     tightened = stoplimit
     if updown == up
         if low > pavg * (1f0 + 3f0 * cfg.makerfee)
