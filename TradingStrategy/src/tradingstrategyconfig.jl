@@ -17,14 +17,55 @@ gainsfilename() = joinpath("trades", "gains_all")
 targetissuesfilename() = joinpath("results", "targetissues")
 
 default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
-tradingstrategy01() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025)
-tradingstrategy02() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025)
+#region TradingStrategies
+tradingstrategy01() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, makerfee=0.0025, stoploss=0.05f0), 
+    maxbudgetquote=500f0,
+    makerfee=0.0025)
+tradingstrategy02() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, makerfee=0.0025), 
+    makerfee=0.0025)
 # original: tradingstrategy03() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0015)
-tradingstrategy03() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true)
-tradingstrategy04() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, buygain=0f0, limitreduction=0.05f0), makerfee=0.0025)
-tradingstrategy05() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, minpricedelta=0.002f0), makerfee=0.0025)
-tradingstrategy06() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, minpricedelta=0.002f0), makerfee=0.0025)
-tradingstrategy07() = TradingStrategy.StrategyConfig(algorithm=TradingStrategy.gain_limit_reversal!, algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0f0), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true)
+tradingstrategy03() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, makerfee=0.0025, incrementgain=0.01f0, stoploss=0.05f0), 
+    makerfee=0.0025, 
+    takerfee=0.004, 
+    enforcemakerlimits=true)
+tradingstrategy04() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, buygain=0f0, makerfee=0.0025), 
+    makerfee=0.0025)
+tradingstrategy05() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, minpricedelta=0.002f0, makerfee=0.0025), 
+    makerfee=0.0025)
+tradingstrategy06() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6, minpricedelta=0.002f0, makerfee=0.0025), 
+    makerfee=0.0025)
+tradingstrategy07() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0f0, makerfee=0.0025), 
+    makerfee=0.0025, 
+    takerfee=0.004, 
+    enforcemakerlimits=true)
+tradingstrategy08() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal_below_regression!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
+        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0.001f0, makerfee=0.0025), 
+        triggerdist=0.005f0, 
+        triggerregrwindow=4*60, 
+        trendregrwindow=24*60, 
+        trendgainthreshold=0.01f0 / 4f0), 
+    makerfee=0.0025, 
+    takerfee=0.004, 
+    enforcemakerlimits=true)
+#endregion TradingStrategies
+
+#region TargetsConfig
 
 # Trend01/Trend02 were replaced by Trend04.
 trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longopen=buy, longhold=hold, shorthold=-hold, shortopen=-buy)), holdbehaviormode=holdbehaviormode)
@@ -52,8 +93,7 @@ targetconfig20() = Targets.TrendRegression(4*60, 0.005, -0.005)
 targetconfig21() = Targets.TrendRegression(3*24*60, 0.05, -0.05) 
 targetconfig22() = Targets.TrendRegression(4*60, 0.01, -0.01) 
 targetconfig23() = Targets.TrendRegression(4*60, 0.02, -0.02) 
-
-boundstargetsconfig01(window) = Targets.Bounds01(window)
+#endregion TargetsConfig
 
 
 
@@ -461,14 +501,58 @@ mk043config() = trendmkconfig("043", trendf6config15(), targetconfig21(), Classi
 mk044config() = trendmkconfig("044", trendf6config14(), targetconfig22(), Classify.model002, tradingstrategy02(); classbalancing=true)
 mk045config() = trendmkconfig("045", trendf6config14(), targetconfig23(), Classify.model002, tradingstrategy02(); classbalancing=true)
 
+const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    mk001config(), mk002config(), mk003config(), mk004config(), mk005config(), mk006config(), mk007config(),
+    mk009config(), mk011config(), mk012config(), mk013config(), mk014config(), mk015config(), mk016config(),
+    mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
+    mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
+    mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
+    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk038bconfig(), mk039config(), mk040config(), 
+    mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(), mk048config(), mk049config(),
+])
+
 #endregion TrendConfig
 
+#region TradingStrategyConfig
+
+# A trading strategy config decouples the traded strategy from the trend detector config:
+# `tdconfigname` supplies classifier, prediction results and featconfig, while `tradingstrategy`
+# replaces the `tradingstrategy` entry of that trend detector config.
+
+"""
+GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true
+"""
+ts001() = (configname="001", tdconfigname="038", tradingstrategy=tradingstrategy03())
+
+"""
+GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0f0), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true
+"""
+ts002() = (configname="002", tdconfigname="038", tradingstrategy=tradingstrategy07())
+
+"""
+GainLimitReversalBelowRegressionConfig(triggerdist=0.005f0, triggerregrwindow=4*60, trendregrwindow=24*60, trendgainthreshold=0.01f0 / 4f0), makerfee=0.0025
+"""
+ts003() = (configname="003", tdconfigname="038", tradingstrategy=tradingstrategy08())
+
+const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    ts001(), ts002(), ts003(),
+])
+
+#endregion TradingStrategyConfig
+
 #region BoundsConfig
+
+boundstargetsconfig01(window) = Targets.Bounds01(window)
+
 "Bounds estimator for short term limits"
 boundsmk001config() = (configname="001", featconfig = boundsf6config01(5), targetconfig = boundstargetsconfig01(5), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
 
 "Bounds estimator for mid term limits"
 boundsmk002config() = (configname="002", featconfig = boundsf6config01(4*60), targetconfig = boundstargetsconfig01(4*60), regressormodel=Classify.boundsregressor001, tradingstrategy=tradingstrategy02())
+
+const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
+    boundsmk001config(), boundsmk002config(),
+])
 
 #endregion BoundsConfig
 
@@ -489,46 +573,8 @@ function _config_from_dict(configs::Dict{String, NamedTuple}, ref::AbstractStrin
     return configs[only(matches)]
 end
 
-const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
-    mk001config(), mk002config(), mk003config(), mk004config(), mk005config(), mk006config(), mk007config(),
-    mk009config(), mk011config(), mk012config(), mk013config(), mk014config(), mk015config(), mk016config(),
-    mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
-    mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
-    mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
-    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk038bconfig(), mk039config(), mk040config(), 
-    mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(), mk048config(), mk049config(),
-])
-
-const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
-    boundsmk001config(), boundsmk002config(),
-])
-
 trenddetectorconfig(ref::AbstractString) = _config_from_dict(TREND_DETECTOR_CONFIGS, ref; label="trend", prefixes=("trenddetector", "trend", "mk"))
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
-
-#region TradingStrategyConfig
-
-# A trading strategy config decouples the traded strategy from the trend detector config:
-# `tdconfigname` supplies classifier, prediction results and featconfig, while `tradingstrategy`
-# replaces the `tradingstrategy` entry of that trend detector config.
-
-"""
-    ts001()
-
-Trading strategy config `001`: trend detector `038` classifier traded with `tradingstrategy03`.
-"""
-ts001() = (configname="001", tdconfigname="038", tradingstrategy=tradingstrategy03())
-
-"""
-    ts002()
-
-Trading strategy config `002`: trend detector `038` classifier traded with `tradingstrategy04`.
-"""
-ts002() = (configname="002", tdconfigname="038", tradingstrategy=tradingstrategy07())
-
-const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
-    ts001(), ts002(),
-])
 
 "Return the trading strategy config payload `(configname, tdconfigname, tradingstrategy)` for `ref`."
 tsconfig(ref::AbstractString) = _config_from_dict(TS_CONFIGS, ref; label="trading strategy", prefixes=("tradingstrategy", "ts"))
@@ -556,7 +602,6 @@ function tsstrategyconfig(ref::AbstractString; mnemonic::AbstractString="mix", m
     return tsstrategyconfig(tsconfig(ref); mnemonic=mnemonic, mode=mode)
 end
 
-#endregion TradingStrategyConfig
 
 "Return a TradingStrategy.StrategyConfig with an instantiated classifier for a TrendDetector config payload."
 function strategyconfig(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig

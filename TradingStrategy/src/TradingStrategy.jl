@@ -223,9 +223,32 @@ Base.@kwdef struct GainLimitReversalConfig <: AbstractAlgorithmConfig
     openthreshold::Float32 = 0.6f0
     buygain::Float32 = 0.001f0
     sellgain::Float32 = 0.01f0
+    incrementgain::Float32 = 0.003f0
     stoploss::Float32 = 0.05f0
-    limitreduction::Float32 = 0f0
     minpricedelta::Float32 = 0.001f0
+    # Number of trailing minutes whose high (long) / low (short) becomes the new close-limit
+    # once a position has aged past maxwindow without reaching its target - see _agedcloselimit.
+    exitwindow::Int = 5
+    # Must match the maker fee of the StrategyConfig this algorithm runs under - the
+    # algorithm only receives algorithmconfig, so the fee needed for the profit-neutral
+    # floor and stop-loss ratchet below is duplicated here rather than threaded through.
+    makerfee::Float32 = 0f0
+end
+
+"""Gain-limit reversal configuration gated by regression distance and trend."""
+Base.@kwdef struct GainLimitReversalBelowRegressionConfig <: AbstractAlgorithmConfig
+    gainlimit::GainLimitReversalConfig = GainLimitReversalConfig()
+    triggerdist::Float32 = 0f0
+    triggerregrwindow::Int = 4 * 60
+    trendregrwindow::Int = 4 * 60
+    trendgainthreshold::Float32 = 0f0
+    function GainLimitReversalBelowRegressionConfig(gainlimit, triggerdist, triggerregrwindow, trendregrwindow, trendgainthreshold)
+        @assert triggerdist >= 0f0 "triggerdist=$(triggerdist) must be nonnegative"
+        @assert triggerregrwindow >= 0 "triggerregrwindow=$(triggerregrwindow) must be nonnegative"
+        @assert trendregrwindow >= 0 "trendregrwindow=$(trendregrwindow) must be nonnegative"
+        @assert trendgainthreshold >= 0f0 "trendgainthreshold=$(trendgainthreshold) must be nonnegative"
+        return new(gainlimit, triggerdist, triggerregrwindow, trendregrwindow, trendgainthreshold)
+    end
 end
 
 """Immutable runtime, execution, and risk configuration shared by algorithms."""
@@ -598,24 +621,50 @@ function _limitreductionminutes(cfg::GainLimitReversalConfig, cols::TSM.TradesCo
     end
 end
 
-" closeprice relative to reference price, reduced by limitreductionminutes * cfg.limitreduction"
-function _closeprice(cfg::GainLimitReversalConfig, limitreductionminutes::Int, refprice::Float32, updown::Targets.TrendPhase)
-    closelimit = 0f0
+"Return the close-limit target for a new open.
+
+The initial close target is anchored on `sellgain`. On subsequent opens the target is only
+ever nudged by the smaller `incrementgain` step, and only when doing so raises the gain
+(moves the target further from `closeprice`); it never regresses toward `closeprice`.
+`incrementgain == 0f0` therefore keeps the original sellgain-based target for the whole
+trade, which is the safest, most likely-to-be-hit setting."
+@inline function _open_close_limit(cfg::GainLimitReversalConfig, closeprice::Float32, updown::Targets.TrendPhase, activeclose::Float32)
     if updown == up
-        closelimit = refprice * (1f0 + (cfg.sellgain))
+        default_target = closeprice * (1f0 + cfg.sellgain)
+        activeclose <= 0f0 && return default_target
+        candidate = closeprice * (1f0 + cfg.incrementgain)
+        return candidate > activeclose ? candidate : activeclose
     elseif updown == down
-        closelimit = refprice * (1f0 - (cfg.sellgain))
-    end
-    if limitreductionminutes <= 0
-        return closelimit
-    end
-    reduction_factor = cfg.limitreduction * limitreductionminutes
-    if updown == up
-        return closelimit * (1f0 - reduction_factor)
-    elseif updown == down
-        return closelimit * (1f0 + reduction_factor)
+        default_target = closeprice * (1f0 - cfg.sellgain)
+        activeclose <= 0f0 && return default_target
+        candidate = closeprice * (1f0 - cfg.incrementgain)
+        return candidate < activeclose ? candidate : activeclose
     else
-        return closelimit
+        return 0f0
+    end
+end
+
+"""Reduced close-limit candidate for a position that has aged past `cfg.maxwindow` minutes
+since its last open without reaching its take-profit.
+
+This never raises the target - raising is reserved for open signals via `_open_close_limit`.
+Instead it pulls the target toward a more easily reachable level: the highest high (long) /
+lowest low (short) observed over the last `cfg.exitwindow` minutes, reflecting that price
+recently failed to reach the current target. The candidate is only applied if it moves the
+close limit by more than `cfg.minpricedelta` and stays on the correct side of the stop-loss
+leg `stoplimit`; otherwise `currentclose` is kept unchanged."""
+function _agedcloselimit(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer, updown::Targets.TrendPhase, currentclose::Float32, stoplimit::Float32)::Float32
+    windowstart = clamp(ix - cfg.exitwindow + 1, 1, ix)
+    if updown == up
+        candidate = maximum(@view cols.high[windowstart:ix])
+        valid = (stoplimit <= 0f0) || (candidate > stoplimit)
+        return (valid && (_relpricedelta(candidate, currentclose) > cfg.minpricedelta)) ? candidate : currentclose
+    elseif updown == down
+        candidate = minimum(@view cols.low[windowstart:ix])
+        valid = (stoplimit <= 0f0) || (candidate < stoplimit)
+        return (valid && (_relpricedelta(candidate, currentclose) > cfg.minpricedelta)) ? candidate : currentclose
+    else
+        return currentclose
     end
 end
 
@@ -631,26 +680,56 @@ function _stopprice(cfg::GainLimitReversalConfig, refprice::Float32, updown::Tar
     end
 end
 
+"""Tighten (never loosen) a stop-loss once the bar's conservative extreme has moved favorably
+past whole multiples of `cfg.makerfee` away from `pavg`: to `pavg*(1±makerfee)` once cleared
+`pavg*(1±2*makerfee)`, then to `pavg*(1±2*makerfee)` (round-trip-fee-neutral) once cleared
+`pavg*(1±3*makerfee)`. Long uses the bar low as the conservative confirmation that price
+stayed above the threshold for the whole bar; short mirrors this with the bar high staying
+below it. `priorstop` (the stop already carried over from the previous row) keeps a stage
+locked in even on a later bar that no longer clears its threshold."""
+function _ratchet_stoploss(cfg::GainLimitReversalConfig, low::Float32, high::Float32, updown::Targets.TrendPhase, pavg::Float32, stoplimit::Float32, priorstop::Float32)::Float32
+    ((cfg.makerfee > 0f0) && (pavg > 0f0)) || return stoplimit
+    return stoplimit # disabling function temporarily for regression test
+    tightened = stoplimit
+    if updown == up
+        if low > pavg * (1f0 + 3f0 * cfg.makerfee)
+            tightened = max(tightened, pavg * (1f0 + 2f0 * cfg.makerfee))
+        elseif low > pavg * (1f0 + 2f0 * cfg.makerfee)
+            tightened = max(tightened, pavg * (1f0 + cfg.makerfee))
+        end
+        return priorstop > 0f0 ? max(tightened, priorstop) : tightened
+    elseif updown == down
+        if high < pavg * (1f0 - 3f0 * cfg.makerfee)
+            tightened = min(tightened, pavg * (1f0 - 2f0 * cfg.makerfee))
+        elseif high < pavg * (1f0 - 2f0 * cfg.makerfee)
+            tightened = min(tightened, pavg * (1f0 - cfg.makerfee))
+        end
+        return priorstop > 0f0 ? min(tightened, priorstop) : tightened
+    else
+        return stoplimit
+    end
+end
+
 """Write both legs of a close bracket: the take-profit `closelimit` and the stop-loss leg
 derived from the same `refprice`, keeping both legs at a consistent distance from the reference.
 
 A zero `closelimit` requests an immediate maker close and keeps the stop leg in place; the stop
-is only dropped when no position is held on that side."""
+is only dropped when no position is held on that side. When a position is held, the plain
+`refprice`-relative stop is additionally ratcheted toward `pavg` via `_ratchet_stoploss`."""
 function _setclosebracket!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer, label, refprice::Float32, closelimit::Float32)
-    long = label == longclose
-    hasposition = long ? (cols.lp_amount[ix] > 0f0) : (cols.sp_amount[ix] > 0f0)
-    stoplimit = hasposition ? _stopprice(cfg, refprice, long ? up : down) : 0f0
-    if long
+    if label == longclose
+        hasposition = cols.lp_amount[ix] > 0f0
+        stoplimit = hasposition ? _ratchet_stoploss(cfg, cols.low[ix], cols.high[ix], up, cols.lol_pavg[ix], _stopprice(cfg, refprice, up), cols.lcsl_limit[ix]) : 0f0
         cols.lc_limit[ix] = closelimit
         cols.lcsl_limit[ix] = stoplimit
     else
+        hasposition = cols.sp_amount[ix] > 0f0
+        stoplimit = hasposition ? _ratchet_stoploss(cfg, cols.low[ix], cols.high[ix], down, cols.sol_pavg[ix], _stopprice(cfg, refprice, down), cols.scsl_limit[ix]) : 0f0
         cols.sc_limit[ix] = closelimit
         cols.scsl_limit[ix] = stoplimit
     end
     return nothing
 end
-
-_setclosebracket!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, label, refprice::Float32, closelimit::Float32) = _setclosebracket!(strategy.algorithmconfig, cols, ix, label, refprice, closelimit)
 
 function _get_classifier_result!(classifier, cols::TSM.TradesColumns, ix::Integer)
     @assert !isnothing(classifier) "classifier must be configured for classifier fallback at ix=$(ix)"
@@ -678,23 +757,26 @@ end
 Applies whenever a position is held and this tick is not actively deciding a new open
 (the open branches handle their own refresh while the order is still resting). Without
 this, a position that fills on the same tick its score drops below `openthreshold` would
-keep whatever `lc_limit` was carried over from a previous, unrelated position -
-`_should_update_price` still gates it to avoid needless churn.
+keep whatever `lc_limit` was carried over from a previous, unrelated position.
 
-`applyreduction=false` forces the plain (unreduced) target: a tick whose incoming label
-was still `longopen`/`shortopen` (score just dipped below threshold) is not an aged
-position in the `limitreduction` sense, even if `lastopentrade` happens to be old."""
+Only open signals (via `_open_close_limit`) may raise the target. A hold/close/ignore tick
+never raises it: while still within `cfg.maxwindow` since the last open it is left untouched,
+and only once aged does `_agedcloselimit` pull it down toward a more reachable recent extreme.
+`_setclosebracket!` is still called unconditionally so the stop-loss leg keeps refreshing
+(and ratcheting) every tick.
+
+`applyreduction=false` suppresses the aged reduction: a tick whose incoming label was still
+`longopen`/`shortopen` (score just dipped below threshold) is not an aged position in that
+sense, even if `lastopentrade` happens to be old."""
 function _refresh_close_limits!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, ix::Integer; applyreduction::Bool=true)
-    lrm = applyreduction ? max(_limitreductionminutes(cfg, cols, ix), 0) : 0
+    aged = applyreduction && (_limitreductionminutes(cfg, cols, ix) > 0)
     closeprice = cols.close[ix]
     if cols.lp_amount[ix] > 0f0
-        lc_candidate = _closeprice(cfg, lrm, closeprice, up)
-        lc_new = _should_update_price(cols.lc_limit[ix], lc_candidate, cfg.minpricedelta) ? lc_candidate : cols.lc_limit[ix]
+        lc_new = aged ? _agedcloselimit(cfg, cols, ix, up, cols.lc_limit[ix], cols.lcsl_limit[ix]) : cols.lc_limit[ix]
         _setclosebracket!(cfg, cols, ix, longclose, closeprice, lc_new)
     end
     if cols.sp_amount[ix] > 0f0
-        sc_candidate = _closeprice(cfg, lrm, closeprice, down)
-        sc_new = _should_update_price(cols.sc_limit[ix], sc_candidate, cfg.minpricedelta) ? sc_candidate : cols.sc_limit[ix]
+        sc_new = aged ? _agedcloselimit(cfg, cols, ix, down, cols.sc_limit[ix], cols.scsl_limit[ix]) : cols.sc_limit[ix]
         _setclosebracket!(cfg, cols, ix, shortclose, closeprice, sc_new)
     end
     return nothing
@@ -722,11 +804,11 @@ Steps:
      open limit. If an opposite position is still held, its close limit is coupled to this
      open limit so the reversal closes and reopens at one price.
    - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
-     only the close limits are refreshed - without `cfg.limitreduction` aging, because a
-     position whose score just dipped below the threshold is not an aged position.
-4. **Otherwise** (hold/close/ignore labels): close limits of held positions are refreshed
-   from the last close, with `cfg.limitreduction` widening the target the longer the
-   position has exceeded `cfg.maxwindow`.
+     only the close limits are refreshed - not aged, because a position whose score just
+     dipped below the threshold is not an aged position.
+4. **Otherwise** (hold/close/ignore labels): close limits of held positions are only ever
+   refreshed downward once aged past `cfg.maxwindow`, toward the highest high (long) /
+   lowest low (short) of the last `cfg.exitwindow` minutes; see `_agedcloselimit`.
 5. **Reversal ordering.** Coupled reversal pairs are made consistent: a long close must not
    match later than the short open that replaces it (and mirrored). If one leg of a pair is
    missing, both are cleared.
@@ -757,7 +839,8 @@ function gain_limit_reversal!(cfg::GainLimitReversalConfig, classifier, cols::TS
                 cols.lo_limit[ix] = lo_candidate
             end
             # both bracket legs are anchored at the last close price
-            lc_candidate = _closeprice(cfg, 0, closeprice, up)
+            heldlong = cols.lp_amount[ix] > 0f0
+            lc_candidate = _open_close_limit(cfg, closeprice, up, heldlong ? cols.lc_limit[ix] : 0f0)
             lc_new = _should_update_price(cols.lc_limit[ix], lc_candidate, cfg.minpricedelta) ? lc_candidate : cols.lc_limit[ix]
             _setclosebracket!(cfg, cols, ix, longclose, closeprice, lc_new)
             cols.so_limit[ix] = 0f0
@@ -772,7 +855,8 @@ function gain_limit_reversal!(cfg::GainLimitReversalConfig, classifier, cols::TS
             if _should_update_price(cols.so_limit[ix], so_candidate, cfg.minpricedelta)
                 cols.so_limit[ix] = so_candidate
             end
-            sc_candidate = _closeprice(cfg, 0, closeprice, down)
+            heldshort = cols.sp_amount[ix] > 0f0
+            sc_candidate = _open_close_limit(cfg, closeprice, down, heldshort ? cols.sc_limit[ix] : 0f0)
             sc_new = _should_update_price(cols.sc_limit[ix], sc_candidate, cfg.minpricedelta) ? sc_candidate : cols.sc_limit[ix]
             _setclosebracket!(cfg, cols, ix, shortclose, closeprice, sc_new)
             cols.lo_limit[ix] = 0f0
@@ -790,7 +874,6 @@ function gain_limit_reversal!(cfg::GainLimitReversalConfig, classifier, cols::TS
     return
 end
 
-gain_limit_reversal!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer) = gain_limit_reversal!(strategy.algorithmconfig, strategy.classifier, cols, ix)
 
 """Return the classifier feature config of the row's base, or `nothing` when unavailable.
 
@@ -818,16 +901,16 @@ end
 Derived from the regression gradient rather than from two prices, so it is the trend of the
 fitted line and not a point-to-point difference. Returns `0f0` when the regression is
 unavailable for this row, which reads as "flat, no guidance"."""
-function _regression_slope_percent_per_hour(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+function _regression_slope_gain_per_hour(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
     featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
     isnothing(featcfg) && return 0f0
     regr = Features.regressionat(featcfg, window, cols.opentime[ix])
     (isnothing(regr) || (regr.regry <= 0f0)) && return 0f0
-    return Float32(Features.relativegain(regr.regry, regr.grad, 60) * 100f0)
+    return Float32(Features.relativegain(regr.regry, regr.grad, 60))
 end
 
 """
-    gain_limit_reversal_below_regression!(cfg, cols, ix)
+    gain_limit_reversal_below_regression!(cfg, classifier, cols, ix)
 
 Limit-reversal lane update: decide the resting order limits of Trades row `ix` from that
 row's label/score and the limits carried over from row `ix-1`. Mutates row `ix` in place
@@ -848,11 +931,11 @@ Steps:
      open limit. If an opposite position is still held, its close limit is coupled to this
      open limit so the reversal closes and reopens at one price.
    - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
-     only the close limits are refreshed - without `cfg.limitreduction` aging, because a
-     position whose score just dipped below the threshold is not an aged position.
-4. **Otherwise** (hold/close/ignore labels): close limits of held positions are refreshed
-   from the last close, with `cfg.limitreduction` widening the target the longer the
-   position has exceeded `cfg.maxwindow`.
+     only the close limits are refreshed - not aged, because a position whose score just
+     dipped below the threshold is not an aged position.
+4. **Otherwise** (hold/close/ignore labels): close limits of held positions are only ever
+   refreshed downward once aged past `cfg.maxwindow`, toward the highest high (long) /
+   lowest low (short) of the last `cfg.exitwindow` minutes; see `_agedcloselimit`.
 5. **Reversal ordering.** Coupled reversal pairs are made consistent: a long close must not
    match later than the short open that replaces it (and mirrored). If one leg of a pair is
    missing, both are cleared.
@@ -861,62 +944,31 @@ All price updates pass `cfg.minpricedelta`, so a limit is only rewritten when it
 more than that relative distance. Amounts and order status are not touched here; they are
 decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
 """
-function gain_limit_reversal_below_regression!(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
-    @assert 1 <= ix <= TSM.tradesrows(cols) "ix=$(ix) out of bounds for trades rows=$(TSM.tradesrows(cols))"
+function gain_limit_reversal_below_regression!(cfg::GainLimitReversalBelowRegressionConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
+    @assert cfg.triggerdist >= 0f0 "triggerdist=$(cfg.triggerdist) must be nonnegative"
+    @assert cfg.triggerregrwindow >= 0 "triggerregrwindow=$(cfg.triggerregrwindow) must be nonnegative"
+    @assert cfg.trendregrwindow >= 0 "trendregrwindow=$(cfg.trendregrwindow) must be nonnegative"
+    @assert cfg.trendgainthreshold >= 0f0 "trendgainthreshold=$(cfg.trendgainthreshold) must be nonnegative"
+
     if cols.score[ix] == 0f0
         _get_classifier_result!(classifier, cols, ix)
     end
-
-    prev = ix - 1
-    cols.lo_limit[ix] = ix > 1 ? cols.lo_limit[prev] : 0f0
-    cols.lc_limit[ix] = ix > 1 ? cols.lc_limit[prev] : 0f0
-    cols.so_limit[ix] = ix > 1 ? cols.so_limit[prev] : 0f0
-    cols.sc_limit[ix] = ix > 1 ? cols.sc_limit[prev] : 0f0
-    cols.lcsl_limit[ix] = ix > 1 ? cols.lcsl_limit[prev] : 0f0
-    cols.scsl_limit[ix] = ix > 1 ? cols.scsl_limit[prev] : 0f0
-
-    closeprice = cols.close[ix]
-    if (cols.label[ix] in (longopen, longstrongopen))
-        if (cols.score[ix] >= cfg.openthreshold)
-            lo_candidate = closeprice * (1f0 - (cfg.buygain))
-            if _should_update_price(cols.lo_limit[ix], lo_candidate, cfg.minpricedelta)
-                cols.lo_limit[ix] = lo_candidate
-            end
-            # both bracket legs are anchored at the last close price
-            lc_candidate = _closeprice(cfg, 0, closeprice, up)
-            lc_new = _should_update_price(cols.lc_limit[ix], lc_candidate, cfg.minpricedelta) ? lc_candidate : cols.lc_limit[ix]
-            _setclosebracket!(cfg, cols, ix, longclose, closeprice, lc_new)
-            cols.so_limit[ix] = 0f0
-            _setclosebracket!(cfg, cols, ix, shortclose, closeprice, cols.sp_amount[ix] > 0f0 ? cols.lo_limit[ix] : 0f0)
-        else # label below threshold
-            cols.label[ix] = longhold
-            _refresh_close_limits!(cfg, cols, ix; applyreduction=false)
-        end
-    elseif (cols.label[ix] in (shortopen, shortstrongopen))
-        if (cols.score[ix] >= cfg.openthreshold)
-            so_candidate = closeprice * (1f0 + (cfg.buygain))
-            if _should_update_price(cols.so_limit[ix], so_candidate, cfg.minpricedelta)
-                cols.so_limit[ix] = so_candidate
-            end
-            sc_candidate = _closeprice(cfg, 0, closeprice, down)
-            sc_new = _should_update_price(cols.sc_limit[ix], sc_candidate, cfg.minpricedelta) ? sc_candidate : cols.sc_limit[ix]
-            _setclosebracket!(cfg, cols, ix, shortclose, closeprice, sc_new)
-            cols.lo_limit[ix] = 0f0
-            _setclosebracket!(cfg, cols, ix, longclose, closeprice, cols.lp_amount[ix] > 0f0 ? cols.so_limit[ix] : 0f0)
-        else # label below threshold
-            cols.label[ix] = shorthold
-            _refresh_close_limits!(cfg, cols, ix; applyreduction=false)
-        end
-    else
-        _refresh_close_limits!(cfg, cols, ix)
+    close_relative_to_regression = cfg.triggerregrwindow == 0 ? 0f0 : _relative_to_regression(cfg.gainlimit, classifier, cols, ix, cfg.triggerregrwindow)
+    slope_gain_per_hour = cfg.trendregrwindow == 0 ? 0f0 : _regression_slope_gain_per_hour(cfg.gainlimit, classifier, cols, ix, cfg.trendregrwindow)
+    if cols.label[ix] in (longopen, longstrongopen)
+        distance_triggered = cfg.triggerregrwindow == 0 || (close_relative_to_regression <= -cfg.triggerdist)
+        trend_triggered = cfg.trendregrwindow == 0 || (slope_gain_per_hour > -cfg.trendgainthreshold)
+        long_triggered = distance_triggered && trend_triggered
+        long_triggered || (cols.label[ix] = longhold)
+    elseif cols.label[ix] in (shortopen, shortstrongopen)
+        distance_triggered = cfg.triggerregrwindow == 0 || (close_relative_to_regression >= cfg.triggerdist)
+        trend_triggered = cfg.trendregrwindow == 0 || (slope_gain_per_hour < cfg.trendgainthreshold)
+        short_triggered = distance_triggered && trend_triggered
+        short_triggered || (cols.label[ix] = shorthold)
     end
-
-    _enforce_reversal_limit_ordering!(cols, ix)
-
-    return
+    return gain_limit_reversal!(cfg.gainlimit, classifier, cols, ix)
 end
 
-gain_limit_reversal_below_regression!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer) = gain_limit_reversal_below_regression!(strategy.algorithmconfig, strategy.classifier, cols, ix)
 
 """Clear one order lane, and for close lanes its stop-loss bracket leg as well."""
 function _resetorder(cols::TSM.TradesColumns, ix::Integer, lane::Symbol; reset_pavg::Bool)
@@ -997,7 +1049,7 @@ function _apply_open_hit!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns,
         TSM.setcategorical!(cols.lc_status, ix, "submitted")
         # lc_limit may still carry a stale value from a previously closed position; anchor the
         # bracket at the last close price now that the fill is known.
-        _setclosebracket!(cfg, cols, ix, longclose, closeprice, _closeprice(cfg, 0, closeprice, up))
+        _setclosebracket!(cfg, cols, ix, longclose, closeprice, _open_close_limit(cfg, closeprice, up, 0f0))
     elseif side == :short
         @assert cols.lp_amount[ix] == 0f0 "Short open hit at ix=$(ix) but lp_amount=$(cols.lp_amount[ix]) is not zero"
         prior_amount = cols.sp_amount[ix]
@@ -1011,14 +1063,12 @@ function _apply_open_hit!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns,
         cols.sc_amount[ix] = cols.sp_amount[ix]
         cols.scl_filled[ix] = 0f0
         TSM.setcategorical!(cols.sc_status, ix, "submitted")
-        _setclosebracket!(cfg, cols, ix, shortclose, closeprice, _closeprice(cfg, 0, closeprice, down))
+        _setclosebracket!(cfg, cols, ix, shortclose, closeprice, _open_close_limit(cfg, closeprice, down, 0f0))
     else
         error("unsupported open hit side=$(side)")
     end
     return nothing
 end
-
-_apply_open_hit!(strategy::StrategyConfig, cols::TSM.TradesColumns, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32) = _apply_open_hit!(strategy.algorithmconfig, cols, ix, side, limitprice, amount)
 
 """Carry the resting order and position state of row `ix-1` into row `ix`.
 

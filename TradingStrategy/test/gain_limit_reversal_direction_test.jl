@@ -30,12 +30,14 @@ function init_strategy_columns!(tdf::DataFrame)
     return tdf
 end
 
-function test_strategy(; minpricedelta=0f0, limitreduction=0f0)
+function test_strategy(; minpricedelta=0f0)
     return TradingStrategy.StrategyConfig(algorithmconfig=TradingStrategy.GainLimitReversalConfig(
         openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0,
-        limitreduction=limitreduction, maxwindow=4 * 60, minpricedelta=minpricedelta,
+        maxwindow=4 * 60, minpricedelta=minpricedelta,
     ))
 end
+
+run_gain_limit_reversal!(strategy, cols, ix) = TradingStrategy.gain_limit_reversal!(strategy.algorithmconfig, strategy.classifier, cols, ix)
 
 @testset "gain_limit_reversal direction" begin
     @testset "long signal encodes long guidance" begin
@@ -48,7 +50,7 @@ end
             score=Float32[0.9f0],
         )
         init_strategy_columns!(tdf)
-        TradingStrategy.gain_limit_reversal!(
+        run_gain_limit_reversal!(
             test_strategy(),
             tcols(tdf),
             1,
@@ -69,7 +71,7 @@ end
             score=Float32[0.9f0],
         )
         init_strategy_columns!(tdf)
-        TradingStrategy.gain_limit_reversal!(
+        run_gain_limit_reversal!(
             test_strategy(),
             tcols(tdf),
             1,
@@ -90,12 +92,12 @@ end
             score=Float32[0.9f0, 0.9f0],
         )
         init_strategy_columns!(tdf)
-        TradingStrategy.gain_limit_reversal!(
+        run_gain_limit_reversal!(
             test_strategy(minpricedelta=0.01f0),
             tcols(tdf),
             1,
         )
-        TradingStrategy.gain_limit_reversal!(
+        run_gain_limit_reversal!(
             test_strategy(minpricedelta=0.01f0),
             tcols(tdf),
             2,
@@ -121,7 +123,7 @@ end
         tdf[1, :so_limit] = 100.5f0
         tdf[1, :lc_limit] = 101f0
         TradingStrategy._rowtakeover!(TSM.TradesColumns(tdf), 2)
-        TradingStrategy.gain_limit_reversal!(test_strategy(limitreduction=1f0), tcols(tdf), 2)
+        run_gain_limit_reversal!(test_strategy(), tcols(tdf), 2)
         @test tdf[2, :lc_limit] <= tdf[2, :so_limit]
         TradingStrategy._validate_row_consistency(tcols(tdf), 2)
     end
@@ -143,7 +145,7 @@ end
         tdf[1, :lo_limit] = 99.5f0
         tdf[1, :sc_limit] = 99f0
         TradingStrategy._rowtakeover!(TSM.TradesColumns(tdf), 2)
-        TradingStrategy.gain_limit_reversal!(test_strategy(limitreduction=1f0), tcols(tdf), 2)
+        run_gain_limit_reversal!(test_strategy(), tcols(tdf), 2)
         @test tdf[2, :sc_limit] >= tdf[2, :lo_limit]
         TradingStrategy._validate_row_consistency(tcols(tdf), 2)
     end

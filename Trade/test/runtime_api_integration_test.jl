@@ -208,7 +208,7 @@ end
             openthreshold=0.25f0,
             buygain=0.45f0,
             sellgain=0.55f0,
-            limitreduction=0.15f0,
+            exitwindow=15,
             maxwindow=12,
         ),
     )
@@ -220,7 +220,7 @@ end
     @test rt.cfg.algorithmconfig.openthreshold == gs.algorithmconfig.openthreshold
     @test rt.cfg.algorithmconfig.buygain == gs.algorithmconfig.buygain
     @test rt.cfg.algorithmconfig.sellgain == gs.algorithmconfig.sellgain
-    @test rt.cfg.algorithmconfig.limitreduction == gs.algorithmconfig.limitreduction
+    @test rt.cfg.algorithmconfig.exitwindow == gs.algorithmconfig.exitwindow
     @test rt.cfg.algorithmconfig.maxwindow == gs.algorithmconfig.maxwindow
     @test rt.source == "test"
     @test !haskey(mc, :strategy_template)
@@ -228,6 +228,6 @@ end
     @test !haskey(mc, :strategy_openthreshold)
     @test !haskey(mc, :strategy_buygain)
     @test !haskey(mc, :strategy_sellgain)
-    @test !haskey(mc, :strategy_limitreduction)
+    @test !haskey(mc, :strategy_exitwindow)
     @test !haskey(mc, :strategy_maxwindow)
 end
