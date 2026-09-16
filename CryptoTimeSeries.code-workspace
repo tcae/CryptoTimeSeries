@@ -6,7 +6,6 @@
 	],
 	"settings": {
 		"jupyter.jupyterServerType": "local",
-		"julia.environmentPath": "/Users/torsten/github/CryptoTimeSeries",
 		"julia.debuggerDefaultCompiled": [
 
 

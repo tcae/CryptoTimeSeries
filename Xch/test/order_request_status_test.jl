@@ -90,6 +90,11 @@ end
         @test accepted[1, :lo_status] != "none"
         @test !ismissing(accepted[1, :equity])
         @test !ismissing(accepted[1, :freequote])
+        accepted[1, :lo_amount] = 0f0
+        accepted[1, :label] = allclose
+        Xch.process_order_request(xc, accepted, 1)
+        @test String(accepted[1, :lo_id]) == "none"
+        @test String(accepted[1, :lo_status]) == "none"
     else
         @test result.reason in ("insufficient_free_quote", "below_minimum_qty")
         @test lowercase(String(accepted[1, :lo_status])) == "rejected"

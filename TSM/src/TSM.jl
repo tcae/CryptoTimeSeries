@@ -32,7 +32,7 @@ const TSM_NO_SET = "none"
 "Value every categorical Trades column carries while unset; shared by all of them."
 const TSM_CATEGORICAL_DEFAULT = "none"
 const TSM_STATUS_LEVELS = ["none", "submitted", "closed", "cancelled", "rejected"]
-const TSM_CATEGORICAL_COLUMNS = Set([:pair, :set, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :lcsl_id, :lcsl_status, :lcsl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :scsl_id, :scsl_status, :scsl_msg, :config, :tsmstate])
+const TSM_CATEGORICAL_COLUMNS = Set([:pair, :set, :closereason, :lo_id, :lo_status, :lo_msg, :lol_id, :lol_status, :lol_msg, :lc_id, :lc_status, :lc_msg, :lcl_id, :lcl_status, :lcl_msg, :lcsl_id, :lcsl_status, :lcsl_msg, :so_id, :so_status, :so_msg, :sol_id, :sol_status, :sol_msg, :sc_id, :sc_status, :sc_msg, :scl_id, :scl_status, :scl_msg, :scsl_id, :scsl_status, :scsl_msg, :config, :tsmstate])
 const TSM_FLOAT_COLUMNS = Set([:lol_filled, :lol_pavg, :lcl_filled, :lcl_pavg, :sol_filled, :sol_pavg, :scl_filled, :scl_pavg, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lcsl_limit, :scsl_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount])
 const TSM_INT_COLUMNS = Set([:rangeid])
 const TSM_TRADE_LANES = Set([:lo, :lc, :so, :sc])
@@ -503,6 +503,8 @@ function _defaultcolumn(field::Symbol, n::Integer)
         return _uncompressedcategorical(fill(TSM_NO_ORDER_ID, n); levels=[TSM_NO_ORDER_ID])
     elseif field === :lo_msg || field === :lol_msg || field === :lc_msg || field === :lcl_msg || field === :lcsl_msg || field === :so_msg || field === :sol_msg || field === :sc_msg || field === :scl_msg || field === :scsl_msg
         return _compressedcategorical(fill(TSM_NO_ORDER_MSG, n); levels=[TSM_NO_ORDER_MSG])
+    elseif field === :closereason
+        return _compressedcategorical(fill("none", n); levels=["none", "stoploss", "takeprofit", "trendchange", "liquidation"])
     elseif field === :pair || field === :set || field === :config || field === :tsmstate
         default = field === :pair ? "none" : field === :set ? TSM_NO_SET : field === :config ? TSM_NO_CONFIG : TSM_NO_STATE
         return _compressedcategorical(fill(default, n); levels=[default])
@@ -718,7 +720,7 @@ gettrades_last_pavg(tradesdf::AbstractDataFrame, ix::Integer, label) = gettrades
 settrades_last_pavg!(tradesdf::DataFrame, ix::Integer, label, value) = settrades_lastlanefield!(tradesdf, ix, label, :pavg, value)
 
 """Every Trades column, in canonical order. Drives both the generated per-field accessors and `TradesColumns`."""
-const TSM_TRADES_COLUMNS = (:opentime, :lastopentrade, :pair, :set, :rangeid, :lo_id, :lo_status, :lol_id, :lol_status, :lol_filled, :lol_pavg, :lo_msg, :lol_msg, :lc_id, :lc_status, :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lc_msg, :lcl_msg, :lcsl_id, :lcsl_status, :lcsl_msg, :lcsl_limit, :so_id, :so_status, :sol_id, :sol_status, :sol_filled, :sol_pavg, :so_msg, :sol_msg, :sc_id, :sc_status, :scl_id, :scl_status, :scl_filled, :scl_pavg, :sc_msg, :scl_msg, :scsl_id, :scsl_status, :scsl_msg, :scsl_limit, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
+const TSM_TRADES_COLUMNS = (:opentime, :lastopentrade, :pair, :set, :rangeid, :closereason, :lo_id, :lo_status, :lol_id, :lol_status, :lol_filled, :lol_pavg, :lo_msg, :lol_msg, :lc_id, :lc_status, :lcl_id, :lcl_status, :lcl_filled, :lcl_pavg, :lc_msg, :lcl_msg, :lcsl_id, :lcsl_status, :lcsl_msg, :lcsl_limit, :so_id, :so_status, :sol_id, :sol_status, :sol_filled, :sol_pavg, :so_msg, :sol_msg, :sc_id, :sc_status, :scl_id, :scl_status, :scl_filled, :scl_pavg, :sc_msg, :scl_msg, :scsl_id, :scsl_status, :scsl_msg, :scsl_limit, :lp_amount, :sp_amount, :close, :high, :low, :equity, :freemargin, :freequote, :label, :score, :lo_limit, :lc_limit, :so_limit, :sc_limit, :lo_amount, :lc_amount, :so_amount, :sc_amount, :config, :tsmstate)
 
 for field in TSM_TRADES_COLUMNS
     ensurefn = Symbol("ensuretrades_", field, "!")
@@ -866,6 +868,7 @@ end
 """Return TradingStrategy-contributed Trades schema initializer functions."""
 function tradingstrategy_tradesdf_contributors()::Vector{Function}
     return Function[
+        tradingstrategy_tradesdf_closereason,
         tradingstrategy_tradesdf_label,
         tradingstrategy_tradesdf_score,
         df -> tradingstrategy_tradesdf_limit(df, longopen),
@@ -875,6 +878,11 @@ function tradingstrategy_tradesdf_contributors()::Vector{Function}
         df -> tradingstrategy_tradesdf_stop_limit(df, longclose),
         df -> tradingstrategy_tradesdf_stop_limit(df, shortclose),
     ]
+end
+
+"""Ensure the replay close-reason marker exists; `none` means no segment closed on the row."""
+function tradingstrategy_tradesdf_closereason(df::DataFrame)::DataFrame
+    return _ensurecolumn!(df, :closereason)
 end
 
 """Return Trade-contributed Trades schema initializer functions."""
@@ -1068,6 +1076,8 @@ function gettradesfield(tradesdf::AbstractDataFrame, ix::Integer, field::Symbol)
         return gettrades_set(tradesdf, ix)
     elseif field === :rangeid
         return gettrades_rangeid(tradesdf, ix)
+    elseif field === :closereason
+        return gettrades_closereason(tradesdf, ix)
     elseif field === :lo_id
         return gettrades_lo_id(tradesdf, ix)
     elseif field === :lo_status
@@ -1203,6 +1213,8 @@ function settradesfield!(tradesdf::DataFrame, ix::Integer, field::Symbol, value)
         return settrades_set!(tradesdf, ix, value)
     elseif field === :rangeid
         return settrades_rangeid!(tradesdf, ix, value)
+    elseif field === :closereason
+        return settrades_closereason!(tradesdf, ix, value)
     elseif field === :lo_id
         return settrades_lo_id!(tradesdf, ix, value)
     elseif field === :lo_status

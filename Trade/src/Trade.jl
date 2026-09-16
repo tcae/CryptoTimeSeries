@@ -615,6 +615,10 @@ function trade!(cache::TradeCache, tradesdfdict::Dict; pairplans=nothing)
             TSM.settrades_msg!(tradesdf, tradesix, shortclose, logged)
         else
             cache.ts.cfg.algorithm(cache.ts.cfg.algorithmconfig, cache.ts.cfg.classifier, TSM.TradesColumns(tradesdf), tradesix)
+                if (tradesrow.lp_amount > 0f0 || tradesrow.sp_amount > 0f0) &&
+                    (tradesrow.label in [longclose, longstrongclose, shortclose, shortstrongclose, allclose])
+                TSM.settradesfield!(tradesdf, tradesix, :closereason, "trendchange")
+            end
             if tradesrow.label in [shortstrongopen, shortopen, allclose, longstrongclose, longclose]
                 closequote += (tradesrow.lp_amount) * tradesrow.close
                 if tradesrow.label in [shortstrongopen, shortopen]

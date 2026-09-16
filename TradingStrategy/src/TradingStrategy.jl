@@ -690,6 +690,7 @@ locked in even on a later bar that no longer clears its threshold."""
 function _ratchet_stoploss(cfg::GainLimitReversalConfig, low::Float32, high::Float32, updown::Targets.TrendPhase, pavg::Float32, stoplimit::Float32, priorstop::Float32)::Float32
     ((cfg.makerfee > 0f0) && (pavg > 0f0)) || return stoplimit
     tightened = stoplimit
+    return stoplimit # diasble ratchet stop loss
     if updown == up
         if low > pavg * (1f0 + 3f0 * cfg.makerfee)
             tightened = max(tightened, pavg * (1f0 + 2f0 * cfg.makerfee))
@@ -1266,12 +1267,14 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
         stoplimit = cols.lcsl_limit[ix]
         # stop before take profit: a bar covering both legs cannot tell which executed first, so the adverse leg wins
         if (stoplimit > 0f0) && _price_in_bar(stoplimit, cols.low[ix], cols.high[ix], :low)
+            TSM.setcategorical!(cols.closereason, ix, "stoploss")
             gain = (stoplimit - openprice) / openprice
             push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
             cols.lcl_pavg[ix] = stoplimit
             _resetorder(cols, ix, :lc, reset_pavg=false)
             last_openix = 0
         elseif _price_in_bar(cols.lc_limit[ix], cols.low[ix], cols.high[ix], :high)
+            TSM.setcategorical!(cols.closereason, ix, "takeprofit")
             gain = (cols.lc_limit[ix] - openprice) / openprice
             push!(result, (up, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
             cols.lcl_pavg[ix] = cols.lc_limit[ix]
@@ -1284,12 +1287,14 @@ function _materialize_gains_sample_from_trades!(result::Union{Nothing, DataFrame
         minutes = Int(div(Dates.value(cols.opentime[ix] - cols.lastopentrade[ix]), 60000)) + 1
         stoplimit = cols.scsl_limit[ix]
         if (stoplimit > 0f0) && _price_in_bar(stoplimit, cols.low[ix], cols.high[ix], :high)
+            TSM.setcategorical!(cols.closereason, ix, "stoploss")
             gain = -(stoplimit - openprice) / openprice
             push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
             cols.scl_pavg[ix] = stoplimit
             _resetorder(cols, ix, :sc, reset_pavg=false)
             last_openix = 0
         elseif _price_in_bar(cols.sc_limit[ix], cols.low[ix], cols.high[ix], :low)
+            TSM.setcategorical!(cols.closereason, ix, "takeprofit")
             gain = -(cols.sc_limit[ix] - openprice) / openprice
             push!(result, (down, (ix - last_openix + 1), minutes, gain, (gain - 2f0 * makerfee), cols.lastopentrade[ix], cols.opentime[ix], last_openix, ix))
             cols.scl_pavg[ix] = cols.sc_limit[ix]

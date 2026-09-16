@@ -48,7 +48,7 @@ tradingstrategy06() = TradingStrategy.StrategyConfig(
     makerfee=0.0025)
 tradingstrategy07() = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal!, 
-    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0f0, makerfee=0.0025), 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, makerfee=0.0025, incrementgain=0f0, stoploss=0.05f0), 
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)

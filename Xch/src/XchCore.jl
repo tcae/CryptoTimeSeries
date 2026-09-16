@@ -1681,6 +1681,10 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
                 # no msg take over from previous row
                 TSM.settradesfield!(tradesdf, ix, amountcol, tradesdf[ix - 1, amountcol])
                 TSM.settradesfield!(tradesdf, ix, poscol, tradesdf[ix - 1, poscol])
+                if idcol in (:lc_id, :sc_id) && (:closereason in propertynames(tradesdf)) &&
+                   (String(tradesdf[ix - 1, :closereason]) == "trendchange")
+                    TSM.settradesfield!(tradesdf, ix, :closereason, "trendchange")
+                end
             end
         end
 
@@ -1736,6 +1740,25 @@ function order_status(xc::XchCache, tradesdf::DataFrame, ix::Integer; auditevent
             TSM.settradesfield!(tradesdf, ix, lastidcol, oid)
             TSM.settradesfield!(tradesdf, ix, laststcol, status)
         end
+        if status == "closed" && idcol in (:lc_id, :lcsl_id, :sc_id, :scsl_id)
+            adapter_reason = hasproperty(info, :rejectreason) ? String(info.rejectreason) : ""
+            close_reason = if idcol in (:lcsl_id, :scsl_id)
+                "stoploss"
+            elseif (adapter_reason == "bracket sibling filled") || (String(tradesdf[ix, msgcol]) == "bracket sibling filled")
+                "stoploss"
+            elseif :label in propertynames(tradesdf) && begin
+                label = tradesdf[ix, :label]
+                close_label = label in (longclose, longstrongclose, shortclose, shortstrongclose, allclose)
+                reversal_label = (idcol in (:lc_id, :lcsl_id) && label in (shortopen, shortstrongopen)) ||
+                    (idcol in (:sc_id, :scsl_id) && label in (longopen, longstrongopen))
+                close_label || reversal_label
+            end
+                "trendchange"
+            else
+                "takeprofit"
+            end
+            TSM.settradesfield!(tradesdf, ix, :closereason, close_reason)
+        end
         if status in ("closed", "cancelled", "rejected", "none")
             TSM.settradesfield!(tradesdf, ix, idcol, NO_ORDER_ID)
             if amountcol in propertynames(tradesdf)
@@ -1764,6 +1787,31 @@ function _applyliquidationevent!(tradesdf::DataFrame, ix::Integer, ev::NamedTupl
     TSM.settradesfield!(tradesdf, ix, long ? :lcl_filled : :scl_filled, Float32(ev.qty))
     TSM.settradesfield!(tradesdf, ix, long ? :lcl_pavg : :scl_pavg, Float32(ev.price))
     TSM.settradesfield!(tradesdf, ix, long ? :lcl_msg : :scl_msg, String(ev.reason))
+    TSM.settradesfield!(tradesdf, ix, :closereason, "liquidation")
+    return nothing
+end
+
+function _append_liquidation_debug!(source::AbstractString, xc::XchCache, decisiondt, base::AbstractString, fields...)
+    path = joinpath(EnvConfig.logfolder(), "liquidation-debug.tsv")
+    mkpath(dirname(path))
+    value(value) = begin
+        io = IOBuffer()
+        show(io, value)
+        replace(String(take!(io)), '\n' => ' ', '\t' => ' ')
+    end
+    columns = (:source, :decisiondt, :base, :positionside, :equity, :prices, :assets_before, :assets_after, :open_orders_before, :open_orders_after, :liquidated, :previous_quantity, :new_quantity, :markprice, :close_id, :close_status, :close_amount, :stop_limit, :account_equity, :free_margin, :free_quote, :assets, :positions, :event)
+    values_by_column = Dict{Symbol, String}(:source => value(source), :decisiondt => value(decisiondt), :base => value(base))
+    for field in fields
+        values_by_column[field.first] = value(field.second)
+    end
+    header = join(String.(columns), '\t') * '\n'
+    values = Base.join([Base.get(values_by_column, column, "") for column in columns], '\t') * '\n'
+    isfile(path) || open(path, "w") do io
+        Base.write(io, header)
+    end
+    open(path, "a") do io
+        Base.write(io, values)
+    end
     return nothing
 end
 
@@ -1943,6 +1991,10 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing,
         # cannot report its execution.
         explicitliquidationsides = Set{Symbol}()
         for ev in get(liquidations_by_base, base, NamedTuple[])
+            _append_liquidation_debug!("xch-explicit", xc, currentdt, base,
+                :event => ev, :account_equity => acct.equity_quote,
+                :free_margin => acct.free_margin_quote, :free_quote => acct.free_quote,
+                :assets => acct.assets, :positions => acct.positions)
             _applyliquidationevent!(tdf, rowix, ev)
             push!(explicitliquidationsides, ev.positionside)
         end
@@ -1967,10 +2019,28 @@ function sync_latest_trades_rows!(xc::XchCache, syncpairs=nothing; acct=nothing,
         # (and without an adapter-reported liquidation event) was force-closed by the
         # exchange; approximate its execution with the current mark price.
         markprice = tdf[rowix, :close]
-        if !(:long in explicitliquidationsides) && (prevlqty > 0f0) && (newlqty == 0f0) && (String(tdf[rowix, :lc_status]) != "closed") && (markprice > 0f0)
+          if !(:long in explicitliquidationsides) && (prevlqty > 0f0) && (newlqty == 0f0) &&
+              (String(tdf[rowix, :lc_status]) != "closed") && (String(tdf[rowix, :lcsl_status]) != "closed") &&
+              (String(tdf[rowix, :lcl_status]) != "closed") && (markprice > 0f0)
+            _append_liquidation_debug!("xch-inferred", xc, currentdt, base,
+                :positionside => :long, :previous_quantity => prevlqty, :new_quantity => newlqty,
+                :markprice => markprice, :close_id => tdf[rowix, :lc_id],
+                :close_status => tdf[rowix, :lc_status], :close_amount => tdf[rowix, :lc_amount],
+                :stop_limit => tdf[rowix, :lcsl_limit], :account_equity => acct.equity_quote,
+                :free_margin => acct.free_margin_quote, :free_quote => acct.free_quote,
+                :assets => acct.assets, :positions => acct.positions)
             _applyliquidationevent!(tdf, rowix, (positionside=:long, qty=prevlqty, price=markprice, hadpendingorder=String(tdf[rowix, :lc_id]) != NO_ORDER_ID, reason="liquidation"))
         end
-        if !(:short in explicitliquidationsides) && (prevsqty > 0f0) && (newsqty == 0f0) && (String(tdf[rowix, :sc_status]) != "closed") && (markprice > 0f0)
+          if !(:short in explicitliquidationsides) && (prevsqty > 0f0) && (newsqty == 0f0) &&
+              (String(tdf[rowix, :sc_status]) != "closed") && (String(tdf[rowix, :scsl_status]) != "closed") &&
+              (String(tdf[rowix, :scl_status]) != "closed") && (markprice > 0f0)
+            _append_liquidation_debug!("xch-inferred", xc, currentdt, base,
+                :positionside => :short, :previous_quantity => prevsqty, :new_quantity => newsqty,
+                :markprice => markprice, :close_id => tdf[rowix, :sc_id],
+                :close_status => tdf[rowix, :sc_status], :close_amount => tdf[rowix, :sc_amount],
+                :stop_limit => tdf[rowix, :scsl_limit], :account_equity => acct.equity_quote,
+                :free_margin => acct.free_margin_quote, :free_quote => acct.free_quote,
+                :assets => acct.assets, :positions => acct.positions)
             _applyliquidationevent!(tdf, rowix, (positionside=:short, qty=prevsqty, price=markprice, hadpendingorder=String(tdf[rowix, :sc_id]) != NO_ORDER_ID, reason="liquidation"))
         end
 
@@ -2087,7 +2157,24 @@ function process_order_request(xc::XchCache, tradesdf::DataFrame, ix::Integer; p
     else
         :none
     end
-    action == :none && return (accepted=false, action=:none, reason="no open amount requested")
+    if (action == :long_open && tradesdf[ix, :sp_amount] > 0f0) ||
+       (action == :short_open && tradesdf[ix, :lp_amount] > 0f0)
+        TSM.settradesfield!(tradesdf, ix, :closereason, "trendchange")
+    end
+    if action == :none
+        for (idcol, statuscol, amountcol) in ((:lo_id, :lo_status, :lo_amount), (:so_id, :so_status, :so_amount))
+            rawid = tradesdf[ix, idcol]
+            oid = ismissing(rawid) ? nothing : strip(String(rawid))
+            (oid == "" || lowercase(oid) == NO_ORDER_ID) && (oid = nothing)
+            if !isnothing(oid) && _orderstillopen(xc, oid)
+                cancelorder(xc, base, oid)
+            end
+            tradesdf[ix, idcol] = NO_ORDER_ID
+            tradesdf[ix, statuscol] = "none"
+            tradesdf[ix, amountcol] = 0f0
+        end
+        return (accepted=false, action=:none, reason="no open amount requested")
+    end
 
     limitcol = action == :long_open ? :lo_limit : :so_limit
     orderamountcol = action == :long_open ? :lo_amount : :so_amount

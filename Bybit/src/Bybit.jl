@@ -1714,6 +1714,31 @@ function _simcurrentprice(bc::BybitCache, symbol::AbstractString, atdt::DateTime
     return Float32(candles[end, :close])
 end
 
+function _liquidation_debug_value(value)::String
+    io = IOBuffer()
+    show(io, value)
+    return replace(String(take!(io)), '\n' => ' ', '\t' => ' ')
+end
+
+function _append_liquidation_debug!(source::AbstractString, decisiondt, fields...)
+    path = joinpath(EnvConfig.logfolder(), "liquidation-debug.tsv")
+    mkpath(dirname(path))
+    columns = (:source, :decisiondt, :base, :positionside, :equity, :prices, :assets_before, :assets_after, :open_orders_before, :open_orders_after, :liquidated, :previous_quantity, :new_quantity, :markprice, :close_id, :close_status, :close_amount, :stop_limit, :account_equity, :free_margin, :free_quote, :assets, :positions, :event)
+    values_by_column = Dict{Symbol, String}(:source => _liquidation_debug_value(source), :decisiondt => _liquidation_debug_value(decisiondt))
+    for field in fields
+        values_by_column[field.first] = _liquidation_debug_value(field.second)
+    end
+    header = join(String.(columns), '\t') * '\n'
+    values = Base.join([Base.get(values_by_column, column, "") for column in columns], '\t') * '\n'
+    isfile(path) || open(path, "w") do io
+        Base.write(io, header)
+    end
+    open(path, "a") do io
+        Base.write(io, values)
+    end
+    return nothing
+end
+
 """
 Force-close all open BybitSim positions at current market price when total account
 equity has dropped to zero or below (maintenance-margin breach), mirroring an
@@ -1749,6 +1774,11 @@ function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}
 
     equity > 0.0 && return nothing
 
+    @warn "BybitSim margin-call trigger" decisiondt equity assets=copy(bc.assets) prices=copy(pricebyix)
+    _append_liquidation_debug!("bybitsim-margin-call", decisiondt,
+        :equity => equity, :prices => copy(pricebyix), :assets_before => copy(bc.assets),
+        :open_orders_before => copy(bc.orderbook))
+
     liquidated = String[]
     for (ix, price) in pricebyix
         coin = String(bc.assets[ix, :coin])
@@ -1756,6 +1786,10 @@ function _simliquidatemargincall!(bc::BybitCache; atdt::Union{Nothing, DateTime}
         symbol = uppercase(string(uppercase(coin), quotecoin))
         _simforceliquidateposition!(bc, symbol, Symbol(side), price, decisiondt) && push!(liquidated, "$(coin)/$(side)")
     end
+    @warn "BybitSim margin-call ledger after liquidation" decisiondt equity_before=equity assets=copy(bc.assets) liquidated
+    _append_liquidation_debug!("bybitsim-margin-call-after", decisiondt,
+        :equity_before => equity, :liquidated => liquidated, :assets_after => copy(bc.assets),
+        :open_orders_after => copy(bc.orderbook))
     !isempty(liquidated) && (verbosity >= 1) && @warn "BybitSim margin call: liquidated underwater positions" liquidated equity at=decisiondt
     return nothing
 end

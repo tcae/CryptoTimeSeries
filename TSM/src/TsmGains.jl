@@ -60,20 +60,15 @@ end
 
 """Return the grouping columns used to compile gains from concatenated Trades rows.
 
-`set`/`rangeid` are only included when `setpartitions` is true; positions from a
-continuous replay can span set/rangeid subrange boundaries *and* liquidity-range
-boundaries (the continuous tradeloop only resets portfolio/position state once, at the
-start of the whole run - never at a liquidity-range or subrange transition), so grouping
-by anything finer than `:pair` there would falsely split one position's open and close
-across groups. When `setpartitions` is false (default), matching therefore scopes to
-`:pair` alone; individual gain rows still carry whatever `:set`/`:rangeid` was active at
-the close, so `gainsreport`'s aggregation is unaffected."""
+Continuous replay isolates each pair and range, while partitioned replay additionally
+isolates each set. A position open at a group boundary is therefore intentionally dropped
+instead of being carried into the next range or set."""
 function _compilegains_groupcols(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::Vector{Symbol}
     @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair to compile gains; names=$(names(tradesdf))"
     cols = Symbol[:pair]
+    (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
     if setpartitions
         (:set in propertynames(tradesdf)) && push!(cols, :set)
-        (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
     end
     return cols
 end
@@ -90,6 +85,7 @@ function _emptygainsdf(tradesdf::AbstractDataFrame)::DataFrame
         side=String[],
         gain=Float32[],
         gainquote=Float32[],
+        closereason=String[],
     )
     if :set in propertynames(tradesdf)
         insertcols!(gainsdf, 2, :set => copy(tradesdf[1:0, :set]))
@@ -128,7 +124,7 @@ function GainPartition(tradesview::AbstractDataFrame)
     @assert :pair in available "tradesdf must contain :pair to compile gains; names=$(names(tradesview))"
 
     keep = vcat(_COMPILEGAINS_HOTCOLUMNS, Symbol[:pair])
-    for col in (:close, :set, :rangeid)
+    for col in (:close, :closereason, :set, :rangeid)
         (col in available) && push!(keep, col)
     end
     rows = select(tradesview, keep)
@@ -171,11 +167,17 @@ function _compilegainsprice(part::GainPartition, ix::Integer, prices::Vector{Flo
     return fallback
 end
 
-"""Append one compiled gain row, mirroring optional `set` and `rangeid` columns from the partition."""
-function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer, opentime::DateTime, openprice::Float32, closetime::DateTime, closeprice::Float32, volume::Float32, side::Symbol)::Nothing
-    gain = side == :long ? (closeprice - openprice) / openprice : (openprice - closeprice) / openprice
-    gainquote = side == :long ? volume * (closeprice - openprice) : volume * (openprice - closeprice)
+"""Append one compiled gain row, mirroring optional metadata columns from the partition."""
+function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer, opentime::DateTime, openprice::Float32, closetime::DateTime, closeprice::Float32, volume::Float32, side::Symbol, makerfee::Float32, takerfee::Float32)::Nothing
     rows = part.rows
+    closereason = (:closereason in propertynames(rows)) ? String(rows[ix, :closereason]) : "none"
+    closefee = closereason == "liquidation" ? takerfee : makerfee
+    open_cost = volume * openprice * (1f0 + makerfee)
+    open_proceeds = volume * openprice * (1f0 - makerfee)
+    close_proceeds = volume * closeprice * (1f0 - closefee)
+    close_cost = volume * closeprice * (1f0 + closefee)
+    gainquote = side == :long ? close_proceeds - open_cost : open_proceeds - close_cost
+    gain = gainquote / (volume * openprice)
 
     if (:set in propertynames(gainsdf)) && (:rangeid in propertynames(gainsdf))
         push!(gainsdf, (
@@ -190,6 +192,7 @@ function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer
             side=String(side),
             gain=gain,
             gainquote=gainquote,
+            closereason=closereason,
         ))
     elseif :set in propertynames(gainsdf)
         push!(gainsdf, (
@@ -203,6 +206,7 @@ function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer
             side=String(side),
             gain=gain,
             gainquote=gainquote,
+            closereason=closereason,
         ))
     elseif :rangeid in propertynames(gainsdf)
         push!(gainsdf, (
@@ -216,6 +220,7 @@ function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer
             side=String(side),
             gain=gain,
             gainquote=gainquote,
+            closereason=closereason,
         ))
     else
         push!(gainsdf, (
@@ -228,6 +233,7 @@ function _pushcompiledgain!(gainsdf::DataFrame, part::GainPartition, ix::Integer
             side=String(side),
             gain=gain,
             gainquote=gainquote,
+            closereason=closereason,
         ))
     end
     return nothing
@@ -243,7 +249,7 @@ function _enqueuecompiledopen!(openqueue::Vector{_OpenTrade}, opentime::DateTime
 end
 
 """Consume one close execution against queued opens in FIFO order and emit gain rows."""
-function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{_OpenTrade}, part::GainPartition, ix::Integer, closeprice::Float32, closevolume::Float32, side::Symbol)::Nothing
+function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{_OpenTrade}, part::GainPartition, ix::Integer, closeprice::Float32, closevolume::Float32, side::Symbol, makerfee::Float32, takerfee::Float32)::Nothing
     remaining = closevolume
     closetime = _compilegainstime(part, ix)
     # Opens are queued from per-row Float32 deltas, so their sum drifts from the stored
@@ -254,7 +260,7 @@ function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{_OpenTrade},
         @assert !isempty(openqueue) "Encountered unmatched $(side) close volume=$(remaining) at ix=$(ix), opentime=$(closetime), pair=$(part.rows[ix, :pair])"
         opentrade = first(openqueue)
         matched = min(opentrade.remaining, remaining)
-        _pushcompiledgain!(gainsdf, part, ix, opentrade.opentime, opentrade.openprice, closetime, closeprice, matched, side)
+        _pushcompiledgain!(gainsdf, part, ix, opentrade.opentime, opentrade.openprice, closetime, closeprice, matched, side, makerfee, takerfee)
         remaining -= matched
         if matched == opentrade.remaining
             popfirst!(openqueue)
@@ -266,7 +272,7 @@ function _matchcompiledclose!(gainsdf::DataFrame, openqueue::Vector{_OpenTrade},
 end
 
 """Compile gain rows for one pair-scoped Trades partition."""
-function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFrame)::Nothing
+function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFrame, makerfee::Float32, takerfee::Float32)::Nothing
     nrow(tradesview) == 0 && return nothing
     part = GainPartition(tradesview)
     longamounts = part.lp_amount
@@ -289,20 +295,20 @@ function _compilegainspartition!(gainsdf::DataFrame, tradesview::AbstractDataFra
         if longdelta > 0f0
             _enqueuecompiledopen!(longopens, _compilegainstime(part, ix), _compilegainsprice(part, ix, part.lol_pavg, :lol_pavg), longdelta)
         elseif longdelta < 0f0
-            _matchcompiledclose!(gainsdf, longopens, part, ix, _compilegainsprice(part, ix, part.lcl_pavg, :lcl_pavg), -longdelta, :long)
+            _matchcompiledclose!(gainsdf, longopens, part, ix, _compilegainsprice(part, ix, part.lcl_pavg, :lcl_pavg), -longdelta, :long, makerfee, takerfee)
         end
 
         if shortdelta > 0f0
             _enqueuecompiledopen!(shortopens, _compilegainstime(part, ix), _compilegainsprice(part, ix, part.sol_pavg, :sol_pavg), shortdelta)
         elseif shortdelta < 0f0
-            _matchcompiledclose!(gainsdf, shortopens, part, ix, _compilegainsprice(part, ix, part.scl_pavg, :scl_pavg), -shortdelta, :short)
+            _matchcompiledclose!(gainsdf, shortopens, part, ix, _compilegainsprice(part, ix, part.scl_pavg, :scl_pavg), -shortdelta, :short, makerfee, takerfee)
         end
     end
     return nothing
 end
 
 """
-    compilegains(tradesdf; setpartitions=false)
+    compilegains(tradesdf; setpartitions=false, makerfee=0f0, takerfee=0f0)
 
 Compile open/close gain pairs from one Trades DataFrame without persisting them, scoping
 matching by `pair` plus optional `set` and `rangeid`. `setpartitions=false` (default) is
@@ -312,17 +318,20 @@ span two distinct liquidity ranges. `gainsreport` still aggregates across all li
 ranges per set, i.e. reports out for the whole coin rather than per liquidity range. Set
 `setpartitions=true` to instead scope matching exactly to `(pair, set, rangeid)`.
 
-Use this when compiling per pair and concatenating afterwards; `compilegainsdf` wraps it
-with persistence.
+`gain` and `gainquote` include the opening maker fee and the closing maker fee, except
+that liquidation closes use `takerfee`. Use this when compiling per pair and concatenating
+afterwards; `compilegainsdf` wraps it with persistence.
 """
-function compilegains(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::DataFrame
+function compilegains(tradesdf::AbstractDataFrame; setpartitions::Bool=false, makerfee::Real=0f0, takerfee::Real=0f0)::DataFrame
+    @assert makerfee >= 0 "makerfee=$(makerfee) must be nonnegative"
+    @assert takerfee >= 0 "takerfee=$(takerfee) must be nonnegative"
     gainsdf = _emptygainsdf(tradesdf)
     nrow(tradesdf) == 0 && return gainsdf
 
     working = DataFrame(tradesdf; copycols=false)
     groupcols = _compilegains_groupcols(working; setpartitions=setpartitions)
     for tradesview in groupby(working, groupcols; sort=false)
-        _compilegainspartition!(gainsdf, tradesview)
+        _compilegainspartition!(gainsdf, tradesview, Float32(makerfee), Float32(takerfee))
     end
 
     sortcols = Symbol[]
@@ -348,18 +357,19 @@ function sortgainsdf!(gainsdf::DataFrame)::DataFrame
 end
 
 """
-    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false)
+    compilegainsdf(tradesdf; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false, makerfee=0f0, takerfee=0f0)
 
-Compile gain pairs via `compilegains` and persist them as `<stem>.arrow` in `folderpath`.
+Compile gain pairs via `compilegains`, including configured fees, and persist them as
+`<stem>.arrow` in `folderpath`.
 """
-function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), setpartitions::Bool=false)::DataFrame
-    gainsdf = compilegains(tradesdf; setpartitions=setpartitions)
+function compilegainsdf(tradesdf::AbstractDataFrame; stem::AbstractString="tsmgains", folderpath::AbstractString=EnvConfig.logfolder(), setpartitions::Bool=false, makerfee::Real=0f0, takerfee::Real=0f0)::DataFrame
+    gainsdf = compilegains(tradesdf; setpartitions=setpartitions, makerfee=makerfee, takerfee=takerfee)
     EnvConfig.savedf(gainsdf, String(stem); folderpath=String(folderpath))
     return gainsdf
 end
 
 """
-    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false)
+    compilegainsdf(tsm; stem="tsmgains", folderpath=EnvConfig.logfolder(), setpartitions=false, makerfee=0f0, takerfee=0f0)
 
 Collect the combined Trades DataFrame from one `TsmCache`, compile gain pairs,
 and persist the result in the current log folder as `<stem>.arrow`.
@@ -390,25 +400,32 @@ function _q75_nonempty(values::AbstractVector{<:Real})
 end
 
 """Return an empty gains report dataframe."""
-function _emptygainsreportdf()::DataFrame
-    return DataFrame(
-        set=String[],
-        avggain=Float32[],
-        avgminutes=Float32[],
-        q75minutes=Float32[],
-        maxminutes=Int[],
-        segments=Int[],
-    )
+function _emptygainsreportdf(groupcols::AbstractVector{Symbol}=[:set])::DataFrame
+    report = DataFrame([col => String[] for col in groupcols])
+    report[!, :avggain] = Float32[]
+    report[!, :avgminutes] = Float32[]
+    report[!, :q75minutes] = Int[]
+    report[!, :maxminutes] = Int[]
+    report[!, :segments] = Int[]
+    report[!, :stoplosses] = Int[]
+    report[!, :trendchanges] = Int[]
+    report[!, :liquidations] = Int[]
+    report[!, :takeprofits] = Int[]
+    return report
 end
 
 """
     gainsreport(gainsdf)
 
-Aggregate gains across all pairs and ranges per set.
+    Aggregate gains by `groupcols`, optionally adding totals grouped by `totalcols`.
+
+The report includes `stoplosses` and `trendchanges`, counted from the canonical
+`closereason` segment metadata. Positions still open at a partition end are not
+compiled into gain segments and therefore cannot be classified as `endrange`.
 """
-function gainsreport(gainsdf::AbstractDataFrame)::DataFrame
+function gainsreport(gainsdf::AbstractDataFrame; groupcols::AbstractVector{Symbol}=[:set], totalcols::Union{Nothing, AbstractVector{Symbol}}=nothing)::DataFrame
     if nrow(gainsdf) == 0
-        return _emptygainsreportdf()
+        return _emptygainsreportdf(groupcols)
     end
 
     @assert :opentime in propertynames(gainsdf) "gainsdf must contain :opentime; names=$(names(gainsdf))"
@@ -416,13 +433,46 @@ function gainsreport(gainsdf::AbstractDataFrame)::DataFrame
     @assert :gain in propertynames(gainsdf) "gainsdf must contain :gain; names=$(names(gainsdf))"
 
     reportinput = DataFrame(gainsdf; copycols=false)
-    if :set ∉ propertynames(reportinput)
+    if (:set in groupcols) && (:set ∉ propertynames(reportinput))
         reportinput[!, :set] = fill("all", nrow(reportinput))
+    end
+    for col in groupcols
+        @assert col in propertynames(reportinput) "gainsdf must contain report grouping column :$(col); names=$(names(gainsdf))"
+    end
+    if isempty(groupcols)
+        reportinput[!, :set] = fill("all", nrow(reportinput))
+        groupcols = [:set]
     end
 
     reportinput[!, :minutes] = [_gainsegmentminutes(reportinput[ix, :opentime], reportinput[ix, :closetime]) for ix in 1:nrow(reportinput)]
 
-    grouped = groupby(reportinput, :set; sort=true)
+    report = _aggregategainsreport(reportinput, groupcols)
+    if !isnothing(totalcols) && !isempty(totalcols) && length(unique(reportinput[!, :pair])) > 1
+        for col in totalcols
+            @assert col in propertynames(reportinput) "gainsdf must contain total grouping column :$(col); names=$(names(gainsdf))"
+        end
+        totals = _aggregategainsreport(reportinput, collect(totalcols))
+        insertcols!(totals, 1, :pair => fill("total", nrow(totals)))
+        report = vcat(report, totals; cols=:union)
+    elseif !isnothing(totalcols) && isempty(totalcols) && length(unique(reportinput[!, :pair])) > 1
+        total = _aggregategainsreport(reportinput, Symbol[])
+        insertcols!(total, 1, :pair => ["total"])
+        report = vcat(report, total; cols=:union)
+    end
+    if :set in propertynames(report)
+        set_strings = [ismissing(v) ? "all" : String(v) for v in report[!, :set]]
+        report[!, :set] = set_strings
+        report[!, :set] = categorical(report[!, :set]; levels=unique(report[!, :set]), compress=true)
+    end
+    return report
+end
+
+function _aggregategainsreport(reportinput::DataFrame, groupcols::AbstractVector{Symbol})::DataFrame
+    if isempty(groupcols)
+        reportinput[!, :_all] = fill("all", nrow(reportinput))
+        groupcols = [:_all]
+    end
+    grouped = groupby(reportinput, groupcols; sort=true)
     report = combine(
         grouped,
         :gain => _mean_nonempty => :avggain,
@@ -430,29 +480,27 @@ function gainsreport(gainsdf::AbstractDataFrame)::DataFrame
         :minutes => _q75_nonempty => :q75minutes,
         :minutes => maximum => :maxminutes,
         nrow => :segments,
+        :closereason => (reasons -> count(==("stoploss"), String.(reasons))) => :stoplosses,
+        :closereason => (reasons -> count(==("trendchange"), String.(reasons))) => :trendchanges,
+        :closereason => (reasons -> count(==("liquidation"), String.(reasons))) => :liquidations,
+        :closereason => (reasons -> count(==("takeprofit"), String.(reasons))) => :takeprofits,
     )
-    set_strings = [ismissing(v) ? "all" : String(v) for v in report[!, :set]]
-    report[!, :set] = set_strings
-    sort!(report, :set)
-    # Rebuild `:set` as a fresh categorical vector derived from strings.
-    # This keeps the categorical semantics while avoiding pool internals from
-    # grouped keys that Arrow cannot serialize reliably.
-    report[!, :set] = categorical(report[!, :set]; levels=unique(report[!, :set]), compress=true)
+    :_all in propertynames(report) && select!(report, Not(:_all))
     return report
 end
 
 """
-    gainsreport(; instem="tsmgains", stem="xchgainsreport", folderpath=EnvConfig.logfolder())
+    gainsreport(; instem="tsmgains", stem="xchgainsreport", folderpath=EnvConfig.logfolder(), groupcols=[:set], totalcols=nothing)
 
-Load `<instem>.arrow` from the current log folder, aggregate gains across all
-pairs and ranges per set, persist `<stem>.arrow`, and return the report table.
+Load `<instem>.arrow`, aggregate by `groupcols`, optionally add multi-pair totals
+grouped by `totalcols`, persist `<stem>.arrow`, and return the report table.
 """
-function gainsreport(; instem::AbstractString="tsmgains", stem::AbstractString="xchgainsreport", folderpath::AbstractString=EnvConfig.logfolder())::DataFrame
+function gainsreport(; instem::AbstractString="tsmgains", stem::AbstractString="xchgainsreport", folderpath::AbstractString=EnvConfig.logfolder(), groupcols::AbstractVector{Symbol}=[:set], totalcols::Union{Nothing, AbstractVector{Symbol}}=nothing)::DataFrame
     loaded = EnvConfig.readdf(String(instem); folderpath=String(folderpath))
     report = if isnothing(loaded)
-        _emptygainsreportdf()
+        _emptygainsreportdf(groupcols)
     else
-        gainsreport(loaded)
+        gainsreport(loaded; groupcols=groupcols, totalcols=totalcols)
     end
     EnvConfig.savedf(report, String(stem); folderpath=String(folderpath))
     return report
