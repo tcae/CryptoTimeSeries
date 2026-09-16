@@ -86,6 +86,17 @@ function _cfgget(obj, key::Symbol, default=nothing)
     end
 end
 
+"Parse a Plotly clickData point's `x` for a date axis (Plotly.js reports it as `\"YYYY-MM-DD HH:MM:SS\"`, space-separated with no `T` and sometimes trailing fractional seconds, unlike Julia's ISO `DateTime` string); returns `nothing` on any parse failure."
+function _parse_click_datetime(xval)::Union{Nothing, DateTime}
+    isnothing(xval) && return nothing
+    s = split(replace(String(xval), ' ' => 'T'), '.')[1]
+    try
+        return DateTime(s)
+    catch
+        return nothing
+    end
+end
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Aggregation and figure builders
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,13 +192,19 @@ end
 
 "Return one point per executed (filled) trade lane for the given day, with side/action and the fill it belongs to."
 function _executed_trade_points(daydf::AbstractDataFrame)
+    # `lo_status`/`so_status` (the parent order lane) only read "closed" on the exact tick the
+    # fill completed and get reset to "none" again as soon as the lane id is cleared, while the
+    # position stays open for many more minutes; `lol_status`/`sol_status` (the per-tick fill
+    # event columns, mirroring what `lcl_status`/`scl_status` already provide for closes) are the
+    # ones that reliably line up 1:1 with `lol_filled`/`sol_filled`/`lol_pavg`/`sol_pavg`.
     lanes = (
-        (statuscol=:lo_status, filledcol=:lol_filled, pavgcol=:lol_pavg, side=:long, action=:open),
-        (statuscol=:lc_status, filledcol=:lcl_filled, pavgcol=:lcl_pavg, side=:long, action=:close),
-        (statuscol=:so_status, filledcol=:sol_filled, pavgcol=:sol_pavg, side=:short, action=:open),
-        (statuscol=:sc_status, filledcol=:scl_filled, pavgcol=:scl_pavg, side=:short, action=:close),
+        (statuscol=:lol_status, filledcol=:lol_filled, pavgcol=:lol_pavg, side=:long, action=:open),
+        (statuscol=:lcl_status, filledcol=:lcl_filled, pavgcol=:lcl_pavg, side=:long, action=:close),
+        (statuscol=:sol_status, filledcol=:sol_filled, pavgcol=:sol_pavg, side=:short, action=:open),
+        (statuscol=:scl_status, filledcol=:scl_filled, pavgcol=:scl_pavg, side=:short, action=:close),
     )
     points = NamedTuple[]
+    close_reason_col = :closereason in propertynames(daydf) ? :closereason : nothing
     for lane in lanes
         (lane.statuscol in propertynames(daydf)) && (lane.filledcol in propertynames(daydf)) && (lane.pavgcol in propertynames(daydf)) || continue
         for ix in 1:nrow(daydf)
@@ -196,6 +213,7 @@ function _executed_trade_points(daydf::AbstractDataFrame)
             filled = ismissing(daydf[ix, lane.filledcol]) ? 0f0 : Float32(daydf[ix, lane.filledcol])
             avgprice = ismissing(daydf[ix, lane.pavgcol]) ? 0f0 : Float32(daydf[ix, lane.pavgcol])
             (filled > 0f0 && avgprice > 0f0) || continue
+            stoploss = (lane.action == :close) && !isnothing(close_reason_col) && (lowercase(strip(string(daydf[ix, close_reason_col]))) == "stoploss")
             equitydelta = ix > firstindex(daydf[!, :equity]) ? (daydf[ix, :equity] - daydf[ix - 1, :equity]) : missing
             push!(points, (
                 opentime=daydf[ix, :opentime],
@@ -206,6 +224,7 @@ function _executed_trade_points(daydf::AbstractDataFrame)
                 high=daydf[ix, :high],
                 low=daydf[ix, :low],
                 equitydelta=equitydelta,
+                stoploss=stoploss,
             ))
         end
     end
@@ -215,6 +234,9 @@ end
 "Hover text for one executed-trade triangle; closing trades additionally show the equity delta realized that minute."
 function _trade_hovertext(p)::String
     parts = ["side=$(p.side)", "action=$(p.action)", "opentime=$(p.opentime)", "filled=$(round(p.filled, digits=6))", "avgprice=$(round(p.avgprice, digits=6))"]
+    if p.stoploss
+        push!(parts, "reason=stoploss")
+    end
     if (p.action == :close) && !ismissing(p.equitydelta)
         push!(parts, "gain (equity Δ)=$(round(p.equitydelta, digits=4))")
     end
@@ -260,11 +282,30 @@ function _minute_figure(daydf::AbstractDataFrame, pair::AbstractString, date::Da
     for (key, spec) in _LANE_MARKER_SPEC
         pts = get(bykey, key, NamedTuple[])
         isempty(pts) && continue
-        xs = [p.opentime for p in pts]
-        ys = [key[1] == :long ? (p.high + offset) : (p.low - offset) for p in pts]
-        texts = [_trade_hovertext(p) for p in pts]
-        push!(lanetraces, scatter(x=xs, y=ys, mode="markers", name=spec.name, text=texts, hoverinfo="text",
-            marker=attr(symbol=spec.symbol, size=11, color=spec.color, line=attr(width=1, color="black"))))
+        if key[2] == :close
+            stoppts = [p for p in pts if p.stoploss]
+            regularpts = [p for p in pts if !p.stoploss]
+            if !isempty(regularpts)
+                xs = [p.opentime for p in regularpts]
+                ys = [key[1] == :long ? (p.high + offset) : (p.low - offset) for p in regularpts]
+                texts = [_trade_hovertext(p) for p in regularpts]
+                push!(lanetraces, scatter(x=xs, y=ys, mode="markers", name=spec.name, text=texts, hoverinfo="text",
+                    marker=attr(symbol=spec.symbol, size=11, color=spec.color, line=attr(width=1, color="black"))))
+            end
+            if !isempty(stoppts)
+                xs = [p.opentime for p in stoppts]
+                ys = [key[1] == :long ? (p.high + offset * 1.8) : (p.low - offset * 1.8) for p in stoppts]
+                texts = [_trade_hovertext(p) for p in stoppts]
+                push!(lanetraces, scatter(x=xs, y=ys, mode="markers", name="$(spec.name) stoploss", text=texts, hoverinfo="text",
+                    marker=attr(symbol=spec.symbol, size=11, color="yellow", line=attr(width=1, color="black"))))
+            end
+        else
+            xs = [p.opentime for p in pts]
+            ys = [key[1] == :long ? (p.high + offset) : (p.low - offset) for p in pts]
+            texts = [_trade_hovertext(p) for p in pts]
+            push!(lanetraces, scatter(x=xs, y=ys, mode="markers", name=spec.name, text=texts, hoverinfo="text",
+                marker=attr(symbol=spec.symbol, size=11, color=spec.color, line=attr(width=1, color="black"))))
+        end
     end
 
     # Note: Plotly always draws `bar` traces behind all `scatter` traces (a fixed per-type
@@ -394,10 +435,14 @@ callback!(app, [Output("minute_chart", "figure"), Output("selected_date_label", 
         points = _cfgget(minute_clickdata, :points, nothing)
         if !isnothing(points) && !isempty(points)
             pt = points[1]
-            curveix = _cfgget(pt, :curveNumber, nothing)
-            pointix = _cfgget(pt, :pointNumber, nothing)
-            if !isnothing(curveix) && Int(curveix) == AS.barcurveindex && !isnothing(pointix)
-                selected_ix = Int(pointix)
+            xval = _cfgget(pt, :x, nothing)
+            # Match by the clicked point's x (opentime) rather than curveNumber/pointNumber so
+            # that clicking a trade triangle (a separate, sparse lane trace) selects the same
+            # table row as clicking the bar underneath it, not just clicks on the bar trace itself.
+            clickdt = _parse_click_datetime(xval)
+            if !isnothing(clickdt)
+                matchix = findfirst(==(clickdt), AS.daydf[!, :opentime])
+                isnothing(matchix) || (selected_ix = matchix - 1)
             end
         end
     else
@@ -430,14 +475,14 @@ end
 callback!(app, [Output("minute_table", "style_data_conditional")], [Input("minute_table", "selected_rows"), Input("minute_chart", "hoverData")]) do selected_rows, hoverdata
     rows = isnothing(selected_rows) ? Int[] : collect(selected_rows)
     hoverrows = Int[]
-    if !isnothing(hoverdata)
+    if !isnothing(hoverdata) && (nrow(AS.daydf) > 0) && (:opentime in propertynames(AS.daydf))
         points = _cfgget(hoverdata, :points, nothing)
         if !isnothing(points) && !isempty(points)
-            pt = points[1]
-            curveix = _cfgget(pt, :curveNumber, nothing)
-            pointix = _cfgget(pt, :pointNumber, nothing)
-            if !isnothing(curveix) && Int(curveix) == AS.barcurveindex && !isnothing(pointix)
-                push!(hoverrows, Int(pointix))
+            xval = _cfgget(points[1], :x, nothing)
+            hoverdt = _parse_click_datetime(xval)
+            if !isnothing(hoverdt)
+                matchix = findfirst(==(hoverdt), AS.daydf[!, :opentime])
+                isnothing(matchix) || push!(hoverrows, matchix - 1)
             end
         end
     end

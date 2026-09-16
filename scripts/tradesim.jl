@@ -209,18 +209,21 @@ function filled_orders_df(xc::Xch.XchCache)::DataFrame
     for (pair, tdf) in xc.tsm.pairstates
         nrow(tdf) == 0 && continue
         cols = propertynames(tdf)
-        required = (:opentime, :pair, :lo_status, :lol_filled, :lol_pavg, :lc_status, :lcl_filled, :lcl_pavg, :so_status, :sol_filled, :sol_pavg, :sc_status, :scl_filled, :scl_pavg)
+        required = (:opentime, :pair, :lol_status, :lol_filled, :lol_pavg, :lcl_status, :lcl_filled, :lcl_pavg, :sol_status, :sol_filled, :sol_pavg, :scl_status, :scl_filled, :scl_pavg)
         all(c -> c in cols, required) || continue
 
         for row in eachrow(tdf)
             created = DateTime(row.opentime)
             symbol = String(ismissing(row.pair) ? pair : row.pair)
 
+            # Use the `*l_status` per-tick fill-event columns (not the parent `lo_status`/`so_status`,
+            # which only read "closed" on the single tick the order finished and reset to "none"
+            # right after) for open lanes too, matching what already worked for close lanes.
             for (statuscol, filledcol, pavgcol, side) in [
-                (:lo_status, :lol_filled, :lol_pavg, "Buy"),
-                (:lc_status, :lcl_filled, :lcl_pavg, "Sell"),
-                (:so_status, :sol_filled, :sol_pavg, "Sell"),
-                (:sc_status, :scl_filled, :scl_pavg, "Buy"),
+                (:lol_status, :lol_filled, :lol_pavg, "Buy"),
+                (:lcl_status, :lcl_filled, :lcl_pavg, "Sell"),
+                (:sol_status, :sol_filled, :sol_pavg, "Sell"),
+                (:scl_status, :scl_filled, :scl_pavg, "Buy"),
             ]
                 status = lowercase(strip(String(row[statuscol])))
                 status == "closed" || continue
