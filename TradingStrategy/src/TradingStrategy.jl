@@ -238,10 +238,13 @@ end
 """Gain-limit reversal configuration gated by regression distance and trend."""
 Base.@kwdef struct GainLimitReversalBelowRegressionConfig <: AbstractAlgorithmConfig
     gainlimit::GainLimitReversalConfig = GainLimitReversalConfig()
+    # only buy if relative price diff between current and trendregrwindow head price is larger than triggerdist (below trend for long, above trend for short)
     triggerdist::Float32 = 0f0
-    triggerregrwindow::Int = 4 * 60
-    trendregrwindow::Int = 4 * 60
-    trendgainthreshold::Float32 = 0f0
+    triggerregrwindow::Int = 4 * 60 # if 0, the trigger regression window is disabled
+    # only buy if the trend gain over the trendregrwindow > -trendgainthreshold for long and < trendgainthreshold for short
+    # shall prevent for long to buy long in a downtrend and for short to sell in an uptrend
+    trendregrwindow::Int = 4 * 60 # if 0, the trend regression window is disabled
+    trendgainthreshold::Float32 = 0f0 # measured in relative gain per hour
     function GainLimitReversalBelowRegressionConfig(gainlimit, triggerdist, triggerregrwindow, trendregrwindow, trendgainthreshold)
         @assert triggerdist >= 0f0 "triggerdist=$(triggerdist) must be nonnegative"
         @assert triggerregrwindow >= 0 "triggerregrwindow=$(triggerregrwindow) must be nonnegative"
@@ -896,7 +899,7 @@ function _relative_to_regression(cfg::GainLimitReversalConfig, classifier, cols:
     return (cols.close[ix] - regprice) / regprice
 end
 
-"""Slope of the `window` regression at the row sample in percent per hour.
+"""Slope of the `window` regression at the row sample in gain per hour.
 
 Derived from the regression gradient rather than from two prices, so it is the trend of the
 fitted line and not a point-to-point difference. Returns `0f0` when the regression is
@@ -910,39 +913,25 @@ function _regression_slope_gain_per_hour(cfg::GainLimitReversalConfig, classifie
 end
 
 """
-    gain_limit_reversal_below_regression!(cfg, classifier, cols, ix)
+     gain_limit_reversal_below_regression!(cfg, classifier, cols, ix)
 
-Limit-reversal lane update: decide the resting order limits of Trades row `ix` from that
-row's label/score and the limits carried over from row `ix-1`. Mutates row `ix` in place
-and returns `nothing`.
+Gate open signals using the fitted regression before delegating to
+`gain_limit_reversal!`. Mutates Trades row `ix` in place and returns `nothing`.
 
-Steps:
+For a long-open label, the row close must be at least `cfg.triggerdist` below the
+regression line over `cfg.triggerregrwindow`, and the regression line's relative gain per
+hour over `cfg.trendregrwindow` must be greater than `-cfg.trendgainthreshold`. For a
+short-open label, the close must be at least `cfg.triggerdist` above the regression line,
+and the regression gain per hour must be less than `cfg.trendgainthreshold`. The
+regression-line distance is `(close - regression_price) / regression_price`; the trend
+value is returned by `Features.relativegain` and is a relative gain, not a regression-line
+price. A zero trigger or trend window disables its corresponding gate.
 
-1. **Classification.** A `score` of `0f0` is the "not yet classified" sentinel of the live
-   path, so `label`/`score` are filled from `cfg.classifier` first. Replay rows arrive
-   prepopulated and skip this.
-2. **Carry over.** `lo_limit`, `lc_limit`, `so_limit`, `sc_limit` and the two stop legs
-   `lcsl_limit`/`scsl_limit` are inherited from row `ix-1` (zero on the first row), so a
-   resting order survives ticks that decide nothing new.
-3. **Open branch** (label `longopen`/`longstrongopen`, mirrored for the short side):
-   - `score >= cfg.openthreshold`: place the open limit one `cfg.buygain` below (long) or
-     above (short) the last close, anchor the matching close bracket (take profit at
-    `cfg.sellgain`, stop at `cfg.stoploss`) at the same close, and clear the opposite
-     open limit. If an opposite position is still held, its close limit is coupled to this
-     open limit so the reversal closes and reopens at one price.
-   - `score < cfg.openthreshold`: the intent is downgraded to `longhold`/`shorthold` and
-     only the close limits are refreshed - not aged, because a position whose score just
-     dipped below the threshold is not an aged position.
-4. **Otherwise** (hold/close/ignore labels): close limits of held positions are only ever
-   refreshed downward once aged past `cfg.maxwindow`, toward the highest high (long) /
-   lowest low (short) of the last `cfg.exitwindow` minutes; see `_agedcloselimit`.
-5. **Reversal ordering.** Coupled reversal pairs are made consistent: a long close must not
-   match later than the short open that replaces it (and mirrored). If one leg of a pair is
-   missing, both are cleared.
-
-All price updates pass `cfg.minpricedelta`, so a limit is only rewritten when it moves by
-more than that relative distance. Amounts and order status are not touched here; they are
-decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
+If an open signal fails either gate, it is downgraded to the matching hold label. The
+underlying gain-limit reversal algorithm then performs classification when `score == 0f0`,
+carries order and stop-limit state from row `ix-1`, updates close brackets, and applies
+the open threshold and reversal ordering rules. Amounts and order status are not changed
+here; they are decided afterwards by `_process_advice_row!` (replay) or by `Trade` (live).
 """
 function gain_limit_reversal_below_regression!(cfg::GainLimitReversalBelowRegressionConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
     @assert cfg.triggerdist >= 0f0 "triggerdist=$(cfg.triggerdist) must be nonnegative"

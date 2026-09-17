@@ -73,7 +73,7 @@ tradelabelcode(tl::TradeLabel) = Int8(tl)
 "Defines the targets interface that shall be provided by all target implementations. Ohlcv is provided at init and maintained as internal reference."
 abstract type AbstractTargets <: EnvConfig.AbstractConfiguration end
 
-"Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set."
+"Adds a coin with OhlcvData to the target generation. Each coin can only have 1 associated data set. In case data is added to already added ohlcv then `supplement!` shall be called to supplement the targets data"
 function setbase!(targets::AbstractTargets, ohlcv::Ohlcv.OhlcvData) error("not implemented") end
 
 "Removes the targets of a basecoin."
@@ -1734,7 +1734,179 @@ function crosscheck(trd::Trend04)::Vector{String}
 end
 #endregion Trend04
 
+#region Trend05
+"""
+Trend05 implements a stronger emphasis on trend reversals compared to Trend04.
+It provides target labels of type `TradeLabel` for a series of OHLCV data samples by applying the supplement! function as follows:
 
+- longopen is only issued if 
+    - the lead regression gradient is positive and
+    - the relative distance to the support regression window is lower than triggerdist or the support regression gradient is positive and
+    - all samples from the current sample until (1 + targetgain) * current pivot price is reached, are longopen or longhold samples
+- shortopen is only issued if 
+    - the support regression is negative and
+    - the relative distance to the support regression window is lower than triggerdist or the support regression gradient is negative and
+    - all samples from the current sample until (1 - targetgain) * current pivot price is reached, are shortopen or shorthold samples
+- longhold is only issued if 
+    - it follows a longopen or a longhold sample
+    - the support regression gradient is positive or zero
+- shorthold is only issued if 
+    - it follows a shortopen or a shorthold sample
+    - the support regression gradient is negative or zero
+- allclose is issued if the aboved label for longopen, longhold, shortopen, or shorthold is not applicable
+
+"""
+Base.@kwdef mutable struct Trend05 <: AbstractTargets
+    leadregr::Int = 5 # lead regression window in minutes
+    supportregr::Int = 15 # support regression window in minutes
+    triggerdist::Float32 = 0.01 # relative distance to the support regression window to trigger longopen/shortopen
+    targetgain::Float32 = 0.01 # relative gain target required to sustain a directional segment
+    ohlcv::Union{OhlcvData, Nothing} = nothing
+    f6::Union{Features.Features006, Nothing} = nothing
+    df::Union{DataFrame, Nothing} = nothing
+end
+
+function _trend05_validateconfig(trd::Trend05)
+    @assert trd.leadregr > 0 "leadregr=$(trd.leadregr) must be positive"
+    @assert trd.supportregr > 0 "supportregr=$(trd.supportregr) must be positive"
+    @assert trd.triggerdist >= 0f0 "triggerdist=$(trd.triggerdist) must be nonnegative"
+    @assert trd.targetgain > 0f0 "targetgain=$(trd.targetgain) must be positive"
+    return nothing
+end
+
+function _trend05_features(trd::Trend05)::Features.Features006
+    _trend05_validateconfig(trd)
+    f6 = Features.Features006()
+    for window in unique((trd.leadregr, trd.supportregr))
+        Features.addregry!(f6, window=window, offset=0)
+        Features.addgrad!(f6, window=window, offset=0)
+    end
+    return f6
+end
+
+function setbase!(trd::Trend05, ohlcv::Ohlcv.OhlcvData)
+    trd.ohlcv = ohlcv
+    trd.f6 = _trend05_features(trd)
+    Features.setbase!(trd.f6, ohlcv, usecache=false)
+    supplement!(trd)
+    return nothing
+end
+
+function removebase!(trd::Trend05)
+    trd.ohlcv = nothing
+    trd.f6 = nothing
+    trd.df = nothing
+    return nothing
+end
+
+function _trend05_regression(trd::Trend05, ix::Integer)
+    @assert !isnothing(trd.f6) "Trend05 requires Features006 before regression lookup"
+    opentime = Ohlcv.dataframe(trd.ohlcv)[ix, :opentime]
+    return Features.regressionat(trd.f6, trd.leadregr, opentime), Features.regressionat(trd.f6, trd.supportregr, opentime)
+end
+
+function _trend05_entry(trd::Trend05, pivot::Float32, lead, support, side::Symbol)::Bool
+    if isnothing(lead) || isnothing(support)
+        return false
+    end
+    support.regry > 0f0 || return false
+    distance = abs((pivot - support.regry) / support.regry)
+    if side === :long
+        return lead.grad > 0f0 && ((distance <= trd.triggerdist) || (support.grad > 0f0))
+    end
+    return lead.grad < 0f0 && ((distance <= trd.triggerdist) || (support.grad < 0f0))
+end
+
+@inline function _trend05_hold(support, side::Symbol)::Bool
+    return !isnothing(support) && (side === :long ? support.grad >= 0f0 : support.grad <= 0f0)
+end
+
+function _trend05_target(pivots::AbstractVector{<:AbstractFloat}, ix::Integer, side::Symbol, targetgain::Float32)
+    target = pivots[ix] * (side === :long ? 1f0 + targetgain : 1f0 - targetgain)
+    for targetix in ix:lastindex(pivots)
+        if side === :long ? pivots[targetix] >= target : pivots[targetix] <= target
+            return targetix
+        end
+    end
+    return nothing
+end
+
+function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol)
+    lead, support = _trend05_regression(trd, ix)
+    _trend05_entry(trd, pivots[ix], lead, support, side) || return nothing
+    targetix = _trend05_target(pivots, ix, side, trd.targetgain)
+    isnothing(targetix) && return nothing
+    for holdix in (ix + 1):targetix
+        _, hold_support = _trend05_regression(trd, holdix)
+        _trend05_hold(hold_support, side) || return nothing
+    end
+    return targetix
+end
+
+function supplement!(trd::Trend05)
+    isnothing(trd.ohlcv) && return nothing
+    _trend05_validateconfig(trd)
+    isnothing(trd.f6) && (trd.f6 = _trend05_features(trd))
+    Features.issupplementedcurrent(trd.f6) || Features.supplement!(trd.f6)
+
+    odf = Ohlcv.dataframe(trd.ohlcv)
+    pivots = Float32.(odf[!, :pivot])
+    labels = fill(allclose, length(pivots))
+    relgains = zeros(Float32, length(pivots))
+    ix = firstindex(pivots)
+    while ix <= lastindex(pivots)
+        longtarget = _trend05_candidate(trd, pivots, ix, :long)
+        shorttarget = _trend05_candidate(trd, pivots, ix, :short)
+        if !isnothing(longtarget)
+            labels[ix] = longopen
+            relgains[ix] = (pivots[longtarget] - pivots[ix]) / pivots[ix]
+            for holdix in (ix + 1):longtarget
+                labels[holdix] = longhold
+                relgains[holdix] = (pivots[longtarget] - pivots[holdix]) / pivots[holdix]
+            end
+            ix = longtarget + 1
+        elseif !isnothing(shorttarget)
+            labels[ix] = shortopen
+            relgains[ix] = (pivots[shorttarget] - pivots[ix]) / pivots[ix]
+            for holdix in (ix + 1):shorttarget
+                labels[holdix] = shorthold
+                relgains[holdix] = (pivots[shorttarget] - pivots[holdix]) / pivots[holdix]
+            end
+            ix = shorttarget + 1
+        else
+            ix += 1
+        end
+    end
+    trd.df = DataFrame(opentime=copy(odf[!, :opentime]), label=labels, relgain=relgains)
+    return nothing
+end
+
+uniquelabels(::Trend05) = [longopen, longhold, shortopen, shorthold, allclose]
+firstrowix(trd::Trend05)::Int = isnothing(trd.df) ? 1 : (nrow(trd.df) > 0 ? firstindex(trd.df[!, :label]) : 1)
+lastrowix(trd::Trend05)::Int = isnothing(trd.df) ? 0 : (nrow(trd.df) > 0 ? lastindex(trd.df[!, :label]) : 0)
+
+function df(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame
+    return isnothing(trd.df) ? DataFrame(opentime=DateTime[], label=TradeLabel[], relgain=Float32[]) : view(trd.df, firstix:lastix, :)
+end
+
+df(trd::Trend05, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labels(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = isnothing(trd.df) ? TradeLabel[] : view(trd.df, firstix:lastix, :label)
+labels(trd::Trend05, startdt::DateTime, enddt::DateTime) = labels(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+relativegain(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = isnothing(trd.df) ? Float32[] : view(trd.df, firstix:lastix, :relgain)
+relativegain(trd::Trend05, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labelbinarytargets(trd::Trend05, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labels(trd, firstix, lastix) .== label
+labelbinarytargets(trd::Trend05, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labelrelativegain(trd::Trend05, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labelbinarytargets(trd, label, firstix, lastix) .* relativegain(trd, firstix, lastix)
+labelrelativegain(trd::Trend05, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelrelativegain(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labelvalues(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame = df(trd, firstix, lastix)
+labelvalues(trd::Trend05, startdt::DateTime, enddt::DateTime)::AbstractDataFrame = df(trd, startdt, enddt)
+
+function describe(trd::Trend05)
+    base = isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base
+    return "$(typeof(trd))_$(base)_leadregr=$(trd.leadregr)_supportregr=$(trd.supportregr)_triggerdist=$(trd.triggerdist)_targetgain=$(trd.targetgain)"
+end
+
+#endregion Trend05
 #region TradePairs
 
 @inline _islongtradepairlabel(label::TradeLabel) = (label == longopen) || (label == longhold)

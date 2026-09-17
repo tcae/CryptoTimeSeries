@@ -23,6 +23,7 @@ end
 
 include("trend04_crosscheck_test.jl")
 include("trend04_test.jl")
+include("trend05_test.jl")
 include("trendregression_test.jl")
 include("tradepairs_test.jl")
 include("bounds01_test.jl")
