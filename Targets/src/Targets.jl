@@ -1741,53 +1741,71 @@ It provides target labels of type `TradeLabel` for a series of OHLCV data sample
 
 - longopen is only issued if 
     - the lead regression gradient is positive and
-    - the relative distance to the support regression window is lower than triggerdist or the support regression gradient is positive and
+    - the relative distance of the current pivot price to the head of the current trend regression line is lower than triggerdist or the support regression gradient is positive and
     - all samples from the current sample until (1 + targetgain) * current pivot price is reached, are longopen or longhold samples
 - shortopen is only issued if 
-    - the support regression is negative and
-    - the relative distance to the support regression window is lower than triggerdist or the support regression gradient is negative and
+    - the lead regression gradient is negative and
+    - the relative distance of the current pivot price to the head of the current trend regression line is higher than triggerdist or the support regression gradient is negative and
     - all samples from the current sample until (1 - targetgain) * current pivot price is reached, are shortopen or shorthold samples
 - longhold is only issued if 
     - it follows a longopen or a longhold sample
-    - the support regression gradient is positive or zero
+    - the support regression gradient is positive
 - shorthold is only issued if 
     - it follows a shortopen or a shorthold sample
-    - the support regression gradient is negative or zero
-- allclose is issued if the aboved label for longopen, longhold, shortopen, or shorthold is not applicable
+    - the support regression gradient is negative
+- allclose is issued if the above label conditions for longopen, longhold, shortopen, or shorthold is not applicable
 
 """
-Base.@kwdef mutable struct Trend05 <: AbstractTargets
-    leadregr::Int = 5 # lead regression window in minutes
-    supportregr::Int = 15 # support regression window in minutes
-    triggerdist::Float32 = 0.01 # relative distance to the support regression window to trigger longopen/shortopen
-    targetgain::Float32 = 0.01 # relative gain target required to sustain a directional segment
-    ohlcv::Union{OhlcvData, Nothing} = nothing
-    f6::Union{Features.Features006, Nothing} = nothing
-    df::Union{DataFrame, Nothing} = nothing
+mutable struct Trend05 <: AbstractTargets
+    leadregr::Int
+    supportregr::Int
+    trendregr::Int
+    triggerdist::Float32
+    targetgain::Float32
+    ohlcv::Union{OhlcvData, Nothing}
+    f6::Union{Features.Features006, Nothing}
+    df::Union{DataFrame, Nothing}
+
+    function Trend05(; leadregr::Int=5, supportregr::Int=15, trendregr::Int=4*60,
+        triggerdist::Float32=0.01f0, targetgain::Float32=0.01f0,
+        f6::Union{Nothing, Features.Features006}=nothing)
+        trd = new(leadregr, supportregr, trendregr, triggerdist, targetgain, nothing, f6, nothing)
+        _trend05_validateconfig(trd)
+        isnothing(f6) || _trend05_requiredfeatures(f6, trd)
+        return trd
+    end
 end
 
 function _trend05_validateconfig(trd::Trend05)
     @assert trd.leadregr > 0 "leadregr=$(trd.leadregr) must be positive"
     @assert trd.supportregr > 0 "supportregr=$(trd.supportregr) must be positive"
+    @assert trd.trendregr > 0 "trendregr=$(trd.trendregr) must be positive"
     @assert trd.triggerdist >= 0f0 "triggerdist=$(trd.triggerdist) must be nonnegative"
     @assert trd.targetgain > 0f0 "targetgain=$(trd.targetgain) must be positive"
     return nothing
 end
 
-function _trend05_features(trd::Trend05)::Features.Features006
-    _trend05_validateconfig(trd)
-    f6 = Features.Features006()
-    for window in unique((trd.leadregr, trd.supportregr))
-        Features.addregry!(f6, window=window, offset=0)
-        Features.addgrad!(f6, window=window, offset=0)
+function _trend05_requiredfeatures(f6::Features.Features006, trd::Trend05)
+    required = NamedTuple[]
+    for window in unique((trd.leadregr, trd.supportregr, trd.trendregr))
+        push!(required, Features._grad(f6, window=window, offset=0))
+        push!(required, Features._regry(f6, window=window, offset=0))
     end
-    return f6
+    available = Features.f6all(f6)
+    @assert all(in(available), required) "Trend05 requires no-offset regression features=$(required), available=$(available)"
+    return required
 end
 
 function setbase!(trd::Trend05, ohlcv::Ohlcv.OhlcvData)
-    trd.ohlcv = ohlcv
-    trd.f6 = _trend05_features(trd)
-    Features.setbase!(trd.f6, ohlcv, usecache=false)
+    throw(ArgumentError("Trend05 requires setbase!(trd, f6::Features006); provide a prepared Features006 superset"))
+end
+
+function setbase!(trd::Trend05, f6::Features.Features006)
+    _trend05_requiredfeatures(f6, trd)
+    @assert !isnothing(Features.ohlcv(f6)) "Trend05 requires Features006 to have an OHLCV base before setbase!(trd, f6)"
+    @assert !isnothing(f6.fdfno) "Trend05 requires Features006 to be supplemented before setbase!(trd, f6)"
+    trd.f6 = f6
+    trd.ohlcv = Features.ohlcv(f6)
     supplement!(trd)
     return nothing
 end
@@ -1802,23 +1820,27 @@ end
 function _trend05_regression(trd::Trend05, ix::Integer)
     @assert !isnothing(trd.f6) "Trend05 requires Features006 before regression lookup"
     opentime = Ohlcv.dataframe(trd.ohlcv)[ix, :opentime]
-    return Features.regressionat(trd.f6, trd.leadregr, opentime), Features.regressionat(trd.f6, trd.supportregr, opentime)
+    return (
+        lead=Features.regressionat(trd.f6, trd.leadregr, opentime),
+        support=Features.regressionat(trd.f6, trd.supportregr, opentime),
+        trend=Features.regressionat(trd.f6, trd.trendregr, opentime),
+    )
 end
 
-function _trend05_entry(trd::Trend05, pivot::Float32, lead, support, side::Symbol)::Bool
-    if isnothing(lead) || isnothing(support)
+function _trend05_entry(trd::Trend05, pivot::Float32, lead, support, trend, side::Symbol)::Bool
+    if isnothing(lead) || isnothing(support) || isnothing(trend)
         return false
     end
-    support.regry > 0f0 || return false
-    distance = abs((pivot - support.regry) / support.regry)
+    trend.regry > 0f0 || return false
+    distance = (pivot - trend.regry) / trend.regry
     if side === :long
-        return lead.grad > 0f0 && ((distance <= trd.triggerdist) || (support.grad > 0f0))
+        return lead.grad > 0f0 && ((distance <= -trd.triggerdist) || (support.grad > 0f0))
     end
-    return lead.grad < 0f0 && ((distance <= trd.triggerdist) || (support.grad < 0f0))
+    return lead.grad < 0f0 && ((distance >= trd.triggerdist) || (support.grad < 0f0))
 end
 
 @inline function _trend05_hold(support, side::Symbol)::Bool
-    return !isnothing(support) && (side === :long ? support.grad >= 0f0 : support.grad <= 0f0)
+    return !isnothing(support) && (side === :long ? support.grad > 0f0 : support.grad < 0f0)
 end
 
 function _trend05_target(pivots::AbstractVector{<:AbstractFloat}, ix::Integer, side::Symbol, targetgain::Float32)
@@ -1832,12 +1854,12 @@ function _trend05_target(pivots::AbstractVector{<:AbstractFloat}, ix::Integer, s
 end
 
 function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol)
-    lead, support = _trend05_regression(trd, ix)
-    _trend05_entry(trd, pivots[ix], lead, support, side) || return nothing
+    regressions = _trend05_regression(trd, ix)
+    _trend05_entry(trd, pivots[ix], regressions.lead, regressions.support, regressions.trend, side) || return nothing
     targetix = _trend05_target(pivots, ix, side, trd.targetgain)
     isnothing(targetix) && return nothing
     for holdix in (ix + 1):targetix
-        _, hold_support = _trend05_regression(trd, holdix)
+        hold_support = _trend05_regression(trd, holdix).support
         _trend05_hold(hold_support, side) || return nothing
     end
     return targetix
@@ -1846,8 +1868,9 @@ end
 function supplement!(trd::Trend05)
     isnothing(trd.ohlcv) && return nothing
     _trend05_validateconfig(trd)
-    isnothing(trd.f6) && (trd.f6 = _trend05_features(trd))
-    Features.issupplementedcurrent(trd.f6) || Features.supplement!(trd.f6)
+    @assert !isnothing(trd.f6) "Trend05 requires a prepared Features006 superset"
+    _trend05_requiredfeatures(trd.f6, trd)
+    @assert Features.issupplementedcurrent(trd.f6) "Trend05 requires Features.supplement!(f6) to run after the latest OHLCV change and before supplement!(trd)"
 
     odf = Ohlcv.dataframe(trd.ohlcv)
     pivots = Float32.(odf[!, :pivot])
@@ -1903,7 +1926,7 @@ labelvalues(trd::Trend05, startdt::DateTime, enddt::DateTime)::AbstractDataFrame
 
 function describe(trd::Trend05)
     base = isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base
-    return "$(typeof(trd))_$(base)_leadregr=$(trd.leadregr)_supportregr=$(trd.supportregr)_triggerdist=$(trd.triggerdist)_targetgain=$(trd.targetgain)"
+    return "$(typeof(trd))_$(base)_leadregr=$(trd.leadregr)_supportregr=$(trd.supportregr)_trendregr=$(trd.trendregr)_triggerdist=$(trd.triggerdist)_targetgain=$(trd.targetgain)"
 end
 
 #endregion Trend05

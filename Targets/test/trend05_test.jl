@@ -1,22 +1,29 @@
 using Dates
 using Test
 
+function trend05withfeatures(ohlcv; leadregr::Int=2, supportregr::Int=3, trendregr::Int=4, triggerdist::Float32=0.02f0, targetgain::Float32=0.05f0)
+    trd = Targets.Trend05(; leadregr, supportregr, trendregr, triggerdist, targetgain)
+    f6 = Features.Features006()
+    for window in (leadregr, supportregr, trendregr, 60)
+        Features.addregry!(f6, window=window, offset=0)
+        Features.addgrad!(f6, window=window, offset=0)
+    end
+    Features.setbase!(f6, ohlcv, usecache=false)
+    Targets.setbase!(trd, f6)
+    return trd
+end
+
 @testset "Trend05 interface and directional labels" begin
     rising = testohlcvfrompivots(Float32.(100:1:160))
-    trd = Targets.Trend05(
-        leadregr=2,
-        supportregr=3,
-        triggerdist=0.02f0,
-        targetgain=0.05f0,
-    )
+    emptytrd = Targets.Trend05()
+    @test Targets.firstrowix(emptytrd) == 1
+    @test Targets.lastrowix(emptytrd) == 0
+    @test isnothing(emptytrd.ohlcv)
+    @test isnothing(emptytrd.df)
+    trd = trend05withfeatures(rising)
 
-    @test Targets.firstrowix(trd) == 1
-    @test Targets.lastrowix(trd) == 0
-    @test isnothing(trd.ohlcv)
-    @test isnothing(trd.df)
     @test trd.targetgain == 0.05f0
 
-    Targets.setbase!(trd, rising)
     labels = collect(Targets.labels(trd))
     gains = collect(Targets.relativegain(trd))
 
@@ -50,13 +57,7 @@ end
 
 @testset "Trend05 short labels" begin
     falling = testohlcvfrompivots(Float32.(160:-1:100))
-    trd = Targets.Trend05(
-        leadregr=2,
-        supportregr=3,
-        triggerdist=0.02f0,
-        targetgain=0.05f0,
-    )
-    Targets.setbase!(trd, falling)
+    trd = trend05withfeatures(falling)
     labels = collect(Targets.labels(trd))
     gains = collect(Targets.relativegain(trd))
 
@@ -68,35 +69,51 @@ end
 end
 
 @testset "Trend05 invalid configuration" begin
-    emptyohlcv = testohlcvfrompivots(Float32[100, 101, 102, 103])
-    @test_throws AssertionError Targets.setbase!(Targets.Trend05(leadregr=0), emptyohlcv)
-    @test_throws AssertionError Targets.setbase!(Targets.Trend05(supportregr=0), emptyohlcv)
-    @test_throws AssertionError Targets.setbase!(Targets.Trend05(triggerdist=-0.01f0), emptyohlcv)
-    @test_throws AssertionError Targets.setbase!(Targets.Trend05(targetgain=0f0), emptyohlcv)
+    @test_throws AssertionError Targets.Trend05(leadregr=0)
+    @test_throws AssertionError Targets.Trend05(supportregr=0)
+    @test_throws AssertionError Targets.Trend05(trendregr=0)
+    @test_throws AssertionError Targets.Trend05(triggerdist=-0.01f0)
+    @test_throws AssertionError Targets.Trend05(targetgain=0f0)
+end
+
+@testset "Trend05 requires a feature superset" begin
+    ohlcv = testohlcvfrompivots(Float32.(100:1:30))
+    f6 = Features.Features006()
+    for window in (2, 3)
+        Features.addregry!(f6, window=window, offset=0)
+        Features.addgrad!(f6, window=window, offset=0)
+    end
+    Features.setbase!(f6, ohlcv, usecache=false)
+    trd = Targets.Trend05(leadregr=2, supportregr=3, trendregr=4)
+    @test_throws AssertionError Targets.setbase!(trd, f6)
+    @test_throws ArgumentError Targets.setbase!(trd, ohlcv)
 end
 
 @testset "Trend05 entry prerequisites" begin
     trd = Targets.Trend05(triggerdist=0.01f0, targetgain=0.02f0)
     support = (regry=100f0, grad=0f0)
 
-    @test Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=1f0), support, :long)
-    @test Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
-    @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=0f0), (regry=100f0, grad=1f0), :long)
-    @test !Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=1f0), support, :long)
-    @test Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=-1f0), support, :short)
-    @test Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
-    @test !Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=0f0), (regry=100f0, grad=-1f0), :short)
-    @test !Targets._trend05_entry(trd, 98f0, (regry=100f0, grad=-1f0), support, :short)
-    @test !Targets._trend05_entry(trd, 100f0, nothing, support, :long)
-    @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), nothing, :long)
+    @test Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=1f0), :long)
+    @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=1f0), :long)
+    @test Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
+    @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=0f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
+    @test !Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=0f0), :long)
+    @test Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
+    @test Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
+    @test Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
+    @test !Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=0f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
+    @test !Targets._trend05_entry(trd, 98f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
+    @test !Targets._trend05_entry(trd, 100f0, nothing, support, (regry=100f0, grad=1f0), :long)
+    @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), nothing, (regry=100f0, grad=1f0), :long)
+    @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), support, nothing, :long)
 end
 
 @testset "Trend05 hold prerequisites" begin
     @test Targets._trend05_hold((regry=100f0, grad=1f0), :long)
-    @test Targets._trend05_hold((regry=100f0, grad=0f0), :long)
+    @test !Targets._trend05_hold((regry=100f0, grad=0f0), :long)
     @test !Targets._trend05_hold((regry=100f0, grad=-1f0), :long)
     @test Targets._trend05_hold((regry=100f0, grad=-1f0), :short)
-    @test Targets._trend05_hold((regry=100f0, grad=0f0), :short)
+    @test !Targets._trend05_hold((regry=100f0, grad=0f0), :short)
     @test !Targets._trend05_hold((regry=100f0, grad=1f0), :short)
     @test !Targets._trend05_hold(nothing, :long)
     @test !Targets._trend05_hold(nothing, :short)
@@ -110,26 +127,24 @@ end
     @test Targets._trend05_target(shortpivots, 1, :short, 0.05f0) == 7
     @test Targets._trend05_target(shortpivots, 2, :short, 0.05f0) === nothing
 
-    shorttrend = Targets.Trend05(leadregr=2, supportregr=3, targetgain=0.05f0)
     shortohlcv = testohlcvfrompivots(Float32[100, 101, 102, 103])
-    Targets.setbase!(shorttrend, shortohlcv)
+    shorttrend = trend05withfeatures(shortohlcv; targetgain=0.05f0)
     @test all(==(Targets.allclose), Targets.labels(shorttrend))
 end
 
 @testset "Trend05 regression warmup and supplementation" begin
     shortohlcv = testohlcvfrompivots(Float32.(100:1:110))
-    trd = Targets.Trend05(leadregr=2, supportregr=3, targetgain=0.05f0)
-    Targets.setbase!(trd, shortohlcv)
+    trd = trend05withfeatures(shortohlcv; targetgain=0.05f0)
     oldrows = nrow(trd.df)
 
     extended = testohlcvfrompivots(Float32.(100:1:130))
     Ohlcv.setdataframe!(shortohlcv, Ohlcv.dataframe(extended))
+    Features.supplement!(trd.f6)
     Targets.supplement!(trd)
     @test nrow(trd.df) == 31
     @test nrow(trd.df) > oldrows
     @test length(Targets.labels(trd)) == 31
 
-    tiny = Targets.Trend05(leadregr=2, supportregr=3, targetgain=0.05f0)
-    Targets.setbase!(tiny, testohlcvfrompivots(Float32[100, 101]))
+    tiny = trend05withfeatures(testohlcvfrompivots(Float32[100, 101]); targetgain=0.05f0)
     @test all(==(Targets.allclose), Targets.labels(tiny))
 end
