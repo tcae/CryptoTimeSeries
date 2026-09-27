@@ -1792,7 +1792,12 @@ function _trend05_requiredfeatures(f6::Features.Features006, trd::Trend05)
         push!(required, Features._regry(f6, window=window, offset=0))
     end
     available = Features.f6all(f6)
-    @assert all(in(available), required) "Trend05 requires no-offset regression features=$(required), available=$(available)"
+    # Features006 stores all offsets of a regression feature in one no-offset fdfno column.
+    # Therefore, an offset request configures the no-offset backing column used by Trend05.
+    configured = requiredfeature -> any(availablefeature ->
+        (availablefeature.f == requiredfeature.f) && (availablefeature.w == requiredfeature.w),
+        available)
+    @assert all(configured, required) "Trend05 requires regression features with matching kind and window=$(required), available=$(available)"
     return required
 end
 
@@ -1817,14 +1822,41 @@ function removebase!(trd::Trend05)
     return nothing
 end
 
-function _trend05_regression(trd::Trend05, ix::Integer)
+"""
+Return the lead, support, and trend regression values at aligned `fdfno` row `ix`.
+
+`supplement!` verifies that `fdfno` and the OHLCV dataframe have identical
+first and last timestamps before calling this function. Therefore `ix` is the
+same row index for both dataframes.
+"""
+function _trend05_regression(trd::Trend05, ix::Integer, regressioncolumns::NamedTuple)
     @assert !isnothing(trd.f6) "Trend05 requires Features006 before regression lookup"
-    opentime = Ohlcv.dataframe(trd.ohlcv)[ix, :opentime]
+    @assert !isnothing(trd.f6.fdfno) "Trend05 requires supplemented Features006 before regression lookup"
+    @assert firstindex(trd.f6.fdfno, 1) <= ix <= lastindex(trd.f6.fdfno, 1) "regression index=$(ix) must be within fdfno rows $(firstindex(trd.f6.fdfno, 1)):$(lastindex(trd.f6.fdfno, 1))"
     return (
-        lead=Features.regressionat(trd.f6, trd.leadregr, opentime),
-        support=Features.regressionat(trd.f6, trd.supportregr, opentime),
-        trend=Features.regressionat(trd.f6, trd.trendregr, opentime),
+        lead=(regry=trd.f6.fdfno[ix, regressioncolumns.lead.regry], grad=trd.f6.fdfno[ix, regressioncolumns.lead.grad]),
+        support=(regry=trd.f6.fdfno[ix, regressioncolumns.support.regry], grad=trd.f6.fdfno[ix, regressioncolumns.support.grad]),
+        trend=(regry=trd.f6.fdfno[ix, regressioncolumns.trend.regry], grad=trd.f6.fdfno[ix, regressioncolumns.trend.grad]),
     )
+end
+
+"""Return the cached no-offset `fdfno` column names used by `Trend05`."""
+function _trend05_regressioncolumns(trd::Trend05)::NamedTuple
+    @assert !isnothing(trd.f6) "Trend05 requires Features006 before cached-column lookup"
+    @assert !isnothing(trd.f6.fdfno) "Trend05 requires supplemented Features006 before cached-column lookup"
+
+    regressioncolumns(window::Int) = (
+        regry=Features.fdfnocol(trd.f6, Features._regry(trd.f6, window=window, offset=0)),
+        grad=Features.fdfnocol(trd.f6, Features._grad(trd.f6, window=window, offset=0)),
+    )
+    columns = (
+        lead=regressioncolumns(trd.leadregr),
+        support=regressioncolumns(trd.supportregr),
+        trend=regressioncolumns(trd.trendregr),
+    )
+    requiredcolumns = [columns.lead.regry, columns.lead.grad, columns.support.regry, columns.support.grad, columns.trend.regry, columns.trend.grad]
+    @assert all(column -> column in names(trd.f6.fdfno), requiredcolumns) "Trend05 requires fdfno regression columns=$(requiredcolumns), available=$(names(trd.f6.fdfno))"
+    return columns
 end
 
 function _trend05_entry(trd::Trend05, pivot::Float32, lead, support, trend, side::Symbol)::Bool
@@ -1853,13 +1885,13 @@ function _trend05_target(pivots::AbstractVector{<:AbstractFloat}, ix::Integer, s
     return nothing
 end
 
-function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol)
-    regressions = _trend05_regression(trd, ix)
+function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol, regressioncolumns::NamedTuple)
+    regressions = _trend05_regression(trd, ix, regressioncolumns)
     _trend05_entry(trd, pivots[ix], regressions.lead, regressions.support, regressions.trend, side) || return nothing
     targetix = _trend05_target(pivots, ix, side, trd.targetgain)
     isnothing(targetix) && return nothing
     for holdix in (ix + 1):targetix
-        hold_support = _trend05_regression(trd, holdix).support
+        hold_support = _trend05_regression(trd, holdix, regressioncolumns).support
         _trend05_hold(hold_support, side) || return nothing
     end
     return targetix
@@ -1870,16 +1902,22 @@ function supplement!(trd::Trend05)
     _trend05_validateconfig(trd)
     @assert !isnothing(trd.f6) "Trend05 requires a prepared Features006 superset"
     _trend05_requiredfeatures(trd.f6, trd)
-    @assert Features.issupplementedcurrent(trd.f6) "Trend05 requires Features.supplement!(f6) to run after the latest OHLCV change and before supplement!(trd)"
-
     odf = Ohlcv.dataframe(trd.ohlcv)
+    @assert !isnothing(trd.f6.fdfno) "Trend05 requires supplemented Features006 before supplement!(trd)"
+    @assert size(trd.f6.fdfno, 1) == size(odf, 1) "Trend05 requires row-aligned Features006 and OHLCV data: size(fdfno, 1)=$(size(trd.f6.fdfno, 1)) must equal size(ohlcv, 1)=$(size(odf, 1))"
+    if size(odf, 1) > 0
+        @assert trd.f6.fdfno[begin, :opentime] == odf[begin, :opentime] "Trend05 requires matching first timestamps: fdfno=$(trd.f6.fdfno[begin, :opentime]) must equal ohlcv=$(odf[begin, :opentime])"
+        @assert trd.f6.fdfno[end, :opentime] == odf[end, :opentime] "Trend05 requires matching last timestamps: fdfno=$(trd.f6.fdfno[end, :opentime]) must equal ohlcv=$(odf[end, :opentime])"
+    end
+    @assert Features.issupplementedcurrent(trd.f6) "Trend05 requires Features.supplement!(f6) to run after the latest OHLCV change and before supplement!(trd)"
+    regressioncolumns = _trend05_regressioncolumns(trd)
     pivots = Float32.(odf[!, :pivot])
     labels = fill(allclose, length(pivots))
     relgains = zeros(Float32, length(pivots))
     ix = firstindex(pivots)
     while ix <= lastindex(pivots)
-        longtarget = _trend05_candidate(trd, pivots, ix, :long)
-        shorttarget = _trend05_candidate(trd, pivots, ix, :short)
+        longtarget = _trend05_candidate(trd, pivots, ix, :long, regressioncolumns)
+        shorttarget = _trend05_candidate(trd, pivots, ix, :short, regressioncolumns)
         if !isnothing(longtarget)
             labels[ix] = longopen
             relgains[ix] = (pivots[longtarget] - pivots[ix]) / pivots[ix]

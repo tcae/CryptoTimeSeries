@@ -89,6 +89,38 @@ end
     @test_throws ArgumentError Targets.setbase!(trd, ohlcv)
 end
 
+@testset "Trend05 accepts offset-backed regression features" begin
+    ohlcv = testohlcvfrompivots(Float32.(100:1:30))
+    f6 = Features.Features006()
+    for window in (2, 3, 4)
+        Features.addregry!(f6, window=window, offset=1)
+        Features.addgrad!(f6, window=window, offset=1)
+    end
+    @test all(feature -> feature.o == 1, Features.f6all(f6))
+    Features.setbase!(f6, ohlcv, usecache=false)
+    Features.supplement!(f6)
+
+    trd = Targets.Trend05(leadregr=2, supportregr=3, trendregr=4)
+    required = Targets._trend05_requiredfeatures(f6, trd)
+    @test required == [
+        Features._grad(f6, window=2, offset=0), Features._regry(f6, window=2, offset=0),
+        Features._grad(f6, window=3, offset=0), Features._regry(f6, window=3, offset=0),
+        Features._grad(f6, window=4, offset=0), Features._regry(f6, window=4, offset=0),
+    ]
+end
+
+@testset "Trend05 requires aligned feature timestamps" begin
+    firstmismatch = trend05withfeatures(testohlcvfrompivots(Float32.(100:1:160)))
+    firstmismatch.f6.fdfno = copy(firstmismatch.f6.fdfno)
+    firstmismatch.f6.fdfno[begin, :opentime] += Minute(1)
+    @test_throws AssertionError Targets.supplement!(firstmismatch)
+
+    lastmismatch = trend05withfeatures(testohlcvfrompivots(Float32.(100:1:160)))
+    lastmismatch.f6.fdfno = copy(lastmismatch.f6.fdfno)
+    lastmismatch.f6.fdfno[end, :opentime] += Minute(1)
+    @test_throws AssertionError Targets.supplement!(lastmismatch)
+end
+
 @testset "Trend05 entry prerequisites" begin
     trd = Targets.Trend05(triggerdist=0.01f0, targetgain=0.02f0)
     support = (regry=100f0, grad=0f0)

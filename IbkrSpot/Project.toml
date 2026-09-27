@@ -1,0 +1,20 @@
+name = "IbkrSpot"
+uuid = "ff66bc39-811f-4826-aba1-63d412e2a021"
+authors = ["Torsten <dropincloud7.gmail.com>"]
+version = "0.1.0"
+
+[deps]
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+Jib = "f310f2d2-a263-11e8-3998-47bd686f18f7"
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
+
+[sources]
+EnvConfig = {path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"}
+Jib = {url = "https://github.com/lbilli/Jib.jl"}
+XchAdapter = {path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"}
