@@ -14,6 +14,7 @@ end
 include("openstatus_test.jl")
 include("order_request_status_test.jl")
 include("sync_latest_trades_rows_test.jl")
+include("ibkr_adapter_test.jl")
 include("messagecatalogtests.jl")
 include("usdtmarket_intent_test.jl")
 

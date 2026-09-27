@@ -1,0 +1,19 @@
+{
+  "exchange": "Bybit",
+  "version": 1,
+  "iceberg": {
+    "enabled": true,
+    "execution": "sequential_websocket"
+  },
+  "orders": {
+    "long": {
+      "instrument": "spot",
+      "max_quote": 500.0
+    },
+    "short": {
+      "instrument": "spot_margin",
+      "leverage": 2,
+      "max_quote": 500.0
+    }
+  }
+}

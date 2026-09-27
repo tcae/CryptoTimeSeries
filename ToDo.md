@@ -14,6 +14,15 @@
 	- above targetgain set stoploss to targetgain and follow trend with incrementtargetgain
 	- above targetgain sell as soon as no open (or hold) support
 
+## IBKR Spot adapter
+- Is there an option to use marketdata from one username and execute on the robot username without market data subscription to avoid double subscriptions? e.g. via running TWS and IB Gateway in parallel with different usernames both used by the robot?
+-  Implement tesst for ordering create, upsert, cancel with paper trading?
+- is it possible to earnmark robot orders in IBKR to avoid interfering with manual trading? e.g. cancelling manual orders by robot
+
+## IBKR Options adapter
+- Please create a similar package for IbkrOptions. The trade decision will be based on teh price development of the underlying stock. Long trades will be mapped to call options, short trades will be mapped to put options. We need an interface function that provides the set of possible call or put options. Each option should provide data about the strike price, the expiration date, the 24h trading volume the ask price, ask volume, bid price, bid volume, model price, last traded price, and a symbol/string to identify this specific option. Check my request and the IBKR API and let me know if design decisions are required. 
+	- liquidiy and best buy price algorithms required to select good options at best strike price
+
 # Known issues
 
 - always set a OCO bracket order for an open amount in trade!

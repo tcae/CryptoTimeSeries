@@ -7,7 +7,7 @@ module Xch
 
 using Dates, DataFrames, DataAPI, CSV, Logging, InlineStrings, UUIDs
 using CategoricalArrays: CategoricalVector
-using Bybit, EnvConfig, KrakenFutures, KrakenSpot, Ohlcv, Targets, TSM
+using Bybit, EnvConfig, IbkrSpot, KrakenFutures, KrakenSpot, Ohlcv, Targets, TSM
 using XchAdapter: XchAdapterCache, TradingPairRef
 import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, accountsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, drainliquidations!, preparetradingpairs!
 import XchAdapter: normalize_order_status
@@ -35,6 +35,7 @@ verbosity = 1
 
 const EXCHANGE_BYBIT::String = "Bybit"
 const EXCHANGE_BYBITSIM::String = "BybitSim"
+const EXCHANGE_IBKRSPOT::String = "IbkrSpot"
 const EXCHANGE_KRAKENFUTURES::String = "KrakenFutures"
 const EXCHANGE_KRAKENSPOT::String = "KrakenSpot"
 
@@ -45,6 +46,8 @@ function _defaultquote(exchange::AbstractString)::String
         return "USD"
     elseif ex == EXCHANGE_KRAKENSPOT
         return "USDC"
+    elseif ex == EXCHANGE_IBKRSPOT
+        return "USD"
     end
     return "USDT"
 end
@@ -129,12 +132,14 @@ function _adaptercache(exchange::AbstractString)::XchAdapterCache
         return Bybit.BybitSimCache()
     elseif exchange == EXCHANGE_BYBIT
         return Bybit.BybitCache()
+    elseif exchange == EXCHANGE_IBKRSPOT
+        return IbkrSpot.IbkrSpotCache()
     elseif exchange == EXCHANGE_KRAKENSPOT
         return KrakenSpot.KrakenSpotCache()
     elseif exchange == EXCHANGE_KRAKENFUTURES
         return KrakenFutures.KrakenFuturesCache()
     end
-    throw(ArgumentError("unsupported exchange=$(exchange), expected one of $(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_KRAKENSPOT), $(EXCHANGE_KRAKENFUTURES)"))
+    throw(ArgumentError("unsupported exchange=$(exchange), expected one of $(EXCHANGE_BYBIT), $(EXCHANGE_BYBITSIM), $(EXCHANGE_IBKRSPOT), $(EXCHANGE_KRAKENSPOT), $(EXCHANGE_KRAKENFUTURES)"))
 end
 
 exchange(xc::XchCache)::String = exchangeid(xc.bc)

@@ -219,7 +219,7 @@ version = "1.2.2"
 deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.3.1"
+version = "4.6.0"
 
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -300,7 +300,7 @@ weakdeps = ["SparseArrays"]
 deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.28.11"
+version = "0.29.1"
 
 [[deps.CodeTracking]]
 deps = ["InteractiveUtils", "REPL", "UUIDs"]
@@ -653,7 +653,7 @@ version = "0.1.1"
 deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.8.8"
+version = "1.9.0"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -945,6 +945,12 @@ git-tree-sha1 = "57e9ce6cf68d0abf5cb6b3b4abf9bedf05c939c0"
 uuid = "7869d1d1-7146-5819-86e3-90919afe41df"
 version = "0.4.15"
 
+[[deps.IbkrSpot]]
+deps = ["CSV", "DataFrames", "Dates", "EnvConfig", "JSON3", "Jib", "Logging", "Sockets", "Test", "TimeZones", "XchAdapter"]
+path = "IbkrSpot"
+uuid = "ff66bc39-811f-4826-aba1-63d412e2a021"
+version = "0.2.0"
+
 [[deps.IndirectArrays]]
 git-tree-sha1 = "012e604e1c7458645cb8b436f8fba789a51b257f"
 uuid = "9b13fd28-a010-5f03-acff-a1bbcff69959"
@@ -1057,6 +1063,13 @@ weakdeps = ["ArrowTypes"]
     [deps.JSON3.extensions]
     JSON3ArrowExt = ["ArrowTypes"]
 
+[[deps.Jib]]
+deps = ["Sockets"]
+git-tree-sha1 = "7a2924153ed1647adacec5ce9fe2d9ab0f9789c8"
+repo-url = "https://github.com/lbilli/Jib.jl"
+uuid = "f310f2d2-a263-11e8-3998-47bd686f18f7"
+version = "0.31.1"
+
 [[deps.JpegTurbo_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "c0c9b76f3520863909825cbecdef58cd63de705a"
@@ -1112,13 +1125,13 @@ weakdeps = ["EnzymeCore", "LinearAlgebra", "SparseArrays"]
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.8"
+version = "0.1.11"
 
 [[deps.KrakenSpot]]
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.8"
+version = "0.1.11"
 
 [[deps.LAME_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -2206,7 +2219,7 @@ version = "1.0.3"
 deps = ["CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "Logging", "Targets", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/TSM"
 uuid = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
-version = "0.2.1"
+version = "0.3.7"
 
 [[deps.TZJData]]
 deps = ["Artifacts"]
@@ -2279,13 +2292,13 @@ weakdeps = ["RecipesBase"]
 deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "TSM", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/Trade"
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
-version = "0.19.5"
+version = "0.19.11"
 
 [[deps.TradingStrategy]]
 deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "TSM", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.8.7"
+version = "0.14.0"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"
@@ -2418,16 +2431,16 @@ uuid = "ffd25f8a-64ca-5728-b0f7-c24cf3aae800"
 version = "5.8.3+0"
 
 [[deps.Xch]]
-deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "TSM", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
+deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "IbkrSpot", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "TSM", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.8.0"
+version = "1.12.0"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]
 path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.3.0"
+version = "0.3.2"
 
 [[deps.Xorg_libICE_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]

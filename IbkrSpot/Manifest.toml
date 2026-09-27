@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "6c6f5aadd7dff7f65bdb1536deef399a0262cdae"
+project_hash = "176a1faee8f5cb172da957fd9387e94b40d36bfd"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -57,6 +57,12 @@ git-tree-sha1 = "6863c5b7fc997eadcabdbaf6c5f201dc30032643"
 uuid = "e1450e63-4bb3-523b-b2a4-4ffa8c0fd77d"
 version = "1.2.2"
 
+[[deps.CSV]]
+deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers", "PooledArrays", "PrecompileTools", "SentinelArrays", "Tables", "Unicode", "WeakRefStrings", "WorkerUtilities"]
+git-tree-sha1 = "abed1e735dd4152f48c90cf0767e1790e25f332f"
+uuid = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+version = "0.10.17"
+
 [[deps.CategoricalArrays]]
 deps = ["DataAPI", "Future", "Missings", "Printf", "Requires", "Statistics", "Unicode"]
 git-tree-sha1 = "f6d71f5b1b09e1a2115efd3bba69123691c15f2b"
@@ -82,6 +88,12 @@ deps = ["Lz4_jll", "TranscodingStreams"]
 git-tree-sha1 = "d58afcd2833601636b48ee8cbeb2edcb086522c2"
 uuid = "5ba52731-8f18-5e0d-9241-30f10d1ec561"
 version = "0.4.6"
+
+[[deps.CodecZlib]]
+deps = ["TranscodingStreams", "Zlib_jll"]
+git-tree-sha1 = "970758a3d591a2a5c2a907c53f2e2f8c1b1d3537"
+uuid = "944b1d66-785c-5afd-91f1-9de20f533193"
+version = "0.7.9"
 
 [[deps.CodecZstd]]
 deps = ["TranscodingStreams", "Zstd_jll"]
@@ -168,6 +180,17 @@ git-tree-sha1 = "d2e49e7efd29719d6f28b891b0e0e159daa9d2b4"
 uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
 version = "0.1.11"
 
+[[deps.FilePathsBase]]
+deps = ["Compat", "Dates"]
+git-tree-sha1 = "3bab2c5aa25e7840a4b065805c0cdfc01f3068d2"
+uuid = "48062228-2e41-5def-b9a4-89aafe57970f"
+version = "0.9.24"
+weakdeps = ["Mmap", "Test"]
+
+    [deps.FilePathsBase.extensions]
+    FilePathsBaseMmapExt = "Mmap"
+    FilePathsBaseTestExt = "Test"
+
 [[deps.FileWatching]]
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 version = "1.11.0"
@@ -178,10 +201,10 @@ uuid = "9fa8497b-333b-5362-9e8d-4d0656e87820"
 version = "1.11.0"
 
 [[deps.IbkrSpot]]
-deps = ["DataFrames", "Dates", "EnvConfig", "JSON3", "Jib", "Logging", "Sockets", "Test", "XchAdapter"]
+deps = ["CSV", "DataFrames", "Dates", "EnvConfig", "JSON3", "Jib", "Logging", "Sockets", "Test", "TimeZones", "XchAdapter"]
 path = "."
 uuid = "ff66bc39-811f-4826-aba1-63d412e2a021"
-version = "0.1.0"
+version = "0.2.0"
 
 [[deps.InlineStrings]]
 git-tree-sha1 = "06b65886c7577a3784d616e29f1302c2e36e389d"
@@ -238,7 +261,6 @@ weakdeps = ["ArrowTypes"]
 [[deps.Jib]]
 deps = ["Sockets"]
 git-tree-sha1 = "7a2924153ed1647adacec5ce9fe2d9ab0f9789c8"
-repo-rev = "master"
 repo-url = "https://github.com/lbilli/Jib.jl"
 uuid = "f310f2d2-a263-11e8-3998-47bd686f18f7"
 version = "0.31.1"
@@ -582,6 +604,11 @@ deps = ["DataAPI", "InlineStrings", "Parsers"]
 git-tree-sha1 = "0716e01c3b40413de5dedbc9c5c69f27cddfddfc"
 uuid = "ea10d353-3f73-51f8-a26c-33c1cb351aa5"
 version = "1.4.3"
+
+[[deps.WorkerUtilities]]
+git-tree-sha1 = "cd1659ba0d57b71a464a29e64dbc67cfe83d54e7"
+uuid = "76eceee3-57b5-4d4a-8e66-0e911cebbf60"
+version = "1.6.1"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]

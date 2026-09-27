@@ -8,7 +8,7 @@ layer that turns the asynchronous callback model into the synchronous adapter co
 """
 module IbkrSpot
 
-using DataFrames, Dates, EnvConfig, JSON3, Logging, Sockets
+using CSV, DataFrames, Dates, EnvConfig, JSON3, Logging, Sockets, TimeZones
 using XchAdapter
 import XchAdapter: rawcache, exchangeid, symbolinfo, validsymbol, getklines, get24h, balances, positionsnapshot, accountsnapshot, emptyorders, openorders, order, cancelorder, createorder, amendorder, servertime, symboltoken, executionorderspec, marginlimits, marginpermitted, marketdataheartbeats, marketdataheartbeat, wsorderssnapshot, wsordersheartbeat, wsbalancessnapshot, wsbalancesheartbeat, ws_orders, ws_balances, accountcapacity, closeorder, upsertcloseorder!, upsertopenorder!, directsequence!, wsclosedkline, preparetradingpairs!
 import XchAdapter: normalize_order_status
@@ -50,13 +50,16 @@ function _connectionconfig()
     cfg = executionconfig()
     haskey(cfg, "connection") || error("missing IbkrSpot execution config connection section")
     conn = cfg["connection"]
+    configured_port = Int(get(conn, "port", 7497))
+    port_override = get(ENV, "IBKR_PORT", nothing)
     return (
         host=String(get(conn, "host", "127.0.0.1")),
-        port=Int(get(conn, "port", 7497)),
+        port=isnothing(port_override) ? configured_port : parse(Int, port_override),
         clientid=Int(get(conn, "clientid", 17)),
         exchange_route=String(get(conn, "exchange_route", "SMART")),
         primary_exchange=String(get(conn, "primary_exchange", "")),
         currency=String(get(conn, "currency", "USD")),
+        account=String(get(conn, "account", "")),
     )
 end
 
@@ -162,6 +165,9 @@ const _portfolio = Dict{String, NamedTuple}()                 # symbol => positi
 const _orderstate = Dict{Int, Dict{Symbol, Any}}()            # orderId => merged openOrder/orderStatus fields
 const _nextvalidid = Ref{Int}(0)
 const _managedaccounts = Ref{String}("")
+const _currenttime_reqid = Ref{Int}(0)
+const _position_reqid = Ref{Int}(0)
+const _openorders_reqid = Ref{Int}(0)
 const _lasttick = Dict{String, Dict{Int, Float64}}()          # symbol => tickType => price
 const _marketdata_heartbeat_by_symbol = Dict{String, DateTime}()
 const _marketdata_heartbeat = Ref{Union{Nothing, DateTime}}(nothing)
@@ -184,5 +190,8 @@ function _takeorderid()::Int
 end
 
 #endregion streamed account and order state
+
+include("adapter.jl")
+include("watchlists.jl")
 
 end  # module

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "464c307870821e4a02ff4022083f9a0e0bf71ac5"
+project_hash = "3139d7b88a499f5228f7da9b07653e15cbc366eb"
 
 [[deps.AliasTables]]
 deps = ["PtrArrays", "Random"]
@@ -78,7 +78,7 @@ version = "1.2.2"
 deps = ["DataFrames", "Dates", "Downloads", "EnvConfig", "Format", "HTTP", "InlineStrings", "JSON3", "Logging", "Ohlcv", "Printf", "SHA", "Test", "TestOhlcv", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/Bybit"
 uuid = "6ee0addf-7ba9-4af4-b054-15117c9fd786"
-version = "4.3.4"
+version = "4.6.0"
 
 [[deps.CSV]]
 deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers", "PooledArrays", "PrecompileTools", "SentinelArrays", "Tables", "Unicode", "WeakRefStrings", "WorkerUtilities"]
@@ -263,7 +263,7 @@ version = "0.1.10"
 deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "../Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.8.8"
+version = "1.9.0"
 
 [[deps.FilePathsBase]]
 deps = ["Compat", "Dates"]
@@ -313,6 +313,12 @@ deps = ["MacroTools", "Test"]
 git-tree-sha1 = "6187bb2d5fcbb2007c39e7ac53308b0d371124bd"
 uuid = "9fb69e20-1954-56bb-a84f-559cc56a8ff7"
 version = "0.2.2"
+
+[[deps.IbkrSpot]]
+deps = ["CSV", "DataFrames", "Dates", "EnvConfig", "JSON3", "Jib", "Logging", "Sockets", "Test", "TimeZones", "XchAdapter"]
+path = "/Users/torsten/github/CryptoTimeSeries/IbkrSpot"
+uuid = "ff66bc39-811f-4826-aba1-63d412e2a021"
+version = "0.2.0"
 
 [[deps.InlineStrings]]
 git-tree-sha1 = "8f3d257792a522b4601c24a577954b0a8cd7334d"
@@ -378,6 +384,13 @@ weakdeps = ["ArrowTypes"]
     [deps.JSON3.extensions]
     JSON3ArrowExt = ["ArrowTypes"]
 
+[[deps.Jib]]
+deps = ["Sockets"]
+git-tree-sha1 = "7a2924153ed1647adacec5ce9fe2d9ab0f9789c8"
+repo-url = "https://github.com/lbilli/Jib.jl"
+uuid = "f310f2d2-a263-11e8-3998-47bd686f18f7"
+version = "0.31.1"
+
 [[deps.JuliaSyntaxHighlighting]]
 deps = ["StyledStrings"]
 uuid = "ac6e5ff7-fb65-4e79-a425-ec3bc9c03011"
@@ -398,13 +411,13 @@ version = "0.2.1+0"
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/KrakenFutures"
 uuid = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
-version = "0.1.10"
+version = "0.1.11"
 
 [[deps.KrakenSpot]]
 deps = ["Base64", "DataFrames", "Dates", "Downloads", "EnvConfig", "HTTP", "JSON3", "Logging", "SHA", "Test", "XchAdapter"]
 path = "/Users/torsten/github/CryptoTimeSeries/KrakenSpot"
 uuid = "2e231227-6429-4ff6-bf87-c58b5fe985f0"
-version = "0.1.10"
+version = "0.1.11"
 
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"
@@ -818,7 +831,7 @@ version = "1.0.3"
 deps = ["CategoricalArrays", "DataFrames", "Dates", "EnvConfig", "Logging", "Targets", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/TSM"
 uuid = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
-version = "0.3.4"
+version = "0.3.7"
 
 [[deps.TZJData]]
 deps = ["Artifacts"]
@@ -932,16 +945,16 @@ uuid = "76eceee3-57b5-4d4a-8e66-0e911cebbf60"
 version = "1.6.1"
 
 [[deps.Xch]]
-deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "TSM", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
+deps = ["Arrow", "Bybit", "CSV", "CategoricalArrays", "DataAPI", "DataFrames", "Dates", "EnvConfig", "IbkrSpot", "InlineStrings", "JSON3", "KrakenFutures", "KrakenSpot", "Logging", "Ohlcv", "SortingAlgorithms", "TSM", "Targets", "Test", "TestOhlcv", "UUIDs", "XchAdapter"]
 path = "."
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.8.3"
+version = "1.12.0"
 
 [[deps.XchAdapter]]
 deps = ["Dates"]
 path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"
 uuid = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
-version = "0.3.1"
+version = "0.3.2"
 
 [[deps.Zlib_jll]]
 deps = ["Libdl"]

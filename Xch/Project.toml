@@ -1,6 +1,6 @@
 name = "Xch"
 uuid = "377c31d0-5293-4e5d-923f-2b5362fd66a9"
-version = "1.11.1"
+version = "1.12.0"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]
@@ -12,6 +12,7 @@ DataAPI = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 EnvConfig = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
+IbkrSpot = "ff66bc39-811f-4826-aba1-63d412e2a021"
 InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 KrakenFutures = "43d0b6f2-6832-4efb-a9c7-cd71b8c84309"
@@ -27,5 +28,6 @@ TSM = "8f0ec7b0-9d77-4f68-b25b-9ce8d5f4f7e8"
 XchAdapter = "c602e5e7-1b7e-4e97-96ac-4389c4f8f0b6"
 
 [sources]
+IbkrSpot = {path = "/Users/torsten/github/CryptoTimeSeries/IbkrSpot"}
 TSM = {path = "/Users/torsten/github/CryptoTimeSeries/TSM"}
 XchAdapter = {path = "/Users/torsten/github/CryptoTimeSeries/XchAdapter"}

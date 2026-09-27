@@ -1,0 +1,1095 @@
+{
+    "minimum_daily_usd_volume": 20000000,
+    "universe": {
+        "symbols": [
+            {
+                "exchange": "SMART",
+                "base_symbol": "AAPL",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MSFT",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AD",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ADYEN",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AFX",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AIXA",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ALV",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AMG",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "AEB",
+                "base_symbol": "ASM",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ASML",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BESI",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BMW",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BN",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CBK",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "UCG",
+                "quote_currency": "EUR",
+                "primary_exchange": "BVME"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CRBN",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CS",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DB1",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DBK",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DHL",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DIM",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DRW3",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DTG",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ENX",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FME",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FUR",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "HBH",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "HO",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "IFX",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "JEN",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "KER",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MBG",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MC",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MUV2",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "PHARM",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "PNL",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "PRX",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "RHM",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SAF",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SAN1",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SAP",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SBMO",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SDF",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SIE",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SIX2",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SRT",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SRT3",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SU",
+                "quote_currency": "EUR",
+                "primary_exchange": "SBF"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SY1",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "WAF",
+                "quote_currency": "EUR",
+                "primary_exchange": "IBIS"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FLOW",
+                "quote_currency": "EUR",
+                "primary_exchange": "AEB"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NEO",
+                "quote_currency": "CAD",
+                "primary_exchange": "TSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AAOI",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ACLS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ADBE",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ADI",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ADM",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ADSK",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AEHR",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AEIS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ALAB",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ALB",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ALGN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AMAT",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AMD",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AMGN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AMKR",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AMZN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ARM",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ARQ",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AVGO",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "AZTA",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BABA",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BAC",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BIDU",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "BRK B",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CAMT",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CDNS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CI",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CLF",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CNP",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "COHR",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CRDO",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CRM",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CRUS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CRWD",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CSCO",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CVNA",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "CVS",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DDOG",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DELL",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DQ",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "DVN",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "EBAY",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ENPH",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ETSY",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "EXE",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "F",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FANG",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FFIV",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FIG",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FIS",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FISV",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FORM",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FOUR",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FTNT",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "FVRR",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "GFS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "GLBE",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "GM",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "GOOGL",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "GPN",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "GRAB",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "HAPN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "HD",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "HUBS",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "IBKR",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "IBM",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ICE",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ICHR",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "IDXX",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ILMN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "INTC",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "JD",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "KEYS",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "KLAC",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "LLY",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "LMT",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "LRCX",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "LULU",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MCHP",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MELI",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "META",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "MU",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NBIS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NET",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NFLX",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NOW",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NVDA",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NXPI",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "NXT",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "OGN",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "OLED",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ON",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "OPRA",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "ORCL",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "PANW",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "PLTR",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "PYPL",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "QCOM",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "QRVO",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "RIO",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "RKLB",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SE",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SHOP",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SLP",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SEDG",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SMCI",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SNOW",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SNPS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SOFI",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SPCX",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SPOT",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "STM",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "STX",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "SWKS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "T",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TER",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TME",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TMUS",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TPC",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TSLA",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TSM",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TTD",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "TXN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "UCTT",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "UI",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "VALE",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "VEEV",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "VRSN",
+                "quote_currency": "USD",
+                "primary_exchange": "NASDAQ"
+            },
+            {
+                "exchange": "SMART",
+                "base_symbol": "XYZ",
+                "quote_currency": "USD",
+                "primary_exchange": "NYSE"
+            }
+        ],
+        "mode": "whitelist"
+    },
+    "version": 1
+}
