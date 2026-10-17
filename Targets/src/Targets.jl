@@ -1741,11 +1741,11 @@ It provides target labels of type `TradeLabel` for a series of OHLCV data sample
 
 - longopen is only issued if 
     - the lead regression gradient is positive and
-    - the relative distance of the current pivot price to the head of the current trend regression line is lower than triggerdist or the support regression gradient is positive and
+    - the relative distance of the current pivot price to the head of the current trend regression line is lower than -triggerdist or the support regression gradient is positive and
     - all samples from the current sample until (1 + targetgain) * current pivot price is reached, are longopen or longhold samples
 - shortopen is only issued if 
     - the lead regression gradient is negative and
-    - the relative distance of the current pivot price to the head of the current trend regression line is higher than triggerdist or the support regression gradient is negative and
+    - the relative distance of the current pivot price to the head of the current trend regression line is higher than +triggerdist or the support regression gradient is negative and
     - all samples from the current sample until (1 - targetgain) * current pivot price is reached, are shortopen or shorthold samples
 - longhold is only issued if 
     - it follows a longopen or a longhold sample
