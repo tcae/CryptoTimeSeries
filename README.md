@@ -69,6 +69,7 @@ In case of variants, e.g. features or classification algorithms, the same functi
 
 ## to do
 
+- Track independent work areas and their current status in the [project planning board](docs/project-planning-board.md).
 - Trade/preparetradecache! should use Assets.jl instead of creating it's own asset selection
 
 ## OHLCV file transfer
