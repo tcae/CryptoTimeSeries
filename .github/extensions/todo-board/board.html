@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Planning board</title>
+<style>
+  body { margin: 0; background: var(--background-color-default, #fff); color: var(--text-color-default, #1f2328);
+    font-family: var(--font-sans, -apple-system, "Segoe UI", sans-serif); font-size: 13px; }
+  header { padding: 10px 14px; border-bottom: 1px solid var(--border-color-default, #d0d7de); display: flex; gap: 10px; align-items: center; position: sticky; top: 0; background: inherit; z-index: 2; }
+  header h1 { font-size: 15px; margin: 0; flex: 1; }
+  button { cursor: pointer; border: 1px solid var(--border-color-default, #d0d7de); background: transparent; color: inherit; border-radius: 6px; padding: 2px 8px; font: inherit; }
+  button:hover { background: rgba(127,127,127,.15); }
+  #tabs { display: flex; gap: 6px; padding: 8px 14px; flex-wrap: wrap; }
+  .tab.sel { border-color: var(--color-focus-outline, #0969da); font-weight: 600; }
+  main { padding: 0 14px 40px; }
+  .card { border: 1px solid var(--border-color-default, #d0d7de); border-radius: 8px; margin: 10px 0; padding: 10px 12px; }
+  .card.focus { border-color: var(--color-focus-outline, #0969da); }
+  .card h2 { font-size: 14px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+  .card h2 span.name { flex: 1; }
+  .bar { height: 6px; border-radius: 3px; background: rgba(127,127,127,.25); overflow: hidden; display: flex; }
+  .bar i { display: block; height: 100%; }
+  .done { background: #2da44e; } .doing { background: #bf8700; } .blocked { background: #cf222e; }
+  .meta { color: var(--text-color-muted, #656d76); margin: 4px 0 6px; font-size: 12px; }
+  .next { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--color-focus-outline, #0969da); background: rgba(127,127,127,.08); }
+  ul { list-style: none; margin: 0; padding-left: 18px; }
+  .root { padding-left: 0; }
+  li > .row { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+  .st { width: 22px; text-align: center; padding: 0; flex: none; }
+  .txt.done-t { text-decoration: line-through; color: var(--text-color-muted, #656d76); }
+  .note { color: var(--text-color-muted, #656d76); font-size: 12px; padding-left: 28px; }
+  .acts { margin-left: auto; opacity: 0; } li > .row:hover .acts { opacity: 1; }
+  input { font: inherit; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--border-color-default, #d0d7de); background: transparent; color: inherit; }
+  .add { display: flex; gap: 6px; margin-top: 6px; } .add input { flex: 1; }
+  #err { color: #cf222e; padding: 0 14px; }
+</style>
+</head>
+<body>
+<header><h1>📋 Planning board <small style="font-weight:400;color:var(--text-color-muted)">(source: ToDo.md)</small></h1>
+  <input id="ns" placeholder="New stream…" /><button id="addS">+ Stream</button></header>
+<div id="err"></div><div id="tabs"></div><main id="main"></main>
+<script>
+const ICON = { todo: "○", doing: "◐", done: "●", blocked: "⛔" };
+const CYCLE = { todo: "doing", doing: "done", done: "todo", blocked: "todo" };
+let board = null, filter = "all";
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const post = async (path, body) => {
+  const r = await fetch(path, { method: "POST", body: JSON.stringify(body) });
+  const j = await r.json();
+  document.getElementById("err").textContent = j.error || "";
+  if (!j.error) load();
+};
+async function load() { board = await (await fetch("api/board")).json(); render(); }
+
+function taskHtml(t, stream) {
+  const kids = t.children.length ? `<ul>${t.children.map((c) => taskHtml(c, stream)).join("")}</ul>` : "";
+  const notes = t.notes.map((n) => `<div class="note">${esc(n)}</div>`).join("");
+  const args = `data-line="${t.line}" data-text="${esc(t.text)}" data-stream="${esc(stream)}"`;
+  return `<li><div class="row"><button class="st" data-act="cycle" ${args} data-status="${t.status}" title="Click to cycle status">${ICON[t.status]}</button>
+    <span class="txt ${t.status === "done" ? "done-t" : ""}">${esc(t.text)}</span>
+    <span class="acts"><button data-act="block" ${args}>⛔</button><button data-act="sub" ${args}>+ step</button></span></div>${notes}${kids}</li>`;
+}
+
+function render() {
+  const names = board.streams.map((s) => s.name);
+  document.getElementById("tabs").innerHTML = ["all", ...names].map((n) =>
+    `<button class="tab ${filter === n ? "sel" : ""}" data-tab="${esc(n)}">${n === "all" ? "All" : esc(n)}</button>`).join("");
+  const shown = board.streams.filter((s) => filter === "all" || s.name === filter);
+  document.getElementById("main").innerHTML = shown.map((s) => {
+    const st = s.stats, w = (k) => st.total ? (100 * st[k]) / st.total : 0;
+    const next = s.next.map((t) => `<div>→ ${esc(t.text)}</div>`).join("") || "<div>—</div>";
+    return `<section class="card ${board.focus === s.name ? "focus" : ""}">
+      <h2><span class="name">${esc(s.name)}</span><span class="meta">${st.pct}% · ${st.done}/${st.total}</span>
+      <button data-act="focus" data-stream="${esc(s.name)}">${board.focus === s.name ? "★ focus" : "☆ focus"}</button></h2>
+      <div class="bar"><i class="done" style="width:${w("done")}%"></i><i class="doing" style="width:${w("doing")}%"></i><i class="blocked" style="width:${w("blocked")}%"></i></div>
+      <div class="meta">${st.doing} doing · ${st.blocked} blocked · ${st.todo} open</div>
+      <div class="next"><b>Next</b>${next}</div>
+      <ul class="root">${s.tasks.map((t) => taskHtml(t, s.name)).join("")}</ul>
+      <div class="add"><input placeholder="Add task / idea to ${esc(s.name)}…" data-add="${esc(s.name)}" /></div></section>`;
+  }).join("");
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  const d = b.dataset;
+  if (d.tab) { filter = d.tab; render(); }
+  else if (d.act === "cycle") post("api/status", { line: +d.line, text: d.text, status: CYCLE[d.status] });
+  else if (d.act === "block") post("api/status", { line: +d.line, text: d.text, status: "blocked" });
+  else if (d.act === "focus") post("api/focus", { stream: d.stream });
+  else if (d.act === "sub") { const t = prompt("Sub-step for: " + d.text); if (t) post("api/add", { stream: d.stream, parentLine: +d.line, text: t }); }
+  else if (b.id === "addS") { const i = document.getElementById("ns"); if (i.value.trim()) { post("api/stream", { name: i.value.trim() }); i.value = ""; } }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.target.dataset.add && e.target.value.trim()) {
+    post("api/add", { stream: e.target.dataset.add, parentLine: null, text: e.target.value.trim() });
+  }
+});
+new EventSource("events").onmessage = load;
+load();
+</script>
+</body>
+</html>
