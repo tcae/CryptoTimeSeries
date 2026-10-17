@@ -1,7 +1,7 @@
 name = "IbkrSpot"
 uuid = "ff66bc39-811f-4826-aba1-63d412e2a021"
 authors = ["Torsten <dropincloud7.gmail.com>"]
-version = "0.2.0"
+version = "0.2.3"
 
 [deps]
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"

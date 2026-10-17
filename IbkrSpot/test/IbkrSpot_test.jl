@@ -22,6 +22,9 @@ using JSON3
     @test long.side == :long
     @test long.instrument == "stock"
     @test long.max_quote > 0
+    @test IbkrSpot._convert_base_to_quote(100.0, 0.8) == 125.0
+    @test IbkrSpot._convert_base_to_quote(100.0, 1.0) == 100.0
+    @test_throws AssertionError IbkrSpot._convert_base_to_quote(100.0, 0.0)
 
     short = IbkrSpot._executionorderspec(:short)
     @test short.side == :short
@@ -65,6 +68,12 @@ end
     @test order.lmtPrice == 100.25
     @test order.postOnly
     @test order.orderRef == "IbkrSpot|long|12|open"
+    @test !order.outsideRth
+    outside_rth_order = IbkrSpot._neworder(cache, 13, "buy", 2.0, 100.25, :long; maker=false, outside_rth=true)
+    @test outside_rth_order.outsideRth
+    market_order = IbkrSpot._neworder(cache, 14, "buy", 1.0, nothing, :long; maker=false)
+    @test market_order.orderType == "MKT"
+    @test market_order.tif == "DAY"
     @test IbkrSpot._tickkey("BID_PRICE") == "BID"
     @test IbkrSpot._tickkey("8") == "VOLUME"
     @test IbkrSpot._bar_datetime("1790343000") == DateTime(2026, 9, 25, 13, 30)

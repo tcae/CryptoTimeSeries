@@ -187,6 +187,9 @@ function _adapterwrapper(cache::IbkrSpotCache)
             end
             reqid > 0 && _complete!(reqid)
         end,
+        execDetails=(reqid, contract, execution) ->
+            _push!(reqid, (contract=contract, execution=execution)),
+        execDetailsEnd=reqid -> _complete!(reqid),
         orderStatus=(orderid, status, filled, remaining, averageprice, permid, parentid, lastfillprice, clientid, whyheld, marketcapprice) -> lock(_state_lock) do
             state = get!(_orderstate, orderid, Dict{Symbol, Any}())
             state[:status] = status
@@ -621,12 +624,21 @@ function getklines(cache::IbkrSpotCache, symbol; startDateTime=nothing, endDateT
     return sort!(output, :opentime)
 end
 
-"""Request the IBKR account summary values required by balances and capacity."""
-function _accountsummary(cache::IbkrSpotCache)
+"""Request IBKR account summary or currency-ledger values and release the subscription."""
+function _accountsummary(cache::IbkrSpotCache; tags::String="NetLiquidation,TotalCashValue,AvailableFunds,InitMarginReq,MaintMarginReq", what::String="account summary")
+    connection = _connection!(cache)
     _wait_account(cache)
-    tags = "NetLiquidation,TotalCashValue,AvailableFunds,InitMarginReq,MaintMarginReq"
-    return _requestvalues(cache, "account summary",
-        (connection, reqid) -> Jib.reqAccountSummary(connection, reqid, "All", tags))
+    reqid = _nextreqid()
+    _opencollector!(reqid)
+    try
+        Jib.reqAccountSummary(connection, reqid, "All", tags)
+        return _await(reqid, what)
+    catch
+        _closecollector!(reqid)
+        rethrow()
+    finally
+        Jib.cancelAccountSummary(connection, reqid)
+    end
 end
 
 """Return rows for the cache's selected TWS account only."""
@@ -711,11 +723,31 @@ end
 
 """Return IBKR net liquidation, available funds, and margin requirements."""
 function accountcapacity(cache::IbkrSpotCache)
-    summary = _accountsummary(cache)
+    summary = _selected_account_rows(cache, _accountsummary(cache))
+    available_row = only(filter(row -> String(row.tag) == "AvailableFunds", summary))
+    base_currency = uppercase(String(available_row.currency))
+    quote_currency = uppercase(cache.config.currency)
+    quote_to_base_rate = if base_currency == quote_currency
+        1.0
+    else
+        ledger = _selected_account_rows(cache, _accountsummary(
+            cache;
+            tags="\$LEDGER:$(quote_currency)",
+            what="$(quote_currency) account ledger",
+        ))
+        rate_row = only(filter(row ->
+            String(row.tag) == "\$LEDGER-ExchangeRate" && uppercase(String(row.currency)) == quote_currency,
+            ledger,
+        ))
+        parse(Float64, rate_row.value)
+    end
+    @assert isfinite(quote_to_base_rate) && quote_to_base_rate > 0 "IBKR account quote-to-base exchange rate=$(quote_to_base_rate) must be finite and positive"
+
     metrics = Dict{String, Float64}()
-    for row in _selected_account_rows(cache, summary)
-        uppercase(row.currency) == uppercase(cache.config.currency) || continue
-        metrics[row.tag] = parse(Float64, row.value)
+    for row in summary
+        currency = uppercase(String(row.currency))
+        currency == base_currency || error("IBKR account summary tag=$(row.tag) currency=$(currency) differs from AvailableFunds currency=$(base_currency)")
+        metrics[String(row.tag)] = _convert_base_to_quote(parse(Float64, row.value), quote_to_base_rate)
     end
     equity = get(metrics, "NetLiquidation", 0.0)
     available = get(metrics, "AvailableFunds", 0.0)
@@ -728,6 +760,12 @@ function accountcapacity(cache::IbkrSpotCache)
         maintenance_margin_quote=max(0.0, get(metrics, "MaintMarginReq", 0.0)),
         source="IbkrSpot:AccountSummary",
     )
+end
+
+"""Convert a base-currency account value into order quote currency."""
+function _convert_base_to_quote(value::Float64, quote_to_base_rate::Float64)::Float64
+    @assert isfinite(quote_to_base_rate) && quote_to_base_rate > 0 "IBKR quote-to-base exchange rate=$(quote_to_base_rate) must be finite and positive"
+    return value / quote_to_base_rate
 end
 
 """Normalize one Jib open-order callback to the shared Xch row schema."""
@@ -826,7 +864,7 @@ function order(cache::IbkrSpotCache, orderid)
 end
 
 """Build an IBKR stock order value without transmitting it."""
-function _neworder(cache::IbkrSpotCache, orderid::Int, orderside::String, quantity::Real, price, configside::Symbol; maker::Bool=true, reduceonly::Bool=false)::Jib.Order
+function _neworder(cache::IbkrSpotCache, orderid::Int, orderside::String, quantity::Real, price, configside::Symbol; maker::Bool=true, reduceonly::Bool=false, outside_rth::Bool=false)::Jib.Order
     orderdata = Jib.Order()
     orderdata.orderId = orderid
     orderdata.clientId = cache.config.clientid
@@ -834,7 +872,8 @@ function _neworder(cache::IbkrSpotCache, orderid::Int, orderside::String, quanti
     orderdata.totalQuantity = quantity
     orderdata.orderType = isnothing(price) ? "MKT" : "LMT"
     orderdata.lmtPrice = isnothing(price) ? nothing : price
-    orderdata.tif = "GTC"
+    orderdata.tif = isnothing(price) ? "DAY" : "GTC"
+    orderdata.outsideRth = outside_rth
     orderdata.transmit = true
     orderdata.postOnly = maker && !isnothing(price)
     orderdata.orderRef = "IbkrSpot|$(configside)|$(orderid)|$(reduceonly ? "reduceonly" : "open")"
@@ -856,6 +895,9 @@ end
 Reduce-only intent is checked against a fresh local position snapshot because
 IBKR stock orders have no atomic reduce-only flag. Notional above `max_quote`
 fails fast; oversized orders are not split into sequential iceberg children.
+`outside_rth` opts the order into execution outside regular trading hours.
+For market orders, `market_referenceprice` supplies the estimate used for local
+notional checks when a quote is unavailable; it is not a limit on execution price.
 """
 function createorder(
     cache::IbkrSpotCache,
@@ -870,11 +912,15 @@ function createorder(
     validate::Bool=false,
     venuepair::Union{Nothing, AbstractString}=nothing,
     adaptivepost::Union{Nothing, Bool}=nothing,
+    outside_rth::Bool=false,
+    market_referenceprice::Union{Nothing, Real}=nothing,
 )
     _ = venuepair
     _ = adaptivepost
     @assert basequantity > 0 "createorder symbol=$(symbol) basequantity=$(basequantity) must be > 0"
     @assert isnothing(price) || price > 0 "createorder symbol=$(symbol) price=$(price) must be > 0"
+    @assert isnothing(market_referenceprice) || market_referenceprice > 0 "createorder symbol=$(symbol) market_referenceprice=$(market_referenceprice) must be > 0"
+    @assert isnothing(price) || isnothing(market_referenceprice) "createorder symbol=$(symbol) market_referenceprice=$(market_referenceprice) is only valid for market orders"
     action = uppercase(orderside)
     @assert action in ("BUY", "SELL") "createorder symbol=$(symbol) orderside=$(orderside) must be Buy or Sell"
     side = isnothing(configside) ? (action == "BUY" ? :long : :short) : configside
@@ -900,11 +946,13 @@ function createorder(
         ticks = resolvedprice / info.ticksize
         resolvedprice = (action == "BUY" ? floor(ticks) : ceil(ticks)) * info.ticksize
     end
-    referenceprice = if isnothing(resolvedprice)
+    referenceprice = if !isnothing(resolvedprice)
+        resolvedprice
+    elseif !isnothing(market_referenceprice)
+        market_referenceprice
+    else
         ticker = _tickerrow(cache, symbol)
         isnothing(ticker) ? nothing : ticker.lastprice
-    else
-        resolvedprice
     end
     isnothing(referenceprice) && error("createorder symbol=$(symbol) requires a price to enforce max_quote=$(spec.max_quote)")
     notional = quantity * referenceprice
@@ -923,7 +971,7 @@ function createorder(
     _wait_api_ready()
     _wait_account(cache)
     orderid = _takeorderid()
-    orderdata = _neworder(cache, orderid, action, quantity, resolvedprice, side; maker=maker, reduceonly=reduceonly)
+    orderdata = _neworder(cache, orderid, action, quantity, resolvedprice, side; maker=maker, reduceonly=reduceonly, outside_rth=outside_rth)
     state = lock(_state_lock) do
         current = get!(_orderstate, orderid, Dict{Symbol, Any}())
         current[:contract] = contract_details.contract
