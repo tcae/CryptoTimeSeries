@@ -2298,7 +2298,7 @@ version = "0.19.11"
 deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "TSM", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.14.0"
+version = "0.14.2"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"

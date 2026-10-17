@@ -184,6 +184,35 @@ end
         @test probe[2, :lp_amount] == openhit.amount
     end
 
+    @testset "below-regression strategy materializes scheduled open" begin
+        probe = DataFrame(
+            opentime=[dt, dt + Minute(1)],
+            high=Float32[101f0, 101f0],
+            low=Float32[99f0, 99f0],
+            close=Float32[100f0, 100f0],
+            score=Float32[0.9f0, 0.9f0],
+            label=TradeLabel[longopen, longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        strategy = TradingStrategy.StrategyConfig(
+            algorithm=TradingStrategy.gain_limit_reversal_below_regression!,
+            algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
+                gainlimit=TradingStrategy.GainLimitReversalConfig(
+                    openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0,
+                ),
+                triggerregrwindow=0,
+                trendregrwindow=0,
+            ),
+        )
+        tp = TradingStrategy.TsTp(pair="BTCUSDT", tradesdf=probe)
+
+        TradingStrategy.simulate_gains!(strategy, tp, nrow(probe))
+
+        @test probe[2, :lp_amount] > 0f0
+        @test probe[2, :lastopentrade] == probe[2, :opentime]
+        @test probe[2, :lc_limit] > probe[2, :close]
+    end
+
     @testset "same-side open hit extends amount" begin
         probe = DataFrame(
             opentime=[dt, dt + Minute(1)],

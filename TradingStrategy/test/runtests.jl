@@ -5,6 +5,9 @@ using DataFrames
 using Targets
 using TSM
 using TradingStrategy
+using EnvConfig
+using Classify
+using Features
 
 """Resolve Trades column handles; the strategy API operates on handles, not on the frame."""
 tcols(df::DataFrame) = TSM.TradesColumns(df)
@@ -16,5 +19,6 @@ include("replay_input_aliasing_test.jl")
 include("trade_storage_test.jl")
 include("tradesdf_limit_reversal_test.jl")
 include("tsconfig_test.jl")
+include("loadtrendclassifier_test.jl")
 
 end # module

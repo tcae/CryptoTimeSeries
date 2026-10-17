@@ -48,14 +48,14 @@ tradingstrategy06() = TradingStrategy.StrategyConfig(
     makerfee=0.0025)
 tradingstrategy07() = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal!, 
-    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, makerfee=0.0025, incrementgain=0f0, stoploss=0.05f0), 
+    algorithmconfig=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, makerfee=0.0025, incrementgain=0f0, stoploss=0.05f0), 
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)
 tradingstrategy08() = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal_below_regression!, 
     algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
-        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0.001f0, incrementgain=0f0, makerfee=0.0025), 
+        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, buygain=0.001f0, incrementgain=0f0, makerfee=0.0025), 
         triggerdist=0.005f0, 
         triggerregrwindow=0, # zero disables the trigger regression window, previously 12*60, 
         trendregrwindow=0, # zero disables the trend regression window, previously 24*60, 
@@ -636,12 +636,10 @@ function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mo
     modelphase = Classify.trend_runtime_load_phase(mode)
     modelprefix = Classify.trend_nn_fileprefix(cfg.configname, modelphase)
     required_minutes = max(Features.requiredminutes(cfg.featconfig), 2)
-    spec = (
-        config_ref=trendconfigref(cfg),
-        nn_fileprefix=modelprefix,
-        featconfig=trendconfigfeaturefactory(cfg),
-        required_minutes=required_minutes,
+    return Classify.loadclassifier(
+        modelprefix,
+        trendconfigfeaturefactory(cfg),
+        required_minutes;
+        search_folders=[EnvConfig.neuralnetspath(), EnvConfig.logfolder()],
     )
-    return Classify.load(Classify.TrendClassifier001, spec; mode=mode, folder=EnvConfig.neuralnetspath())
 end
-

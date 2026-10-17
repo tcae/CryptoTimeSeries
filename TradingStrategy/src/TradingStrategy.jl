@@ -1079,6 +1079,10 @@ function _apply_open_hit!(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns,
     return nothing
 end
 
+function _apply_open_hit!(cfg::GainLimitReversalBelowRegressionConfig, cols::TSM.TradesColumns, ix::Integer, side::Symbol, limitprice::Float32, amount::Float32)
+    return _apply_open_hit!(cfg.gainlimit, cols, ix, side, limitprice, amount)
+end
+
 """Carry the resting order and position state of row `ix-1` into row `ix`.
 
 Only order/position state is carried. `opentime`, `high`, `low`, `close`, `score` and
