@@ -93,6 +93,8 @@ targetconfig20() = Targets.TrendRegression(4*60, 0.005, -0.005)
 targetconfig21() = Targets.TrendRegression(3*24*60, 0.05, -0.05) 
 targetconfig22() = Targets.TrendRegression(4*60, 0.01, -0.01) 
 targetconfig23() = Targets.TrendRegression(4*60, 0.02, -0.02) 
+
+targetconfig05_01() = Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0)
 #endregion TargetsConfig
 
 
@@ -501,6 +503,8 @@ mk043config() = trendmkconfig("043", trendf6config15(), targetconfig21(), Classi
 mk044config() = trendmkconfig("044", trendf6config14(), targetconfig22(), Classify.model002, tradingstrategy02(); classbalancing=true)
 mk045config() = trendmkconfig("045", trendf6config14(), targetconfig23(), Classify.model002, tradingstrategy02(); classbalancing=true)
 
+mk050config() = trendmkconfig("050", trendf6config09(), targetconfig05_01(), Classify.model002, tradingstrategy08(); classbalancing=true)
+
 const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     mk001config(), mk002config(), mk003config(), mk004config(), mk005config(), mk006config(), mk007config(),
     mk009config(), mk011config(), mk012config(), mk013config(), mk014config(), mk015config(), mk016config(),
@@ -509,6 +513,7 @@ const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg fo
     mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
     mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk038bconfig(), mk039config(), mk040config(), 
     mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(), mk048config(), mk049config(),
+    mk050config(),
 ])
 
 #endregion TrendConfig

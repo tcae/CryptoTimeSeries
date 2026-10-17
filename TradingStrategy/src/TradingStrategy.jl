@@ -153,7 +153,7 @@ end
 @inline _lanehascloseguidance(ta::TradeAction) = (ta.openprice > 0f0) && (ta.closeprice > 0f0)
 @inline _price_in_bar(price::Float32, low::Real, high::Real) = ((low) <= price) && (price <= (high))
 @inline _price_in_bar(price::Float32, low::Real, high::Real, boundary::Symbol) = boundary === :high ? (price <= (high)) : ((low) <= price)
-@inline _relpricedelta(a::Real, b::Real) = abs((a) - (b)) / max(abs((b)), 1f-6)
+@inline _absrelpricedelta(a::Real, b::Real) = abs((a) - (b)) / max(abs((b)), 1f-6)
 
 " true if candidate > 0 and either current <= 0 or relative price delta exceeds minpricedelta"
 @inline function _should_update_price(current::Real, candidate::Real, minpricedelta::Float32)
@@ -163,7 +163,7 @@ end
     if current <= 0f0 || minpricedelta <= 0f0
         return true
     end
-    return _relpricedelta(candidate, current) > minpricedelta
+    return _absrelpricedelta(candidate, current) > minpricedelta
 end
 
 """
@@ -217,7 +217,21 @@ end
 
 abstract type AbstractAlgorithmConfig end
 
-"""Configuration specific to the gain-limit reversal algorithms."""
+"""
+Configuration specific to the gain-limit reversal algorithms.
+
+- maxwindow is the maximum age of a position in minutes before it is considered for trailing close-limit adjustments.
+- openthreshold is the minimum relative gain required to open a position.
+- buygain is the relative offset of the entry limit from the current price: below
+  the current price for long entries and above it for short entries.
+- sellgain is the relative take-profit offset from the current price: above the
+  current price for long positions and below it for short positions.
+- incrementgain is the incremental gain used for adjusting trailing limits in case of additional open signals after a position has already been opened.
+- stoploss is the maximum acceptable loss before closing a position.
+- minpricedelta is the minimum price change considered significant for triggering actions.
+- exitwindow is the number of trailing minutes whose high (long) / low (short) becomes the new close-limit once a position has aged past maxwindow without reaching its target.
+- makerfee is the maker fee of the StrategyConfig this algorithm runs under. It is used to determine fallback stoploss limits for a profit neutral exit.
+"""
 Base.@kwdef struct GainLimitReversalConfig <: AbstractAlgorithmConfig
     maxwindow::Int = 4 * 60
     openthreshold::Float32 = 0.6f0
@@ -235,14 +249,20 @@ Base.@kwdef struct GainLimitReversalConfig <: AbstractAlgorithmConfig
     makerfee::Float32 = 0f0
 end
 
-"""Gain-limit reversal configuration gated by regression distance and trend."""
+"""
+Gain-limit reversal configuration gated by regression distance and trend.
+
+- only buy if relative price diff between current and triggerregrwindow head price is larger than triggerdist (below trend for long, above trend for short)
+    - `triggerdist` is the minimum relative price difference from triggerregrwindow regression line endpoint to trigger a buy/sell
+    - `triggerregrwindow` is the length of the trigger regression window in minutes. If 0, the trigger regression window is disabled.
+- only buy if the trend gain over the trendregrwindow > -trendgainthreshold for long and < trendgainthreshold for short
+    - `trendregrwindow` is the length of the trend regression window in minutes. If 0, the trend regression window is disabled.
+    - `trendgainthreshold` is the minimum trend gain required to trigger a buy/sell, measured in relative gain per hour.
+"""
 Base.@kwdef struct GainLimitReversalBelowRegressionConfig <: AbstractAlgorithmConfig
     gainlimit::GainLimitReversalConfig = GainLimitReversalConfig()
-    # only buy if relative price diff between current and trendregrwindow head price is larger than triggerdist (below trend for long, above trend for short)
-    triggerdist::Float32 = 0f0
+    triggerdist::Float32 = 0f0 # measured as relative price difference from triggerregrwindow regression line endpoint
     triggerregrwindow::Int = 4 * 60 # if 0, the trigger regression window is disabled
-    # only buy if the trend gain over the trendregrwindow > -trendgainthreshold for long and < trendgainthreshold for short
-    # shall prevent for long to buy long in a downtrend and for short to sell in an uptrend
     trendregrwindow::Int = 4 * 60 # if 0, the trend regression window is disabled
     trendgainthreshold::Float32 = 0f0 # measured in relative gain per hour
     function GainLimitReversalBelowRegressionConfig(gainlimit, triggerdist, triggerregrwindow, trendregrwindow, trendgainthreshold)
@@ -661,11 +681,11 @@ function _agedcloselimit(cfg::GainLimitReversalConfig, cols::TSM.TradesColumns, 
     if updown == up
         candidate = maximum(@view cols.high[windowstart:ix])
         valid = (stoplimit <= 0f0) || (candidate > stoplimit)
-        return (valid && (_relpricedelta(candidate, currentclose) > cfg.minpricedelta)) ? candidate : currentclose
+        return (valid && (_absrelpricedelta(candidate, currentclose) > cfg.minpricedelta)) ? candidate : currentclose
     elseif updown == down
         candidate = minimum(@view cols.low[windowstart:ix])
         valid = (stoplimit <= 0f0) || (candidate < stoplimit)
-        return (valid && (_relpricedelta(candidate, currentclose) > cfg.minpricedelta)) ? candidate : currentclose
+        return (valid && (_absrelpricedelta(candidate, currentclose) > cfg.minpricedelta)) ? candidate : currentclose
     else
         return currentclose
     end

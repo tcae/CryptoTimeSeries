@@ -807,7 +807,7 @@ version = "1.10.0"
 deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "."
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-version = "0.2.6"
+version = "0.2.7"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]

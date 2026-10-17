@@ -187,7 +187,7 @@ function featurestargetsdf(
         Features.features(featcfg, startdt, enddt)
     end
 
-    if targetconfig isa Targets.TrendRegression
+    if targetconfig isa Union{Targets.TrendRegression, Targets.Trend05}
         if Features.issupplementedcurrent(featcfg)
             Targets.setbase!(targetconfig, featcfg)
         else
