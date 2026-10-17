@@ -128,16 +128,34 @@ end
     @test Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=1f0), :long)
     @test Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
+    @test Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=0f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=0f0), :long)
     @test Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
     @test Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
+    @test Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
     @test Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
     @test !Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=0f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
     @test !Targets._trend05_entry(trd, 98f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
     @test !Targets._trend05_entry(trd, 100f0, nothing, support, (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), nothing, (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), support, nothing, :long)
+end
+
+@testset "Trend05 entry requires uninterrupted holds through target" begin
+    rising = trend05withfeatures(testohlcvfrompivots(Float32.(100:1:160)))
+    risingcolumns = Targets._trend05_regressioncolumns(rising)
+    @test Targets.labels(rising)[2] == Targets.longopen
+    rising.f6.fdfno[4, risingcolumns.support.grad] = 0f0
+    Targets.supplement!(rising)
+    @test Targets.labels(rising)[2] != Targets.longopen
+
+    falling = trend05withfeatures(testohlcvfrompivots(Float32.(160:-1:100)))
+    fallingcolumns = Targets._trend05_regressioncolumns(falling)
+    @test Targets.labels(falling)[2] == Targets.shortopen
+    falling.f6.fdfno[4, fallingcolumns.support.grad] = 0f0
+    Targets.supplement!(falling)
+    @test Targets.labels(falling)[2] != Targets.shortopen
 end
 
 @testset "Trend05 hold prerequisites" begin
