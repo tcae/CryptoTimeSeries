@@ -1,6 +1,8 @@
 
 # next to do
 
+> Use the [project planning board](docs/project-planning-board.md) for current status, focus areas, and next steps. This file remains the source of the original backlog notes.
+
 - implement alternative 1 to gain_limit_reversal! that
 	- buys long only below 4h regression
 	- does not renew limit with new open signal
