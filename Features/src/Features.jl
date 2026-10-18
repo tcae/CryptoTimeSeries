@@ -1166,85 +1166,43 @@ function Base.show(io::IO, f6::Features006)
     println(io, desc)
 end
 
-function file(f6::Features006)
-    mnm = uppercase(f6.ohlcv.base) * "_" * uppercase(f6.ohlcv.quotecoin) * "_" * "_F4"  #* use saved Features004 data cache
-    filename = EnvConfig.coinfile(f6.ohlcv.base, f6.ohlcv.quotecoin, "f4"; extension=".arrow")
-    legacyfilename = EnvConfig.datafile(mnm, "Features004")
-    return (filename=filename, existing=isfile(filename) || isdir(legacyfilename) || isfile(legacyfilename))
-end
-
-function _f4regrcol(f6::Features006, window, f6regr)
-    f6f4 = Dict("ry" => "regry", "rg" => "grad", "rs" => "std")
-    join([window, f6f4[f6regr]], "_")
-end
-
 """
-Features006 will use the Features004 cache but will not change it.
-Creates a f6.fdfno dataframe without considering offset with columns of F4 cache that match f6 config using f6 column naming.
+Features006 reads its regression columns (regry, grad, std) from the per-coin regression store
+(see `updateregression!`) but will not change it. Missing windows or rows are calculated by `supplement!`.
+Creates a f6.fdfno dataframe without considering offset using f6 column naming.
 """
 function read!(f6::Features006)::DataFrame
     if isnothing(f6.ohlcv)
         (verbosity >= 2)  && println("no ohlcv found in f6 - missing base info required to read")
         return emptycachef006()
     end
-    fn = file(f6)
-    legacyfilename = EnvConfig.datafile(uppercase(f6.ohlcv.base) * "_" * uppercase(f6.ohlcv.quotecoin) * "_" * "_F4", "Features004")
-    requestedf4cols = String["opentime"]
-    for f in f6all(f6)
-        if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
-            push!(requestedf4cols, _f4regrcol(f6, f.w, f.f))
+    regrfeatures = [f for f in f6all(f6) if f.f in ("ry", "rg", "rs")]
+    windows = sort!(unique([f.w for f in regrfeatures]))
+    stdwindows = Set(f.w for f in regrfeatures if f.f == "rs")
+    fdfno = emptycachef006()
+    refot = nothing
+    for window in windows
+        regr = readregression(f6.ohlcv.base, f6.ohlcv.quotecoin, window)
+        (isnothing(regr) || (size(regr, 1) == 0)) && continue
+        regrstd = window in stdwindows ? readregression(f6.ohlcv.base, f6.ohlcv.quotecoin, window; std=true) : nothing
+        if isnothing(refot)
+            refot = regr[!, :opentime]
+            fdfno[:, "opentime"] = copy(refot)
+        end
+        # all windows are calculated from the same OHLCV history, i.e. differing starts indicate stale stores that are recalculated in memory
+        if (regr[begin, :opentime] != refot[begin]) || (size(regr, 1) < size(fdfno, 1))
+            (verbosity >= 2) && println("$(EnvConfig.now()) ignoring regression store window=$window of $(f6.ohlcv.base) with range $(regr[begin, :opentime])..$(regr[end, :opentime]) not covering $(refot[begin])..$(refot[size(fdfno, 1)])")
+            continue
+        end
+        rows = 1:size(fdfno, 1)
+        fdfno[:, fdfnocol(f6, _regry(f6, window=window, offset=0))] = regr[rows, :regry]
+        fdfno[:, fdfnocol(f6, _grad(f6, window=window, offset=0))] = regr[rows, :grad]
+        if !isnothing(regrstd) && (regrstd[begin, :opentime] == refot[begin]) && (size(regrstd, 1) >= size(fdfno, 1))
+            fdfno[:, fdfnocol(f6, _std(f6, window=window, offset=0))] = regrstd[rows, :std]
         end
     end
-    # try
-    df = _read_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin; columns=requestedf4cols)
-    if size(df, 1) > 0
-        if (names(df) == ["opentime"]) || (names(df) == [:opentime])
-            fullshared = _read_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin)
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows; selected columns contain only opentime (requested=$(requestedf4cols)), full shared names=$(names(fullshared))")
-        else
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared f6/F4 Arrow data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df))")
-        end
-    elseif isdir(legacyfilename) || isfile(legacyfilename)
-        (verbosity >= 3) && println("$(EnvConfig.now()) start loading legacy f6 data of $(f6.ohlcv.base) from $(legacyfilename)")
-        df = DataFrame(JDF.loadjdf(legacyfilename))
-        (verbosity >= 2) && println("$(EnvConfig.now()) loaded legacy f6 data of $(f6.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows and names=$(names(df)) from $(legacyfilename)")
-        if size(df, 1) > 0
-            _write_shared_f4_arrow(f6.ohlcv.base, f6.ohlcv.quotecoin, df)
-            rm(legacyfilename; force=true, recursive=true)
-        end
-    else
-        (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow cache for $(f6.ohlcv.base)")
-        df = emptycachef006()
-    end
-
-    if size(df, 1) == 0
-        fdfno = emptycachef006()
-    else
-        fdfno = DataFrame()
-        missingf4cols = String[]
-        for f in f6all(f6)
-            if (f.f in ["ry", "rg", "rs"]) && (f.w in regressionwindows004)
-                f4col = _f4regrcol(f6, f.w, f.f)
-                f6col = fdfnocol(f6, f)
-                if f4col in names(df)
-                    fdfno[:, f6col] = df[!, f4col]
-                else
-                    push!(missingf4cols, f4col)
-                end
-            end
-        end
-        if !isempty(missingf4cols)
-            missingf4cols = sort!(unique(missingf4cols))
-            (verbosity >= 2) && println("$(EnvConfig.now()) shared F4 cache for $(f6.ohlcv.base) is missing columns $(missingf4cols); recalculating them from OHLCV")
-        end
-        if ("opentime" in names(df)) && (size(fdfno, 2) > 0)
-            fdfno[:, "opentime"] = df[!, "opentime"]
-        end
-    end
+    (verbosity >= 3) && (size(fdfno, 1) > 0) && println("$(EnvConfig.now()) loaded regression store of $(f6.ohlcv.base) from $(fdfno[begin, :opentime]) until $(fdfno[end, :opentime]) with names=$(names(fdfno))")
     f6.fdfno = fdfno
-    # catch e
-    #     Logging.@warn "exception $e detected"
-    # end
     return fdfno
 end
 
@@ -1336,8 +1294,10 @@ function _maxdist!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
             md = vcat(md1, md)
         end
         if !isnothing(odfstartix)
-            md2 = rollingmax(view(odf[!, :high], odfstartix:lastindex(odf[!, :high])), window)
-            md = vcat(md, md2)
+            # the appended rows need `window` rows of lookback to equal a full calculation
+            lastix = lastindex(odf[!, :high])
+            md2 = rollingmax(view(odf[!, :high], max(firstindex(odf[!, :high]), odfstartix-window):lastix), window)
+            md = vcat(md, view(md2, (lastindex(md2)-(lastix-odfstartix)):lastindex(md2)))
         end
     else
         md = rollingmax(odf[!, :high], window)
@@ -1613,6 +1573,8 @@ function regryat(f6::Features006, window::Integer, dt::DateTime)
 end
 
 #endregion Features006
+
+include("featurestore.jl")
 
 #region Features005
 

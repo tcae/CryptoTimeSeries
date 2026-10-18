@@ -1757,6 +1757,8 @@ It provides target labels of type `TradeLabel` for a series of OHLCV data sample
 
 Before targets can be generated a Features.Features006 object must be provided and populated with the required features, namely the regression features as required for trend05. 
 This can be done via Trend05 creation or via setbase!(trd, f6).
+
+`lastfinalix` is the last label row that does not depend on OHLCV data beyond the base, i.e. all entry decisions up to it reached their target or broke their hold within the base.
 """
 mutable struct Trend05 <: AbstractTargets
     leadregr::Int
@@ -1767,11 +1769,12 @@ mutable struct Trend05 <: AbstractTargets
     ohlcv::Union{OhlcvData, Nothing}
     f6::Union{Features.Features006, Nothing}
     df::Union{DataFrame, Nothing}
+    lastfinalix::Int
 
     function Trend05(; leadregr::Int=5, supportregr::Int=15, trendregr::Int=4*60,
         triggerdist::Float32=0.01f0, targetgain::Float32=0.01f0,
         f6::Union{Nothing, Features.Features006}=nothing)
-        trd = new(leadregr, supportregr, trendregr, triggerdist, targetgain, nothing, f6, nothing)
+        trd = new(leadregr, supportregr, trendregr, triggerdist, targetgain, nothing, f6, nothing, 0)
         _trend05_validateconfig(trd)
         isnothing(f6) || _trend05_requiredfeatures(f6, trd)
         return trd
@@ -1813,6 +1816,8 @@ function setbase!(trd::Trend05, f6::Features.Features006)
     @assert !isnothing(f6.fdfno) "Trend05 requires Features006 to be supplemented before setbase!(trd, f6)"
     trd.f6 = f6
     trd.ohlcv = Features.ohlcv(f6)
+    trd.df = nothing
+    trd.lastfinalix = 0
     supplement!(trd)
     return nothing
 end
@@ -1821,6 +1826,7 @@ function removebase!(trd::Trend05)
     trd.ohlcv = nothing
     trd.f6 = nothing
     trd.df = nothing
+    trd.lastfinalix = 0
     return nothing
 end
 
@@ -1878,28 +1884,31 @@ end
     return !isnothing(support) && (side === :long ? support.grad > 0f0 : support.grad < 0f0)
 end
 
-function _trend05_target(pivots::AbstractVector{<:AbstractFloat}, ix::Integer, side::Symbol, targetgain::Float32)
-    target = pivots[ix] * (side === :long ? 1f0 + targetgain : 1f0 - targetgain)
-    for targetix in ix:lastindex(pivots)
-        if side === :long ? pivots[targetix] >= target : pivots[targetix] <= target
-            return targetix
-        end
-    end
-    return nothing
-end
-
+"""
+Return `(targetix, resolved)` of a `side` entry at `ix`. `targetix` is the first row that reaches the target gain
+with uninterrupted holds since `ix`, otherwise `nothing`. `resolved` is false if neither the target was reached nor
+a hold was broken within `pivots`, i.e. the decision depends on future OHLCV data.
+"""
 function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol, regressioncolumns::NamedTuple, featureoffset::Integer)
     regressions = _trend05_regression(trd, ix, regressioncolumns, featureoffset)
-    _trend05_entry(trd, pivots[ix], regressions.lead, regressions.support, regressions.trend, side) || return nothing
-    targetix = _trend05_target(pivots, ix, side, trd.targetgain)
-    isnothing(targetix) && return nothing
-    for holdix in (ix + 1):targetix
-        hold_support = _trend05_regression(trd, holdix, regressioncolumns, featureoffset).support
-        _trend05_hold(hold_support, side) || return nothing
+    _trend05_entry(trd, pivots[ix], regressions.lead, regressions.support, regressions.trend, side) || return (nothing, true)
+    target = pivots[ix] * (side === :long ? 1f0 + trd.targetgain : 1f0 - trd.targetgain)
+    for holdix in (ix + 1):lastindex(pivots)
+        _trend05_hold(_trend05_regression(trd, holdix, regressioncolumns, featureoffset).support, side) || return (nothing, true)
+        (side === :long ? pivots[holdix] >= target : pivots[holdix] <= target) && return (holdix, true)
     end
-    return targetix
+    return (nothing, false)
 end
 
+"""
+    supplement!(trd::Trend05)
+
+Update targets after supplementing the underlying Features006. For appended OHLCV
+rows, preserve the final prefix and rescan from the first unresolved entry decision.
+This decision can precede the last emitted open signal. Without appended rows or
+with a different timestamp prefix, recalculate all targets.
+Assert that Features006 is supplemented for its current OHLCV base before checking alignment.
+"""
 function supplement!(trd::Trend05)
     isnothing(trd.ohlcv) && return nothing
     _trend05_validateconfig(trd)
@@ -1907,6 +1916,7 @@ function supplement!(trd::Trend05)
     _trend05_requiredfeatures(trd.f6, trd)
     odf = Ohlcv.dataframe(trd.ohlcv)
     @assert !isnothing(trd.f6.fdfno) "Trend05 requires supplemented Features006 before supplement!(trd)"
+    @assert Features.issupplementedcurrent(trd.f6) "Trend05 requires Features.supplement!(f6) to run after the latest OHLCV change and before supplement!(trd); OHLCV rows=$(size(odf, 1)), F6 no-offset rows=$(size(trd.f6.fdfno, 1))"
     if size(odf, 1) > 0
         featurefirstix = findfirst(==(odf[begin, :opentime]), trd.f6.fdfno[!, :opentime])
         @assert !isnothing(featurefirstix) "Trend05 requires the first OHLCV timestamp $(odf[begin, :opentime]) to exist in Features006"
@@ -1917,16 +1927,28 @@ function supplement!(trd::Trend05)
     else
         featurefirstix = 1
     end
-    @assert Features.issupplementedcurrent(trd.f6) "Trend05 requires Features.supplement!(f6) to run after the latest OHLCV change and before supplement!(trd)"
     regressioncolumns = _trend05_regressioncolumns(trd)
     pivots = Float32.(odf[!, :pivot])
     featureoffset = featurefirstix - firstindex(odf, 1)
-    labels = fill(allclose, length(pivots))
-    relgains = zeros(Float32, length(pivots))
-    ix = firstindex(pivots)
+    previousrows = isnothing(trd.df) ? 0 : nrow(trd.df)
+    appended = 0 < previousrows < length(pivots) && trd.df[!, :opentime] == odf[1:previousrows, :opentime]
+    restartix = appended ? trd.lastfinalix + 1 : firstindex(pivots)
+    if appended
+        append!(trd.df, DataFrame(opentime=odf[(previousrows + 1):end, :opentime],
+            label=fill(allclose, length(pivots) - previousrows), relgain=zeros(Float32, length(pivots) - previousrows)))
+        trd.df[restartix:end, :label] .= allclose
+        trd.df[restartix:end, :relgain] .= 0f0
+    else
+        trd.df = DataFrame(opentime=copy(odf[!, :opentime]), label=fill(allclose, length(pivots)), relgain=zeros(Float32, length(pivots)))
+    end
+    labels = trd.df[!, :label]
+    relgains = trd.df[!, :relgain]
+    firstunresolvedix = nothing
+    ix = restartix
     while ix <= lastindex(pivots)
-        longtarget = _trend05_candidate(trd, pivots, ix, :long, regressioncolumns, featureoffset)
-        shorttarget = _trend05_candidate(trd, pivots, ix, :short, regressioncolumns, featureoffset)
+        longtarget, longresolved = _trend05_candidate(trd, pivots, ix, :long, regressioncolumns, featureoffset)
+        shorttarget, shortresolved = isnothing(longtarget) ? _trend05_candidate(trd, pivots, ix, :short, regressioncolumns, featureoffset) : (nothing, true)
+        isnothing(firstunresolvedix) && !(longresolved && shortresolved) && (firstunresolvedix = ix)
         if !isnothing(longtarget)
             labels[ix] = longopen
             relgains[ix] = (pivots[longtarget] - pivots[ix]) / pivots[ix]
@@ -1947,7 +1969,7 @@ function supplement!(trd::Trend05)
             ix += 1
         end
     end
-    trd.df = DataFrame(opentime=copy(odf[!, :opentime]), label=labels, relgain=relgains)
+    trd.lastfinalix = isnothing(firstunresolvedix) ? lastindex(pivots) : firstunresolvedix - 1
     return nothing
 end
 
@@ -2297,5 +2319,7 @@ function lowhigh2centerwidth(lowtarget::AbstractVector{<:Real}, hightarget::Abst
 end
 
 #endregion Bounds01
+
+include("targetstore.jl")
 
 end  # module

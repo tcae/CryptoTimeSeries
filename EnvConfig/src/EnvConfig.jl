@@ -422,6 +422,24 @@ function neuralnetspath()
 end
 neuralnetfile(fileprefix::AbstractString) = joinpath(neuralnetspath(), splitext(String(fileprefix))[1] * ".bson")
 
+"""
+Return the root folder of named classifier artifacts. Test mode classifiers are debug data and
+therefore live under `~/crypto/debug/classifiers`, all others under `~/crypto/classifiers`.
+"""
+function classifierspath()::String
+    root = configmode == test ? defaultdebugfilespath : dirname(defaultlogfilespath)
+    path = normpath(joinpath(root, "classifiers"))
+    isdir(path) || mkpath(path)
+    return path
+end
+
+"Return (and create) the artifact folder of the classifier named `classifiername`."
+function classifierfolder(classifiername::AbstractString)::String
+    path = normpath(joinpath(classifierspath(), String(classifiername)))
+    isdir(path) || mkpath(path)
+    return path
+end
+
 function _setbasepath!(basepath::AbstractString, folder)
     global logfilespath
     if isnothing(folder) || (folder == "")
@@ -673,10 +691,14 @@ function tableexists(filename::AbstractString; folderpath=logfolder(), format::S
     return _table_storage_exists(tablepath(filename; folderpath=folderpath, format=format), format)
 end
 
-"Write a table in JDF or Arrow format and return the resulting path. Arrow files are written in stream format so they can be appended later."
-function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, append::Bool=false)
+"""
+Write a table in JDF or Arrow format and return the resulting path. Arrow files are written in stream format so they can be appended later.
+`metadata` key/value pairs are stored as Arrow schema metadata (Arrow only, not with `append`) and can be read with `tablemetadata`.
+"""
+function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, append::Bool=false, metadata::Union{Nothing, AbstractDict{String, String}}=nothing)
     @assert format in (:jdf, :arrow) "format=$(format) must be :jdf or :arrow"
     @assert !(append && (format != :arrow)) "append=true is only supported for format=:arrow"
+    @assert isnothing(metadata) || ((format == :arrow) && !append) "metadata requires format=:arrow without append; got format=$(format) append=$(append)"
     filepath = tablepath(filename; folderpath=folderpath, format=format)
     mkpath(dirname(filepath))
     if format == :jdf
@@ -689,10 +711,25 @@ function writetable(table, filename::AbstractString; folderpath=logfolder(), for
             Arrow.append(filepath, safetable)
         else
             (verbosity >= 3) && println("$(EnvConfig.now()) writing Arrow dataframe to $filepath")
-            Arrow.write(filepath, safetable; file=false)
+            # write a new file and rename it, because truncating a file in place breaks still memory mapped readers of it
+            tmppath = filepath * ".tmp"
+            if isnothing(metadata)
+                Arrow.write(tmppath, safetable; file=false)
+            else
+                Arrow.write(tmppath, safetable; file=false, metadata=Dict{String, String}(metadata))
+            end
+            mv(tmppath, filepath; force=true)
         end
     end
     return filepath
+end
+
+"Return the Arrow schema metadata written via `writetable(...; metadata)` or `nothing` if the table does not exist."
+function tablemetadata(filename::AbstractString; folderpath=logfolder())::Union{Nothing, Dict{String, String}}
+    filepath = tablepath(filename; folderpath=folderpath, format=:arrow)
+    _table_storage_exists(filepath, :arrow) || return nothing
+    meta = Arrow.getmetadata(Arrow.Table(filepath))
+    return isnothing(meta) ? Dict{String, String}() : Dict{String, String}(String(k) => String(v) for (k, v) in meta)
 end
 
 "Read a stored table in JDF or Arrow format. With `format=:auto`, the preferred default format is tried first and the other format is used as fallback. Set `materialize=false` to keep Arrow tables in their lazy form, and `copycols=true` only when the caller needs to mutate the loaded dataframe."
@@ -735,7 +772,7 @@ function readtable(filename::AbstractString; folderpath=logfolder(), format::Sym
 end
 
 "Save a dataframe using the preferred or explicitly supplied storage format."
-savedf(df, filename; folderpath=logfolder(), format::Symbol=dfformat()) = writetable(df, filename; folderpath=folderpath, format=format)
+savedf(df, filename; folderpath=logfolder(), format::Symbol=dfformat(), metadata::Union{Nothing, AbstractDict{String, String}}=nothing) = writetable(df, filename; folderpath=folderpath, format=format, metadata=metadata)
 
 "Append a dataframe to an existing Arrow table, or create it if it does not exist yet."
 appenddf(df, filename; folderpath=logfolder()) = writetable(df, filename; folderpath=folderpath, format=:arrow, append=true)

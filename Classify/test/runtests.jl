@@ -11,7 +11,7 @@ using Ohlcv
 include("setpartitions_test.jl")
 include("storage_format_test.jl")
 include("adaptnn_reinforce_test.jl")
-include("trend05_featurestargets_test.jl")
+include("classifierstore_test.jl")
 
 for optional_test in ("lstm_contract_test.jl", "lstm_phase2_training_test.jl")
 	optional_path = joinpath(@__DIR__, optional_test)

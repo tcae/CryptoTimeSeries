@@ -17,9 +17,12 @@ softplus(x::Real) = log1p(exp(-abs(x))) + max(x, 0)
 
 # Compatibility wrappers used by tests and scripts that reference BoundsEstimator-local
 # cache filename helpers.
-resultsfilename(coin=nothing) = TradingStrategy.resultsfilename(coin)
-featuresfilename(coin=nothing) = TradingStrategy.featuresfilename(coin)
-predictionsfilename() = TradingStrategy.predictionsfilename()
+"Return the per-coin (or with `coin=nothing` concatenated) results table stem; results include hlcp, sets, ranges and targets."
+resultsfilename(coin=nothing) = isnothing(coin) ? joinpath("results", "all") : joinpath("results", String(coin))
+"Return the per-coin (or with `coin=nothing` concatenated) features table stem."
+featuresfilename(coin=nothing) = isnothing(coin) ? joinpath("features", "all") : joinpath("features", String(coin))
+"Return the concatenated bounds predictions table stem."
+predictionsfilename() = joinpath("predictions", "maxpredictions")
 
 # Compatibility wrappers for legacy configuration helper access via BoundsEstimator.
 boundsf6config01(window) = TradingStrategy.boundsf6config01(window)
@@ -143,8 +146,8 @@ function _persist_coin_featuretarget_cache(coin::AbstractString, coinresultsdf, 
         return false
     end
     @assert size(coinresultsdf, 1) == size(coinfeaturesdf, 1) "unexpected mismatch of coinresultsdf and coinfeaturesdf size with coinresultsdf size $(size(coinresultsdf, 1)) and coinfeaturesdf size $(size(coinfeaturesdf, 1))"
-    EnvConfig.savedf(coinresultsdf, TradingStrategy.resultsfilename(coin); folderpath=folderpath)
-    EnvConfig.savedf(coinfeaturesdf, TradingStrategy.featuresfilename(coin); folderpath=folderpath)
+    EnvConfig.savedf(coinresultsdf, resultsfilename(coin); folderpath=folderpath)
+    EnvConfig.savedf(coinfeaturesdf, featuresfilename(coin); folderpath=folderpath)
     return true
 end
 
@@ -206,8 +209,8 @@ function getfeaturestargets(cfg::BoundsEstimatorConfig, coinix, rangeid, samples
 end
 
 function _load_featuretarget_pair(coin::AbstractString)
-    resultsdf = EnvConfig.readdf(TradingStrategy.resultsfilename(coin))
-    featuresdf = EnvConfig.readdf(TradingStrategy.featuresfilename(coin))
+    resultsdf = EnvConfig.readdf(resultsfilename(coin))
+    featuresdf = EnvConfig.readdf(featuresfilename(coin))
     @assert isnothing(resultsdf) == isnothing(featuresdf) "unexpected mismatch of resultsdf and featuresdf existence for coin=$(coin) with resultsdf existence $(isnothing(resultsdf)) and featuresdf existence $(isnothing(featuresdf))"
 
     if !isnothing(resultsdf)
@@ -218,13 +221,13 @@ function _load_featuretarget_pair(coin::AbstractString)
         end
         if !has_current_target_format(resultsdf)
             @warn "ignoring stale bounds feature/target cache with outdated format" coin=coin expected=BOUNDS_RATIO_FORMAT names=names(resultsdf)
-            EnvConfig.deletefolder(TradingStrategy.resultsfilename(coin))
-            EnvConfig.deletefolder(TradingStrategy.featuresfilename(coin))
+            EnvConfig.deletefolder(resultsfilename(coin))
+            EnvConfig.deletefolder(featuresfilename(coin))
             return nothing, nothing
         elseif !issorted(resultsdf[!, :rangeid])
             @warn "ignoring stale bounds feature/target cache with non-monotonic rangeid ordering" coin=coin minimum_rangeid=minimum(resultsdf[!, :rangeid]) maximum_rangeid=maximum(resultsdf[!, :rangeid])
-            EnvConfig.deletefolder(TradingStrategy.resultsfilename(coin))
-            EnvConfig.deletefolder(TradingStrategy.featuresfilename(coin))
+            EnvConfig.deletefolder(resultsfilename(coin))
+            EnvConfig.deletefolder(featuresfilename(coin))
             return nothing, nothing
         end
         if :bounds_target_format in propertynames(resultsdf)
@@ -245,11 +248,11 @@ end
 function _featuretarget_cachefiles(cfg::BoundsEstimatorConfig; include_results::Bool=true, include_features::Bool=true, coins::AbstractVector{<:AbstractString}=cfg.coins)
     files = String[]
     for coin in coins
-        if include_results && EnvConfig.isfolder(TradingStrategy.resultsfilename(coin))
-            push!(files, TradingStrategy.resultsfilename(coin))
+        if include_results && EnvConfig.isfolder(resultsfilename(coin))
+            push!(files, resultsfilename(coin))
         end
-        if include_features && EnvConfig.isfolder(TradingStrategy.featuresfilename(coin))
-            push!(files, TradingStrategy.featuresfilename(coin))
+        if include_features && EnvConfig.isfolder(featuresfilename(coin))
+            push!(files, featuresfilename(coin))
         end
     end
     return files
@@ -261,8 +264,8 @@ function _concat_coin_featuretarget_caches(cfg::BoundsEstimatorConfig, coins::Ab
     cachedcoins = String[]
 
     for coin in coins
-        hasresults = EnvConfig.isfolder(TradingStrategy.resultsfilename(coin))
-        hasfeatures = EnvConfig.isfolder(TradingStrategy.featuresfilename(coin))
+        hasresults = EnvConfig.isfolder(resultsfilename(coin))
+        hasfeatures = EnvConfig.isfolder(featuresfilename(coin))
         @assert hasresults == hasfeatures "unexpected mismatch of coin-specific results/features cache existence for coin=$(coin) with hasresults=$(hasresults) and hasfeatures=$(hasfeatures)"
         if hasresults
             coinresultsdf, coinfeaturesdf = _load_featuretarget_pair(coin)
@@ -412,7 +415,7 @@ function getregressor(cfg::BoundsEstimatorConfig)
             return nothing
         end
         resultsdf = featuresdf = nothing # free memory
-        Classify.adaptboundsregressor!(nn, features, targets)
+        Classify.adaptboundsregressor!(nn, features, targets; maxepochs=(EnvConfig.configmode == test ? 10 : 1000))
         (verbosity >= 3) && showlosses(nn)
         if isnothing(nn)
             # no adaptation took place
@@ -436,16 +439,16 @@ function getboundspredictionsdf(cfg::BoundsEstimatorConfig)
         return DataFrame(centerpred=centerpred, widthpred=widthpred)
     end
 
-    predictionsdf = EnvConfig.readdf(TradingStrategy.predictionsfilename())
+    predictionsdf = EnvConfig.readdf(predictionsfilename())
     depfiles = _featuretarget_cachefiles(cfg)
     if !isnothing(predictionsdf) && !has_current_prediction_format(predictionsdf)
         @warn "ignoring stale predictions cache with legacy marker or missing prediction columns; names=$(names(predictionsdf))"
-        EnvConfig.deletefolder(TradingStrategy.predictionsfilename())
+        EnvConfig.deletefolder(predictionsfilename())
         predictionsdf = nothing
     end
-    if !isnothing(predictionsdf) && !isfreshcache(TradingStrategy.predictionsfilename(), depfiles)
+    if !isnothing(predictionsdf) && !isfreshcache(predictionsfilename(), depfiles)
         @warn "ignoring stale bounds prediction cache; rebuilding from newer coin-specific feature/target caches"
-        EnvConfig.deletefolder(TradingStrategy.predictionsfilename())
+        EnvConfig.deletefolder(predictionsfilename())
         predictionsdf = nothing
     end
     if isnothing(predictionsdf) || (size(predictionsdf, 1) == 0)
@@ -460,7 +463,7 @@ function getboundspredictionsdf(cfg::BoundsEstimatorConfig)
             features = df2features(featuresdf, cfg)
             predictionsdf = predictbounds(nn, features)
             @assert size(predictionsdf, 1) == size(featuresdf, 1) == size(resultsdf, 1) "size(predictionsdf, 1)=$(size(predictionsdf, 1)) != size(featuresdf, 1)=$(size(featuresdf, 1)) != size(resultsdf, 1)=$(size(resultsdf, 1)) for mix"
-            EnvConfig.savedf(predictionsdf, TradingStrategy.predictionsfilename())
+            EnvConfig.savedf(predictionsdf, predictionsfilename())
         end
     end
     if !isnothing(predictionsdf) && size(predictionsdf, 1) > 0
@@ -776,9 +779,9 @@ function introspection(cfg::BoundsEstimatorConfig)
     else
         println("No coin-specific bounds results cache found in $(EnvConfig.logfolder())")
     end
-    preddf = EnvConfig.readdf(TradingStrategy.predictionsfilename())
+    preddf = EnvConfig.readdf(predictionsfilename())
     if !isnothing(preddf) && (size(preddf, 1) > 0)
-        println("$(TradingStrategy.predictionsfilename()): size(preddf) = $(size(preddf))")
+        println("$(predictionsfilename()): size(preddf) = $(size(preddf))")
         println("describe(preddf, :all)=$(describe(preddf, :all))")
     else
         println("No results file found in $(EnvConfig.logfolder()) - size(preddf)=$(isnothing(preddf) ? "nothing" : size(preddf))")
@@ -974,7 +977,6 @@ function main(args::Vector{String}=ARGS)
     ])
 
     if specialonly
-        # renamepredictionfiles([TradingStrategy.mk001config().folder, TradingStrategy.mk002config().folder, TradingStrategy.mk003config().folder, TradingStrategy.mk004config().folder, TradingStrategy.mk005config().folder])
         println("No special task defined")
     elseif inspectonly
         introspection(cfg)

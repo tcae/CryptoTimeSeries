@@ -19,6 +19,6 @@ include("replay_input_aliasing_test.jl")
 include("trade_storage_test.jl")
 include("tradesdf_limit_reversal_test.jl")
 include("tsconfig_test.jl")
-include("loadtrendclassifier_test.jl")
+include("artifactpipeline_test.jl")
 
 end # module

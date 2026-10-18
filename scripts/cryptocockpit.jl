@@ -84,7 +84,12 @@ end
 
 _cached_artifact(key::AbstractString, loader::Function) = _cached_artifact(loader, key)
 
-_resolve_trendconfig(ref::AbstractString) = TradingStrategy.trenddetectorconfig(ref)
+"Resolve a trading strategy context into fresh feature/target configs of its classifier."
+function _resolve_trendconfig(ref::AbstractString)
+    tscfg = TradingStrategy.tsconfig(ref)
+    clcfg = TradingStrategy.classifierconfig(tscfg.classifier)
+    return (configname=tscfg.configname, tscfg=tscfg, clcfg=clcfg, featconfig=TradingStrategy.featureconfig(clcfg.features), targetconfig=TradingStrategy.targetconfig(clcfg.targets))
+end
 _resolve_boundsconfig(ref::AbstractString) = TradingStrategy.boundsestimatorconfig(ref)
 
 function _config_subfolder(prefix::AbstractString, cfg, mode::EnvConfig.Mode)
@@ -136,7 +141,7 @@ end
 
 function _available_configrefs(kind::Symbol)
     if kind == :trend
-        return sort!(collect(keys(TradingStrategy.TREND_DETECTOR_CONFIGS)); by=lowercase)
+        return sort!(collect(keys(TradingStrategy.TS_CONFIGS)); by=lowercase)
     elseif kind == :bounds
         return sort!(collect(keys(TradingStrategy.BOUNDS_ESTIMATOR_CONFIGS)); by=lowercase)
     end
@@ -147,13 +152,7 @@ function _has_cached_output(kind::Symbol, configref::AbstractString)
     try
         cfg = kind == :trend ? _resolve_trendconfig(configref) : _resolve_boundsconfig(configref)
         if kind == :trend
-            return any(_cockpit_model_modes()) do mode
-                folder = _config_subfolder("Trend", cfg, mode)
-                _with_log_subfolder(folder) do
-                    model = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), "mix")
-                    isfile(Classify.nnfilename(model.fileprefix)) || _config_tableexists(folder, "results")
-                end
-            end
+            return Classify.isclassifierstored(TradingStrategy.tsclassifiername(cfg.tscfg))
         elseif kind == :bounds
             return any(_cockpit_model_modes()) do mode
                 folder = _config_subfolder("Bounds", cfg, mode)
@@ -678,17 +677,10 @@ end
 _label_code(value) = get(DIAGNOSTIC_LABEL_CODE, _safe_tradelabel(value), 0)
 
 function _load_classifier_from_interface(cfg)
-    for mode in _cockpit_model_modes()
-        folder = _config_subfolder("Trend", cfg, mode)
-        nn = _cached_artifact("trend:" * folder) do
-            _with_log_subfolder(folder) do
-                model = cfg.classifiermodel(Features.featurecount(cfg.featconfig), Targets.uniquelabels(cfg.targetconfig), "mix")
-                isfile(Classify.nnfilename(model.fileprefix)) ? Classify.loadnn(model.fileprefix) : nothing
-            end
-        end
-        !isnothing(nn) && return nn
+    name = TradingStrategy.tsclassifiername(cfg.tscfg)
+    return _cached_artifact("trend:" * name) do
+        Classify.isclassifierstored(name) ? TradingStrategy.loadtrendclassifier(cfg.clcfg).nn : nothing
     end
-    return nothing
 end
 
 function _load_regressor_from_interface(cfg)

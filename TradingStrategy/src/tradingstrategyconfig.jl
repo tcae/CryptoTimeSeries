@@ -4,19 +4,8 @@ traincoins() = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", 
 
 settypes() = ["train", "test", "eval"]
 
-partitionconfig01() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=Features.requiredminutes(featconfig), minpartitionsize=12*60, maxpartitionsize=2*24*60)
-partitionconfig02() =(samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=8*60, minpartitionsize=12*60, maxpartitionsize=2*24*60)
+partitionconfig02() = (samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=8*60, minpartitionsize=12*60, maxpartitionsize=2*24*60)
 
-resultsfilename(coin=nothing) = isnothing(coin) ? joinpath("results", "all") : joinpath("results", String(coin)) # includes hlcp, sets, ranges, targets
-featuresfilename(coin=nothing) = isnothing(coin) ? joinpath("features", "all") : joinpath("features", String(coin))
-predictionsfilename(coin=nothing) = isnothing(coin) ? joinpath("predictions", "maxpredictions") : joinpath("predictions", String(coin))
-confusionfilename() = joinpath("predictions", "confusion")
-xconfusionfilename() = joinpath("predictions", "xconfusion")
-distancesfilename() = joinpath("trades", "distances")
-gainsfilename() = joinpath("trades", "gains_all")
-targetissuesfilename() = joinpath("results", "targetissues")
-
-default_openthresholds() = Float32[0.8f0, 0.7f0, 0.6f0, 0.5f0, 0.4f0, 0.3f0]
 #region TradingStrategies
 tradingstrategy01() = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal!, 
@@ -64,40 +53,6 @@ tradingstrategy08() = TradingStrategy.StrategyConfig(
     takerfee=0.004, 
     enforcemakerlimits=true)
 #endregion TradingStrategies
-
-#region TargetsConfig
-
-# Trend01/Trend02 were replaced by Trend04.
-trend04targetconfig(minwindow, maxwindow, buy, hold; holdbehaviormode=beyond_maxwindow) = Targets.Trend04(minwindow, maxwindow, Targets.thresholds((longopen=buy, longhold=hold, shorthold=-hold, shortopen=-buy)), holdbehaviormode=holdbehaviormode)
-
-targetconfig01() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=beyond_maxwindow)
-targetconfig02() = trend04targetconfig(10, 4*60, 0.05, 0.03)
-targetconfig03() = trend04targetconfig(10, 4*60, 0.02, 0.01)
-targetconfig04() = trend04targetconfig(10, 4*60, 0.007, 0.005)
-targetconfig05() = trend04targetconfig(0, 4*60, 0.01, 0.01)
-targetconfig06() = trend04targetconfig(2, 4*60, 0.01, 0.01)
-targetconfig07() = trend04targetconfig(10, 4*60, 0.01, 0.005, holdbehaviormode=beyond_maxwindow)
-targetconfig08() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend02 replaced by Trend04
-targetconfig09() = trend04targetconfig(10, 2*60, 0.01, 0.01)
-targetconfig10() = trend04targetconfig(10, 1*60, 0.01, 0.01)
-targetconfig11() = trend04targetconfig(10, 2*60, 0.01, 0.005) # Trend04
-targetconfig12() = trend04targetconfig(10, 24*60, 0.05, 0.01, holdbehaviormode=beyond_maxwindow) # Trend04 with long term target
-targetconfig13() = trend04targetconfig(10, 2*60, 0.01, 0.01, holdbehaviormode=beyond_maxwindow) 
-targetconfig14() = trend04targetconfig(10, 4*60, 0.01, 0.01, holdbehaviormode=no_hold)
-targetconfig15() = trend04targetconfig(10, 60, 0.01, 0.01, holdbehaviormode=no_hold) 
-targetconfig16() = trend04targetconfig(10, 2*60, 0.01, 0.01, holdbehaviormode=no_hold) 
-targetconfig17() = trend04targetconfig(60, 24*60, 0.05, 0.05, holdbehaviormode=no_hold) # Trend04 with long term target
-targetconfig18() = Targets.TrendRegression(5, 0.01, -0.01) # for SINE and DOUBLESINE regression tests only
-targetconfig19() = Targets.TrendRegression(24*60, 0.01, -0.01) 
-targetconfig20() = Targets.TrendRegression(4*60, 0.005, -0.005) 
-targetconfig21() = Targets.TrendRegression(3*24*60, 0.05, -0.05) 
-targetconfig22() = Targets.TrendRegression(4*60, 0.01, -0.01) 
-targetconfig23() = Targets.TrendRegression(4*60, 0.02, -0.02) 
-
-targetconfig05_01() = Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0)
-#endregion TargetsConfig
-
-
 
 #region FeaturesConfig
 
@@ -308,242 +263,171 @@ end
 
 #endregion FeaturesConfig
 
-#region TrendConfig
+#region Registries
 
-"""Return a one-step TrendDetector config payload."""
-function trendmkconfig(configname::AbstractString, featconfig, targetconfig, classifiermodel, tradingstrategy; classbalancing::Bool=true)
-    return (
-        configname=String(configname),
-        featconfig=featconfig,
-        targetconfig=targetconfig,
-        classifiermodel=classifiermodel,
-        tradingstrategy=tradingstrategy,
-        classbalancing=classbalancing,
-    )
-end
+# Every reusable artifact is identified by registry ids of the components it depends on:
+# - features `Fxx` -> per-coin feature store `coins/<pair>/features/Fxx.arrow`
+# - targets `Txx` -> per-coin target store `coins/<pair>/targets/Txx.arrow`
+# - partition `Pxx` + date range `Dxx` -> per-coin sets store `coins/<pair>/sets/Pxx_Dxx.arrow`
+# - classifier `Fxx-Txx-Pxx-Mxxx-Bx[-variant]-CSxx-Dxx` -> classifier folder with NN, training index and predictions
+# - trading strategy context `TS_CONFIGS` = classifier base name + strategy `Sxx`
+# Content hashes of features, targets and sets configs are stored with the artifacts and asserted on load,
+# i.e. a changed registry entry requires a new id.
 
-"""
-mk1 = mix adapted with multiple adaptations per coin with **good results**: ppv(longbuy) = 72%
-"""
-mk001config() = trendmkconfig("001", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
+const FEATURE_CONFIGS = Dict{String, Function}(
+    "F01" => trendf6config01, "F03" => trendf6config03, "F04" => trendf6config04, "F05" => trendf6config05,
+    "F06" => trendf6config06, "F07" => trendf6config07, "F08" => trendf6config08, "F09" => trendf6config09,
+    "F10" => trendf6config10, "F11" => trendf6config11, "F12" => trendf6config12, "F13" => trendf6config13,
+    "F14" => trendf6config14, "F15" => trendf6config15,
+)
 
-"""
-mk2 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
-"""
-mk002config() = trendmkconfig("002", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
+const TARGET_CONFIGS = Dict{String, Function}(
+    "T01" => () -> Targets.Trend04(10, 4*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T02" => () -> Targets.Trend04(10, 4*60, Targets.thresholds((longopen=0.05, longhold=0.03, shorthold=-0.03, shortopen=-0.05)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T03" => () -> Targets.Trend04(10, 4*60, Targets.thresholds((longopen=0.02, longhold=0.01, shorthold=-0.01, shortopen=-0.02)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T04" => () -> Targets.Trend04(10, 4*60, Targets.thresholds((longopen=0.007, longhold=0.005, shorthold=-0.005, shortopen=-0.007)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T05" => () -> Targets.Trend04(0, 4*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T06" => () -> Targets.Trend04(2, 4*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T07" => () -> Targets.Trend04(10, 4*60, Targets.thresholds((longopen=0.01, longhold=0.005, shorthold=-0.005, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T08" => () -> Targets.Trend04(10, 2*60, Targets.thresholds((longopen=0.01, longhold=0.005, shorthold=-0.005, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T09" => () -> Targets.Trend04(10, 2*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T10" => () -> Targets.Trend04(10, 1*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T12" => () -> Targets.Trend04(10, 24*60, Targets.thresholds((longopen=0.05, longhold=0.01, shorthold=-0.01, shortopen=-0.05)), holdbehaviormode=Targets.beyond_maxwindow),
+    "T14" => () -> Targets.Trend04(10, 4*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.no_hold),
+    "T15" => () -> Targets.Trend04(10, 60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.no_hold),
+    "T16" => () -> Targets.Trend04(10, 2*60, Targets.thresholds((longopen=0.01, longhold=0.01, shorthold=-0.01, shortopen=-0.01)), holdbehaviormode=Targets.no_hold),
+    "T17" => () -> Targets.Trend04(60, 24*60, Targets.thresholds((longopen=0.05, longhold=0.05, shorthold=-0.05, shortopen=-0.05)), holdbehaviormode=Targets.no_hold),
+    "T18" => () -> Targets.TrendRegression(5, 0.01, -0.01),
+    "T19" => () -> Targets.TrendRegression(24*60, 0.01, -0.01),
+    "T20" => () -> Targets.TrendRegression(4*60, 0.005, -0.005),
+    "T21" => () -> Targets.TrendRegression(3*24*60, 0.05, -0.05),
+    "T22" => () -> Targets.TrendRegression(4*60, 0.01, -0.01),
+    "T23" => () -> Targets.TrendRegression(4*60, 0.02, -0.02),
+    "T24" => () -> Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0),
+    "T25" => () -> Targets.Trend05(leadregr=15, supportregr=60, trendregr=12*60, triggerdist=0.01f0, targetgain=0.01f0),
+)
 
-"""
-mk3 = one iteration adaptation with one merged set (allclose=>0.9, longbuy=>0.1), but target config targetconfig02() with **poor results**: ppv(longbuy) = 26%
-"""
-mk003config() = trendmkconfig("003", trendf6config01(), targetconfig02(), Classify.model001, tradingstrategy02())
+const PARTITION_CONFIGS = Dict{String, Function}("P02" => partitionconfig02)
 
-"""
-mk4 = targetconfig03() with one merged set (allclose=>0.726, longbuy=>0.274)
-"""
-mk004config() = trendmkconfig("004", trendf6config01(), targetconfig03(), Classify.model001, tradingstrategy02())
+"Coin sets with the epoch budget of their training, which scales with the data volume of the coin set."
+const COINSET_CONFIGS = Dict{String, NamedTuple}(
+    "CS00" => (coins=testcoins(), maxepochs=10),
+    "CS01" => (coins=traincoins(), maxepochs=1000),
+)
 
-"""
-mk5 = targetconfig04() with one merged set (allclose=>?, longbuy=>?)
-"""
-mk005config() = trendmkconfig("005", trendf6config01(), targetconfig04(), Classify.model001, tradingstrategy02())
+const DATERANGE_CONFIGS = Dict{String, NamedTuple}(
+    "D00" => (startdt=DateTime("2025-01-17T20:56:00"), enddt=DateTime("2025-08-10T15:00:00")),
+    "D01" => (startdt=DateTime("2017-11-17T20:56:00"), enddt=DateTime("2025-08-10T15:00:00")),
+)
 
-"""
-mk6 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
-"""
-mk006config() = trendmkconfig("006", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
+const MODEL_CONFIGS = Dict{String, Function}(
+    "M001" => Classify.model001, "M002" => Classify.model002, "M003" => Classify.model003, "M004" => Classify.model004,
+    "M005" => Classify.model005, "M006" => Classify.model006, "M007" => Classify.model007,
+)
 
-"""
-same as mk6 butwith copied mix classifier from mk2
-mk7 = mix adapted in just one iteration with all coin features/targets in one set, which is a fairer class representation in the adaptation, (allclose=>0.494, longbuy=>0.506) with **good results**: ppv(longbuy) = 73%
-"""
-mk007config() = trendmkconfig("007", trendf6config01(), targetconfig01(), Classify.model001, tradingstrategy02())
+const STRATEGY_CONFIGS = Dict{String, Function}(
+    "S01" => tradingstrategy01, "S02" => tradingstrategy02, "S03" => tradingstrategy03, "S04" => tradingstrategy04,
+    "S05" => tradingstrategy05, "S06" => tradingstrategy06, "S07" => tradingstrategy07, "S08" => tradingstrategy08,
+)
 
-"""
-mk8 = mix adapted with all coin features/targets in one set, features are clipped, normalized, shifted, and in addition batch norm layer after initial layer with relu activation in model001
-equal mean, q25, q75, min, max does not look like healthy feature values - longbuy ppv classification performance is with close to 70% also worse
-"""
-# mk008config() = trendmkconfig("008", trendf6config02(), targetconfig01(), Classify.model001, tradingstrategy02())
+"Return a classifier config that is independent of the coin set and date range it is trained on."
+clconfig(features::AbstractString, targets::AbstractString, model::AbstractString; classbalancing::Bool=true, partition::AbstractString="P02", variant::AbstractString="") =
+    (features=String(features), targets=String(targets), partition=String(partition), model=String(model), classbalancing=classbalancing, variant=String(variant))
 
-""" **my favorite**  
-mk9 = mix adapted with all coin features/targets in one set, features are not clipped, batch norm layer before and between layers with relu activation in model002
-"""
-mk009config() = trendmkconfig("009", trendf6config01(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=true)
+"Return the classifier base name `Fxx-Txx-Pxx-Mxxx-Bx[-variant]` of a classifier config."
+classifierbasename(clcfg::NamedTuple)::String = join([clcfg.features, clcfg.targets, clcfg.partition, clcfg.model, clcfg.classbalancing ? "B1" : "B0"], "-") * (isempty(clcfg.variant) ? "" : "-" * clcfg.variant)
 
-"""
-mk10 = mix adapted with all coin features/targets in one set, features are clipped, initial batch norm layer in model002
-"""
-# mk010config() = (configname="010", featconfig = trendf6config02(), targetconfig = targetconfig01(), classifiermodel=Classify.model002)
+"Return the unique classifier artifact name of a classifier config trained on `coinset` within `daterange`."
+classifiername(clcfg::NamedTuple; coinset::AbstractString, daterange::AbstractString)::String = classifierbasename(clcfg) * "-" * String(coinset) * "-" * String(daterange)
 
-"""
-mk11 = mix adapted with all coin features/targets in one set, no clipping, initial batch norm layer but no further internal batch norm layers
-"""
-mk011config() = trendmkconfig("011", trendf6config01(), targetconfig01(), Classify.model003, tradingstrategy02())
-
-"""
-mk12 = like mk9 but with an additional layer
-"""
-mk012config() = trendmkconfig("012", trendf6config01(), targetconfig01(), Classify.model004, tradingstrategy02())
-
-"""
-mk13 = like mk9 but with 4/3 broader layers
-"""
-mk013config() = trendmkconfig("013", trendf6config01(), targetconfig01(), Classify.model005, tradingstrategy02())
-
-"""
-mk14 = like mk11 but removed layer 3
-"""
-mk014config() = trendmkconfig("014", trendf6config01(), targetconfig01(), Classify.model006, tradingstrategy02())
-
-"""
-mk15 = like mk11 but reduced number of nodes of layers by reducing factor of layer 1 from 3 to 2
-"""
-mk015config() = trendmkconfig("015", trendf6config01(), targetconfig01(), Classify.model007, tradingstrategy02())
-
-"""
-mk16 = no tolerance against target disturbances (minwindow=0), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
-"""
-mk016config() = trendmkconfig("016", trendf6config01(), targetconfig05(), Classify.model002, tradingstrategy02())
-
-"""
-mk17 = short tolerance against target disturbances (minwindow=2), the rest is the same as mk9: mix adapted with all coin features/targets in one set, features are not clipped, batch norm before and between layers with relu activation in model002
-"""
-mk017config() = trendmkconfig("017", trendf6config01(), targetconfig06(), Classify.model002, tradingstrategy02())
-
-"""  
-mk18 = mk9 but with simplified features
-"""
-mk018config() = trendmkconfig("018", trendf6config03(), targetconfig01(), Classify.model002, tradingstrategy02())
-
-"""  
-mk19 = mk9 but with simplified features
-"""
-mk019config() = trendmkconfig("019", trendf6config04(), targetconfig01(), Classify.model002, tradingstrategy02())
-
-"""  
-mk20 = mk17 but feature grads without offset
-"""
-mk020config() = trendmkconfig("020", trendf6config05(), targetconfig06(), Classify.model002, tradingstrategy02())
-
-"""  
-mk21 = mk17 but feature grads without offset and 12h regr grad added
-"""
-mk021config() = trendmkconfig("021", trendf6config06(), targetconfig06(), Classify.model002, tradingstrategy02())
-
-"""  
-mk22 = mk21 but with 3*24h regr grad added
-"""
-mk022config() = trendmkconfig("022", trendf6config07(), targetconfig06(), Classify.model002, tradingstrategy02())
-#* from mk23 onwards partitionconfig02() shall be used with a fixed partition gap of 8h to get the same targets gains for the same targetconfig but different requiredminutes(features)
-
-"""  
-mk023 = equal to mk9 with the only difference that hold thresholds are lowered to 0.5% instead of being equal to the buy threshold of 1%
-"""
-mk023config() = trendmkconfig("023", trendf6config01(), targetconfig07(), Classify.model002, tradingstrategy02())
-
-"""  
-mk024 = equal to mk23 but Trend01/Trend02 were replaced by Trend04 targets
-"""
-mk024config() = trendmkconfig("024", trendf6config01(), targetconfig08(), Classify.model002, tradingstrategy02())
-
-"""
-mk9 = mk9 with short term target, i.e. maxwindow 2h
-"""
-mk025config() = trendmkconfig("025", trendf6config01(), targetconfig09(), Classify.model002, tradingstrategy02())
-mk025bconfig() = trendmkconfig("025b", trendf6config01(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=false)
-mk025Cconfig() = trendmkconfig("025C", trendf6config01(), targetconfig08(), Classify.model002, tradingstrategy02(); classbalancing=false)
-mk025Dconfig() = trendmkconfig("025D", trendf6config01(), targetconfig11(), Classify.model002, tradingstrategy02(); classbalancing=false)
-# mk25D and mk25E are the same config but in teh meanwhile the missing hold was fixed
-mk025Econfig() = trendmkconfig("025E", trendf6config01(), targetconfig11(), Classify.model002, tradingstrategy02(); classbalancing=false)
-
-"""
-mk026 = mk9 with short term target, i.e. maxwindow 1h
-"""
-mk026config() = trendmkconfig("026", trendf6config01(), targetconfig10(), Classify.model002, tradingstrategy02())
-
-"""
-mk27 = long term trend with long term window and 5% ambition
-"""
-mk027config() = trendmkconfig("027", trendf6config08(), targetconfig12(), Classify.model002, tradingstrategy02())
-mk039config() = trendmkconfig("039", trendf6config12(), targetconfig17(), Classify.model002, tradingstrategy02(); classbalancing=true)
-
-"""   
-mk028 = mk009 without class balancing
-"""
-mk028config() = trendmkconfig("028", trendf6config01(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=false)
-
-"""   
-mk029 = mk009 without class balancing but implementation for hold equally strict than for buy (no config change)
-"""
-mk029config() = trendmkconfig("029", trendf6config01(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=false)
-
-"""   
-relies on grad without offset and 2h target, i.e. maxwindow 2h, hold threshold equal to buy threshold, no class balancing
-"""
-mk030config() = trendmkconfig("030", trendf6config09(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=false)
-mk031config() = trendmkconfig("031", trendf6config09(), targetconfig09(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk032config() = trendmkconfig("032", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy02(); classbalancing=true)
-
-mk046config() = trendmkconfig("046", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy03(); classbalancing=true) # favorite
-
-mk047config() = trendmkconfig("047", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy04(); classbalancing=true)
-mk048config() = trendmkconfig("048", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy05(); classbalancing=true)
-mk049config() = trendmkconfig("049", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy06(); classbalancing=true)
-mk033config() = trendmkconfig("033", trendf6config09(), targetconfig01(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk034config() = trendmkconfig("034", trendf6config09(), targetconfig07(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk035config() = trendmkconfig("035", trendf6config10(), targetconfig14(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk037config() = trendmkconfig("037", trendf6config09(), targetconfig13(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk038config() = trendmkconfig("038", trendf6config09(), targetconfig16(), Classify.model002, tradingstrategy03(); classbalancing=true)
-mk038bconfig() = trendmkconfig("038b", trendf6config09(), targetconfig16(), Classify.model002, tradingstrategy03(); classbalancing=true)
-
-mk036config() = trendmkconfig("036", trendf6config11(), targetconfig15(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk040config() = trendmkconfig("040", trendf6config12(), targetconfig18(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk041config() = trendmkconfig("041", trendf6config13(), targetconfig19(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk042config() = trendmkconfig("042", trendf6config14(), targetconfig20(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk043config() = trendmkconfig("043", trendf6config15(), targetconfig21(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk044config() = trendmkconfig("044", trendf6config14(), targetconfig22(), Classify.model002, tradingstrategy02(); classbalancing=true)
-mk045config() = trendmkconfig("045", trendf6config14(), targetconfig23(), Classify.model002, tradingstrategy02(); classbalancing=true)
-
-mk050config() = trendmkconfig("050", trendf6config09(), targetconfig05_01(), Classify.model002, tradingstrategy08(); classbalancing=true)
-
-const TREND_DETECTOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
-    mk001config(), mk002config(), mk003config(), mk004config(), mk005config(), mk006config(), mk007config(),
-    mk009config(), mk011config(), mk012config(), mk013config(), mk014config(), mk015config(), mk016config(),
-    mk017config(), mk018config(), mk019config(), mk020config(), mk021config(), mk022config(), mk023config(),
-    mk024config(), mk025config(), mk025bconfig(), mk025Cconfig(), mk025Dconfig(), mk025Econfig(), mk026config(),
-    mk027config(), mk028config(), mk029config(), mk030config(), mk031config(), mk032config(), mk033config(), 
-    mk034config(), mk035config(), mk036config(), mk037config(), mk038config(), mk038bconfig(), mk039config(), mk040config(), 
-    mk041config(), mk042config(), mk043config(), mk044config(), mk045config(), mk046config(), mk047config(), mk048config(), mk049config(),
-    mk050config(),
+const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c for c in [
+    clconfig("F01", "T01", "M002"),                         # former mk009
+    clconfig("F01", "T05", "M002"),                         # former mk016
+    clconfig("F01", "T06", "M002"),                         # former mk017
+    clconfig("F03", "T01", "M002"),                         # former mk018
+    clconfig("F04", "T01", "M002"),                         # former mk019
+    clconfig("F05", "T06", "M002"),                         # former mk020
+    clconfig("F06", "T06", "M002"),                         # former mk021
+    clconfig("F07", "T06", "M002"),                         # former mk022
+    clconfig("F01", "T07", "M002"),                         # former mk023
+    clconfig("F01", "T08", "M002"),                         # former mk024
+    clconfig("F01", "T09", "M002"),                         # former mk025
+    clconfig("F01", "T09", "M002"; classbalancing=false),   # former mk025b
+    clconfig("F01", "T08", "M002"; classbalancing=false),   # former mk025C, mk025D, mk025E
+    clconfig("F01", "T10", "M002"),                         # former mk026
+    clconfig("F08", "T12", "M002"),                         # former mk027
+    clconfig("F01", "T01", "M002"; classbalancing=false),   # former mk028, mk029
+    clconfig("F09", "T09", "M002"; classbalancing=false),   # former mk030
+    clconfig("F09", "T09", "M002"),                         # former mk031, mk032, mk037, mk046 - mk049
+    clconfig("F09", "T01", "M002"),                         # former mk033
+    clconfig("F09", "T07", "M002"),                         # former mk034
+    clconfig("F10", "T14", "M002"),                         # former mk035
+    clconfig("F11", "T15", "M002"),                         # former mk036
+    clconfig("F09", "T16", "M002"),                         # former mk038, mk038b
+    clconfig("F12", "T17", "M002"),                         # former mk039
+    clconfig("F12", "T18", "M002"),                         # former mk040, short regressions for SINE and DOUBLESINE
+    clconfig("F13", "T19", "M002"),                         # former mk041
+    clconfig("F14", "T20", "M002"),                         # former mk042
+    clconfig("F15", "T21", "M002"),                         # former mk043
+    clconfig("F14", "T22", "M002"),                         # former mk044
+    clconfig("F14", "T23", "M002"),                         # former mk045
+    clconfig("F09", "T24", "M002"),                         # former mk050
+    clconfig("F10", "T25", "M002"),
 ])
 
-#endregion TrendConfig
+"Return a trading strategy context of a classifier (base name) and a strategy id."
+tsentry(configname::AbstractString, classifier::AbstractString, strategy::AbstractString) = (configname=String(configname), classifier=String(classifier), strategy=String(strategy))
 
-#region TradingStrategyConfig
-
-# A trading strategy config decouples the traded strategy from the trend detector config:
-# `tdconfigname` supplies classifier, prediction results and featconfig, while `tradingstrategy`
-# replaces the `tradingstrategy` entry of that trend detector config.
-
-"""
-GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.6), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true
-"""
-ts001() = (configname="001", tdconfigname="038", tradingstrategy=tradingstrategy03())
-
-"""
-GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.3, buygain=0f0), makerfee=0.0025, takerfee=0.004, enforcemakerlimits=true
-"""
-ts002() = (configname="002", tdconfigname="038", tradingstrategy=tradingstrategy07())
-
-"""
-GainLimitReversalBelowRegressionConfig(triggerdist=0.005f0, triggerregrwindow=4*60, trendregrwindow=24*60, trendgainthreshold=0.01f0 / 4f0), makerfee=0.0025
-"""
-ts003() = (configname="003", tdconfigname="038", tradingstrategy=tradingstrategy08())
-
+# Keys of former TrendDetector configs are kept for CLI continuity; 101-103 are the former ts001-ts003.
 const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
-    ts001(), ts002(), ts003(),
+    tsentry("009", "F01-T01-P02-M002-B1", "S02"),
+    tsentry("016", "F01-T05-P02-M002-B1", "S02"),
+    tsentry("017", "F01-T06-P02-M002-B1", "S02"),
+    tsentry("018", "F03-T01-P02-M002-B1", "S02"),
+    tsentry("019", "F04-T01-P02-M002-B1", "S02"),
+    tsentry("020", "F05-T06-P02-M002-B1", "S02"),
+    tsentry("021", "F06-T06-P02-M002-B1", "S02"),
+    tsentry("022", "F07-T06-P02-M002-B1", "S02"),
+    tsentry("023", "F01-T07-P02-M002-B1", "S02"),
+    tsentry("024", "F01-T08-P02-M002-B1", "S02"),
+    tsentry("025", "F01-T09-P02-M002-B1", "S02"),
+    tsentry("025b", "F01-T09-P02-M002-B0", "S02"),
+    tsentry("025C", "F01-T08-P02-M002-B0", "S02"),
+    tsentry("025D", "F01-T08-P02-M002-B0", "S02"),
+    tsentry("025E", "F01-T08-P02-M002-B0", "S02"),
+    tsentry("026", "F01-T10-P02-M002-B1", "S02"),
+    tsentry("027", "F08-T12-P02-M002-B1", "S02"),
+    tsentry("028", "F01-T01-P02-M002-B0", "S02"),
+    tsentry("029", "F01-T01-P02-M002-B0", "S02"),
+    tsentry("030", "F09-T09-P02-M002-B0", "S02"),
+    tsentry("031", "F09-T09-P02-M002-B1", "S02"),
+    tsentry("032", "F09-T09-P02-M002-B1", "S02"),
+    tsentry("033", "F09-T01-P02-M002-B1", "S02"),
+    tsentry("034", "F09-T07-P02-M002-B1", "S02"),
+    tsentry("035", "F10-T14-P02-M002-B1", "S02"),
+    tsentry("036", "F11-T15-P02-M002-B1", "S02"),
+    tsentry("037", "F09-T09-P02-M002-B1", "S02"),
+    tsentry("038", "F09-T16-P02-M002-B1", "S03"),
+    tsentry("038b", "F09-T16-P02-M002-B1", "S03"),
+    tsentry("039", "F12-T17-P02-M002-B1", "S02"),
+    tsentry("040", "F12-T18-P02-M002-B1", "S02"),
+    tsentry("041", "F13-T19-P02-M002-B1", "S02"),
+    tsentry("042", "F14-T20-P02-M002-B1", "S02"),
+    tsentry("043", "F15-T21-P02-M002-B1", "S02"),
+    tsentry("044", "F14-T22-P02-M002-B1", "S02"),
+    tsentry("045", "F14-T23-P02-M002-B1", "S02"),
+    tsentry("046", "F09-T09-P02-M002-B1", "S03"),  # favorite
+    tsentry("047", "F09-T09-P02-M002-B1", "S04"),
+    tsentry("048", "F09-T09-P02-M002-B1", "S05"),
+    tsentry("049", "F09-T09-P02-M002-B1", "S06"),
+    tsentry("050", "F09-T24-P02-M002-B1", "S08"),
+    tsentry("051", "F10-T25-P02-M002-B1", "S08"),
+    tsentry("101", "F09-T16-P02-M002-B1", "S03"),
+    tsentry("102", "F09-T16-P02-M002-B1", "S07"),
+    tsentry("103", "F09-T16-P02-M002-B1", "S08"),
 ])
 
-#endregion TradingStrategyConfig
+#endregion Registries
 
 #region BoundsConfig
 
@@ -561,85 +445,120 @@ const BOUNDS_ESTIMATOR_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg 
 
 #endregion BoundsConfig
 
-function _config_from_dict(configs::Dict{String, NamedTuple}, ref::AbstractString; label::AbstractString="config", prefixes=("",))
+#region Accessors
+
+"Return the registry entry `ref` of `configs` (case insensitive) after stripping the first matching prefix of `prefixes`."
+function _config_from_dict(configs::AbstractDict{String}, ref::AbstractString; label::AbstractString="config", prefixes=("",))
     raw = strip(String(ref))
     lowerraw = lowercase(raw)
     for prefix in prefixes
-        lowerprefix = lowercase(prefix)
-        if startswith(lowerraw, lowerprefix)
+        if !isempty(prefix) && startswith(lowerraw, lowercase(prefix)) && (length(raw) > length(prefix))
             raw = strip(raw[(length(prefix) + 1):end])
             lowerraw = lowercase(raw)
             break
         end
     end
-
     matches = [key for key in keys(configs) if lowercase(key) == lowerraw]
     @assert length(matches) == 1 "unknown $(label) config ref=$(ref); available confignames=$(join(sort!(collect(keys(configs)); by=lowercase), ", "))"
     return configs[only(matches)]
 end
 
-trenddetectorconfig(ref::AbstractString) = _config_from_dict(TREND_DETECTOR_CONFIGS, ref; label="trend", prefixes=("trenddetector", "trend", "mk"))
+"Return a fresh (unbased) Features006 config of the features id `featuresid`."
+featureconfig(featuresid::AbstractString) = _config_from_dict(FEATURE_CONFIGS, featuresid; label="features")()
+"Return the Features006 factory of the features id `featuresid`."
+featurefactory(featuresid::AbstractString)::Function = _config_from_dict(FEATURE_CONFIGS, featuresid; label="features")
+"Return a fresh (unbased) target config of the targets id `targetsid`."
+targetconfig(targetsid::AbstractString) = _config_from_dict(TARGET_CONFIGS, targetsid; label="targets")()
+"Return the partition config NamedTuple of the partition id `partitionid`."
+partitionconfig(partitionid::AbstractString)::NamedTuple = _config_from_dict(PARTITION_CONFIGS, partitionid; label="partition")()
+"Return the coin set `(coins, maxepochs)` of the coin set id `coinsetid`."
+coinsetconfig(coinsetid::AbstractString)::NamedTuple = _config_from_dict(COINSET_CONFIGS, coinsetid; label="coinset")
+"Return the date range `(startdt, enddt)` of the date range id `daterangeid`."
+daterangeconfig(daterangeid::AbstractString)::NamedTuple = _config_from_dict(DATERANGE_CONFIGS, daterangeid; label="daterange")
+"Return the NN model factory `(featurecount, labels, mnemonic) -> NN` of the model id `modelid`."
+modelconfig(modelid::AbstractString)::Function = _config_from_dict(MODEL_CONFIGS, modelid; label="model")
+"Return the StrategyConfig template (without classifier) of the strategy id `strategyid`."
+strategytemplate(strategyid::AbstractString)::StrategyConfig = _config_from_dict(STRATEGY_CONFIGS, strategyid; label="strategy")()
+"Return the classifier config of the classifier base name `basename`."
+classifierconfig(basename::AbstractString)::NamedTuple = _config_from_dict(CLASSIFIER_CONFIGS, basename; label="classifier")
+"Return the trading strategy context `(configname, classifier, strategy)` for `ref`."
+tsconfig(ref::AbstractString)::NamedTuple = _config_from_dict(TS_CONFIGS, ref; label="trading strategy", prefixes=("tradingstrategy", "ts", "mk"))
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
 
-"Return the trading strategy config payload `(configname, tdconfigname, tradingstrategy)` for `ref`."
-tsconfig(ref::AbstractString) = _config_from_dict(TS_CONFIGS, ref; label="trading strategy", prefixes=("tradingstrategy", "ts"))
+"Coin set id used by default: test mode trains and evaluates on the artificial test coins."
+defaultcoinset()::String = EnvConfig.configmode == EnvConfig.test ? "CS00" : "CS01"
+"Date range id used by default: test mode uses a short recent date range."
+defaultdaterange()::String = EnvConfig.configmode == EnvConfig.test ? "D00" : "D01"
 
-"Return the TrendDetector config payload referenced by a trading strategy config payload."
-tstrendconfig(tscfg::NamedTuple)::NamedTuple = trenddetectorconfig(tscfg.tdconfigname)
-
-"Return the canonical config reference string for a trading strategy config payload."
-tsconfigref(tscfg::NamedTuple)::String = String(tscfg.configname)
-
-"Return the source tag used when wiring a trading strategy config into Trade."
-tsconfigsource(tscfg::NamedTuple; prefix::AbstractString="tradingstrategy")::String = "$(String(prefix)):$(tsconfigref(tscfg))/$(String(tscfg.tdconfigname))"
-
-"""
-Return a `StrategyConfig` for a trading strategy config payload: the classifier is loaded from
-the referenced TrendDetector config while all trading parameters stem from `tscfg.tradingstrategy`.
-"""
-function tsstrategyconfig(tscfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
-    classifier = loadtrendclassifier(tstrendconfig(tscfg); mnemonic=mnemonic, mode=mode)
-    return _strategy_with_classifier(tscfg.tradingstrategy, classifier)
+"Return the hex SHA1 content hash of a canonical config description."
+confighash(description::AbstractString)::String = bytes2hex(SHA.sha1(String(description)))
+"Return the content hash of the features id `featuresid`."
+featureshash(featuresid::AbstractString)::String = confighash(Features.configdescription(featureconfig(featuresid)))
+"Return the content hash of the targets id `targetsid`."
+targetshash(targetsid::AbstractString)::String = confighash(Targets.configdescription(targetconfig(targetsid)))
+"Return the per-coin sets store id of a partition id and a date range id."
+setsid(partitionid::AbstractString, daterangeid::AbstractString)::String = "$(partitionid)_$(daterangeid)"
+"Return the canonical description of a partition and date range; explicit formatting keeps it independent of `show` methods of loaded packages."
+function setsdescription(partitionid::AbstractString, daterangeid::AbstractString)::String
+    p = partitionconfig(partitionid)
+    dr = daterangeconfig(daterangeid)
+    return "samplesets=$(join(p.samplesets, ","));partitionsize=$(p.partitionsize);gapsize=$(p.gapsize);minpartitionsize=$(p.minpartitionsize);maxpartitionsize=$(p.maxpartitionsize);startdt=$(Dates.format(dr.startdt, dateformat"yyyy-mm-ddTHH:MM:SS"));enddt=$(Dates.format(dr.enddt, dateformat"yyyy-mm-ddTHH:MM:SS"))"
 end
+setshash(partitionid::AbstractString, daterangeid::AbstractString)::String = confighash(setsdescription(partitionid, daterangeid))
+"Return the content hash of the coin list of the coin set id `coinsetid`."
+coinsethash(coinsetid::AbstractString)::String = confighash(join(coinsetconfig(coinsetid).coins, ","))
 
-"Return a `StrategyConfig` for a trading strategy config reference."
-function tsstrategyconfig(ref::AbstractString; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
-    return tsstrategyconfig(tsconfig(ref); mnemonic=mnemonic, mode=mode)
-end
+"Return the classifier labels in class index order of the classifier config `clcfg`."
+classifierlabels(clcfg::NamedTuple)::Vector{Targets.TradeLabel} = Targets.uniquelabels(targetconfig(clcfg.targets))
 
+"Return the classifier input feature columns of the classifier config `clcfg`."
+classifierfeaturecols(clcfg::NamedTuple)::Vector{String} = Features.requestedcolumns(featureconfig(clcfg.features))
 
-"Return a TradingStrategy.StrategyConfig with an instantiated classifier for a TrendDetector config payload."
-function strategyconfig(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
-    classifier = loadtrendclassifier(cfg; mnemonic=mnemonic, mode=mode)
-    return _strategy_with_classifier(cfg.tradingstrategy, classifier)
-end
-
-"Return a TradingStrategy.StrategyConfig with an instantiated classifier for a TrendDetector config reference."
-function strategyconfig(ref::AbstractString; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::TradingStrategy.StrategyConfig
-    return strategyconfig(trenddetectorconfig(ref); mnemonic=mnemonic, mode=mode)
-end
-
-"Return the canonical config reference string for a TrendDetector config payload."
-trendconfigref(cfg::NamedTuple)::String = String(cfg.configname)
-
-"Return the canonical TrendDetector model folder name for a given config payload."
-trendconfigfolder(cfg::NamedTuple, phase::AbstractString)::String = "Trend-$(trendconfigref(cfg))-$(String(phase))"
-
-"Return the source tag used when wiring a TrendDetector config into Trade."
-trendconfigsource(cfg::NamedTuple; prefix::AbstractString="trenddetector")::String = "$(String(prefix)):$(trendconfigref(cfg))"
-
-"Return the feature-config factory for a TrendDetector config payload."
-trendconfigfeaturefactory(cfg::NamedTuple)::Function = () -> cfg.featconfig
-
-"Load a runtime classifier for a TrendDetector config payload."
-function loadtrendclassifier(cfg::NamedTuple; mnemonic::AbstractString="mix", mode=EnvConfig.configmode)::Classify.TrendClassifier001
-    modelphase = Classify.trend_runtime_load_phase(mode)
-    modelprefix = Classify.trend_nn_fileprefix(cfg.configname, modelphase)
-    required_minutes = max(Features.requiredminutes(cfg.featconfig), 2)
-    return Classify.loadclassifier(
-        modelprefix,
-        trendconfigfeaturefactory(cfg),
-        required_minutes;
-        search_folders=[EnvConfig.neuralnetspath(), EnvConfig.logfolder()],
+"Return the expected classifier meta data (component ids and content hashes) that identifies the trained classifier."
+function classifiermeta(clcfg::NamedTuple; coinset::AbstractString, daterange::AbstractString)::Dict{String, String}
+    return Dict(
+        "name" => classifiername(clcfg; coinset=coinset, daterange=daterange),
+        "features" => clcfg.features, "featureshash" => featureshash(clcfg.features),
+        "targets" => clcfg.targets, "targetshash" => targetshash(clcfg.targets),
+        "sets" => setsid(clcfg.partition, daterange), "setshash" => setshash(clcfg.partition, daterange),
+        "model" => clcfg.model, "classbalancing" => string(clcfg.classbalancing),
+        "coinset" => String(coinset), "coinsethash" => coinsethash(coinset),
+        "labels" => join(string.(classifierlabels(clcfg)), ","),
+        "featurecols" => join(classifierfeaturecols(clcfg), ","),
     )
 end
+
+"Assert that the stored meta data of the classifier `classifiername` matches `expected` for all keys of `expected`."
+function checkclassifiermeta(classifiername::AbstractString, expected::AbstractDict{String, String})
+    stored = Classify.readmeta(classifiername)
+    @assert !isnothing(stored) "classifier $(classifiername) has no meta data"
+    mismatches = [key for key in keys(expected) if get(stored, key, "") != expected[key]]
+    @assert isempty(mismatches) "classifier $(classifiername) meta data mismatch for $(mismatches): stored=$(Dict(k => get(stored, k, "") for k in mismatches)) expected=$(Dict(k => expected[k] for k in mismatches))"
+    return stored
+end
+
+"Return the classifier artifact name of a trading strategy context for `coinset` and `daterange`."
+tsclassifiername(tscfg::NamedTuple; coinset::AbstractString=defaultcoinset(), daterange::AbstractString=defaultdaterange())::String =
+    classifiername(classifierconfig(tscfg.classifier); coinset=coinset, daterange=daterange)
+
+"Load the adapted classifier of a classifier config after asserting its meta data."
+function loadtrendclassifier(clcfg::NamedTuple; coinset::AbstractString=defaultcoinset(), daterange::AbstractString=defaultdaterange())::Classify.TrendClassifier001
+    name = classifiername(clcfg; coinset=coinset, daterange=daterange)
+    checkclassifiermeta(name, classifiermeta(clcfg; coinset=coinset, daterange=daterange))
+    return Classify.loadclassifier(name; featconfig=featurefactory(clcfg.features))
+end
+
+"Return a `StrategyConfig` for a trading strategy context: the strategy template of `tscfg.strategy` with the adapted classifier of `tscfg.classifier`."
+function strategyconfig(tscfg::NamedTuple; coinset::AbstractString=defaultcoinset(), daterange::AbstractString=defaultdaterange())::StrategyConfig
+    classifier = loadtrendclassifier(classifierconfig(tscfg.classifier); coinset=coinset, daterange=daterange)
+    return _strategy_with_classifier(strategytemplate(tscfg.strategy), classifier)
+end
+
+"Return a `StrategyConfig` for a trading strategy context reference."
+strategyconfig(ref::AbstractString; coinset::AbstractString=defaultcoinset(), daterange::AbstractString=defaultdaterange())::StrategyConfig =
+    strategyconfig(tsconfig(ref); coinset=coinset, daterange=daterange)
+
+"Return the source tag used when wiring a trading strategy context into Trade."
+tsconfigsource(tscfg::NamedTuple; prefix::AbstractString="tradingstrategy")::String = "$(String(prefix)):$(tscfg.configname)/$(tscfg.classifier)/$(tscfg.strategy)"
+
+#endregion Accessors

@@ -9,12 +9,11 @@ Usage:
   julia --project=. scripts/TradeAdviceCompare.jl
 
 Environment overrides:
-    TRADE_ADVICE_CONFIG_REF   (default: 046)
+    TRADE_ADVICE_CONFIG_REF   (default: 046)           # trading strategy context of TS_CONFIGS
     TRADE_ADVICE_STARTDT      (default: 2025-07-01T01:00:00)
     TRADE_ADVICE_ENDDT        (default: 2025-07-30T01:00:00)
     TRADE_ADVICE_COINS        (default: SINE)          # comma-separated
     TRADE_ADVICE_MODE         (default: test)          # test|train
-    TRADE_ADVICE_CLASSIFIER_FOLDER (default: Trend-<config>-test)
     TRADE_ADVICE_TREND_ROOT   (default: \$HOME/crypto/logs)
     TRADE_ADVICE_SIM_ROOT     (default: \$HOME/crypto/debug)
 """
@@ -170,7 +169,6 @@ function main()
     mode = lowercase(_env_or_default("TRADE_ADVICE_MODE", "test"))
     @assert mode in ("test", "train") "TRADE_ADVICE_MODE must be test or train"
     coins = _parse_coins(_env_or_default("TRADE_ADVICE_COINS", "SINE"))
-    classifier_folder = _env_or_default("TRADE_ADVICE_CLASSIFIER_FOLDER", "Trend-$(config_ref)-test")
     trend_root = _env_or_default("TRADE_ADVICE_TREND_ROOT", joinpath(homedir(), "crypto", "logs"))
     sim_root = _env_or_default("TRADE_ADVICE_SIM_ROOT", joinpath(homedir(), "crypto", "debug"))
     legacy_logs_root = joinpath(homedir(), "crypto", "logs")
@@ -182,8 +180,7 @@ function main()
 
     trend_args = [
         mode,
-        "special",
-        "config=$(config_ref)",
+        "ts=$(config_ref)",
         "folder=$(trend_folder)",
         "startdt=$(startdt)",
         "enddt=$(enddt)",
@@ -193,14 +190,11 @@ function main()
     if _has_trades_td(trend_folderpath, coins)
         println("Reusing existing TrendDetector artifact in ", trend_folderpath)
     else
-        trend_cmd = addenv(
-            Cmd(vcat(
-                collect(Base.julia_cmd().exec),
-                ["--project=.", "scripts/TrendDetector.jl"],
-                trend_args,
-            )),
-            "TRENDDETECTOR_CLASSIFIER_FOLDER" => classifier_folder,
-        )
+        trend_cmd = Cmd(vcat(
+            collect(Base.julia_cmd().exec),
+            ["--project=.", "scripts/TrendDetector.jl"],
+            trend_args,
+        ))
         Base.invokelatest(_run_or_fail, trend_cmd)
     end
 
@@ -212,7 +206,7 @@ function main()
                 collect(Base.julia_cmd().exec),
                 ["--project=.", "scripts/tradesim.jl"],
             )),
-            "TRADESIM_CONFIG_REF" => config_ref,
+            "TRADESIM_TS_REF" => config_ref,
             "TRADESIM_STARTDT" => startdt,
             "TRADESIM_ENDDT" => enddt,
             "TRADESIM_BASES" => join(coins, ","),

@@ -10,35 +10,33 @@ function _reinforce_test_nn(name::AbstractString)
 end
 
 @testset "Classify adaptnn reinforce_epochs" begin
-    oldfolder = EnvConfig.logfolder()
-    oldmode = EnvConfig.configmode
     tmpdir = mktempdir()
-
     try
-        EnvConfig.setlogpath(tmpdir)
-        EnvConfig.configmode = EnvConfig.test
-
         x = Float32[0f0 1f0 2f0 3f0]
         y = ["A", "A", "B", "B"]
-        onehot = Float32.(Flux.onehotbatch(y, ["A", "B"]))
 
         nn = _reinforce_test_nn("reinforce_idx")
-        wrongix = Classify._misclassified_indices(nn, x, onehot)
-        @test wrongix == [3, 4]
+        @test Classify.misclassifiedindices(nn, Classify.MatrixSampleSource(nn, x, y)) == [3, 4]
 
         nn_no_reinforce = _reinforce_test_nn("no_reinforce")
-        Classify.adaptnn!(nn_no_reinforce, x, y; reinforce_epochs=0)
+        Classify.adaptnn!(nn_no_reinforce, Classify.MatrixSampleSource(nn_no_reinforce, x, y); maxepochs=10, reinforce_epochs=0, folderpath=tmpdir)
         @test length(nn_no_reinforce.losses) == 10
         @test isapprox(nn_no_reinforce.losses[1], nn_no_reinforce.losses[2]; atol=1f-6)
+        @test isfile(Classify.nnfilename("no_reinforce"; folderpath=tmpdir))
 
         nn_reinforce = _reinforce_test_nn("with_reinforce")
-        Classify.adaptnn!(nn_reinforce, x, y; reinforce_epochs=1)
+        Classify.adaptnn!(nn_reinforce, Classify.MatrixSampleSource(nn_reinforce, x, y); maxepochs=10, reinforce_epochs=1, folderpath=tmpdir)
         @test length(nn_reinforce.losses) == 10
         @test isapprox(nn_reinforce.losses[2], nn_reinforce.losses[1]; atol=1f-6)
         @test isapprox(nn_reinforce.losses[2], nn_reinforce.losses[end]; atol=1f-6)
+
+        # weighted full set loss equals the weighted mean of per-sample losses
+        w = Float32[1, 1, 3, 3]
+        src = Classify.MatrixSampleSource(nn, x, y, w)
+        losses = Classify.samplelosses(nn, nn.model(x), Float32.(Flux.onehotbatch(y, nn.labels)))
+        @test Classify.fullsetloss(nn, src; chunksize=3) ≈ sum(w .* losses) / sum(w)
+        @test Classify.classweights([2, 0, 6]) ≈ Float32[2, 0, 2/3]
     finally
-        EnvConfig.configmode = oldmode
-        EnvConfig.setlogpath(oldfolder)
         rm(tmpdir; force=true, recursive=true)
     end
 end

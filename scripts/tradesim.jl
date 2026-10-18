@@ -1,12 +1,12 @@
 """
-tradesim.jl — Backtest simulation script using a selected TrendDetector config,
+tradesim.jl — Backtest simulation script using a selected trading strategy context,
 followed by a performance report.
 
 Configuration is defined in the CONFIG block below. Adjust the parameters
 to your requirements before running.
 
 Usage:
-    julia --project=scripts scripts/tradesim.jl [help] [test|train] [config=<name>|strat=<name>] [startdt=<DateTime>] [enddt=<DateTime>] [coins=<CSV>]
+    julia --project=. scripts/tradesim.jl [help] [test|train] [ts=<name>] [coinset=<CSxx>] [daterange=<Dxx>] [startdt=<DateTime>] [enddt=<DateTime>] [coins=<CSV>] [usepartitions=<Bool>]
 """
 
 import Pkg
@@ -26,8 +26,24 @@ using EnvConfig, TradingStrategy, Trade, Classify, Xch, Bybit, Ohlcv, Features, 
 const EXCHANGE = Xch.EXCHANGE_BYBITSIM
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLI ARGUMENTS — help, test|train, config, startdt, enddt, coins
+# CLI ARGUMENTS — help, test|train, ts, coinset, daterange, startdt, enddt, coins, usepartitions
 # ─────────────────────────────────────────────────────────────────────────────
+
+const CLI_FLAGS = ("help", "--help", "-h", "test", "train")
+const CLI_KEYS = ("help", "ts", "coinset", "daterange", "startdt", "enddt", "coins", "usepartitions")
+
+"Assert that every CLI argument is a known flag or `key=value` parameter to fail fast on typos and obsolete parameters."
+function _assertknownargs(args::Vector{String})
+    for arg in args
+        if occursin("=", arg)
+            key = first(split(arg, "="; limit=2))
+            @assert key in CLI_KEYS "unknown parameter $(arg); known key=value parameters: $(join(CLI_KEYS, ", ")) - see `help`"
+        else
+            @assert arg in CLI_FLAGS "unknown flag $(arg); known flags: $(join(CLI_FLAGS, ", ")) - see `help`"
+        end
+    end
+    return nothing
+end
 
 function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing,AbstractString}=nothing)
     prefix = key * "="
@@ -55,7 +71,7 @@ end
 function tradesimhelp()::String
     return """
 Usage:
-    julia --project=scripts scripts/tradesim.jl [help] [test|train] [key=value ...]
+    julia --project=. scripts/tradesim.jl [help] [test|train] [key=value ...]
 
 Flag parameters:
   help, --help, -h
@@ -63,25 +79,23 @@ Flag parameters:
       Default: false
 
   test
-      Use `EnvConfig.init(test)` and default replay source/classifier folder phase `test`.
+      Use `EnvConfig.init(test)`; the classifier defaults to coin set `CS00` and date range `D00`.
       Default: true
 
   train
-      Use `EnvConfig.init(training)` and default replay source/classifier folder phase `training`.
+      Use `EnvConfig.init(training)`; the classifier defaults to coin set `CS01` and date range `D01`.
       Default: false
 
 Key=value parameters:
-  config=<configname>
-      Trend preset from `TREND_DETECTOR_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`.
-      Mutually exclusive with `strat`.
-      Default: `046`, or `TRADESIM_CONFIG_REF` env var when set
+  ts=<configname>
+      Trading strategy context from `TS_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`
+      (classifier + strategy). Replays the stored per-coin predictions of its classifier, which
+      `scripts/TrendDetector.jl ts=<configname> stage=predict` creates.
+      Default: `046`, or `TRADESIM_TS_REF` env var when set
 
-  strat=<configname>
-      Trading strategy preset from `TS_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`.
-      Selects the trend detector config (classifier, prediction results, featconfig) via its
-      `tdconfigname` and replaces that trend config's own trading strategy.
-      Mutually exclusive with `config`.
-      Default: unset, or `TRADESIM_STRAT_REF` env var when set
+  coinset=<CSxx> daterange=<Dxx>
+      Training identity of the replayed classifier.
+      Default: coin set and date range of the selected test/train mode
 
   startdt=<DateTime>
       Override backtest start datetime (ISO-8601 format).
@@ -100,12 +114,21 @@ Key=value parameters:
 
   usepartitions=<bool>
       When true, replay runs one independent tradeloop per (pair, set, rangeid)
-      group, resetting the portfolio between groups; gains are reported per
-      (pair, set), plus one total row per set when multiple pairs are used.
-      When false (default), evaluation runs independently per (pair, rangeid)
-      group, while the report is aggregated per pair, plus one overall total
-      row when multiple pairs are used.
+      group of the classifier's set partitions, resetting the portfolio between groups.
+      When false (default), set/rangeid boundaries are ignored and all pairs are
+      traded together in one continuous tradeloop (resembles tradereal); an
+      interrupted run resumes from its checkpoint.
       Default: `TRADESIM_USE_PARTITIONS` env var, or `false`
+
+Further environment variables:
+  TRADESIM_LOG_SUBFOLDER        log subfolder override (default: `tradesim-ts<ts>-<mode>-<coins>-<dates>`)
+  TRADESIM_PROFILE_TRADE_LOOP   profile the trade loop (`true`/`false`, default `false`)
+  TRADESIM_MEASURE_TRADE_LOOP   run without checkpoint resume for timing (`true`/`false`, default `false`)
+
+Unknown flags or parameters abort the run.
+
+Example:
+    julia --project=. scripts/tradesim.jl test ts=046 coins=SINE startdt=2025-07-01T00:00:00 enddt=2025-07-01T06:00:00
 """
 end
 
@@ -113,11 +136,15 @@ if _wants_help(ARGS)
     println(tradesimhelp())
     exit(0)
 end
+_assertknownargs(ARGS)
 
 const HAS_TEST = "test" in ARGS
 const HAS_TRAIN = "train" in ARGS
 @assert !(HAS_TEST && HAS_TRAIN) "mode flags are exclusive; use only one of test or train"
 const TESTMODE = !HAS_TRAIN  # default true (test), matches previous hardcoded behavior
+EnvConfig.init(TESTMODE ? test : training)  # test mode → cryptoxchsim, no live credentials needed
+# Per-coin stores and the simulated exchange data live in the Bybit coins folder.
+EnvConfig.setcoinspath!("Bybit")
 const PROFILE_TRADE_LOOP = lowercase(strip(get(ENV, "TRADESIM_PROFILE_TRADE_LOOP", "false"))) in ("1", "true", "yes", "on")
 const MEASURE_TRADE_LOOP = lowercase(strip(get(ENV, "TRADESIM_MEASURE_TRADE_LOOP", "false"))) in ("1", "true", "yes", "on")
 
@@ -168,27 +195,12 @@ const INITIAL_QUOTE_BALANCE = 1000.0
 # Maximum fraction of total portfolio value allocated to a single asset.
 const MAX_ASSET_FRACTION = 0.1f0
 
-# Mandatory stop-loss distance from each open order's price, as a fraction (e.g. 0.05 = 5%).
-# Strategy parameters used by the backtest.
-const STRAT_REF = begin
-    raw = strip(String(_argvalue(ARGS, "strat", get(ENV, "TRADESIM_STRAT_REF", ""))))
-    isempty(raw) ? nothing : raw
-end
-@assert isnothing(STRAT_REF) || isnothing(_argvalue(ARGS, "config", nothing)) "config and strat are mutually exclusive; got strat=$(STRAT_REF) and config=$(_argvalue(ARGS, "config", nothing))"
-const STRAT_CONFIG = isnothing(STRAT_REF) ? nothing : TradingStrategy.tsconfig(STRAT_REF)
-const CONFIG_REF = isnothing(STRAT_CONFIG) ? _argvalue(ARGS, "config", get(ENV, "TRADESIM_CONFIG_REF", "046")) : String(STRAT_CONFIG.tdconfigname)
-const CLFOLDER = TESTMODE ? "test" : "training"
-const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
-const CONFIG_NAME = String(CONFIG.configname)
-const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, CLFOLDER)
+const TS_CONFIG = TradingStrategy.tsconfig(_argvalue(ARGS, "ts", get(ENV, "TRADESIM_TS_REF", "046")))
+const CL_CONFIG = TradingStrategy.classifierconfig(TS_CONFIG.classifier)
+const COINSET = _argvalue(ARGS, "coinset", TradingStrategy.defaultcoinset())
+const DATERANGE = _argvalue(ARGS, "daterange", TradingStrategy.defaultdaterange())
 # Run label distinguishing log output of different trading strategies applied to the same classifier.
-const RUN_LABEL = isnothing(STRAT_CONFIG) ? CONFIG_NAME : "$(CONFIG_NAME)-ts$(String(STRAT_CONFIG.configname))"
-
-# Replay source folder containing classifier artifacts and prediction outputs.
-const REPLAY_SOURCE_SUBFOLDER = begin
-    raw = strip(get(ENV, "TRADESIM_REPLAY_SOURCE", ""))
-    isempty(raw) ? "Trend-$(CONFIG_NAME)-$(CLFOLDER)" : raw
-end
+const RUN_LABEL = "ts$(TS_CONFIG.configname)"
 
 # Log subfolder under EnvConfig.logfolder(); built once the effective backtest date range is
 # known (see `_tradesim_default_log_subfolder`), unless overridden via TRADESIM_LOG_SUBFOLDER.
@@ -282,40 +294,13 @@ function ensure_quote_budget!(xc::Xch.XchCache, quote_coin::AbstractString, mini
     end
 end
 
-"Load one replay source dataframe from a configured log subfolder and subdirectory."
-function _load_replay_df(logsubfolder::AbstractString, subdir::AbstractString, stem::AbstractString)::DataFrame
-    logsroot = EnvConfig.defaultlogfilespath
-    folderpath = joinpath(logsroot, String(logsubfolder), String(subdir))
-    df = EnvConfig.readdf(String(stem); folderpath=folderpath)
-    @assert !isnothing(df) "missing replay source $(subdir)/$(stem).arrow in $(folderpath)"
-    return DataFrame(df)
-end
-
 """
-Load results+predictions for `coins`, preferring the per-coin cache files
-(`results/<coin>.arrow`, `predictions/<coin>.arrow`) written by `TrendDetector` when every
-requested coin has one, since those are orders of magnitude smaller than the combined
-`results/all` + `predictions/maxpredictions` files covering the whole training universe.
-Falls back to the combined files (then filtered by caller) when any requested coin lacks a
-per-coin cache, e.g. older replay-source folders generated before the per-coin split existed.
+Load the replay source of `coins`: per-coin predictions of the classifier of `TS_CONFIG` joined
+with targets, set partitions and OHLCV prices (see `TradingStrategy.replayinput`).
 """
-function _load_replay_source(logsubfolder::AbstractString, coins::AbstractVector{<:AbstractString})
-    logsroot = EnvConfig.defaultlogfilespath
-    resultsfolderpath = joinpath(logsroot, String(logsubfolder), "results")
-    predictionsfolderpath = joinpath(logsroot, String(logsubfolder), "predictions")
-    coinids = uppercase.(String.(coins))
-    havepercoin = !isempty(coinids) && all(coinids) do coin
-        EnvConfig.tableexists(coin; folderpath=resultsfolderpath, format=:auto) &&
-        EnvConfig.tableexists(coin; folderpath=predictionsfolderpath, format=:auto)
-    end
-    if havepercoin
-        resultparts = [DataFrame(EnvConfig.readdf(coin; folderpath=resultsfolderpath)) for coin in coinids]
-        predparts = [DataFrame(EnvConfig.readdf(coin; folderpath=predictionsfolderpath)) for coin in coinids]
-        resultsdf = length(resultparts) == 1 ? resultparts[1] : vcat(resultparts...; cols=:union)
-        preddf = length(predparts) == 1 ? predparts[1] : vcat(predparts...; cols=:union)
-        return resultsdf, preddf
-    end
-    return _load_replay_df(logsubfolder, "results", "all"), _load_replay_df(logsubfolder, "predictions", "maxpredictions")
+function _load_replay_source(coins::AbstractVector{<:AbstractString})::DataFrame
+    parts = [TradingStrategy.replayinput(CL_CONFIG, uppercase(String(coin)); coinset=COINSET, daterange=DATERANGE) for coin in coins]
+    return reduce(vcat, parts)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -399,34 +384,20 @@ function _delete_tradesim_checkpoint!()
     return nothing
 end
 
-"Build replay trades input from result and prediction artifacts."
-function _build_replay_input(resultsdf::DataFrame, preddf::DataFrame, quotecoin::AbstractString)::DataFrame
-    required_result = (:opentime, :coin, :set, :rangeid, :high, :low, :close)
-    for c in required_result
-        @assert c in propertynames(resultsdf) "results/all must contain column $(c); names=$(names(resultsdf))"
-    end
-    required_pred = (:label, :score)
-    for c in required_pred
-        @assert c in propertynames(preddf) "predictions/maxpredictions must contain column $(c); names=$(names(preddf))"
-    end
-    @assert nrow(resultsdf) == nrow(preddf) "results and predictions row mismatch: results=$(nrow(resultsdf)) predictions=$(nrow(preddf))"
-
+"Build replay trades input from the replay source of `_load_replay_source`."
+function _build_replay_input(resultsdf::DataFrame, quotecoin::AbstractString)::DataFrame
     q = uppercase(String(quotecoin))
-    paircol = [uppercase(String(resultsdf[ix, :coin])) * q for ix in 1:nrow(resultsdf)]
-    setcol = [ismissing(resultsdf[ix, :set]) ? TSM.TSM_NO_SET : String(resultsdf[ix, :set]) for ix in 1:nrow(resultsdf)]
-
-    replaydf = DataFrame(
-        opentime=DateTime.(resultsdf[!, :opentime]),
-        pair=paircol,
-        set=setcol,
-        rangeid=Int32.(resultsdf[!, :rangeid]),
-        high=Float32.(resultsdf[!, :high]),
-        low=Float32.(resultsdf[!, :low]),
-        close=Float32.(resultsdf[!, :close]),
-        label=Targets.tradelabel.(String.(preddf[!, :label])),
-        score=Float32.(preddf[!, :score]),
+    return DataFrame(
+        opentime=resultsdf[!, :opentime],
+        pair=[uppercase(String(coin)) * q for coin in resultsdf[!, :coin]],
+        set=String.(resultsdf[!, :set]),
+        rangeid=resultsdf[!, :rangeid],
+        high=resultsdf[!, :high],
+        low=resultsdf[!, :low],
+        close=resultsdf[!, :close],
+        label=resultsdf[!, :label],
+        score=resultsdf[!, :score],
     )
-    return replaydf
 end
 
 "Validate replay sequence: same pair/set/rangeid groups must have strictly increasing opentime."
@@ -828,13 +799,12 @@ end
 
 "Run artifact-driven trades replay through Trade tradeloop and return (tradesdf, fillsdf)."
 function run_replay_from_artifacts!(cache::Trade.TradeCache;
-    logsubfolder::AbstractString=REPLAY_SOURCE_SUBFOLDER,
     quotecoin::AbstractString=QUOTE_COIN,
     startdt::Union{Nothing, DateTime}=nothing,
     enddt::Union{Nothing, DateTime}=nothing,
 )
-    resultsdf, preddf = _load_replay_source(logsubfolder, BACKTEST_BASES)
-    @assert nrow(resultsdf) > 0 "replay source results/all is empty"
+    resultsdf = _load_replay_source(BACKTEST_BASES)
+    @assert nrow(resultsdf) > 0 "replay source is empty for coins=$(BACKTEST_BASES)"
 
     source_opentimes = DateTime.(resultsdf[!, :opentime])
     source_startdt = minimum(source_opentimes)
@@ -847,9 +817,8 @@ function run_replay_from_artifacts!(cache::Trade.TradeCache;
     allowedcoins = Set(uppercase.(String.(BACKTEST_BASES)))
     mask = mask .& [uppercase(String(c)) in allowedcoins for c in resultsdf[!, :coin]]
     resultsdf = resultsdf[mask, :]
-    preddf = preddf[mask, :]
     @assert nrow(resultsdf) > 0 "replay input is empty after coins filter; coins=$(BACKTEST_BASES)"
-    replaydf = _build_replay_input(resultsdf, preddf, quotecoin)
+    replaydf = _build_replay_input(resultsdf, quotecoin)
     @assert nrow(replaydf) > 0 "replay input is empty after timestamp filter; startdt=$(effective_startdt), enddt=$(effective_enddt)"
 
     sort!(replaydf, [:pair, :set, :rangeid, :opentime])
@@ -950,15 +919,14 @@ minute over the full timestamp range, resembling the live tradereal loop. Return
 (tradesdf, fillsdf).
 """
 function run_replay_continuous!(cache::Trade.TradeCache;
-    logsubfolder::AbstractString=REPLAY_SOURCE_SUBFOLDER,
     quotecoin::AbstractString=QUOTE_COIN,
     startdt::Union{Nothing, DateTime}=nothing,
     enddt::Union{Nothing, DateTime}=nothing,
     resume::Bool=true,
     profile_trade_loop::Bool=false,
 )
-    resultsdf, preddf = _load_replay_source(logsubfolder, BACKTEST_BASES)
-    @assert nrow(resultsdf) > 0 "replay source results/all is empty"
+    resultsdf = _load_replay_source(BACKTEST_BASES)
+    @assert nrow(resultsdf) > 0 "replay source is empty for coins=$(BACKTEST_BASES)"
 
     source_opentimes = DateTime.(resultsdf[!, :opentime])
     source_startdt = minimum(source_opentimes)
@@ -971,9 +939,8 @@ function run_replay_continuous!(cache::Trade.TradeCache;
     allowedcoins = Set(uppercase.(String.(BACKTEST_BASES)))
     mask = mask .& [uppercase(String(c)) in allowedcoins for c in resultsdf[!, :coin]]
     resultsdf = resultsdf[mask, :]
-    preddf = preddf[mask, :]
     @assert nrow(resultsdf) > 0 "replay input is empty after coins filter; coins=$(BACKTEST_BASES)"
-    replaydf = _build_replay_input(resultsdf, preddf, quotecoin)
+    replaydf = _build_replay_input(resultsdf, quotecoin)
     @assert nrow(replaydf) > 0 "replay input is empty after timestamp filter; startdt=$(effective_startdt), enddt=$(effective_enddt)"
 
     sort!(replaydf, [:pair, :opentime])
@@ -1193,25 +1160,23 @@ end
 # SETUP
 # ─────────────────────────────────────────────────────────────────────────────
 
-EnvConfig.init(TESTMODE ? test : training)  # test mode → cryptoxchsim, no live credentials needed
 EnvConfig.setpairquote!(QUOTE_COIN)
 
 Xch.verbosity = 1
 Classify.verbosity  = 2
 Trade.verbosity     = 3
 
-println("$(EnvConfig.now()): starting tradesim with config=$CONFIG_NAME strat=$(isnothing(STRAT_CONFIG) ? "none" : String(STRAT_CONFIG.configname)) phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES usepartitions=$USE_PARTITIONS")
+println("$(EnvConfig.now()): starting tradesim with $(TradingStrategy.tsconfigsource(TS_CONFIG)) classifier=$(TradingStrategy.tsclassifiername(TS_CONFIG; coinset=COINSET, daterange=DATERANGE)) phase=$(TESTMODE ? "test" : "training") coins=$BACKTEST_BASES usepartitions=$USE_PARTITIONS")
 # println("$(EnvConfig.now()): backtest $BACKTEST_STARTDT → $BACKTEST_ENDDT")
 
-println("$(EnvConfig.now()): replay source folder=$REPLAY_SOURCE_SUBFOLDER")
 
 effective_startdt, effective_enddt = backtest_bounds_from_env(BACKTEST_STARTDT, BACKTEST_ENDDT)
 run_startdt, run_enddt = effective_startdt, effective_enddt
 # Only the overall replay source's min/max opentime are needed here, and only when a bound
 # wasn't given explicitly - skip loading results altogether when both are already known.
 if isnothing(run_startdt) || isnothing(run_enddt)
-    resultsdf_window, _ = _load_replay_source(REPLAY_SOURCE_SUBFOLDER, BACKTEST_BASES)
-    @assert nrow(resultsdf_window) > 0 "replay source results/all is empty"
+    resultsdf_window = _load_replay_source(BACKTEST_BASES)
+    @assert nrow(resultsdf_window) > 0 "replay source is empty for coins=$(BACKTEST_BASES)"
     source_opentimes_window = DateTime.(resultsdf_window[!, :opentime])
     cache_startdt = isnothing(run_startdt) ? minimum(source_opentimes_window) : run_startdt
     cache_enddt = isnothing(run_enddt) ? maximum(source_opentimes_window) : run_enddt
@@ -1225,9 +1190,7 @@ EnvConfig.setlogpath(LOG_SUBFOLDER)
 rm(joinpath(EnvConfig.logfolder(), "liquidation-debug.tsv"); force=true)
 println("$(EnvConfig.now()): log subfolder=$LOG_SUBFOLDER")
 
-strategy_runtime = isnothing(STRAT_CONFIG) ?
-    TradingStrategy.TsCache(CONFIG_REF; source="tradesim:$CONFIG_NAME") :
-    TradingStrategy.TsCache(strategy=TradingStrategy.tsstrategyconfig(STRAT_CONFIG), source="tradesim:$(TradingStrategy.tsconfigsource(STRAT_CONFIG))")
+strategy_runtime = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(TS_CONFIG; coinset=COINSET, daterange=DATERANGE), source="tradesim:$(TradingStrategy.tsconfigsource(TS_CONFIG))")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BUILD TRADE CACHE
@@ -1257,7 +1220,6 @@ println("$(EnvConfig.now()): blacklist ($(length(cache.blacklistbases)) bases): 
 
 alltrades, allfills = if USE_PARTITIONS
     run_replay_from_artifacts!(cache;
-        logsubfolder=REPLAY_SOURCE_SUBFOLDER,
         quotecoin=QUOTE_COIN,
         startdt=run_startdt,
         enddt=run_enddt,
@@ -1265,15 +1227,13 @@ alltrades, allfills = if USE_PARTITIONS
 else
     if PROFILE_TRADE_LOOP
         run_replay_continuous!(cache;
-            logsubfolder=REPLAY_SOURCE_SUBFOLDER,
-            quotecoin=QUOTE_COIN,
+                quotecoin=QUOTE_COIN,
             startdt=run_startdt,
             enddt=run_enddt,
             resume=false,
         )
     end
     run_replay_continuous!(cache;
-        logsubfolder=REPLAY_SOURCE_SUBFOLDER,
         quotecoin=QUOTE_COIN,
         startdt=run_startdt,
         enddt=run_enddt,
@@ -1310,7 +1270,7 @@ println("$(EnvConfig.now()): saved replay gains to $saved_gains rows=$(nrow(repl
 println("$(EnvConfig.now()): saved replay gains report to $saved_gainsreport rows=$(nrow(replay_reportdf))")
 # println(replay_reportdf)
 
-# replay_compare_root = joinpath(dirname(EnvConfig.logfolder()), REPLAY_SOURCE_SUBFOLDER)
+# replay_compare_root = joinpath(dirname(EnvConfig.logfolder()), "TS-$(TS_CONFIG.configname)-test")
 # trades_td = EnvConfig.readdf("trades-td"; folderpath=replay_compare_root)
 # if !isnothing(trades_td)
 #     cmp = tradescompare(DataFrame(trades_td), alltrades)

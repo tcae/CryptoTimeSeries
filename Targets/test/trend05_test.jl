@@ -170,13 +170,6 @@ end
 end
 
 @testset "Trend05 target reachability" begin
-    pivots = Float32[100, 101, 102, 103, 104, 105]
-    @test Targets._trend05_target(pivots, 1, :long, 0.05f0) == 6
-    @test Targets._trend05_target(pivots, 2, :long, 0.05f0) === nothing
-    shortpivots = Float32[106, 105, 104, 103, 102, 101, 100]
-    @test Targets._trend05_target(shortpivots, 1, :short, 0.05f0) == 7
-    @test Targets._trend05_target(shortpivots, 2, :short, 0.05f0) === nothing
-
     shortohlcv = testohlcvfrompivots(Float32[100, 101, 102, 103])
     shorttrend = trend05withfeatures(shortohlcv; targetgain=0.05f0)
     @test all(==(Targets.allclose), Targets.labels(shorttrend))
@@ -197,4 +190,95 @@ end
 
     tiny = trend05withfeatures(testohlcvfrompivots(Float32[100, 101]); targetgain=0.05f0)
     @test all(==(Targets.allclose), Targets.labels(tiny))
+end
+
+@testset "Trend05 requires current supplemented features" begin
+    ohlcv = testohlcvfrompivots(Float32.(100:1:110))
+    trd = trend05withfeatures(ohlcv)
+    previous = copy(trd.df)
+    extended = testohlcvfrompivots(Float32.(100:1:130))
+    Ohlcv.setdataframe!(ohlcv, Ohlcv.dataframe(extended))
+    @test !Features.issupplementedcurrent(trd.f6)
+    @test_throws r"requires Features.supplement!\(f6\)" Targets.supplement!(trd)
+    @test trd.df == previous
+    Features.supplement!(trd.f6)
+    @test Features.issupplementedcurrent(trd.f6)
+    @test isnothing(Targets.supplement!(trd))
+    @test nrow(trd.df) == 31
+    trd.f6.fdf = nothing
+    @test_throws r"requires Features.supplement!\(f6\)" Targets.supplement!(trd)
+end
+
+@testset "Trend05 appended targets equal full rebuilds" begin
+    for pivots in (Float32.(100:1:180), Float32.(180:-1:100),
+        vcat(Float32.(100:1:140), Float32.(139:-1:100), Float32.(101:1:140)))
+        ohlcv = testohlcvfrompivots(pivots[1:11])
+        trd = trend05withfeatures(ohlcv)
+        targetdf = trd.df
+        for rows in (12, 13, 20, 21, 40, length(pivots))
+            finalix = trd.lastfinalix
+            prefix = copy(trd.df[1:finalix, :])
+            extended = testohlcvfrompivots(pivots[1:rows])
+            Ohlcv.setdataframe!(ohlcv, Ohlcv.dataframe(extended))
+            Features.supplement!(trd.f6)
+            Targets.supplement!(trd)
+            rebuilt = trend05withfeatures(extended)
+            @test trd.df === targetdf
+            @test trd.df[1:finalix, :] == prefix
+            @test trd.df == rebuilt.df
+            @test trd.lastfinalix == rebuilt.lastfinalix
+        end
+        replacement = trend05withfeatures(testohlcvfrompivots(reverse(pivots)))
+        Targets.setbase!(trd, replacement.f6)
+        @test trd.df == replacement.df
+        @test trd.lastfinalix == replacement.lastfinalix
+    end
+end
+
+@testset "Trend05 append resumes before provisional open signals" begin
+    for (pivots, gradient, openlabel) in (
+        (Float32[108, 100, 101, 106, 108, 114], 1f0, Targets.longopen),
+        (Float32[108, 116, 115, 110, 108, 102], -1f0, Targets.shortopen))
+        ohlcv = testohlcvfrompivots(pivots[1:5])
+        trd = trend05withfeatures(ohlcv)
+        extended = testohlcvfrompivots(pivots)
+        rebuilt = trend05withfeatures(extended)
+        for target in (trd, rebuilt)
+            columns = Targets._trend05_regressioncolumns(target)
+            for regression in values(columns)
+                target.f6.fdfno[!, regression.grad] .= gradient
+                target.f6.fdfno[!, regression.regry] .= 100f0
+            end
+            Targets.supplement!(target)
+        end
+        @test trd.lastfinalix == 0
+        @test Targets.labels(trd)[1] == Targets.allclose
+        @test Targets.labels(trd)[2] == openlabel
+        @test Targets.labels(rebuilt)[1] == openlabel
+        targetdf = trd.df
+        Ohlcv.setdataframe!(ohlcv, Ohlcv.dataframe(extended))
+        Features.supplement!(trd.f6)
+        columns = Targets._trend05_regressioncolumns(trd)
+        for regression in values(columns)
+            trd.f6.fdfno[!, regression.grad] .= gradient
+            trd.f6.fdfno[!, regression.regry] .= 100f0
+        end
+        Targets.supplement!(trd)
+        @test trd.df === targetdf
+        @test trd.df == rebuilt.df
+        @test trd.lastfinalix == rebuilt.lastfinalix
+    end
+end
+
+@testset "Trend05 final label rows" begin
+    reached = trend05withfeatures(testohlcvfrompivots(Float32.(100:1:160)))
+    @test reached.lastfinalix < 61
+    @test Targets.labels(reached)[2] == Targets.longopen
+    @test reached.lastfinalix >= 7
+
+    # rising without reaching the target gain leaves the first entry decision open
+    unresolved = trend05withfeatures(testohlcvfrompivots(Float32.(100:1:103)); targetgain=0.05f0)
+    @test unresolved.lastfinalix < 4
+    Targets.removebase!(unresolved)
+    @test unresolved.lastfinalix == 0
 end

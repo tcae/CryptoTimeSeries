@@ -9,7 +9,7 @@ This module intentionally keeps only the API surface required by:
 """
 module TradingStrategy
 
-using DataFrames, Dates, CategoricalArrays
+using DataFrames, Dates, CategoricalArrays, SHA
 using EnvConfig, Features, Targets, Classify, Xch, Ohlcv, TSM
 
 """Return the normalized config-scoped subfolder used for persisted trade artifacts."""
@@ -341,10 +341,9 @@ function TsCache(; classifier::Union{Nothing, Classify.AbstractClassifier}=nothi
     return TsCache(Dict{String, TsTp}(), Set{String}(), configured_strategy, String(source))
 end
 
-"Build TsCache from a TrendDetector config reference, loading and compiling the strategy under the hood."
-function TsCache(configref::AbstractString; mnemonic::AbstractString="mix", mode=EnvConfig.configmode, source::AbstractString="manual")
-    strategy = strategyconfig(configref; mnemonic=mnemonic, mode=mode)
-    return TsCache(strategy=strategy, source=source)
+"Build TsCache from a trading strategy context reference (see `TS_CONFIGS`), loading its adapted classifier."
+function TsCache(tsref::AbstractString; source::AbstractString="manual")
+    return TsCache(strategy=strategyconfig(tsref), source=source)
 end
 
 "Return canonical trading-pair key for TsCache pair state lookups."
@@ -1450,5 +1449,6 @@ function processreplaygains!(tp::TsTp;
 end
 
 include("tradingstrategyconfig.jl")
+include("artifactpipeline.jl")
 
 end # module

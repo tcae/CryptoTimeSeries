@@ -165,6 +165,32 @@ function testpairquote()
     end
 end
 
+function testtablemetadata()
+    mktempdir() do tmpdir
+        df = DataFrame(x=Float32[1, 2])
+        EnvConfig.savedf(df, "withmeta"; folderpath=tmpdir, format=:arrow, metadata=Dict("confighash" => "abc"))
+        @test EnvConfig.tablemetadata("withmeta"; folderpath=tmpdir) == Dict("confighash" => "abc")
+        EnvConfig.savedf(df, "withoutmeta"; folderpath=tmpdir, format=:arrow)
+        @test isempty(EnvConfig.tablemetadata("withoutmeta"; folderpath=tmpdir))
+        @test isnothing(EnvConfig.tablemetadata("missingtable"; folderpath=tmpdir))
+        @test_throws AssertionError EnvConfig.savedf(df, "jdfmeta"; folderpath=tmpdir, format=:jdf, metadata=Dict("a" => "b"))
+    end
+end
+
+function testclassifierspath()
+    oldmode = EnvConfig.configmode
+    try
+        EnvConfig.init(test)
+        @test startswith(EnvConfig.classifierspath(), EnvConfig.defaultdebugfilespath)
+        @test basename(EnvConfig.classifierfolder("F01-T01")) == "F01-T01"
+        rm(EnvConfig.classifierfolder("F01-T01"); recursive=true)
+        EnvConfig.init(training)
+        @test EnvConfig.classifierspath() == normpath(joinpath(dirname(EnvConfig.defaultlogfilespath), "classifiers"))
+    finally
+        EnvConfig.init(oldmode)
+    end
+end
+
 @testset "Config tests" begin
 
 EnvConfig.verbosity = 3
@@ -174,6 +200,8 @@ testauthexchangehelpers()
 testconfig()
 testtableio()
 testpairquote()
+testtablemetadata()
+testclassifierspath()
 
 @test EnvConfig.datetimeformat == "yymmdd HH:MM"
 @test basename(EnvConfig.tradingfolder) == "crypto"

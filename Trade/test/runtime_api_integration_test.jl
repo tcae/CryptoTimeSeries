@@ -8,6 +8,10 @@ const TEST_RECONCILIATION_BY_BASE = Dict{String, NamedTuple}()
 const TEST_ROWS = NamedTuple[]
 const TEST_PREPARE_CALLS = NamedTuple[]
 
+"Classifier stub for runtime tests that inject rows and never infer."
+struct StubClassifier <: Classify.AbstractClassifier end
+Classify.requiredminutes(::StubClassifier) = 0
+
 "Return injected per-base tradesdf row state used by Trade._collect_strategy_row."
 function TradingStrategy.gettradesrow!(
     rt::TradingStrategy.TsCache,
@@ -119,7 +123,7 @@ end
     tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=Xch.XchCache(), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
-    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    rt = TradingStrategy.TsCache(classifier=StubClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
     rt.accepted = Set(["BTC", "ETH"])
     tc.ts = rt
 
@@ -143,7 +147,7 @@ end
     tc.cfg = DataFrame(basecoin=["BTC"])
     tc.xc.currentdt = DateTime("2026-05-30T12:00:00")
 
-    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    rt = TradingStrategy.TsCache(classifier=StubClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
     empty!(TEST_ROWS)
     push!(TEST_ROWS,
         (
@@ -181,7 +185,7 @@ end
     tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=xc, trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
-    rt = TradingStrategy.TsCache(classifier=Classify.Classifier011(), strategy=TradingStrategy.StrategyConfig(), source="test")
+    rt = TradingStrategy.TsCache(classifier=StubClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
     tc.ts = rt
 
     dt = DateTime("2026-05-30T12:34:00")

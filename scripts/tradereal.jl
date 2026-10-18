@@ -1,19 +1,73 @@
 """
-tradereal.jl — Live trading script using a selected TrendDetector config.
+tradereal.jl — Live trading script using a selected trading strategy context.
 
 Configuration is defined in the CONFIG block below. Adjust the parameters
 to your requirements before starting. The loop runs until Ctrl+C is pressed.
 
-Set `TRADEREAL_CONFIG_REF` to pick a `TREND_DETECTOR_CONFIGS` preset, or
-`TRADEREAL_STRAT_REF` to pick a `TS_CONFIGS` preset that keeps the classifier of its
-referenced trend detector config but replaces that config's trading strategy.
+Set `ts=<configname>` or `TRADEREAL_TS_REF` to pick a `TS_CONFIGS` preset (classifier + strategy, default `046`).
+The adapted classifier of the production coin set and date range (`CS01`/`D01`) is loaded.
 
 Usage:
-    julia --project=scripts scripts/tradereal.jl
+    julia --project=scripts scripts/tradereal.jl [help] [ts=<configname>]
 """
 
 import Pkg
 Pkg.activate(joinpath(@__DIR__), io=devnull)
+
+"Return the `key=value` value of `key` in `args` or `default`."
+function _argvalue(args::Vector{String}, key::AbstractString, default::Union{Nothing,AbstractString}=nothing)
+    prefix = key * "="
+    for arg in args
+        startswith(arg, prefix) && return split(arg, "="; limit=2)[2]
+    end
+    return default
+end
+
+const CLI_FLAGS = ("help", "--help", "-h")
+const CLI_KEYS = ("ts",)
+
+"Assert that every CLI argument is a known flag or `key=value` parameter to fail fast on typos and obsolete parameters."
+function _assertknownargs(args::Vector{String})
+    for arg in args
+        if occursin("=", arg)
+            key = first(split(arg, "="; limit=2))
+            @assert key in CLI_KEYS "unknown parameter $(arg); known key=value parameters: $(join(CLI_KEYS, ", ")) - see `help`"
+        else
+            @assert arg in CLI_FLAGS "unknown flag $(arg); known flags: $(join(CLI_FLAGS, ", ")) - see `help`"
+        end
+    end
+    return nothing
+end
+
+"Return CLI help text for `tradereal.jl`."
+function traderealhelp()::String
+    return """
+Usage:
+    julia --project=scripts scripts/tradereal.jl [help] [ts=<configname>]
+
+Live trading loop on the exchange configured by `EXCHANGE` in the CONFIG block of the script
+(trade mode, quote coin and auth alias are configured there as well). Stop with Ctrl+C.
+
+Flag parameters:
+  help, --help, -h
+      Show this message and exit.
+
+Key=value parameters:
+  ts=<configname>
+      Trading strategy context from `TS_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`.
+      Its classifier must be adapted for coin set `CS01` and date range `D01`, e.g. via
+      `julia --project=. scripts/TrendDetector.jl train ts=<configname> stage=train`.
+      Default: `TRADEREAL_TS_REF` env var, or `046`
+
+Unknown flags or parameters abort the run.
+"""
+end
+
+if any(arg -> arg in CLI_FLAGS, ARGS)
+    println(traderealhelp())
+    exit(0)
+end
+_assertknownargs(ARGS)
 
 using Dates, Logging, LoggingExtras
 using EnvConfig, TradingStrategy, Trade, Classify, Xch, Features, Ohlcv, Targets, TSM
@@ -36,18 +90,9 @@ const TRADE_MODE = Trade.buysell
 
 const QUOTE_COIN = "USD"
 
-# Maximum fraction of total portfolio value allocated to a single asset.
-const STRAT_REF = begin
-    raw = strip(get(ENV, "TRADEREAL_STRAT_REF", ""))
-    isempty(raw) ? nothing : String(raw)
-end
-const STRAT_CONFIG = isnothing(STRAT_REF) ? nothing : TradingStrategy.tsconfig(STRAT_REF)
-const CONFIG_REF = isnothing(STRAT_CONFIG) ? get(ENV, "TRADEREAL_CONFIG_REF", "046") : String(STRAT_CONFIG.tdconfigname)
-const CONFIG = TradingStrategy.trenddetectorconfig(CONFIG_REF)
-const CONFIG_NAME = String(CONFIG.configname)
-const MODEL_FOLDER = TradingStrategy.trendconfigfolder(CONFIG, "production")
+const TS_CONFIG = TradingStrategy.tsconfig(_argvalue(ARGS, "ts", get(ENV, "TRADEREAL_TS_REF", "046")))
 # Run label distinguishing log output of different trading strategies applied to the same classifier.
-const RUN_LABEL = isnothing(STRAT_CONFIG) ? CONFIG_NAME : "$(CONFIG_NAME)-ts$(String(STRAT_CONFIG.configname))"
+const RUN_LABEL = "ts$(TS_CONFIG.configname)"
 
 # Log subfolder under EnvConfig.logfolder().
 const LOG_SUBFOLDER = "tradereal-" * RUN_LABEL * "-" * Dates.format(Dates.now(), Dates.DateFormat("yymmdd-HHMMSS"))
@@ -110,14 +155,12 @@ Xch.setstartdt(xc, Xch.tradetime(xc))
 
 TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-strategy_runtime = isnothing(STRAT_CONFIG) ?
-    TradingStrategy.TsCache(CONFIG_REF; source="trenddetector:$CONFIG_NAME") :
-    TradingStrategy.TsCache(strategy=TradingStrategy.tsstrategyconfig(STRAT_CONFIG), source=TradingStrategy.tsconfigsource(STRAT_CONFIG))
+strategy_runtime = TradingStrategy.TsCache(strategy=TradingStrategy.strategyconfig(TS_CONFIG), source=TradingStrategy.tsconfigsource(TS_CONFIG))
 
 cache = Trade.TradeCache(strategy_runtime, xc=xc, trademode=TRADE_MODE)
 
 println("$(EnvConfig.now()): exchange=$EXCHANGE, trademode=$TRADE_MODE")
-println("$(EnvConfig.now()): strategy config=$RUN_LABEL, engine=tradingstrategy")
+println("$(EnvConfig.now()): strategy context=$(TradingStrategy.tsconfigsource(TS_CONFIG)), classifier=$(TradingStrategy.tsclassifiername(TS_CONFIG))")
 println("$(EnvConfig.now()): quote coin=$QUOTE_COIN")
 println("$(EnvConfig.now()): blacklist ($(length(cache.blacklistbases)) bases): $(cache.blacklistbases)")
 println("$(EnvConfig.now()): starting live trade loop — press Ctrl+C to stop")

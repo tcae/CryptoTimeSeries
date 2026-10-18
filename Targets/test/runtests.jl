@@ -27,6 +27,7 @@ include("trend05_test.jl")
 include("trendregression_test.jl")
 include("tradepairs_test.jl")
 include("bounds01_test.jl")
+include("targetstore_test.jl")
 # include("fixeddistancegain_test.jl") fails due to changes in Targets
 
 @testset "Targets Labelthresholds" begin

@@ -33,7 +33,7 @@ verbosity = 1
 
 export lstm_bounds_trend_features, lstm_feature_contract, lstm_tensor_windows
 export lstm_trade_signal_model, train_lstm_trade_signals!, predict_lstm_trade_signals, penultimatefeatures
-export TrendClassifier001, loadclassifier, load, save
+export TrendClassifier001, loadclassifier
 
 #region abstractclassifier
 """
@@ -142,40 +142,6 @@ function advice(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, ohlcvix=ohlcv.ix
     return nothing
 end
 
-"Load a classifier instance by type and load specification."
-function load(::Type{T}, spec; kwargs...) where {T<:AbstractClassifier}
-    _ = spec
-    _ = kwargs
-    error("missing load implementation for classifier type $(T)")
-end
-
-"Load persisted classifier artifacts when available, otherwise build a fresh classifier instance."
-function loadorbuild(::Type{T}, spec, featurecount::Integer, labels, mnemonic::AbstractString, classifiermodel::Function; kwargs...) where {T<:AbstractClassifier}
-    _ = spec
-    _ = featurecount
-    _ = labels
-    _ = mnemonic
-    _ = classifiermodel
-    _ = kwargs
-    error("missing loadorbuild implementation for classifier type $(T)")
-end
-
-"Create aligned feature and target tables for one OHLCV sequence."
-function featurestargetsdf(cl::AbstractClassifier, ohlcv::Ohlcv.OhlcvData, targetconfig::Targets.AbstractTargets; kwargs...)
-    _ = ohlcv
-    _ = targetconfig
-    _ = kwargs
-    error("missing featurestargetsdf implementation for classifier type $(typeof(cl))")
-end
-
-"Adapt or retrain one classifier instance from prepared results/features tables."
-function prepareadaptation(cl::AbstractClassifier, resultsdf::AbstractDataFrame, featuresdf::AbstractDataFrame; kwargs...)
-    _ = resultsdf
-    _ = featuresdf
-    _ = kwargs
-    error("missing prepareadaptation implementation for classifier type $(typeof(cl))")
-end
-
 "Return whether classifier training/adaptation has been executed already."
 function isadapted(cl::AbstractClassifier)::Bool
     error("missing isadapted implementation for classifier type $(typeof(cl))")
@@ -189,56 +155,6 @@ end
 "Return the underlying model payload used by one classifier implementation."
 function model(cl::AbstractClassifier)
     error("missing model implementation for classifier type $(typeof(cl))")
-end
-
-"Resolve a classifier type token to a concrete `AbstractClassifier` subtype."
-function resolveclassifiertype(token)::Type{<:AbstractClassifier}
-    if token isa Type
-        token <: AbstractClassifier || throw(ArgumentError("classifier_type must subtype Classify.AbstractClassifier, got $(token)"))
-        return token
-    end
-    name = String(token)
-    isdefined(Classify, Symbol(name)) || throw(ArgumentError("unknown classifier_type=$(name); expected one exported by Classify"))
-    typ = getproperty(Classify, Symbol(name))
-    (typ isa Type) && (typ <: AbstractClassifier) || throw(ArgumentError("classifier_type=$(name) is not a Classify.AbstractClassifier subtype"))
-    return typ
-end
-
-"Resolve one classifier from explicit constructor options."
-function resolveclassifier(;
-    classifier::Union{Nothing, AbstractClassifier}=nothing,
-    classifier_factory::Union{Nothing, Function}=nothing,
-    classifier_type=nothing,
-    classifier_spec=nothing,
-    mode=EnvConfig.configmode,
-)::AbstractClassifier
-    if !isnothing(classifier)
-        return classifier
-    end
-
-    if !isnothing(classifier_factory)
-        cl = classifier_factory()
-        cl isa AbstractClassifier || throw(ArgumentError("classifier_factory must return Classify.AbstractClassifier, got $(typeof(cl))"))
-        return cl
-    end
-
-    has_type = !isnothing(classifier_type)
-    has_spec = !isnothing(classifier_spec)
-    if has_type && has_spec
-        typ = resolveclassifiertype(classifier_type)
-        return load(typ, classifier_spec; mode=mode)
-    elseif has_type
-        typ = resolveclassifiertype(classifier_type)
-        return typ()
-    end
-
-    throw(ArgumentError("classifier configuration missing: provide one of classifier, classifier_factory, classifier_type, or classifier_type + classifier_spec"))
-end
-
-"Persist a classifier instance to storage."
-function save(cl::AbstractClassifier; kwargs...)
-    _ = kwargs
-    error("missing save implementation for classifier type $(typeof(cl))")
 end
 
 "Returns a Dict of setname => vector of row ranges"
@@ -1800,179 +1716,30 @@ end
 nnconverged(losses::AbstractVector) = (length(losses) > 10) && (losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end])
 nnconverged(nn) = nnconverged(nn.losses)
 
-"""
-Estimate inverse-frequency class weights and per-sample weights from `targets`.
-
-The weights are normalized as `1 / (n_active_classes * p(class))`, which keeps the
-mean sample weight close to 1 while emphasizing underrepresented classes.
-"""
-function classweighting(targets::AbstractVector, labels::AbstractVector=unique(targets))
-    labelnames = string.(labels)
-    targetcats = categorical(string.(targets), levels=labelnames, ordered=true)
-    dist = Distributions.fit(UnivariateFinite, targetcats)
-    activecount = max(count(label -> pdf(dist, label) > 0, labelnames), 1)
-    classweights = Float32[
-        (let prob = (pdf(dist, label))
-            prob > 0f0 ? inv((activecount) * prob) : 0f0
-        end) for label in labelnames
-    ]
-    weightmap = Dict{String, Float32}(label => weight for (label, weight) in zip(labelnames, classweights))
-    sampleweights = Float32[get(weightmap, string(target), 0f0) for target in targets]
-    return (; dist, labels=collect(labels), classweights, sampleweights)
-end
-
-"""
-Apply `nn.lossfunc` with optional per-sample weights.
-
-Currently weighted adaptation is supported for the classifier and bounds-regressor
-losses used in this workspace.
-"""
-function weightedloss(nn::NN, y_hat::AbstractMatrix, y::AbstractMatrix, sampleweights::AbstractVector{<:Real})
-    @assert size(y_hat, 2) == size(y, 2) == length(sampleweights) "size(y_hat, 2)=$(size(y_hat, 2)), size(y, 2)=$(size(y, 2)) and length(sampleweights)=$(length(sampleweights)) must match"
-    weights = Float32.(vec(sampleweights))
-    weightsum = sum(weights)
-    @assert weightsum > 0f0 "sum(sampleweights)=$(weightsum) must be > 0"
-
+"Return the per-sample losses of `nn.lossfunc`; their mean equals `nn.lossfunc(y_hat, y)`."
+function samplelosses(nn::NN, y_hat::AbstractMatrix, y::AbstractMatrix)
+    @assert size(y_hat) == size(y) "size(y_hat)=$(size(y_hat)) must equal size(y)=$(size(y))"
     if nn.lossfunc === Flux.logitcrossentropy
-        losses = vec(-sum(y .* Flux.logsoftmax(y_hat; dims=1), dims=1))
-        return sum(weights .* losses) / weightsum
+        return vec(-sum(y .* Flux.logsoftmax(y_hat; dims=1), dims=1))
     elseif nn.lossfunc === Flux.mse
-        losses = vec(mean((y_hat .- y) .^ 2; dims=1))
-        return sum(weights .* losses) / weightsum
-    else
-        error("sampleweights are only supported for Flux.logitcrossentropy and Flux.mse, got $(nn.lossfunc)")
+        return vec(mean((y_hat .- y) .^ 2; dims=1))
     end
+    error("per-sample losses are only supported for Flux.logitcrossentropy and Flux.mse, got $(nn.lossfunc)")
 end
 
-# using Flux
-# using NNlib: softplus
-
-function adaptboundsregressor!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix)
-    # Bounds regressor expects [center; width] in Y and uses nn.valuecorrection for width range correction.
-    @assert size(features, 2) == size(Y, 2)   # same number of observations
-    @assert size(Y, 1) == 2            # centerwidth
-    return adaptnn!(nn, features, Y)
+"Apply `nn.lossfunc` with per-sample weights."
+function weightedloss(nn::NN, y_hat::AbstractMatrix, y::AbstractMatrix, sampleweights::AbstractVector{Float32})
+    @assert size(y_hat, 2) == size(y, 2) == length(sampleweights) "size(y_hat, 2)=$(size(y_hat, 2)), size(y, 2)=$(size(y, 2)) and length(sampleweights)=$(length(sampleweights)) must match"
+    weightsum = sum(sampleweights)
+    @assert weightsum > 0f0 "sum(sampleweights)=$(weightsum) must be > 0"
+    return sum(sampleweights .* samplelosses(nn, y_hat, y)) / weightsum
 end
 
-"Return sample indices where predicted class differs from one-hot target class."
-function _misclassified_indices(nn::NN, X::AbstractMatrix, Y::AbstractMatrix)
-    @assert size(X, 2) == size(Y, 2) "size(X,2)=$(size(X,2)) must equal size(Y,2)=$(size(Y,2))"
-    @assert size(Y, 1) == length(nn.labels) "size(Y,1)=$(size(Y,1)) must equal length(nn.labels)=$(length(nn.labels))"
-
-    # Evaluate logits with deterministic inference behavior before selecting hard samples.
-    Flux.testmode!(nn.model)
-    y_hat = nn.valuecorrection(nn.model(X))
-    Flux.trainmode!(nn.model)
-
-    predix = vec(mapslices(argmax, y_hat, dims=1))
-    trueix = vec(mapslices(argmax, Y, dims=1))
-    return findall(predix .!= trueix)
-end
-
-"""
-creates and adapts a neural network using `features` with ground truth label provided with `targets` that belong to observation samples with index ix within the original sample sequence.
-relativedist is a vector
-"""
-function adaptnn!(nn::NN, features::AbstractMatrix, targets::AbstractVector; sampleweights::Union{Nothing,AbstractVector}=nothing, reinforce_epochs::Integer=0)
-    if !isnothing(sampleweights)
-        @assert length(sampleweights) == length(targets) "length(sampleweights)=$(length(sampleweights)) must equal length(targets)=$(length(targets))"
-    end
-    # onehottargets = Flux.onehotbatch(targets, unique(targets))  # onehot class encoding of an observation as one column
-    onehottargets = Flux.onehotbatch(targets, nn.labels)  # onehot class encoding of an observation as one column
-    return adaptnn!(nn, features, onehottargets; sampleweights=sampleweights, reinforce_epochs=reinforce_epochs)
-end
-
-"""
-Common adaptation loop for matrix targets.
-Uses nn.valuecorrection to transform raw model outputs before loss evaluation.
-If `reinforce_epochs > 0`, hard-sample filtering is applied once after that many
-epochs: remaining training continues on the currently misclassified samples, but
-the misclassification check itself always reevaluates the parent adaptation set
-so previously correct samples can be reintroduced if they become wrong again.
-"""
-function adaptnn!(nn::NN, features::AbstractMatrix, Y::AbstractMatrix; sampleweights::Union{Nothing,AbstractVector}=nothing, reinforce_epochs::Integer=0)
-    Xfull = Float32.(features)
-    Yfull = Float32.(Y)
-    Wfull = isnothing(sampleweights) ? nothing : Float32.(vec(sampleweights))
-    @assert size(Xfull, 2) == size(Yfull, 2) "size(X,2)=$(size(Xfull,2)) must equal size(Y,2)=$(size(Yfull,2))"
-    if !isnothing(Wfull)
-        @assert size(Xfull, 2) == length(Wfull) "size(X,2)=$(size(Xfull,2)) must equal length(sampleweights)=$(length(Wfull))"
-    end
-
-    Xtrain = Xfull
-    Ytrain = Yfull
-    Wtrain = Wfull
-    if verbosity >= 3
-        wtraindesc = isnothing(Wtrain) ? "is nothing" : "size=$(size(Wtrain)) eltype=$(eltype(Wtrain))"
-        println("adaptnn! train arrays: Xtrain size=$(size(Xtrain)) eltype=$(eltype(Xtrain)); Ytrain size=$(size(Ytrain)) eltype=$(eltype(Ytrain)); Wtrain $(wtraindesc)")
-    end
-    loader = isnothing(Wtrain) ?
-        Flux.DataLoader((Xtrain, Ytrain), batchsize=64, shuffle=true) :
-        Flux.DataLoader((Xtrain, Ytrain, Wtrain), batchsize=64, shuffle=true)
-
-    # Training loop, using the whole data set 1000 times:
-    trainmode!(nn)
-    minloss = maxloss = missing
-    breakmsg = "epoch loop finished without convergence"
-    maxepoch = EnvConfig.configmode == test ? 10 : 1000
-    @showprogress for epoch in 1:maxepoch
-        losses = Float32[]
-        for batch in loader
-            x = batch[1]
-            y = batch[2]
-            w = length(batch) > 2 ? batch[3] : nothing
-            loss, grads = Flux.withgradient(nn.model) do m
-                # Evaluate model and loss inside gradient context:
-                y_hat = nn.valuecorrection(m(x))
-                #y_hat is a Float32 matrix, y is a boolean/Float32 matrix of size (classes, batchsize).
-                isnothing(w) ? nn.lossfunc(y_hat, y) : weightedloss(nn, y_hat, y, w)
-            end
-            minloss = ismissing(minloss) ? loss : min(minloss, loss)
-            maxloss = ismissing(maxloss) ? loss : max(maxloss, loss)
-            Flux.update!(nn.optim, nn.model, grads[1])
-            push!(losses, loss)  # logging, outside gradient context
-        end
-        # Track convergence on the full adaptation set, even when training batches
-        # are restricted by reinforce filtering.
-        Flux.testmode!(nn.model)
-        y_hat_full = nn.valuecorrection(nn.model(Xfull))
-        Flux.trainmode!(nn.model)
-        epochloss = isnothing(Wfull) ? nn.lossfunc(y_hat_full, Yfull) : weightedloss(nn, y_hat_full, Yfull, Wfull)
-        push!(nn.losses, epochloss)  # register loss measured on the full adaptation set
-        savenn(nn)
-        if nnconverged(nn)
-            breakmsg = "stopping adaptation after epoch $epoch due to no loss reduction ($(nn.losses[end-4:end])) in last 4 epochs"
-            break
-        end
-
-        if (reinforce_epochs > 0) && (epoch % reinforce_epochs == 0)
-            if nn.lossfunc === Flux.logitcrossentropy
-                # Re-evaluate against the full set so hard-sample filtering can
-                # bring back samples that were correct before but became wrong.
-                wrongix = _misclassified_indices(nn, Xfull, Yfull)
-                if isempty(wrongix)
-                    breakmsg = "stopping adaptation after epoch $epoch because reinforce filtering found no misclassified samples"
-                    break
-                end
-                Xtrain = @view Xfull[:, wrongix]
-                Ytrain = @view Yfull[:, wrongix]
-                if !isnothing(Wfull)
-                    Wtrain = @view Wfull[wrongix]
-                end
-                loader = isnothing(Wtrain) ?
-                    Flux.DataLoader((Xtrain, Ytrain), batchsize=64, shuffle=true) :
-                    Flux.DataLoader((Xtrain, Ytrain, Wtrain), batchsize=64, shuffle=true)
-                breakmsg = "applied reinforce filtering after epoch $epoch with $(length(wrongix)) hard samples; continuing training"
-            else
-                breakmsg = "reinforce filtering skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy"
-            end
-        end
-    end
-    testmode!(nn)
-    nn.optim # parameters, momenta and output have all changed
-    println(breakmsg)  # print after showprogress loop to avoid cluttered text output
-    println("minloss=$minloss  maxloss=$maxloss")
-    return nn
+"Adapt a bounds regressor that expects `[center; width]` in `Y` and uses `nn.valuecorrection` for width range correction."
+function adaptboundsregressor!(nn::NN, features::AbstractMatrix{Float32}, Y::AbstractMatrix{Float32}; maxepochs::Integer)
+    @assert size(features, 2) == size(Y, 2) "size(features, 2)=$(size(features, 2)) must equal size(Y, 2)=$(size(Y, 2))"
+    @assert size(Y, 1) == 2 "bounds regressor expects [center; width] rows but got size(Y, 1)=$(size(Y, 1))"
+    return adaptnn!(nn, MatrixSampleSource(features, Y); maxepochs=maxepochs)
 end
 
 " Returns a predictions Float Array of size(classes, observations)"
@@ -2059,74 +1826,6 @@ function predictiondistribution(predictions, classifiertitle)
         dist[ix] += 1
     end
     println("$(EnvConfig.now()) prediction distribution with $classifiertitle classifier: $dist")
-end
-
-function adaptbase(regrwindow, features::Features.AbstractFeatures, pe::Dict, setranges::Dict)
-    println("$(EnvConfig.now()) preparing features and targets for regressionwindow $regrwindow")
-    features, targets, featuresdescription, targetsdescription, relativedist = featurestargets(regrwindow, features, pe)
-    # trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["base"])
-    trainfeatures = subsetdim2(features, setranges["base"])
-    traintargets = subsetdim2(targets, setranges["base"])
-    # println("before oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    # (trainfeatures), traintargets = oversample((trainfeatures), traintargets)  # all classes are equally trained
-    (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
-    # println("after oversampling: $(Distributions.fit(UnivariateFinite, categorical(traintargets))))")
-    println("$(EnvConfig.now()) adapting machine for regressionwindow $regrwindow")
-    nn = model001(size(trainfeatures, 1), Targets.uniquelabels(), Features.periodlabels(regrwindow))
-    nn = adaptnn!(nn, trainfeatures, traintargets)
-    nn.featuresdescription = featuresdescription
-    nn.targetsdescription = targetsdescription
-    println("$(EnvConfig.now()) predicting with machine for regressionwindow $regrwindow")
-    pred = predict(nn, features)
-    push!(nn.predictions, predictionsdataframeold(nn, setranges, targets, pred, features))
-    # predictiondistribution(pred, nn.mnemonic)
-
-    println("saving adapted classifier $(nn.fileprefix)")
-    # println(nn)
-    savenn(nn)
-    # println("$(EnvConfig.now()) load machine from file $(nn.fileprefix) for regressionwindow $regrwindow and predict")
-    # nntest = loadnn(nn.fileprefix)
-    # println(nntest)
-    # predtest = predict(nntest, features)
-    # @assert pred ≈ predtest  "NN results differ from loaded NN: pred[:, 1:5] = $(pred[:, begin:begin+5]) predtest[:, 1:5] = $(predtest[:, begin:begin+5])"
-    return nn
-end
-
-function adaptcombi(nnvec::Vector{NN}, features::Features.AbstractFeatures, pe::Dict, setranges::Dict)
-    @error "under reconsideration - does not work"
-    return
-
-    println("$(EnvConfig.now()) preparing features and targets for combi classifier")
-    features, targets, featuresdescription, targetsdescription, relativedist = combifeaturestargets(nnvec, features, pe)
-    # trainix = subsetdim2(collect(firstindex(targets):lastindex(targets)), setranges["combi"])
-    # println("size(features)=$(size(features)), size(targets)=$(size(targets))")
-    trainfeatures = subsetdim2(features, setranges["combi"])
-    traintargets = subsetdim2(targets, setranges["combi"])
-    # println("before oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
-    (trainfeatures), traintargets = undersample((trainfeatures), traintargets)  # all classes are equally trained
-    # println("after oversample size(trainfeatures)=$(size(trainfeatures)), size(traintargets)=$(size(traintargets))")
-    println("$(EnvConfig.now()) adapting machine for combi classifier")
-    nn = model001(size(trainfeatures, 1), Targets.uniquelabels(), "combi")
-    nn = adaptnn!(nn, trainfeatures, traintargets)
-    nn.featuresdescription = featuresdescription
-    nn.targetsdescription = targetsdescription
-    nn.predecessors = [nn.fileprefix for nn in nnvec]
-    println("$(EnvConfig.now()) predicting with combi classifier")
-    pred = predict(nn, features)
-    push!(nn.predictions, predictionsdataframeold(nn, setranges, targets, pred, features))
-    # predictiondistribution(pred, nn.mnemonic)
-    @assert size(pred, 2) == size(features, 2)  "size(pred[combi], 2)=$(size(pred, 2)) == size(features, 2)=$(size(features, 2))"
-    @assert size(targets, 1) == size(features, 2)  "size(targets[combi], 1)=$(size(targets, 1)) == size(features, 2)=$(size(features, 2))"
-
-    println("saving adapted classifier $(nn.fileprefix)")
-    # println(nn)
-    savenn(nn)
-    # println("$(EnvConfig.now()) load machine from file $(nn.fileprefix) for regressionwindow combi and predict")
-    # nntest = loadnn(nn.fileprefix)
-    # println(nntest)
-    # predtest = predict(nntest, features)
-    # @assert pred ≈ predtest  "NN results differ from loaded NN: pred[:, 1:5] = $(pred[:, begin:begin+5]) predtest[:, 1:5] = $(predtest[:, begin:begin+5])"
-    return nn
 end
 
 function lossesfilename(fileprefix::String)
@@ -2824,13 +2523,11 @@ end
 
 #endregion Evaluation
 
-include("Classifier011.jl")
-include("Classifier013.jl")
-include("Classifier014.jl")
-include("Classifier015.jl")
 include("BsonLegacyMigration.jl")
-include("TrendClassifierRuntimeCommon.jl")
+include("SampleSource.jl")
+include("SetsStore.jl")
 include("TrendClassifier001.jl")
+include("ClassifierStore.jl")
 
 """
 idea:
