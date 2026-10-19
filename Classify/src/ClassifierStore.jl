@@ -4,6 +4,7 @@
 # - `nn.bson`, `nn-lastepoch.bson`: adapted NN (best loss) and last epoch checkpoint
 # - `meta.arrow`: key/value table with component ids, hashes, labels, feature columns and coins
 # - `trainindex.arrow`: training samples as references into the per-coin feature stores
+# - `trainfeatures.f32`: compact features × samples Float32 matrix of the training index, memory mapped during adaptation
 # - `predictions/<coin>.arrow`: opentime, score, label (Int8 TradeLabel code) over the feature store history
 
 const NN_FILEPREFIX = "nn"

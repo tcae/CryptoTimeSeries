@@ -16,7 +16,11 @@ end
         y = ["A", "A", "B", "B"]
 
         nn = _reinforce_test_nn("reinforce_idx")
-        @test Classify.misclassifiedindices(nn, Classify.MatrixSampleSource(nn, x, y)) == [3, 4]
+        misclassified = Classify.misclassifiedindices(nn, Classify.MatrixSampleSource(nn, x, y))
+        @test misclassified == [3, 4]
+        @test eltype(misclassified) == UInt32
+        @test eltype(Classify._sampleindices(4)) == UInt32
+        @test_throws AssertionError Classify._sampleindices(typemax(UInt32) + 1)
 
         nn_no_reinforce = _reinforce_test_nn("no_reinforce")
         Classify.adaptnn!(nn_no_reinforce, Classify.MatrixSampleSource(nn_no_reinforce, x, y); maxepochs=10, reinforce_epochs=0, folderpath=tmpdir)

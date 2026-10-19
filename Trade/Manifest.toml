@@ -281,10 +281,10 @@ weakdeps = ["SparseArrays"]
     ChainRulesCoreSparseArraysExt = "SparseArrays"
 
 [[deps.Classify]]
-deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
+deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "Mmap", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.30.0"
+version = "0.31.0"
 
 [[deps.CodecLz4]]
 deps = ["Lz4_jll", "TranscodingStreams"]
@@ -1840,7 +1840,7 @@ version = "1.10.0"
 deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-version = "0.3.0"
+version = "0.3.2"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
@@ -1872,7 +1872,7 @@ version = "1.22.2"
     RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
 
 [[deps.Trade]]
-deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "IbkrSpot", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "TSM", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
+deps = ["Bybit", "CSV", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "JSON", "Logging", "LoggingExtras", "Ohlcv", "PrettyTables", "Profile", "Statistics", "TSM", "Targets", "Test", "TestOhlcv", "TradingStrategy", "Xch"]
 path = "."
 uuid = "a2ab2fc1-00c2-4ff3-94b6-ed3e853b2d26"
 version = "0.19.11"
@@ -1881,7 +1881,7 @@ version = "0.19.11"
 deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "SHA", "TSM", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.15.0"
+version = "0.15.1"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"

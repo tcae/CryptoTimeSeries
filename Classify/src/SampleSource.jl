@@ -87,6 +87,108 @@ end
 
 classindex(src::ArrowIndexSource, ixs::AbstractVector{<:Integer}) = src.labelix[ixs]
 
+"File name of the compact training feature matrix within a classifier folder."
+const TRAINFEATURES_FILE = "trainfeatures.f32"
+
+"""
+Memory-mapped sample source backed by one compact features × samples Float32 matrix file.
+
+The matrix holds only the samples referenced by the training index, in index order, so all
+features of a sample are contiguous and a randomly picked sample touches one memory page.
+The file is headerless: its dimensions follow from the feature count and the index length.
+"""
+struct CompactMmapSource{L<:AbstractVector{<:Integer}, WV<:AbstractVector{Float32}} <: AbstractSampleSource
+    X::Matrix{Float32}  # features × samples, memory mapped read-only
+    labelix::L
+    weight::WV
+    nlabels::Int
+    useweights::Bool
+end
+
+"""
+    _writecompactmatrix(path, featurestores, featurecols, coinixs, rows)
+
+Write the features × samples Float32 matrix of the samples `(coinixs[i], rows[i])` to `path`.
+The matrix is filled directly in a writable memory map of a temporary file that is renamed
+to `path` afterwards, because truncating a file in place breaks still memory mapped readers.
+"""
+function _writecompactmatrix(path::AbstractString, featurestores::AbstractVector, featurecols::AbstractVector{<:AbstractString},
+    coinixs::AbstractVector{<:Integer}, rows::AbstractVector{<:Integer})
+    columns = [[store[!, col] for col in featurecols] for store in featurestores]
+    @assert all(column -> eltype(column) == Float32, Iterators.flatten(columns)) "feature store columns must be Float32; found $(unique(eltype.(Iterators.flatten(columns))))"
+    nfeatures = length(featurecols)
+    tmppath = path * ".tmp"
+    open(tmppath, "w+") do io
+        X = Mmap.mmap(io, Matrix{Float32}, (nfeatures, length(coinixs)))
+        for sampleix in eachindex(coinixs)
+            coincolumns = columns[coinixs[sampleix]]
+            row = rows[sampleix]
+            for featureix in 1:nfeatures
+                X[featureix, sampleix] = coincolumns[featureix][row]
+            end
+        end
+        Mmap.sync!(X)
+    end
+    mv(tmppath, path; force=true)
+    return path
+end
+
+"""
+    CompactMmapSource(featurestores, featurecols, index; folderpath, nlabels, useweights)
+
+Write the compact features × samples matrix of the samples in `index` to `TRAINFEATURES_FILE`
+in `folderpath` and memory-map it read-only. `featurestores` contains per-coin feature tables in
+coin-index order, `featurecols` the feature column names in classifier input order and `index`
+the training index table with columns `coinix, row, labelix, weight`.
+"""
+function CompactMmapSource(featurestores::AbstractVector, featurecols::AbstractVector{<:AbstractString}, index;
+    folderpath::AbstractString, nlabels::Integer, useweights::Bool)
+    @assert !isempty(featurestores) "CompactMmapSource requires at least one feature store"
+    @assert !isempty(featurecols) "CompactMmapSource requires at least one feature column"
+    @assert nlabels > 0 "nlabels=$(nlabels) must be > 0"
+    coinixs = index[!, :coinix]
+    rows = index[!, :row]
+    labelix = index[!, :labelix]
+    weight = index[!, :weight]
+    nsamp = length(coinixs)
+    @assert nsamp > 0 "CompactMmapSource requires a non-empty training index"
+    @assert length(rows) == length(labelix) == length(weight) == nsamp "index column lengths differ: coinix=$(nsamp) row=$(length(rows)) labelix=$(length(labelix)) weight=$(length(weight))"
+    @assert all(coinix -> 1 <= coinix <= length(featurestores), coinixs) "coinix values must be within 1:$(length(featurestores))"
+    mkpath(folderpath)
+    path = joinpath(folderpath, TRAINFEATURES_FILE)
+    (verbosity >= 2) && println("$(EnvConfig.now()) writing compact training features $(length(featurecols))×$(nsamp) to $(path)")
+    _writecompactmatrix(path, featurestores, featurecols, coinixs, rows)
+    expectedbytes = sizeof(Float32) * length(featurecols) * nsamp
+    @assert filesize(path) == expectedbytes "$(path) has $(filesize(path)) bytes; expected $(expectedbytes)"
+    X = open(io -> Mmap.mmap(io, Matrix{Float32}, (length(featurecols), nsamp)), path, "r")
+    return CompactMmapSource(X, labelix, weight, Int(nlabels), useweights)
+end
+
+"Return the number of samples in the compact memory-mapped source."
+nsamples(src::CompactMmapSource) = size(src.X, 2)
+
+"""
+Return the feature, one-hot label and optional weight batch for sample indices `ixs`.
+
+Indices are sorted so samples sharing a memory page are read together.
+"""
+function batch(src::CompactMmapSource, ixs::AbstractVector{<:Integer})
+    sortedixs = sort(ixs)
+    x = src.X[:, sortedixs]
+    y = Flux.onehotbatch(src.labelix[sortedixs], 1:src.nlabels)
+    w = src.useweights ? src.weight[sortedixs] : nothing
+    return x, y, w
+end
+
+"Return true class indices for sample indices `ixs`."
+classindex(src::CompactMmapSource, ixs::AbstractVector{<:Integer}) = src.labelix[ixs]
+
+"Return checked UInt32 sample indices for a sample count, to keep adaptation index vectors compact."
+function _sampleindices(nsamples::Integer)::UnitRange{UInt32}
+    @assert 0 <= nsamples <= typemax(UInt32) "nsamples=$(nsamples) must be within 0:$(typemax(UInt32))"
+    return UInt32(1):UInt32(nsamples)
+end
+
 "Return inverse-frequency class weights `1 / (n_active_classes * p(class))` for class sample `counts`; absent classes get weight 0."
 function classweights(counts::AbstractVector{<:Integer})::Vector{Float32}
     total = sum(counts)
@@ -120,8 +222,8 @@ end
 "Return the sample indices of `src` whose predicted class differs from the target class."
 function misclassifiedindices(nn::NN, src::AbstractSampleSource; chunksize::Integer=8192)
     Flux.testmode!(nn.model)
-    wrongix = Int[]
-    for chunk in Iterators.partition(1:nsamples(src), chunksize)
+    wrongix = UInt32[]
+    for chunk in Iterators.partition(_sampleindices(nsamples(src)), chunksize)
         x, _, _ = batch(src, chunk)
         predix = vec(map(argmax, eachcol(nn.valuecorrection(nn.model(x)))))
         trueix = classindex(src, chunk)
@@ -144,13 +246,14 @@ always reevaluates the full adaptation set so previously correct samples can be 
 """
 function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinforce_epochs::Integer=0, batchsize::Integer=64, folderpath::AbstractString=EnvConfig.logfolder())
     @assert maxepochs > 0 "maxepochs=$(maxepochs) must be > 0"
-    active = collect(1:nsamples(src))
+    active = collect(_sampleindices(nsamples(src)))
     (verbosity >= 3) && println("adaptnn! with $(nsamples(src)) samples of $(typeof(src).name.name), maxepochs=$(maxepochs), batchsize=$(batchsize)")
     Flux.trainmode!(nn.model)
     minloss = maxloss = missing
     breakmsg = "epoch loop finished without convergence"
     @showprogress for epoch in 1:maxepochs
-        for chunk in Iterators.partition(shuffle(active), batchsize)
+        shuffle!(active)
+        for chunk in Iterators.partition(active, batchsize)
             x, y, w = batch(src, chunk)
             loss, grads = Flux.withgradient(nn.model) do m
                 y_hat = nn.valuecorrection(m(x))

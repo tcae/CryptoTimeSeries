@@ -3,7 +3,7 @@ Train and evaluate the trading signal classifiers
 """
 module Classify
 
-using CSV, DataFrames, Logging, Dates, Random
+using CSV, DataFrames, Logging, Dates, Random, Mmap
 using BSON, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils, Tables
 using CategoricalArrays
 using CategoricalDistributions
@@ -1680,6 +1680,33 @@ function model007(featurecount, labels, mnemonic)::NN
     description = "Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out) relu)" # (@doc model001);
     nn = NN(model, optim, lossfunc, labels, description)
     setmnemonic(nn, "model007_" * mnemonic)
+    return nn
+end
+
+"""
+Same as model002 but with 10x lower learning rate to reduce loss volatility
+"""
+function model008(featurecount, labels, mnemonic)::NN
+    lay_in = featurecount
+    lay_out = length(labels)
+    lay1 = 3 * lay_in
+    lay2 = round(Int, lay1 * 2 / 3)
+    lay3 = round(Int, (lay2 + lay_out) / 2)
+    model = Chain(
+        BatchNorm(lay_in),             #* this initial normalization is the only difference to model001
+        Dense(lay_in => lay1, relu),   # activation function inside layer
+        BatchNorm(lay1),
+        Dense(lay1 => lay2, relu),   # activation function inside layer
+        BatchNorm(lay2),
+        Dense(lay2 => lay3, relu),   # activation function inside layer
+        BatchNorm(lay3),
+        Dense(lay3 => lay_out))   # no activation function inside layer, no softmax in combination with logitcrossentropy instead of crossentropy with softmax
+    optim = Flux.setup(Flux.Adam(0.0001,(0.9, 0.999)), model)  # will store optimiser momentum, etc.
+    lossfunc = Flux.logitcrossentropy
+
+    description = "BatchNorm($(lay_in))-Dense($(lay_in)->$(lay1) relu)-BatchNorm($(lay1))-Dense($(lay1)->$(lay2) relu)-BatchNorm($(lay2))-Dense($(lay2)->$(lay3) relu)-BatchNorm($(lay3))-Dense($(lay3)->$(lay_out))"
+    nn = NN(model, optim, lossfunc, labels, description)
+    setmnemonic(nn, "model008_" * mnemonic)
     return nn
 end
 

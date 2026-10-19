@@ -66,15 +66,19 @@ const CLASSIFIERSTORE_PARTITION = (samplesets=["train", "test", "train", "eval"]
         @test all(unbalanced[!, :weight] .== 1f0)
         Classify.savetrainindex(classifiername, indexdf)
 
-        # memory mapped source batches equal the in-memory feature matrix
+        # direct and compact memory mapped sources batch identically to the in-memory feature matrix
         featurecols = Features.requestedcolumns(classifierstoretestf6())
         storedindex = Classify.readtrainindex(classifiername)
-        src = Classify.ArrowIndexSource([stores[coin][1] for coin in coins], featurecols, storedindex; nlabels=length(labels), useweights=true)
+        featurestores = [stores[coin][1] for coin in coins]
+        directsrc = Classify.ArrowIndexSource(featurestores, featurecols, storedindex; nlabels=length(labels), useweights=true)
+        src = Classify.CompactMmapSource(featurestores, featurecols, storedindex;
+            folderpath=EnvConfig.classifierfolder(classifiername), nlabels=length(labels), useweights=true)
         @test Classify.nsamples(src) == size(indexdf, 1)
         sampleixs = collect(1:Classify.nsamples(src))
         x, y, w = Classify.batch(src, sampleixs)
         expected = reduce(hcat, [Float32[stores[coins[indexdf[ix, :coinix]]][1][indexdf[ix, :row], col] for col in featurecols] for ix in sampleixs])
         @test x == expected
+        @test x == first(Classify.batch(directsrc, sampleixs))
         @test vec(map(argmax, eachcol(y))) == indexdf[!, :labelix]
         @test w == indexdf[!, :weight]
         shuffledixs = [7, 3, 11, 1]
@@ -82,6 +86,7 @@ const CLASSIFIERSTORE_PARTITION = (samplesets=["train", "test", "train", "eval"]
         sortedixs = sort(shuffledixs)
         @test xs == expected[:, sortedixs]
         @test vec(map(argmax, eachcol(ys))) == indexdf[sortedixs, :labelix]
+        @test xs == first(Classify.batch(directsrc, shuffledixs))
 
         # one adaptation implementation for memory mapped and in-memory sources
         cl = Classify.newclassifier(classifiername, Classify.model002, classifierstoretestf6, labels)

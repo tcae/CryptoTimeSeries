@@ -322,7 +322,7 @@ const DATERANGE_CONFIGS = Dict{String, NamedTuple}(
 
 const MODEL_CONFIGS = Dict{String, Function}(
     "M001" => Classify.model001, "M002" => Classify.model002, "M003" => Classify.model003, "M004" => Classify.model004,
-    "M005" => Classify.model005, "M006" => Classify.model006, "M007" => Classify.model007,
+    "M005" => Classify.model005, "M006" => Classify.model006, "M007" => Classify.model007, "M008" => Classify.model008,
 )
 
 const STRATEGY_CONFIGS = Dict{String, Function}(
@@ -373,6 +373,8 @@ const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c f
     clconfig("F14", "T23", "M002"),                         # former mk045
     clconfig("F09", "T24", "M002"),                         # former mk050
     clconfig("F10", "T25", "M002"),
+    clconfig("F09", "T24", "M008"),                         # former mk050
+    clconfig("F10", "T25", "M008"),
 ])
 
 "Return a trading strategy context of a classifier (base name) and a strategy id."
@@ -422,6 +424,8 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("049", "F09-T09-P02-M002-B1", "S06"),
     tsentry("050", "F09-T24-P02-M002-B1", "S08"),
     tsentry("051", "F10-T25-P02-M002-B1", "S08"),
+    tsentry("052", "F09-T24-P02-M008-B1", "S08"),
+    tsentry("053", "F10-T25-P02-M008-B1", "S08"),
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),
     tsentry("103", "F09-T16-P02-M002-B1", "S08"),

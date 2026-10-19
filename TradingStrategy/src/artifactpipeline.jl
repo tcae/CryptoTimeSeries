@@ -46,7 +46,7 @@ Return the adapted classifier of `clcfg` trained on `coinset` within `daterange`
 adapted classifier is reused unless `retrain` is set, in which case adaptation continues from
 its stored weights, optimizer state and loss history, optionally with reinforcement.
 If no adapted classifier exists, create and train a new classifier.
-Training samples are referenced via a memory mapped training index into the per-coin feature stores.
+Training samples are compacted into one features × samples Float32 matrix file that is memory mapped for adaptation.
 """
 function trainclassifier!(clcfg::NamedTuple; coinset::AbstractString, daterange::AbstractString, retrain::Bool=false, reinforce_epochs::Integer=0)::Classify.TrendClassifier001
     name = classifiername(clcfg; coinset=coinset, daterange=daterange)
@@ -64,7 +64,8 @@ function trainclassifier!(clcfg::NamedTuple; coinset::AbstractString, daterange:
     Classify.savetrainindex(name, indexdf)
     indexdf = Classify.readtrainindex(name)
     featurestores = [loadcoin(coin)[1] for coin in coins]
-    src = Classify.ArrowIndexSource(featurestores, classifierfeaturecols(clcfg), indexdf; nlabels=length(labels), useweights=clcfg.classbalancing)
+    src = Classify.CompactMmapSource(featurestores, classifierfeaturecols(clcfg), indexdf;
+        folderpath=EnvConfig.classifierfolder(name), nlabels=length(labels), useweights=clcfg.classbalancing)
     Classify.writemeta(name, merge(meta, Dict("coins" => join(coins, ","))))
     # predictions and evaluations of a previously adapted NN are invalid for the new one
     rm(Classify.predictionsfolder(name); recursive=true)

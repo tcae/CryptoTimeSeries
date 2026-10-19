@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "bc5e16fbb73f30813145a26b86dead41a6b51927"
+project_hash = "54ac619fea37f4b8e7cc7db581f823c0e0caa878"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "d9aaef7c63466eee4de23b4d9dad03629df54bea"
@@ -237,10 +237,10 @@ weakdeps = ["SparseArrays"]
     ChainRulesCoreSparseArraysExt = "SparseArrays"
 
 [[deps.Classify]]
-deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
+deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "Mmap", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
 path = "."
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.29.2"
+version = "0.31.0"
 
 [[deps.CodecLz4]]
 deps = ["Lz4_jll", "TranscodingStreams"]
@@ -441,7 +441,7 @@ version = "1.0.7"
 deps = ["Arrow", "CategoricalArrays", "DataFrames", "Dates", "JDF", "JSON3", "Logging", "Pkg", "Test"]
 path = "/Users/torsten/github/CryptoTimeSeries/EnvConfig"
 uuid = "a6e3057b-1cf6-47d2-8344-4f4d121c3bc7"
-version = "0.2.16"
+version = "0.3.0"
 
 [[deps.EnzymeCore]]
 git-tree-sha1 = "c6ee69ee502060982d12dbaaf3d8fcb4e835a0d1"
@@ -480,7 +480,7 @@ version = "0.1.10"
 deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "1.8.8"
+version = "2.0.0"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -1745,7 +1745,7 @@ version = "1.10.0"
 deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-version = "0.2.7"
+version = "0.3.2"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
