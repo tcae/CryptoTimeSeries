@@ -50,8 +50,9 @@ const CLASSIFIERSTORE_PARTITION = (samplesets=["train", "test", "train", "eval"]
 
         # training index references feature rows of the train set with matching label index
         loadcoin(coin) = stores[coin]
-        indexdf = Classify.buildtrainindex(coins, loadcoin, labels; classbalancing=true)
+        indexdf = Classify.buildtrainindex(coins, loadcoin, labels)
         @test size(indexdf, 1) > 0
+        @test names(indexdf) == ["coinix", "row", "labelix"]
         for ix in 1:97:size(indexdf, 1)
             fdf, tdf, sdf = stores[coins[indexdf[ix, :coinix]]]
             dt = fdf[indexdf[ix, :row], :opentime]
@@ -59,20 +60,17 @@ const CLASSIFIERSTORE_PARTITION = (samplesets=["train", "test", "train", "eval"]
             @test (length(sixs) == 1) && (sdf[only(sixs), :set] == "train")
             @test labels[indexdf[ix, :labelix]] == Targets.TradeLabel(tdf[findfirst(==(dt), tdf[!, :opentime]), :label])
         end
-        classweightsum = [sum(indexdf[indexdf[!, :labelix] .== ix, :weight]) for ix in eachindex(labels)]
+        classweight = Classify.classweights([count(==(UInt8(ix)), indexdf[!, :labelix]) for ix in eachindex(labels)])
+        classweightsum = [count(==(UInt8(ix)), indexdf[!, :labelix]) * classweight[ix] for ix in eachindex(labels)]
         activesums = filter(>(0f0), classweightsum)
         @test all(isapprox.(activesums, first(activesums); rtol=1f-4))
-        unbalanced = Classify.buildtrainindex(coins, loadcoin, labels; classbalancing=false)
-        @test all(unbalanced[!, :weight] .== 1f0)
-        Classify.savetrainindex(classifiername, indexdf)
 
         # direct and compact memory mapped sources batch identically to the in-memory feature matrix
         featurecols = Features.requestedcolumns(classifierstoretestf6())
-        storedindex = Classify.readtrainindex(classifiername)
         featurestores = [stores[coin][1] for coin in coins]
-        directsrc = Classify.ArrowIndexSource(featurestores, featurecols, storedindex; nlabels=length(labels), useweights=true)
-        src = Classify.CompactMmapSource(featurestores, featurecols, storedindex;
-            folderpath=EnvConfig.classifierfolder(classifiername), nlabels=length(labels), useweights=true)
+        directsrc = Classify.ArrowIndexSource(featurestores, featurecols, indexdf; nlabels=length(labels), useweights=true)
+        src = Classify.CompactMmapSource(featurestores, featurecols, indexdf;
+            folderpath=EnvConfig.classifierfolder(classifiername), nlabels=length(labels), classbalancing=true)
         @test Classify.nsamples(src) == size(indexdf, 1)
         sampleixs = collect(1:Classify.nsamples(src))
         x, y, w = Classify.batch(src, sampleixs)
@@ -80,7 +78,9 @@ const CLASSIFIERSTORE_PARTITION = (samplesets=["train", "test", "train", "eval"]
         @test x == expected
         @test x == first(Classify.batch(directsrc, sampleixs))
         @test vec(map(argmax, eachcol(y))) == indexdf[!, :labelix]
-        @test w == indexdf[!, :weight]
+        @test w == classweight[indexdf[!, :labelix]]
+        @test src.labelix == indexdf[!, :labelix]
+        @test filesize(joinpath(EnvConfig.classifierfolder(classifiername), Classify.TRAINLABELS_FILE)) == Classify.nsamples(src)
         shuffledixs = [7, 3, 11, 1]
         xs, ys, ws = Classify.batch(src, shuffledixs)
         sortedixs = sort(shuffledixs)

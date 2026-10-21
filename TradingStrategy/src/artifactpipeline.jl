@@ -59,13 +59,15 @@ function trainclassifier!(clcfg::NamedTuple; coinset::AbstractString, daterange:
     @assert !isempty(coins) "no coin of coinset $(coinset) has OHLCV data to train classifier $(name)"
     labels = classifierlabels(clcfg)
     loadcoin(coin) = coinstores(clcfg, coin; daterange=daterange)
-    indexdf = Classify.buildtrainindex(coins, loadcoin, labels; classbalancing=clcfg.classbalancing)
+    indexdf = Classify.buildtrainindex(coins, loadcoin, labels)
     @assert size(indexdf, 1) > 0 "empty training index of classifier $(name)"
-    Classify.savetrainindex(name, indexdf)
-    indexdf = Classify.readtrainindex(name)
     featurestores = [loadcoin(coin)[1] for coin in coins]
     src = Classify.CompactMmapSource(featurestores, classifierfeaturecols(clcfg), indexdf;
-        folderpath=EnvConfig.classifierfolder(name), nlabels=length(labels), useweights=clcfg.classbalancing)
+        folderpath=EnvConfig.classifierfolder(name), nlabels=length(labels), classbalancing=clcfg.classbalancing)
+    # Drop the compaction-only index and feature-store mappings before random-access training.
+    indexdf = nothing
+    empty!(featurestores)
+    GC.gc()
     Classify.writemeta(name, merge(meta, Dict("coins" => join(coins, ","))))
     # predictions and evaluations of a previously adapted NN are invalid for the new one
     rm(Classify.predictionsfolder(name); recursive=true)

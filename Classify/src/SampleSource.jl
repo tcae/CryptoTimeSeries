@@ -35,15 +35,15 @@ classindex(src::MatrixSampleSource, ixs::AbstractVector{<:Integer}) = [argmax(vi
 Memory mapped sample source of a classifier training index.
 
 Each sample references row `row[i]` of the per-coin feature store `features[coinix[i]]` and carries its
-class index `labelix[i]` (position in the classifier label order) and sample weight `weight[i]`.
-Batches gather the features of their samples sorted by storage location and build lazy one-hot targets.
+class index `labelix[i]` (position in the classifier label order). Class weights are calculated once
+from the per-class sample counts.
 """
-struct ArrowIndexSource{V<:AbstractVector{Float32}, C<:AbstractVector{<:Integer}, R<:AbstractVector{<:Integer}, L<:AbstractVector{<:Integer}, WV<:AbstractVector{Float32}} <: AbstractSampleSource
+struct ArrowIndexSource{V<:AbstractVector{Float32}, C<:AbstractVector{<:Integer}, R<:AbstractVector{<:Integer}, L<:AbstractVector{<:Integer}} <: AbstractSampleSource
     features::Vector{Vector{V}}  # [coinix][featureix] memory mapped feature store column
     coinix::C
     row::R
     labelix::L
-    weight::WV
+    classweight::Vector{Float32}
     nlabels::Int
     useweights::Bool
 end
@@ -53,16 +53,19 @@ end
 
 `featurestores` is a vector of per-coin feature store tables in coin index order, `featurecols`
 the feature column names in classifier input order and `index` the training index table with
-columns `coinix, row, labelix, weight`.
+columns `coinix, row, labelix`.
 """
 function ArrowIndexSource(featurestores::AbstractVector, featurecols::AbstractVector{<:AbstractString}, index; nlabels::Integer, useweights::Bool)
     @assert !isempty(featurestores) "ArrowIndexSource requires at least one feature store"
+    @assert 0 < nlabels <= typemax(UInt8) "nlabels=$(nlabels) must be within 1:$(typemax(UInt8))"
     columns = [[store[!, col] for col in featurecols] for store in featurestores]
     V = typeof(columns[1][1])
     @assert all(col -> col isa V, Iterators.flatten(columns)) "all feature store columns must share type $(V); found $(unique(typeof.(Iterators.flatten(columns))))"
     @assert eltype(V) == Float32 "feature store columns must be Float32 but are $(eltype(V))"
     features = Vector{Vector{V}}([Vector{V}(cols) for cols in columns])
-    src = ArrowIndexSource(features, index[!, :coinix], index[!, :row], index[!, :labelix], index[!, :weight], Int(nlabels), useweights)
+    labelix = index[!, :labelix]
+    counts = [count(==(UInt8(ix)), labelix) for ix in 1:nlabels]
+    src = ArrowIndexSource(features, index[!, :coinix], index[!, :row], labelix, classweights(counts), Int(nlabels), useweights)
     @assert nsamples(src) > 0 "ArrowIndexSource requires a non-empty training index"
     return src
 end
@@ -81,14 +84,16 @@ function batch(src::ArrowIndexSource, ixs::AbstractVector{<:Integer})
         end
     end
     y = Flux.onehotbatch(src.labelix[sortedixs], 1:src.nlabels)
-    w = src.useweights ? src.weight[sortedixs] : nothing
+    w = src.useweights ? src.classweight[src.labelix[sortedixs]] : nothing
     return x, y, w
 end
 
 classindex(src::ArrowIndexSource, ixs::AbstractVector{<:Integer}) = src.labelix[ixs]
+batchindices(src::ArrowIndexSource, ixs::AbstractVector{<:Integer}) = sort(ixs; by=ix -> (src.coinix[ix], src.row[ix]))
 
 "File name of the compact training feature matrix within a classifier folder."
 const TRAINFEATURES_FILE = "trainfeatures.f32"
+const TRAINLABELS_FILE = "trainlabels.u8"
 
 """
 Memory-mapped sample source backed by one compact features × samples Float32 matrix file.
@@ -97,10 +102,10 @@ The matrix holds only the samples referenced by the training index, in index ord
 features of a sample are contiguous and a randomly picked sample touches one memory page.
 The file is headerless: its dimensions follow from the feature count and the index length.
 """
-struct CompactMmapSource{L<:AbstractVector{<:Integer}, WV<:AbstractVector{Float32}} <: AbstractSampleSource
+struct CompactMmapSource{L<:AbstractVector{UInt8}} <: AbstractSampleSource
     X::Matrix{Float32}  # features × samples, memory mapped read-only
     labelix::L
-    weight::WV
+    classweight::Vector{Float32}
     nlabels::Int
     useweights::Bool
 end
@@ -134,34 +139,47 @@ function _writecompactmatrix(path::AbstractString, featurestores::AbstractVector
 end
 
 """
-    CompactMmapSource(featurestores, featurecols, index; folderpath, nlabels, useweights)
+    CompactMmapSource(featurestores, featurecols, index; folderpath, nlabels, classbalancing)
 
-Write the compact features × samples matrix of the samples in `index` to `TRAINFEATURES_FILE`
-in `folderpath` and memory-map it read-only. `featurestores` contains per-coin feature tables in
-coin-index order, `featurecols` the feature column names in classifier input order and `index`
-the training index table with columns `coinix, row, labelix, weight`.
+Write the compact features × samples matrix and aligned UInt8 labels for samples in `index` to
+`TRAINFEATURES_FILE` and `TRAINLABELS_FILE` in `folderpath`, then memory-map both read-only.
+`featurestores` contains per-coin feature tables in coin-index order, `featurecols` the feature
+column names in classifier input order and `index` has columns `coinix, row, labelix`. Original
+coin and row coordinates are used only while compacting; sample indices then address both files.
 """
 function CompactMmapSource(featurestores::AbstractVector, featurecols::AbstractVector{<:AbstractString}, index;
-    folderpath::AbstractString, nlabels::Integer, useweights::Bool)
+    folderpath::AbstractString, nlabels::Integer, classbalancing::Bool)
     @assert !isempty(featurestores) "CompactMmapSource requires at least one feature store"
     @assert !isempty(featurecols) "CompactMmapSource requires at least one feature column"
-    @assert nlabels > 0 "nlabels=$(nlabels) must be > 0"
+    @assert 0 < nlabels <= typemax(UInt8) "nlabels=$(nlabels) must be within 1:$(typemax(UInt8))"
     coinixs = index[!, :coinix]
     rows = index[!, :row]
     labelix = index[!, :labelix]
-    weight = index[!, :weight]
     nsamp = length(coinixs)
     @assert nsamp > 0 "CompactMmapSource requires a non-empty training index"
-    @assert length(rows) == length(labelix) == length(weight) == nsamp "index column lengths differ: coinix=$(nsamp) row=$(length(rows)) labelix=$(length(labelix)) weight=$(length(weight))"
+    @assert length(rows) == length(labelix) == nsamp "index column lengths differ: coinix=$(nsamp) row=$(length(rows)) labelix=$(length(labelix))"
     @assert all(coinix -> 1 <= coinix <= length(featurestores), coinixs) "coinix values must be within 1:$(length(featurestores))"
+    @assert all(label -> 1 <= label <= nlabels, labelix) "labelix values must be within 1:$(nlabels)"
     mkpath(folderpath)
     path = joinpath(folderpath, TRAINFEATURES_FILE)
     (verbosity >= 2) && println("$(EnvConfig.now()) writing compact training features $(length(featurecols))×$(nsamp) to $(path)")
     _writecompactmatrix(path, featurestores, featurecols, coinixs, rows)
+    labelpath = joinpath(folderpath, TRAINLABELS_FILE)
+    labeltmppath = labelpath * ".tmp"
+    open(labeltmppath, "w+") do io
+        labels = Mmap.mmap(io, Vector{UInt8}, nsamp)
+        labels .= labelix
+        Mmap.sync!(labels)
+    end
+    mv(labeltmppath, labelpath; force=true)
     expectedbytes = sizeof(Float32) * length(featurecols) * nsamp
     @assert filesize(path) == expectedbytes "$(path) has $(filesize(path)) bytes; expected $(expectedbytes)"
+    @assert filesize(labelpath) == nsamp "$(labelpath) has $(filesize(labelpath)) bytes; expected $(nsamp)"
     X = open(io -> Mmap.mmap(io, Matrix{Float32}, (length(featurecols), nsamp)), path, "r")
-    return CompactMmapSource(X, labelix, weight, Int(nlabels), useweights)
+    labels = open(io -> Mmap.mmap(io, Vector{UInt8}, nsamp), labelpath, "r")
+    counts = [count(==(UInt8(ix)), labels) for ix in 1:nlabels]
+    classweight = classbalancing ? classweights(counts) : ones(Float32, nlabels)
+    return CompactMmapSource(X, labels, classweight, Int(nlabels), classbalancing)
 end
 
 "Return the number of samples in the compact memory-mapped source."
@@ -176,12 +194,16 @@ function batch(src::CompactMmapSource, ixs::AbstractVector{<:Integer})
     sortedixs = sort(ixs)
     x = src.X[:, sortedixs]
     y = Flux.onehotbatch(src.labelix[sortedixs], 1:src.nlabels)
-    w = src.useweights ? src.weight[sortedixs] : nothing
+    w = src.useweights ? src.classweight[src.labelix[sortedixs]] : nothing
     return x, y, w
 end
 
 "Return true class indices for sample indices `ixs`."
 classindex(src::CompactMmapSource, ixs::AbstractVector{<:Integer}) = src.labelix[ixs]
+
+"Return sample indices in the order used by `batch`."
+batchindices(src::AbstractSampleSource, ixs::AbstractVector{<:Integer}) = ixs
+batchindices(src::CompactMmapSource, ixs::AbstractVector{<:Integer}) = sort(ixs)
 
 "Return checked UInt32 sample indices for a sample count, to keep adaptation index vectors compact."
 function _sampleindices(nsamples::Integer)::UnitRange{UInt32}
@@ -219,18 +241,55 @@ function fullsetloss(nn::NN, src::AbstractSampleSource; chunksize::Integer=8192)
     return losssum / weightsum
 end
 
-"Return the sample indices of `src` whose predicted class differs from the target class."
-function misclassifiedindices(nn::NN, src::AbstractSampleSource; chunksize::Integer=8192)
+"Return a packed bit vector marking samples of `src` whose predicted class differs from the target class."
+function misclassificationflags(nn::NN, src::AbstractSampleSource; chunksize::Integer=8192)
     Flux.testmode!(nn.model)
-    wrongix = UInt32[]
+    flags = falses(nsamples(src))
     for chunk in Iterators.partition(_sampleindices(nsamples(src)), chunksize)
-        x, _, _ = batch(src, chunk)
+        orderedixs = batchindices(src, chunk)
+        x, _, _ = batch(src, orderedixs)
         predix = vec(map(argmax, eachcol(nn.valuecorrection(nn.model(x)))))
-        trueix = classindex(src, chunk)
-        append!(wrongix, chunk[predix .!= trueix])
+        trueix = classindex(src, orderedixs)
+        flags[orderedixs] .= predix .!= trueix
     end
     Flux.trainmode!(nn.model)
-    return wrongix
+    return flags
+end
+
+"Return sample weights with hard-example emphasis normalized to preserve each class's total weight."
+function _reinforcementweights(baseweights::Union{Nothing, AbstractVector{Float32}}, labels::AbstractVector{<:Integer},
+    flags::AbstractVector{Bool}, hardnessmeans::AbstractVector{Float32})
+    @assert length(labels) == length(flags) "length(labels)=$(length(labels)) must equal length(flags)=$(length(flags))"
+    @assert all(label -> 1 <= label <= length(hardnessmeans), labels) "labels must be within 1:$(length(hardnessmeans))"
+    @assert isnothing(baseweights) || length(baseweights) == length(labels) "length(baseweights)=$(isnothing(baseweights) ? 0 : length(baseweights)) must equal length(labels)=$(length(labels))"
+    weights = ones(Float32, length(labels))
+    isnothing(baseweights) || (weights .= baseweights)
+    for sampleix in eachindex(labels)
+        label = labels[sampleix]
+        weights[sampleix] *= (flags[sampleix] ? 2f0 : 1f0) / hardnessmeans[label]
+    end
+    return weights
+end
+
+"Return per-class mean hardness for binary 1×/2× emphasis flags."
+function _classhardnessmeans(src::AbstractSampleSource, flags::AbstractVector{Bool}, nlabels::Integer; chunksize::Integer=8192)
+    @assert length(flags) == nsamples(src) "length(flags)=$(length(flags)) must equal nsamples(src)=$(nsamples(src))"
+    @assert nlabels > 0 "nlabels=$(nlabels) must be > 0"
+    classcounts = zeros(Int, nlabels)
+    hardcounts = zeros(Int, nlabels)
+    for chunk in Iterators.partition(_sampleindices(nsamples(src)), chunksize)
+        labels = classindex(src, chunk)
+        for (offset, sampleix) in enumerate(chunk)
+            label = labels[offset]
+            classcounts[label] += 1
+            flags[sampleix] && (hardcounts[label] += 1)
+        end
+    end
+    means = ones(Float32, nlabels)
+    for label in eachindex(means)
+        classcounts[label] > 0 && (means[label] += hardcounts[label] / classcounts[label])
+    end
+    return means
 end
 
 """
@@ -240,13 +299,18 @@ Adapt `nn` with shuffled batches of `src` for at most `maxepochs` epochs or unti
 the full adaptation set (registered per epoch in `nn.losses`) converges. `nn` is checkpointed
 per epoch under `nn.fileprefix` in `folderpath`.
 
-If `reinforce_epochs > 0`, hard-sample filtering is applied every `reinforce_epochs` epochs:
-training continues on the currently misclassified samples, but the misclassification check
-always reevaluates the full adaptation set so previously correct samples can be reintroduced.
+If `reinforce_epochs > 0`, training still uses every sample. Every `reinforce_epochs`, the
+misclassification flags are refreshed over the full adaptation set; misclassified samples receive
+2× emphasis, normalized within their class so each class retains its original total weight.
+The packed flags are in-memory training state and are rebuilt after a restart.
 """
 function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinforce_epochs::Integer=0, batchsize::Integer=64, folderpath::AbstractString=EnvConfig.logfolder())
     @assert maxepochs > 0 "maxepochs=$(maxepochs) must be > 0"
+    @assert reinforce_epochs >= 0 "reinforce_epochs=$(reinforce_epochs) must be >= 0"
+    @assert batchsize > 0 "batchsize=$(batchsize) must be > 0"
     active = collect(_sampleindices(nsamples(src)))
+    hardflags = falses(nsamples(src))
+    hardnessmeans = ones(Float32, length(nn.labels))
     (verbosity >= 3) && println("adaptnn! with $(nsamples(src)) samples of $(typeof(src).name.name), maxepochs=$(maxepochs), batchsize=$(batchsize)")
     Flux.trainmode!(nn.model)
     minloss = maxloss = missing
@@ -254,7 +318,12 @@ function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinfor
     @showprogress for epoch in 1:maxepochs
         shuffle!(active)
         for chunk in Iterators.partition(active, batchsize)
-            x, y, w = batch(src, chunk)
+            orderedixs = batchindices(src, chunk)
+            x, y, w = batch(src, orderedixs)
+            if (reinforce_epochs > 0) && (nn.lossfunc === Flux.logitcrossentropy)
+                labels = classindex(src, orderedixs)
+                w = _reinforcementweights(w, labels, hardflags[orderedixs], hardnessmeans)
+            end
             loss, grads = Flux.withgradient(nn.model) do m
                 y_hat = nn.valuecorrection(m(x))
                 isnothing(w) ? nn.lossfunc(y_hat, y) : weightedloss(nn, y_hat, y, w)
@@ -271,15 +340,11 @@ function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinfor
         end
         if (reinforce_epochs > 0) && (epoch % reinforce_epochs == 0)
             if nn.lossfunc === Flux.logitcrossentropy
-                wrongix = misclassifiedindices(nn, src)
-                if isempty(wrongix)
-                    breakmsg = "stopping adaptation after epoch $epoch because reinforce filtering found no misclassified samples"
-                    break
-                end
-                active = wrongix
-                breakmsg = "applied reinforce filtering after epoch $epoch with $(length(wrongix)) hard samples; continuing training"
+                hardflags = misclassificationflags(nn, src)
+                hardnessmeans = _classhardnessmeans(src, hardflags, length(nn.labels))
+                breakmsg = "refreshed soft reinforcement after epoch $epoch with $(count(hardflags)) hard samples"
             else
-                breakmsg = "reinforce filtering skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy"
+                breakmsg = "reinforcement skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy"
             end
         end
     end

@@ -16,9 +16,20 @@ end
         y = ["A", "A", "B", "B"]
 
         nn = _reinforce_test_nn("reinforce_idx")
-        misclassified = Classify.misclassifiedindices(nn, Classify.MatrixSampleSource(nn, x, y))
-        @test misclassified == [3, 4]
-        @test eltype(misclassified) == UInt32
+        src = Classify.MatrixSampleSource(nn, x, y)
+        misclassified = Classify.misclassificationflags(nn, src)
+        @test misclassified == BitVector([false, false, true, true])
+        means = Classify._classhardnessmeans(src, misclassified, 2)
+        @test means == Float32[1, 2]
+        weights = Classify._reinforcementweights(Float32[1, 1, 2, 2], [1, 1, 2, 2], misclassified, means)
+        @test weights == Float32[1, 1, 2, 2]
+        @test sum(weights[1:2]) == 2f0
+        @test sum(weights[3:4]) == 4f0
+        mixedflags = BitVector([false, true, true, false])
+        mixedmeans = Classify._classhardnessmeans(src, mixedflags, 2)
+        mixedweights = Classify._reinforcementweights(Float32[1, 1, 2, 2], [1, 1, 2, 2], mixedflags, mixedmeans)
+        @test sum(mixedweights[1:2]) ≈ 2f0
+        @test sum(mixedweights[3:4]) ≈ 4f0
         @test eltype(Classify._sampleindices(4)) == UInt32
         @test_throws AssertionError Classify._sampleindices(typemax(UInt32) + 1)
 

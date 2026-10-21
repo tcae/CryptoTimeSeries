@@ -3,12 +3,10 @@
 # Artifacts of a named classifier in `EnvConfig.classifierfolder(classifiername)`:
 # - `nn.bson`, `nn-lastepoch.bson`: adapted NN (best loss) and last epoch checkpoint
 # - `meta.arrow`: key/value table with component ids, hashes, labels, feature columns and coins
-# - `trainindex.arrow`: training samples as references into the per-coin feature stores
-# - `trainfeatures.f32`: compact features × samples Float32 matrix of the training index, memory mapped during adaptation
+# - `trainfeatures.f32`, `trainlabels.u8`: compact features and aligned labels, memory mapped during adaptation
 # - `predictions/<coin>.arrow`: opentime, score, label (Int8 TradeLabel code) over the feature store history
 
 const NN_FILEPREFIX = "nn"
-const TRAININDEX_STEM = "trainindex"
 const META_STEM = "meta"
 
 "Return (and create) the per-coin predictions folder of the classifier `classifiername`."
@@ -87,14 +85,14 @@ function _appendindexrows!(coinixs, rows, labelixs, coinix::Integer, fot::Abstra
 end
 
 """
-    buildtrainindex(coins, loadcoin, labels; settype="train", classbalancing)
+    buildtrainindex(coins, loadcoin, labels; settype="train")
 
-Return the training index DataFrame with columns `coinix, row, labelix, weight` of all samples
-of `settype` over `coins`. `loadcoin(coin)` returns the `(features, targets, sets)` stores of `coin`.
-`labelix` is the position of the target label in `labels`; with `classbalancing` the weights are
-inverse class frequencies, otherwise 1.
+Return the training index DataFrame with columns `coinix, row, labelix` of all samples of
+`settype` over `coins`. `loadcoin(coin)` returns the `(features, targets, sets)` stores of `coin`.
+`labelix` is the position of the target label in `labels`. The coin and row coordinates are used
+to build the compact feature matrix; class weights are derived from label counts by the sample source.
 """
-function buildtrainindex(coins::AbstractVector{<:AbstractString}, loadcoin::Function, labels::AbstractVector{Targets.TradeLabel}; settype::AbstractString="train", classbalancing::Bool)::DataFrame
+function buildtrainindex(coins::AbstractVector{<:AbstractString}, loadcoin::Function, labels::AbstractVector{Targets.TradeLabel}; settype::AbstractString="train")::DataFrame
     @assert length(coins) <= typemax(UInt16) "$(length(coins)) coins exceed the UInt16 coin index"
     codemap = Dict{Int8, UInt8}(Targets.tradelabelcode(label) => UInt8(ix) for (ix, label) in enumerate(labels))
     coinixs = UInt16[]
@@ -109,17 +107,8 @@ function buildtrainindex(coins::AbstractVector{<:AbstractString}, loadcoin::Func
     (verbosity >= 2) && println()
     counts = [count(==(UInt8(ix)), labelixs) for ix in eachindex(labels)]
     (verbosity >= 2) && println("$(EnvConfig.now()) training index class counts $(Dict(zip(string.(labels), counts)))")
-    cw = classbalancing ? classweights(counts) : ones(Float32, length(labels))
-    return DataFrame(coinix=coinixs, row=rows, labelix=labelixs, weight=cw[labelixs])
+    return DataFrame(coinix=coinixs, row=rows, labelix=labelixs)
 end
-
-"Persist the training index of the classifier `classifiername`."
-function savetrainindex(classifiername::AbstractString, indexdf::AbstractDataFrame)
-    EnvConfig.savedf(indexdf, TRAININDEX_STEM; folderpath=EnvConfig.classifierfolder(classifiername), format=:arrow)
-end
-
-"Return the (memory mapped) training index of the classifier `classifiername` or `nothing` if not stored."
-readtrainindex(classifiername::AbstractString) = EnvConfig.readdf(TRAININDEX_STEM; folderpath=EnvConfig.classifierfolder(classifiername), format=:arrow)
 
 """
     predictfeatures(nn, fdf, featurecols; chunksize=8192)

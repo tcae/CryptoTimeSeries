@@ -30,7 +30,7 @@ Run configuration of one TrendDetector invocation.
 - `coinset`, `daterange`: training data identity of the classifier
 - `coins`: coins whose stores, predictions, evaluation and gains are processed
 - `stage`: last pipeline stage to run
-- `retrain`, `reinforce_epochs`: classifier adaptation options
+- `retrain`, `reinforce_epochs`: classifier adaptation and soft-reinforcement options
 - `replaystartdt`, `replayenddt`: optional gain replay window replacing the set partitions
 - `folder`: log subfolder of the gain replay output
 """
@@ -434,7 +434,12 @@ Key=value parameters:
       Replay window of the gain stage replacing the set partitions (ISO-8601).
       Example: `startdt=2025-07-01T01:00:00 enddt=2025-07-30T01:00:00`
   reinforce=<Int>
-      Apply hard-sample filtering every `reinforce` epochs. Default: `0` (off)
+      Refresh interval in epochs, not the number of reinforced epochs. After every
+      `reinforce`-th epoch the training-set misclassification flags are recomputed; the
+      following epochs give misclassified samples 2× loss weight, normalized within each
+      class, until the next refresh. Reinforcement starts after the first refresh and lasts
+      until convergence or the epoch limit. All training samples remain in the shuffled batches.
+      Example: `reinforce=3` refreshes after epochs 3, 6, 9, ... Default: `0` (off)
   folder=<name>
       Gain replay output subfolder. Default: `TS-<ts>-<mode>`
   runid=<name>
@@ -446,6 +451,14 @@ Examples:
     julia --project=. scripts/TrendDetector.jl test ts=050 stage=train
     julia --project=. scripts/TrendDetector.jl train ts=046 coins=BTC,ETH startdt=2025-07-01T00:00:00 enddt=2025-07-30T00:00:00
 """
+# How reinforcement works, for example with reinforce=3:
+
+# Epochs 1–3: normal training, using class weights only.
+# After epoch 3: the training set is scored and every misclassified sample is flagged.
+# Epochs 4–6: flagged samples get 2× loss weight, normalized within each class.
+# After epoch 6: the flags are recomputed. This repeats until convergence or the epoch limit.
+# So once it starts, reinforcement stays active for the rest of training. There is currently no parameter to limit how many epochs are reinforced.
+
 end
 
 """

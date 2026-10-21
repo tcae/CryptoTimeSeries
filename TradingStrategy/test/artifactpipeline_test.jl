@@ -22,6 +22,10 @@ using Dates, Ohlcv, TestOhlcv
         @test cl isa Classify.TrendClassifier001
         @test length(cl.nn.losses) <= 2
         @test Classify.isclassifierstored(name)
+        classifierfolder = EnvConfig.classifierfolder(name)
+        @test isfile(joinpath(classifierfolder, Classify.TRAINFEATURES_FILE))
+        @test isfile(joinpath(classifierfolder, Classify.TRAINLABELS_FILE))
+        @test !isfile(joinpath(classifierfolder, "trainindex.arrow"))
         meta = Classify.readmeta(name)
         @test meta["coins"] == join(coins, ",")
         @test meta["featureshash"] == TradingStrategy.featureshash("F09")
