@@ -10,7 +10,7 @@ targetsfolder(base::AbstractString, quotecoin::AbstractString) = EnvConfig.coinf
 configdescription(trd::AbstractTargets)::String = error("configdescription not implemented for $(typeof(trd))")
 configdescription(trd::Trend04)::String = "Trend04(minwindow=$(trd.minwindow),maxwindow=$(trd.maxwindow),holdanchormode=$(trd.holdanchormode),holdbehaviormode=$(trd.holdbehaviormode),longopen=$(trd.thres.longopen),longhold=$(trd.thres.longhold),shorthold=$(trd.thres.shorthold),shortopen=$(trd.thres.shortopen))"
 configdescription(trd::TrendRegression)::String = "TrendRegression(window=$(trd.window),longthreshold=$(trd.longthreshold),shortthreshold=$(trd.shortthreshold))"
-configdescription(trd::Trend05)::String = "Trend05(leadregr=$(trd.leadregr),supportregr=$(trd.supportregr),trendregr=$(trd.trendregr),triggerdist=$(trd.triggerdist),targetgain=$(trd.targetgain))"
+configdescription(trd::Trend05)::String = "Trend05(leadregr=$(trd.leadregr),supportregr=$(trd.supportregr),trendregr=$(trd.trendregr),triggerdist=$(trd.triggerdist),targetgain=$(trd.targetgain),distance=(pivot-regry)/pivot)"
 
 "Return the look-ahead horizon in minutes of a target config with a bounded look-ahead."
 lookaheadminutes(trd::AbstractTargets)::Int = error("lookaheadminutes not implemented for $(typeof(trd))")

@@ -19,8 +19,9 @@ It should be retained for the first feature-stabilization experiment. The
 diagnostics below do not establish that removing BatchNorm improves trading
 performance.
 
-This investigation was read-only apart from this document. No training process,
-source implementation, or saved classifier was modified.
+The initial investigation was read-only apart from this document. Following the
+agreements below, feature stabilization and new configurations were implemented.
+No production training process or saved classifier was modified by this work.
 
 ## Evidence and timing
 
@@ -97,42 +98,104 @@ Relevant implementation:
 
 - [F09 configuration](../TradingStrategy/src/tradingstrategyconfig.jl).
 - [Volume calculation and Features006 assembly](../Features/src/Features.jl):
-  `correctunworkablevolume`, `relativevolume`, and `supplement!`.
+  `relativevolume`, `_relvol!`, and `supplement!`. The historical epsilon-based
+  `correctunworkablevolume` helper was removed with the agreed implementation.
 
-### Recommended first experiment
+### Agreed implementation
 
-Keep the current model, BatchNorm layout, target definition, partitioning, and
-class-balancing policy fixed. Introduce a new feature configuration that
-saturates relative volume at 100, preserving all values below the cap.
+Keep the current M008 model and BatchNorm layout. Relative volume is capped at
+**60**, superseding the initial experimental suggestion of 100. This pragmatic
+modeling threshold retains a rough peak indicator without distinguishing
+exceptionally large ratios.
 
-This retains the intended rough volume-peak signal and changes only 0.04338% of
-training rows. A cap of 100 is a pragmatic experimental choice, not an optimized
-or economically universal threshold. Removing relative volume entirely is a
-useful later ablation if capping does not produce useful improvement.
+The shared `relativevolume` calculation retains the ordinary long-window median
+when positive. Only if it is zero does it use the median of strictly positive
+volumes from that same trailing long window. An entirely inactive window yields
+zero. For example, 355 zeros followed by five volumes of 10 produce a ratio of
+one for short=5, long=360, rather than an artificial peak. This does not guarantee
+that every onset sequence starts at one: the short median can remain zero or
+differ from the positive-volume baseline. No future observations are used.
+Tiny positive medians remain real baselines, rather than being replaced by
+machine epsilon. Leading partial windows use the available history.
 
-The feature must be bounded before it reaches BatchNorm. Apply the same feature
-definition to training, stored predictions, simulation, and live inference.
-Use a new feature/classifier identity rather than silently changing F09 and
-reusing its caches. Train fresh weights and optimizer state so the result is not
-confounded by adaptation to the original unbounded feature.
+Features006 applies the cap in `_relvol!` to the assembled vector, including
+cached, prepended, and appended values. Its behavior is shared by offline
+training and runtime feature generation.
 
-A bounded calculation should explicitly define zero-baseline behavior: positive
-short-window volume with zero long-window median should saturate, while zero
-volume in both windows should represent no activity. It should not depend on
-machine epsilon as an economically meaningful volume baseline.
+A separate `nrg` feature is defined as raw `rg / mean_pivot`, in relative change
+per minute, where `mean_pivot` is the mean pivot of the regression window.
+`addnormgrad!` requires the raw regression columns; `_normgrad!` creates the
+normalized no-offset column in `fdfno`. `supplement!` selects offset views
+without normalizing or mutating raw columns. Negative slopes remain intentional.
+
+A least-squares line passes through the window mean, so for full windows
+`mean_pivot = regry - rg * (window - 1) / 2` (`regressionmeanpivot`) without an
+additional pass over the prices. The first `window - 1` rows of a calculation
+range use the mean of their available pivots, because their regression may come
+from a longer cached history. With positive prices the mean is strictly
+positive, and `|nrg| <= 6 / (window + 1)` holds by construction: about 1.0,
+0.375, 0.098, and 0.025 for windows 5, 15, 60, and 240. No cap is needed.
+Nonfinite slopes, nonpositive/nonfinite mean pivots, and nonfinite results fail
+explicitly with diagnostic assertions; with positive prices they indicate
+corrupted data.
+
+The first definition `rg / regry` was rejected after `trend ts=056 train` failed
+for CTC at 2022-09-21T11:30. A single trade printed 0.00008 after a constant
+0.3036, the price stayed there for 53 minutes with a volume of 4, and then
+recovered. The window-5 regression extrapolated `regry=-0.0303` from positive
+prices. The cached regression stores contained non-positive `regry` for CTC,
+LUNA, LUNC, MAVIA, OP, SERAPH, and WIF (3 to 1,505 rows per window), mostly from
+real crashes. The last pivot was also considered as a denominator. It is always
+positive, but it is unbounded: at the CTC glitch it gives about -1,100 per minute
+instead of -0.60 with the mean pivot. In normal markets both denominators differ
+by only about `nrg * (window - 1) / 2`.
+
+The CTC glitch itself is accepted as noise for now (53 of about 1.37M rows).
+A general data-quality check for extreme price jumps on near-zero volume is
+deferred.
+
+Raw regression stores, `rg`, and `regry` are unchanged. Consequently the
+TradingStrategy hourly slope gate, regression deviations, and target geometry
+continue using raw price-unit slopes. Trade has no direct regression consumer;
+its changed inputs are the new classifiers' signals.
+
+New feature configurations:
+
+- F16: F09 with its four `rg` inputs replaced by `nrg`; distances and volume retained.
+- F17: F10 with its four `rg` inputs replaced by `nrg`; volume retained.
+
+New strategy configurations preserve the original targets, strategy, partition,
+and balancing, using M008 in every case:
+
+| New TS | Equivalent original TS | Classifier | Strategy |
+|---|---|---|---|
+| 054 | 038, with M008 | F16-T16-P02-M008-B1 | S03 |
+| 055 | 046, with M008 | F16-T09-P02-M008-B1 | S03 |
+| 056 | 052 | F16-T24-P02-M008-B1 | S08 |
+| 057 | 053 | F17-T25-P02-M008-B1 | S08 |
+
+Use these new classifier identities with fresh training and optimizer state.
+The volume semantics change applies to all Features006 volume configurations,
+including older IDs. Their canonical descriptions now include the positive-
+median rule and cap, so old feature stores and classifier metadata fail hash
+validation rather than silently mixing old and new semantics. Existing artifacts
+are not automatically deleted or migrated. Rebuild affected feature stores
+before training; old volume-dependent classifiers cannot be treated as compatible.
+Raw regression and target stores need not be regenerated for this feature change.
 
 Validate:
 
 1. Zero-baseline, zero-volume, ordinary-ratio, exact-cap, and above-cap cases.
-2. Feature values at or below 100 throughout the new training matrix.
+2. Feature values at or below 60 throughout the new training matrix.
 3. Identical feature semantics in offline and live paths.
 4. Epoch loss stability and training/inference normalization agreement.
 5. Held-out entry PPV and fee-aware trade-event results, with event coverage
    recorded to prevent a trivial improvement from emitting almost no signals.
 
-Do not change BatchNorm, gradient scaling, targets, reinforcement, and weighting
-simultaneously with this first experiment. Relative-gradient normalization is a
-separate candidate for a subsequent controlled experiment.
+The agreed new configurations combine volume stabilization and `nrg`, but retain
+the model and BatchNorm layout. A separate volume-only ablation remains useful
+to distinguish their effects. These code-level validations do not establish
+held-out PPV or loss stability; those require new training and evaluation.
 
 ## 2. Historical loss instability and BatchNorm diagnosis
 
@@ -246,7 +309,7 @@ ambiguity. Outcomes of the later reinforced run require a new evaluation.
 
 - Preserve the tested BatchNorm architecture initially; reconsider it only with
   controlled evidence after bounding feature values.
-- Consider relative or volatility-normalized slopes for cross-coin comparability.
+- Evaluate the new endpoint-normalized slopes for cross-coin comparability.
 - Expose distance to the 240-minute regression endpoint directly: T24 uses this
   quantity in its entry condition, but F09 does not supply it directly.
 - Assess target alignment with the desired turning-point entries. Trend05 emits
@@ -262,3 +325,51 @@ ambiguity. Outcomes of the later reinforced run require a new evaluation.
 
 Address these topics independently so that improvements can be attributed to
 specific changes.
+
+## Implementation validation
+
+### Follow-up: aligning Trend05 position with the existing ry feature (2026-10-25)
+
+Trend05 now calculates its signed trend distance as
+`(pivot - trend.regry) / pivot`, exactly matching the existing Features006 `ry`
+feature for `window=trendregr, offset=0`. The observed pivot is strictly positive;
+the distance itself is negative below the regression endpoint and positive above
+it. `triggerdist` is unchanged and the comparison still includes equality.
+This slightly relaxes the long distance boundary and tightens the short boundary
+relative to the former regression-endpoint denominator.
+
+The existing rejection of nonpositive trend regression endpoints is retained
+explicitly. Support/lead gradient conditions, hold rules, gain targets, and the
+existing feature definitions remain unchanged. No new position feature or
+classifier configuration is introduced by this change.
+
+Targets is increased from 0.3.2 to 0.3.3. The Trend05 canonical description now
+includes `distance=(pivot-regry)/pivot`, changing its target hash. Existing
+Trend05 target stores and dependent classifier metadata are incompatible and
+must be explicitly rebuilt/retrained; predictions and evaluations must then be
+regenerated. They are not silently reused or automatically deleted. OHLCV,
+regression, feature, and partition stores do not need rebuilding for this change.
+
+Focused package-level Trend04 crosschecks, Trend05 tests, and target-store tests
+passed 244 assertions, including exact/near distance thresholds, price-scale
+invariance, matching the actual `ry` feature, retained endpoint rejection,
+invalid pivot assertions, and incremental/full target equivalence.
+
+Features was increased to 2.1.0 and TradingStrategy to 0.16.0. Consumer manifests
+were resolved using Pkg. Regression tests were run sequentially at package level:
+
+- Features complete enabled suite: 250 assertions passed, including positive-
+  volume baselines, prefix causality, cap boundaries, live append equivalence,
+  normalized-gradient scaling/offsets, cache/store equivalence, a crash case
+  with negative `regry` and the mean-pivot bound, and explicit failures for
+  invalid mean pivots or slopes.
+- In-memory `nrg` over the full histories of CTC, LUNA, LUNC, MAVIA, OP, SERAPH,
+  and WIF (windows 5 to 720): all values are finite. With full windows, the
+  largest value reached 77% of the bound; larger values occur only in row 2,
+  which is dropped from the feature store with the other warm-up rows.
+- TradingStrategy complete enabled suite: 899 assertions passed, including all
+  four new configuration mappings, raw regression gate invariance with `nrg`,
+  and artifact pipeline integration.
+- Targets focused Trend04 crosschecks and Trend05 suite: 188 assertions passed.
+
+No new production classifier training or held-out PPV measurement was performed.

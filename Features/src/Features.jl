@@ -705,42 +705,37 @@ function rollingmedianstd!(medianstd, std, requiredminutes, startindex, window=1
     return medianstd
 end
 
-# 1000, 100, 10, si = 991, ci = 891, l(t)=110
-# t 110 - 10
+"""
+    relativevolume(volumes, shortwindow, largewindow)
 
-function correctunworkablevolume(vv::Vector{T})::Vector{T} where {T <: AbstractFloat}
-    return map(x -> x < zero(x) ? error("only positive volume allowed but found $x") : (abs(x) <= eps(typeof(x)) ? eps(typeof(x)) : x), vv)
+Return trailing short-window volume medians divided by trailing long-window medians.
+When a long-window median is zero, use the median of its strictly positive volumes.
+An entirely inactive long window yields zero. Only past and current volumes are used.
+Leading rows use the available prefix when a complete window is not yet available.
+"""
+function relativevolume(volumes, shortwindow, largewindow)
+    @assert !isempty(volumes) "volumes must not be empty; length=$(length(volumes))"
+    @assert 0 < shortwindow < largewindow "require 0 < shortwindow=$(shortwindow) < largewindow=$(largewindow)"
+    @assert all(v -> isfinite(v) && v >= 0, volumes) "volumes must be finite and nonnegative; extrema=$(extrema(volumes))"
+    datalen = length(volumes)
+    large = runmedian(volumes, min(largewindow, datalen))
+    short = runmedian(volumes, min(shortwindow, datalen))
+    return _relativevolumeratios(volumes, short, large, largewindow)
 end
 
-function relativevolume(volumes, shortwindow, largewindow)
-    datalen = length(volumes)
-    # Check if data is long enough for the requested windows
-    if datalen < largewindow
-        if datalen < shortwindow
-            # Not enough data for short window either; return first value repeated
-            (verbosity >= 2) && @warn "relativevolume: insufficient data length $datalen < shortwindow=$shortwindow; returning vector of first value $(volumes[1])"
-            return fill(volumes[1], datalen)
+"""Divide trailing medians, replacing a zero baseline with its positive-volume median."""
+function _relativevolumeratios(volumes, shortmedians, longmedians, longwindow::Integer)
+    ratios = similar(shortmedians)
+    for ix in eachindex(ratios)
+        baseline = longmedians[ix]
+        if iszero(baseline) && !iszero(shortmedians[ix])
+            positivevolumes = filter(>(0), view(volumes, max(firstindex(volumes), ix - longwindow + 1):ix))
+            @assert !isempty(positivevolumes) "positive short median=$(shortmedians[ix]) requires positive volumes at index=$(ix), longwindow=$(longwindow)"
+            baseline = median(positivevolumes)
         end
-        # Use available data length as the long window (at least shortwindow+1 to get a ratio > 1)
-        effective_long = max(shortwindow + 1, datalen - 1)
-        (verbosity >= 2) && @warn "relativevolume: insufficient data length $datalen for largewindow=$largewindow; using effective_long=$effective_long instead"
-        large = runmedian(volumes, effective_long)
-        large = correctunworkablevolume(large)
-        short = runmedian(volumes, shortwindow)
-        return short ./ large
+        ratios[ix] = iszero(baseline) ? zero(shortmedians[ix]) : shortmedians[ix] / baseline
     end
-    # large = rollmedian(volumes, largewindow)
-    # largelen = size(large, 1)
-    # short = rollmedian(volumes, shortwindow)
-    # shortlen = size(short, 1)
-    # short = @view short[shortlen - largelen + 1: shortlen]
-    large = runmedian(volumes, largewindow)
-    large = correctunworkablevolume(large)
-    # largelen = size(large, 1)
-    short = runmedian(volumes, shortwindow)
-    # shortlen = size(short, 1)
-    # println("short=$short, large=$large, short/large=$(short./large)")
-    return short ./ large
+    return ratios
 end
 
 """
@@ -978,6 +973,7 @@ Features006 provides a configurable feature set. The following features can be a
 
     - last y position (regry) of linear regression characterized by regression window [minutes] and offset [minutes]
     - gradient (grad) of linear regression characterized by regression window [minutes] and offset [minutes]
+    - normalized gradient (nrg), raw gradient divided by the mean pivot of the regression window, in relative change per minute
     - standard deviation (std) of linear regression characterized by regression window [minutes] and offset [minutes]
     - relative distance of pivot to maximum of range (maxdist) characterized by window [minutes] and offset [minutes]
     - relative distance of pivot to minimum of range (mindist) characterized by window [minutes] and offset [minutes]
@@ -1009,6 +1005,8 @@ end
 
 _regry(f6::Features006; window, offset) = (f="ry", w=window, o=offset)
 _grad(f6::Features006; window, offset) = (f="rg", w=window, o=offset)
+"""Describe a regression gradient normalized by its regression end price."""
+_normgrad(f6::Features006; window, offset) = (f="nrg", w=window, o=offset)
 _std(f6::Features006; window, offset) = (f="rs", w=window, o=offset)
 _mind(f6::Features006; window, offset) = (f="mind", w=window, o=offset)
 _maxd(f6::Features006; window, offset) = (f="maxd", w=window, o=offset)
@@ -1037,6 +1035,23 @@ function addgrad!(f6::Features006; window::Integer=15, offset::Integer=0)
     y = _regry(f6, window=window, offset=offset)
     push!(f6.required, y)
     g = _grad(f6, window=window, offset=offset)
+    push!(f6.requested, g)
+    return g
+end
+
+"""
+    addnormgrad!(f6::Features006; window::Integer=15, offset::Integer=0)
+
+Request `nrg = rg / mean_pivot`, a relative slope per minute normalized by the strictly
+positive mean pivot of the regression window (see `_normgrad!`). Preserve raw `rg` and
+`regry` as required no-offset columns.
+The offset selects a historical normalized value without changing either raw column.
+"""
+function addnormgrad!(f6::Features006; window::Integer=15, offset::Integer=0)
+    _check!(f6, window, offset)
+    push!(f6.required, _regry(f6, window=window, offset=offset))
+    push!(f6.required, _grad(f6, window=window, offset=offset))
+    g = _normgrad(f6, window=window, offset=offset)
     push!(f6.requested, g)
     return g
 end
@@ -1218,6 +1233,11 @@ function emptyfdf(f6::Features006, consideroffset)
     return df
 end
 
+"""
+Calculate Features006 relative volume and saturate it at 60 times the baseline.
+The feature identifies rough activity peaks: larger ratios need not be distinguished
+and would otherwise dominate normalization. The cap covers cached and new rows.
+"""
 function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
     rvcol = fdfnocol(f6, ftup)
     short = ftup.s
@@ -1245,7 +1265,47 @@ function _relvol!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
         rv = relativevolume(odf[!, :basevolume], short, long)
     end
     @assert length(rv) == desiredlen "unexpected $rvcol length mismatch for $(f6.ohlcv.base): length(rv)=$(length(rv)) desiredlen=$(desiredlen)"
-    fdfno[:, rvcol] = rv
+    fdfno[:, rvcol] = min.(rv, 60f0)
+    return fdfno
+end
+
+"""
+    regressionmeanpivot(regry, grad, window)
+
+Return the mean pivot of a full regression `window`. A least-squares line passes through the
+window mean, hence `mean = regry - grad * (window - 1) / 2`. It is strictly positive for
+positive prices, unlike the extrapolated end point `regry`.
+"""
+regressionmeanpivot(regry, grad, window) = regry - grad * (window - 1) / 2
+
+"""
+    _normgrad!(fdfno, f6, ftup, odf, odfendix, odfstartix)
+
+Materialize `nrg = rg / mean_pivot` as a separate no-offset column while preserving raw `rg`
+and `regry`. `mean_pivot` is the mean pivot of the regression window, derived from `rg` and
+`regry` via `regressionmeanpivot` for full windows. The first `window - 1` rows of `odf` use
+the mean of their available pivots because their regression may originate from a longer
+cached history. The mean denominator bounds `|nrg| <= 6 / (window + 1)` and stays finite
+when an abrupt drop drives `regry` to zero or below.
+"""
+function _normgrad!(fdfno, f6::Features006, ftup, odf, odfendix, odfstartix)
+    _regrgrady!(fdfno, f6, ftup, odf, odfendix, odfstartix)
+    nrgcol = fdfnocol(f6, ftup)
+    nrgcol in names(fdfno) && return fdfno
+    rg = fdfno[!, fdfnocol(f6, _grad(f6, window=ftup.w, offset=0))]
+    ry = fdfno[!, fdfnocol(f6, _regry(f6, window=ftup.w, offset=0))]
+    pivot = odf[!, :pivot]
+    meanpivot = regressionmeanpivot.(ry, rg, ftup.w)
+    for ix in firstindex(pivot):min(ftup.w - 1, lastindex(pivot))
+        meanpivot[ix] = mean(view(pivot, firstindex(pivot):ix))
+    end
+    for ix in eachindex(meanpivot)
+        @assert isfinite(rg[ix]) "nrg requires finite rg=$(rg[ix]); window=$(ftup.w), opentime=$(odf[ix, :opentime])"
+        @assert isfinite(meanpivot[ix]) && meanpivot[ix] > 0 "nrg requires positive finite mean pivot=$(meanpivot[ix]) (regry=$(ry[ix]), rg=$(rg[ix])); window=$(ftup.w), opentime=$(odf[ix, :opentime])"
+    end
+    nrg = rg ./ meanpivot
+    @assert all(isfinite, nrg) "nrg must be finite; window=$(ftup.w), extrema=$(extrema(nrg))"
+    fdfno[:, nrgcol] = nrg
     return fdfno
 end
 
@@ -1466,6 +1526,7 @@ function _supplementfdfno!(f6::Features006, odf)
     fdfno = DataFrame()
     for f in f6all(f6)
         if f.f in ["ry", "rg"] fdfno = _regrgrady!(fdfno, f6, f, odf, odfendix, odfstartix)
+        elseif f.f == "nrg" fdfno = _normgrad!(fdfno, f6, f, odf, odfendix, odfstartix)
         elseif f.f == "rs" fdfno = _regrstd!(fdfno, f6, f, odf, odfendix, odfstartix)
         elseif f.f == "mind" fdfno = _mindist!(fdfno, f6, f, odf, odfendix, odfstartix)
         elseif f.f == "maxd" fdfno = _maxdist!(fdfno, f6, f, odf, odfendix, odfstartix)
@@ -1504,7 +1565,7 @@ function supplement!(f6::Features006)
     for f in f6requested(f6)
         fdfc = fdfcol(f6, f)
         fdfnoc = fdfnocol(f6, f)
-        if f.f in ["rg", "rs", "rv"] 
+        if f.f in ["rg", "nrg", "rs", "rv"]
             fdf[:, fdfc] = view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)
         elseif f.f in ["ry", "mind", "maxd"] 
             # take difference to pivot and normalize by pivot to get relative distance
@@ -1552,8 +1613,9 @@ Return `(regry, grad)` of the rolling regression over `:pivot` for `window` at `
 regression end point and `grad` its slope per minute.
 
 Both come from `fdfno`, which `addgrad!`, `addstd!` and `addregry!` all materialize for
-their window - in contrast to the requested feature columns, which carry pivot-relative
-values. `offset` does not apply here: `fdfno` columns are keyed by window only and the
+their window, as does `addnormgrad!`. Raw `rg` remains in price units; requested `nrg`
+is divided by the mean pivot of its regression window and requested `ry` is pivot-relative.
+`offset` does not apply here: `fdfno` columns are keyed by window only and the
 offset is a lookback applied when the feature vector is built.
 """
 function regressionat(f6::Features006, window::Integer, dt::DateTime)
@@ -2594,4 +2656,3 @@ featureslookback01[24*60] = features1d01
 
 
 end  # module
-

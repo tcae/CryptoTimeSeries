@@ -6,6 +6,7 @@ using EnvConfig, Ohlcv, Features, TestOhlcv
 function featurestoretestf6()
     f6 = Features.Features006()
     Features.addgrad!(f6, window=15, offset=0)
+    Features.addnormgrad!(f6, window=15, offset=3)
     Features.addstd!(f6, window=10, offset=5)
     Features.addregry!(f6, window=60, offset=0)
     Features.addmaxdist!(f6, window=30, offset=0)
@@ -64,7 +65,7 @@ end
         for col in Features.requestedcolumns(f6)
             @test fdf[!, col] ≈ f6nocache.fdf[(rowoffset + 1):end, col]
         end
-        @test Features.configdescription(f6) == "Features006(" * join(Features.requestedcolumns(f6), ",") * ")"
+        @test Features.configdescription(f6) == "Features006(" * join(Features.requestedcolumns(f6), ",") * ";rv=positive-median-if-zero,cap60;nrg=rg/meanpivot)"
         @test size(Features.readfeatures("SINE", ohlcv.quotecoin, "FTEST"; confighash="hash1"), 1) == size(fdf, 1)
         @test_throws AssertionError Features.readfeatures("SINE", ohlcv.quotecoin, "FTEST"; confighash="hash2")
         @test isnothing(Features.readfeatures("SINE", ohlcv.quotecoin, "FMISSING"; confighash="hash1"))

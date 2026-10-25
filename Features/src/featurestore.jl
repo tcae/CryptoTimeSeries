@@ -10,7 +10,11 @@ featuresfolder(base::AbstractString, quotecoin::AbstractString) = EnvConfig.coin
 _regressionstem(window::Integer; std::Bool=false) = std ? "regrstd$(window)" : "regr$(window)"
 
 "Return the canonical config-only description of `f6` that identifies its feature columns independent of any OHLCV base."
-configdescription(f6::Features006)::String = "Features006(" * join(requestedcolumns(f6), ",") * ")"
+function configdescription(f6::Features006)::String
+    semantics = any(f -> f.f == "rv", f6requested(f6)) ? ";rv=positive-median-if-zero,cap60" : ""
+    semantics *= any(f -> f.f == "nrg", f6requested(f6)) ? ";nrg=rg/meanpivot" : ""
+    return "Features006(" * join(requestedcolumns(f6), ",") * semantics * ")"
+end
 
 "Return the regression windows of `f6` and the subset that requires a std column."
 function regressionwindows(f6::Features006)

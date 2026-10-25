@@ -730,7 +730,7 @@ version = "0.1.1"
 deps = ["Arrow", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "JDF", "LinearRegression", "Logging", "Ohlcv", "PlotlyJS", "RollingFunctions", "SortingAlgorithms", "Statistics", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Features"
 uuid = "5dba1262-1c53-45f4-82e1-ee0062ee5128"
-version = "2.0.0"
+version = "2.1.0"
 
 [[deps.FileIO]]
 deps = ["Pkg", "Requires", "UUIDs"]
@@ -2474,7 +2474,7 @@ version = "1.10.0"
 deps = ["CategoricalArrays", "Combinatorics", "DataFrames", "Dates", "EnvConfig", "Features", "Logging", "LoggingExtras", "Ohlcv", "RollingFunctions", "SortingAlgorithms", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Targets"
 uuid = "08eb77dc-7627-4dc2-8b9a-0a9a8d02f815"
-version = "0.3.2"
+version = "0.3.3"
 
 [[deps.TensorCore]]
 deps = ["LinearAlgebra"]
@@ -2513,7 +2513,7 @@ version = "0.19.11"
 deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "SHA", "TSM", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.15.1"
+version = "0.16.0"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"

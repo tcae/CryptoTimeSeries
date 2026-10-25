@@ -52,7 +52,7 @@ medvol(v, w) = [median(v[(max(firstindex(v),ix-w+1):ix)]) for ix in eachindex(v)
     sl = 2
     ll = 3
     res = Features.relativevolume(vol, sl, ll)
-    rvtest = vcat([vol[1] / eps(Float32)], (medvol(vol, sl) ./ medvol(vol, ll))[2:end])
+    rvtest = vcat([0f0], (medvol(vol, sl) ./ medvol(vol, ll))[2:end])
     @test all(rvtest .== res)
     
 end

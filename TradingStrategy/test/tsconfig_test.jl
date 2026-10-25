@@ -1,3 +1,5 @@
+using Dates, Ohlcv, TestOhlcv, Xch
+
 @testset "configuration registries" begin
     EnvConfig.init(EnvConfig.test)
     for (name, cfg) in TradingStrategy.TS_CONFIGS
@@ -7,6 +9,35 @@
         @test TradingStrategy.strategytemplate(cfg.strategy) isa TradingStrategy.StrategyConfig
         @test isnothing(TradingStrategy.strategytemplate(cfg.strategy).classifier)
         @test TradingStrategy.tsconfig(name).configname == name
+    end
+
+    @testset "normalized features preserve raw strategy regression gates" begin
+        EnvConfig.init(EnvConfig.test)
+        startdt = DateTime("2025-02-17T13:30:00")
+        ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Hour(8))
+        f6 = TradingStrategy.featureconfig("F16")
+        Features.setbase!(f6, ohlcv; usecache=false)
+        labels = TradingStrategy.classifierlabels(TradingStrategy.classifierconfig(TradingStrategy.tsconfig("056").classifier))
+        nn = Classify.model008(Features.featurecount(f6), labels, "nrg-regression-gates")
+        cl = Classify.TrendClassifier001(nn; featconfig=TradingStrategy.trendf6config16)
+        cl.bc[ohlcv.base] = (ohlcv=ohlcv, featcfg=f6)
+        odf = Ohlcv.dataframe(ohlcv)
+        dt = odf[end, :opentime]
+        price = odf[end, :pivot]
+        pair = Xch.tradingpairkey(ohlcv.base, ohlcv.quotecoin)
+        df = DataFrame(opentime=[dt], close=[price], pair=[pair])
+        for contributor in TSM.tradesdf_all_contributors()
+            contributor(df)
+        end
+        df[1, :opentime] = dt
+        df[1, :close] = price
+        TSM.setcategorical!(df[!, :pair], 1, pair)
+        cols = TSM.TradesColumns(df)
+        cfg = TradingStrategy.GainLimitReversalConfig(maxwindow=240)
+        regr = Features.regressionat(f6, 240, dt)
+        @test TradingStrategy._relative_to_regression(cfg, cl, cols, 1) ≈ (price - regr.regry) / regr.regry
+        @test TradingStrategy._regression_slope_gain_per_hour(cfg, cl, cols, 1) ≈ Features.relativegain(regr.regry, regr.grad, 60)
+        @test f6.fdfno[end, "nrg+240"] ≈ regr.grad / Features.regressionmeanpivot(regr.regry, regr.grad, 240)
     end
     for (basename, clcfg) in TradingStrategy.CLASSIFIER_CONFIGS
         @test TradingStrategy.classifierbasename(clcfg) == basename
@@ -47,6 +78,24 @@
     @test target051 isa Targets.Trend05
     @test (target051.leadregr, target051.supportregr, target051.trendregr) == (15, 60, 12*60)
     @test !isempty(Targets._trend05_requiredfeatures(TradingStrategy.featureconfig(cl051.features), target051))
+
+    for (newid, oldid, featuresid) in [("054", "038", "F16"), ("055", "046", "F16"),
+                                     ("056", "052", "F16"), ("057", "053", "F17")]
+        newts = TradingStrategy.tsconfig(newid)
+        oldts = TradingStrategy.tsconfig(oldid)
+        newcl = TradingStrategy.classifierconfig(newts.classifier)
+        oldcl = TradingStrategy.classifierconfig(oldts.classifier)
+        @test newcl.features == featuresid
+        @test newcl.model == "M008"
+        @test newcl.targets == oldcl.targets
+        @test newcl.partition == oldcl.partition
+        @test newcl.classbalancing == oldcl.classbalancing
+        @test newts.strategy == oldts.strategy
+        oldcols = Features.requestedcolumns(TradingStrategy.featureconfig(oldcl.features))
+        newcols = Features.requestedcolumns(TradingStrategy.featureconfig(newcl.features))
+        @test newcols == replace.(oldcols, r"^rg\+" => "nrg+")
+        @test TradingStrategy.featureshash(newcl.features) != TradingStrategy.featureshash(oldcl.features)
+    end
 
     meta = TradingStrategy.classifiermeta(TradingStrategy.classifierconfig(ts046.classifier); coinset="CS00", daterange="D00")
     @test meta["featureshash"] == TradingStrategy.featureshash("F09")

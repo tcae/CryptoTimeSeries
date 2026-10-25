@@ -1758,6 +1758,12 @@ It provides target labels of type `TradeLabel` for a series of OHLCV data sample
 Before targets can be generated a Features.Features006 object must be provided and populated with the required features, namely the regression features as required for trend05. 
 This can be done via Trend05 creation or via setbase!(trd, f6).
 
+The signed trend distance is `(pivot - trend.regry) / pivot`, matching the Features006
+`ry` feature at offset zero. Negative values mean below the regression endpoint;
+positive values mean above it. Thresholds include equality. Entry candidates still
+require a positive trend regression endpoint, even though the denominator is the
+positive observed pivot.
+
 `lastfinalix` is the last label row that does not depend on OHLCV data beyond the base, i.e. all entry decisions up to it reached their target or broke their hold within the base.
 """
 mutable struct Trend05 <: AbstractTargets
@@ -1873,7 +1879,8 @@ function _trend05_entry(trd::Trend05, pivot::Float32, lead, support, trend, side
         return false
     end
     trend.regry > 0f0 || return false
-    distance = (pivot - trend.regry) / trend.regry
+    @assert isfinite(pivot) && pivot > 0f0 "Trend05 requires a positive finite pivot=$(pivot)"
+    distance = (pivot - trend.regry) / pivot
     if side === :long
         return lead.grad > 0f0 && ((distance <= -trd.triggerdist) || (support.grad > 0f0))
     end

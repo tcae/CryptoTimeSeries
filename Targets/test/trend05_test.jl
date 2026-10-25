@@ -131,7 +131,7 @@ end
     @test Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=0f0), (regry=100f0, grad=1f0), (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=1f0), support, (regry=100f0, grad=0f0), :long)
-    @test Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
+    @test !Targets._trend05_entry(trd, 101f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
     @test Targets._trend05_entry(trd, 102f0, (regry=100f0, grad=-1f0), support, (regry=100f0, grad=-1f0), :short)
     @test Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
     @test Targets._trend05_entry(trd, 99f0, (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), (regry=100f0, grad=-1f0), :short)
@@ -140,6 +140,45 @@ end
     @test !Targets._trend05_entry(trd, 100f0, nothing, support, (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), nothing, (regry=100f0, grad=1f0), :long)
     @test !Targets._trend05_entry(trd, 100f0, (regry=100f0, grad=1f0), support, nothing, :long)
+end
+
+@testset "Trend05 pivot-relative distance matches ry" begin
+    trd = Targets.Trend05(triggerdist=0.01f0)
+    support = (regry=100f0, grad=0f0)
+    for (side, gradient, endpoint) in ((:long, 1f0, 101f0), (:short, -1f0, 99f0))
+        lead = (regry=100f0, grad=gradient)
+        trend = (regry=endpoint, grad=0f0)
+        @test Targets._trend05_entry(trd, 100f0, lead, support, trend, side)
+        neartrend = (regry=endpoint - gradient * 0.001f0, grad=0f0)
+        fartrend = (regry=endpoint + gradient * 0.001f0, grad=0f0)
+        @test !Targets._trend05_entry(trd, 100f0, lead, support, neartrend, side)
+        @test Targets._trend05_entry(trd, 100f0, lead, support, fartrend, side)
+        @test Targets._trend05_entry(trd, 1000f0, (regry=1000f0, grad=gradient * 10f0),
+            (regry=1000f0, grad=0f0), (regry=endpoint * 10f0, grad=0f0), side)
+        for invalidendpoint in (0f0, -1f0)
+            @test !Targets._trend05_entry(trd, 100f0, lead, support,
+                (regry=invalidendpoint, grad=0f0), side)
+        end
+        for invalidpivot in (0f0, -1f0, NaN32, Inf32)
+            @test_throws AssertionError Targets._trend05_entry(trd, invalidpivot, lead, support, trend, side)
+        end
+    end
+    # The changed denominator admits a long candidate just outside the old 1% boundary.
+    @test Targets._trend05_entry(trd, 99.005f0, (regry=100f0, grad=1f0), support,
+        (regry=100f0, grad=0f0), :long)
+    @test occursin("distance=(pivot-regry)/pivot", Targets.configdescription(trd))
+    ohlcv = testohlcvfrompivots(Float32[100, 104, 98, 103, 99, 102])
+    f6 = Features.Features006()
+    Features.addregry!(f6, window=4)
+    Features.setbase!(f6, ohlcv; usecache=false)
+    pivots = Ohlcv.dataframe(ohlcv)[!, :pivot]
+    for ix in eachindex(pivots), side in (:long, :short)
+        gradient = side === :long ? 1f0 : -1f0
+        distance = f6.fdf[ix, "ry+4+0"]
+        expected = side === :long ? distance <= -trd.triggerdist : distance >= trd.triggerdist
+        @test Targets._trend05_entry(trd, pivots[ix], (regry=100f0, grad=gradient), support,
+            (regry=f6.fdfno[ix, "ry+4"], grad=0f0), side) == expected
+    end
 end
 
 @testset "Trend05 entry requires uninterrupted holds through target" begin

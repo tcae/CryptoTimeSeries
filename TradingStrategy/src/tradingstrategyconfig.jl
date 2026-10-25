@@ -261,6 +261,50 @@ function boundsf6config01(window)
     return featcfg
 end
 
+function trendf6config16()
+    featcfg = Features.Features006()
+    for window in (5, 15, 60, 4*60)
+        Features.addnormgrad!(featcfg, window=window)
+    end
+    Features.addmaxdist!(featcfg, window=60)
+    Features.addmindist!(featcfg, window=60)
+    Features.addrelvol!(featcfg, short=5, long=6*60)
+    return featcfg
+end
+
+function trendf6config17()
+    featcfg = Features.Features006()
+    for window in (15, 60, 4*60, 12*60)
+        Features.addnormgrad!(featcfg, window=window)
+    end
+    Features.addrelvol!(featcfg, short=5, long=6*60)
+    return featcfg
+end
+
+function trendf6config18()
+    featcfg = Features.Features006()
+    for window in (60, 4*60, 24*60, 3*24*60)
+        Features.addnormgrad!(featcfg, window=window)
+    end
+    Features.addrelvol!(featcfg, short=5, long=6*60)
+    return featcfg
+end
+
+function trendf6configlst(lead, support, xsupport, trend)
+    featcfg = Features.Features006()
+    for window in (lead, support, xsupport, trend)
+        Features.addnormgrad!(featcfg, window=window)
+    end
+    Features.addnormgrad!(featcfg, window=support, offset=support-1)
+    Features.addregry!(featcfg, window=trend)
+    Features.addrelvol!(featcfg, short=lead, long=trend)
+    return featcfg
+end
+
+trendf6config19() = trendf6configlst(5, 15, 60, 4*60)
+trendf6config20() = trendf6configlst(15, 60, 4*60, 12*60)
+trendf6config21() = trendf6configlst(60, 4*60, 24*60, 3*24*60)
+
 #endregion FeaturesConfig
 
 #region Registries
@@ -279,6 +323,8 @@ const FEATURE_CONFIGS = Dict{String, Function}(
     "F06" => trendf6config06, "F07" => trendf6config07, "F08" => trendf6config08, "F09" => trendf6config09,
     "F10" => trendf6config10, "F11" => trendf6config11, "F12" => trendf6config12, "F13" => trendf6config13,
     "F14" => trendf6config14, "F15" => trendf6config15,
+    "F16" => trendf6config16, "F17" => trendf6config17, "F18" => trendf6config18,
+    "F19" => trendf6config19, "F20" => trendf6config20, "F21" => trendf6config21
 )
 
 const TARGET_CONFIGS = Dict{String, Function}(
@@ -304,7 +350,8 @@ const TARGET_CONFIGS = Dict{String, Function}(
     "T22" => () -> Targets.TrendRegression(4*60, 0.01, -0.01),
     "T23" => () -> Targets.TrendRegression(4*60, 0.02, -0.02),
     "T24" => () -> Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0),
-    "T25" => () -> Targets.Trend05(leadregr=15, supportregr=60, trendregr=12*60, triggerdist=0.01f0, targetgain=0.01f0),
+    "T25" => () -> Targets.Trend05(leadregr=15, supportregr=60, trendregr=12*60, triggerdist=0.02f0, targetgain=0.02f0),
+    "T26" => () -> Targets.Trend05(leadregr=60, supportregr=4*60, trendregr=3*24*60, triggerdist=0.05f0, targetgain=0.05f0),
 )
 
 const PARTITION_CONFIGS = Dict{String, Function}("P02" => partitionconfig02)
@@ -375,6 +422,14 @@ const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c f
     clconfig("F10", "T25", "M002"),
     clconfig("F09", "T24", "M008"),                         # former mk050
     clconfig("F10", "T25", "M008"),
+    clconfig("F16", "T16", "M008"),
+    clconfig("F16", "T09", "M008"),
+    clconfig("F16", "T24", "M008"),
+    clconfig("F17", "T25", "M008"),
+    clconfig("F18", "T26", "M008"),
+    clconfig("F19", "T24", "M008"),
+    clconfig("F20", "T25", "M008"),
+    clconfig("F21", "T26", "M008"),
 ])
 
 "Return a trading strategy context of a classifier (base name) and a strategy id."
@@ -426,6 +481,16 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("051", "F10-T25-P02-M002-B1", "S08"),
     tsentry("052", "F09-T24-P02-M008-B1", "S08"),
     tsentry("053", "F10-T25-P02-M008-B1", "S08"),
+    tsentry("054", "F16-T16-P02-M008-B1", "S03"),  # = 038 but with F16=F09 with normalized gradients and model008 learning rate
+    tsentry("055", "F16-T09-P02-M008-B1", "S03"),  # = 046 but with F16=F09 with normalized gradients and model008 learning rate
+    tsentry("056", "F16-T24-P02-M008-B1", "S08"),  # = 052 but with F16=F09 with normalized gradients
+    tsentry("057", "F17-T25-P02-M008-B1", "S08"),  
+    tsentry("058", "F18-T26-P02-M008-B1", "S08"),  
+
+    tsentry("059", "F19-T24-P02-M008-B1", "S08"),
+    tsentry("060", "F20-T25-P02-M008-B1", "S08"),
+    tsentry("061", "F21-T26-P02-M008-B1", "S08"),
+
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),
     tsentry("103", "F09-T16-P02-M002-B1", "S08"),
