@@ -324,13 +324,9 @@ function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinfor
                 labels = classindex(src, orderedixs)
                 w = _reinforcementweights(w, labels, hardflags[orderedixs], hardnessmeans)
             end
-            loss, grads = Flux.withgradient(nn.model) do m
-                y_hat = nn.valuecorrection(m(x))
-                isnothing(w) ? nn.lossfunc(y_hat, y) : weightedloss(nn, y_hat, y, w)
-            end
+            loss = trainbatch!(nn, x, y, w)
             minloss = ismissing(minloss) ? loss : min(minloss, loss)
             maxloss = ismissing(maxloss) ? loss : max(maxloss, loss)
-            Flux.update!(nn.optim, nn.model, grads[1])
         end
         push!(nn.losses, fullsetloss(nn, src))
         savenn(nn; folderpath=folderpath)

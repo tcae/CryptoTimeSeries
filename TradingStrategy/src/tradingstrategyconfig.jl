@@ -370,6 +370,7 @@ const DATERANGE_CONFIGS = Dict{String, NamedTuple}(
 const MODEL_CONFIGS = Dict{String, Function}(
     "M001" => Classify.model001, "M002" => Classify.model002, "M003" => Classify.model003, "M004" => Classify.model004,
     "M005" => Classify.model005, "M006" => Classify.model006, "M007" => Classify.model007, "M008" => Classify.model008,
+    "M009" => Classify.model009, "M010" => Classify.model010, "M011" => Classify.model011,
 )
 
 const STRATEGY_CONFIGS = Dict{String, Function}(
@@ -406,11 +407,13 @@ const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c f
     clconfig("F01", "T01", "M002"; classbalancing=false),   # former mk028, mk029
     clconfig("F09", "T09", "M002"; classbalancing=false),   # former mk030
     clconfig("F09", "T09", "M002"),                         # former mk031, mk032, mk037, mk046 - mk049
+    clconfig("F09", "T09", "M011"),                         
     clconfig("F09", "T01", "M002"),                         # former mk033
     clconfig("F09", "T07", "M002"),                         # former mk034
     clconfig("F10", "T14", "M002"),                         # former mk035
     clconfig("F11", "T15", "M002"),                         # former mk036
     clconfig("F09", "T16", "M002"),                         # former mk038, mk038b
+    clconfig("F09", "T16", "M011"),                         
     clconfig("F12", "T17", "M002"),                         # former mk039
     clconfig("F12", "T18", "M002"),                         # former mk040, short regressions for SINE and DOUBLESINE
     clconfig("F13", "T19", "M002"),                         # former mk041
@@ -428,8 +431,13 @@ const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c f
     clconfig("F17", "T25", "M008"),
     clconfig("F18", "T26", "M008"),
     clconfig("F19", "T24", "M008"),
+    clconfig("F19", "T24", "M009"),
+    clconfig("F19", "T24", "M010"),
+    clconfig("F19", "T24", "M011"),
     clconfig("F20", "T25", "M008"),
+    clconfig("F20", "T25", "M011"),
     clconfig("F21", "T26", "M008"),
+    clconfig("F21", "T26", "M011"),
 ])
 
 "Return a trading strategy context of a classifier (base name) and a strategy id."
@@ -490,6 +498,10 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("059", "F19-T24-P02-M008-B1", "S08"),
     tsentry("060", "F20-T25-P02-M008-B1", "S08"),
     tsentry("061", "F21-T26-P02-M008-B1", "S08"),
+
+    tsentry("062", "F19-T24-P02-M011-B1", "S08"),
+    tsentry("063", "F20-T25-P02-M011-B1", "S08"),
+    tsentry("064", "F21-T26-P02-M011-B1", "S08"),
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),

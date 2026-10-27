@@ -8,6 +8,7 @@ using BSON, Flux, Statistics, ProgressMeter, StatisticalMeasures, MLUtils, Table
 using CategoricalArrays
 using CategoricalDistributions
 using Distributions
+import SimpleChains
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 
 const PREDICTIONLISTFILE = "predictionlist.csv"
@@ -2551,6 +2552,8 @@ end
 #endregion Evaluation
 
 include("BsonLegacyMigration.jl")
+include("SimpleChainsBatchNorm.jl")
+include("SimpleChainsNN.jl")
 include("SampleSource.jl")
 include("SetsStore.jl")
 include("TrendClassifier001.jl")

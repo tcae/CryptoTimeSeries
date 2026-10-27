@@ -46,6 +46,16 @@ Each module is located in the src folder and has a corresponding '_test' unti te
 
 Scripts for investigations as well as the GUI ([cryptocockpit](scripts/cryptocockpit.jl)) are located in the scripts folder without a unit test
 
+### Small-network runtime comparison
+
+[SimpleChains versus configuration 059](docs/2026-10-26-simplechains-model008-benchmark.md)
+documents the M009 SimpleChains alternative, the M010 matched Flux control, and
+the architecture-matched M011 with native BatchNorm, with measured
+SINE/DOUBLESINE training and inference runtimes. Reproduce the isolated
+test-mode comparison with `julia --project=. scripts/benchmark_model008.jl`.
+Add `--batchnorm` to compare M011 directly against 059.
+Configuration 059 retains M008 and its BatchNorm layers unchanged.
+
 ## Design
 
 In order to achieve a seperation of concerns and a self documenting code, the approach is to separate

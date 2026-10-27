@@ -70,6 +70,26 @@ using Dates, Ohlcv, TestOhlcv
         @test isnothing(Classify.readpredictions(name, "DOUBLESINE"))
         reused = TradingStrategy.trainclassifier!(clcfg; coinset="CSTEST", daterange="DTEST")
         @test reused.nn.losses == continued.nn.losses
+
+        @testset "SimpleChains alternatives use the full artifact pipeline" begin
+            for modelid in ("M009", "M010", "M011")
+                denseconfig = TradingStrategy.classifierconfig("F19-T24-P02-$(modelid)-B1")
+                densename = TradingStrategy.classifiername(denseconfig; coinset="CSTEST", daterange="DTEST")
+                rm(EnvConfig.classifierfolder(densename); force=true, recursive=true)
+                dense = TradingStrategy.trainclassifier!(denseconfig; coinset="CSTEST", daterange="DTEST")
+                @test length(dense.nn.losses) == 2
+                @test all(isfinite, dense.nn.losses)
+                @test (dense.nn.model isa Classify.SimpleChainsModel) == (modelid in ("M009", "M011"))
+                @test TradingStrategy.predictcoins!(denseconfig, coins; coinset="CSTEST", daterange="DTEST") == coins
+                features = TradingStrategy.coinstores(denseconfig, "SINE"; daterange="DTEST")[1]
+                predictions = Classify.readpredictions(densename, "SINE")
+                @test predictions[!, :opentime] == features[!, :opentime]
+                @test all(score -> isfinite(score) && 0f0 <= score <= 1f0, predictions[!, :score])
+                confusion, extended = TradingStrategy.evaluateclassifier(denseconfig, coins; coinset="CSTEST", daterange="DTEST")
+                @test nrow(confusion) > 0
+                @test nrow(extended) > 0
+            end
+        end
     finally
         delete!(TradingStrategy.COINSET_CONFIGS, "CSTEST")
         delete!(TradingStrategy.DATERANGE_CONFIGS, "DTEST")

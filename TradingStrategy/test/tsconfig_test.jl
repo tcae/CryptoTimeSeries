@@ -66,6 +66,13 @@ using Dates, Ohlcv, TestOhlcv, Xch
     @test TradingStrategy.tsclassifiername(ts046; coinset="CS01", daterange="D01") == "F09-T09-P02-M002-B1-CS01-D01"
     @test TradingStrategy.defaultcoinset() == "CS00"
     @test TradingStrategy.defaultdaterange() == "D00"
+    @test TradingStrategy.tsconfig("059").classifier == "F19-T24-P02-M008-B1"
+    @test TradingStrategy.modelconfig("M009") === Classify.model009
+    @test TradingStrategy.modelconfig("M010") === Classify.model010
+    @test TradingStrategy.modelconfig("M011") === Classify.model011
+    @test TradingStrategy.classifierconfig("F19-T24-P02-M009-B1").model == "M009"
+    @test TradingStrategy.classifierconfig("F19-T24-P02-M010-B1").model == "M010"
+    @test TradingStrategy.classifierconfig("F19-T24-P02-M011-B1").model == "M011"
     @test TradingStrategy.tsconfigsource(ts046) == "tradingstrategy:046/F09-T09-P02-M002-B1/S03"
     @test TradingStrategy.classifierbasename(TradingStrategy.clconfig("F01", "T01", "M002"; classbalancing=false, variant="x")) == "F01-T01-P02-M002-B0-x"
 
