@@ -11,6 +11,7 @@ using Ohlcv
 include("setpartitions_test.jl")
 include("storage_format_test.jl")
 include("adaptnn_reinforce_test.jl")
+include("nnconverged_test.jl")
 include("simplechains_test.jl")
 include("simplechains_batchnorm_test.jl")
 include("classifierstore_test.jl")

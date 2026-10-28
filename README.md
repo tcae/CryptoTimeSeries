@@ -56,6 +56,32 @@ test-mode comparison with `julia --project=. scripts/benchmark_model008.jl`.
 Add `--batchnorm` to compare M011 directly against 059.
 Configuration 059 retains M008 and its BatchNorm layers unchanged.
 
+### Training stopping criteria
+
+Classifier adaptation stops after 50 epochs without at least a 0.05% relative
+loss reduction from the best loss at the last meaningful improvement. Smaller
+record improvements accumulate against that reference; they do not individually
+reset patience. Every actual record-low checkpoint is still saved as `nn.bson`,
+and `nn-lastepoch.bson` retains the latest model, optimizer and loss history.
+The monitored loss is the full class-weighted training loss, not validation loss.
+
+CS01 has a hard total budget of 200 epochs; adaptation also caps any larger
+requested budget at 200. Recorded epochs count toward the budget on resume.
+`retrain` resumes the last-epoch checkpoint, not the best checkpoint, and does
+not restart a converged or exhausted history. CS00 retains its 10-epoch budget.
+
+To train and evaluate the real-data F20/T25 M011 classifier (TS063):
+
+```sh
+julia --project=. scripts/TrendDetector.jl train ts=063 coinset=CS01 daterange=D01 stage=evaluate
+```
+
+TS060 selects the corresponding M008 classifier. Existing TS060 artifacts are
+reused unless explicitly retrained. Comparing a completed historical TS060 run
+against TS063 measures classifier quality, but is not a controlled runtime
+benchmark: the earlier run used different stopping criteria and may have run
+alongside other jobs.
+
 ## Design
 
 In order to achieve a seperation of concerns and a self documenting code, the approach is to separate

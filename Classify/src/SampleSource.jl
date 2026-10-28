@@ -295,9 +295,12 @@ end
 """
     adaptnn!(nn, src; maxepochs, reinforce_epochs=0, batchsize=64, folderpath=EnvConfig.logfolder())
 
-Adapt `nn` with shuffled batches of `src` for at most `maxepochs` epochs or until the loss over
-the full adaptation set (registered per epoch in `nn.losses`) converges. `nn` is checkpointed
-per epoch under `nn.fileprefix` in `folderpath`.
+Adapt `nn` with shuffled batches of `src` up to a total history of
+`min(maxepochs, 200)` epochs, including previously recorded epochs, or until the loss over
+the full adaptation set converges: 50 epochs without a relative reduction of at least
+0.05% from the last meaningful best loss. Every actual record-low loss is still saved.
+`nn` is checkpointed per epoch under `nn.fileprefix` in `folderpath`. A resumed history
+already at the limit or converged is not trained further.
 
 If `reinforce_epochs > 0`, training still uses every sample. Every `reinforce_epochs`, the
 misclassification flags are refreshed over the full adaptation set; misclassified samples receive
@@ -308,14 +311,21 @@ function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinfor
     @assert maxepochs > 0 "maxepochs=$(maxepochs) must be > 0"
     @assert reinforce_epochs >= 0 "reinforce_epochs=$(reinforce_epochs) must be >= 0"
     @assert batchsize > 0 "batchsize=$(batchsize) must be > 0"
+    epochlimit = min(maxepochs, 200)
+    if nnconverged(nn) || length(nn.losses) >= epochlimit
+        Flux.testmode!(nn.model)
+        println("skipping adaptation: epochs=$(length(nn.losses)), epochlimit=$(epochlimit), converged=$(nnconverged(nn))")
+        return nn
+    end
     active = collect(_sampleindices(nsamples(src)))
     hardflags = falses(nsamples(src))
     hardnessmeans = ones(Float32, length(nn.labels))
     (verbosity >= 3) && println("adaptnn! with $(nsamples(src)) samples of $(typeof(src).name.name), maxepochs=$(maxepochs), batchsize=$(batchsize)")
     Flux.trainmode!(nn.model)
     minloss = maxloss = missing
-    breakmsg = "epoch loop finished without convergence"
-    @showprogress for epoch in 1:maxepochs
+    breakmsg = "stopping adaptation at total epoch limit $(epochlimit)"
+    @showprogress for epoch in (length(nn.losses) + 1):epochlimit
+        epochstart = time()
         shuffle!(active)
         for chunk in Iterators.partition(active, batchsize)
             orderedixs = batchindices(src, chunk)
@@ -329,18 +339,21 @@ function adaptnn!(nn::NN, src::AbstractSampleSource; maxepochs::Integer, reinfor
             maxloss = ismissing(maxloss) ? loss : max(maxloss, loss)
         end
         push!(nn.losses, fullsetloss(nn, src))
+        @assert isfinite(nn.losses[end]) && nn.losses[end] >= 0 "epoch=$(epoch) loss=$(nn.losses[end]) must be finite and nonnegative"
         savenn(nn; folderpath=folderpath)
+        bestloss, bestepoch = findmin(nn.losses)
+        println("$(EnvConfig.now()) epoch=$(epoch)/$(epochlimit) loss=$(nn.losses[end]) bestloss=$(bestloss) bestepoch=$(bestepoch) elapsed_seconds=$(round(time() - epochstart; digits=3))")
         if nnconverged(nn)
-            breakmsg = "stopping adaptation after epoch $epoch due to no loss reduction ($(nn.losses[end-4:end])) in last 4 epochs"
+            breakmsg = "stopping adaptation after total epoch $(epoch): no meaningful relative loss reduction of 0.05% in 50 epochs"
             break
         end
         if (reinforce_epochs > 0) && (epoch % reinforce_epochs == 0)
             if nn.lossfunc === Flux.logitcrossentropy
                 hardflags = misclassificationflags(nn, src)
                 hardnessmeans = _classhardnessmeans(src, hardflags, length(nn.labels))
-                breakmsg = "refreshed soft reinforcement after epoch $epoch with $(count(hardflags)) hard samples"
+                (verbosity >= 2) && println("refreshed soft reinforcement after epoch $epoch with $(count(hardflags)) hard samples")
             else
-                breakmsg = "reinforcement skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy"
+                (verbosity >= 1) && println("reinforcement skipped at epoch $epoch because nn.lossfunc=$(nn.lossfunc) is not Flux.logitcrossentropy")
             end
         end
     end

@@ -1,6 +1,6 @@
 name = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.34.0"
+version = "0.35.0"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]

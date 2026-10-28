@@ -1740,8 +1740,33 @@ function boundsregressor001(featurecount, labels, mnemonic)::NN
     return nn
 end
 
-"Return whether a loss history has converged by showing no improvement in the last 5 recorded epochs after at least 11 epochs."
-nnconverged(losses::AbstractVector) = (length(losses) > 10) && (losses[end-4] <= losses[end-3] <= losses[end-2] <= losses[end-1] <= losses[end])
+"""
+    nnconverged(losses; patience=50, minrelativeimprovement=0.0005)
+
+Return whether `patience` epochs have elapsed without a meaningful relative loss
+reduction. The reference is the best loss at the last meaningful improvement;
+smaller record improvements accumulate against that reference rather than resetting
+patience individually. Equality at the improvement threshold counts as improvement,
+but an unchanged loss never does. Replaying the history preserves patience on resume.
+"""
+function nnconverged(losses::AbstractVector; patience::Integer=50, minrelativeimprovement::Real=0.0005)::Bool
+    @assert patience > 0 "patience=$(patience) must be > 0"
+    @assert isfinite(minrelativeimprovement) && 0 <= minrelativeimprovement < 1 "minrelativeimprovement=$(minrelativeimprovement) must be finite and within [0, 1)"
+    @assert all(loss -> isfinite(loss) && loss >= 0, losses) "losses=$(losses) must be finite and nonnegative"
+    isempty(losses) && return false
+    reference = first(losses)
+    improvementepoch = 1
+    for epoch in 2:length(losses)
+        loss = losses[epoch]
+        if loss < reference && reference - loss >= reference * minrelativeimprovement
+            reference = loss
+            improvementepoch = epoch
+        end
+    end
+    return length(losses) - improvementepoch >= patience
+end
+
+"Return whether the recorded loss history of `nn` has converged."
 nnconverged(nn) = nnconverged(nn.losses)
 
 "Return the per-sample losses of `nn.lossfunc`; their mean equals `nn.lossfunc(y_hat, y)`."

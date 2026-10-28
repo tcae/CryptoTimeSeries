@@ -63,15 +63,25 @@ using Dates, Ohlcv, TestOhlcv
         @test stat(nnpath).mtime == mtime1
 
         previouslosses = copy(cl.nn.losses)
+        lastnn = Classify.loadnn(Classify.NN_FILEPREFIX * "-lastepoch"; folderpath=classifierfolder)
+        lastlosses = copy(lastnn.losses)
+        TradingStrategy.trainclassifier!(clcfg; coinset="CSTEST", daterange="DTEST", retrain=true)
+        @test Classify.readpredictions(name, "SINE")[!, :label] == fullpred[!, :label]
+        @test Classify.loadnn(Classify.NN_FILEPREFIX * "-lastepoch"; folderpath=classifierfolder).losses == lastlosses
+        TradingStrategy.COINSET_CONFIGS["CSTEST"] = (coins=coins, maxepochs=4)
         continued = TradingStrategy.trainclassifier!(clcfg; coinset="CSTEST", daterange="DTEST", retrain=true, reinforce_epochs=1)
         @test length(previouslosses) < length(continued.nn.losses) <= length(previouslosses) + 2
         @test continued.nn.losses[1:length(previouslosses)] == previouslosses
+        resumed = Classify.loadnn(Classify.NN_FILEPREFIX * "-lastepoch"; folderpath=classifierfolder)
+        @test length(resumed.losses) == 4
+        @test resumed.losses[1:length(lastlosses)] == lastlosses
         @test isnothing(Classify.readpredictions(name, "SINE"))
         @test isnothing(Classify.readpredictions(name, "DOUBLESINE"))
         reused = TradingStrategy.trainclassifier!(clcfg; coinset="CSTEST", daterange="DTEST")
         @test reused.nn.losses == continued.nn.losses
 
         @testset "SimpleChains alternatives use the full artifact pipeline" begin
+            TradingStrategy.COINSET_CONFIGS["CSTEST"] = (coins=coins, maxepochs=2)
             for modelid in ("M009", "M010", "M011")
                 denseconfig = TradingStrategy.classifierconfig("F19-T24-P02-$(modelid)-B1")
                 densename = TradingStrategy.classifiername(denseconfig; coinset="CSTEST", daterange="DTEST")

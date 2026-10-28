@@ -359,7 +359,7 @@ const PARTITION_CONFIGS = Dict{String, Function}("P02" => partitionconfig02)
 "Coin sets with the epoch budget of their training, which scales with the data volume of the coin set."
 const COINSET_CONFIGS = Dict{String, NamedTuple}(
     "CS00" => (coins=testcoins(), maxepochs=10),
-    "CS01" => (coins=traincoins(), maxepochs=1000),
+    "CS01" => (coins=traincoins(), maxepochs=200),
 )
 
 const DATERANGE_CONFIGS = Dict{String, NamedTuple}(

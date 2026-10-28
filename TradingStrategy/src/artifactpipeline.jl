@@ -44,7 +44,9 @@ end
 
 Return the adapted classifier of `clcfg` trained on `coinset` within `daterange`. An already
 adapted classifier is reused unless `retrain` is set, in which case adaptation continues from
-its stored weights, optimizer state and loss history, optionally with reinforcement.
+the last-epoch checkpoint's weights, optimizer state and loss history, optionally with reinforcement.
+The epoch budget is a total, not an additional allowance per invocation; stopped histories
+are reused without invalidating predictions.
 If no adapted classifier exists, create and train a new classifier.
 Training samples are compacted into one features × samples Float32 matrix file that is memory mapped for adaptation.
 """
@@ -54,6 +56,13 @@ function trainclassifier!(clcfg::NamedTuple; coinset::AbstractString, daterange:
     cl = Classify.isclassifierstored(name) ? loadtrendclassifier(clcfg; coinset=coinset, daterange=daterange) : nothing
     if !isnothing(cl) && !retrain
         return cl
+    end
+    if !isnothing(cl)
+        cl.nn = Classify.loadnn(Classify.NN_FILEPREFIX * "-lastepoch"; folderpath=EnvConfig.classifierfolder(name))
+        if Classify.nnconverged(cl.nn) || length(cl.nn.losses) >= min(coinsetconfig(coinset).maxepochs, 200)
+            println("$(EnvConfig.now()) classifier $(name) already stopped: epochs=$(length(cl.nn.losses)), converged=$(Classify.nnconverged(cl.nn))")
+            return loadtrendclassifier(clcfg; coinset=coinset, daterange=daterange)
+        end
     end
     coins = ensurecoinstores!(clcfg, coinsetconfig(coinset).coins; daterange=daterange)
     @assert !isempty(coins) "no coin of coinset $(coinset) has OHLCV data to train classifier $(name)"
