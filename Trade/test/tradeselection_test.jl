@@ -1,7 +1,7 @@
 module TradingStrategyTest
 
 using Test, Dates, Logging, LoggingExtras, DataFrames
-using EnvConfig, Trade, Classify, Features, Ohlcv, Xch, Bybit
+using EnvConfig, Trade, Classify, Features, Ohlcv, Xch, Bybit, TradingStrategy
 
 println("TradingStrategyTest tradestrategy_test")
 println("$(EnvConfig.now()): started")
@@ -23,9 +23,8 @@ startdt = Dates.now(UTC) # - Hour(1)
 enddt = nothing  # DateTime("2024-03-30T10:03:00")
 
 # assets = Xch.portfolio!(xc)
-# tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), assets[!, :coin]; datetime=startdt, updatecache=true)
-
-tc = Trade.tradeselection!(Trade.TradeCache(xc=xc), []; datetime=startdt, updatecache=true)
+@assert length(ARGS) == 1 "tradeselection_test requires one trading strategy configuration reference; ARGS=$(ARGS)"
+tc = Trade.tradeselection!(Trade.TradeCache(only(ARGS); xc=xc), []; datetime=startdt, updatecache=true)
 
 
 # dummy = DateTime("2000-01-01T00:00:00")

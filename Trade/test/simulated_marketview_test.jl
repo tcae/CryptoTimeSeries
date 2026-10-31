@@ -1,7 +1,27 @@
+module SimulatedMarketviewTest
+
+include("testfixtures.jl")
+using .TradeTestFixtures
 using Test
 using Dates
 using DataFrames
-using EnvConfig, Trade, Xch, Ohlcv
+using EnvConfig, Trade, Xch, Ohlcv, TradingStrategy
+
+@testset "TradeCache requires explicit strategy configuration" begin
+    EnvConfig.init(EnvConfig.test)
+    xc = Xch.XchCache()
+    @test_throws UndefKeywordError Trade.TradeCache(; xc=xc)
+    @test_throws ArgumentError Trade.TradeCache(TradingStrategy.StrategyConfig(); xc=xc)
+    strategy = TradeTestFixtures.strategy()
+    runtime = TradingStrategy.TsCache(strategy=strategy, source="test")
+    @test Trade.TradeCache(runtime; xc=xc).ts === runtime
+    @test Trade.TradeCache(; ts=runtime, xc=xc).ts === runtime
+    cache = Trade.TradeCache(strategy; xc=xc)
+    @test cache.ts.cfg.classifier === strategy.classifier
+    @test cache.ts.cfg.algorithm === strategy.algorithm
+    @test cache.ts.cfg.algorithmconfig === strategy.algorithmconfig
+    @test Trade._tradeselection_history_minutes(cache) >= 24 * 60
+end
 
 @testset "simulated marketview" begin
     EnvConfig.init(EnvConfig.test)
@@ -28,7 +48,7 @@ using EnvConfig, Trade, Xch, Ohlcv
 
     xc = Xch.XchCache(startdt=startdt, enddt=dt)
     Xch.addbase!(xc, ohlcv)
-    tc = Trade.TradeCache(xc=xc, trademode=Trade.notrade)
+    tc = Trade.TradeCache(TradeTestFixtures.strategy(); xc=xc, trademode=Trade.notrade)
 
     mdf = Trade._simulated_usdtmarketview(tc, dt, Set(["BTC"]), startdt)
     @test nrow(mdf) == 1
@@ -40,6 +60,8 @@ using EnvConfig, Trade, Xch, Ohlcv
     @test Trade._uses_simulated_marketview(tc)
 
     xc_live = Xch.XchCache(startdt=startdt, enddt=nothing)
-    tc_live = Trade.TradeCache(xc=xc_live, trademode=Trade.notrade)
+    tc_live = Trade.TradeCache(TradeTestFixtures.strategy(); xc=xc_live, trademode=Trade.notrade)
     @test !Trade._uses_simulated_marketview(tc_live)
+end
+
 end

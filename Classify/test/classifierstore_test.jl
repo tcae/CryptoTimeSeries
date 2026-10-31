@@ -14,6 +14,58 @@ classifierstoretesttargets() = Targets.Trend04(5, 60, Targets.thresholds((longop
 
 const CLASSIFIERSTORE_PARTITION = (samplesets=["train", "test", "train", "eval"], partitionsize=60, gapsize=10, minpartitionsize=30, maxpartitionsize=120)
 
+@testset "runtime strategy-only regressions preserve inference" begin
+    EnvConfig.init(test)
+    mktempdir(EnvConfig.defaultdebugfilespath) do folder
+        oldpath = EnvConfig.coinspath()
+        EnvConfig.setcoinspath!(folder)
+        try
+            startdt = DateTime("2025-02-17T13:30:00")
+            ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(240))
+            labels = Targets.uniquelabels(classifierstoretesttargets())
+            nn = Classify.model008(Features.featurecount(classifierstoretestf6()), labels, "internal-regression-test")
+            baseline = Classify.TrendClassifier001(nn; featconfig=classifierstoretestf6)
+            augmented = Classify.TrendClassifier001(nn; featconfig=classifierstoretestf6)
+            original = Features.configdescription(augmented.featconfig())
+            Classify.addbase!(baseline, ohlcv)
+            @test_logs (:info, r"Calculating missing strategy regression in memory") Classify.addbase!(augmented, ohlcv; regressionwindows=[180, 180])
+            f6 = Classify.featconfig(augmented, "SINE")
+            @test Features.features(f6) ≈ Features.features(Classify.featconfig(baseline, "SINE"))
+            @test Features.configdescription(augmented.featconfig()) == original
+            @test Classify.requiredminutes(augmented) == Classify.requiredminutes(baseline)
+            @test Features.regressionat(f6, 180, startdt + Minute(240)) isa NamedTuple
+            @test Classify._featurematrix(augmented, Features.features(f6)) ≈ Classify._featurematrix(baseline, Features.features(Classify.featconfig(baseline, "SINE")))
+            dt = startdt + Minute(240)
+            @test Classify.advice(augmented, "SINE", dt).tradelabel == Classify.advice(baseline, "SINE", dt).tradelabel
+            @test Classify.advice(augmented, "SINE", dt).probability ≈ Classify.advice(baseline, "SINE", dt).probability
+            other = TestOhlcv.testohlcv("DOUBLESINE", startdt, dt)
+            Classify.addbase!(augmented, other; regressionwindows=[180])
+            @test Classify.featconfig(augmented, "DOUBLESINE") !== f6
+            path = joinpath(Features.regressionfolder("SINE", ohlcv.quotecoin), "regr180.arrow")
+            @test !isfile(path)
+            Features.updateregression!(ohlcv, 180)
+            bytes = read(path)
+            timestamp = stat(path).mtime
+            cached = Classify.TrendClassifier001(nn; featconfig=classifierstoretestf6)
+            @test_logs Classify.addbase!(cached, Ohlcv.ohlcvview(ohlcv, 240:240); regressionwindows=[180])
+            @test read(path) == bytes
+            @test stat(path).mtime == timestamp
+            @test Classify.advice(cached, "SINE", dt).probability ≈ Classify.advice(baseline, "SINE", dt).probability
+            extended = TestOhlcv.testohlcv("SINE", startdt, dt + Minute(1))
+            Ohlcv.setdataframe!(ohlcv, DataFrame(Ohlcv.dataframe(extended)))
+            Classify.supplement!(augmented)
+            @test Features.regressionat(f6, 180, dt + Minute(1)) isa NamedTuple
+            @test read(path) == bytes
+            @test stat(path).mtime == timestamp
+            incomplete = Classify.TrendClassifier001(nn; featconfig=classifierstoretestf6)
+            @test_logs (:info, r"Calculating missing strategy regression in memory") Classify.addbase!(incomplete, ohlcv; regressionwindows=[180])
+            @test read(path) == bytes
+        finally
+            EnvConfig.setcoinspath!(oldpath)
+        end
+    end
+end
+
 @testset "Classify classifier store" begin
     EnvConfig.init(test)
     oldcoinspath = EnvConfig.activecoinspath

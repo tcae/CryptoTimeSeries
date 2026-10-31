@@ -31,6 +31,83 @@ end
 Classify.supplement!(cl::MockClassifier) = cl
 Classify.requiredminutes(::MockClassifier) = 0
 
+"""Minimal classifier input configuration for testing strategy-only regressions."""
+function strategyregressiontestfeatures()
+    f6 = Features.Features006()
+    Features.addgrad!(f6; window=5)
+    return f6
+end
+
+@testset "strategy regressions share live and replay initialization" begin
+    EnvConfig.init(EnvConfig.test)
+    mktempdir(EnvConfig.defaultdebugfilespath) do folder
+        oldpath = EnvConfig.coinspath()
+        EnvConfig.setcoinspath!(folder)
+        try
+            startdt = DateTime("2025-02-17T13:30:00")
+            ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(80))
+            labels = Targets.TradeLabel[Targets.longopen, Targets.shortopen]
+            nn = Classify.model008(Features.featurecount(strategyregressiontestfeatures()), labels, "strategy-regressions")
+            cl = Classify.TrendClassifier001(nn; featconfig=strategyregressiontestfeatures)
+            cfg = TradingStrategy.GainLimitReversalBelowRegressionConfig(triggerregrwindow=180, trendregrwindow=180)
+            strategy = TradingStrategy.StrategyConfig(classifier=cl, algorithm=TradingStrategy.gain_limit_reversal_below_regression!, algorithmconfig=cfg)
+            rt = TradingStrategy.TsCache(strategy=strategy)
+            @test TradingStrategy._strategyregressionwindows(cfg) == [180]
+            @test isempty(TradingStrategy._strategyregressionwindows(TradingStrategy.GainLimitReversalConfig()))
+            @test isempty(TradingStrategy._strategyregressionwindows(TradingStrategy.strategytemplate("S08").algorithmconfig))
+            @test TradingStrategy.requiredhistoryminutes(rt) == 180
+            dt = Ohlcv.dataframe(ohlcv)[end, :opentime]
+            @test_throws r"requires 180 minutes" TradingStrategy.addclassifierbase!(rt, ohlcv; datetime=dt)
+            xc = Xch.XchCache(Bybit.BybitCache(); startdt=startdt)
+            EnvConfig.setcoinspath!(folder)
+            xc.bases["SINE"] = ohlcv
+            @test !isnothing(TradingStrategy.acceptbase!(rt, xc, "SINE"; datetime=dt))
+            f6 = Classify.featconfig(cl, "SINE")
+            @test Features.requestedcolumns(f6) == Features.requestedcolumns(strategyregressiontestfeatures())
+            @test Features.regressionat(f6, 180, dt) isa NamedTuple
+            path = joinpath(Features.regressionfolder("SINE", ohlcv.quotecoin), "regr180.arrow")
+            @test !isfile(path)
+            extended = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(81))
+            Ohlcv.setdataframe!(ohlcv, DataFrame(Ohlcv.dataframe(extended)))
+            @test !isnothing(TradingStrategy.acceptbase!(rt, xc, "SINE"; datetime=dt + Minute(1)))
+            @test !isfile(path)
+            @test Features.regressionat(f6, 180, dt + Minute(1)) isa NamedTuple
+
+            probe = DataFrame(opentime=[dt + Minute(1)], pair=["SINEUSDT"], close=Float32[2], high=Float32[2], low=Float32[2], score=Float32[0.9], label=Targets.TradeLabel[Targets.longopen])
+            init_runtime_columns!(probe)
+            cols = TSM.TradesColumns(probe)
+            regr = Features.regressionat(f6, 180, dt + Minute(1))
+            @test TradingStrategy._relative_to_regression(cfg.gainlimit, cl, cols, 1, 180) ≈ (probe.close[1] - regr.regry) / regr.regry
+            @test TradingStrategy._regression_slope_gain_per_hour(cfg.gainlimit, cl, cols, 1, 180) ≈ Features.relativegain(regr.regry, regr.grad, 60)
+            @test_throws AssertionError TradingStrategy._relative_to_regression(cfg.gainlimit, nothing, cols, 1, 180)
+
+            full = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(240))
+            TradingStrategy.reset!(rt)
+            TradingStrategy.addclassifierbase!(rt, Ohlcv.ohlcvview(full, 200:240); datetime=startdt + Minute(200))
+            @test Classify.featconfig(cl, "SINE") !== f6
+            @test Features.regressionat(Classify.featconfig(cl, "SINE"), 180, startdt + Minute(200)) isa NamedTuple
+            TradingStrategy.reset!(rt)
+            replayxc = Xch.XchCache(Bybit.BybitCache(); startdt=startdt, enddt=startdt + Minute(240))
+            EnvConfig.setcoinspath!(folder)
+            replayxc.bases["SINE"] = ohlcv
+            @test_throws AssertionError TradingStrategy.acceptbase!(rt, replayxc, "SINE"; datetime=dt)
+            replayxc.bases["SINE"] = full
+            @test !isnothing(TradingStrategy.acceptbase!(rt, replayxc, "SINE"; datetime=startdt + Minute(240)))
+            TradingStrategy.apply_strategy!(rt, TradingStrategy.StrategyConfig(classifier=cl))
+            TradingStrategy.addclassifierbase!(rt, full)
+            @test !("ry+180" in names(Classify.featconfig(cl, "SINE").fdfno))
+            mockrt = TradingStrategy.TsCache(classifier=MockClassifier(), strategy=TradingStrategy.StrategyConfig(algorithmconfig=cfg))
+            @test_throws r"require TrendClassifier001" TradingStrategy.addclassifierbase!(mockrt, full)
+            preloaded = Classify.TrendClassifier001(nn; featconfig=strategyregressiontestfeatures)
+            Classify.addbase!(preloaded, full)
+            preloadedrt = TradingStrategy.TsCache(classifier=preloaded, strategy=TradingStrategy.StrategyConfig(algorithmconfig=cfg))
+            @test_throws r"not initialized" TradingStrategy.addclassifierbase!(preloadedrt, full)
+        finally
+            EnvConfig.setcoinspath!(oldpath)
+        end
+    end
+end
+
 function Classify.advice(cl::MockClassifier, base::AbstractString, datetime::DateTime; investment=nothing)
     _ = investment
     cl.advice_calls += 1

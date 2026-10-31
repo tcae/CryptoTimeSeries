@@ -52,6 +52,17 @@ tradingstrategy08() = TradingStrategy.StrategyConfig(
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)
+tradingstrategy09() = TradingStrategy.StrategyConfig(
+    algorithm=TradingStrategy.gain_limit_reversal_below_regression!, 
+    algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
+        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, buygain=0.001f0, incrementgain=0f0, makerfee=0.0025), 
+        triggerdist=0.005f0, 
+        triggerregrwindow=4*60, # zero disables the trigger regression window, previously 12*60, 
+        trendregrwindow=4*60, # zero disables the trend regression window, previously 24*60, 
+        trendgainthreshold=0.01f0 / 4f0), 
+    makerfee=0.0025, 
+    takerfee=0.004, 
+    enforcemakerlimits=true)
 #endregion TradingStrategies
 
 #region FeaturesConfig
@@ -609,10 +620,10 @@ function classifiermeta(clcfg::NamedTuple; coinset::AbstractString, daterange::A
     )
 end
 
-"Assert that the stored meta data of the classifier `classifiername` matches `expected` for all keys of `expected`."
+"Assert that the stored meta data of the classifier `classifiername` matches `expected`; report the artifact path, active mode and mode-selection guidance when meta data is missing."
 function checkclassifiermeta(classifiername::AbstractString, expected::AbstractDict{String, String})
     stored = Classify.readmeta(classifiername)
-    @assert !isnothing(stored) "classifier $(classifiername) has no meta data"
+    @assert !isnothing(stored) "classifier $(classifiername) has no meta data at $(joinpath(EnvConfig.classifierfolder(classifiername), "meta.arrow")) (mode=$(EnvConfig.configmode)). Test mode defaults to CS00/D00 and reads debug classifiers; train mode defaults to CS01/D01 and reads normal classifiers. If TrendDetector adapted the classifier in train mode, run tradesim with the train flag and the same coinset/daterange as the adaptation. In tradesim, train selects trained artifacts; it does not retrain or enable live trading. Replay coins/startdt/enddt do not select the classifier's training identity."
     mismatches = [key for key in keys(expected) if get(stored, key, "") != expected[key]]
     @assert isempty(mismatches) "classifier $(classifiername) meta data mismatch for $(mismatches): stored=$(Dict(k => get(stored, k, "") for k in mismatches)) expected=$(Dict(k => expected[k] for k in mismatches))"
     return stored

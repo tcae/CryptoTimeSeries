@@ -120,7 +120,7 @@ end
 @testset "Blacklisted base removal stays outside runtime until prepare" begin
     EnvConfig.init(EnvConfig.test)
 
-    tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=Xch.XchCache(), trademode=Trade.notrade)
+    tc = Trade.TradeCache(TradingStrategy.StrategyConfig(classifier=StubClassifier()); xc=Xch.XchCache(), trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=StubClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
@@ -140,7 +140,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=xc, trademode=Trade.notrade)
+    tc = Trade.TradeCache(TradingStrategy.StrategyConfig(classifier=StubClassifier()); xc=xc, trademode=Trade.notrade)
 
     @test !isnothing(Trade._strategyruntime(tc))
 
@@ -182,7 +182,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     xc = Xch.XchCache()
-    tc = Trade.TradeCache(TradingStrategy.strategyconfig("046"); xc=xc, trademode=Trade.notrade)
+    tc = Trade.TradeCache(TradingStrategy.StrategyConfig(classifier=StubClassifier()); xc=xc, trademode=Trade.notrade)
     tc.cfg = DataFrame(basecoin=["BTC", "ETH"])
 
     rt = TradingStrategy.TsCache(classifier=StubClassifier(), strategy=TradingStrategy.StrategyConfig(), source="test")
@@ -204,7 +204,7 @@ end
     EnvConfig.init(EnvConfig.test)
 
     mc = Dict{Symbol, Any}()
-    rt = TradingStrategy.TsCache("046"; source="test")
+    rt = TradingStrategy.TsCache(classifier=StubClassifier(); source="test")
     gs = TradingStrategy.StrategyConfig(
         ;
         algorithm=TradingStrategy.gain_limit_reversal!,

@@ -1020,6 +1020,21 @@ f6all(f6::Features006) = union(f6.required, f6.requested)
 featurecount(f6::Features006) = length(f6requested(f6))
 requestedcolumns(f6::Features006) = [fdfcol(f6, f) for f in f6requested(f6)]
 
+"""
+    require_regression!(f6; window)
+
+Register raw regression endpoint and slope dependencies before base initialization.
+Reuse existing dependencies without adding classifier inputs or changing their order.
+"""
+function require_regression!(f6::Features006; window::Integer)
+    @assert isnothing(f6.ohlcv) "register regression window=$(window) before initializing base=$(isnothing(f6.ohlcv) ? nothing : f6.ohlcv.base)"
+    _check!(f6, window, 0)
+    for feature in (_regry(f6; window=window, offset=0), _grad(f6; window=window, offset=0))
+        any(f -> f.f == feature.f && f.w == window, f6all(f6)) || push!(f6.required, feature)
+    end
+    return f6
+end
+
 "Adds feature configuration of last y price as a ration to the last linear regression price characterized by regression window [minutes] and offset [minutes]. "
 function addregry!(f6::Features006; window::Integer=15, offset::Integer=0)
     _check!(f6, window, offset)

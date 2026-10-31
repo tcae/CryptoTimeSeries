@@ -34,7 +34,34 @@ Notes:
 
 ### 1.3 Trade runtime knobs
 
+Strategies using regression gates register their enabled windows as internal
+`Features006.required` dependencies before each base is initialized. Existing
+classifier regressions are reused; extra windows do not change requested classifier
+columns, feature hashes, or neural-network inputs. Zero windows remain disabled.
+
+Missing or incomplete strategy regressions are logged before calculation and computed
+in memory only. Existing per-coin `regression/regr<window>.arrow` stores are reused,
+including stores covering a larger history than the runtime view. Neither replay
+initialization nor live supplementation creates or modifies regression stores:
+limited replay ranges must not fragment stored history. Persistent stores are maintained
+by the separate full-history artifact pipeline.
+
+History fetching requests the largest classifier/strategy requirement. Replay
+requires full source history before the first evaluation; live retains classifier
+acceptance requirements and allows strategy regressions to develop from partial
+history, logging that condition at initialization. Unavailable or invalid active
+regressions fail explicitly instead of silently supplying zero guidance.
+
 These are runtime options configured through typed `Trade.TradeCache` fields and the selected `TradingStrategy.StrategyConfig`.
+
+`Trade.TradeCache` requires an explicit strategy: pass a configured `StrategyConfig`,
+a `TsCache`, or a trading strategy configuration reference as its positional argument.
+The keyword constructor requires `ts`. It never implicitly selects configuration `046`
+or loads a default classifier. Tests supply their own classifier configuration instead
+of depending on previously trained artifacts.
+
+The cockpit selects its trading strategy through `COCKPIT_TREND_REF` (default `025`)
+and preserves that runtime when changing exchanges.
 
 | Option | Typical values | Intent | Used by modules |
 |---|---|---|---|

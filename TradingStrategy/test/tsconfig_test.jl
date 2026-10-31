@@ -108,6 +108,25 @@ using Dates, Ohlcv, TestOhlcv, Xch
     @test meta["featureshash"] == TradingStrategy.featureshash("F09")
     @test meta["labels"] == join(string.(Targets.uniquelabels(TradingStrategy.targetconfig("T09"))), ",")
 
+    @testset "classifier metadata diagnostics" begin
+        mktempdir(EnvConfig.classifierspath()) do folder
+            name = basename(folder)
+            expected = Dict("name" => name)
+            @test_throws r"has no meta data at" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws joinpath(folder, "meta.arrow") TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "mode=test" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "Test mode defaults to CS00/D00" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "train mode defaults to CS01/D01" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "run tradesim with the train flag" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "same coinset/daterange" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "it does not retrain or enable live trading" TradingStrategy.checkclassifiermeta(name, expected)
+            @test_throws "Replay coins/startdt/enddt do not select" TradingStrategy.checkclassifiermeta(name, expected)
+            Classify.writemeta(name, expected)
+            @test TradingStrategy.checkclassifiermeta(name, expected) == expected
+            @test_throws r"meta data mismatch" TradingStrategy.checkclassifiermeta(name, Dict("name" => "different"))
+        end
+    end
+
     @test_throws AssertionError TradingStrategy.tsconfig("doesnotexist")
     @test_throws AssertionError TradingStrategy.featureconfig("F02")
 end

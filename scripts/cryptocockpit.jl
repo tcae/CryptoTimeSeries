@@ -21,7 +21,7 @@ import PlotlyJS: PlotlyBase, Plot, dataset, Layout, attr, scatter, candlestick, 
 using Dates, DataFrames, Logging
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, Classify, Xch, Trade, TradingStrategy
 
-const COCKPIT_TREND_REF = "025"
+const COCKPIT_TREND_REF = get(ENV, "COCKPIT_TREND_REF", "025")
 const COCKPIT_BOUNDS_REF = "001"
 const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target"]
 const DIAGNOSTIC_LABEL_CODE = Dict{Any, Int}(
@@ -335,7 +335,7 @@ mutable struct CockpitData
         cssdir = EnvConfig.setprojectdir()  * "/scripts/"
         xc = Xch.XchCache()
         # notrade default: cryptocockpit never calls Trade.trade!, TradeCache is only a container for xc/cfg here.
-        cp = new(Trade.TradeCache(xc=xc), nothing, nothing, true, dtf, cssdir)
+        cp = new(Trade.TradeCache(COCKPIT_TREND_REF; xc=xc), nothing, nothing, true, dtf, cssdir)
         updateassets!(cp, false)
         return cp
     end
@@ -1267,7 +1267,7 @@ callback!(
         active_row_id = _active_row_id(active_cell, olddata, currentfocus)
         CP.donormalize = "normalize" in indicator
         if button_id == "exchange_select"
-            CP.tc = Trade.TradeCache(xc=Xch.XchCache(bc=Xch._adaptercache(String(exchange))))
+            CP.tc = Trade.TradeCache(CP.tc.ts; xc=Xch.XchCache(bc=Xch._adaptercache(String(exchange))))
             updateassets!(CP, false)
             active_row_id = _first_basecoin(CP.tc.cfg)
         end

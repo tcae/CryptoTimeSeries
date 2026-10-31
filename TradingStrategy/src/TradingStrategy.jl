@@ -221,7 +221,7 @@ abstract type AbstractAlgorithmConfig end
 Configuration specific to the gain-limit reversal algorithms.
 
 - maxwindow is the maximum age of a position in minutes before it is considered for trailing close-limit adjustments.
-- openthreshold is the minimum relative gain required to open a position.
+- openthreshold is the minimum classifier score of an open signal required to open a position.
 - buygain is the relative offset of the entry limit from the current price: below
   the current price for long entries and above it for short entries.
 - sellgain is the relative take-profit offset from the current price: above the
@@ -440,24 +440,64 @@ end
 
 acceptedbases(rt::TsCache)::Set{String} = copy(rt.accepted)
 
-"Return the classifier history requirement in minutes for runtime compatibility callers."
+"""Return active strategy regression windows; algorithms without regressions need none."""
+_strategyregressionwindows(::AbstractAlgorithmConfig)::Vector{Int} = Int[]
+
+"""Return the unique enabled distance/trend regression windows."""
+function _strategyregressionwindows(cfg::GainLimitReversalBelowRegressionConfig)::Vector{Int}
+    return unique(filter(>(0), [cfg.triggerregrwindow, cfg.trendregrwindow]))
+end
+
+"Return the desired OHLCV history in minutes for classifier and active strategy regressions."
 function requiredhistoryminutes(rt::TsCache)::Int
-    return Int(max(0, Classify.requiredminutes(_strategyclassifier(rt))))
+    return max(Classify.requiredminutes(_strategyclassifier(rt)), maximum(_strategyregressionwindows(rt.cfg.algorithmconfig); init=0))
+end
+
+"""Attach a base once with its strategy-only regressions registered before initialization."""
+function _attachclassifierbase!(rt::TsCache, ohlcv::Ohlcv.OhlcvData)::Nothing
+    classifier = _strategyclassifier(rt)
+    basekey = uppercase(String(ohlcv.base))
+    windows = _strategyregressionwindows(rt.cfg.algorithmconfig)
+    @assert isempty(windows) || classifier isa Classify.TrendClassifier001 "strategy regressions windows=$(windows) require TrendClassifier001; classifier=$(typeof(classifier))"
+    if !(basekey in Set{String}(uppercase.(String.(Classify.bases(classifier)))))
+        if isempty(windows)
+            Classify.addbase!(classifier, ohlcv)
+        else
+            Classify.addbase!(classifier, ohlcv; regressionwindows=windows)
+        end
+    end
+    Classify.supplement!(classifier)
+    if !isempty(windows)
+        featcfg = Classify.featconfig(classifier, basekey)
+        @assert featcfg isa Features.Features006 "strategy regression base=$(basekey) requires Features006 after supplementation; config=$(typeof(featcfg)), windows=$(windows)"
+        for window in windows
+            @assert ("ry+$(window)" in names(featcfg.fdfno)) && ("rg+$(window)" in names(featcfg.fdfno)) "strategy regression window=$(window) not initialized for base=$(basekey); register before base initialization, columns=$(names(featcfg.fdfno))"
+        end
+    end
+    return nothing
+end
+
+"""Require full source history for active replay regressions, including parent OHLCV behind views."""
+function _checkreplayregressionhistory(rt::TsCache, ohlcv::Ohlcv.OhlcvData, datetime::DateTime)::Nothing
+    windows = _strategyregressionwindows(rt.cfg.algorithmconfig)
+    isempty(windows) && return nothing
+    odf = parent(Ohlcv.dataframe(ohlcv))
+    required = requiredhistoryminutes(rt)
+    @assert nrow(odf) > 1 && odf[1, :opentime] <= datetime - Minute(required) "replay base=$(ohlcv.base) requires $(required) minutes of classifier/strategy history before $(datetime); available start=$(nrow(odf) == 0 ? nothing : odf[1, :opentime]), windows=$(windows)"
+    return nothing
 end
 
 """Attach one base's OHLCV to the runtime classifier and bring its feature config current.
 
+`datetime` is the first replay evaluation time (defaults to the last visible sample).
+Active regressions require full source history before that time.
 The live path does this implicitly in `acceptbase!`, but the replay path feeds prepopulated
 label/score rows and never calls the classifier - so a strategy algorithm that reads
 classifier-derived features (e.g. the `maxwindow` regression) would find no base. Replay
 drivers call this per pair and release it again with `dropbase!`."""
-function addclassifierbase!(rt::TsCache, ohlcv::Ohlcv.OhlcvData)::Nothing
-    classifier = _strategyclassifier(rt)
-    basekey = uppercase(String(ohlcv.base))
-    if !(basekey in Set{String}(uppercase.(String.(Classify.bases(classifier)))))
-        Classify.addbase!(classifier, ohlcv)
-    end
-    Classify.supplement!(classifier)
+function addclassifierbase!(rt::TsCache, ohlcv::Ohlcv.OhlcvData; datetime::DateTime=Ohlcv.dataframe(ohlcv)[end, :opentime])::Nothing
+    _checkreplayregressionhistory(rt, ohlcv, datetime)
+    _attachclassifierbase!(rt, ohlcv)
     return nothing
 end
 
@@ -520,20 +560,20 @@ function acceptbase!(rt::TsCache, xc::Xch.XchCache, base::AbstractString; dateti
     rowcount = size(odf, 1)
     rowcount > 0 || return nothing
 
-    required_minutes = requiredhistoryminutes(rt)
+    replay = !isnothing(xc.enddt)
+    replay && _checkreplayregressionhistory(rt, ohlcv, datetime)
+    required_minutes = replay ? requiredhistoryminutes(rt) : Classify.requiredminutes(_strategyclassifier(rt))
     startdt = datetime - Minute(required_minutes)
-    if odf[1, :opentime] > startdt
+    if parent(odf)[1, :opentime] > startdt
         return nothing
     end
 
     classifier = _strategyclassifier(rt)
-    loaded = Set{String}(uppercase.(String.(Classify.bases(classifier))))
-    if !(basekey in loaded)
-        Classify.addbase!(classifier, ohlcv)
-        push!(loaded, basekey)
+    if !replay && !(basekey in Classify.bases(classifier)) && !isempty(_strategyregressionwindows(rt.cfg.algorithmconfig)) &&
+        parent(odf)[1, :opentime] > datetime - Minute(requiredhistoryminutes(rt))
+        @info "Initializing strategy regressions with partial live history; supplementation will extend them as samples arrive" base=basekey windows=_strategyregressionwindows(rt.cfg.algorithmconfig) available_start=parent(odf)[1, :opentime] datetime
     end
-
-    Classify.supplement!(classifier)
+    _attachclassifierbase!(rt, ohlcv)
     updatecache && Classify.writetargetsfeatures(classifier)
 
     accepted = Set{String}(uppercase.(String.(Classify.bases(classifier))))
@@ -897,11 +937,9 @@ function gain_limit_reversal!(cfg::GainLimitReversalConfig, classifier, cols::TS
 end
 
 
-"""Return the classifier feature config of the row's base, or `nothing` when unavailable.
+"""Return the per-base feature configuration, or `nothing` if the base was not attached.
 
-Unavailable means the base was never attached to the classifier - the replay path only does
-that when its driver calls `addclassifierbase!`, so a strategy reading features must treat
-this as "no guidance" rather than as an error."""
+Active regression readers assert availability rather than substituting zero guidance."""
 function _rowfeatconfig(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer)
     isnothing(classifier) && return nothing
     pair = cols.pair[ix]
@@ -912,22 +950,21 @@ end
 "Relative distance of the row close to the cfg.maxwindow regression line; negative means below."
 function _relative_to_regression(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
     featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
-    isnothing(featcfg) && return 0f0
+    @assert !isnothing(featcfg) "strategy regression base=$(cols.pair[ix]) unavailable at $(cols.opentime[ix]); window=$(window)"
     regprice = Features.regryat(featcfg, window, cols.opentime[ix])
-    (isnothing(regprice) || regprice <= 0f0) && return 0f0
+    @assert !isnothing(regprice) && isfinite(regprice) && regprice > 0f0 "strategy regression price=$(regprice) invalid for base=$(cols.pair[ix]), datetime=$(cols.opentime[ix]), window=$(window)"
     return (cols.close[ix] - regprice) / regprice
 end
 
 """Slope of the `window` regression at the row sample in gain per hour.
 
 Derived from the regression gradient rather than from two prices, so it is the trend of the
-fitted line and not a point-to-point difference. Returns `0f0` when the regression is
-unavailable for this row, which reads as "flat, no guidance"."""
+fitted line and not a point-to-point difference. Assert regression availability and validity."""
 function _regression_slope_gain_per_hour(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
     featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
-    isnothing(featcfg) && return 0f0
+    @assert !isnothing(featcfg) "strategy regression base=$(cols.pair[ix]) unavailable at $(cols.opentime[ix]); window=$(window)"
     regr = Features.regressionat(featcfg, window, cols.opentime[ix])
-    (isnothing(regr) || (regr.regry <= 0f0)) && return 0f0
+    @assert !isnothing(regr) && isfinite(regr.regry) && regr.regry > 0f0 && isfinite(regr.grad) "strategy regression=$(regr) invalid for base=$(cols.pair[ix]), datetime=$(cols.opentime[ix]), window=$(window)"
     return Float32(Features.relativegain(regr.regry, regr.grad, 60))
 end
 

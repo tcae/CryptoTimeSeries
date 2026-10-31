@@ -1,4 +1,6 @@
 module TradeBudgetAllocationTest
+include("testfixtures.jl")
+using .TradeTestFixtures
 using Test
 using Dates
 using DataFrames
@@ -24,9 +26,7 @@ function build_case(bases::Vector{String}; equity::Float32, closeprice::Float32,
     xc = Xch.XchCache(startdt=DT, enddt=DT)
     TSM.ensuretradesschema!(xc.tsm, TSM.tradesdf_all_contributors())
 
-    # Reuse a resolved config for its classifier, but drive the documented algorithm contract.
-    resolved = TradingStrategy.strategyconfig("046")
-    strategy = TradingStrategy.StrategyConfig(classifier=resolved.classifier, algorithm=contract_algorithm!, minorderquote=minorderquote, maxbudgetquote=maxbudgetquote)
+    strategy = TradingStrategy.StrategyConfig(classifier=TradeTestFixtures.NoInferenceClassifier(), algorithm=contract_algorithm!, minorderquote=minorderquote, maxbudgetquote=maxbudgetquote)
     tc = Trade.TradeCache(strategy; xc=xc, trademode=Trade.buysell)
     tc.cfg = DataFrame(basecoin=bases, pair=[Xch.tradingpairkey(base, QUOTE) for base in bases], openenabled=fill(true, length(bases)), closeenabled=fill(true, length(bases)))
 

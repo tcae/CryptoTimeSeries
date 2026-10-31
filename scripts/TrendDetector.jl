@@ -172,7 +172,7 @@ function getgainsdf(rc::RunConfig)
         @assert isnothing(badix) "invalid score in gain input for coin=$(coin) at row $(badix) due to $(badreason)"
         # Replay feeds prepopulated label/score rows and never calls the classifier, so the
         # base has to be attached explicitly for algorithms reading classifier features.
-        TradingStrategy.addclassifierbase!(ts, Ohlcv.read(coin))
+        TradingStrategy.addclassifierbase!(ts, Ohlcv.read(coin); datetime=minimum(coinresultsdf[!, :opentime]))
 
         # Ranges are replayed in chronological order so the accumulated pair snapshot is built
         # from the beginning of time; sets interleave, so groups are ordered by first opentime.

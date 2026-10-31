@@ -1,5 +1,7 @@
 module TradeUnitTest
 
+include("testfixtures.jl")
+using .TradeTestFixtures
 using Test, Dates, Logging, LoggingExtras, DataFrames
 using EnvConfig, Trade, Classify, Ohlcv, Xch
 
@@ -14,7 +16,7 @@ function prepcache()
     startdt = enddt - Day(30)  # DateTime("2025-01-03T16:09:00")
     coins = ["ADA"]
     xc=Xch.XchCache( startdt=startdt, enddt=enddt)
-    cache = Trade.tradeselection!(Trade.TradeCache(xc=xc), coins, assetonly=true)
+    cache = Trade.tradeselection!(Trade.TradeCache(TradeTestFixtures.strategy(); xc=xc), coins, assetonly=true)
     return cache
 end
 

@@ -60,16 +60,15 @@ function _tradeaccountsnapshot(tradesdfdict::Dict)
 end
 
 """
-*TradeCache* contains the recipe and state parameters for the **tradeloop** as parameter. Recipe parameters to create a *TradeCache* are
-+ *backtestperiod* is the *Dates* period of the backtest (in case *backtestchunk* > 0)
-+ *backtestenddt* specifies the last *DateTime* of the backtest
-+ *baseconstraint* is an array of base crypto strings that constrains the crypto bases for trading else if *nothing* there is no constraint
-
+TradeCache contains the exchange, configured strategy runtime and trading-loop state.
+The keyword constructor requires `ts`; no strategy or classifier is loaded implicitly.
+Prefer `TradeCache(strategy; xc, trademode)` to also apply the strategy's exchange
+fee rates and maker-limit enforcement.
 """
 Base.@kwdef mutable struct TradeCache
     xc::Xch.XchCache = Xch.XchCache()  # required to connect to exchange
     cfg::AbstractDataFrame = DataFrame()    # maintains the bases to trade and their strategy acceptance state
-    ts::TradingStrategy.TsCache = TradingStrategy.TsCache("046"; source="default")
+    ts::TradingStrategy.TsCache
     blacklistbases::Vector{String} = String[]
     reloadtimes::Vector{Time} = [Time("04:00:00")]
     last_traderefresh_dt::Union{Nothing, DateTime} = nothing
@@ -80,6 +79,7 @@ Base.@kwdef mutable struct TradeCache
     loopcond::Threads.Condition = Threads.Condition(looplock)
 end
 
+"""Construct a TradeCache from an explicit runtime, configured strategy, or configuration reference."""
 function TradeCache(strategy::Union{TradingStrategy.TsCache, AbstractString, TradingStrategy.StrategyConfig}; xc=Xch.XchCache(), trademode=notrade)
     ts = strategy isa TradingStrategy.TsCache ? strategy : strategy isa AbstractString ? TradingStrategy.TsCache(strategy; source="default") : TradingStrategy.TsCache(strategy=strategy, source="default")
     cache = TradeCache(xc=xc, ts=ts, trademode=trademode)
@@ -930,4 +930,3 @@ function run_live!(cache::TradeCache; skip_init::Bool=false)
 end
 
 end  # module
-

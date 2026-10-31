@@ -53,12 +53,30 @@ function TrendClassifier001(
 end
 
 """
-    addbase!(cl::TrendClassifier001, ohlcv::Ohlcv.OhlcvData)
+    addbase!(cl::TrendClassifier001, ohlcv::Ohlcv.OhlcvData; regressionwindows=Int[])
 
 Attach a base OHLCV stream and initialize the feature configuration for cache-backed inference.
+Register strategy-only regression dependencies before initialization. Reuse existing
+stores and log missing history before calculating it in memory; never write runtime
+regressions to stores, including for limited replay ranges.
 """
-function addbase!(cl::TrendClassifier001, ohlcv::Ohlcv.OhlcvData)
+function addbase!(cl::TrendClassifier001, ohlcv::Ohlcv.OhlcvData; regressionwindows::AbstractVector{<:Integer}=Int[])
     featcfg = cl.featconfig()
+    for window in unique(regressionwindows)
+        Features.require_regression!(featcfg; window=window)
+    end
+    if !isempty(regressionwindows)
+        visible = Ohlcv.dataframe(ohlcv)
+        source = parent(visible)
+        @assert nrow(visible) > 0 && nrow(source) > 1 "strategy regressions for base=$(ohlcv.base) require a visible sample and at least two source samples; visible=$(nrow(visible)), source=$(nrow(source)), windows=$(regressionwindows)"
+        firstrow = max(1, searchsortedfirst(source[!, :opentime], visible[1, :opentime]) - Features.requiredminutes(featcfg) + 1)
+        for window in unique(regressionwindows)
+            stored = Features.readregression(ohlcv.base, ohlcv.quotecoin, window)
+            if isnothing(stored) || nrow(stored) == 0 || stored[1, :opentime] > source[firstrow, :opentime] || stored[end, :opentime] < visible[end, :opentime]
+                @info "Calculating missing strategy regression in memory; initialization may take additional time (store remains unchanged)" base=ohlcv.base quotecoin=ohlcv.quotecoin window startdt=source[firstrow, :opentime] enddt=visible[end, :opentime]
+            end
+        end
+    end
     Features.setbase!(featcfg, ohlcv, usecache=true)
     cl.bc[ohlcv.base] = (ohlcv=ohlcv, featcfg=featcfg)
     return cl

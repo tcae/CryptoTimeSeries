@@ -1,11 +1,13 @@
 module TradeBybitGuardrailTest
+include("testfixtures.jl")
+using .TradeTestFixtures
 using Test
 using EnvConfig, Xch, Trade
 
 EnvConfig.init(test)
 
 @testset "Trade Bybit guardrail" begin
-    cache = Trade.TradeCache()
+    cache = Trade.TradeCache(TradeTestFixtures.strategy())
     Xch.setsymbolinfocache!(cache.xc, "BTCUSDT", (
         symbol="BTCUSDT",
         status="Trading",

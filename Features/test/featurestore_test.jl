@@ -14,6 +14,66 @@ function featurestoretestf6()
     return f6
 end
 
+@testset "internal strategy regression dependencies" begin
+    EnvConfig.init(test)
+    mktempdir(EnvConfig.defaultdebugfilespath) do folder
+        oldpath = EnvConfig.coinspath()
+        EnvConfig.setcoinspath!(folder)
+        try
+            startdt = DateTime("2025-02-17T13:30:00")
+            ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(120))
+            baseline = featurestoretestf6()
+            augmented = featurestoretestf6()
+            cols = Features.requestedcolumns(baseline)
+            description = Features.configdescription(baseline)
+            count = Features.featurecount(baseline)
+            required = copy(augmented.required)
+            Features.require_regression!(augmented; window=15)
+            @test augmented.required == required
+            Features.require_regression!(augmented; window=180)
+            dependencies = copy(augmented.required)
+            Features.require_regression!(augmented; window=180)
+            @test augmented.required == dependencies
+            @test Features.requiredminutes(augmented) == 180
+            @test augmented.maxoffset == baseline.maxoffset
+            @test Features.requestedcolumns(augmented) == cols
+            @test Features.featurecount(augmented) == count
+            @test Features.configdescription(augmented) == description
+            @test_throws AssertionError Features.require_regression!(augmented; window=1)
+            @test_throws AssertionError Features.require_regression!(augmented; window=14401)
+            ry, rg = Features.rollingregression(Ohlcv.dataframe(ohlcv).pivot, 180)
+            Features.setbase!(baseline, ohlcv; usecache=false)
+            Features.setbase!(augmented, ohlcv; usecache=true)
+            @test Features.features(augmented) ≈ Features.features(baseline)
+            @test augmented.fdfno[!, "ry+180"] ≈ ry
+            @test augmented.fdfno[!, "rg+180"] ≈ rg
+            @test isnothing(Features.readregression("SINE", ohlcv.quotecoin, 180))
+            @test_throws AssertionError Features.require_regression!(augmented; window=240)
+
+            Features.updateregression!(ohlcv, 180)
+            path = joinpath(Features.regressionfolder("SINE", ohlcv.quotecoin), "regr180.arrow")
+            bytes = read(path)
+            timestamp = stat(path).mtime
+            cached = featurestoretestf6()
+            Features.require_regression!(cached; window=180)
+            Features.setbase!(cached, Ohlcv.ohlcvview(ohlcv, 60:100); usecache=true)
+            @test Features.regressionat(cached, 180, Ohlcv.dataframe(ohlcv)[100, :opentime]).regry ≈ ry[100]
+            @test read(path) == bytes
+            @test Features.regressionat(augmented, 180, startdt + Minute(120)).regry ≈ ry[end]
+
+            extended = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(125))
+            Ohlcv.setdataframe!(ohlcv, DataFrame(Ohlcv.dataframe(extended)))
+            Features.supplement!(augmented)
+            @test read(path) == bytes
+            @test stat(path).mtime == timestamp
+            @test Features.regressionat(augmented, 180, startdt + Minute(125)) isa NamedTuple
+            @test nrow(Features.readregression("SINE", ohlcv.quotecoin, 180)) < nrow(Ohlcv.dataframe(ohlcv))
+        finally
+            EnvConfig.setcoinspath!(oldpath)
+        end
+    end
+end
+
 @testset "FeatureStore tests" begin
     EnvConfig.init(test)
     oldcoinspath = EnvConfig.activecoinspath
