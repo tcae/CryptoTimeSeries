@@ -360,9 +360,9 @@ const TARGET_CONFIGS = Dict{String, Function}(
     "T21" => () -> Targets.TrendRegression(3*24*60, 0.05, -0.05),
     "T22" => () -> Targets.TrendRegression(4*60, 0.01, -0.01),
     "T23" => () -> Targets.TrendRegression(4*60, 0.02, -0.02),
-    "T24" => () -> Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0),
-    "T25" => () -> Targets.Trend05(leadregr=15, supportregr=60, trendregr=12*60, triggerdist=0.02f0, targetgain=0.02f0),
-    "T26" => () -> Targets.Trend05(leadregr=60, supportregr=4*60, trendregr=3*24*60, triggerdist=0.05f0, targetgain=0.05f0),
+    "T24" => () -> Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0, targetminutes=480),
+    "T25" => () -> Targets.Trend05(leadregr=15, supportregr=60, trendregr=12*60, triggerdist=0.02f0, targetgain=0.02f0, targetminutes=480),
+    "T26" => () -> Targets.Trend05(leadregr=60, supportregr=4*60, trendregr=3*24*60, triggerdist=0.05f0, targetgain=0.05f0, targetminutes=480),
 )
 
 const PARTITION_CONFIGS = Dict{String, Function}("P02" => partitionconfig02)
@@ -510,9 +510,11 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("060", "F20-T25-P02-M008-B1", "S08"),
     tsentry("061", "F21-T26-P02-M008-B1", "S08"),
 
-    tsentry("062", "F19-T24-P02-M011-B1", "S08"),
+    tsentry("062", "F19-T24-P02-M011-B1", "S08"),  # modified 059 with SimpleChains based classifier speeding up training at same performance level
     tsentry("063", "F20-T25-P02-M011-B1", "S08"),
     tsentry("064", "F21-T26-P02-M011-B1", "S08"),
+
+    tsentry("065", "F19-T24-P02-M011-B1", "S09"),  # modified 062 concerning trading strategy parameters
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),
@@ -572,7 +574,23 @@ modelconfig(modelid::AbstractString)::Function = _config_from_dict(MODEL_CONFIGS
 "Return the StrategyConfig template (without classifier) of the strategy id `strategyid`."
 strategytemplate(strategyid::AbstractString)::StrategyConfig = _config_from_dict(STRATEGY_CONFIGS, strategyid; label="strategy")()
 "Return the classifier config of the classifier base name `basename`."
-classifierconfig(basename::AbstractString)::NamedTuple = _config_from_dict(CLASSIFIER_CONFIGS, basename; label="classifier")
+function classifierconfig(basename::AbstractString)::NamedTuple
+    cfg = _config_from_dict(CLASSIFIER_CONFIGS, basename; label="classifier")
+    checktargetpartition(targetconfig(cfg.targets), partitionconfig(cfg.partition).gapsize)
+    return cfg
+end
+
+"""
+    checktargetpartition(target, gapminutes)
+
+Assert that the look-ahead of any `AbstractTargets` implementation does not exceed
+the partition gap. Implementations without a declared horizon fail explicitly.
+"""
+function checktargetpartition(target::Targets.AbstractTargets, gapminutes::Integer)
+    horizon = Targets.lookaheadminutes(target)
+    @assert 0 < horizon <= gapminutes "target=$(Targets.configdescription(target)) lookaheadminutes=$(horizon) must be positive and <= partition gapsize=$(gapminutes)"
+    return nothing
+end
 "Return the trading strategy context `(configname, classifier, strategy)` for `ref`."
 tsconfig(ref::AbstractString)::NamedTuple = _config_from_dict(TS_CONFIGS, ref; label="trading strategy", prefixes=("tradingstrategy", "ts", "mk"))
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
@@ -608,6 +626,7 @@ classifierfeaturecols(clcfg::NamedTuple)::Vector{String} = Features.requestedcol
 
 "Return the expected classifier meta data (component ids and content hashes) that identifies the trained classifier."
 function classifiermeta(clcfg::NamedTuple; coinset::AbstractString, daterange::AbstractString)::Dict{String, String}
+    checktargetpartition(targetconfig(clcfg.targets), partitionconfig(clcfg.partition).gapsize)
     return Dict(
         "name" => classifiername(clcfg; coinset=coinset, daterange=daterange),
         "features" => clcfg.features, "featureshash" => featureshash(clcfg.features),

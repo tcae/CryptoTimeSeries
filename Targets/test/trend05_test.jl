@@ -1,8 +1,8 @@
 using Dates
 using Test
 
-function trend05withfeatures(ohlcv; leadregr::Int=2, supportregr::Int=3, trendregr::Int=4, triggerdist::Float32=0.02f0, targetgain::Float32=0.05f0)
-    trd = Targets.Trend05(; leadregr, supportregr, trendregr, triggerdist, targetgain)
+function trend05withfeatures(ohlcv; leadregr::Int=2, supportregr::Int=3, trendregr::Int=4, triggerdist::Float32=0.02f0, targetgain::Float32=0.05f0, targetminutes::Int=480)
+    trd = Targets.Trend05(; leadregr, supportregr, trendregr, triggerdist, targetgain, targetminutes)
     f6 = Features.Features006()
     for window in (leadregr, supportregr, trendregr, 60)
         Features.addregry!(f6, window=window, offset=0)
@@ -69,11 +69,56 @@ end
 end
 
 @testset "Trend05 invalid configuration" begin
+    @test_throws AssertionError Targets.Trend05(targetminutes=0)
+    @test_throws AssertionError Targets.Trend05(targetminutes=-1)
     @test_throws AssertionError Targets.Trend05(leadregr=0)
     @test_throws AssertionError Targets.Trend05(supportregr=0)
     @test_throws AssertionError Targets.Trend05(trendregr=0)
     @test_throws AssertionError Targets.Trend05(triggerdist=-0.01f0)
     @test_throws AssertionError Targets.Trend05(targetgain=0f0)
+end
+
+@testset "Trend05 elapsed target horizon" begin
+    for pivots in (Float32.(100:1:160), Float32.(160:-1:100))
+        trd = trend05withfeatures(testohlcvfrompivots(pivots))
+        columns = Targets._trend05_regressioncolumns(trd)
+        side = pivots[end] > pivots[1] ? :long : :short
+        endpoint, resolved = Targets._trend05_candidate(trd, pivots, 2, side, columns, 0)
+        @test resolved && !isnothing(endpoint)
+        trd.targetminutes = endpoint - 2
+        @test Targets._trend05_candidate(trd, pivots, 2, side, columns, 0) == (endpoint, true)
+        trd.targetminutes -= 1
+        @test Targets._trend05_candidate(trd, pivots, 2, side, columns, 0) == (nothing, true)
+        @test Targets.lookaheadminutes(trd) == trd.targetminutes
+        @test occursin("targetminutes=$(trd.targetminutes)", Targets.configdescription(trd))
+        @test occursin("targetminutes=$(trd.targetminutes)", Targets.describe(trd))
+    end
+    trd = trend05withfeatures(testohlcvfrompivots(Float32[100, 101, 102, 103]); targetminutes=2, targetgain=0.5f0)
+    columns = Targets._trend05_regressioncolumns(trd)
+    @test Targets._trend05_candidate(trd, Float32[100, 101, 102], 2, :long, columns, 0) == (nothing, false)
+    @test Targets._trend05_candidate(trd, Float32[100, 101, 102, 103], 2, :long, columns, 0) == (nothing, true)
+    @test trd.lastfinalix >= 2
+    # Missing clock minutes must not extend the deadline by counting rows.
+    trd.f6.fdfno[3:end, :opentime] .+= Minute(5)
+    @test Targets._trend05_candidate(trd, Float32[100, 101, 102, 103], 2, :long, columns, 0) == (nothing, true)
+end
+
+@testset "Trend05 bounded append preserves final labels" begin
+    pivots = Float32.(100:1:120)
+    ohlcv = testohlcvfrompivots(pivots[1:4])
+    trd = trend05withfeatures(ohlcv; targetminutes=3)
+    for rows in (5, 6, 9, length(pivots))
+        finalix = trd.lastfinalix
+        previous = copy(trd.df[1:finalix, :])
+        extended = testohlcvfrompivots(pivots[1:rows])
+        Ohlcv.setdataframe!(ohlcv, Ohlcv.dataframe(extended))
+        Features.supplement!(trd.f6)
+        Targets.supplement!(trd)
+        rebuilt = trend05withfeatures(extended; targetminutes=3)
+        @test trd.df[1:finalix, :] == previous
+        @test trd.df == rebuilt.df
+        @test trd.lastfinalix == rebuilt.lastfinalix
+    end
 end
 
 @testset "Trend05 requires a feature superset" begin

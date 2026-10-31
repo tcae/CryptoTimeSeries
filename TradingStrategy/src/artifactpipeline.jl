@@ -7,6 +7,7 @@
 
 "Return the per-coin feature, target and sets stores of a classifier config for `coin` or `nothing` entries if not stored."
 function coinstores(clcfg::NamedTuple, coin::AbstractString; daterange::AbstractString, quotecoin::AbstractString=EnvConfig.pairquote)
+    checktargetpartition(targetconfig(clcfg.targets), partitionconfig(clcfg.partition).gapsize)
     return (
         Features.readfeatures(coin, quotecoin, clcfg.features; confighash=featureshash(clcfg.features)),
         Targets.readtargets(coin, quotecoin, clcfg.targets; confighash=targetshash(clcfg.targets)),
@@ -21,6 +22,7 @@ Bring the per-coin feature, target and sets stores of `clcfg` up to date for all
 return the coins that have OHLCV data and therefore stores.
 """
 function ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString}; daterange::AbstractString)::Vector{String}
+    checktargetpartition(targetconfig(clcfg.targets), partitionconfig(clcfg.partition).gapsize)
     dr = daterangeconfig(daterange)
     processed = String[]
     for (coinix, coin) in enumerate(coins)

@@ -1764,7 +1764,10 @@ positive values mean above it. Thresholds include equality. Entry candidates sti
 require a positive trend regression endpoint, even though the denominator is the
 positive observed pivot.
 
-`lastfinalix` is the last label row that does not depend on OHLCV data beyond the base, i.e. all entry decisions up to it reached their target or broke their hold within the base.
+`targetminutes` (default 480) limits the elapsed time from an entry candidate to
+reaching `targetgain`. Equality at the deadline is accepted. An expired candidate
+does not emit an entry or its holds. `lastfinalix` is the last label row whose
+entry decisions reached their target, broke their hold, or expired within the base.
 """
 mutable struct Trend05 <: AbstractTargets
     leadregr::Int
@@ -1772,6 +1775,7 @@ mutable struct Trend05 <: AbstractTargets
     trendregr::Int
     triggerdist::Float32
     targetgain::Float32
+    targetminutes::Int
     ohlcv::Union{OhlcvData, Nothing}
     f6::Union{Features.Features006, Nothing}
     df::Union{DataFrame, Nothing}
@@ -1779,20 +1783,22 @@ mutable struct Trend05 <: AbstractTargets
 
     function Trend05(; leadregr::Int=5, supportregr::Int=15, trendregr::Int=4*60,
         triggerdist::Float32=0.01f0, targetgain::Float32=0.01f0,
-        f6::Union{Nothing, Features.Features006}=nothing)
-        trd = new(leadregr, supportregr, trendregr, triggerdist, targetgain, nothing, f6, nothing, 0)
+        targetminutes::Int=480, f6::Union{Nothing, Features.Features006}=nothing)
+        trd = new(leadregr, supportregr, trendregr, triggerdist, targetgain, targetminutes, nothing, f6, nothing, 0)
         _trend05_validateconfig(trd)
         isnothing(f6) || _trend05_requiredfeatures(f6, trd)
         return trd
     end
 end
 
+"Assert that Trend05 regression windows, target horizon and gain thresholds are valid."
 function _trend05_validateconfig(trd::Trend05)
     @assert trd.leadregr > 0 "leadregr=$(trd.leadregr) must be positive"
     @assert trd.supportregr > 0 "supportregr=$(trd.supportregr) must be positive"
     @assert trd.trendregr > 0 "trendregr=$(trd.trendregr) must be positive"
     @assert trd.triggerdist >= 0f0 "triggerdist=$(trd.triggerdist) must be nonnegative"
     @assert trd.targetgain > 0f0 "targetgain=$(trd.targetgain) must be positive"
+    @assert trd.targetminutes > 0 "targetminutes=$(trd.targetminutes) must be positive"
     return nothing
 end
 
@@ -1893,18 +1899,22 @@ end
 
 """
 Return `(targetix, resolved)` of a `side` entry at `ix`. `targetix` is the first row that reaches the target gain
-with uninterrupted holds since `ix`, otherwise `nothing`. `resolved` is false if neither the target was reached nor
-a hold was broken within `pivots`, i.e. the decision depends on future OHLCV data.
+with uninterrupted holds since `ix` and no later than `targetminutes` elapsed minutes,
+otherwise `nothing`. `resolved` is false only when the available history ends before
+the deadline without reaching the target or breaking a hold.
 """
 function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol, regressioncolumns::NamedTuple, featureoffset::Integer)
     regressions = _trend05_regression(trd, ix, regressioncolumns, featureoffset)
     _trend05_entry(trd, pivots[ix], regressions.lead, regressions.support, regressions.trend, side) || return (nothing, true)
     target = pivots[ix] * (side === :long ? 1f0 + trd.targetgain : 1f0 - trd.targetgain)
+    timestamps = trd.f6.fdfno[!, :opentime]
+    deadline = timestamps[ix + featureoffset] + Minute(trd.targetminutes)
     for holdix in (ix + 1):lastindex(pivots)
+        timestamps[holdix + featureoffset] > deadline && return (nothing, true)
         _trend05_hold(_trend05_regression(trd, holdix, regressioncolumns, featureoffset).support, side) || return (nothing, true)
         (side === :long ? pivots[holdix] >= target : pivots[holdix] <= target) && return (holdix, true)
     end
-    return (nothing, false)
+    return (nothing, timestamps[lastindex(pivots) + featureoffset] >= deadline)
 end
 
 """
@@ -2000,9 +2010,10 @@ labelrelativegain(trd::Trend05, label::TradeLabel, startdt::DateTime, enddt::Dat
 labelvalues(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame = df(trd, firstix, lastix)
 labelvalues(trd::Trend05, startdt::DateTime, enddt::DateTime)::AbstractDataFrame = df(trd, startdt, enddt)
 
+"Return a description of Trend05 including its base, regressions, gain and target deadline."
 function describe(trd::Trend05)
     base = isnothing(trd.ohlcv) ? "Base?" : trd.ohlcv.base
-    return "$(typeof(trd))_$(base)_leadregr=$(trd.leadregr)_supportregr=$(trd.supportregr)_trendregr=$(trd.trendregr)_triggerdist=$(trd.triggerdist)_targetgain=$(trd.targetgain)"
+    return "$(typeof(trd))_$(base)_leadregr=$(trd.leadregr)_supportregr=$(trd.supportregr)_trendregr=$(trd.trendregr)_triggerdist=$(trd.triggerdist)_targetgain=$(trd.targetgain)_targetminutes=$(trd.targetminutes)"
 end
 
 #endregion Trend05

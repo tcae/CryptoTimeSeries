@@ -6,6 +6,7 @@ using Test
     include("tradeloop_progress_test.jl")
     include("trade_budget_allocation_test.jl")
     include("trade_epoch_allocation_test.jl")
+    include("liquiditygate_test.jl")
     # bybit_guardrail_test removed - tests guardrail that prevents trading on data-only exchanges
     # This concept no longer applies with single-exchange model
 end

@@ -10,12 +10,13 @@ targetsfolder(base::AbstractString, quotecoin::AbstractString) = EnvConfig.coinf
 configdescription(trd::AbstractTargets)::String = error("configdescription not implemented for $(typeof(trd))")
 configdescription(trd::Trend04)::String = "Trend04(minwindow=$(trd.minwindow),maxwindow=$(trd.maxwindow),holdanchormode=$(trd.holdanchormode),holdbehaviormode=$(trd.holdbehaviormode),longopen=$(trd.thres.longopen),longhold=$(trd.thres.longhold),shorthold=$(trd.thres.shorthold),shortopen=$(trd.thres.shortopen))"
 configdescription(trd::TrendRegression)::String = "TrendRegression(window=$(trd.window),longthreshold=$(trd.longthreshold),shortthreshold=$(trd.shortthreshold))"
-configdescription(trd::Trend05)::String = "Trend05(leadregr=$(trd.leadregr),supportregr=$(trd.supportregr),trendregr=$(trd.trendregr),triggerdist=$(trd.triggerdist),targetgain=$(trd.targetgain),distance=(pivot-regry)/pivot)"
+configdescription(trd::Trend05)::String = "Trend05(leadregr=$(trd.leadregr),supportregr=$(trd.supportregr),trendregr=$(trd.trendregr),triggerdist=$(trd.triggerdist),targetgain=$(trd.targetgain),targetminutes=$(trd.targetminutes),distance=(pivot-regry)/pivot)"
 
 "Return the look-ahead horizon in minutes of a target config with a bounded look-ahead."
 lookaheadminutes(trd::AbstractTargets)::Int = error("lookaheadminutes not implemented for $(typeof(trd))")
 lookaheadminutes(trd::Trend04)::Int = trd.maxwindow
 lookaheadminutes(trd::TrendRegression)::Int = trd.window
+lookaheadminutes(trd::Trend05)::Int = trd.targetminutes
 
 "Return the number of leading labels of a based target config with `nrows` labels that do not depend on OHLCV data beyond its base."
 finallabelcount(trd::AbstractTargets, nrows::Integer)::Int = error("finallabelcount not implemented for $(typeof(trd))")

@@ -183,10 +183,16 @@ function _rolling_pricechangepercent24h(df::AbstractDataFrame, endix::Int, enddt
 end
 
 """
+    _continuous_liquidity_now(df, datetime; minquotevol, accumulate, checkperiod, threshold)
+
 Fast liquidity gate for trade selection at `datetime`.
 
 The objective is to admit coins that are liquid overall (24h quote volume gate)
 and currently liquid continuously over the recent `checkperiod` window.
+It applies the start criterion of `Ohlcv.liquiditycheck` with the `Ohlcv.ld`
+defaults: fewer than `threshold * checkperiod` minutes of the last `checkperiod`
+minutes may miss `minquotevol` accumulated over `accumulate` minutes.
+Returns `false` if fewer than `checkperiod + accumulate - 1` rows are available.
 """
 function _continuous_liquidity_now(df::AbstractDataFrame, datetime::DateTime;
     minquotevol::Float32=Ohlcv.ld.minquotevol,
@@ -222,6 +228,40 @@ function _continuous_liquidity_now(df::AbstractDataFrame, datetime::DateTime;
 
     startnok = round(Int, checkperiod * threshold)
     return insufficient < startnok
+end
+
+"""Return the rounded daily quote-volume minimum used by trade selection."""
+_minimum_daily_quotevolume() = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) * 1000000
+
+"""
+    tradeselection!(xc::Xch.XchCache; datetime=xc.startdt, excludedbases=String[])
+
+Discover liquid USDT coins using public market data only. Apply the same daily
+volume and continuous-liquidity start criteria as trading, without balances,
+classifiers, strategy state, or orders. Skip `excludedbases` before downloading
+recent OHLCV. Return candidate rows with `minquotevol` and `continuousminvol`
+flags; callers must require both flags. Recent OHLCV remains in `xc`, not on disk.
+"""
+function tradeselection!(xc::Xch.XchCache; datetime::DateTime=xc.startdt,
+        excludedbases::AbstractVector{<:AbstractString}=String[])::DataFrame
+    @assert EnvConfig.pairquote == "USDT" "market-data selection requires USDT, quote=$(EnvConfig.pairquote)"
+    datetime = floor(datetime, Minute)
+    market = Xch.screeningUSDTmarket(xc; dt=datetime)
+    @assert nrow(market) > 0 "empty USDT market at datetime=$datetime"
+    excluded = Set(excludedbases)
+    candidates = filter(row -> !(row.basecoin in excluded) &&
+        row.quotevolume24h >= _minimum_daily_quotevolume(), market)
+    candidates[!, :minquotevol] = trues(nrow(candidates))
+    candidates[!, :continuousminvol] = falses(nrow(candidates))
+    historyminutes = Ohlcv.ld.checkperiod + Ohlcv.ld.accumulate + LIQUIDITY_LOOKBACK_MARGIN_MINUTES
+    for row in eachrow(candidates)
+        ohlcv = Xch.cryptodownload(xc, row.basecoin, "1m", datetime - Minute(historyminutes), datetime)
+        row.continuousminvol = _continuous_liquidity_now(Ohlcv.dataframe(ohlcv), datetime)
+        if !row.continuousminvol
+            Xch.removebase!(xc, row.basecoin)
+        end
+    end
+    return candidates
 end
 
 function _ensure_marketview_ohlcv!(tc::TradeCache, base::AbstractString, startdt::DateTime, enddt::DateTime, loaded::Set)
@@ -440,7 +480,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
     tc.cfg[:, :pair] = [Xch.tradingpairkey(String(base), quotecoin) for base in tc.cfg[!, :basecoin]]
     tc.cfg[:, :datetime] .= datetime
     # tc.cfg[:, :validbase] = [Xch.validbase(tc.xc, base) for base in tc.cfg[!, :basecoin]] # is already filtered by getUSDTmarket
-    minimumdayquotevolumemillion = round(Ohlcv.liquiddailyminimumquotevolume() / 1000000, digits=0) # ignore allcoins with less than liquiddailyminimumquotevolume
+    minimumdayquotevolumemillion = _minimum_daily_quotevolume() / 1000000
     tc.cfg[:, :minquotevol] = tc.cfg[:, :quotevolume24h_M] .>= minimumdayquotevolumemillion
     tc.cfg[:, :continuousminvol] .= false
     tc.cfg[:, :inportfolio] = [base in portfolioassetbaseset for base in tc.cfg[!, :basecoin]]
@@ -473,7 +513,7 @@ function tradeselection!(tc::TradeCache, assetbases::Vector; datetime=tc.xc.star
         if updatecache
             Ohlcv.write(ohlcv) # write ohlcv even if data length is too short to calculate features
         end
-        row.continuousminvol = true #TODO check disabled until debugged _continuous_liquidity_now(Ohlcv.dataframe(ohlcv), datetime, minquotevol=5000f0, accumulate=60, checkperiod=24*60, threshold=0.8)
+        row.continuousminvol = _continuous_liquidity_now(Ohlcv.dataframe(ohlcv), datetime)
         if row.inportfolio || (row.minquotevol && !row.blacklisted)
             push!(candidatebaseset, String(row.basecoin))
         end

@@ -56,6 +56,91 @@ test-mode comparison with `julia --project=. scripts/benchmark_model008.jl`.
 Add `--batchnorm` to compare M011 directly against 059.
 Configuration 059 retains M008 and its BatchNorm layers unchanged.
 
+### Supplement Bybit USDT OHLCV
+
+Run from Terminal in the repository root:
+
+```bash
+set -o pipefail
+caffeinate -i julia --project=. scripts/supplement.jl 2>&1 | tee "$HOME/crypto/debug/supplement-$(date +%Y%m%d-%H%M%S).log"
+```
+
+The script first updates every existing `Bybit/<coin>-USDT/ohlcv.arrow`
+cache to the last completed UTC minute. Unavailable/delisted coins are reported
+and left unchanged. Existing historical prefixes, including supplemented
+Binance candles, are preserved; only the final cached candle may be refreshed.
+It then runs the public-market `Trade.tradeselection!` overload to discover
+uncached coins passing the trading daily-volume and continuous-liquidity gates.
+For those coins it downloads up to two years of available one-minute history.
+
+No credentials, classifier, orders, or VS Code process are required. Ctrl+C
+stops the foreground run; completed coin writes are retained and rerunning
+continues from the updated caches. Each write is atomic and verified. This
+script does not rebuild or delete feature, target, regression, or sets stores.
+Unexpected errors abort with diagnostics rather than silently skipping coins.
+Run `julia --project=. scripts/supplement.jl --help` for help.
+
+### Market regime diagnostics (Phase A)
+
+Run `julia --project=. scripts/diagnose_market_regimes.jl` to inspect CS01/D01
+without changing data partitions, target stores or classifiers. Results are saved
+under `~/crypto/debug/market-regimes/<timestamp>/`:
+
+- `market.arrow`: hourly market indicators, using exact normalized ten-day
+  minute-price regressions, one-day slopes, directional breadth and volatility.
+- `coverage.arrow`: explicit missing/invalid coin-history diagnostics.
+- `candidates.arrow`: 18 threshold/strength/confirmation comparisons.
+- Candidate hourly and segment tables: online labels, retrospective labels,
+  estimated starts and confirmation timestamps.
+- `report.txt`: methodology, distributions and candidate durations/counts.
+- `sample-coverage.arrow`: currently stored eligible samples by feature/target,
+  coin, set, illustrative retrospective regime and calendar month. Months are
+  reporting buckets, not walk-forward folds. Missing and historical target
+  stores are identified separately; none are regenerated.
+
+Volume weights use trailing approximate quote turnover (`pivot * basevolume`),
+with a 10% coin cap and at least ten eligible coins. A coin hour is eligible only
+if its cutoff minute lies inside an `Ohlcv.liquiditycheck` range (`Ohlcv.ld`
+defaults, the same liquidity definition as P02 set generation). All indicator inputs are
+past/current completed minutes. Historical regime labels may backdate to the
+start of a subsequently confirmed candidate; online labels never backdate.
+Volatility-normalized strength is a descriptive heuristic, not a significance
+test. Candidate settings are not selected automatically or used for training.
+
+Run focused diagnostic tests with
+`julia --project=. -e 'include("test/market_regime_diagnostics_test.jl")'`.
+
+### Trend05 target horizon and partition safety
+
+Trend05 accepts `targetminutes` (480 minutes by default). A candidate must reach
+`targetgain`, with uninterrupted holds, at or before its elapsed-time deadline.
+Expired candidates produce no entry/hold segment. An incomplete candidate remains
+provisional only until its deadline can be observed. T24/T25/T26 explicitly use
+480 minutes, matching P02's eight-hour gap.
+
+Classifier configuration and store preparation assert that every target's declared
+look-ahead is positive and does not exceed its partition gap. Historical target
+configs with longer horizons now fail that check rather than running unsafely.
+
+This changes T24/T25/T26 content hashes. Existing target stores, classifier
+metadata and predictions are not silently compatible with bounded targets.
+The normal hash checks reject incompatible artifacts; they must be explicitly
+rebuilt/replaced before training with the changed targets.
+
+Audit existing real-data stores without regenerating them:
+
+```sh
+julia --project=. scripts/investigate_trend05_horizon.jl
+```
+
+Add `--invalidate` to remove only target Arrow stores with proven crossings of
+P02 partition gaps. Evidence and each removal are logged under
+`~/crypto/debug/trend05-horizon`. The script scans T24/T25/T26 for CS01/D01 and
+also distinguishes crossings into a different set type. It reconstructs the
+future dependency of successful stored entry/hold segments; failed or unresolved
+candidate dependencies are not recorded in target stores, so zero crossings is
+not proof of full historical independence. It never removes classifiers.
+
 ### Training stopping criteria
 
 Classifier adaptation stops after 50 epochs without at least a 0.05% relative
