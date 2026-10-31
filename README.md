@@ -78,6 +78,9 @@ stops the foreground run; completed coin writes are retained and rerunning
 continues from the updated caches. Each write is atomic and verified. This
 script does not rebuild or delete feature, target, regression, or sets stores.
 Unexpected errors abort with diagnostics rather than silently skipping coins.
+Bybit kline internal errors (10016) are retried up to four attempts, waiting
+1, 2 and 4 seconds. Exhausted retries and other API errors abort explicitly;
+failed responses are never interpreted as the end of available history.
 Run `julia --project=. scripts/supplement.jl --help` for help.
 
 ### Market regime diagnostics (Phase A)
@@ -143,7 +146,7 @@ not proof of full historical independence. It never removes classifiers.
 
 ### Training stopping criteria
 
-Classifier adaptation stops after 50 epochs without at least a 0.05% relative
+Legacy classifier adaptation stops after 50 epochs without at least a 0.05% relative
 loss reduction from the best loss at the last meaningful improvement. Smaller
 record improvements accumulate against that reference; they do not individually
 reset patience. Every actual record-low checkpoint is still saved as `nn.bson`,
@@ -166,6 +169,138 @@ reused unless explicitly retrained. Comparing a completed historical TS060 run
 against TS063 measures classifier quality, but is not a controlled runtime
 benchmark: the earlier run used different stopping criteria and may have run
 alongside other jobs.
+
+### Regime/fold validation experiments
+
+[RegimeTraining.jl](scripts/RegimeTraining.jl) runs a separate SimpleChains
+SimpleChains experiment without altering P02, existing classifiers, live
+thresholds or OHLCV caches. Start with SINE/DOUBLESINE from Terminal:
+
+```sh
+julia --project=. scripts/RegimeTraining.jl test mode=synthetic runid=synthetic-01 stage=train epochs=200
+```
+
+Shared consecutive calendar folds and complete blocks are balanced toward
+train/eval/test 4:1:1 within each represented regime/fold. Unknown regimes are
+excluded from all three populations and explicitly counted. Experiment-private
+features/targets are rebuilt from OHLCV; full input hashes reject changed data
+or configuration under an existing run ID.
+
+Stopping and best-checkpoint selection use **held-out, fixed regime/fold-weighted
+eval loss**, with 50-epoch patience, 0.05% meaningful relative improvement and
+a hard 200-total-epoch budget. Natural pooled eval loss is reported separately.
+`retrain` resumes the last checkpoint, warning if test results already exist; every actual
+eval record low can become the best checkpoint. `epochs=2` is useful for a smoke
+test, not a classifier-quality assessment.
+
+Outputs are under `~/crypto/debug/regime-training/<run>/`:
+
+- Shared market/calendar, sample coverage/exclusions, immutable identities,
+  train/eval indices and compact sources.
+- `balanced/epoch-losses.arrow`, `epoch-cells.arrow`, best/last checkpoints
+  and `training-report.txt`.
+- Eval minute and target-interval opportunity metrics; overall, regime, fold,
+  regime/fold and coin reports; macro summaries, non-dominated threshold
+  candidates and `eval-curves.svg`.
+- Precision/recall/coverage and counts for the five labels and grouped `long`
+  and `short`. Minute metrics include 95% bootstrap intervals from 200 joint
+  shared-block resamples; unsupported intervals are missing.
+
+`allclose` means **no established trend**, not a directional exit. Threshold
+abstention is separate. Reports concern opportunities, not executed-trade
+economics, and do not introduce live regime-dependent thresholds.
+
+Choose a scalar threshold from eval reports, then record it and the best
+checkpoint for test (0.5 below is only an example):
+
+```sh
+julia --project=. scripts/RegimeTraining.jl test mode=synthetic runid=synthetic-01 stage=test threshold=0.5
+julia --project=. scripts/RegimeTraining.jl test mode=synthetic runid=synthetic-wf-01 stage=walkforward threshold=0.5
+```
+
+Test reports contain only the chosen threshold, never an automatic sweep.
+Changed thresholds/checkpoints and adaptation after test reporting warn but are
+permitted. `test-threshold-history.arrow` preserves evaluation settings;
+`fixed-threshold.arrow` records the latest choice. Training-resume compatibility,
+patience and the total epoch cap still apply. Walk-forward trains fresh models
+on expanding earlier windows, uses cutoff-safe liquidity/regime memberships
+and horizon purges, and aggregates disjoint later test windows. Its supplied
+threshold is fixed before running the windows.
+
+`folds=1,2`, `regimes=up,down` and `trainweights=balanced` provide diagnostic
+selection and optional train-only regime/fold weighting.
+
+Like TrendDetector, `test` (default) selects CS00/D00 and `train` selects CS01/D01.
+`ts=063` is the default registered TS context: F20/T25/M011 with its class-balancing
+flag. `coinset`, `daterange`, and `coins` are registry selections/overrides.
+`startdt`/`enddt` must be supplied together and override experiment dates.
+Unlike TrendDetector's replay-only coin override, `coins` selects the entire
+regime experiment universe, including training. Default test mode generates
+CS00 artificial data over the registered date range using registered features
+and targets; `mode=synthetic` is the explicit small smoke fixture.
+
+```sh
+julia --project=. scripts/RegimeTraining.jl test ts=063 stage=evaluate
+julia --project=. scripts/RegimeTraining.jl test ts=063 stage=gain
+julia --project=. scripts/RegimeTraining.jl train ts=063 coinset=CS01 daterange=D01 stage=train
+```
+
+Stages are `stores`, `train`, `predict`, `evaluate`, `gain`, plus explicit
+`test` and `walkforward`. Adaptation ends with eval reports and `next-steps.txt`:
+inspect diagrams, select thresholds and update the trading strategy before
+starting a subsequent `stage=gain` run. Gain requires an existing adapted
+checkpoint and never trains a missing model. `retrain` resumes adaptation only.
+
+`reinforce=N` uses the same soft reinforcement as TrendDetector: after every
+N epochs, train-only misclassification flags are refreshed. Misclassified samples
+receive 2x emphasis, normalized within each class to preserve its existing weight
+mass (including optional regime/fold weights). All train samples remain in batches.
+It is a refresh interval, not additional training epochs; `reinforce=0` disables it.
+Flags, normalizers and refresh history are checkpointed for reproducible resume.
+Changing the interval on resume refreshes flags and is logged, without resetting
+held-out eval weights, best-loss history, 50-epoch patience or the 200-total-epoch cap.
+An already converged/exhausted run does not restart merely because reinforcement
+is enabled. Refresh counts are in `balanced/reinforcement-refreshes.arrow`.
+
+```sh
+rtrain test ts=063 stage=train reinforce=3
+rtrain test ts=063 stage=train retrain reinforce=3
+```
+
+Use `retrain` when enabling reinforcement for an existing run; keep its runid
+and dataset options. Reinforcement does not change signal thresholds or test data.
+`runid` optionally names the immutable experiment; otherwise it is derived
+deterministically from configuration, excluding stage/epoch/threshold controls.
+`folder` selects the gain output subfolder (market runs under `~/crypto/logs`,
+test/smoke runs under the experiment's debug `gain` folder). Gain replay uses reserved test samples and the
+registered strategy's execution thresholds, fees, budgets and regression windows,
+with separate predicted/target passes and independent contiguous block ranges.
+It does not read legacy classifier artifacts or use eval samples for gains.
+Keep the same runid and dataset options. The same or another TS context is
+accepted when its classifier configuration is identical; TS/strategy identity
+is separate from adaptation identity. The first test gain run records the
+checkpoint digest, test membership and actual strategy settings in
+`test-strategy.arrow`. Later runs warn on changed strategy/checkpoint settings
+but permit experimental replay. `test-strategy-history.arrow` retains the settings
+used by each replay invocation. This does not lock or modify registry entries.
+Results informed by previous test results are not independent held-out assessments.
+The reporting `threshold` option is for explicit test/walk-forward evaluation,
+not an override of strategy execution thresholds.
+Explicit `mincoins`/`weightcap` overrides must be supplied together and recorded
+in a distinct experiment identity. M008/Flux contexts fail explicitly; use a
+registered SimpleChains context such as TS063.
+
+Real-market execution reads local
+Bybit USDT OHLCV only; it does not download data. Real-market validation and
+detector calibration for the full universe remain pending history-repair completion.
+A two-epoch real-data integration test has passed on the repaired subset through
+AVL (August–October 2026), with an explicitly approved subset-only five-coin/20%
+detector configuration because fewer than ten coins pass liquidity there.
+This is not full-budget model validation. RG01/RF01 market
+defaults are illustrative settings, not validated optimal choices; walk-forward
+needs two years of initial training plus 90-day eval/test windows and gaps.
+See the [implementation plan](docs/2026-10-31-regime-fold-validation-plan.md)
+and `julia --project=. scripts/RegimeTraining.jl --help`.
 
 ## Design
 

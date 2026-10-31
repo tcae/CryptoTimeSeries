@@ -1758,7 +1758,7 @@ function nnconverged(losses::AbstractVector; patience::Integer=50, minrelativeim
     improvementepoch = 1
     for epoch in 2:length(losses)
         loss = losses[epoch]
-        if loss < reference && reference - loss >= reference * minrelativeimprovement
+        if loss < reference && loss <= reference * (1 - minrelativeimprovement)
             reference = loss
             improvementepoch = epoch
         end
@@ -2061,6 +2061,8 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thre
     # preallocate collection matrices with columns TP, TN, FP, FN and rows as bins with lower separation value x/thresholdbins per label per set
     setnames = levels(predictions.set)
     cmc = zeros(Int, length(setnames), length(alllabels), length(confcatsyms), thresholdbins)
+    targetcounts = zeros(Int, length(setnames), length(alllabels))
+    setcounts = zeros(Int, length(setnames))
     for ix in eachindex(predictions[!, :label])
         predlabel = normlabel(predictions[ix, :label])
         targetlabel = normlabel(predictions[ix, :target])
@@ -2072,6 +2074,8 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thre
         elseif binix == 0
             outofrangecount += 1
         else
+            targetcounts[levelcode(predictions.set[ix]), Targets.tradelabelix(targetlabel, alllabels)] += 1
+            setcounts[levelcode(predictions.set[ix])] += 1
             if predlabel == targetlabel
                 cmc[levelcode(predictions.set[ix]), labelix, confcat[:tp], binix] += 1
             else  
@@ -2090,10 +2094,8 @@ function extendedconfusionmatrix(predictions::AbstractDataFrame, alllabels, thre
                     cm[six, lix, confcat[:tp], bix] += cmc[six, lix, confcat[:tp], bix2]
                     cm[six, lix, confcat[:fp], bix] += cmc[six, lix, confcat[:fp], bix2]
                 end
-                for bix2 in 1:(bix-1)
-                    cm[six, lix, confcat[:fn], bix] += cmc[six, lix, confcat[:tp], bix2]
-                    cm[six, lix, confcat[:tn], bix] += cmc[six, lix, confcat[:fp], bix2]
-                end
+                cm[six, lix, confcat[:fn], bix] = targetcounts[six, lix] - cm[six, lix, confcat[:tp], bix]
+                cm[six, lix, confcat[:tn], bix] = setcounts[six] - targetcounts[six, lix] - cm[six, lix, confcat[:fp], bix]
             end
         end
     end
@@ -2580,6 +2582,8 @@ include("BsonLegacyMigration.jl")
 include("SimpleChainsBatchNorm.jl")
 include("SimpleChainsNN.jl")
 include("SampleSource.jl")
+include("EvalTraining.jl")
+include("SignalMetrics.jl")
 include("SetsStore.jl")
 include("TrendClassifier001.jl")
 include("ClassifierStore.jl")

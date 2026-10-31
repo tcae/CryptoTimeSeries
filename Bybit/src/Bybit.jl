@@ -1043,13 +1043,32 @@ function _sim_klines(bc::BybitCache, symbol::AbstractString; startDateTime=nothi
 end
 
 """
-Returns ohlcv/klines data as DataFrame with oldest first rows (which is compatible to Ohlcv but in **contrast to the Bybit default!**)
-```
-1000×6 DataFrame
-  Row │ opentime             open     high     low      close    basevolume
-      │ DateTime             Float32  Float32  Float32  Float32  Float32
-──────┼─────────────────────────────────────────────────────────────────────
-    1 │ 2024-01-14T12:59:00  42758.0  42758.0  42735.1  42744.0  2.71146
+Execute a public kline request, retrying internal server error 10016 up to four
+attempts with 1, 2 and 4 second delays. Other API errors fail immediately.
+Injected request and wait functions allow offline tests; interrupts propagate.
+"""
+function _checkedklinerequest(request::Function; wait::Function=sleep)::AbstractDict
+    for attempt in 1:4
+        response = request()
+        code = response["retCode"]
+        code == 0 && return response
+        message = response["retMsg"]
+        if code == 10016 && attempt < 4
+            delay = 2^(attempt - 1)
+            @warn "Transient Bybit kline error; retrying" code message attempt delay
+            wait(delay)
+            continue
+        end
+        error("Bybit kline request failed: retCode=$code retMsg=$message attempt=$attempt")
+    end
+    error("Bybit kline retry loop exhausted unexpectedly")
+end
+
+"""
+Return spot OHLCV candles for `symbol` in `interval` over the requested time range.
+Rows are oldest first, unlike the Bybit API response order.
+Retry transient internal API errors; throw on failed requests rather than treating
+them as missing history. Only successful empty results return an empty table.
 """
 function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
     if !isnothing(bc.orderbook)
@@ -1063,7 +1082,7 @@ function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=no
         params["start"] = Printf.@sprintf("%.0d",Dates.datetime2unix(startDateTime) * 1000)
         params["end"] = Printf.@sprintf("%.0d",Dates.datetime2unix(endDateTime) * 1000)
     end
-    response = HttpPublicRequest(bc, "GET", "/v5/market/kline", params, "kline")
+    response = _checkedklinerequest(() -> HttpPublicRequest(bc, "GET", "/v5/market/kline", params, "kline"))
     response["result"]["list"] = length(response["result"]) == 0 ? _convertklines(Dict()) : _convertklines(response["result"]["list"])
     return response["result"]["list"]
 end
@@ -2663,5 +2682,3 @@ filterOnRegex(matcher, withDictArr; withKey="symbol") = filter(x -> match(Regex(
 
 
 end
-
-

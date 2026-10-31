@@ -16,9 +16,98 @@ Live trading uses one fixed threshold per supported signal type, not per regime.
 Classifier trend detection remains separate from strategy execution and
 completed-trade economics. No claim of profitability follows from signal precision.
 
-This document is a plan, not an implementation of these capabilities.
+## Implementation status
 
-## Current baseline
+The synthetic-first experiment pipeline is implemented in
+[RegimeCalendar.jl](../TradingStrategy/src/RegimeCalendar.jl),
+[RegimePipeline.jl](../TradingStrategy/src/RegimePipeline.jl),
+[EvalTraining.jl](../Classify/src/EvalTraining.jl),
+[SignalMetrics.jl](../Classify/src/SignalMetrics.jl) and
+[RegimeTraining.jl](../scripts/RegimeTraining.jl).
+
+Implemented surfaces:
+
+- Full-content dataset identities and private rebuilt feature/target stores.
+- Shared regime/fold/block calendars, balanced complete-block assignments,
+  explicit unknown exclusions, fold/regime selection and optional train weights.
+- Fixed held-out eval-loss stopping, natural/weighted/cell histories and
+  identity-checked best/last checkpoints with resumable optimizer/RNG state.
+- Train-only soft reinforcement via `reinforce=N`, matching TrendDetector's
+  refresh interval and class-normalized 2x hard-example emphasis. Reinforcement
+  state/history resumes exactly; eval weighting, patience and total cap remain
+  unchanged, including when enabling reinforcement after earlier adaptation.
+- Five-label and grouped long/short precision, recall, coverage, opportunity
+  episodes, macro/coin diagnostics, threshold candidates and SVG curves.
+- Joint shared-block bootstrap minute-metric intervals; explicit insufficient
+  independent support. Opportunity reports provide counts/support, not bootstrap
+  intervals.
+- Separate expanding chronological experiments with cutoff-safe membership,
+  horizon purges, fresh models and disjoint aggregated test windows.
+
+Synthetic pooled training, frozen-threshold test reporting and four chronological
+two-epoch runs have completed. Focused tests cover exact stopping limits, resume,
+BatchNorm isolation, unknown exclusion, shared assignments and metric semantics.
+These smoke runs verify execution, not final model quality.
+
+The CLI currently reports **one scalar threshold for all labels and regimes**;
+per-signal report curves do not add unsupported live strategy controls. Test
+membership and best-checkpoint digest are recorded alongside that threshold.
+Changed thresholds/checkpoints and training after test reporting produce warnings,
+not policy rejections; threshold evaluation history is retained. Existing P02 and legacy
+training-loss adaptation remain available unchanged.
+
+Partial real-data integration has passed for the repaired alphabetical subset
+through AVL, using August 1–October 31, 2026 (19:42 UTC) plus 11 days of context.
+Of 43 cached symbols, 32 have window coverage and seven contribute eligible
+assigned samples. Private F20/T25 stores were rebuilt. The normal ten-coin detector
+produced only unknown periods because at most seven coins passed liquidity.
+With explicit user approval, a separate subset-only configuration uses five
+minimum coins and a 20% coin-weight cap; liquidity criteria and market defaults
+remain unchanged. It produced 219,293 train, 56,003 eval and 55,212 reserved test
+samples, all in diagnostic fold 40, with all three known regimes represented.
+Two M011 epochs and eval signal/event/bootstrap/coin reports completed. No test
+threshold was selected and no reserved test predictions were evaluated.
+
+Pending: full real-market history completion, broader real-store audit/rebuild
+runs, detector calibration on a declared development period, and full-budget
+real-data quality assessment. Market RG01/RF01 defaults are illustrative, not calibrated choices.
+The phase descriptions below retain the agreed design and acceptance criteria;
+they are not claims that real-market acceptance has already passed.
+
+The runner is now named `RegimeTraining.jl` and follows TrendDetector's
+`test`/`train`, `ts`, `coinset`, `daterange`, `coins`, `retrain`, `runid` and
+`folder` conventions. Default test inputs use CS00/D00 and the selected
+registered feature/target/model configuration; the small fixture requires
+`mode=synthetic`. Adaptation ends with eval diagrams and manual next-step guidance.
+A subsequent gain run requires the regime best checkpoint and uses reserved
+test membership and the registered strategy, with independent predicted and
+target passes. The same or another TS context can select that checkpoint when
+its classifier configuration is identical. Strategy settings are recorded
+separately with replay history. Changes after test exposure warn but do not
+restrict experimental strategy replay; classifier/data compatibility still applies.
+TrendDetector remains unchanged. Regime date overrides select experiment
+membership, rather than only a gain replay window.
+
+## Development order: synthetic first, real data afterwards
+
+OHLCV history repair and derived-store rebuilding run independently and must not
+block implementation. Implement the complete pipeline against SINE and DOUBLESINE
+artificial OHLCV from TestOhlcv, including regime detection, shared folds, set
+assignment, training, eval-loss stopping, metrics, threshold reporting and
+walk-forward execution.
+
+Use deterministic synthetic variants covering up/down trends, no established
+trend, missing coverage, regime transitions, liquidity exclusions and unequal
+coin histories. Synthetic detector settings and expected regime outcomes are
+test fixtures, not production threshold calibration. Test data belongs under
+`~/crypto/debug`.
+
+After the complete synthetic pipeline passes and history repair has finished,
+audit/rebuild real-market stores and run the real-data coverage, calibration and
+training experiments. Only the real-market validation stage depends on history
+repair completion; implementation and synthetic validation do not.
+
+## Original baseline (before this implementation)
 
 | Capability | Current implementation | Required change |
 |---|---|---|
@@ -42,20 +131,26 @@ Relevant surfaces:
 
 ## Phase 1: Freeze data and regime identity
 
-1. Rebuild affected feature, target and sets stores after OHLCV history repairs.
-   Audit all reused stores, not just deleted caches.
+1. Establish the data-audit/rebuild mechanism using SINE and DOUBLESINE fixtures.
+   After real OHLCV history repairs finish, rebuild affected feature, target and
+   sets stores and audit all reused stores, not just deleted caches. The real-data
+   rebuild is a gate for real-market validation, not for subsequent implementation.
 2. Extend dataset identity with OHLCV content/revision, liquidity settings,
    features/targets, date range, coin universe and partition/calendar identities.
    Coverage endpoints alone must not authorize reuse after interior changes.
 3. Persist an immutable run manifest and exact train/eval/test membership hashes.
    Reject incompatible resumed checkpoints. Keep P02 and existing classifier
    artifacts unchanged; new experiment identities receive new IDs.
-4. Re-run liquidity-filtered regime diagnostics with supplemented BTC/ETH history.
+4. Implement and test liquidity-filtered regime detection on synthetic patterns.
+   After history repair, re-run diagnostics with supplemented market history.
    Freeze slope, volatility-strength, breadth, hysteresis and confirmation settings
    using a declared development period, not test performance.
 5. Persist shared regime segments with regime, estimated start, confirmation time,
    end, detector ID and data identity. Missing market coverage is explicit
-   `unknown`, never silently `flat`.
+   `unknown`, never silently `flat`. Exclude unknown-regime samples from training,
+   evaluation and test in every new experiment mode, including walk-forward.
+   Retain exclusion counts and coverage diagnostics, not optimization or metric
+   samples. Existing historical P02 artifacts remain unchanged.
 6. Historical backdated labels may support descriptive stratification. Persist
    confirmation times and the maximum information cutoff supporting each label.
    Do not use post-cutoff confirmations or retrospectively screened liquidity
@@ -92,8 +187,9 @@ This is the main regime-balanced experiment, not walk-forward validation.
 7. Do not fabricate missing regimes: a 90-day fold may be entirely up or down.
    Balance available cells, balance regimes across the full experiment, and
    report empty/small cells. Exact equality is not a valid invariant.
-8. Exclude unknown-regime periods from the balanced experiment and report their
-   duration/counts. Preserve them in the unchanged P02 control where applicable.
+8. Exclude unknown-regime periods from train/eval/test in all new experiment
+   modes and report their duration/counts. Do not include them in pooled losses,
+   precision, recall, coverage denominators or threshold selection.
 
 Per-coin sets gain `blockid`, `foldid`, `regime`, while retaining `rangeid`.
 Store the shared calendar separately, with assignment/config hashes.
@@ -277,8 +373,11 @@ then Classify, then TradingStrategy; run Trade tests if threshold consumers chan
 Add functions/types with docstrings and module-local tests; bump package versions
 when externally used APIs change. Update related configuration/CLI documentation.
 
-Run small synthetic end-to-end checks first, then a real-data coverage audit before
-expensive training. Long runs must have Terminal commands, progress logs, Ctrl+C,
+Complete and verify every phase end-to-end with SINE and DOUBLESINE first,
+without waiting for real OHLCV history repair. Include assertions that unknown
+samples never enter any train/eval/test source or metric denominator.
+After repair finalization, audit real-data coverage and derived stores before
+real-market calibration and expensive training. Long runs must have Terminal commands, progress logs, Ctrl+C,
 checkpoint resume and immutable experiment IDs. Do not start them inside VS Code
 without an explicit request.
 

@@ -14,6 +14,8 @@ include("adaptnn_reinforce_test.jl")
 include("nnconverged_test.jl")
 include("simplechains_test.jl")
 include("simplechains_batchnorm_test.jl")
+include("evaltraining_test.jl")
+include("signalmetrics_test.jl")
 include("classifierstore_test.jl")
 
 for optional_test in ("lstm_contract_test.jl", "lstm_phase2_training_test.jl")

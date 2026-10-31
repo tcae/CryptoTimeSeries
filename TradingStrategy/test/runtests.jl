@@ -22,4 +22,7 @@ include("tsconfig_test.jl")
 include("targetpartition_test.jl")
 include("artifactpipeline_test.jl")
 
+include("regimecalendar_test.jl")
+include("regimepipeline_test.jl")
+
 end # module

@@ -1487,5 +1487,7 @@ end
 
 include("tradingstrategyconfig.jl")
 include("artifactpipeline.jl")
+include("RegimeCalendar.jl")
+include("RegimePipeline.jl")
 
 end # module

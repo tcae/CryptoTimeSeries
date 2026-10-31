@@ -1,4 +1,5 @@
 using Bybit, EnvConfig, Test, Dates, DataFrames
+include("kline_retry_test.jl")
 
 EnvConfig.init(production)  # test production
 
@@ -543,4 +544,3 @@ EnvConfig.init(production)  # test production
     @test stop_crossing.status == "New"
 
 end
-
