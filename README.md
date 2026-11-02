@@ -130,20 +130,6 @@ metadata and predictions are not silently compatible with bounded targets.
 The normal hash checks reject incompatible artifacts; they must be explicitly
 rebuilt/replaced before training with the changed targets.
 
-Audit existing real-data stores without regenerating them:
-
-```sh
-julia --project=. scripts/investigate_trend05_horizon.jl
-```
-
-Add `--invalidate` to remove only target Arrow stores with proven crossings of
-P02 partition gaps. Evidence and each removal are logged under
-`~/crypto/debug/trend05-horizon`. The script scans T24/T25/T26 for CS01/D01 and
-also distinguishes crossings into a different set type. It reconstructs the
-future dependency of successful stored entry/hold segments; failed or unresolved
-candidate dependencies are not recorded in target stores, so zero crossings is
-not proof of full historical independence. It never removes classifiers.
-
 ### Training stopping criteria
 
 Legacy classifier adaptation stops after 50 epochs without at least a 0.05% relative

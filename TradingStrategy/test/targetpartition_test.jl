@@ -14,5 +14,4 @@ struct UndeclaredHorizonTarget <: Targets.AbstractTargets end
         @test TradingStrategy.targetconfig(id).targetminutes == 480
         @test occursin("targetminutes=480", Targets.configdescription(TradingStrategy.targetconfig(id)))
     end
-    include("../../test/investigate_trend05_horizon_test.jl")
 end
