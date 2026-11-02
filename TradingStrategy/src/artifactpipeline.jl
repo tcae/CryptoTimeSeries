@@ -15,15 +15,11 @@ function coinstores(clcfg::NamedTuple, coin::AbstractString; daterange::Abstract
     )
 end
 
-"""
-    ensurecoinstores!(clcfg, coins; daterange)
-
-Bring the per-coin feature, target and sets stores of `clcfg` up to date for all `coins` and
-return the coins that have OHLCV data and therefore stores.
-"""
-function ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString}; daterange::AbstractString)::Vector{String}
+"""Update shared feature, target and optionally partition stores for a coin list."""
+function _ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString};
+        daterange::Union{Nothing, AbstractString})::Vector{String}
     checktargetpartition(targetconfig(clcfg.targets), partitionconfig(clcfg.partition).gapsize)
-    dr = daterangeconfig(daterange)
+    dr = isnothing(daterange) ? nothing : daterangeconfig(daterange)
     processed = String[]
     for (coinix, coin) in enumerate(coins)
         ohlcv = Ohlcv.read(coin)
@@ -31,14 +27,37 @@ function ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractSt
             @warn "skipping coin without OHLCV history" coin
             continue
         end
-        print("\r$(EnvConfig.now()) ensuring stores $(clcfg.features), $(clcfg.targets), $(setsid(clcfg.partition, daterange)) of $(coin) ($(coinix)/$(length(coins)))                ")
+        storeslabel = isnothing(daterange) ? "$(clcfg.features), $(clcfg.targets)" : "$(clcfg.features), $(clcfg.targets), $(setsid(clcfg.partition, daterange))"
+        print("\r$(EnvConfig.now()) ensuring stores $(storeslabel) of $(coin) ($(coinix)/$(length(coins)))                ")
         Features.updatefeatures!(ohlcv, clcfg.features, featureconfig(clcfg.features); confighash=featureshash(clcfg.features))
         Targets.updatetargets!(ohlcv, clcfg.targets, targetconfig(clcfg.targets); confighash=targetshash(clcfg.targets))
-        Classify.updatesets!(ohlcv, setsid(clcfg.partition, daterange), partitionconfig(clcfg.partition), dr.startdt, dr.enddt; confighash=setshash(clcfg.partition, daterange))
+        if !isnothing(dr)
+            Classify.updatesets!(ohlcv, setsid(clcfg.partition, daterange), partitionconfig(clcfg.partition), dr.startdt, dr.enddt; confighash=setshash(clcfg.partition, daterange))
+        end
         push!(processed, String(coin))
     end
     println()
     return processed
+end
+
+"""
+    ensurefeaturetargetstores!(clcfg, coins)
+
+Bring the shared per-coin feature and target stores of `clcfg` up to date using each coin's
+complete OHLCV history. Does not create partition/set stores.
+"""
+function ensurefeaturetargetstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString})::Vector{String}
+    return _ensurecoinstores!(clcfg, coins; daterange=nothing)
+end
+
+"""
+    ensurecoinstores!(clcfg, coins; daterange)
+
+Bring the per-coin feature, target and sets stores of `clcfg` up to date for all `coins` and
+return the coins that have OHLCV data and therefore stores.
+"""
+function ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString}; daterange::AbstractString)::Vector{String}
+    return _ensurecoinstores!(clcfg, coins; daterange)
 end
 
 """

@@ -551,30 +551,40 @@ function HttpPrivateRequest(bc::BybitCache, method, endPoint, params, info)
     return returnbody
 end
 
-function HttpPublicRequest(bc::BybitCache, method, endPoint, params::Union{Dict, Nothing}, info)
+"""
+Execute a public REST request and return `(body, headers)`.
+`headers` maps lowercase HTTP header names to values, e.g. the Bybit rate-limit headers
+`x-bapi-limit`, `x-bapi-limit-status` and `x-bapi-limit-reset-timestamp`.
+Non-200 HTTP status codes throw an error that includes status and raw response text.
+"""
+function _httppublicresponse(bc::BybitCache, method, endPoint, params::Union{Dict, Nothing})::NamedTuple
     methodpost = method == "POST"
     payload = isnothing(params) ? "" : (methodpost ? _dict2paramspost(params) : _dict2paramsget(params))
     url = bc.apirest * endPoint
     if !methodpost && !isempty(payload)
         url *= "?" * payload
     end
+    io = IOBuffer()
+    response = if methodpost
+        Downloads.request(url; method=method, headers=["Content-Type" => "application/json"], input=IOBuffer(payload), output=io)
+    else
+        Downloads.request(url; method=method, output=io)
+    end
+    text = String(take!(io))
+    headers = Dict(lowercase(name) => value for (name, value) in response.headers)
+    response.status == 200 || error("Bybit HTTP status=$(response.status) url=$url response=$(first(text, 500))")
+    body = _dictstring2values!(JSON3.read(text, Dict))
+    if body["retCode"] != 0
+        @warn "HttpPublicRequest $method, url=$url, payload=$payload, response=$body, limit=$(get(headers, "x-bapi-limit", "")), limitstatus=$(get(headers, "x-bapi-limit-status", "")), limitreset=$(get(headers, "x-bapi-limit-reset-timestamp", ""))"
+    end
+    return (body=body, headers=headers)
+end
 
-    body = Dict()
+function HttpPublicRequest(bc::BybitCache, method, endPoint, params::Union{Dict, Nothing}, info)
     try
-        io = IOBuffer()
-        if methodpost
-            Downloads.request(url; method=method, headers=["Content-Type" => "application/json"], input=IOBuffer(payload), output=io)
-        else
-            Downloads.request(url; method=method, output=io)
-        end
-        body = JSON3.read(String(take!(io)), Dict)
-        body = _dictstring2values!(body)
-        if body["retCode"] != 0
-            @warn "HttpPublicRequest $method, url=$url, payload=$payload, response=$body"
-        end
-        return body
+        return _httppublicresponse(bc, method, endPoint, params).body
     catch err
-        @error "HttpPublicRequest $method failed, url=$url, payload=$payload, response=$body, exception=$err"
+        @error "HttpPublicRequest $info $method $endPoint failed, params=$params, exception=$err"
         rethrow()
     end
 end
@@ -1042,20 +1052,55 @@ function _sim_klines(bc::BybitCache, symbol::AbstractString; startDateTime=nothi
     error("BybitSim missing cached OHLCV for base=$(base), interval=$(interval), range=$(startdt) to $(enddt). Synthetic fallback is disabled for non-test symbols.")
 end
 
+const KLINE_RATELIMIT_CODE = 10006
+const KLINE_PERMANENT_CODES = (10001, 10003, 10004, 10005, 10010)
+const KLINE_MAXATTEMPTS = 12
+const KLINE_MAXBACKOFFSECONDS = 300.0
+
 """
-Execute a public kline request, retrying internal server error 10016 up to four
-attempts with 1, 2 and 4 second delays. Other API errors fail immediately.
-Injected request and wait functions allow offline tests; interrupts propagate.
+Return seconds to wait after a Bybit rate-limit response (retCode 10006).
+Uses the `x-bapi-limit-reset-timestamp` header (epoch milliseconds) relative to `nowms`,
+waiting at least `minseconds` to absorb clock skew. Without that header the exponential
+`backoff` is used.
 """
-function _checkedklinerequest(request::Function; wait::Function=sleep)::AbstractDict
-    for attempt in 1:4
-        response = request()
-        code = response["retCode"]
-        code == 0 && return response
-        message = response["retMsg"]
-        if code == 10016 && attempt < 4
-            delay = 2^(attempt - 1)
-            @warn "Transient Bybit kline error; retrying" code message attempt delay
+function _ratelimitdelay(headers::AbstractDict, nowms::Real, backoff::Real; minseconds::Real=1.0)::Float64
+    reset = get(headers, "x-bapi-limit-reset-timestamp", nothing)
+    isnothing(reset) && return backoff
+    return max((parse(Int64, reset) - nowms) / 1000, minseconds)
+end
+
+"""
+Execute a public kline request returning `(body, headers)` and return the body on success.
+
+- Rate limit (retCode 10006): wait until `x-bapi-limit-reset-timestamp` before retrying.
+- Permanent API errors (invalid parameter or authorization codes) fail immediately.
+- Any other API error or exception (network failure, HTTP error status, unparsable
+  response, e.g. during a Bybit outage or overload) is retried with exponential backoff
+  1, 2, 4, ... seconds, capped at $(KLINE_MAXBACKOFFSECONDS) seconds.
+
+Gives up after $(KLINE_MAXATTEMPTS) consecutive failed attempts. Injected `wait` and
+`clockms` (epoch milliseconds) allow offline tests; interrupts propagate.
+"""
+function _checkedklinerequest(request::Function; wait::Function=sleep,
+        clockms::Function=() -> time() * 1000)::AbstractDict
+    for attempt in 1:KLINE_MAXATTEMPTS
+        backoff = min(2.0^(attempt - 1), KLINE_MAXBACKOFFSECONDS)
+        response = try
+            request()
+        catch err
+            err isa InterruptException && rethrow()
+            attempt == KLINE_MAXATTEMPTS && rethrow()
+            @warn "Bybit kline request exception; retrying" exception=err attempt delay=backoff
+            wait(backoff)
+            continue
+        end
+        body = response.body
+        code = body["retCode"]
+        code == 0 && return body
+        message = body["retMsg"]
+        if !(code in KLINE_PERMANENT_CODES) && attempt < KLINE_MAXATTEMPTS
+            delay = code == KLINE_RATELIMIT_CODE ? _ratelimitdelay(response.headers, clockms(), backoff) : backoff
+            @warn "Bybit kline error; retrying" code message attempt delay limit=get(response.headers, "x-bapi-limit", "") limitstatus=get(response.headers, "x-bapi-limit-status", "")
             wait(delay)
             continue
         end
@@ -1067,8 +1112,9 @@ end
 """
 Return spot OHLCV candles for `symbol` in `interval` over the requested time range.
 Rows are oldest first, unlike the Bybit API response order.
-Retry transient internal API errors; throw on failed requests rather than treating
-them as missing history. Only successful empty results return an empty table.
+Wait for the rate-limit reset on retCode 10006 and retry other transient failures with
+exponential backoff (see `_checkedklinerequest`); throw on persistent failures rather
+than treating them as missing history. Only successful empty results return an empty table.
 """
 function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=nothing, interval="1m")
     if !isnothing(bc.orderbook)
@@ -1082,7 +1128,7 @@ function getklines(bc::BybitCache, symbol; startDateTime=nothing, endDateTime=no
         params["start"] = Printf.@sprintf("%.0d",Dates.datetime2unix(startDateTime) * 1000)
         params["end"] = Printf.@sprintf("%.0d",Dates.datetime2unix(endDateTime) * 1000)
     end
-    response = _checkedklinerequest(() -> HttpPublicRequest(bc, "GET", "/v5/market/kline", params, "kline"))
+    response = _checkedklinerequest(() -> _httppublicresponse(bc, "GET", "/v5/market/kline", params))
     response["result"]["list"] = length(response["result"]) == 0 ? _convertklines(Dict()) : _convertklines(response["result"]["list"])
     return response["result"]["list"]
 end

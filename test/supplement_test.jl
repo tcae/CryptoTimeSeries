@@ -78,6 +78,21 @@ end
             Supplement.supplementcoin!(xc, "LIQ", enddt+Minute(2))
             @test DataFrame(Arrow.Table(path)) == stored
             @test !isfile(joinpath(dirname(path), "ohlcv-supplement.arrow"))
+            stored = copy(stored)
+            unsorted = stored[[2, 1, 3:nrow(stored)...], :]
+            Arrow.write(path, unsorted)
+            @test_throws AssertionError Supplement.supplementcoin!(xc, "LIQ", enddt+Minute(2))
+            failures = Pair{String, String}[]
+            @test (@test_logs (:error,) match_mode=:any Supplement.guardedsupplement!(failures, xc, "LIQ", enddt+Minute(2))) == false
+            @test first.(failures) == ["LIQ"]
+            @test occursin("not sorted and unique", last(only(failures)))
+            @test DataFrame(Arrow.Table(path)) == unsorted
+            @test isempty(Xch.bases(xc))
+            Arrow.write(path, stored)
+            @test Supplement.guardedsupplement!(failures, xc, "LIQ", enddt+Minute(2))
+            @test length(failures) == 1
+            @test Supplement.reportfailures(Pair{String, String}[]) === nothing
+            @test Supplement.reportfailures(failures) === nothing
         finally
             EnvConfig.setcoinspath!(previousfolder)
             EnvConfig.setpairquote!(previousquote)
@@ -116,5 +131,6 @@ end
     @test_throws AssertionError Supplement.checkohlcv(invalid, "NAN")
     @test Supplement.checkohlcv(old[[1, 3, 5], :], "HISTORICAL-GAPS") === nothing
     @test Supplement.main(["--help"]) === nothing
+    @test Supplement.main(["help"]) === nothing
     @test_throws AssertionError Supplement.main(["unknown"])
 end

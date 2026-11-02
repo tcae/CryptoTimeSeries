@@ -32,6 +32,7 @@ function helptext()::String
       mincoins=<Int> weightcap=<0..1>  explicit detector overrides, both required
     Training outputs eval threshold curves without using test for selection.
     Run test only after choosing a fixed threshold from eval reports.
+    Market mode refreshes/reuses shared full-history feature and target stores, then selects the experiment window.
     Detector RF01/RG01 settings are recorded in the immutable manifest; no automatic calibration.
     Adaptation ends with eval diagrams and next-step guidance.
     Gain requires an existing checkpoint; it never trains and replays reserved test only.
@@ -111,6 +112,34 @@ end
 synthetictarget() = Targets.Trend05(leadregr=5,supportregr=15,trendregr=60,
     triggerdist=0.001f0,targetgain=0.005f0,targetminutes=60)
 
+"""Select complete experiment-window rows from the shared full-history feature and target stores."""
+function sharedstorewindow(history::DataFrame, featurestore::AbstractDataFrame,
+        targetstore::AbstractDataFrame, featurefactory::Function,
+        targetfactory::Function, coin::AbstractString)::Tuple{DataFrame,DataFrame}
+    required = Features.requiredminutes(featurefactory())
+    expectedfeatures = nrow(history) - required + 1
+    @assert expectedfeatures > 0 "insufficient history for features of $coin: rows=$(nrow(history)) requiredminutes=$required"
+    firstfeature = history.opentime[required]
+    featurefirstix = searchsortedfirst(featurestore.opentime,firstfeature)
+    featurelastix = searchsortedlast(featurestore.opentime,last(history.opentime))
+    @assert featurefirstix <= featurelastix "shared feature store of $coin does not contain expected interval $firstfeature to $(last(history.opentime))"
+    features = DataFrame(featurestore[featurefirstix:featurelastix,:];copycols=true)
+    @assert (nrow(features) == expectedfeatures) && (features.opentime[begin] == firstfeature) &&
+        (features.opentime[end] == last(history.opentime)) "shared feature store of $coin covers $(nrow(features)) rows from $(features.opentime[begin]) to $(features.opentime[end]); expected $expectedfeatures rows from $firstfeature to $(last(history.opentime))"
+
+    targetfirstix = searchsortedfirst(targetstore.opentime,first(history.opentime))
+    targetlastix = searchsortedlast(targetstore.opentime,last(history.opentime))
+    @assert targetfirstix <= targetlastix "shared target store of $coin does not contain expected interval $(first(history.opentime)) to $(last(history.opentime))"
+    targets = DataFrame(targetstore[targetfirstix:targetlastix,:];copycols=true)
+    @assert (nrow(targets) == nrow(history)) && (targets.opentime[begin] == history.opentime[begin]) &&
+        (targets.opentime[end] == history.opentime[end]) "shared target store of $coin covers $(nrow(targets)) rows from $(targets.opentime[begin]) to $(targets.opentime[end]); expected $(nrow(history)) rows from $(history.opentime[begin]) to $(history.opentime[end])"
+    finalcount = max(0,nrow(targets)-Targets.lookaheadminutes(targetfactory()))
+    if finalcount < nrow(targets)
+        targets[(finalcount+1):end,:label] .= Targets.tradelabelcode(Targets.ignore)
+    end
+    return features,targets
+end
+
 """Prepare SINE and DOUBLESINE OHLCV, or read an explicitly selected market universe."""
 function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts))::NamedTuple
     mode = rc.mode
@@ -131,10 +160,16 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts)):
             blockminutes=360,gapminutes=60,minminutes=120)
         return (;histories,startdt,enddt,regime,folds,
             featurefactory=syntheticfeatures,targetfactory=synthetictarget,mode,
-            modelid=rc.clcfg.model,classbalancing=rc.clcfg.classbalancing,context=rc.description,rc)
+            modelid=rc.clcfg.model,classbalancing=rc.clcfg.classbalancing,context=rc.description,
+            sharedstores=nothing,rc)
     end
     startdt,enddt = rc.startdt,rc.enddt
     EnvConfig.setcoinspath!("Bybit")
+    sharedstores = nothing
+    if mode == "market"
+        TradingStrategy.ensurefeaturetargetstores!(rc.clcfg,rc.coins)
+        sharedstores = Dict{String,Tuple{DataFrame,DataFrame}}()
+    end
     regime = mode=="test" ? TradingStrategy.RegimeConfig(mincoins=2,weightcap=0.5) : TradingStrategy.RegimeConfig()
     if haskey(opts,"mincoins")
         regime = TradingStrategy.RegimeConfig(mincoins=parse(Int,opts["mincoins"]),
@@ -160,17 +195,23 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts)):
         end
         Ohlcv.addpivot!(df)
         histories[coin] = df
+        if mode == "market"
+            featurestore,targetstore,_ = TradingStrategy.coinstores(rc.clcfg,coin;daterange=rc.daterange)
+            @assert !isnothing(featurestore) && !isnothing(targetstore) "missing shared feature/target stores for $coin after ensuring full OHLCV coverage"
+            sharedstores[coin] = sharedstorewindow(df,featurestore,targetstore,featurefactory,targetfactory,coin)
+        end
     end
     return (;histories,startdt,enddt,regime,folds=TradingStrategy.FoldConfig(),
         featurefactory,targetfactory,mode,modelid=rc.clcfg.model,classbalancing=rc.clcfg.classbalancing,
-        context=rc.description,rc)
+        context=rc.description,sharedstores,rc)
 end
 
 """Persist private stores, shared regimes, folds and per-coin projected memberships."""
 function prepare!(input::NamedTuple, folder::AbstractString)::NamedTuple
-    description = "regime-experiment-v2;RG01=$(input.regime);RF01=$(input.folds);start=$(input.startdt);end=$(input.enddt);features=$(Features.configdescription(input.featurefactory()));targets=$(Targets.configdescription(input.targetfactory()));model=$(input.modelid);classbalancing=$(input.classbalancing);mode=$(input.mode);$(input.context)"
+    description = "regime-experiment-v3;RG01=$(input.regime);RF01=$(input.folds);start=$(input.startdt);end=$(input.enddt);features=$(Features.configdescription(input.featurefactory()));targets=$(Targets.configdescription(input.targetfactory()));model=$(input.modelid);classbalancing=$(input.classbalancing);mode=$(input.mode);$(input.context)"
     identity = TradingStrategy.experimentmanifest!(folder,input.histories,description)
-    stores = TradingStrategy.experimentstores!(input.histories,input.featurefactory,input.targetfactory,folder)
+    stores = TradingStrategy.experimentstores!(input.histories,input.featurefactory,input.targetfactory,folder;
+        sharedstores=input.sharedstores)
     eligible = TradingStrategy.experimenttimes(input.histories,stores,input.regime)
     market = TradingStrategy.marketcalendar(input.histories,input.regime;
         startdt=input.startdt,enddt=input.enddt)

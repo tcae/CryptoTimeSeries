@@ -30,39 +30,67 @@ end
 
 """
 Rebuild or reuse experiment-private features and targets by full input identity.
-Never reuse legacy derived caches whose content revision cannot be established.
+When full-history shared stores are supplied, select and validate the experiment window from
+them; otherwise calculate the window locally. Persisted rows must cover the complete experiment
+history, accounting for feature warm-up and incomplete target look-ahead.
 """
 function experimentstores!(histories::AbstractDict, featurefactory::Function,
-        targetfactory::Function, folder::AbstractString)::NamedTuple
+        targetfactory::Function, folder::AbstractString;
+        sharedstores::Union{Nothing, AbstractDict}=nothing)::NamedTuple
     coins = sort!(collect(keys(histories)))
     featurestores = DataFrame[]
     targetstores = DataFrame[]
     for coin in coins
+        history = histories[coin]
         localfolder = mkpath(joinpath(folder,"stores",coin))
         if isfile(joinpath(localfolder,"features.arrow")) && isfile(joinpath(localfolder,"targets.arrow"))
-            push!(featurestores,EnvConfig.readtable("features";folderpath=localfolder,format=:arrow))
-            push!(targetstores,EnvConfig.readtable("targets";folderpath=localfolder,format=:arrow))
-            continue
+            fdf = EnvConfig.readtable("features";folderpath=localfolder,format=:arrow)
+            tdf = EnvConfig.readtable("targets";folderpath=localfolder,format=:arrow)
+            required = Features.requiredminutes(featurefactory())
+            expectedfeatures = nrow(history) - required + 1
+            if (expectedfeatures > 0) && (nrow(fdf) == expectedfeatures) &&
+                    (fdf[begin,:opentime] == history.opentime[required]) &&
+                    (fdf[end,:opentime] == history.opentime[end]) &&
+                    (nrow(tdf) == nrow(history)) &&
+                    (tdf[begin,:opentime] == history.opentime[begin]) &&
+                    (tdf[end,:opentime] == history.opentime[end])
+                push!(featurestores,fdf)
+                push!(targetstores,tdf)
+                continue
+            end
         end
-        ohlcv = Ohlcv.defaultohlcv(coin)
-        Ohlcv.setdataframe!(ohlcv,copy(histories[coin]))
-        Ohlcv.addpivot!(ohlcv)
-        features = featurefactory()
-        Features.setbase!(features,ohlcv;usecache=false)
-        fdf = copy(features.fdf[!,vcat(["opentime"],Features.requestedcolumns(features))])
-        firsttime = Ohlcv.dataframe(ohlcv).opentime[Features.requiredminutes(features)]
-        filter!(row -> row.opentime >= firsttime,fdf)
-        target = targetfactory()
-        regression = Targets.regressionfeatures(target)
-        if isnothing(regression)
-            Targets.setbase!(target,ohlcv)
+        if !isnothing(sharedstores) && haskey(sharedstores,coin)
+            sharedfeature, sharedtarget = sharedstores[coin]
+            fdf = DataFrame(sharedfeature;copycols=true)
+            tdf = DataFrame(sharedtarget;copycols=true)
         else
-            Features.setbase!(regression,ohlcv;usecache=false)
-            Targets.setbase!(target,regression)
+            ohlcv = Ohlcv.defaultohlcv(coin)
+            Ohlcv.setdataframe!(ohlcv,copy(history))
+            Ohlcv.addpivot!(ohlcv)
+            features = featurefactory()
+            Features.setbase!(features,ohlcv;usecache=false)
+            fdf = copy(features.fdf[!,vcat(["opentime"],Features.requestedcolumns(features))])
+            firsttime = Ohlcv.dataframe(ohlcv).opentime[Features.requiredminutes(features)]
+            filter!(row -> row.opentime >= firsttime,fdf)
+            target = targetfactory()
+            regression = Targets.regressionfeatures(target)
+            if isnothing(regression)
+                Targets.setbase!(target,ohlcv)
+            else
+                Features.setbase!(regression,ohlcv;usecache=false)
+                Targets.setbase!(target,regression)
+            end
+            codes = Targets.tradelabelcode.(Targets.labels(target))
+            codes[Targets.finallabelcount(target,length(codes))+1:end] .= Targets.tradelabelcode(Targets.ignore)
+            tdf = DataFrame(opentime=copy(history.opentime),label=codes)
         end
-        codes = Targets.tradelabelcode.(Targets.labels(target))
-        codes[Targets.finallabelcount(target,length(codes))+1:end] .= Targets.tradelabelcode(Targets.ignore)
-        tdf = DataFrame(opentime=copy(histories[coin].opentime),label=codes)
+        required = Features.requiredminutes(featurefactory())
+        expectedfeatures = nrow(history) - required + 1
+        @assert expectedfeatures > 0 "insufficient history for features of $coin: rows=$(nrow(history)) requiredminutes=$required"
+        @assert nrow(fdf) == expectedfeatures "feature store of $coin has $(nrow(fdf)) rows; expected $expectedfeatures rows from $(history.opentime[required]) to $(history.opentime[end])"
+        @assert (fdf[begin,:opentime] == history.opentime[required]) && (fdf[end,:opentime] == history.opentime[end]) "feature store of $coin spans $(fdf[begin,:opentime]) to $(fdf[end,:opentime]); expected $(history.opentime[required]) to $(history.opentime[end])"
+        @assert nrow(tdf) == nrow(history) "target store of $coin has $(nrow(tdf)) rows; expected $(nrow(history)) rows from $(history.opentime[begin]) to $(history.opentime[end])"
+        @assert (tdf[begin,:opentime] == history.opentime[begin]) && (tdf[end,:opentime] == history.opentime[end]) "target store of $coin spans $(tdf[begin,:opentime]) to $(tdf[end,:opentime]); expected $(history.opentime[begin]) to $(history.opentime[end])"
         EnvConfig.writetable(fdf,"features";folderpath=localfolder,format=:arrow)
         EnvConfig.writetable(tdf,"targets";folderpath=localfolder,format=:arrow)
         push!(featurestores,fdf)

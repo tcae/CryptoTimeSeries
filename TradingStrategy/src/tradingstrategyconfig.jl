@@ -387,6 +387,7 @@ const MODEL_CONFIGS = Dict{String, Function}(
 const STRATEGY_CONFIGS = Dict{String, Function}(
     "S01" => tradingstrategy01, "S02" => tradingstrategy02, "S03" => tradingstrategy03, "S04" => tradingstrategy04,
     "S05" => tradingstrategy05, "S06" => tradingstrategy06, "S07" => tradingstrategy07, "S08" => tradingstrategy08,
+    "S09" => tradingstrategy09,
 )
 
 "Return a classifier config that is independent of the coin set and date range it is trained on."

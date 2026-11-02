@@ -82,10 +82,40 @@ function supplementcoin!(xc::Xch.XchCache, base::AbstractString, enddt::DateTime
     return nothing
 end
 
+"""
+Run `supplementcoin!` for one pair and continue on failure.
+Any exception except `InterruptException` is logged, recorded in `failures` as
+`base => error message`, and the pair is removed from `xc`. Return `true` on success.
+"""
+function guardedsupplement!(failures::Vector{Pair{String, String}}, xc::Xch.XchCache,
+        base::AbstractString, enddt::DateTime; newcoin::Bool=false)::Bool
+    try
+        supplementcoin!(xc, base, enddt; newcoin=newcoin)
+        return true
+    catch error
+        error isa InterruptException && rethrow()
+        @error "Supplementation failed; pair skipped, cache unchanged" base exception=(error, catch_backtrace())
+        push!(failures, String(base) => sprint(showerror, error))
+        Xch.removebase!(xc, base)
+        return false
+    end
+end
+
+"""Print the pairs that failed during supplementation, or nothing if none failed."""
+function reportfailures(failures::Vector{Pair{String, String}})::Nothing
+    isempty(failures) && return nothing
+    println(stderr, "\nSkipped $(length(failures)) pairs due to errors:")
+    for (base, message) in failures
+        println(stderr, "  $base-USDT: $(first(split(message, '\n')))")
+    end
+    flush(stderr)
+    return nothing
+end
+
 """Update cached coins, then discover and backfill new liquid Bybit USDT coins."""
 function main(args::Vector{String}=ARGS)::Nothing
-    if args in (["help"], ["--help"], ["-h"])
-        println("Usage: julia --project=. scripts/supplement.jl\nUpdate all cached Bybit USDT coins, then discover liquid new coins with up to two years of history.\nPublic API only; no orders or classifiers. Ctrl+C stops; rerun to resume.")
+    if any(in(("help", "--help", "-h")), args)
+        println("Usage: julia --project=. scripts/supplement.jl [help]\nUpdate all cached Bybit USDT coins, then discover liquid new coins with up to two years of history.\nPublic API only; no orders or classifiers. Ctrl+C stops; rerun to resume.")
         return nothing
     end
     @assert isempty(args) "unknown supplement arguments=$args; use --help"
@@ -95,24 +125,33 @@ function main(args::Vector{String}=ARGS)::Nothing
     enddt = floor(Dates.now(UTC), Minute) - Minute(1)
     xc = Xch.XchCache(Bybit.BybitCache(false, "", ""); startdt=enddt)
     cached = cachedbases(EnvConfig.activecoinspath)
-    println("Updating $(length(cached)) cached USDT coins through $enddt UTC")
-    for (ix, base) in enumerate(cached)
-        if !Xch.validbase(xc, base)
-            @warn "Cached coin is unavailable on Bybit; unchanged" base
-            continue
+    failures = Pair{String, String}[]
+    reported = Ref(false)
+    report = () -> (reported[] || reportfailures(failures); reported[] = true; nothing)
+    # Ctrl+C terminates the process directly, even while blocked in download tasks; atexit still reports
+    atexit(report)
+    try
+        println("Updating $(length(cached)) cached USDT coins through $enddt UTC")
+        for (ix, base) in enumerate(cached)
+            if !Xch.validbase(xc, base)
+                @warn "Cached coin is unavailable on Bybit; unchanged" base
+                continue
+            end
+            println("Cached coin $ix/$(length(cached)): $base")
+            guardedsupplement!(failures, xc, base, enddt)
+            GC.gc()
         end
-        println("Cached coin $ix/$(length(cached)): $base")
-        supplementcoin!(xc, base, enddt)
-        GC.gc()
-    end
-    println("Discovering new liquid USDT coins")
-    candidates = Trade.tradeselection!(xc; datetime=enddt, excludedbases=cached)
-    newbases = sort!(collect(candidates[candidates.minquotevol .& candidates.continuousminvol, :basecoin]))
-    println("New liquid coins ($(length(newbases))): $(join(newbases, ", "))")
-    Xch.removeallbases(xc)
-    for base in newbases
-        supplementcoin!(xc, base, enddt; newcoin=true)
-        GC.gc()
+        println("Discovering new liquid USDT coins")
+        candidates = Trade.tradeselection!(xc; datetime=enddt, excludedbases=cached)
+        newbases = sort!(collect(candidates[candidates.minquotevol .& candidates.continuousminvol, :basecoin]))
+        println("New liquid coins ($(length(newbases))): $(join(newbases, ", "))")
+        Xch.removeallbases(xc)
+        for base in newbases
+            guardedsupplement!(failures, xc, base, enddt; newcoin=true)
+            GC.gc()
+        end
+    finally
+        report()
     end
     println("Supplementation complete. Existing feature/target/set caches are not rebuilt by this script.")
     return nothing

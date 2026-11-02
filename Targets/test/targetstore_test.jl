@@ -28,6 +28,11 @@ using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
         @test EnvConfig.tablemetadata("TTEST04"; folderpath=Targets.targetsfolder("SINE", ohlcv.quotecoin))["labels"] == join(string.(Targets.uniquelabels(trd)), ",")
         @test_throws AssertionError Targets.readtargets("SINE", ohlcv.quotecoin, "TTEST04"; confighash="other")
         @test isnothing(Targets.readtargets("SINE", ohlcv.quotecoin, "TMISSING"; confighash="h04"))
+        laterohlcv = TestOhlcv.testohlcv("SINE", startdt + Hour(1), enddt)
+        Targets.updatetargets!(laterohlcv, "TPREP", Targets.Trend04(10, 60, thres); confighash="hprepend")
+        prependedtdf = Targets.updatetargets!(ohlcv, "TPREP", Targets.Trend04(10, 60, thres); confighash="hprepend")
+        @test prependedtdf[!, :opentime] == tdf[!, :opentime]
+        @test prependedtdf[!, :label] == tdf[!, :label]
 
         # TrendRegression is calculated from its own regression features
         trr = Targets.TrendRegression(15, 0.005, -0.005)

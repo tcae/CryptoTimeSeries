@@ -1,10 +1,13 @@
 module ScriptHelpTests
 
 using Test, Dates, Statistics
-using Classify, Targets, Distributions, EnvConfig
+using DataFrames
+using Classify, Targets, Distributions, EnvConfig, Xch, Features, Ohlcv, TestOhlcv, TradingStrategy
 
 include("../scripts/BoundsEstimator.jl")
 include("../scripts/TrendDetector.jl")
+include("../scripts/RegimeTraining.jl")
+include("../scripts/refresh.jl")
 
 @testset "script help text includes defaults" begin
     bhelp = BoundsEstimator.boundsestimatorhelp()
@@ -17,6 +20,95 @@ include("../scripts/TrendDetector.jl")
     @test occursin("stage=<stores|train|predict|evaluate|gain>", thelp)
     @test occursin("help, --help, -h", thelp)
 
+end
+
+@testset "RegimeTraining slices complete shared stores" begin
+    startdt = DateTime("2025-02-01T00:00:00")
+    ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(1800))
+    history = DataFrame(Ohlcv.dataframe(ohlcv)[101:1400,:];copycols=true)
+    featurefactory = RegimeTraining.syntheticfeatures
+    targetfactory = RegimeTraining.synthetictarget
+
+    features = featurefactory()
+    Features.setbase!(features,ohlcv;usecache=false)
+    required = Features.requiredminutes(features)
+    featurestore = DataFrame(features.fdf[(required-features.maxoffset):end,
+        vcat(["opentime"],Features.requestedcolumns(features))];copycols=true)
+
+    target = targetfactory()
+    regression = Targets.regressionfeatures(target)
+    Features.setbase!(regression,ohlcv;usecache=false)
+    Targets.setbase!(target,regression)
+    codes = Targets.tradelabelcode.(Targets.labels(target))
+    codes[(Targets.finallabelcount(target,length(codes))+1):end] .= Targets.tradelabelcode(Targets.ignore)
+    targetstore = DataFrame(opentime=copy(Ohlcv.dataframe(ohlcv).opentime),label=codes)
+
+    selectedfeatures, selectedtargets = RegimeTraining.sharedstorewindow(history,
+        featurestore,targetstore,featurefactory,targetfactory,"SINE")
+    @test selectedfeatures.opentime == history.opentime[Features.requiredminutes(featurefactory()):end]
+    @test selectedtargets.opentime == history.opentime
+    lastfinal = nrow(history) - Targets.lookaheadminutes(targetfactory())
+    @test all(selectedtargets[(lastfinal+1):end,:label] .== Targets.tradelabelcode(Targets.ignore))
+    mktempdir() do folder
+        shared = Dict("SINE"=>(selectedfeatures,selectedtargets))
+        stores = TradingStrategy.experimentstores!(Dict("SINE"=>history),featurefactory,
+            targetfactory,folder;sharedstores=shared)
+        @test stores.featurestores[1] == selectedfeatures
+        @test stores.targetstores[1] == selectedtargets
+        reused = TradingStrategy.experimentstores!(Dict("SINE"=>history),featurefactory,
+            targetfactory,folder;sharedstores=shared)
+        @test reused.featurestores[1] == selectedfeatures
+        @test reused.targetstores[1] == selectedtargets
+    end
+end
+
+@testset "Refresh config parsing" begin
+    @test Refresh.parseoptions(["features=F19,F20", "targets=T24", "pairs=BTC-USDT,ETH"]) ==
+        Dict("features"=>"F19,F20", "targets"=>"T24", "pairs"=>"BTC-USDT,ETH")
+    @test_throws AssertionError Refresh.parseoptions(["pair=BTC-USDT"])
+    @test_throws AssertionError Refresh.parseoptions(["unknown=value"])
+    @test_throws AssertionError Refresh.parseoptions(["features=F19", "features=F20"])
+    @test Refresh.configids("f19,F20", "features") == ["F19", "F20"]
+    @test_throws AssertionError Refresh.configids("F19,F19", "features")
+    @test Refresh.exchangecfg("krakenspot") == (Xch.EXCHANGE_KRAKENSPOT, "USDC")
+    @test Refresh.resolvepairs("btc-usdt,eth", ["BTC-USDT", "ETH-USDT"], "USDT") ==
+        ["BTC-USDT", "ETH-USDT"]
+    @test_throws AssertionError Refresh.resolvepairs("BTC", ["ETH-USDT"], "USDT")
+    @test Refresh.main(["features=F19", "help"]) === nothing
+    @test Refresh.main(["--help"]) === nothing
+end
+
+@testset "Refresh writes complete shared stores" begin
+    EnvConfig.init(EnvConfig.test)
+    oldcoinspath = EnvConfig.activecoinspath
+    oldquote = EnvConfig.pairquote
+    tempfolder = mktempdir()
+    try
+        EnvConfig.setcoinspath!(tempfolder)
+        EnvConfig.setpairquote!("USDT")
+        startdt = DateTime("2025-03-01T00:00:00")
+        ohlcv = TestOhlcv.testohlcv("SINE",startdt,startdt+Minute(1200))
+        Ohlcv.write(ohlcv)
+        failures = Pair{String,String}[]
+        Refresh.refreshpair!(failures, "SINE-USDT", ["F08", "F19"], ["T24"])
+        @test first.(failures) == ["SINE-USDT F08"]
+        @test occursin("insufficient OHLCV history", last(only(failures)))
+        Refresh.refreshpair!(failures, "MISSING-USDT", ["F19"], ["T24"])
+        @test first.(failures) == ["SINE-USDT F08", "MISSING-USDT OHLCV"]
+        @test Refresh.reportfailures(failures) === nothing
+        features = Features.readfeatures("SINE","USDT","F19";
+            confighash=TradingStrategy.featureshash("F19"))
+        targets = Targets.readtargets("SINE","USDT","T24";
+            confighash=TradingStrategy.targetshash("T24"))
+        @test nrow(features) == nrow(Ohlcv.dataframe(ohlcv))-Features.requiredminutes(TradingStrategy.featureconfig("F19"))+1
+        @test features.opentime[end] == Ohlcv.dataframe(ohlcv).opentime[end]
+        @test nrow(targets) == nrow(Ohlcv.dataframe(ohlcv))
+        @test targets.opentime[end] == Ohlcv.dataframe(ohlcv).opentime[end]
+    finally
+        EnvConfig.setcoinspath!(relpath(oldcoinspath,dirname(EnvConfig.defaultlogfilespath)))
+        EnvConfig.setpairquote!(oldquote)
+        rm(tempfolder;force=true,recursive=true)
+    end
 end
 
 @testset "script help flag detection" begin

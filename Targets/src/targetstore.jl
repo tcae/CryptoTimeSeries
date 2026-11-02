@@ -119,21 +119,29 @@ end
 
 Return the per-coin target store `targetsid` after bringing it up to date with the complete
 OHLCV history of `ohlcv`. `trd` is an unbased target config instance used for the calculation.
-A store that matches the OHLCV history is extended by recalculating only its tail.
+A store that matches the OHLCV history is extended by recalculating only its tail. Stored
+coverage is reused only when the row count and first/last timestamps match the full history.
 """
 function updatetargets!(ohlcv::Ohlcv.OhlcvData, targetsid::AbstractString, trd::AbstractTargets; confighash::AbstractString)
     odf = Ohlcv.dataframe(ohlcv)
     @assert !(odf isa SubDataFrame) "updatetargets! requires the complete OHLCV history of $(ohlcv.base), not a view"
     ot = odf[!, :opentime]
+    @assert !isempty(ot) "target store $(targetsid) of $(ohlcv.base) requires non-empty OHLCV history"
     stored = readtargets(ohlcv.base, ohlcv.quotecoin, targetsid; confighash=confighash)
-    if !isnothing(stored) && (size(stored, 1) > 0) && (stored[end, :opentime] == ot[end])
+    expectedrows = length(ot)
+    if !isnothing(stored) && (size(stored, 1) == expectedrows) &&
+            (stored[begin, :opentime] == ot[begin]) && (stored[end, :opentime] == ot[end])
         return stored
     end
-    extendable = !isnothing(stored) && (size(stored, 1) > 0) && (size(stored, 1) < length(ot)) && (stored[begin, :opentime] == ot[begin]) && (stored[end, :opentime] == ot[size(stored, 1)])
+    extendable = !isnothing(stored) && (size(stored, 1) > 0) &&
+        (size(stored, 1) < expectedrows) && (stored[begin, :opentime] == ot[begin]) &&
+        (stored[end, :opentime] == ot[size(stored, 1)])
     codes = extendable ? _extendedtargetcodes(trd, ohlcv, stored[!, :label]) : _targetcodes(trd, ohlcv)
     @assert length(codes) == length(ot) "targets $(targetsid) of $(ohlcv.base): $(length(codes)) labels != OHLCV rows=$(length(ot))"
+    targetdf = DataFrame(opentime=copy(ot), label=codes)
+    @assert (size(targetdf, 1) == expectedrows) && (targetdf[begin, :opentime] == ot[begin]) && (targetdf[end, :opentime] == ot[end]) "target store $(targetsid) of $(ohlcv.base) covers $(size(targetdf, 1)) rows from $(targetdf[begin, :opentime]) to $(targetdf[end, :opentime]); expected $(expectedrows) rows from $(ot[begin]) to $(ot[end])"
     meta = Dict("confighash" => String(confighash), "labels" => join(string.(uniquelabels(trd)), ","))
-    EnvConfig.savedf(DataFrame(opentime=copy(ot), label=codes), targetsid; folderpath=targetsfolder(ohlcv.base, ohlcv.quotecoin), format=:arrow, metadata=meta)
+    EnvConfig.savedf(targetdf, targetsid; folderpath=targetsfolder(ohlcv.base, ohlcv.quotecoin), format=:arrow, metadata=meta)
     (verbosity >= 3) && println("$(EnvConfig.now()) $(extendable ? "extended" : "calculated") target store $(targetsid) of $(ohlcv.base) to $(length(codes)) rows")
     return readtargets(ohlcv.base, ohlcv.quotecoin, targetsid; confighash=confighash)
 end

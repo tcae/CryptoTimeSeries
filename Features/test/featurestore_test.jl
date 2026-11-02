@@ -139,6 +139,14 @@ end
             @test extdf[!, col] ≈ fdf[!, col]
         end
 
+        laterohlcv = TestOhlcv.testohlcv("SINE", startdt + Hour(1), enddt)
+        Features.updatefeatures!(laterohlcv, "FPREP", featurestoretestf6(); confighash="hprepend")
+        prependeddf = Features.updatefeatures!(ohlcv, "FPREP", featurestoretestf6(); confighash="hprepend")
+        @test prependeddf[!, :opentime] == fdf[!, :opentime]
+        for col in Features.requestedcolumns(f6)
+            @test prependeddf[!, col] ≈ fdf[!, col]
+        end
+
         # live trading extends Features006 minute by minute; the result equals a calculation from scratch
         n0 = size(odf, 1) - 300
         live = Ohlcv.defaultohlcv("SINE")

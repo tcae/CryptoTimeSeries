@@ -18,6 +18,10 @@ using Dates, Ohlcv, TestOhlcv
         for coin in coins
             Ohlcv.write(TestOhlcv.testohlcv(coin, startdt, enddt))
         end
+        @test TradingStrategy.ensurefeaturetargetstores!(clcfg, coins) == coins
+        @test all(coin -> !isnothing(TradingStrategy.coinstores(clcfg, coin; daterange="DTEST")[1]), coins)
+        @test all(coin -> !isnothing(TradingStrategy.coinstores(clcfg, coin; daterange="DTEST")[2]), coins)
+        @test all(coin -> isnothing(TradingStrategy.coinstores(clcfg, coin; daterange="DTEST")[3]), coins)
         cl = TradingStrategy.trainclassifier!(clcfg; coinset="CSTEST", daterange="DTEST")
         @test cl isa Classify.TrendClassifier001
         @test length(cl.nn.losses) <= 2

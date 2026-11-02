@@ -102,6 +102,8 @@ the calculation; regressions are taken from (and added to) the regression store.
 The store starts after the warm-up of `requiredminutes(f6)` minutes and has the columns
 `opentime` followed by `requestedcolumns(f6)`. A store that matches the OHLCV history is only
 extended by the rows of new OHLCV data, which Features006 calculates with the required lookback.
+Stored coverage is reused only when its row count and first/last timestamps match the expected
+feature interval; a changed start or incomplete range causes a full recalculation.
 """
 function updatefeatures!(ohlcv::Ohlcv.OhlcvData, featuresid::AbstractString, f6::Features006; confighash::AbstractString)
     @assert isnothing(f6.ohlcv) "updatefeatures! expects an unbased Features006 config but it is based on $(f6.ohlcv.base)"
@@ -109,7 +111,14 @@ function updatefeatures!(ohlcv::Ohlcv.OhlcvData, featuresid::AbstractString, f6:
     @assert !(odf isa SubDataFrame) "updatefeatures! requires the complete OHLCV history of $(ohlcv.base), not a view"
     ot = odf[!, :opentime]
     stored = readfeatures(ohlcv.base, ohlcv.quotecoin, featuresid; confighash=confighash)
-    if !isnothing(stored) && (size(stored, 1) > 0) && (stored[end, :opentime] == ot[end])
+    # the store starts at OHLCV row requiredminutes, which is the first row with complete feature windows
+    firstohlcvix = requiredminutes(f6)
+    @assert firstohlcvix <= lastindex(ot) "insufficient OHLCV history of $(ohlcv.base) for $(featuresid): $(size(odf, 1)) rows with requiredminutes=$(requiredminutes(f6))"
+    expectedrows = length(ot) - firstohlcvix + 1
+    expectedfirst = ot[firstohlcvix]
+    expectedlast = ot[end]
+    if !isnothing(stored) && (size(stored, 1) == expectedrows) &&
+            (stored[begin, :opentime] == expectedfirst) && (stored[end, :opentime] == expectedlast)
         return stored
     end
     windows, stdwindows = regressionwindows(f6)
@@ -117,11 +126,10 @@ function updatefeatures!(ohlcv::Ohlcv.OhlcvData, featuresid::AbstractString, f6:
         updateregression!(ohlcv, window; std=(window in stdwindows))
     end
     cols = requestedcolumns(f6)
-    # the store starts at OHLCV row requiredminutes, which is the first row with complete feature windows
-    firstohlcvix = requiredminutes(f6)
-    @assert firstohlcvix <= lastindex(ot) "insufficient OHLCV history of $(ohlcv.base) for $(featuresid): $(size(odf, 1)) rows with requiredminutes=$(requiredminutes(f6))"
     storedlastix = isnothing(stored) ? 0 : firstohlcvix + size(stored, 1) - 1
-    extendable = !isnothing(stored) && (size(stored, 1) > 0) && (stored[begin, :opentime] == ot[firstohlcvix]) && (storedlastix < lastindex(ot)) && (stored[end, :opentime] == ot[storedlastix])
+    extendable = !isnothing(stored) && (size(stored, 1) > 0) &&
+        (stored[begin, :opentime] == expectedfirst) && (size(stored, 1) < expectedrows) &&
+        (storedlastix < lastindex(ot)) && (stored[end, :opentime] == ot[storedlastix])
     if extendable
         tailohlcv = Ohlcv.ohlcvview(ohlcv, (storedlastix + 1):lastindex(ot))
         setbase!(f6, tailohlcv, usecache=true)
@@ -134,6 +142,8 @@ function updatefeatures!(ohlcv::Ohlcv.OhlcvData, featuresid::AbstractString, f6:
         storedf = DataFrame(f6.fdf[(firstohlcvix - f6.maxoffset):end, vcat(["opentime"], cols)]; copycols=true)
     end
     removebase!(f6)
+    @assert size(storedf, 1) == expectedrows "feature store $(featuresid) of $(ohlcv.base) covers $(size(storedf, 1)) rows; expected $(expectedrows) rows from $(expectedfirst) to $(expectedlast)"
+    @assert (storedf[begin, :opentime] == expectedfirst) && (storedf[end, :opentime] == expectedlast) "feature store $(featuresid) of $(ohlcv.base) spans $(storedf[begin, :opentime]) to $(storedf[end, :opentime]); expected $(expectedfirst) to $(expectedlast)"
     meta = Dict("confighash" => String(confighash), "requiredminutes" => string(requiredminutes(f6)), "columns" => join(cols, ","))
     EnvConfig.savedf(storedf, featuresid; folderpath=featuresfolder(ohlcv.base, ohlcv.quotecoin), format=:arrow, metadata=meta)
     (verbosity >= 3) && println("$(EnvConfig.now()) $(extendable ? "extended" : "calculated") feature store $(featuresid) of $(ohlcv.base) to $(size(storedf, 1)) rows")
