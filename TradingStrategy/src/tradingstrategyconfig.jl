@@ -375,7 +375,7 @@ const COINSET_CONFIGS = Dict{String, NamedTuple}(
 
 const DATERANGE_CONFIGS = Dict{String, NamedTuple}(
     "D00" => (startdt=DateTime("2025-01-17T20:56:00"), enddt=DateTime("2025-08-10T15:00:00")),
-    "D01" => (startdt=DateTime("2017-11-17T20:56:00"), enddt=DateTime("2025-08-10T15:00:00")),
+    "D01" => (startdt=DateTime("2017-11-17T20:56:00"), enddt=DateTime("2026-11-02T22:00:00")),
 )
 
 const MODEL_CONFIGS = Dict{String, Function}(

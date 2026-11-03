@@ -54,6 +54,7 @@ using Dates, Ohlcv, TestOhlcv, Xch
     @test allunique(targethashes)
     @test TradingStrategy.featureshash("F09") == TradingStrategy.featureshash("f09")
     @test length(TradingStrategy.featureshash("F09")) == 40
+    @test TradingStrategy.daterangeconfig("D01") == (startdt=DateTime("2017-11-17T20:56:00"), enddt=DateTime("2026-11-02T22:00:00"))
     @test TradingStrategy.setshash("P02", "D00") != TradingStrategy.setshash("P02", "D01")
     @test TradingStrategy.setsdescription("P02", "D00") == "samplesets=train,test,train,train,eval,train;partitionsize=1440;gapsize=480;minpartitionsize=720;maxpartitionsize=2880;startdt=2025-01-17T20:56:00;enddt=2025-08-10T15:00:00"
 

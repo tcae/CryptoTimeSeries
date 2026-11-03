@@ -13,7 +13,7 @@ function helptext()::String
     return """
     julia --project=. scripts/RegimeTraining.jl [test|train] [retrain] [key=value ...]
       test                       default; registered CS00/D00 artificial coins
-      train                      registered CS01/D01 local Bybit USDT history
+      train                      registered CS01/D01 local Bybit USDT history through 2026-11-02T22:00:00
       ts=<id>                    default 063; registered features/targets/model/B flag
       coinset=<CSxx> daterange=<Dxx>  defaults from EnvConfig mode
       coins=<CSV>                override actual training/eval/replay universe
@@ -31,6 +31,7 @@ function helptext()::String
       threshold=<0..1>            required for test/walkforward; fixed across regimes
       mincoins=<Int> weightcap=<0..1>  explicit detector overrides, both required
     Training outputs eval threshold curves without using test for selection.
+    Curve columns: precision/PPV, recall, NPV (= TN / (TN + FN)), all versus coverage.
     Run test only after choosing a fixed threshold from eval reports.
     Market mode refreshes/reuses shared full-history feature and target stores, then selects the experiment window.
     Detector RF01/RG01 settings are recorded in the immutable manifest; no automatic calibration.
@@ -322,18 +323,26 @@ function thresholdsummary!(metrics::DataFrame,folder::AbstractString,stem::Strin
     return nothing
 end
 
-"""Write SVG curves with labeled axes, enlarged hover targets and CSS tooltips."""
+"""
+Write precision/PPV, recall and NPV SVG curves versus coverage with hover tooltips.
+PPV equals precision; NPV is TN / (TN + FN), including abstentions as non-issued
+signals in the existing confusion counts. Undefined ratios are omitted.
+"""
 function signalplot!(metrics::DataFrame,folder::AbstractString,stem::String)::Nothing
+    metrics = copy(metrics)
+    metrics.npv = [row.tn + row.fn == 0 ? missing : row.tn / (row.tn + row.fn)
+        for row in eachrow(metrics)]
     signals = unique(metrics.signal)
     colors = Dict("overall"=>"#111111","up"=>"#267d36","flat"=>"#666666","down"=>"#b32727")
     open(joinpath(folder,stem*"-curves.svg"),"w") do io
-        println(io,"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1000\" height=\"$(length(signals)*280+40)\" viewBox=\"0 0 1000 $(length(signals)*280+40)\">")
+        println(io,"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1480\" height=\"$(length(signals)*280+40)\" viewBox=\"0 0 1480 $(length(signals)*280+40)\">")
         println(io,"<style>.point .tooltip{visibility:hidden;pointer-events:none}.point:hover .tooltip,.point:focus .tooltip{visibility:visible}.point{cursor:crosshair}text{font-family:sans-serif;font-size:12px}</style>")
         println(io,"<rect width=\"100%\" height=\"100%\" fill=\"white\"/><text x=\"20\" y=\"25\">Black overall; green up; gray flat; red down. Hover or Tab to points; labels show selected overall thresholds.</text>")
-        for (signalix,signal) in enumerate(signals), (axisix,metric) in enumerate((:precision,:recall))
+        for (signalix,signal) in enumerate(signals), (axisix,metric) in enumerate((:precision,:recall,:npv))
             left = (axisix-1)*480+60
             top = (signalix-1)*280+60
-            println(io,"<text x=\"$left\" y=\"$(top-10)\">$signal: $metric versus coverage</text>")
+            metricname = metric == :precision ? "precision/PPV" : metric == :npv ? "NPV" : string(metric)
+            println(io,"<text x=\"$left\" y=\"$(top-10)\">$signal: $metricname versus coverage</text>")
             println(io,"<path d=\"M $left $top v 200 h 400\" fill=\"none\" stroke=\"#aaa\"/><text x=\"$left\" y=\"$(top+220)\">0</text><text x=\"$(left+390)\" y=\"$(top+220)\">1</text>")
             for tick in (0,0.5,1)
                 y = top+200*(1-tick)
@@ -351,7 +360,7 @@ function signalplot!(metrics::DataFrame,folder::AbstractString,stem::String)::No
                 for row in eachrow(rows)
                     x = round(left+400row.coverage;digits=2)
                     y = round(top+200*(1-row[metric]);digits=2)
-                    detail = "$regime threshold=$(row.threshold) coverage=$(round(row.coverage;digits=4)) $metric=$(round(row[metric];digits=4))"
+                    detail = "$regime threshold=$(row.threshold) coverage=$(round(row.coverage;digits=4)) $metricname=$(round(row[metric];digits=4))"
                     println(io,"<g class=\"point\" tabindex=\"0\" aria-label=\"$detail\"><title>$detail</title><circle cx=\"$x\" cy=\"$y\" r=\"8\" fill=\"transparent\" pointer-events=\"all\"/><circle cx=\"$x\" cy=\"$y\" r=\"2\" fill=\"$(colors[regime])\" pointer-events=\"none\"/><g class=\"tooltip\"><rect x=\"$(left+5)\" y=\"$(top+5)\" width=\"390\" height=\"25\" fill=\"white\" stroke=\"$(colors[regime])\"/><text x=\"$(left+10)\" y=\"$(top+22)\">$detail</text></g></g>")
                     if regime=="overall" && row.threshold in (0.3,0.4,0.5)
                         println(io,"<text x=\"$(x+5)\" y=\"$(y-7)\" pointer-events=\"none\">$(row.threshold)</text>")

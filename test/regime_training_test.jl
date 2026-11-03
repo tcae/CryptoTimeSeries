@@ -2,6 +2,29 @@ using Test, Dates, DataFrames
 import EnvConfig, TradingStrategy, Classify, Targets
 include("../scripts/RegimeTraining.jl")
 
+@testset "Signal curve predictive values" begin
+    EnvConfig.init(EnvConfig.test)
+    metrics = DataFrame(signal=fill("longopen",3),grouping=fill("overall",3),
+        regime=fill(missing,3),threshold=[0.3,0.4,0.5],coverage=[0.2,0.1,1.0],
+        precision=[0.75,1.0,0.5],recall=[0.6,0.2,1.0],tn=[8,9,0],fn=[2,1,0])
+    original = copy(metrics)
+    mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+        @test RegimeTraining.signalplot!(metrics,folder,"eval") === nothing
+        svg = read(joinpath(folder,"eval-curves.svg"),String)
+        @test occursin("width=\"1480\"",svg)
+        @test occursin("<text x=\"60\" y=\"50\">longopen: precision/PPV versus coverage",svg)
+        @test occursin("<text x=\"540\" y=\"50\">longopen: recall versus coverage",svg)
+        @test occursin("<text x=\"1020\" y=\"50\">longopen: NPV versus coverage",svg)
+        @test occursin("overall threshold=0.3 coverage=0.2 precision/PPV=0.75",svg)
+        @test occursin("overall threshold=0.3 coverage=0.2 NPV=0.8",svg)
+        @test occursin("overall threshold=0.4 coverage=0.1 NPV=0.9",svg)
+        @test !occursin("overall threshold=0.5 coverage=1.0 NPV=",svg)
+        @test !occursin("NaN",svg)
+        @test !occursin("Inf",svg)
+    end
+    @test isequal(metrics,original)
+end
+
 @testset "Synthetic regime training pipeline" begin
     @test RegimeTraining.main(["--help"]) === nothing
     @test_throws AssertionError RegimeTraining.options(["runid=x","runid=y"])
