@@ -83,6 +83,58 @@ Bybit kline internal errors (10016) are retried up to four attempts, waiting
 failed responses are never interpreted as the end of available history.
 Run `julia --project=. scripts/supplement.jl --help` for help.
 
+### Refresh shared stores
+
+Refresh features/targets and explicitly rebuild selected train/test/eval assignment stores
+from cached full OHLCV histories:
+
+```bash
+julia --project=. scripts/refresh.jl partitions=P02_D01,P02_D00
+julia --project=. scripts/refresh.jl features=F19 targets=T24 partitions=P02_D01 pairs=BTC-USDT,ETH-USDT
+```
+
+Comma-separated IDs must be one shell argument; quote lists containing spaces, for
+example `partitions="P02_D01, P02_D00"`. Without `pairs`, all cached pairs are processed.
+The default exchange is Bybit; select another with `xch=KrakenSpot`, for example.
+
+`partitions` always replaces the selected `sets/Pxx_Dxx.arrow` files using current
+partition/date-range registry settings, including when their stored hashes differ.
+Features and targets retain their normal reuse checks. Classifiers, predictions and
+experiment-local regime/fold assignments are not rebuilt or removed. Changed memberships
+can invalidate earlier evaluations; prefer new configuration IDs to preserve reproducibility.
+Failures are logged and summarized while other pair/config combinations continue.
+Empty sets stores are saved with a warning and summarized at exit by coin pair and
+partition ID, separately from failures. They contribute no samples through those stores.
+For each refreshed partition, the final output includes a copy-pasteable
+`traincoins() = [...]` definition limited to coins with train, eval and test assignments.
+That partition list does not establish RegimeTraining eligibility. Add `ts=066` to
+run full preparation using that strategy's features/targets and the default regime
+detector/folds, and print a separate **RegimeTraining eligibility** report at completion:
+
+```bash
+julia --project=. scripts/refresh.jl partitions=P02_D01 ts=062,066,067
+```
+
+This Bybit-only report evaluates selected USDT pairs, using dates from the requested
+partitions (D01 by default when none are requested). It refreshes required shared stores,
+but does not train or change classifiers. It reports excluded short histories and per-coin
+regime/fold train/eval/test sample counts per configuration, then prints one common
+copy-pasteable list: every coin must have complete coverage under **all** selected configs.
+Each config is fully evaluated, including its feature history and target lookahead;
+the result is not approximated using only the largest warmup value.
+Eligibility preparation processes one coin at a time and releases its OHLCV and
+feature/target tables before the next coin. Only compact hourly observations are
+pooled to build the shared market calendar. Eligible minute timestamps are temporarily
+stored on disk and reloaded one coin at a time for fold balancing and membership counts.
+No minute-level membership tables are retained across coins or configurations;
+the final reports retain only three sample counts per coin. Temporary files are removed
+when preparation finishes or throws. Shared market observations cannot be evaluated
+independently per coin: volume-capped cross-coin weights require simultaneous coverage.
+Coverage is universe-dependent; changing the list can change market regimes.
+RegimeTraining warns and skips histories that cannot satisfy its warmup requirement;
+it still fails explicitly if no usable histories or shared training blocks remain.
+Run `julia --project=. scripts/refresh.jl --help` for details.
+
 ### Market regime diagnostics (Phase A)
 
 Run `julia --project=. scripts/diagnose_market_regimes.jl` to inspect CS01/D01

@@ -1,6 +1,6 @@
 testcoins() = ["SINE", "DOUBLESINE"]
 traincoins() = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
-# traincoins() = ["ETH", "BTC", "ADA", "SOL", "XRP"]
+traincoins_v2() = ["0G", "1INCH", "2Z", "AAVE", "ACH", "ADA", "AERO", "AEVO", "AGI", "AGLA", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "ANIME", "ANKR", "APE", "APEX", "APRS", "APT", "AR", "ARB", "ARKM", "ASTER", "ATH", "ATOM", "AVA", "AVAX", "AVL", "AVNT", "AXL", "AXS", "AZTEC", "B3", "BABYDOGE", "BAN", "BARD", "BASED", "BB", "BBQ", "BCH", "BEAM", "BERA", "BICO", "BLAST", "BLUR", "BMT", "BNB", "BOBA", "BOME", "BONK", "BR", "BRETT", "BSB", "BTC", "C98", "CAKE", "CAMP", "CARV", "CATI", "CC", "CELO", "CFG", "CGPT", "CHILLGUY", "CHZ", "COMP", "COOK", "COOKIE", "COQ", "CORE", "CPOOL", "CRV", "CTC", "CYBER", "DATA", "DEEP", "DEGEN", "DGB", "DIAM", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DOUBLESINE", "DRIFT", "DYDX", "DYM", "EDGE", "EGLD", "EIGEN", "ELX", "ENA", "ENJ", "ENS", "ENSO", "EOS", "EPT", "ERA", "ETC", "ETH", "ETHFI", "ETHW", "F", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FON", "FOXY", "FTM", "FTT", "FUEL", "FXS", "G7", "GAL", "GALA", "GALAXIS", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAM", "GRASS", "GRT", "H", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOLO", "HOME", "HOOK", "HOT", "HUMA", "HYPE", "HYPER", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "IO", "IP", "JASMY", "JTO", "JUP", "KAIA", "KAS", "KAVA", "KDA", "KLAY", "KMNO", "KSM", "LA", "LADYS", "LAYER", "LDO", "LEVER", "LFT", "LGX", "LINEA", "LINK", "LIT", "LMWR", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "ME", "MEME", "MEMEFI", "MERL", "MET", "METH", "MEW", "MILK", "MINA", "MKR", "MLK", "MNT", "MOCA", "MOG", "MON", "MORPHO", "MOVE", "MOVR", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NGL", "NIBI", "NLK", "NOT", "NS", "NXPC", "OL", "OM", "OMG", "OMNI", "ONDO", "ONE", "OP", "ORDER", "ORDI", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PLANET", "PLUME", "PNUT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PROVE", "PUFFER", "PUMP", "PURSE", "PYTH", "QNT", "QTUM", "RATS", "RDNT", "RECALL", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RSS3", "RUNE", "RVN", "S", "SAFE", "SAND", "SATS", "SC", "SCR", "SCRT", "SEI", "SEOR", "SERAPH", "SFUND", "SHIB", "SHRAP", "SIGN", "SINE", "SIS", "SNX", "SOL", "SOLV", "SOMI", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQR", "SSV", "STETH", "STG", "STOP", "STRK", "STX", "SUI", "SUN", "SUNDOG", "SUPRA", "SUSHI", "SWELL", "SXT", "TA", "TAC", "TAI", "TAIKO", "THETA", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TRUMP", "TRX", "TWT", "UMA", "UNI", "USDC", "USDE", "USTC", "UXLINK", "VELO", "VENOM", "VET", "VIRTUAL", "VRA", "W", "WAL", "WAVES", "WAXP", "WCT", "WEN", "WIF", "WLD", "WLFI", "WOO", "X", "XAI", "XAN", "XAUT", "XCAD", "XDC", "XEC", "XION", "XLM", "XPL", "XRP", "XTER", "XTZ", "XWG", "YB", "YFI", "ZAMA", "ZBT", "ZEN", "ZETA", "ZIG", "ZIL", "ZK", "ZKC", "ZKJ", "ZKL", "ZORA", "ZRC", "ZRO", "ZRX"]
 
 settypes() = ["train", "test", "eval"]
 
@@ -371,6 +371,7 @@ const PARTITION_CONFIGS = Dict{String, Function}("P02" => partitionconfig02)
 const COINSET_CONFIGS = Dict{String, NamedTuple}(
     "CS00" => (coins=testcoins(), maxepochs=10),
     "CS01" => (coins=traincoins(), maxepochs=200),
+    "CS02" => (coins=traincoins_v2(), maxepochs=200),
 )
 
 const DATERANGE_CONFIGS = Dict{String, NamedTuple}(
@@ -512,10 +513,11 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("061", "F21-T26-P02-M008-B1", "S08"),
 
     tsentry("062", "F19-T24-P02-M011-B1", "S08"),  # modified 059 with SimpleChains based classifier speeding up training at same performance level
-    tsentry("063", "F20-T25-P02-M011-B1", "S08"),
-    tsentry("064", "F21-T26-P02-M011-B1", "S08"),
 
     tsentry("065", "F19-T24-P02-M011-B1", "S09"),  # modified 062 concerning trading strategy parameters
+    tsentry("066", "F20-T25-P02-M011-B1", "S09"),  # modified 063 concerning trading strategy parameters
+    tsentry("067", "F21-T26-P02-M011-B1", "S09"),  # modified 064 concerning trading strategy parameters
+    tsentry("068", "F09-T09-P02-M011-B1", "S09"),  # modified 032 with model 011 SimpleChains and S09 strategy
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),
@@ -597,7 +599,7 @@ tsconfig(ref::AbstractString)::NamedTuple = _config_from_dict(TS_CONFIGS, ref; l
 boundsestimatorconfig(ref::AbstractString) = _config_from_dict(BOUNDS_ESTIMATOR_CONFIGS, ref; label="bounds", prefixes=("boundsestimator", "boundsmk", "bounds", "mk"))
 
 "Coin set id used by default: test mode trains and evaluates on the artificial test coins."
-defaultcoinset()::String = EnvConfig.configmode == EnvConfig.test ? "CS00" : "CS01"
+defaultcoinset()::String = EnvConfig.configmode == EnvConfig.test ? "CS00" : "CS02"
 "Date range id used by default: test mode uses a short recent date range."
 defaultdaterange()::String = EnvConfig.configmode == EnvConfig.test ? "D00" : "D01"
 

@@ -60,6 +60,12 @@ end
         @test isfile(joinpath(sources.folder,"eval-candidates.arrow"))
         @test isfile(joinpath(sources.folder,"eval-macro.arrow"))
         @test !isfile(joinpath(sources.folder,"test-predictions.arrow"))
+        mappedprediction = TradingStrategy.experimentpredictions(best,sources.evalindex,sources.eval)
+        storedprediction = TradingStrategy.experimentpredictions(best,sources.evalindex,
+            prepared.stores,sources.cols)
+        @test mappedprediction.label==storedprediction.label
+        @test mappedprediction.target==storedprediction.target
+        @test mappedprediction.score≈storedprediction.score
         tested = RegimeTraining.testreport!(prepared,sources,prepared.sets,best,0.5)
         @test all(==("test"),tested.set)
         @test all(!=("unknown"),tested.regime)
@@ -114,7 +120,6 @@ end
             @test all(table.opentime[table.set .== "test"] .<= window.teststop-Minute(60))
             @test all(!=("unknown"),table.regime)
         end
-
         let input = nothing
         @testset "Registered RegimeTraining CLI configuration" begin
             EnvConfig.init(EnvConfig.test)
@@ -180,5 +185,27 @@ end
         partial = TradingStrategy.foldcalendar(prepared.market,prepared.eligible,input.folds;
             horizonminutes=60,enddt=cutoff)
         @test all(partial.stop .<= cutoff-Minute(60))
+        streamed = RegimeTraining.trainingsources(prepared,prepared.sets,
+            joinpath(folder,"streamed-model");trainweights="balanced",streaming=true,
+            keephistories=true)
+        @test isempty(prepared.stores.featurestores)
+        @test isempty(prepared.stores.targetstores)
+        @test isempty(streamed.trainindex)
+        @test isempty(streamed.testindex)
+        sampleixs = collect(1:min(16,Classify.nsamples(sources.train)))
+        @test first(Classify.batch(streamed.train,sampleixs))==
+            first(Classify.batch(sources.train,sampleixs))
+        @test TradingStrategy.experimentpredictions(best,streamed.evalindex,streamed.eval).score ≈
+            TradingStrategy.experimentpredictions(best,sources.evalindex,sources.eval).score
+        @test isequal(RegimeTraining.loadtestindex(streamed),sources.testindex)
+        @test RegimeTraining.releasetrainingmemory!(prepared,sources)===nothing
+        @test isempty(prepared.input.histories)
+        @test isempty(prepared.stores.featurestores)
+        @test isempty(prepared.stores.targetstores)
+        @test isempty(prepared.eligible)
+        @test isempty(prepared.sets)
+        @test isempty(sources.trainindex)
+        @test nrow(TradingStrategy.experimentpredictions(best,sources.evalindex,sources.eval))==
+            Classify.nsamples(sources.eval)
     end
 end

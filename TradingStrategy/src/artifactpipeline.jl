@@ -17,7 +17,9 @@ end
 
 """Update shared feature, target and optionally partition stores for a coin list."""
 function _ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString};
-        daterange::Union{Nothing, AbstractString})::Vector{String}
+        daterange::Union{Nothing, AbstractString}, progressoffset::Int=0,
+        progresstotal::Int=length(coins))::Vector{String}
+    @assert 0 <= progressoffset && progressoffset+length(coins) <= progresstotal "invalid store progress: offset=$progressoffset coins=$(length(coins)) total=$progresstotal"
     checktargetpartition(targetconfig(clcfg.targets), partitionconfig(clcfg.partition).gapsize)
     dr = isnothing(daterange) ? nothing : daterangeconfig(daterange)
     processed = String[]
@@ -28,7 +30,7 @@ function _ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractS
             continue
         end
         storeslabel = isnothing(daterange) ? "$(clcfg.features), $(clcfg.targets)" : "$(clcfg.features), $(clcfg.targets), $(setsid(clcfg.partition, daterange))"
-        print("\r$(EnvConfig.now()) ensuring stores $(storeslabel) of $(coin) ($(coinix)/$(length(coins)))                ")
+        print("\r$(EnvConfig.now()) ensuring stores $(storeslabel) of $(coin) ($(progressoffset+coinix)/$(progresstotal))                ")
         Features.updatefeatures!(ohlcv, clcfg.features, featureconfig(clcfg.features); confighash=featureshash(clcfg.features))
         Targets.updatetargets!(ohlcv, clcfg.targets, targetconfig(clcfg.targets); confighash=targetshash(clcfg.targets))
         if !isnothing(dr)
@@ -41,13 +43,15 @@ function _ensurecoinstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractS
 end
 
 """
-    ensurefeaturetargetstores!(clcfg, coins)
+    ensurefeaturetargetstores!(clcfg, coins; progressoffset=0, progresstotal=length(coins))
 
 Bring the shared per-coin feature and target stores of `clcfg` up to date using each coin's
 complete OHLCV history. Does not create partition/set stores.
+Use `progressoffset` and `progresstotal` to display progress within a larger streaming coin loop.
 """
-function ensurefeaturetargetstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString})::Vector{String}
-    return _ensurecoinstores!(clcfg, coins; daterange=nothing)
+function ensurefeaturetargetstores!(clcfg::NamedTuple, coins::AbstractVector{<:AbstractString};
+        progressoffset::Int=0, progresstotal::Int=length(coins))::Vector{String}
+    return _ensurecoinstores!(clcfg, coins; daterange=nothing,progressoffset,progresstotal)
 end
 
 """

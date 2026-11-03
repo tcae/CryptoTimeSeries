@@ -169,6 +169,15 @@ function marketcalendar(histories::AbstractDict, config::RegimeConfig;
     times = collect(ceil(startdt, Minute(config.stepminutes)):Minute(config.stepminutes):enddt)
     observations = [regimeobservations(histories[coin], times, config; cutoff)
         for coin in sort!(collect(keys(histories)))]
+    return marketcalendar(observations,config;startdt,enddt,retrospective)
+end
+
+"""Build the shared market calendar from compact per-coin observations, without retaining OHLCV."""
+function marketcalendar(observations::AbstractVector{<:AbstractDataFrame}, config::RegimeConfig;
+        startdt::DateTime, enddt::DateTime, retrospective::Bool=true)::DataFrame
+    checkregimeconfig(config)
+    @assert startdt < enddt "invalid market range=$startdt to $enddt"
+    times = collect(ceil(startdt, Minute(config.stepminutes)):Minute(config.stepminutes):enddt)
     locations = [Dict(time => ix for (ix,time) in enumerate(df.opentime)) for df in observations]
     market = DataFrame(opentime=times, slope=zeros(length(times)), short_slope=zeros(length(times)),
         volatility=zeros(length(times)), breadth=zeros(length(times)),
@@ -225,13 +234,18 @@ function foldcalendar(market::DataFrame, sampletimes::AbstractDict, config::Fold
         isnothing(enddt) || (stop = min(stop,enddt+Minute(1)))
         usableend = stop-Minute(config.gapminutes+1)
         if usableend-start+Minute(1) >= Minute(config.minminutes)
-            count = sum(searchsortedlast(times, usableend)-searchsortedfirst(times,start)+1
-                for times in values(sampletimes))
+            count = sum((searchsortedlast(times, usableend)-searchsortedfirst(times,start)+1
+                for times in values(sampletimes));init=0)
             push!(blocks, (nrow(blocks)+1, foldid, market.regime[ix], start, usableend,
                 maximum(market.confirmed[ix:lastix]), count, ""))
         end
         ix = lastix+1
     end
+    return balancecalendar!(blocks)
+end
+
+"""Assign complete calendar blocks 4:1:1 using their final eligible sample counts."""
+function balancecalendar!(blocks::DataFrame)::DataFrame
     totals = Dict{Tuple{Int,String}, Vector{Int}}()
     ratios = [4/6,1/6,1/6]
     setnames = ["train","eval","test"]
@@ -249,6 +263,37 @@ function foldcalendar(market::DataFrame, sampletimes::AbstractDict, config::Fold
         actual[selected] += blocks.samples[ix]
     end
     return blocks
+end
+
+"""
+Build identical shared folds while loading eligible timestamps one coin at a time.
+The loader must return sorted, unique timestamps; references are released between coins.
+"""
+function foldcalendar(market::DataFrame, sampletimesloader::Function,
+        coins::AbstractVector{<:AbstractString}, config::FoldConfig;
+        horizonminutes::Int, enddt::Union{Nothing,DateTime}=nothing)::DataFrame
+    blocks = foldcalendar(market,Dict{String,Vector{DateTime}}(),config;horizonminutes,enddt)
+    for coin in coins
+        times = sampletimesloader(coin)
+        @assert issorted(times) && allunique(times) "sample timestamps for $coin must be sorted and unique: rows=$(length(times))"
+        for block in eachrow(blocks)
+            block.samples += searchsortedlast(times,block.stop)-searchsortedfirst(times,block.start)+1
+        end
+        times = nothing
+        GC.gc()
+    end
+    return balancecalendar!(blocks)
+end
+
+"""Count train/eval/test membership without constructing minute-level projected rows."""
+function calendarcounts(times::AbstractVector{DateTime}, calendar::DataFrame)::NamedTuple
+    @assert issorted(times) && allunique(times) "sample timestamps must be sorted and unique: rows=$(length(times))"
+    counts = Dict("train"=>0,"eval"=>0,"test"=>0)
+    for block in eachrow(calendar)
+        @assert haskey(counts,block.set) "unsupported calendar set=$(block.set)"
+        counts[block.set] += searchsortedlast(times,block.stop)-searchsortedfirst(times,block.start)+1
+    end
+    return (train=counts["train"],eval=counts["eval"],test=counts["test"])
 end
 
 """Project shared calendar assignments onto eligible coin samples, excluding unknown."""

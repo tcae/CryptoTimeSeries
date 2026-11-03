@@ -139,6 +139,44 @@ function _writecompactmatrix(path::AbstractString, featurestores::AbstractVector
 end
 
 """
+Write the compact matrix by loading one feature store at a time. The index must be grouped
+by coin, as produced by `TradingStrategy.experimentindex`.
+"""
+function _writecompactmatrix(path::AbstractString, featurestoreloader::Function,
+        ncoins::Integer, featurecols::AbstractVector{<:AbstractString},
+        coinixs::AbstractVector{<:Integer}, rows::AbstractVector{<:Integer})
+    @assert ncoins > 0 "ncoins=$(ncoins) must be positive"
+    @assert issorted(coinixs) "compact mmap index must be grouped by coin"
+    nfeatures = length(featurecols)
+    tmppath = path * ".tmp"
+    open(tmppath, "w+") do io
+        X = Mmap.mmap(io, Matrix{Float32}, (nfeatures, length(coinixs)))
+        firstsample = firstindex(coinixs)
+        while firstsample <= lastindex(coinixs)
+            coinix = coinixs[firstsample]
+            @assert 1 <= coinix <= ncoins "coinix=$(coinix) must be within 1:$(ncoins)"
+            lastsample = firstsample
+            while lastsample < lastindex(coinixs) && coinixs[lastsample+1] == coinix
+                lastsample += 1
+            end
+            store = featurestoreloader(coinix)
+            columns = [store[!, col] for col in featurecols]
+            @assert all(column -> eltype(column) == Float32, columns) "feature store $(coinix) columns must be Float32; found $(unique(eltype.(columns)))"
+            for sampleix in firstsample:lastsample, featureix in 1:nfeatures
+                X[featureix, sampleix] = columns[featureix][rows[sampleix]]
+            end
+            store = nothing
+            columns = nothing
+            GC.gc()
+            firstsample = lastsample + 1
+        end
+        Mmap.sync!(X)
+    end
+    mv(tmppath, path; force=true)
+    return path
+end
+
+"""
     CompactMmapSource(featurestores, featurecols, index; folderpath, nlabels, classbalancing)
 
 Write the compact features × samples matrix and aligned UInt8 labels for samples in `index` to
@@ -164,6 +202,48 @@ function CompactMmapSource(featurestores::AbstractVector, featurecols::AbstractV
     path = joinpath(folderpath, TRAINFEATURES_FILE)
     (verbosity >= 2) && println("$(EnvConfig.now()) writing compact training features $(length(featurecols))×$(nsamp) to $(path)")
     _writecompactmatrix(path, featurestores, featurecols, coinixs, rows)
+    labelpath = joinpath(folderpath, TRAINLABELS_FILE)
+    labeltmppath = labelpath * ".tmp"
+    open(labeltmppath, "w+") do io
+        labels = Mmap.mmap(io, Vector{UInt8}, nsamp)
+        labels .= labelix
+        Mmap.sync!(labels)
+    end
+    mv(labeltmppath, labelpath; force=true)
+    expectedbytes = sizeof(Float32) * length(featurecols) * nsamp
+    @assert filesize(path) == expectedbytes "$(path) has $(filesize(path)) bytes; expected $(expectedbytes)"
+    @assert filesize(labelpath) == nsamp "$(labelpath) has $(filesize(labelpath)) bytes; expected $(nsamp)"
+    X = open(io -> Mmap.mmap(io, Matrix{Float32}, (length(featurecols), nsamp)), path, "r")
+    labels = open(io -> Mmap.mmap(io, Vector{UInt8}, nsamp), labelpath, "r")
+    counts = [count(==(UInt8(ix)), labels) for ix in 1:nlabels]
+    classweight = classbalancing ? classweights(counts) : ones(Float32, nlabels)
+    return CompactMmapSource(X, labels, classweight, Int(nlabels), classbalancing)
+end
+
+"""
+    CompactMmapSource(featurestoreloader, ncoins, featurecols, index; folderpath, nlabels, classbalancing)
+
+Create compact mmap feature and label files by loading each coin's feature table only while its
+contiguous index segment is copied. This bounds compaction memory to one feature table plus the
+destination mmap. `featurestoreloader(coinix)` must return that coin's feature DataFrame.
+"""
+function CompactMmapSource(featurestoreloader::Function, ncoins::Integer,
+        featurecols::AbstractVector{<:AbstractString}, index;
+        folderpath::AbstractString, nlabels::Integer, classbalancing::Bool)
+    @assert !isempty(featurecols) "CompactMmapSource requires at least one feature column"
+    @assert 0 < nlabels <= typemax(UInt8) "nlabels=$(nlabels) must be within 1:$(typemax(UInt8))"
+    coinixs = index[!, :coinix]
+    rows = index[!, :row]
+    labelix = index[!, :labelix]
+    nsamp = length(coinixs)
+    @assert nsamp > 0 "CompactMmapSource requires a non-empty training index"
+    @assert length(rows) == length(labelix) == nsamp "index column lengths differ: coinix=$(nsamp) row=$(length(rows)) labelix=$(length(labelix))"
+    @assert issorted(coinixs) "compact mmap index must be grouped by coin"
+    @assert all(label -> 1 <= label <= nlabels, labelix) "labelix values must be within 1:$(nlabels)"
+    mkpath(folderpath)
+    path = joinpath(folderpath, TRAINFEATURES_FILE)
+    (verbosity >= 2) && println("$(EnvConfig.now()) writing compact training features $(length(featurecols))×$(nsamp) to $(path)")
+    _writecompactmatrix(path, featurestoreloader, ncoins, featurecols, coinixs, rows)
     labelpath = joinpath(folderpath, TRAINLABELS_FILE)
     labeltmppath = labelpath * ".tmp"
     open(labeltmppath, "w+") do io

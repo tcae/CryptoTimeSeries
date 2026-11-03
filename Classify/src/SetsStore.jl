@@ -43,14 +43,16 @@ function _liquidranges(ohlcv::Ohlcv.OhlcvData, startix::Integer, endix::Integer)
 end
 
 """
-    updatesets!(ohlcv, setsid, partitionconfig, startdt, enddt; confighash)
+    updatesets!(ohlcv, setsid, partitionconfig, startdt, enddt; confighash, rebuild=false)
 
 Return the per-coin sets store `setsid` after (re)building it from the liquid ranges of the
 complete OHLCV history of `ohlcv` within `startdt..enddt`, partitioned according to
 `partitionconfig` (NamedTuple with `samplesets, partitionsize, gapsize, minpartitionsize, maxpartitionsize`).
 The store is reused as long as the OHLCV coverage of the date range is unchanged.
+Set `rebuild=true` to explicitly replace it even if its hash or coverage differs.
+The existing file is retained until the replacement has been generated and written.
 """
-function updatesets!(ohlcv::Ohlcv.OhlcvData, setsid::AbstractString, partitionconfig::NamedTuple, startdt::DateTime, enddt::DateTime; confighash::AbstractString)
+function updatesets!(ohlcv::Ohlcv.OhlcvData, setsid::AbstractString, partitionconfig::NamedTuple, startdt::DateTime, enddt::DateTime; confighash::AbstractString, rebuild::Bool=false)
     @assert startdt < enddt "startdt=$(startdt) must be < enddt=$(enddt)"
     odf = Ohlcv.dataframe(ohlcv)
     @assert !(odf isa SubDataFrame) "updatesets! requires the complete OHLCV history of $(ohlcv.base), not a view"
@@ -59,7 +61,7 @@ function updatesets!(ohlcv::Ohlcv.OhlcvData, setsid::AbstractString, partitionco
     endix = searchsortedlast(ot, enddt)
     coverage = endix >= startix ? "$(ot[startix])..$(ot[endix])" : "empty"
     folder = setsfolder(ohlcv.base, ohlcv.quotecoin)
-    stored = readsets(ohlcv.base, ohlcv.quotecoin, setsid; confighash=confighash)
+    stored = rebuild ? nothing : readsets(ohlcv.base, ohlcv.quotecoin, setsid; confighash=confighash)
     if !isnothing(stored) && (EnvConfig.tablemetadata(setsid; folderpath=folder)["coverage"] == coverage)
         return stored
     end

@@ -123,11 +123,20 @@ end
         directsrc = Classify.ArrowIndexSource(featurestores, featurecols, indexdf; nlabels=length(labels), useweights=true)
         src = Classify.CompactMmapSource(featurestores, featurecols, indexdf;
             folderpath=EnvConfig.classifierfolder(classifiername), nlabels=length(labels), classbalancing=true)
+        loadedcoins = Int[]
+        streamsrc = Classify.CompactMmapSource(coinix -> begin
+            push!(loadedcoins,coinix)
+            stores[coins[coinix]][1]
+        end,length(coins),featurecols,indexdf;
+            folderpath=joinpath(EnvConfig.classifierfolder(classifiername),"streaming"),
+            nlabels=length(labels),classbalancing=true)
+        @test loadedcoins==sort!(unique(indexdf.coinix))
         @test Classify.nsamples(src) == size(indexdf, 1)
         sampleixs = collect(1:Classify.nsamples(src))
         x, y, w = Classify.batch(src, sampleixs)
         expected = reduce(hcat, [Float32[stores[coins[indexdf[ix, :coinix]]][1][indexdf[ix, :row], col] for col in featurecols] for ix in sampleixs])
         @test x == expected
+        @test first(Classify.batch(streamsrc,sampleixs))==x
         @test x == first(Classify.batch(directsrc, sampleixs))
         @test vec(map(argmax, eachcol(y))) == indexdf[!, :labelix]
         @test w == classweight[indexdf[!, :labelix]]

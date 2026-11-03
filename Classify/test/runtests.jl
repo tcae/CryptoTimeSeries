@@ -9,6 +9,7 @@ using Classify, Features, Targets
 using Ohlcv
 
 include("setpartitions_test.jl")
+include("setsstore_test.jl")
 include("storage_format_test.jl")
 include("adaptnn_reinforce_test.jl")
 include("nnconverged_test.jl")

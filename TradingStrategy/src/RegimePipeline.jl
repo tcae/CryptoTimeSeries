@@ -1,3 +1,61 @@
+"""Return the context length required by regime, liquidity, feature and target calculations."""
+function regimewarmup(featurefactory::Function, targetfactory::Function,
+        config::RegimeConfig)::Int
+    regression = Targets.regressionfeatures(targetfactory())
+    return max(config.longminutes,config.liquidity.startdistance+config.liquidity.minliquidminutes,
+        Features.requiredminutes(featurefactory()),
+        isnothing(regression) ? 0 : Features.requiredminutes(regression))
+end
+
+"""Select a history window; warn and return nothing when it cannot satisfy regime warmup."""
+function regimehistory(raw::AbstractDataFrame, coin::AbstractString,
+        startdt::DateTime, enddt::DateTime, warmup::Int)::Union{Nothing,DataFrame}
+    firstrow = searchsortedfirst(raw.opentime,startdt-Minute(warmup+1))
+    lastrow = searchsortedlast(raw.opentime,enddt)
+    rows = max(0,lastrow-firstrow+1)
+    if rows <= warmup
+        @warn "skipping coin with insufficient window/context history" coin rows warmup startdt enddt
+        return nothing
+    end
+    history = DataFrame(raw[firstrow:lastrow,:];copycols=true)
+    Ohlcv.addpivot!(history)
+    return history
+end
+
+"""Select aligned experiment rows from complete shared stores and purge unfinished targets."""
+function sharedstorewindow(history::DataFrame, featurestore::AbstractDataFrame,
+        targetstore::AbstractDataFrame, featurefactory::Function,
+        targetfactory::Function, coin::AbstractString)::Tuple{DataFrame,DataFrame}
+    required = Features.requiredminutes(featurefactory())
+    expectedfeatures = nrow(history)-required+1
+    @assert expectedfeatures > 0 "insufficient history for $coin: rows=$(nrow(history)) requiredminutes=$required"
+    firstfeature = history.opentime[required]
+    firstrow = searchsortedfirst(featurestore.opentime,firstfeature)
+    lastrow = searchsortedlast(featurestore.opentime,last(history.opentime))
+    features = DataFrame(featurestore[firstrow:lastrow,:];copycols=true)
+    @assert nrow(features)==expectedfeatures && first(features.opentime)==firstfeature &&
+        last(features.opentime)==last(history.opentime) "shared features misaligned for $coin: rows=$(nrow(features)) expected=$expectedfeatures"
+    firstrow = searchsortedfirst(targetstore.opentime,first(history.opentime))
+    lastrow = searchsortedlast(targetstore.opentime,last(history.opentime))
+    targets = DataFrame(targetstore[firstrow:lastrow,:];copycols=true)
+    @assert nrow(targets)==nrow(history) && first(targets.opentime)==first(history.opentime) &&
+        last(targets.opentime)==last(history.opentime) "shared targets misaligned for $coin: rows=$(nrow(targets)) expected=$(nrow(history))"
+    finalcount = max(0,nrow(targets)-Targets.lookaheadminutes(targetfactory()))
+    targets[(finalcount+1):end,:label] .= Targets.tradelabelcode(Targets.ignore)
+    return features,targets
+end
+
+"""Build the full regime/fold preparation shared by training and refresh eligibility reporting."""
+function regimeassignments(histories::AbstractDict, stores::NamedTuple,
+        config::RegimeConfig, folds::FoldConfig, startdt::DateTime, enddt::DateTime,
+        horizon::Int)::NamedTuple
+    eligible = experimenttimes(histories,stores,config)
+    market = marketcalendar(histories,config;startdt,enddt)
+    calendar = foldcalendar(market,eligible,folds;horizonminutes=horizon,enddt)
+    sets = Dict(coin=>calendarsets(eligible[coin],calendar) for coin in stores.coins)
+    return (;eligible,market,calendar,sets)
+end
+
 """
 Persist an input/config identity and fail on reuse of a different dataset.
 Hashes contain full OHLCV content, not just coverage endpoints.
@@ -260,5 +318,26 @@ function experimentpredictions(nn, index::DataFrame, stores::NamedTuple,
     result[!, :label] = [labels[predicted[row.coinix].label[row.row]] for row in eachrow(index)]
     result[!, :score] = [predicted[row.coinix].score[row.row] for row in eachrow(index)]
     result[!, :target] = [nn.labels[row.labelix] for row in eachrow(index)]
+    return result
+end
+
+"""Build metric rows from compact sample-source batches without loading per-coin feature stores."""
+function experimentpredictions(nn, index::DataFrame,
+        source::Classify.AbstractSampleSource)::DataFrame
+    @assert nrow(index) == Classify.nsamples(source) "prediction index rows=$(nrow(index)) differ from compact source samples=$(Classify.nsamples(source))"
+    result = select(index,:coin,:opentime,:set,:regime,:foldid,:blockid)
+    scores = Vector{Float32}(undef,nrow(index))
+    labels = Vector{eltype(nn.labels)}(undef,nrow(index))
+    Classify.Flux.testmode!(nn.model)
+    for chunk in Iterators.partition(1:nrow(index),8192)
+        ordered = Classify.batchindices(source,chunk)
+        features,_,_ = Classify.batch(source,ordered)
+        chunkscores,chunklabels = Classify.maxpredict(nn,features)
+        scores[ordered] .= chunkscores
+        labels[ordered] .= chunklabels
+    end
+    result[!,:label] = labels
+    result[!,:score] = scores
+    result[!,:target] = [nn.labels[row.labelix] for row in eachrow(index)]
     return result
 end
