@@ -964,8 +964,6 @@ end
 
 #endregion FeatureUtilities
 
-include("Features004.jl")
-
 #region Features006
 
 """
@@ -1655,11 +1653,9 @@ include("featurestore.jl")
 
 #region Features005
 
-# Features005 is based on Features004. To reuse the F4 cache files, those features are always calculated to keep the saved cache complete.
-
 regressionwindows005 = [2, 5, 15, 60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
 regressionproperties = ["grad", "std", "regry"]
-savedregressionwindows005 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60] # == Features.regressionwindows004
+savedregressionwindows005 = [60, 4*60, 12*60, 24*60, 3*24*60, 10*24*60]
 savedregressionproperties = ["grad", "std", "regry"]
 minmaxproperties = ["mindist", "maxdist"]
 regressionfeaturespec005(regrwindows=regressionwindows005, regrprops=regressionproperties) = [join(["rw", rw, rp], "_") for rw in regrwindows for rp in regrprops]
@@ -1792,7 +1788,7 @@ Struct property notes:
 - cfgdf: dataframe of the validated configuration
   - configcols: vector of column names of the requested configuration, which is subset of names(f5.fdf)
 - ohlcv: reference ohlcv data that are used as basis for feature calculation
-- fdf: features data frame with union of configured columns and Features004 columns
+- fdf: features data frame with union of configured columns and cached regression columns
 
 """
 mutable struct Features005 <: AbstractFeatures
@@ -1853,7 +1849,7 @@ requiredminutes(f5::Features005) = f5.requiredminutes
 function emptycachef005()
     df = DataFrame()
     df[:, "opentime"] = DateTime[]
-    for rw in savedregressionwindows005   # share data with Features004 and only regressionwindows004 subset of regressionwindows005 in cache
+    for rw in savedregressionwindows005
         for rp in savedregressionproperties
             df[:, join(["rw", string(rw), rp], "_")] = Float32[]
         end
@@ -1861,124 +1857,51 @@ function emptycachef005()
     return df
 end
 describe(f5::Features005)::String = "Features005($(uppercase(f5.ohlcv.base)))" * join(names(f5.fdf), "+")
-mnemonic(f5::Features005) = uppercase(f5.ohlcv.base) * "_" * uppercase(f5.ohlcv.quotecoin) * "_" * "_F4"  #* share data with Features004
+mnemonic(f5::Features005) = uppercase(f5.ohlcv.base) * "_" * uppercase(f5.ohlcv.quotecoin) * "_F5"
 
+"Return the independent Features005 Arrow cache path under the active exchange root."
 function file(f5::Features005)
-    mnm = mnemonic(f5)
-    filename = EnvConfig.coinfile(f5.ohlcv.base, f5.ohlcv.quotecoin, "f4"; extension=".arrow")
-    legacyfilename = EnvConfig.datafile(mnm, "Features004")  # share data with Features004
-    return (filename=filename, existing=isfile(filename) || isdir(legacyfilename) || isfile(legacyfilename))
+    @assert !isnothing(f5.ohlcv) "Features005 file requires a base; ohlcv=$(f5.ohlcv)"
+    filename = EnvConfig.coinfile(f5.ohlcv.base, f5.ohlcv.quotecoin, "f5"; extension=".arrow")
+    return (filename=filename, existing=isfile(filename))
 end
 
+"Write the reusable, no-offset regression columns of a complete Features005 instance to its own cache."
 function write(f5::Features005)
-    if !isnothing(f5.fdf) && !isnothing(f5.ohlcv)
-        fn = file(f5)
-        if !f5.complete || (size(f5.fdf, 1) == 0)
-            (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to incomplete data=$(f5.complete) or empty data: size(f5.fdf)=$(size(f5.fdf))")
-            return
-        end
-        if !isnothing(f5.latestloadeddt) && (f5.latestloadeddt >= f5.fdf[end, :opentime])
-            (verbosity >= 3) && println("$(EnvConfig.now()) f5 not written due to already stored data:$(f5.latestloadeddt) >= $(f5.fdf[end, :opentime])")
-            return
-        end
-        df = DataFrame()
-        for configrow in eachrow(f5.cfgdf)
-            if configrow.save
-                savecol = configrow.first == "opentime" ? "opentime" : join([string(configrow.second), string(configrow.third)], "_")
-                df[:, savecol] = f5.fdf[!, configrow.config]
-            end
-        end
-        try
-            arrowpaths = _write_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin, df)
-            legacyfilename = EnvConfig.datafile(mnemonic(f5), "Features004")
-            if !isempty(arrowpaths) && (isdir(legacyfilename) || isfile(legacyfilename))
-                rm(legacyfilename; force=true, recursive=true)
-            end
-            (verbosity >= 2) && println("$(EnvConfig.now()) saved F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows to $(fn.filename)")
-            (verbosity >= 3) && !isempty(arrowpaths) && println("$(EnvConfig.now()) saved shared F4 Arrow cache to $(first(arrowpaths))")
-            f5.latestloadeddt = size(f5.fdf, 1) > 0 ? f5.fdf[end, :opentime] : nothing
-        catch e
-            Logging.@error "exception $e detected when writing $(fn.filename)"
-        end
-    else
-        (verbosity >= 2) && isnothing(f5.fdf) && println("no features found in F5 - nothing to write")
-        (verbosity >= 2) && isnothing(f5.ohlcv) && println("no ohlcv found in F5 - missing base info required to write")
+    @assert !isnothing(f5.ohlcv) && !isnothing(f5.fdf) "Features005 write requires a base and features; ohlcv=$(f5.ohlcv), fdf=$(f5.fdf)"
+    if !f5.complete || isempty(f5.fdf)
+        (verbosity >= 2) && println("$(EnvConfig.now()) F5 cache not written: complete=$(f5.complete), rows=$(size(f5.fdf, 1))")
+        return nothing
     end
+    if !isnothing(f5.latestloadeddt) && f5.latestloadeddt >= f5.fdf[end, :opentime]
+        return nothing
+    end
+    cols = f5.cfgdf[f5.cfgdf.save, :config]
+    folder = EnvConfig.coinfolderpath(f5.ohlcv.base, f5.ohlcv.quotecoin)
+    EnvConfig.savedf(f5.fdf[!, cols], "f5"; folderpath=folder, format=:arrow)
+    f5.latestloadeddt = f5.fdf[end, :opentime]
+    return nothing
 end
 
+"Read the Features005 regression cache, reusing only an aligned prefix of the current feature interval."
 function read!(f5::Features005)::DataFrame
-    if isnothing(f5.ohlcv)
-        (verbosity >= 2)  && println("no ohlcv found in F5 - missing base info required to read")
-        return emptycachef005()
-    end
-    fn = file(f5)
-    legacyfilename = EnvConfig.datafile(mnemonic(f5), "Features004")
-    requestedcols = String[]
-    for configrow in eachrow(f5.cfgdf)
-        if configrow.save
-            push!(requestedcols, configrow.first == "opentime" ? "opentime" : join([string(configrow.second), string(configrow.third)], "_"))
+    @assert !isnothing(f5.ohlcv) "Features005 read requires a base; ohlcv=$(f5.ohlcv)"
+    folder = EnvConfig.coinfolderpath(f5.ohlcv.base, f5.ohlcv.quotecoin)
+    stored = EnvConfig.readdf("f5"; folderpath=folder, format=:arrow, copycols=true)
+    df = emptycachef005()
+    odf = Ohlcv.dataframe(f5.ohlcv)
+    firstix = requiredminutes(f5)
+    if !isnothing(stored) && !isempty(stored) && firstix <= size(odf, 1)
+        cols = names(df)
+        @assert all(col in names(stored) for col in cols) "Features005 cache columns=$(names(stored)) must contain $(cols)"
+        if stored[begin, :opentime] == odf[firstix, :opentime]
+            rows = min(size(stored, 1), size(odf, 1) - firstix + 1)
+            @assert stored[1:rows, :opentime] == odf[firstix:firstix+rows-1, :opentime] "Features005 cache timestamps do not match OHLCV for $(f5.ohlcv.base); rows=$(rows), firstix=$(firstix)"
+            df = stored[1:rows, cols]
         end
     end
-    # try
     f5.complete = true
-    df = _read_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin; columns=requestedcols)
-    if size(df, 1) > 0
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded shared F4 Arrow data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows")
-            startix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[begin, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? firstindex(df[!, :opentime]) : nothing
-            endix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[end, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? lastindex(df[!, :opentime]) : nothing
-            if !isnothing(startix)
-                if isnothing(endix) # df[begin] is inside and df[end] is outside ohlcv time range
-                    endix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[end, :opentime])
-                    df = df[startix:endix, :]
-                # else no df change
-                end
-            else
-                if !isnothing(endix) # df[begin] is outside and df[end] is inside ohlcv time range
-                    startix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[begin, :opentime])
-                    df = df[startix:endix, :]
-                else # both df[begin] and df[end] are outside ohlcv time range
-                    df = emptycachef005()
-                end
-            end
-    elseif isdir(legacyfilename) || isfile(legacyfilename)
-            (verbosity >= 3) && println("$(EnvConfig.now()) start loading legacy F5 data of $(f5.ohlcv.base) from $(legacyfilename)")
-            df = DataFrame(JDF.loadjdf(legacyfilename))
-            (verbosity >= 2) && println("$(EnvConfig.now()) loaded legacy F5 data of $(f5.ohlcv.base) from $(df[1, :opentime]) until $(df[end, :opentime]) with $(size(df, 1)) rows from $(legacyfilename)")
-            if size(df, 1) > 0
-                _write_shared_f4_arrow(f5.ohlcv.base, f5.ohlcv.quotecoin, df)
-                rm(legacyfilename; force=true, recursive=true)
-            end
-            if size(df, 1) == 0
-                (verbosity >= 2) && println("$(EnvConfig.now()) no data loaded from $(legacyfilename)")
-                df = emptycachef005()
-            else
-                startix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[begin, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? firstindex(df[!, :opentime]) : nothing
-                endix = Ohlcv.dataframe(f5.ohlcv)[begin, :opentime] <= df[end, :opentime] <= Ohlcv.dataframe(f5.ohlcv)[end, :opentime] ? lastindex(df[!, :opentime]) : nothing
-                if !isnothing(startix)
-                    if isnothing(endix) # df[begin] is inside and df[end] is outside ohlcv time range
-                        endix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[end, :opentime])
-                        df = df[startix:endix, :]
-                    # else no df change
-                    end
-                else
-                    if !isnothing(endix) # df[begin] is outside and df[end] is inside ohlcv time range
-                        startix = Ohlcv.rowix(df[!, :opentime], Ohlcv.dataframe(f5.ohlcv)[begin, :opentime])
-                        df = df[startix:endix, :]
-                    else # both df[begin] and df[end] are outside ohlcv time range
-                        df = emptycachef005()
-                    end
-                end
-            end
-        else
-            (verbosity >= 2) && println("$(EnvConfig.now()) no data found for $(fn.filename) and no shared F4 Arrow cache for $(f5.ohlcv.base)")
-            df = emptycachef005()
-        end
-        f5.fdf = df
-        # (verbosity >= 3) && println("$(EnvConfig.now()) Features005.read! after loading and adapting $f5")
-        # (verbosity >= 3) && println("$(EnvConfig.now()) Features005.read! names(df)=$(names(df))")
-        # catch e
-    #     Logging.@warn "exception $e detected"
-    # end
+    f5.fdf = df
     return df
 end
 
@@ -2022,7 +1945,6 @@ function supplement!(f5::Features005)
         end
         win = configrow.second
         offset = configrow.fourth
-        # obsolete TODO calc rolling regressioin run of same length than ohlcv, supplement from f4 and restore them.use offset as view vector
         if configrow.first == "rw"
             fc = f5.cfgdf
             regryrow = first(f5.cfgdf[(fc[!, :first] .== "rw") .&& (fc[!, :second] .== win) .&& (fc[!, :third] .== "regry") .&& (fc[!, :fourth] .== offset), :])
@@ -2165,7 +2087,8 @@ std(f5::Features005, regrminutes) = f5.fdf[!, join(["rw", regrminutes, "std"], "
 mindist(f5::Features005, mmminutes) = f5.fdf[!, join(["mm", mmminutes, "mindist"], "_")]
 maxdist(f5::Features005, mmminutes) = f5.fdf[!, join(["mm", mmminutes, "maxdist"], "_")]
 relativevolume(f5::Features005, shortlongtuple) = f5.fdf[!, join(["rv", shortlongtuple[1], shortlongtuple[2]], "_")]
-regrwindows(f5::Features005) = keys(f4.rw)
+"Return the configured regression windows of Features005."
+regrwindows(f5::Features005) = unique(f5.cfgdf[f5.cfgdf.first .== "rw", :second])
 opentime(f5::Features005) = isnothing(f5.fdf) ? [] : f5.fdf[!, :opentime]
 
 function Base.show(io::IO, f5::Features005)

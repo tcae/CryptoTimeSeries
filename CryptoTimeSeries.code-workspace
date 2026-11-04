@@ -95,6 +95,9 @@
 		"github.copilot.enable": {
 			"julia": true,
 			"python": true
+		},
+		"chat.agent.sandbox.fileSystem.userConfiguredPaths": {
+			"readwritePaths": ["/Users/torsten/crypto"]
 		}
 	},
 	"launch": {

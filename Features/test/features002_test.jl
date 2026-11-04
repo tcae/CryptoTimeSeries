@@ -299,33 +299,6 @@ f12xd = describe(f12x)
 @test maximum(f12xd[!, :max]) < 3.2
 @test all(y-> eltype(y) == Float32, eachcol(f12x))
 
-# Features004 storage tests
-enddt = DateTime("2023-02-18T13:29:00")
-period = Day(1)
-startdt = enddt - period
-EnvConfig.init(production)
-EnvConfig.setlogpath("F4StorageTest")
-xc = Xch.XchCache()
-ohlcv = Xch.cryptodownload(xc, "SINE", "1m", startdt, enddt)
-# f4 is larger reference
-f4 = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=false)
-# f4s is smaller f4 subset with some f4 data before and after f4s
-f4s = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-4, lastix=lastindex(ohlcv.df[!, "opentime"])-3, regrwindows=[15, 60], usecache=false)
-Features.write(f4s)
-@test Features.file(f4s).existing == true
-@test isfile(EnvConfig.coinfile(f4s.basecoin, f4s.quotecoin, "f4"; extension=".arrow"))
-sharedf4 = Features._read_shared_f4_arrow(f4s.basecoin, f4s.quotecoin; columns=["grad_15", "regry_15"])
-@test "grad_15" in String.(names(sharedf4))
-@test "regry_15" in String.(names(sharedf4))
-@test size(sharedf4, 2) >= 3
-rm(Features.file(f4s).filename; force=true, recursive=true)
-@test Features.file(f4s).existing == false
-f4r = Features.Features004(ohlcv; firstix=lastindex(ohlcv.df[!, "opentime"])-6, lastix=lastindex(ohlcv.df[!, "opentime"])-1, regrwindows=[15, 60], usecache=true)
-# Features.Features004 should read the shared Arrow copy and supplement missing data before and after
-for (regr, df) in f4r.rw
-    @test f4.rw[regr]==select!(f4r.rw[regr], names(f4.rw[regr]))  # select! is required to match sequence of columns after read from file
-end
-
 f6cache = Features.Features006()
 Features.addgrad!(f6cache; window=15, offset=0)
 f6cache.ohlcv = ohlcv
@@ -334,7 +307,5 @@ f6df = Features.read!(f6cache)
 @test "rg+15" in names(f6df)
 @test "ry+15" in names(f6df)
 
-Features.delete(f4s)
-@test Features.file(f4s).existing == false
 
 end # testset

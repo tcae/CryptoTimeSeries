@@ -69,3 +69,4 @@ Pkg.test(PKGTEST_PACKAGES; coverage=COVERAGE_ARG)
 
 include(joinpath(@__DIR__, "bounds_estimator_test.jl"))
 include(joinpath(@__DIR__, "script_help_test.jl"))
+include(joinpath(@__DIR__, "jdf2arrow_test.jl"))

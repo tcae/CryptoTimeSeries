@@ -381,7 +381,7 @@ end
 
 """
 Loads all USDT coins, checks liquidity volume criteria, removes risk coins.
-If isnothing(datetime) or datetime > last update then uploads latest OHLCV and calculates F4 of remaining coins that are then stored.
+If isnothing(datetime) or datetime > last update then uploads latest OHLCV of remaining coins.
 The resulting DataFrame table of tradable coins is stored, consisting of the union of openenabled and closeenabled pairs.
 `assetonly` is an input parameter to limit coins for backtesting.
 """

@@ -191,6 +191,28 @@ function testclassifierspath()
     end
 end
 
+"Verify that default initialization and a no-argument reset select Bybit, while explicit roots remain supported."
+function testcoinspath()
+    oldpath = EnvConfig.activecoinspath
+    oldlogs = EnvConfig.defaultlogfilespath
+    @test EnvConfig.coinsfolder == "Bybit"
+    @test EnvConfig.defaultcoinspath == normpath(joinpath(dirname(oldlogs), "Bybit"))
+    mktempdir(EnvConfig.defaultdebugfilespath) do folder
+        try
+            EnvConfig.defaultlogfilespath = joinpath(folder, "logs")
+            @test EnvConfig.setcoinspath!("KrakenSpot") == joinpath(folder, "KrakenSpot")
+            @test EnvConfig.setcoinspath!() == joinpath(folder, "Bybit")
+            @test EnvConfig.coinspath() == joinpath(folder, "Bybit")
+            @test EnvConfig.coinfolderpath("btc", "usdt", "features") ==
+                joinpath(folder, "Bybit", "BTC-USDT", "features")
+            @test !ispath(joinpath(folder, "coins"))
+        finally
+            EnvConfig.defaultlogfilespath = oldlogs
+            EnvConfig.activecoinspath = oldpath
+        end
+    end
+end
+
 @testset "Config tests" begin
 
 EnvConfig.verbosity = 3
@@ -202,6 +224,7 @@ testtableio()
 testpairquote()
 testtablemetadata()
 testclassifierspath()
+testcoinspath()
 
 @test EnvConfig.datetimeformat == "yymmdd HH:MM"
 @test basename(EnvConfig.tradingfolder) == "crypto"

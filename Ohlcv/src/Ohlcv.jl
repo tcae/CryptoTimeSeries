@@ -567,7 +567,7 @@ function file(ohlcv::OhlcvData)
     return (filename=filename, existing=isfile(filename) || legacyfile(ohlcv).existing)
 end
 
-"""Write the shared per-coin OHLCV cache to `coins/<pair>/ohlcv.arrow`. Arrow stream format is used so new rows can be appended."""
+"""Write the per-coin OHLCV cache to `<exchange>/<pair>/ohlcv.arrow`. Arrow stream format is used so new rows can be appended."""
 function write_arrow(ohlcv::OhlcvData; append::Bool=false, df::AbstractDataFrame=ohlcv.df)
     if !(df isa AbstractDataFrame) || (size(df, 1) == 0)
         return nothing
@@ -576,7 +576,7 @@ function write_arrow(ohlcv::OhlcvData; append::Bool=false, df::AbstractDataFrame
     return EnvConfig.writetable(df[!, save_cols], "ohlcv"; folderpath=folderpath, format=:arrow, append=append)
 end
 
-"""Read the shared per-coin OHLCV cache from `coins/<pair>/ohlcv.arrow`, if available."""
+"""Read the per-coin OHLCV cache from `<exchange>/<pair>/ohlcv.arrow`, if available."""
 function read_arrow(ohlcv::OhlcvData)
     folderpath = EnvConfig.coinfolderpath(ohlcv.base, ohlcv.quotecoin)
     df = EnvConfig.readdf("ohlcv"; folderpath=folderpath, format=:arrow, copycols=true)

@@ -1,6 +1,6 @@
 #region FeatureStore
 
-# Per-coin stores under `coins/<BASE-QUOTE>/`:
+# Per-coin stores under `<exchange>/<BASE-QUOTE>/`:
 # - `regression/regr<window>.arrow`: opentime, regry, grad over the full OHLCV history
 # - `regression/regrstd<window>.arrow`: opentime, std over the full OHLCV history
 # - `features/<featuresid>.arrow`: opentime + requested Features006 columns without warm-up rows
@@ -30,6 +30,32 @@ Return the per-coin regression store of `window` as (memory mapped) DataFrame wi
 """
 function readregression(base::AbstractString, quotecoin::AbstractString, window::Integer; std::Bool=false)
     return EnvConfig.readdf(_regressionstem(window; std=std); folderpath=regressionfolder(base, quotecoin), format=:arrow)
+end
+
+"""
+    regressionband(ohlcv::Ohlcv.OhlcvData, window::Integer)::DataFrame
+
+Return `opentime, regry, grad, std` for a minute OHLCV interval. Reuse standalone
+regression stores only if both their full timestamp vectors match that interval;
+otherwise calculate the band in memory. Never write stores from this plotting helper.
+"""
+function regressionband(ohlcv::Ohlcv.OhlcvData, window::Integer)::DataFrame
+    odf = Ohlcv.dataframe(ohlcv)
+    @assert ohlcv.interval == "1m" && size(odf, 1) > 1 && window > 1 "regression band requires minute OHLCV, >1 rows and window>1; interval=$(ohlcv.interval), rows=$(size(odf, 1)), window=$(window)"
+    stored = readregression(ohlcv.base, ohlcv.quotecoin, window)
+    storedstd = readregression(ohlcv.base, ohlcv.quotecoin, window; std=true)
+    if !isnothing(stored) && !isnothing(storedstd) &&
+            stored[!, :opentime] == odf[!, :opentime] &&
+            storedstd[!, :opentime] == odf[!, :opentime]
+        return DataFrame(opentime=copy(odf[!, :opentime]),
+            regry=copy(stored[!, :regry]), grad=copy(stored[!, :grad]),
+            std=copy(storedstd[!, :std]))
+    end
+    regry, grad = rollingregression(odf[!, :pivot], window)
+    std = rollingregressionstdmv(
+        [odf[!, :open], odf[!, :high], odf[!, :low], odf[!, :close]],
+        regry, grad, window, 1)
+    return DataFrame(opentime=copy(odf[!, :opentime]), regry=regry, grad=grad, std=std)
 end
 
 "Return the number of leading `stored` rows that equal the leading OHLCV opentimes, i.e. the reusable prefix."

@@ -23,6 +23,8 @@ using EnvConfig, Ohlcv, Features, Targets, TestOhlcv, Classify, Xch, Trade, Trad
 
 const COCKPIT_TREND_REF = get(ENV, "COCKPIT_TREND_REF", "025")
 const COCKPIT_BOUNDS_REF = "001"
+const COCKPIT_REGRESSION_WINDOWS = ("1h" => 60, "4h" => 4*60, "12h" => 12*60,
+    "1d" => 24*60, "3d" => 3*24*60, "10d" => 10*24*60)
 const DIAGNOSTIC_LABEL_ROWS = ["trend target", "trend pred", "tradepairs target"]
 const DIAGNOSTIC_LABEL_CODE = Dict{Any, Int}(
     missing => 0,
@@ -134,11 +136,6 @@ function _config_tableexists(folder::AbstractString, filename::AbstractString)
     return EnvConfig.tableexists(filename; folderpath=folderpath, format=:auto)
 end
 
-function _load_cockpit_f4(ohlcv::Ohlcv.OhlcvData)
-    f4 = Features.Features004(ohlcv; usecache=true)
-    return isnothing(f4) ? Features.Features004(ohlcv.base, ohlcv.quotecoin) : f4
-end
-
 function _available_configrefs(kind::Symbol)
     if kind == :trend
         return sort!(collect(keys(TradingStrategy.TS_CONFIGS)); by=lowercase)
@@ -224,11 +221,8 @@ end
 function _loadohlcv!(cp, base, interval)
     if !(base in keys(cp.coin))
         ohlcv = Xch.getohlcv(cp.tc.xc, base)
-        cp.coin[base] = CoinData(Dict{String, Ohlcv.OhlcvData}(), nothing)
+        cp.coin[base] = CoinData(Dict{String, Ohlcv.OhlcvData}(), Dict{Int, DataFrame}())
         cp.coin[base].ohlcv["1m"] = ohlcv
-        cp.coin[base].f4 = _load_cockpit_f4(ohlcv)
-    elseif isnothing(cp.coin[base].f4) || isempty(cp.coin[base].f4.rw)
-        cp.coin[base].f4 = _load_cockpit_f4(cp.coin[base].ohlcv["1m"])
     end
     if !(interval in keys(cp.coin[base].ohlcv))
         @assert interval in ["5m", "1h", "1d", "3d"] "$interval not in [5m, 1h, 1d, 3d]"
@@ -317,9 +311,10 @@ function updateassets!(cp, download=false)
     end
 end
 
+"Cache a coin's OHLCV intervals and lazily calculated regression bands."
 mutable struct CoinData
     ohlcv  # Dict interval => OhlcvData
-    f4     # Features004
+    regressions::Dict{Int, DataFrame}
 end
 
 mutable struct CockpitData
@@ -408,7 +403,7 @@ app.layout = html_div() do
         ),
         dcc_checklist(
             id="spread_select",
-            options=[(label = label, value = value) for (label, value) in Features.regressionwindows004dict],
+            options=[(label = label, value = value) for (label, value) in COCKPIT_REGRESSION_WINDOWS],
                 # value=["test"],
                 # value=[60],
                 labelStyle=(:display => "inline-block")
@@ -429,7 +424,7 @@ app.layout = html_div() do
         html_div(id="click_action")
     ])
 end
-println("spread list: $([(label = label, value = value) for (label, value) in Features.regressionwindows004dict])")
+println("spread list: $([(label = label, value = value) for (label, value) in COCKPIT_REGRESSION_WINDOWS])")
 
 # function rangeselection(rl1d, rl10d, rl6M, rlall, rl4h)
 #     ctx = callback_context()
@@ -1002,7 +997,7 @@ end
 
 function addheatmap!(traces, ohlcv, subdf, normref)
     @assert size(subdf, 1) >= 1
-    firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(Features.regressionwindows004))
+    firstdt = subdf[begin, :opentime] - Dates.Minute(maximum(last, COCKPIT_REGRESSION_WINDOWS))
     calcdf = ohlcv.df[firstdt .< ohlcv.df.opentime .<= subdf[end, :opentime], :]
     pivot = Ohlcv.pivot!(calcdf)
     pivot = normpercent(cp, pivot, normref)
@@ -1031,14 +1026,15 @@ function addheatmap!(traces, ohlcv, subdf, normref)
 end
 
 function spreadtraces(cp, base, ohlcvdf, window, normref)
-    traces = []
-    if (base in keys(cp.coin)) && (isnothing(cp.coin[base].f4) || !(window in keys(cp.coin[base].f4.rw)))
-        cp.coin[base].f4 = _load_cockpit_f4(cp.coin[base].ohlcv["1m"])
+    @assert base in keys(cp.coin) "missing cockpit coin $(base); loaded=$(collect(keys(cp.coin)))"
+    ohlcv = cp.coin[base].ohlcv["1m"]
+    regr = get!(cp.coin[base].regressions, window) do
+        Features.regressionband(ohlcv, window)
     end
-    regr = (base in keys(cp.coin)) && !isnothing(cp.coin[base].f4) && (window in keys(cp.coin[base].f4.rw)) ? cp.coin[base].f4.rw[window] : nothing
-    if isnothing(regr)
-        @warn "no f4 regression data found for $base"
-        return []
+    odf = Ohlcv.dataframe(ohlcv)
+    if size(regr, 1) != size(odf, 1) || regr[begin, :opentime] != odf[begin, :opentime] ||
+            regr[end, :opentime] != odf[end, :opentime]
+        regr = cp.coin[base].regressions[window] = Features.regressionband(ohlcv, window)
     end
     filter = falses(length(regr[!, :opentime]))
     ix = Ohlcv.rowix(regr[!, :opentime], ohlcvdf[begin, :opentime])
@@ -1122,7 +1118,6 @@ function candlestickgraph(cp, traces, base, interval, period, enddt, regression,
         if !isempty(spread)
             # println("period=$period, enddt=$enddt")
             for win in spread
-                # winminutes = win == "1m" ? 1 : Features.regressionwindows004dict[win]
                 if win > intervalminutes
                     # win = parse(Int64, window)
                     #  visualization spreads

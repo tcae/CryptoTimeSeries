@@ -408,7 +408,7 @@ runid() = Dates.format(Dates.now(), "yy-mm-dd_HH-MM-SS") * "_gitSHA-" * read(`gi
 
 logfilesfolder = "logs"
 debugfilesfolder = "debug"
-coinsfolder = "coins"
+coinsfolder = "Bybit"
 # defaultlogfilespath = normpath(joinpath(tradingfolder, logfilesfolder))
 defaultlogfilespath = normpath(joinpath(homedir(), "crypto", logfilesfolder))
 defaultdebugfilespath = normpath(joinpath(homedir(), "crypto", debugfilesfolder))
@@ -460,7 +460,12 @@ function setdebugpath(folder=nothing)
     return _setbasepath!(defaultdebugfilespath, folder)
 end
 
-"Set the shared per-coin data root folder under ~/crypto (e.g. Bybit)."
+"""
+    setcoinspath!(folder::AbstractString="Bybit")
+
+Set the per-coin data root under ~/crypto. Defaults to Bybit; exchange adapters
+select their own exchange folder during initialization.
+"""
 function setcoinspath!(folder::AbstractString=coinsfolder)
     global activecoinspath
     cleaned = strip(String(folder))
@@ -819,7 +824,7 @@ function datafile(mnemonic::String, subfolder=nothing, extension=".jdf")
     return isnothing(subfolder) ? normpath(joinpath(tradingfolder, datafolder, mnemonic * extension)) : normpath(joinpath(tradingfolder, datafolder, subfolder, mnemonic * extension))
 end
 
-"""Return the local root folder for shared per-coin Arrow artifacts created during Phase 2, colocated with `logs/` under `~/crypto/coins`."""
+"""Return the active exchange root for per-coin Arrow artifacts, defaulting to `~/crypto/Bybit`, and create it if missing."""
 function coinspath()
     isdir(activecoinspath) || mkpath(activecoinspath)
     return activecoinspath
@@ -828,9 +833,9 @@ end
 """
     coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=pairquote, subfolder=nothing)
 
-Return the folder for a shared coin-pair artifact under `coins/`, creating it on
-first use. Examples include `coins/BTC-USDT/ohlcv.arrow` and
-`coins/BTC-USDT/f4.arrow`.
+Return the folder for a coin-pair artifact under the active exchange root, creating
+it on first use. Examples include `Bybit/BTC-USDT/ohlcv.arrow` and
+`Bybit/BTC-USDT/features/F09.arrow`.
 """
 function coinfolderpath(basecoin::AbstractString, quotecoin::AbstractString=pairquote, subfolder=nothing)
     pairfolder = uppercase(basecoin) * "-" * uppercase(quotecoin)
@@ -1070,5 +1075,4 @@ end
 #endregion abstract-configuration
 
 end # module
-
 

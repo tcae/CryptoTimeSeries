@@ -74,6 +74,42 @@ end
     end
 end
 
+@testset "regression bands without legacy features" begin
+    oldpath = EnvConfig.activecoinspath
+    mktempdir(EnvConfig.defaultdebugfilespath) do folder
+        try
+            EnvConfig.setcoinspath!(folder)
+            startdt = DateTime("2025-02-01")
+            ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Minute(80))
+            baseline = Features.regressionband(ohlcv, 15)
+            @test names(baseline) == ["opentime", "regry", "grad", "std"]
+            @test baseline.opentime == ohlcv.df.opentime
+            ry, rg = Features.rollingregression(ohlcv.df.pivot, 15)
+            @test baseline.regry ≈ ry
+            @test baseline.grad ≈ rg
+            @test baseline.std ≈ Features.rollingregressionstdmv(
+                [ohlcv.df.open, ohlcv.df.high, ohlcv.df.low, ohlcv.df.close], ry, rg, 15)
+            @test isnothing(Features.readregression("SINE", ohlcv.quotecoin, 15))
+            Features.updateregression!(ohlcv, 15; std=true)
+            cached = Features.regressionband(ohlcv, 15)
+            @test cached.opentime == baseline.opentime
+            @test cached[!, [:regry, :grad, :std]] ≈ baseline[!, [:regry, :grad, :std]]
+            path = joinpath(Features.regressionfolder("SINE", ohlcv.quotecoin), "regr15.arrow")
+            bytes = read(path)
+            slice = Ohlcv.ohlcvview(ohlcv, 21:50)
+            @test Features.regressionband(slice, 15).opentime == slice.df.opentime
+            @test read(path) == bytes
+            @test_throws AssertionError Features.regressionband(ohlcv, 1)
+            @test_throws AssertionError Features.regressionband(Ohlcv.ohlcvview(ohlcv, 1:1), 15)
+            nonminute = Ohlcv.copy(ohlcv)
+            Ohlcv.setinterval!(nonminute, "5m")
+            @test_throws AssertionError Features.regressionband(nonminute, 15)
+        finally
+            EnvConfig.activecoinspath = oldpath
+        end
+    end
+end
+
 @testset "FeatureStore tests" begin
     EnvConfig.init(test)
     oldcoinspath = EnvConfig.activecoinspath

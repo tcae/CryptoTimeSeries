@@ -373,17 +373,18 @@ In case of variants, e.g. features or classification algorithms, the same functi
 
 ## OHLCV file transfer
 
-Shared OHLCV cache files now live under `~/crypto/coins/<BASE>-<QUOTE>/ohlcv.arrow`.
+OHLCV cache files live under `~/crypto/<exchange>/<BASE>-<QUOTE>/ohlcv.arrow`,
+with Bybit as the default exchange root. See [storage and conversion](docs/Jdf2Arrow.md).
 
 - create a tar file of OHLCV Arrow caches:
-  - cd ~/crypto/coins
+  - cd ~/crypto/Bybit
   - tar -czvf ohlcv.tar.gz */ohlcv.arrow
   - or
-  - tar -czvf ohlcv.tar.gz ~/crypto/coins/*/ohlcv.arrow
+  - tar -czvf ohlcv.tar.gz ~/crypto/Bybit/*/ohlcv.arrow
 - list files in `ohlcv.tar.gz`:
   - tar -ztvf ohlcv.tar.gz
-- extract files from `ohlcv.tar.gz` to `~/crypto/coins`:
-  - tar -xzvf ohlcv.tar.gz -C ~/crypto/coins
+- extract files from `ohlcv.tar.gz` to `~/crypto/Bybit`:
+  - tar -xzvf ohlcv.tar.gz -C ~/crypto/Bybit
 - split a big file into 700 MB chunks:
   - split -b 700m ohlcv.tar.gz ohlcv.tar.gz.parts_
   - creates:
