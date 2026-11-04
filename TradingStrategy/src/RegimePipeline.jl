@@ -157,8 +157,36 @@ function experimentstores!(histories::AbstractDict, featurefactory::Function,
     return (; coins,featurestores,targetstores)
 end
 
+"""Join sorted timestamp vectors without per-row DataFrame access or timestamp dictionaries."""
+function _sortedexperimenttimes(historytimes::AbstractVector{DateTime},
+        featuretimes::AbstractVector{DateTime}, targettimes::AbstractVector{DateTime},
+        targetlabels::AbstractVector, finitefeatures::AbstractVector{Bool},
+        liquid::AbstractVector{Bool}, coin::AbstractString)::Vector{DateTime}
+    ignorecode = Targets.tradelabelcode(Targets.ignore)
+    featureix = targetix = 1
+    times = DateTime[]
+    for ix in eachindex(liquid)
+        liquid[ix] || continue
+        time = historytimes[ix]
+        while featureix <= length(featuretimes) && featuretimes[featureix] < time
+            featureix += 1
+        end
+        while targetix <= length(targettimes) && targettimes[targetix] < time
+            targetix += 1
+        end
+        featureix <= length(featuretimes) && featuretimes[featureix] == time || continue
+        targetix <= length(targettimes) && targettimes[targetix] == time || continue
+        targetlabels[targetix] != ignorecode || continue
+        @assert finitefeatures[featureix] "invalid feature row for $coin at $time"
+        push!(times,time)
+    end
+    return times
+end
+
 """
-Find valid, liquid, nonignored samples through exact timestamp joins.
+Find valid, liquid, nonignored samples through an exact sorted timestamp walk.
+All input timestamps must be sorted and unique. Feature validity is calculated column-wise
+and checked only for joined, liquid, nonignored samples.
 A chronological cutoff recomputes training liquidity from only that prefix.
 """
 function experimenttimes(histories::AbstractDict, stores::NamedTuple, config::RegimeConfig;
@@ -166,25 +194,27 @@ function experimenttimes(histories::AbstractDict, stores::NamedTuple, config::Re
     result = Dict{String,Vector{DateTime}}()
     for (coinix,coin) in enumerate(stores.coins)
         history = histories[coin]
-        lastix = isnothing(cutoff) ? nrow(history) : searchsortedlast(history.opentime,cutoff)
-        liquid = falses(nrow(history))
+        tdf = stores.targetstores[coinix]
+        fdf = stores.featurestores[coinix]
+        historytimes = history[!, :opentime]
+        featuretimes = fdf[!, :opentime]
+        targettimes = tdf[!, :opentime]
+        for (kind,timestamps) in (("history",historytimes),("features",featuretimes),("targets",targettimes))
+            @assert _strictregimetimes(timestamps) "$(kind) timestamps for $(coin) must be sorted and unique: rows=$(length(timestamps))"
+        end
+        lastix = isnothing(cutoff) ? nrow(history) : searchsortedlast(historytimes,cutoff)
+        liquid = falses(lastix)
         if lastix > 0
             for range in Ohlcv.liquiditycheck(view(history,1:lastix,:);config.liquidity...)
                 liquid[range] .= true
             end
         end
-        tdf = stores.targetstores[coinix]
-        fdf = stores.featurestores[coinix]
-        features = Dict(time=>ix for (ix,time) in enumerate(fdf.opentime))
-        target = Dict(time=>ix for (ix,time) in enumerate(tdf.opentime))
-        times = DateTime[]
-        for (ix,time) in enumerate(history.opentime)
-            liquid[ix] && haskey(features,time) && haskey(target,time) || continue
-            tdf.label[target[time]] != Targets.tradelabelcode(Targets.ignore) || continue
-            @assert all(isfinite,fdf[features[time],Not(:opentime)]) "invalid feature row for $coin at $time"
-            push!(times,time)
+        finitefeatures = trues(nrow(fdf))
+        for column in names(fdf,Not(:opentime))
+            finitefeatures .&= isfinite.(fdf[!,column])
         end
-        result[coin] = times
+        result[coin] = _sortedexperimenttimes(historytimes,featuretimes,targettimes,
+            tdf[!, :label],finitefeatures,liquid,coin)
     end
     return result
 end

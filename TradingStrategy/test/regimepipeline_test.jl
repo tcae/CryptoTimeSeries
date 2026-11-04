@@ -24,6 +24,92 @@ end
 regimepipelinelongtarget() = Targets.Trend05(leadregr=5,supportregr=15,
     trendregr=800,triggerdist=0.001f0,targetgain=0.005f0,targetminutes=120)
 
+"""Retain the original dictionary join as an exact eligibility regression oracle."""
+function dictionaryexperimenttimes(histories::AbstractDict, stores::NamedTuple,
+        config::TradingStrategy.RegimeConfig; cutoff::Union{Nothing,DateTime}=nothing)
+    result = Dict{String,Vector{DateTime}}()
+    for (coinix,coin) in enumerate(stores.coins)
+        history = histories[coin]
+        lastix = isnothing(cutoff) ? nrow(history) : searchsortedlast(history.opentime,cutoff)
+        liquid = falses(nrow(history))
+        if lastix > 0
+            for range in Ohlcv.liquiditycheck(view(history,1:lastix,:);config.liquidity...)
+                liquid[range] .= true
+            end
+        end
+        fdf,tdf = stores.featurestores[coinix],stores.targetstores[coinix]
+        features = Dict(time=>ix for (ix,time) in enumerate(fdf.opentime))
+        targets = Dict(time=>ix for (ix,time) in enumerate(tdf.opentime))
+        times = DateTime[]
+        for (ix,time) in enumerate(history.opentime)
+            liquid[ix] && haskey(features,time) && haskey(targets,time) || continue
+            tdf.label[targets[time]] != Targets.tradelabelcode(Targets.ignore) || continue
+            @assert all(isfinite,fdf[features[time],Not(:opentime)]) "invalid feature row for $coin at $time"
+            push!(times,time)
+        end
+        result[coin] = times
+    end
+    return result
+end
+
+@testset "Sorted eligibility walk preserves exact timestamp joins" begin
+    start = DateTime(2025,1,1)
+    history = TestOhlcv.sinedata(120,2400,0,1;firstutc=start)
+    Ohlcv.addpivot!(history)
+    histories = Dict("SINE"=>history)
+    liquidity = (minquotevol=5000f0,accumulate=15,checkperiod=60,
+        startthreshold=0.05,stopthreshold=0.25,minliquidminutes=120,startdistance=120)
+    config = TradingStrategy.RegimeConfig(longminutes=240,shortminutes=60,
+        stepminutes=30,mincoins=2,weightcap=0.5,liquidity=liquidity)
+    featuretimes = vcat([start-Minute(2)],history.opentime[5:2390][[ix%7!=0 for ix in 5:2390]],
+        [last(history.opentime)+Minute(2)])
+    targettimes = history.opentime[[ix%11!=0 for ix in 1:nrow(history)]]
+    features = DataFrame(opentime=featuretimes,first=ones(Float32,length(featuretimes)),
+        second=ones(Float64,length(featuretimes)))
+    targets = DataFrame(opentime=targettimes,
+        label=fill(Targets.tradelabelcode(Targets.allclose),length(targettimes)))
+    targets.label[1:13:end] .= Targets.tradelabelcode(Targets.ignore)
+    stores = (coins=["SINE"],featurestores=[features],targetstores=[targets])
+    expected = dictionaryexperimenttimes(histories,stores,config)
+    @test !isempty(expected["SINE"])
+    @test TradingStrategy.experimenttimes(histories,stores,config)==expected
+    for cutoff in (start-Minute(1),start+Minute(900),last(history.opentime)+Minute(1))
+        @test TradingStrategy.experimenttimes(histories,stores,config;cutoff)==
+            dictionaryexperimenttimes(histories,stores,config;cutoff)
+    end
+    for (fdf,tdf) in ((features[1:0,:],targets),(features,targets[1:0,:]),
+            (features[1:3,:],targets),(features,targets[end-2:end,:]))
+        partial = (coins=["SINE"],featurestores=[fdf],targetstores=[tdf])
+        @test TradingStrategy.experimenttimes(histories,partial,config)==
+            dictionaryexperimenttimes(histories,partial,config)
+    end
+    @test TradingStrategy.experimenttimes(Dict("SINE"=>history[1:0,:]),stores,config)["SINE"]==DateTime[]
+    invalid = deepcopy(features)
+    validtime = first(expected["SINE"])
+    invalid.first[findfirst(==(validtime),invalid.opentime)] = NaN32
+    invalidstores = merge(stores,(featurestores=[invalid],))
+    @test_throws AssertionError TradingStrategy.experimenttimes(histories,invalidstores,config)
+    cutoff = validtime-Minute(1)
+    @test TradingStrategy.experimenttimes(histories,invalidstores,config;cutoff)==
+        dictionaryexperimenttimes(histories,invalidstores,config;cutoff)
+    ignored = deepcopy(targets)
+    ignored.label[findfirst(==(validtime),ignored.opentime)] = Targets.tradelabelcode(Targets.ignore)
+    ignoredstores = merge(invalidstores,(targetstores=[ignored],))
+    @test TradingStrategy.experimenttimes(histories,ignoredstores,config)==
+        dictionaryexperimenttimes(histories,ignoredstores,config)
+    for timestamps in (DateTime[],[start],[start,start+Minute(2)])
+        @test TradingStrategy._strictregimetimes(timestamps)
+    end
+    @test !TradingStrategy._strictregimetimes([start,start])
+    @test !TradingStrategy._strictregimetimes([start+Minute(1),start])
+    for table in (history,features,targets)
+        original = table.opentime[2]
+        table.opentime[2] = table.opentime[1]
+        @test_throws AssertionError TradingStrategy.experimenttimes(histories,stores,config)
+        table.opentime[2] = original
+    end
+end
+
 @testset "Regime history eligibility boundaries" begin
     start = DateTime(2025,1,1)
     raw = TestOhlcv.sinedata(120,28801,0,1;firstutc=start)

@@ -1843,21 +1843,19 @@ function removebase!(trd::Trend05)
 end
 
 """
-Return the lead, support, and trend regression values at aligned `fdfno` row `ix`.
+Return the lead, support, and trend regression values from cached column vectors at row `ix`.
 
-`supplement!` verifies that `fdfno` and the OHLCV dataframe have identical
-first and last timestamps before calling this function. Therefore `ix` is the
-same row index for both dataframes.
+`supplement!` verifies that `fdfno` and the OHLCV dataframe have identical first
+and last timestamps before the scan begins, so `ix` is aligned in both.
 """
-function _trend05_regression(trd::Trend05, ix::Integer, regressioncolumns::NamedTuple, featureoffset::Integer=0)
-    @assert !isnothing(trd.f6) "Trend05 requires Features006 before regression lookup"
-    @assert !isnothing(trd.f6.fdfno) "Trend05 requires supplemented Features006 before regression lookup"
-    featureix = ix + featureoffset
-    @assert firstindex(trd.f6.fdfno, 1) <= featureix <= lastindex(trd.f6.fdfno, 1) "regression index=$(featureix) must be within fdfno rows $(firstindex(trd.f6.fdfno, 1)):$(lastindex(trd.f6.fdfno, 1))"
+function _trend05_regression(regressionvectors::NamedTuple, featureix::Integer)
+    firstfeatureix = firstindex(regressionvectors.lead.grad)
+    lastfeatureix = lastindex(regressionvectors.lead.grad)
+    @assert firstfeatureix <= featureix <= lastfeatureix "regression index=$(featureix) must be within fdfno rows $(firstfeatureix):$(lastfeatureix)"
     return (
-        lead=(regry=trd.f6.fdfno[featureix, regressioncolumns.lead.regry], grad=trd.f6.fdfno[featureix, regressioncolumns.lead.grad]),
-        support=(regry=trd.f6.fdfno[featureix, regressioncolumns.support.regry], grad=trd.f6.fdfno[featureix, regressioncolumns.support.grad]),
-        trend=(regry=trd.f6.fdfno[featureix, regressioncolumns.trend.regry], grad=trd.f6.fdfno[featureix, regressioncolumns.trend.grad]),
+        lead=(regry=regressionvectors.lead.regry[featureix], grad=regressionvectors.lead.grad[featureix]),
+        support=(regry=regressionvectors.support.regry[featureix], grad=regressionvectors.support.grad[featureix]),
+        trend=(regry=regressionvectors.trend.regry[featureix], grad=regressionvectors.trend.grad[featureix]),
     )
 end
 
@@ -1880,6 +1878,18 @@ function _trend05_regressioncolumns(trd::Trend05)::NamedTuple
     return columns
 end
 
+"""Resolve the cached `Trend05` regression columns to typed vectors for repeated row access."""
+function _trend05_regressionvectors(trd::Trend05, regressioncolumns::NamedTuple)::NamedTuple
+    @assert !isnothing(trd.f6) "Trend05 requires Features006 before cached-column lookup"
+    @assert !isnothing(trd.f6.fdfno) "Trend05 requires supplemented Features006 before cached-column lookup"
+    fdfno = trd.f6.fdfno
+    return (
+        lead=(regry=fdfno[!, regressioncolumns.lead.regry], grad=fdfno[!, regressioncolumns.lead.grad]),
+        support=(regry=fdfno[!, regressioncolumns.support.regry], grad=fdfno[!, regressioncolumns.support.grad]),
+        trend=(regry=fdfno[!, regressioncolumns.trend.regry], grad=fdfno[!, regressioncolumns.trend.grad]),
+    )
+end
+
 function _trend05_entry(trd::Trend05, pivot::Float32, lead, support, trend, side::Symbol)::Bool
     if isnothing(lead) || isnothing(support) || isnothing(trend)
         return false
@@ -1897,21 +1907,29 @@ end
     return !isnothing(support) && (side === :long ? support.grad > 0f0 : support.grad < 0f0)
 end
 
+"Check a numeric support gradient against the required hold direction."
+@inline function _trend05_hold(supportgrad::Real, side::Symbol)::Bool
+    return side === :long ? supportgrad > 0f0 : supportgrad < 0f0
+end
+
 """
 Return `(targetix, resolved)` of a `side` entry at `ix`. `targetix` is the first row that reaches the target gain
 with uninterrupted holds since `ix` and no later than `targetminutes` elapsed minutes,
 otherwise `nothing`. `resolved` is false only when the available history ends before
-the deadline without reaching the target or breaking a hold.
+the deadline without reaching the target or breaking a hold. Regression columns and
+timestamps are passed as vectors so the forward scan avoids repeated DataFrame lookups.
 """
-function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol, regressioncolumns::NamedTuple, featureoffset::Integer)
-    regressions = _trend05_regression(trd, ix, regressioncolumns, featureoffset)
+function _trend05_candidate(trd::Trend05, pivots, ix::Integer, side::Symbol,
+        regressionvectors::NamedTuple, timestamps::AbstractVector{DateTime}, featureoffset::Integer)
+    featureix = ix + featureoffset
+    regressions = _trend05_regression(regressionvectors, featureix)
     _trend05_entry(trd, pivots[ix], regressions.lead, regressions.support, regressions.trend, side) || return (nothing, true)
     target = pivots[ix] * (side === :long ? 1f0 + trd.targetgain : 1f0 - trd.targetgain)
-    timestamps = trd.f6.fdfno[!, :opentime]
-    deadline = timestamps[ix + featureoffset] + Minute(trd.targetminutes)
+    deadline = timestamps[featureix] + Minute(trd.targetminutes)
     for holdix in (ix + 1):lastindex(pivots)
-        timestamps[holdix + featureoffset] > deadline && return (nothing, true)
-        _trend05_hold(_trend05_regression(trd, holdix, regressioncolumns, featureoffset).support, side) || return (nothing, true)
+        featureix = holdix + featureoffset
+        timestamps[featureix] > deadline && return (nothing, true)
+        _trend05_hold(regressionvectors.support.grad[featureix], side) || return (nothing, true)
         (side === :long ? pivots[holdix] >= target : pivots[holdix] <= target) && return (holdix, true)
     end
     return (nothing, timestamps[lastindex(pivots) + featureoffset] >= deadline)
@@ -1945,6 +1963,8 @@ function supplement!(trd::Trend05)
         featurefirstix = 1
     end
     regressioncolumns = _trend05_regressioncolumns(trd)
+    regressionvectors = _trend05_regressionvectors(trd, regressioncolumns)
+    timestamps = trd.f6.fdfno[!, :opentime]
     pivots = Float32.(odf[!, :pivot])
     featureoffset = featurefirstix - firstindex(odf, 1)
     previousrows = isnothing(trd.df) ? 0 : nrow(trd.df)
@@ -1963,8 +1983,8 @@ function supplement!(trd::Trend05)
     firstunresolvedix = nothing
     ix = restartix
     while ix <= lastindex(pivots)
-        longtarget, longresolved = _trend05_candidate(trd, pivots, ix, :long, regressioncolumns, featureoffset)
-        shorttarget, shortresolved = isnothing(longtarget) ? _trend05_candidate(trd, pivots, ix, :short, regressioncolumns, featureoffset) : (nothing, true)
+        longtarget, longresolved = _trend05_candidate(trd, pivots, ix, :long, regressionvectors, timestamps, featureoffset)
+        shorttarget, shortresolved = isnothing(longtarget) ? _trend05_candidate(trd, pivots, ix, :short, regressionvectors, timestamps, featureoffset) : (nothing, true)
         isnothing(firstunresolvedix) && !(longresolved && shortresolved) && (firstunresolvedix = ix)
         if !isnothing(longtarget)
             labels[ix] = longopen

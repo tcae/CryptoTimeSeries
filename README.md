@@ -123,9 +123,14 @@ copy-pasteable list: every coin must have complete coverage under **all** select
 Each config is fully evaluated, including its feature history and target lookahead;
 the result is not approximated using only the largest warmup value.
 Eligibility preparation processes one coin at a time and releases its OHLCV and
-feature/target tables before the next coin. Only compact hourly observations are
-pooled to build the shared market calendar. Eligible minute timestamps are temporarily
+feature/target tables before the next coin. Hourly observations are appended to one
+temporary Arrow file, then memory-mapped as per-coin views to build the shared market
+calendar with sorted cursors rather than timestamp dictionaries. Eligible samples use
+an exact sorted walk across history, feature and target timestamps, without per-minute
+lookup dictionaries or temporary feature-row objects. Eligible minute timestamps are temporarily
 stored on disk and reloaded one coin at a time for fold balancing and membership counts.
+Each accepted coin's timestamp file must survive preparation of all later coins.
+An empty timestamp table yields zero counts; a missing file is an error, not an exclusion.
 No minute-level membership tables are retained across coins or configurations;
 the final reports retain only three sample counts per coin. Temporary files are removed
 when preparation finishes or throws. Shared market observations cannot be evaluated

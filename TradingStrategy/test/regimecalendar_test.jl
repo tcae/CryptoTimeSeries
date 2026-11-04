@@ -1,5 +1,73 @@
 using Test, Dates, DataFrames
-import TradingStrategy, TestOhlcv, Ohlcv
+import TradingStrategy, TestOhlcv, Ohlcv, EnvConfig
+
+"""Retain the original dictionary-based market aggregation as a numerical regression oracle."""
+function dictionarymarketcalendar(observations, config; startdt, enddt, retrospective=true)
+    times = collect(ceil(startdt,Minute(config.stepminutes)):Minute(config.stepminutes):enddt)
+    locations = [Dict(time=>ix for (ix,time) in enumerate(df.opentime)) for df in observations]
+    market = DataFrame(opentime=times,slope=zeros(length(times)),short_slope=zeros(length(times)),
+        volatility=zeros(length(times)),breadth=zeros(length(times)),coins=zeros(Int,length(times)),
+        eligible=falses(length(times)))
+    for (ix,time) in enumerate(times)
+        rows = [(df,locations[coinix][time]) for (coinix,df) in enumerate(observations)
+            if haskey(locations[coinix],time)]
+        market.coins[ix] = length(rows)
+        length(rows)>=config.mincoins || continue
+        volumes = [df.volume[row] for (df,row) in rows]
+        all(>(0),volumes) || continue
+        weights = TradingStrategy.regimeweights(volumes;cap=config.weightcap)
+        market.slope[ix] = sum(weights .* [df.slope[row] for (df,row) in rows])
+        market.short_slope[ix] = sum(weights .* [df.short_slope[row] for (df,row) in rows])
+        market.volatility[ix] = sum(weights .* [df.volatility[row] for (df,row) in rows])
+        market.breadth[ix] = sum(weights .* [df.slope[row]>0 for (df,row) in rows])
+        market.eligible[ix] = true
+    end
+    return TradingStrategy.detectregimes(market,config;retrospective)
+end
+
+@testset "Appended hourly observations preserve the shared market" begin
+    start = DateTime(2025,1,1)
+    config = TradingStrategy.RegimeConfig(longminutes=240,shortminutes=60,
+        stepminutes=60,mincoins=2,weightcap=0.6,confirmation=2)
+    empty = DataFrame(opentime=DateTime[],slope=Float64[],short_slope=Float64[],
+        volume=Float64[],volatility=Float64[])
+    firstcoin = DataFrame(opentime=start .+ Hour.([-1,0,1,3,4,7]),slope=fill(0.01,6),
+        short_slope=fill(0.02,6),volume=fill(100.0,6),volatility=fill(0.01,6))
+    secondcoin = DataFrame(opentime=start .+ Hour.([0,1,2,3,4,8]),slope=fill(-0.02,6),
+        short_slope=fill(-0.03,6),volume=fill(1.0,6),volatility=fill(0.02,6))
+    secondcoin.volume[5] = 0.0
+    offgrid = DataFrame(opentime=start .+ Minute.([30,60,180,240,360]),slope=fill(0.03,5),
+        short_slope=fill(0.04,5),volume=fill(5.0,5),volatility=fill(0.03,5))
+    observations = [empty,firstcoin,secondcoin,offgrid,empty]
+    enddt = start+Hour(6)
+    for retrospective in (false,true)
+        expected = dictionarymarketcalendar(observations,config;startdt=start,enddt,retrospective)
+        @test isequal(TradingStrategy.marketcalendar(observations,config;
+            startdt=start,enddt,retrospective),expected)
+        mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+            ranges = UnitRange{Int}[]
+            rows = 0
+            for observation in observations
+                EnvConfig.appenddf(observation,"observations";folderpath=folder)
+                push!(ranges,(rows+1):(rows+nrow(observation)))
+                rows += nrow(observation)
+            end
+            mapped = EnvConfig.readtable("observations";folderpath=folder,format=:arrow,copycols=false)
+            @test nrow(mapped)==rows
+            @test !(mapped.slope isa Vector)
+            views = [view(mapped,range,:) for range in ranges]
+            @test isequal(TradingStrategy.marketcalendar(views,config;
+                startdt=start,enddt,retrospective),expected)
+        end
+    end
+    @test all(!,TradingStrategy.marketcalendar([empty,empty],config;
+        startdt=start,enddt).eligible)
+    @test_throws AssertionError TradingStrategy.marketcalendar([firstcoin[end:-1:1,:]],config;
+        startdt=start,enddt)
+    duplicate = vcat(firstcoin[1:1,:],firstcoin)
+    @test_throws AssertionError TradingStrategy.marketcalendar([duplicate],config;
+        startdt=start,enddt)
+end
 
 @testset "Shared regimes and calendar contracts" begin
     liquidity = (minquotevol=5000f0, accumulate=15, checkperiod=60,

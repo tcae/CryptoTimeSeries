@@ -301,7 +301,7 @@ function persistregimetimes!(history::DataFrame, coin::AbstractString, clcfg::Na
     return nothing
 end
 
-"""Process one coin at its full-loop position, retaining only observations and disk-backed timestamps."""
+"""Process one coin at its full-loop position and return its current observations for disk storage."""
 function preparecoin!(coin::AbstractString, dr::NamedTuple, warmup::Int,
         clcfg::NamedTuple, regime::TradingStrategy.RegimeConfig,
         times::AbstractVector{DateTime}, folder::AbstractString;
@@ -333,22 +333,28 @@ function regimecounts(config::AbstractString, dr::NamedTuple,
     times = collect(ceil(dr.startdt,Minute(regime.stepminutes)):Minute(regime.stepminutes):dr.enddt)
     return mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
         acceptedcoins = String[]
-        observations = DataFrame[]
+        observationranges = UnitRange{Int}[]
+        observationrows = 0
         for (coinix,coin) in enumerate(coins)
             observation = preparecoin!(coin,dr,warmup,clcfg,regime,times,folder;
                 coinix,ncoins=length(coins))
             if !isnothing(observation)
                 push!(acceptedcoins,coin)
-                push!(observations,observation)
+                EnvConfig.appenddf(observation,"observations";folderpath=folder)
+                push!(observationranges,(observationrows+1):(observationrows+nrow(observation)))
+                observationrows += nrow(observation)
             end
             observation = nothing
             GC.gc()
         end
         counts = Dict{String,typeof((train=0,eval=0,test=0))}()
         isempty(acceptedcoins) && return counts
-        market = TradingStrategy.marketcalendar(observations,regime;
+        observations = EnvConfig.readtable("observations";folderpath=folder,format=:arrow,copycols=false)
+        @assert !isnothing(observations) "missing hourly observations in $folder for coins=$acceptedcoins"
+        @assert nrow(observations)==observationrows "hourly observation rows=$(nrow(observations)) != appended rows=$observationrows"
+        market = TradingStrategy.marketcalendar([view(observations,rows,:) for rows in observationranges],regime;
             startdt=dr.startdt,enddt=dr.enddt)
-        empty!(observations)
+        observations = nothing
         GC.gc()
         loader = coin -> readregimetimes(coin,folder)
         calendar = TradingStrategy.foldcalendar(market,loader,acceptedcoins,
@@ -370,8 +376,9 @@ end
 Run full RegimeTraining store, liquidity, market-regime and fold preparation without training.
 Uses the selected Bybit USDT universe for every classifier and requested date range.
 Report the common coin list satisfying all configurations, not just a maximum warmup estimate.
-Only one coin's source tables are retained at a time. Hourly observations are pooled for the
-shared market calendar; eligible minute timestamps are stored temporarily on disk.
+Only one coin's source tables are retained at a time. Hourly observations are appended to
+one temporary Arrow file and memory-mapped for the shared market calendar.
+Eligible minute timestamps are stored temporarily on disk.
 Only final per-coin counts are retained across configurations.
 """
 function regimereport!(configs::Vector{String}, dateranges::Vector{String},
@@ -444,7 +451,9 @@ The final common copy-pasteable list includes only coins with train, eval and te
 under every selected configuration; per-config counts and exclusions are printed first.
 Coverage depends on the evaluated universe; changing that list can change market regimes.
 Preparation streams source tables and eligible timestamps one coin at a time.
-Only hourly market observations and final sample counts are pooled, not full histories or stores.
+Hourly observations are appended to one temporary Arrow file and memory-mapped for the
+shared market calendar, using sorted cursors rather than timestamp dictionaries.
+Only final sample counts are retained across configurations.
 """
 end
 

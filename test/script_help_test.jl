@@ -193,9 +193,9 @@ end
     oldcoinspath = EnvConfig.activecoinspath
     oldquote = EnvConfig.pairquote
     startdt = DateTime(2025,1,1)
-    histories = Dict("SINE"=>TestOhlcv.sinedata(2400,60000,0,1;firstutc=startdt),
-        "DOUBLESINE"=>TestOhlcv.sinedata(2400,60000,0,10.5;firstutc=startdt))
-    dr = (startdt=startdt,enddt=last(histories["SINE"].opentime))
+    histories = Dict("0G"=>TestOhlcv.sinedata(2400,60000,0,1;firstutc=startdt),
+        "ZTX"=>TestOhlcv.sinedata(2400,60000,0,10.5;firstutc=startdt))
+    dr = (startdt=startdt,enddt=last(histories["0G"].opentime))
     liquidity = merge(Ohlcv.ld,(checkperiod=60,minliquidminutes=120,startdistance=120))
     regime = TradingStrategy.RegimeConfig(longminutes=240,shortminutes=60,
         stepminutes=30,mincoins=2,weightcap=0.5,threshold=0.0025,strength=0.0,
@@ -224,6 +224,53 @@ end
                 expected = Dict(coin=>(train=count(==("train"),sets.set),
                     eval=count(==("eval"),sets.set),test=count(==("test"),sets.set))
                     for (coin,sets) in assignments.sets)
+                times = collect(startdt:Minute(regime.stepminutes):dr.enddt)
+                mktempdir(folder) do timestampfolder
+                    coins = sort!(collect(keys(histories)))
+                    persisted = Dict{String,Vector{DateTime}}()
+                    observationranges = UnitRange{Int}[]
+                    observationrows = 0
+                    for (coinix,coin) in enumerate(coins)
+                        observation = Refresh.preparecoin!(coin,dr,warmup,clcfg,regime,
+                            times,timestampfolder;coinix,ncoins=length(coins))
+                        @test !isnothing(observation)
+                        observationref = WeakRef(observation)
+                        EnvConfig.appenddf(observation,"observations";folderpath=timestampfolder)
+                        push!(observationranges,(observationrows+1):(observationrows+nrow(observation)))
+                        observationrows += nrow(observation)
+                        observation = nothing
+                        persisted[coin] = copy(Refresh.readregimetimes(coin,timestampfolder))
+                        @test !isempty(persisted[coin])
+                        @test issorted(persisted[coin]) && allunique(persisted[coin])
+                        GC.gc()
+                        @test isnothing(observationref.value)
+                        for preparedcoin in coins[1:coinix]
+                            @test Refresh.readregimetimes(preparedcoin,timestampfolder) ==
+                                persisted[preparedcoin]
+                        end
+                    end
+                    mapped = EnvConfig.readtable("observations";folderpath=timestampfolder,
+                        format=:arrow,copycols=false)
+                    @test nrow(mapped)==observationrows
+                    @test !(mapped.slope isa Vector)
+                    market = TradingStrategy.marketcalendar(
+                        [view(mapped,rows,:) for rows in observationranges],regime;
+                        startdt=dr.startdt,enddt=dr.enddt)
+                    @test isequal(market,assignments.market)
+                    loader = coin -> Refresh.readregimetimes(coin,timestampfolder)
+                    calendar = TradingStrategy.foldcalendar(market,loader,coins,
+                        folds;horizonminutes=Targets.lookaheadminutes(targetfactory()),enddt=dr.enddt)
+                    @test Dict(coin=>TradingStrategy.calendarcounts(loader(coin),calendar)
+                        for coin in coins)==expected
+                    EnvConfig.writetable(DataFrame(opentime=DateTime[]),"EMPTY";
+                        folderpath=timestampfolder,format=:arrow)
+                    emptytimes = Refresh.readregimetimes("EMPTY",timestampfolder)
+                    @test isempty(emptytimes)
+                    @test eltype(emptytimes)==DateTime
+                    @test TradingStrategy.calendarcounts(emptytimes,calendar)==
+                        (train=0,eval=0,test=0)
+                    @test_throws AssertionError Refresh.readregimetimes("MISSING",timestampfolder)
+                end
                 streamed = Refresh.regimecounts("066",dr,sort!(collect(keys(histories)));regime,folds)
                 @test streamed==expected
                 @test all(counts -> all(>(0),values(counts)),values(streamed))

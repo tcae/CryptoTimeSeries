@@ -81,26 +81,28 @@ end
 @testset "Trend05 elapsed target horizon" begin
     for pivots in (Float32.(100:1:160), Float32.(160:-1:100))
         trd = trend05withfeatures(testohlcvfrompivots(pivots))
-        columns = Targets._trend05_regressioncolumns(trd)
+        regressionvectors = Targets._trend05_regressionvectors(trd, Targets._trend05_regressioncolumns(trd))
+        timestamps = trd.f6.fdfno[!, :opentime]
         side = pivots[end] > pivots[1] ? :long : :short
-        endpoint, resolved = Targets._trend05_candidate(trd, pivots, 2, side, columns, 0)
+        endpoint, resolved = Targets._trend05_candidate(trd, pivots, 2, side, regressionvectors, timestamps, 0)
         @test resolved && !isnothing(endpoint)
         trd.targetminutes = endpoint - 2
-        @test Targets._trend05_candidate(trd, pivots, 2, side, columns, 0) == (endpoint, true)
+        @test Targets._trend05_candidate(trd, pivots, 2, side, regressionvectors, timestamps, 0) == (endpoint, true)
         trd.targetminutes -= 1
-        @test Targets._trend05_candidate(trd, pivots, 2, side, columns, 0) == (nothing, true)
+        @test Targets._trend05_candidate(trd, pivots, 2, side, regressionvectors, timestamps, 0) == (nothing, true)
         @test Targets.lookaheadminutes(trd) == trd.targetminutes
         @test occursin("targetminutes=$(trd.targetminutes)", Targets.configdescription(trd))
         @test occursin("targetminutes=$(trd.targetminutes)", Targets.describe(trd))
     end
     trd = trend05withfeatures(testohlcvfrompivots(Float32[100, 101, 102, 103]); targetminutes=2, targetgain=0.5f0)
-    columns = Targets._trend05_regressioncolumns(trd)
-    @test Targets._trend05_candidate(trd, Float32[100, 101, 102], 2, :long, columns, 0) == (nothing, false)
-    @test Targets._trend05_candidate(trd, Float32[100, 101, 102, 103], 2, :long, columns, 0) == (nothing, true)
+    regressionvectors = Targets._trend05_regressionvectors(trd, Targets._trend05_regressioncolumns(trd))
+    timestamps = trd.f6.fdfno[!, :opentime]
+    @test Targets._trend05_candidate(trd, Float32[100, 101, 102], 2, :long, regressionvectors, timestamps, 0) == (nothing, false)
+    @test Targets._trend05_candidate(trd, Float32[100, 101, 102, 103], 2, :long, regressionvectors, timestamps, 0) == (nothing, true)
     @test trd.lastfinalix >= 2
     # Missing clock minutes must not extend the deadline by counting rows.
     trd.f6.fdfno[3:end, :opentime] .+= Minute(5)
-    @test Targets._trend05_candidate(trd, Float32[100, 101, 102, 103], 2, :long, columns, 0) == (nothing, true)
+    @test Targets._trend05_candidate(trd, Float32[100, 101, 102, 103], 2, :long, regressionvectors, timestamps, 0) == (nothing, true)
 end
 
 @testset "Trend05 bounded append preserves final labels" begin
@@ -244,6 +246,8 @@ end
 
 @testset "Trend05 hold prerequisites" begin
     @test Targets._trend05_hold((regry=100f0, grad=1f0), :long)
+    @test Targets._trend05_hold(1.0, :long)
+    @test !Targets._trend05_hold(0.0, :long)
     @test !Targets._trend05_hold((regry=100f0, grad=0f0), :long)
     @test !Targets._trend05_hold((regry=100f0, grad=-1f0), :long)
     @test Targets._trend05_hold((regry=100f0, grad=-1f0), :short)

@@ -29,6 +29,11 @@ function checkregimeconfig(config::RegimeConfig)::Nothing
     return nothing
 end
 
+"""Check sorted, unique timestamps without allocating a timestamp set."""
+function _strictregimetimes(times::AbstractVector{DateTime})::Bool
+    return all(ix -> times[ix-1] < times[ix], (firstindex(times)+1):lastindex(times))
+end
+
 """Normalize positive turnover weights, bounding every individual coin's influence."""
 function regimeweights(volumes::AbstractVector; cap::Float64)::Vector{Float64}
     @assert !isempty(volumes) && all(v -> isfinite(v) && v > 0, volumes) "invalid turnover weights=$volumes"
@@ -172,19 +177,33 @@ function marketcalendar(histories::AbstractDict, config::RegimeConfig;
     return marketcalendar(observations,config;startdt,enddt,retrospective)
 end
 
-"""Build the shared market calendar from compact per-coin observations, without retaining OHLCV."""
+"""
+Build the shared market calendar from sorted per-coin observations, including memory-mapped views.
+Advance one cursor per coin instead of allocating timestamp lookup dictionaries.
+"""
 function marketcalendar(observations::AbstractVector{<:AbstractDataFrame}, config::RegimeConfig;
         startdt::DateTime, enddt::DateTime, retrospective::Bool=true)::DataFrame
     checkregimeconfig(config)
     @assert startdt < enddt "invalid market range=$startdt to $enddt"
     times = collect(ceil(startdt, Minute(config.stepminutes)):Minute(config.stepminutes):enddt)
-    locations = [Dict(time => ix for (ix,time) in enumerate(df.opentime)) for df in observations]
+    observationtimes = [df[!, :opentime] for df in observations]
+    for (coinix, timestamps) in enumerate(observationtimes)
+        @assert _strictregimetimes(timestamps) "observation timestamps must be sorted and unique: coin index=$(coinix), rows=$(length(timestamps))"
+    end
+    cursors = ones(Int,length(observations))
     market = DataFrame(opentime=times, slope=zeros(length(times)), short_slope=zeros(length(times)),
         volatility=zeros(length(times)), breadth=zeros(length(times)),
         coins=zeros(Int,length(times)), eligible=falses(length(times)))
     for (ix, time) in enumerate(times)
-        rows = [(df, locations[coinix][time]) for (coinix,df) in enumerate(observations)
-            if haskey(locations[coinix],time)]
+        for coinix in eachindex(observationtimes)
+            timestamps = observationtimes[coinix]
+            while cursors[coinix] <= length(timestamps) && timestamps[cursors[coinix]] < time
+                cursors[coinix] += 1
+            end
+        end
+        rows = [(df, cursors[coinix]) for (coinix,df) in enumerate(observations)
+            if cursors[coinix] <= length(observationtimes[coinix]) &&
+                observationtimes[coinix][cursors[coinix]] == time]
         market.coins[ix] = length(rows)
         length(rows) >= config.mincoins || continue
         volumes = [df.volume[row] for (df,row) in rows]
