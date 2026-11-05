@@ -52,6 +52,55 @@ function dictionaryexperimenttimes(histories::AbstractDict, stores::NamedTuple,
     return result
 end
 
+"""Keep the previous dictionary-based index join as an independent regression oracle."""
+function dictionaryexperimentindex(stores::NamedTuple, sets::AbstractDict,
+        labels::AbstractVector; settype::String, folds::Vector{Int}=Int[],
+        regimes::Vector{String}=String[])::DataFrame
+    index = DataFrame(coinix=Int[],row=Int[],labelix=Int[],coin=String[],
+        opentime=DateTime[],set=String[],regime=String[],foldid=Int[],blockid=Int[])
+    codes = Dict(Targets.tradelabelcode(label)=>ix for (ix,label) in enumerate(labels))
+    for (coinix,coin) in enumerate(stores.coins)
+        frows = Dict(time=>ix for (ix,time) in enumerate(stores.featurestores[coinix].opentime))
+        trows = Dict(time=>ix for (ix,time) in enumerate(stores.targetstores[coinix].opentime))
+        for row in eachrow(sets[coin])
+            row.set==settype && row.regime!="unknown" || continue
+            isempty(folds) || row.foldid in folds || continue
+            isempty(regimes) || row.regime in regimes || continue
+            code = stores.targetstores[coinix].label[trows[row.opentime]]
+            push!(index,(coinix,frows[row.opentime],codes[code],coin,row.opentime,
+                settype,row.regime,row.foldid,row.blockid))
+        end
+    end
+    return index
+end
+
+@testset "Sorted source coordinates preserve gaps, filtering and fail-fast joins" begin
+    start = DateTime(2025)
+    times = [start+Minute(ix) for ix in 0:8]
+    features = DataFrame(opentime=times[[1,3,4,6,8]],value=ones(Float32,5))
+    labels = Targets.uniquelabels(regimepipelinetarget())
+    targets = DataFrame(opentime=times[[2,3,4,6,8,9]],
+        label=Targets.tradelabelcode.(labels[[1,2,3,4,5,1]]))
+    sets = Dict("SINE"=>DataFrame(opentime=times[[2,3,4,6,8]],
+        set=["eval","train","train","train","train"],regime=["unknown","up","flat","down","up"],
+        foldid=[1,1,1,2,2],blockid=1:5))
+    stores = (coins=["SINE"],featurestores=[features],targetstores=[targets])
+    for (folds,regimes) in ((Int[],String[]),([1],String[]),(Int[],["up"]),([2],["up"]))
+        actual = TradingStrategy.experimentindex(stores,sets,labels;settype="train",folds,regimes)
+        @test isequal(actual,dictionaryexperimentindex(stores,sets,labels;settype="train",folds,regimes))
+    end
+    missingfeatures = merge(stores,(featurestores=[features[1:end-1,:]],))
+    @test_throws AssertionError TradingStrategy.experimentindex(missingfeatures,sets,labels;settype="train")
+    missingtargets = merge(stores,(targetstores=[targets[1:2,:]],))
+    @test_throws AssertionError TradingStrategy.experimentindex(missingtargets,sets,labels;settype="train")
+    invalidtargets = copy(targets)
+    invalidtargets.label[2] = Targets.tradelabelcode(Targets.ignore)
+    @test_throws AssertionError TradingStrategy.experimentindex(
+        merge(stores,(targetstores=[invalidtargets],)),sets,labels;settype="train")
+    @test_throws AssertionError TradingStrategy.experimentindex(
+        merge(stores,(featurestores=[reverse(features)],)),sets,labels;settype="train")
+end
+
 @testset "Sorted eligibility walk preserves exact timestamp joins" begin
     start = DateTime(2025,1,1)
     history = TestOhlcv.sinedata(120,2400,0,1;firstutc=start)
@@ -188,6 +237,38 @@ end
         end
         labels = Targets.uniquelabels(regimepipelinetarget())
         index = TradingStrategy.experimentindex(stores,sets,labels;settype="train")
+        @test isequal(index,dictionaryexperimentindex(stores,sets,labels;settype="train"))
+        mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do indexfolder
+            references = WeakRef[]
+            loader = coin -> begin
+                GC.gc()
+                @test all(ref -> isnothing(ref.value),references)
+                coinix = findfirst(==(coin),stores.coins)
+                loaded = (features=copy(stores.featurestores[coinix]),
+                    targets=copy(stores.targetstores[coinix]),sets=copy(sets[coin]))
+                append!(references,WeakRef.((loaded.features,loaded.targets,loaded.sets)))
+                loaded
+            end
+            streamed = TradingStrategy.experimentindices(indexfolder,stores.coins,loader,labels)
+            for (settype,actual) in zip(("train","eval","test"),values(streamed))
+                @test isequal(actual,dictionaryexperimentindex(stores,sets,labels;settype))
+                @test !(actual.row isa Vector)
+            end
+            GC.gc()
+            @test all(ref -> isnothing(ref.value),references)
+            filtered = TradingStrategy.experimentindices(indexfolder,stores.coins,loader,labels;
+                folds=[first(index.foldid)],regimes=[first(index.regime)])
+            for (settype,actual) in zip(("train","eval","test"),values(filtered))
+                @test isequal(actual,dictionaryexperimentindex(stores,sets,labels;
+                    settype,folds=[first(index.foldid)],regimes=[first(index.regime)]))
+            end
+            @test_throws AssertionError TradingStrategy.experimentindices(indexfolder,
+                stores.coins,loader,labels;folds=[100])
+        end
+        original = sets["SINE"].opentime[2]
+        sets["SINE"].opentime[2] = sets["SINE"].opentime[1]
+        @test_throws AssertionError TradingStrategy.experimentindex(stores,sets,labels;settype="train")
+        sets["SINE"].opentime[2] = original
         @test all(!=("unknown"),index.regime)
         @test all(==("train"),index.set)
         weights = TradingStrategy.balancedcellweights(index)
@@ -203,5 +284,24 @@ end
         TradingStrategy.writecalendarcoverage!(folder,sets,times,market)
         @test isfile(joinpath(folder,"exclusions.arrow"))
         @test isfile(joinpath(folder,"sample-coverage.arrow"))
+        mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do streamedfolder
+            references = WeakRef[]
+            loader = coin -> begin
+                GC.gc()
+                @test all(ref -> isnothing(ref.value),references)
+                loaded = (sets=copy(sets[coin]),eligible=copy(times[coin]))
+                append!(references,WeakRef.((loaded.sets,loaded.eligible)))
+                loaded
+            end
+            TradingStrategy.writecalendarcoverage!(streamedfolder,stores.coins,loader,market)
+            for stem in ("exclusions","sample-coverage")
+                expected = EnvConfig.readtable(stem;folderpath=folder,format=:arrow,copycols=true)
+                actual = EnvConfig.readtable(stem;folderpath=streamedfolder,format=:arrow,copycols=true)
+                stem=="sample-coverage" && (sort!(expected,[:set,:regime,:foldid]);sort!(actual,[:set,:regime,:foldid]))
+                @test isequal(actual,expected)
+            end
+            GC.gc()
+            @test all(ref -> isnothing(ref.value),references)
+        end
     end
 end

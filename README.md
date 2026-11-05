@@ -233,14 +233,60 @@ Stopping and best-checkpoint selection use **held-out, fixed regime/fold-weighte
 eval loss**, with 50-epoch patience, 0.05% meaningful relative improvement and
 a hard 200-total-epoch budget. Natural pooled eval loss is reported separately.
 `retrain` resumes the last checkpoint, warning if test results already exist; every actual
-eval record low can become the best checkpoint. `epochs=2` is useful for a smoke
+eval record low can become the best checkpoint. `eval-last.bson` is saved every epoch
+with complete training/evaluation history. `eval-best.bson` is replaced only on a
+strictly lower weighted eval loss and retains history through that best epoch.
+Loading or resuming repairs a missing/stale best file from the last checkpoint,
+but leaves a current best file untouched. `epochs=2` is useful for a smoke
 test, not a classifier-quality assessment.
 
-Outputs are under `~/crypto/debug/regime-training/<run>/`:
+The recorded `trainloss` is the effective-weight-mass-weighted mean of losses
+already computed during training batches, including reinforcement when enabled.
+It describes changing parameters and training-mode BatchNorm, not a separate
+final-model inference pass over the training set. Older records in resumed runs
+retain their original full-training-set inference losses. Only held-out weighted
+eval loss controls selection and stopping. Epoch logs separate adaptation,
+eval inference, eval diagnostic aggregation and checkpoint-saving times.
+
+Epoch shuffling uses one UInt32 index vector; batches are lazy views rather than
+millions of separately allocated index arrays. Eval diagnostics reduce losses in
+chunks with pooled natural/weighted accumulators, without retaining a population-sized loss
+vector or building full-population masks/tuple arrays. Fixed eval weights are
+also constructed with per-cell counts instead of repeated masks.
+Best/last checkpoints reference the separately persisted `eval-manifest.bson` by
+SHA-256 rather than embedding its fixed weights. Keep the manifest
+alongside both checkpoints. The Classify checkpoint loader verifies and resolves
+the reference; existing embedded-manifest checkpoints remain resumable.
+Regime/fold membership is used once to calculate the fixed weights, not during
+epoch evaluation. All sample indices are released before adaptation; the eval
+index is reloaded only for final predictions/reports. New eval manifests retain
+weights but no regime/fold arrays. Existing v1 manifests are verified through
+their frozen identity/weights and projected to the smaller active contract.
+Per-epoch cell-loss reports are no longer produced; final regime/fold reports
+remain available.
+
+Market training outputs are under `~/crypto/logs/regime-training/<run>/`.
+Test/synthetic runs use `~/crypto/debug/regime-training/<run>/`. Temporary
+preparation files stay inside the run folder and are removed after use; market
+preparation therefore also uses logs, never debug. Older/running runs retain their original
+debug location: nothing is moved automatically, and resuming an old market run
+requires moving its complete run folder to the logs location after it has stopped.
+
+Immediately after adaptation, before predictions or threshold reports, the best-eval
+model is also saved as `~/crypto/classifiers/<classifier>-<coinset>-<daterange>/nn.bson`,
+with normal loader metadata and experiment/checkpoint provenance in `meta.arrow`.
+Threshold selection does not change or delay this trained classifier. Reusing an
+existing checkpoint also publishes it without further adaptation. Replacing a
+published model invalidates its cached predictions and confusion tables.
+Resume regime training with `rtrain ... retrain`, using the intermediate
+`eval-last.bson` under logs, not the legacy classifier training command.
+Registered test classifiers use `~/crypto/debug/classifiers/`; synthetic fixtures
+and chronological walk-forward models remain experiment-local and do not replace
+the registered deployment classifier.
 
 - Shared market/calendar, sample coverage/exclusions, immutable identities,
   train/eval indices and compact sources.
-- `balanced/epoch-losses.arrow`, `epoch-cells.arrow`, best/last checkpoints
+- `balanced/epoch-losses.arrow`, best/last checkpoints (no per-epoch cell-loss table)
   and `training-report.txt`.
 - Eval minute and target-interval opportunity metrics; overall, regime, fold,
   regime/fold and coin reports; macro summaries, non-dominated threshold
@@ -248,6 +294,27 @@ Outputs are under `~/crypto/debug/regime-training/<run>/`:
 - Precision/recall/coverage and counts for the five labels and grouped `long`
   and `short`. Minute metrics include 95% bootstrap intervals from 200 joint
   shared-block resamples; unsupported intervals are missing.
+
+Reporting encodes labels once and accumulates small set/regime/fold/block
+confusion tables per threshold. Bootstrap resamples these block counts instead
+of rescanning minute rows for every block. Event reporting sorts once (or reuses
+already sorted input), walks consecutive coin/metadata segments, and matches
+intervals with forward cursors. Only segment-local intervals survive until their
+counts are accumulated. Per-coin reports use table views rather than copying and
+filtering the complete universe for each coin. Metric definitions, report row
+order and seeded bootstrap results are unchanged.
+
+Timestamped, flushed console messages identify the run/output folder, per-coin
+preparation, shared calendars, index construction, compaction, adaptation and
+reporting. Adaptation displays batch progress and logs every completed checkpoint
+with train/eval losses and the best epoch. `eval training stopped` means adaptation
+has finished, **not** that reporting has finished. Eval predictions are persisted
+before the expensive bootstrap/event calculations; minute metrics are also saved
+before event calculations. Reporting logs threshold/group/block progress at
+roughly 30-second checkpoints when the current calculation reaches a progress
+boundary, and logs per-coin reports. These are not timer-driven heartbeats inside
+an individual long operation. Already-running Julia processes do not acquire
+source changes automatically.
 
 `allclose` means **no established trend**, not a directional exit. Threshold
 abstention is separate. Reports concern opportunities, not executed-trade
@@ -293,6 +360,30 @@ Stages are `stores`, `train`, `predict`, `evaluate`, `gain`, plus explicit
 inspect diagrams, select thresholds and update the trading strategy before
 starting a subsequent `stage=gain` run. Gain requires an existing adapted
 checkpoint and never trains a missing model. `retrain` resumes adaptation only.
+
+Market preparation follows refresh's coin-scoped lifecycle: validate and hash
+one history at a time, ensure shared stores from **full** OHLCV history, then
+persist that coin's experiment windows and eligible timestamps before releasing
+the source tables. Hourly observations are appended to a temporary Arrow file
+and mapped for the **complete-universe** market calendar; eligible timestamps
+remain disk-backed through fold balancing, projected-set persistence and coverage
+counting. Scratch files are removed on completion or failure.
+
+Training indices use sorted timestamp cursor joins, not minute-sized dictionaries.
+Train/eval/test indices are written in coin-sized Arrow batches and read without
+copying columns; only one coin's feature/target/set tables and index batch are
+loaded at a time. Train and test metadata mappings are released before/after
+compaction as appropriate; eval metadata remains necessary for reporting, and
+test metadata is reloaded on demand. Dataset and training identities and sample
+ordering are unchanged. Index batches preserve a fixed native Arrow schema rather
+than compacting integer types or independently encoding each coin's dictionary.
+Timestamp uniqueness checks walk sorted vectors without allocating minute-sized
+sets, and window selection copies each column only once. Walk-forward still
+reloads histories and stores needed
+for cutoff-safe chronological membership calculations; its initial store ensuring
+and calendar preparation are streamed, but its window calculation is not yet
+fully disk-streamed. OS-managed mmap pages and Julia's allocator can still
+contribute to resident memory.
 
 `reinforce=N` uses the same soft reinforcement as TrendDetector: after every
 N epochs, train-only misclassification flags are refreshed. Misclassified samples

@@ -659,15 +659,21 @@ function _arrow_dictencoded_categorical(values)
     return CategoricalArrays.CategoricalArray(normalized)
 end
 
-"Convert non-native Arrow columns to dictionary-encoded categorical or enum-backed values while preserving missings."
+"Prepare Arrow columns without copying unchanged native vectors or modifying the input table."
 function _arrow_safe_table(table)
-    df = DataFrames.DataFrame(table)
+    df = DataFrames.DataFrame(table; copycols=false)
     for name in DataFrames.names(df)
         column = df[!, name]
         colsym = Symbol(name)
         T = Base.nonmissingtype(eltype(column))
         if T <: Enum
             df[!, name] = _arrow_dictencoded_categorical(column)
+        elseif column isa Arrow.Primitive && T <: Dates.TimeType
+            # Materialize timestamps to retain canonical Julia/Arrow extension metadata.
+            df[!, name] = copy(column)
+        elseif column isa Arrow.DictEncoded && T <: CategoricalArrays.CategoricalValue
+            # Arrow needs the categorical extension's array, not its encoded wrapper.
+            df[!, name] = copy(column)
         elseif (column isa CategoricalArrays.CategoricalArray) || (T <: CategoricalArrays.CategoricalValue)
             df[!, name] = column
         elseif (colsym == :coin) && (T <: AbstractString)
@@ -699,18 +705,21 @@ end
 """
 Write a table in JDF or Arrow format and return the resulting path. Arrow files are written in stream format so they can be appended later.
 `metadata` key/value pairs are stored as Arrow schema metadata (Arrow only, not with `append`) and can be read with `tablemetadata`.
+Set `preserveschema=true` for native Arrow tables whose batches must retain identical column
+types and string values: do not compact integers or independently dictionary-encode coins.
 """
-function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, append::Bool=false, metadata::Union{Nothing, AbstractDict{String, String}}=nothing)
+function writetable(table, filename::AbstractString; folderpath=logfolder(), format::Symbol=:jdf, append::Bool=false, metadata::Union{Nothing, AbstractDict{String, String}}=nothing, preserveschema::Bool=false)
     @assert format in (:jdf, :arrow) "format=$(format) must be :jdf or :arrow"
     @assert !(append && (format != :arrow)) "append=true is only supported for format=:arrow"
     @assert isnothing(metadata) || ((format == :arrow) && !append) "metadata requires format=:arrow without append; got format=$(format) append=$(append)"
+    @assert !preserveschema || format == :arrow "preserveschema requires format=:arrow, got format=$format"
     filepath = tablepath(filename; folderpath=folderpath, format=format)
     mkpath(dirname(filepath))
     if format == :jdf
         (verbosity >= 3) && println("$(EnvConfig.now()) writing JDF dataframe to $filepath")
         JDF.savejdf(filepath, DataFrames.DataFrame(table))
     else
-        safetable = _arrow_safe_table(table)
+        safetable = preserveschema ? table : _arrow_safe_table(table)
         if append && isfile(filepath)
             (verbosity >= 3) && println("$(EnvConfig.now()) appending Arrow dataframe to $filepath")
             Arrow.append(filepath, safetable)
@@ -1075,4 +1084,3 @@ end
 #endregion abstract-configuration
 
 end # module
-

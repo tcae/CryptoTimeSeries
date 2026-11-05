@@ -275,6 +275,33 @@ end
                 @test streamed==expected
                 @test all(counts -> all(>(0),values(counts)),values(streamed))
                 @test all(counts -> counts isa NamedTuple{(:train,:eval,:test)},values(streamed))
+                rc = RegimeTraining.buildrunconfig(Dict("ts"=>"066","mode"=>"market",
+                    "coins"=>join(stores.coins,","),"startdt"=>string(dr.startdt),
+                    "enddt"=>string(dr.enddt)))
+                input = (histories=Dict{String,DataFrame}(),coins=stores.coins,
+                    startdt=dr.startdt,enddt=dr.enddt,regime,folds,featurefactory,targetfactory,
+                    mode="market",modelid=clcfg.model,classbalancing=clcfg.classbalancing,
+                    context=rc.description,sharedstores=nothing,rc)
+                mktempdir(folder) do trainingfolder
+                    prepared = RegimeTraining.prepare!(input,trainingfolder)
+                    @test isempty(prepared.input.histories)
+                    @test isempty(prepared.stores.featurestores)
+                    @test isempty(prepared.stores.targetstores)
+                    @test isempty(prepared.eligible)
+                    @test isempty(prepared.sets)
+                    @test isequal(prepared.market,assignments.market)
+                    @test isequal(prepared.calendar,assignments.calendar)
+                    for (coinix,coin) in enumerate(stores.coins)
+                        localfolder = joinpath(trainingfolder,"stores",coin)
+                        @test isequal(RegimeTraining.readpreparedtable(localfolder,"sets"),assignments.sets[coin])
+                        @test isequal(RegimeTraining.readpreparedtable(localfolder,"features"),stores.featurestores[coinix])
+                        _,sharedtargets = TradingStrategy.sharedstorewindow(selected[coin],
+                            Features.readfeatures(coin,"USDT",clcfg.features;confighash=TradingStrategy.featureshash(clcfg.features)),
+                            Targets.readtargets(coin,"USDT",clcfg.targets;confighash=TradingStrategy.targetshash(clcfg.targets)),
+                            featurefactory,targetfactory,coin)
+                        @test isequal(RegimeTraining.readpreparedtable(localfolder,"targets"),sharedtargets)
+                    end
+                end
             end
         finally
             EnvConfig.setcoinspath!(relpath(oldcoinspath,dirname(EnvConfig.defaultlogfilespath)))

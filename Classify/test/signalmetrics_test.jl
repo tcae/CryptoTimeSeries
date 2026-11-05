@@ -1,4 +1,69 @@
 using Test, Classify, DataFrames, Dates, Targets, CategoricalArrays
+using Random, Statistics
+include("signalmetrics_reference.jl")
+
+"""Build shuffled multi-coin reports with gaps, interleaved cells, reused blocks and excluded first rows."""
+function randomsignalfixture(seed::Int;minutes::Int=40)
+    rng = MersenneTwister(seed)
+    labels = [Classify.SIGNAL_LABELS...,"ignore","longstrongopen","shortstronghold"]
+    df = DataFrame(coin=String[],opentime=DateTime[],set=String[],regime=String[],
+        foldid=Int[],blockid=Int[],target=String[],label=String[],score=Float32[])
+    for coin in ("AAA","BBB"), set in ("train","eval"), minute in 1:minutes
+        rand(rng)<0.1 && continue
+        push!(df,(coin,DateTime(2026)+Minute(minute),set,
+            rand(rng,["up","down","unknown"]),rand(rng,1:2),rand(rng,1:3),
+            rand(rng,labels),rand(rng,labels),rand(rng,Float32[0,0.5,0.8,1])))
+    end
+    return df[randperm(rng,nrow(df)),:]
+end
+
+@testset "Optimized reporting equals independent row-scanning oracles" begin
+    for seed in 1:8
+        df = randomsignalfixture(seed)
+        thresholds = [0.0,0.5,0.8,1.0]
+        for bootstrap in (0,11)
+            expected = referencesignalmetrics(df;thresholds,bootstrap,seed)
+            actual = Classify.signalmetrics(df;thresholds,bootstrap,seed)
+            @test isequal(actual,expected)
+        end
+        @test isequal(Classify.signaleventmetrics(df;thresholds),
+            referencesignalevents(df;thresholds))
+        sort!(df,[:coin,:set,:opentime])
+        @test isequal(Classify.signaleventmetrics(df;thresholds),
+            referencesignalevents(df;thresholds))
+    end
+    df = randomsignalfixture(91)
+    for column in (:coin,:set,:regime,:target,:label)
+        df[!,column] = categorical(df[!,column])
+    end
+    @test isequal(Classify.signalmetrics(df;thresholds=[0.5],bootstrap=17),
+        referencesignalmetrics(df;thresholds=[0.5],bootstrap=17))
+    @test isequal(Classify.signaleventmetrics(df;thresholds=[0.5]),
+        referencesignalevents(df;thresholds=[0.5]))
+    subset = view(df,2:2:nrow(df),:)
+    @test isequal(Classify.signalmetrics(subset;thresholds=[0.5],bootstrap=17),
+        referencesignalmetrics(subset;thresholds=[0.5],bootstrap=17))
+    @test isequal(Classify.signaleventmetrics(subset;thresholds=[0.5]),
+        referencesignalevents(subset;thresholds=[0.5]))
+    cutoffs = Dict(name=>0.5 for name in Classify.SIGNAL_LABELS)
+    @test isequal(Classify.signalmetrics(df;thresholds=[cutoffs]),
+        referencesignalmetrics(df;thresholds=[cutoffs]))
+    emptydf = df[1:0,:]
+    @test isempty(Classify.signalmetrics(emptydf))
+    @test isempty(Classify.signaleventmetrics(emptydf))
+end
+
+@testset "Sorted event matching handles spanning and repeated episodes" begin
+    for targetbits in 0:31, episodebits in 0:31
+        df = DataFrame(coin=fill("AAA",5),set=fill("eval",5),regime=fill("up",5),
+            foldid=ones(Int,5),blockid=ones(Int,5),opentime=DateTime(2026).+Minute.(1:5),
+            target=[isodd(targetbits>>ix) ? "longhold" : "allclose" for ix in 0:4],
+            label=[isodd(episodebits>>ix) ? "longhold" : "allclose" for ix in 0:4],
+            score=ones(Float32,5))
+        @test isequal(Classify.signaleventmetrics(df;thresholds=[0.5]),
+            referencesignalevents(df;thresholds=[0.5]))
+    end
+end
 
 """Build a small wrong-direction, abstention, exclusion and missing-minute fixture."""
 function signalmetricfixture()
@@ -8,6 +73,52 @@ function signalmetricfixture()
         target=["longopen", "longhold", "allclose", "shortopen", "shorthold", "allclose", "longopen", "ignore"],
         label=["longopen", "shortopen", "allclose", "shortopen", "shorthold", "longhold", "longopen", "longopen"],
         score=Float32[0.5, 0.9, 0.4, 0.9, 0.8, 0.7, 1, 1])
+end
+
+@testset "Reporting allocation regression on shared calendar blocks" begin
+    n = 2000
+    df = DataFrame(coin=fill("AAA",n),set=fill("eval",n),regime=fill("up",n),
+        foldid=[isodd(ix) ? 1 : 2 for ix in 1:n],
+        blockid=[div(ix-1,500)+1 for ix in 1:n],
+        opentime=DateTime(2026).+Minute.(1:n),
+        target=[isodd(ix) ? "longhold" : "allclose" for ix in 1:n],
+        label=[ix%3==0 ? "longhold" : "allclose" for ix in 1:n],
+        score=fill(0.7f0,n))
+    for (optimized,reference,kwargs) in (
+            (Classify.signalmetrics,referencesignalmetrics,(bootstrap=7,)),
+            (Classify.signaleventmetrics,referencesignalevents,NamedTuple()))
+        expected = reference(df;thresholds=[0.3,0.8],kwargs...)
+        @test isequal(optimized(df;thresholds=[0.3,0.8],kwargs...),expected)
+        oldbytes = @allocated reference(df;thresholds=[0.3,0.8],kwargs...)
+        newbytes = @allocated optimized(df;thresholds=[0.3,0.8],kwargs...)
+        @test newbytes<oldbytes/2
+    end
+end
+
+@testset "Report progress callbacks preserve metrics and surface failures" begin
+    predictions = signalmetricfixture()
+    for (report,kwargs,phase) in (
+            (Classify.signalmetrics,(bootstrap=5,seed=713),"minute metrics"),
+            (Classify.signaleventmetrics,NamedTuple(),"event metrics"))
+        statuses = NamedTuple[]
+        expected = report(predictions;thresholds=[0.5,0.8],kwargs...)
+        actual = report(predictions;thresholds=[0.5,0.8],kwargs...,
+            onprogress=status -> push!(statuses,status))
+        @test isequal(actual,expected)
+        @test !isempty(statuses)
+        @test first(statuses).phase==phase
+        @test first(statuses).threshold==0.5
+        @test first(statuses).groupix==1
+        @test all(status -> 1<=status.groupix<=status.groups,statuses)
+        @test Set(status.threshold for status in statuses)==Set([0.5,0.8])
+        @test any(status -> status.signal=="longopen",statuses)
+        @test_throws ErrorException report(predictions;thresholds=[0.5],kwargs...,
+            onprogress=status -> error("intentional progress failure"))
+        if report===Classify.signalmetrics
+            @test any(status -> status.phase=="minute block counts" &&
+                1<=status.blockix<=status.blocks,statuses)
+        end
+    end
 end
 
 @testset "Argmax decisions and minute signal metrics" begin

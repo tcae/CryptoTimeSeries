@@ -228,7 +228,7 @@ function foldcalendar(market::DataFrame, sampletimes::AbstractDict, config::Fold
         horizonminutes::Int, enddt::Union{Nothing,DateTime}=nothing)::DataFrame
     @assert config.foldminutes > 0 && config.blockminutes > 0 && config.minminutes > 0 "invalid fold configuration=$config"
     @assert config.gapminutes >= horizonminutes >= 0 "gap=$(config.gapminutes) is shorter than horizon=$horizonminutes"
-    @assert issorted(market.opentime) && allunique(market.opentime) "market calendar is not sorted and unique"
+    @assert _strictregimetimes(market.opentime) "market calendar is not sorted and unique: rows=$(nrow(market))"
     @assert nrow(market) > 1 "insufficient market observations=$(nrow(market))"
     step = market.opentime[2]-market.opentime[1]
     blocks = DataFrame(blockid=Int[], foldid=Int[], regime=String[], start=DateTime[],
@@ -294,7 +294,7 @@ function foldcalendar(market::DataFrame, sampletimesloader::Function,
     blocks = foldcalendar(market,Dict{String,Vector{DateTime}}(),config;horizonminutes,enddt)
     for coin in coins
         times = sampletimesloader(coin)
-        @assert issorted(times) && allunique(times) "sample timestamps for $coin must be sorted and unique: rows=$(length(times))"
+        @assert _strictregimetimes(times) "sample timestamps for $coin must be sorted and unique: rows=$(length(times))"
         for block in eachrow(blocks)
             block.samples += searchsortedlast(times,block.stop)-searchsortedfirst(times,block.start)+1
         end
@@ -306,7 +306,7 @@ end
 
 """Count train/eval/test membership without constructing minute-level projected rows."""
 function calendarcounts(times::AbstractVector{DateTime}, calendar::DataFrame)::NamedTuple
-    @assert issorted(times) && allunique(times) "sample timestamps must be sorted and unique: rows=$(length(times))"
+    @assert _strictregimetimes(times) "sample timestamps must be sorted and unique: rows=$(length(times))"
     counts = Dict("train"=>0,"eval"=>0,"test"=>0)
     for block in eachrow(calendar)
         @assert haskey(counts,block.set) "unsupported calendar set=$(block.set)"
@@ -317,7 +317,7 @@ end
 
 """Project shared calendar assignments onto eligible coin samples, excluding unknown."""
 function calendarsets(times::AbstractVector{DateTime}, calendar::DataFrame)::DataFrame
-    @assert issorted(times) && allunique(times) "sample timestamps are not sorted and unique"
+    @assert _strictregimetimes(times) "sample timestamps are not sorted and unique: rows=$(length(times))"
     result = DataFrame(opentime=DateTime[], set=String[], regime=String[],
         foldid=Int[], blockid=Int[], rangeid=Int[])
     for block in eachrow(calendar)

@@ -17,7 +17,7 @@ function regimehistory(raw::AbstractDataFrame, coin::AbstractString,
         @warn "skipping coin with insufficient window/context history" coin rows warmup startdt enddt
         return nothing
     end
-    history = DataFrame(raw[firstrow:lastrow,:];copycols=true)
+    history = DataFrame(view(raw,firstrow:lastrow,:);copycols=true)
     Ohlcv.addpivot!(history)
     return history
 end
@@ -32,12 +32,12 @@ function sharedstorewindow(history::DataFrame, featurestore::AbstractDataFrame,
     firstfeature = history.opentime[required]
     firstrow = searchsortedfirst(featurestore.opentime,firstfeature)
     lastrow = searchsortedlast(featurestore.opentime,last(history.opentime))
-    features = DataFrame(featurestore[firstrow:lastrow,:];copycols=true)
+    features = DataFrame(view(featurestore,firstrow:lastrow,:);copycols=true)
     @assert nrow(features)==expectedfeatures && first(features.opentime)==firstfeature &&
         last(features.opentime)==last(history.opentime) "shared features misaligned for $coin: rows=$(nrow(features)) expected=$expectedfeatures"
     firstrow = searchsortedfirst(targetstore.opentime,first(history.opentime))
     lastrow = searchsortedlast(targetstore.opentime,last(history.opentime))
-    targets = DataFrame(targetstore[firstrow:lastrow,:];copycols=true)
+    targets = DataFrame(view(targetstore,firstrow:lastrow,:);copycols=true)
     @assert nrow(targets)==nrow(history) && first(targets.opentime)==first(history.opentime) &&
         last(targets.opentime)==last(history.opentime) "shared targets misaligned for $coin: rows=$(nrow(targets)) expected=$(nrow(history))"
     finalcount = max(0,nrow(targets)-Targets.lookaheadminutes(targetfactory()))
@@ -62,16 +62,30 @@ Hashes contain full OHLCV content, not just coverage endpoints.
 """
 function experimentmanifest!(folder::AbstractString, histories::AbstractDict,
         description::AbstractString)::String
+    return experimentmanifest!(folder,sort!(collect(keys(histories))),
+        coin -> histories[coin],description)
+end
+
+"""Load and hash one history inside a non-inlined scope so the caller retains no source roots."""
+@noinline function _experimentdigest!(folder::AbstractString, historyloader::Function,
+        coin::AbstractString)::String
+    history = historyloader(coin)
+    staged = EnvConfig.writetable(history,"identity-input";folderpath=folder,format=:arrow)
+    try
+        return bytes2hex(open(sha256,staged))
+    finally
+        rm(staged)
+    end
+end
+
+"""Persist the same immutable input identity while loading and releasing one coin at a time."""
+function experimentmanifest!(folder::AbstractString, coins::AbstractVector{<:AbstractString},
+        historyloader::Function, description::AbstractString)::String
     mkpath(folder)
     rows = DataFrame(coin=String[], digest=String[])
-    for coin in sort!(collect(keys(histories)))
-        # Stream through the repository writer, avoiding materializing a textual
-        # representation of millions of candles for content hashing.
-        staged = EnvConfig.writetable(histories[coin], "identity-input";
-            folderpath=folder,format=:arrow)
-        digest = open(sha256,staged)
-        push!(rows,(coin,bytes2hex(digest)))
-        rm(staged)
+    for coin in sort(coins)
+        push!(rows,(coin,_experimentdigest!(folder,historyloader,coin)))
+        GC.gc()
     end
     identity = confighash(description * join(["$(row.coin):$(row.digest)" for row in eachrow(rows)],";"))
     path = joinpath(folder,"manifest.arrow")
@@ -119,8 +133,8 @@ function experimentstores!(histories::AbstractDict, featurefactory::Function,
         end
         if !isnothing(sharedstores) && haskey(sharedstores,coin)
             sharedfeature, sharedtarget = sharedstores[coin]
-            fdf = DataFrame(sharedfeature;copycols=true)
-            tdf = DataFrame(sharedtarget;copycols=true)
+            fdf = sharedfeature
+            tdf = sharedtarget
         else
             ohlcv = Ohlcv.defaultohlcv(coin)
             Ohlcv.setdataframe!(ohlcv,copy(history))
@@ -219,34 +233,99 @@ function experimenttimes(histories::AbstractDict, stores::NamedTuple, config::Re
     return result
 end
 
+"""Create an empty fold-aware source index with stable column types."""
+function _experimentindex()::DataFrame
+    return DataFrame(coinix=Int[],row=Int[],labelix=Int[],coin=String[],
+        opentime=DateTime[],set=String[],regime=String[],foldid=Int[],blockid=Int[])
+end
+
+"""Append one coin's source coordinates using strictly sorted, exact timestamp joins."""
+function _appendexperimentindex!(index::DataFrame, fdf::AbstractDataFrame,
+        tdf::AbstractDataFrame, sets::AbstractDataFrame, labels::AbstractVector,
+        coin::AbstractString, coinix::Int; settype::String,
+        folds::AbstractVector{Int}, regimes::AbstractVector{<:AbstractString})::Nothing
+    featuretimes,targettimes,targetlabels = fdf.opentime,tdf.opentime,tdf.label
+    for (kind,timestamps) in (("features",featuretimes),("targets",targettimes),
+            ("sets",sets.opentime))
+        @assert _strictregimetimes(timestamps) "$kind timestamps for $coin must be sorted and unique: rows=$(length(timestamps))"
+    end
+    codes = Dict(Targets.tradelabelcode(label)=>ix for (ix,label) in enumerate(labels))
+    featureix = targetix = 1
+    for row in eachrow(sets)
+        row.set == settype && row.regime != "unknown" || continue
+        isempty(folds) || row.foldid in folds || continue
+        isempty(regimes) || row.regime in regimes || continue
+        time = row.opentime
+        while featureix <= length(featuretimes) && featuretimes[featureix] < time
+            featureix += 1
+        end
+        while targetix <= length(targettimes) && targettimes[targetix] < time
+            targetix += 1
+        end
+        @assert featureix <= length(featuretimes) && featuretimes[featureix] == time &&
+            targetix <= length(targettimes) && targettimes[targetix] == time "sets/features/targets misaligned: $coin $time"
+        code = targetlabels[targetix]
+        @assert haskey(codes,code) "unsupported target=$code for $coin at $time"
+        push!(index,(coinix,featureix,codes[code],coin,time,
+            settype,row.regime,row.foldid,row.blockid))
+    end
+    return nothing
+end
+
 """
-Build fold-aware source coordinates and metric metadata from eligible sets.
-Unknown regimes are rejected; optional folds/regimes filter a fixed population.
+Build fold-aware source coordinates and metric metadata using sorted timestamp walks.
+Inputs must have strictly increasing, unique timestamps; optional folds/regimes filter
+a fixed known-regime population.
 """
 function experimentindex(stores::NamedTuple, sets::AbstractDict, labels::AbstractVector;
         settype::String, folds::AbstractVector{Int}=Int[],
         regimes::AbstractVector{<:AbstractString}=String[])::DataFrame
-    index = DataFrame(coinix=Int[],row=Int[],labelix=Int[],coin=String[],
-        opentime=DateTime[],set=String[],regime=String[],foldid=Int[],blockid=Int[])
-    codes = Dict(Targets.tradelabelcode(label)=>ix for (ix,label) in enumerate(labels))
+    index = _experimentindex()
     for (coinix,coin) in enumerate(stores.coins)
-        fdf = stores.featurestores[coinix]
-        tdf = stores.targetstores[coinix]
-        frows = Dict(time=>ix for (ix,time) in enumerate(fdf.opentime))
-        trows = Dict(time=>ix for (ix,time) in enumerate(tdf.opentime))
-        for row in eachrow(sets[coin])
-            row.set == settype && row.regime != "unknown" || continue
-            isempty(folds) || row.foldid in folds || continue
-            isempty(regimes) || row.regime in regimes || continue
-            @assert haskey(frows,row.opentime) && haskey(trows,row.opentime) "sets/features/targets misaligned: $coin $(row.opentime)"
-            code = tdf.label[trows[row.opentime]]
-            @assert haskey(codes,code) "unsupported target=$code for $coin at $(row.opentime)"
-            push!(index,(coinix,frows[row.opentime],codes[code],coin,row.opentime,
-                settype,row.regime,row.foldid,row.blockid))
-        end
+        _appendexperimentindex!(index,stores.featurestores[coinix],stores.targetstores[coinix],
+            sets[coin],labels,coin,coinix;settype,folds,regimes)
     end
     @assert nrow(index)>0 "empty experiment source set=$settype folds=$folds regimes=$regimes"
     return index
+end
+
+"""
+Write train/eval/test indices in coin-sized Arrow batches into a fresh folder, returning
+zero-copy mapped indices. The loader returns features, targets and sets. Input tables and
+index batches are released before the next load; coin order and source row coordinates
+match `experimentindex`. No accumulated minute-level output vectors are retained.
+"""
+function experimentindices(folder::AbstractString, coins::AbstractVector{<:AbstractString}, storeloader::Function,
+        labels::AbstractVector; folds::AbstractVector{Int}=Int[],
+        regimes::AbstractVector{<:AbstractString}=String[])::NamedTuple
+    @assert !isempty(coins) "experiment indices require coins, got=$coins"
+    for (coinix,coin) in enumerate(coins)
+        _writecoinindices!(folder,storeloader,labels,coin,coinix;folds,regimes)
+        GC.gc()
+    end
+    indices = (
+        trainindex=EnvConfig.readtable("train-index";folderpath=folder,format=:arrow,copycols=false),
+        evalindex=EnvConfig.readtable("eval-index";folderpath=folder,format=:arrow,copycols=false),
+        testindex=EnvConfig.readtable("test-index";folderpath=folder,format=:arrow,copycols=false))
+    for (settype,index) in zip(("train","eval","test"),values(indices))
+        @assert !isnothing(index) && nrow(index)>0 "empty experiment source set=$settype folds=$folds regimes=$regimes"
+    end
+    return indices
+end
+
+"""Scope one coin's source roots and write fixed-schema batches; the first coin replaces output."""
+@noinline function _writecoinindices!(folder::AbstractString, storeloader::Function,
+        labels::AbstractVector, coin::AbstractString, coinix::Int;
+        folds::AbstractVector{Int}, regimes::AbstractVector{<:AbstractString})::Nothing
+    stores = storeloader(coin)
+    for settype in ("train","eval","test")
+        index = _experimentindex()
+        _appendexperimentindex!(index,stores.features,stores.targets,stores.sets,
+            labels,coin,coinix;settype,folds,regimes)
+        EnvConfig.writetable(index,settype*"-index";folderpath=folder,format=:arrow,
+            append=coinix>1,preserveschema=true)
+    end
+    return nothing
 end
 
 """Freeze sample weights: equal cell means within regimes, equal represented regimes."""
@@ -265,21 +344,41 @@ end
 """Write the actual sample distribution and explicitly counted exclusions."""
 function writecalendarcoverage!(folder::AbstractString, sets::AbstractDict,
         eligible::AbstractDict, market::DataFrame)::Nothing
-    populated = [copy(df) for df in values(sets) if nrow(df)>0]
-    if !isempty(populated)
-        table = vcat(populated...)
-        counts = combine(groupby(table,[:set,:regime,:foldid]),nrow=>:samples)
-        EnvConfig.writetable(counts,"sample-coverage";folderpath=folder,format=:arrow)
-    end
+    return writecalendarcoverage!(folder,sort!(collect(keys(sets))),
+        coin -> (sets=sets[coin],eligible=eligible[coin]),market)
+end
 
-    used = sum(nrow,values(sets))
-    total = sum(length,values(eligible))
-    @assert nrow(market)>1 "coverage requires at least two market observations, got=$(nrow(market))"
-    step = market.opentime[2]-market.opentime[1]
-    unknown = sum(count(times) do time
+"""Scope one coin's source roots and return only cell counts and scalar exclusions."""
+@noinline function _calendarcoverage(assignmentloader::Function, coin::AbstractString,
+        market::DataFrame, step::Period)::NamedTuple
+    (;sets,eligible) = assignmentloader(coin)
+    counts = combine(groupby(sets,[:set,:regime,:foldid]),nrow=>:samples;threads=false)
+    unknown = count(eligible) do time
         ix = searchsortedlast(market.opentime,time)
         return ix>0 && time<last(market.opentime)+step && market.regime[ix]=="unknown"
-    end for times in values(eligible))
+    end
+    return (;counts,used=nrow(sets),total=length(eligible),unknown)
+end
+
+"""Write identical coverage by retaining only per-cell counts between coin-scoped loads."""
+function writecalendarcoverage!(folder::AbstractString, coins::AbstractVector{<:AbstractString},
+        assignmentloader::Function, market::DataFrame)::Nothing
+    @assert nrow(market)>1 "coverage requires at least two market observations, got=$(nrow(market))"
+    step = market.opentime[2]-market.opentime[1]
+    counts = DataFrame(set=String[],regime=String[],foldid=Int[],samples=Int[])
+    used = total = unknown = 0
+    for coin in coins
+        coverage = _calendarcoverage(assignmentloader,coin,market,step)
+        append!(counts,coverage.counts)
+        used += coverage.used
+        total += coverage.total
+        unknown += coverage.unknown
+        GC.gc()
+    end
+    if nrow(counts)>0
+        counts = combine(groupby(counts,[:set,:regime,:foldid]),:samples=>sum=>:samples)
+        EnvConfig.writetable(counts,"sample-coverage";folderpath=folder,format=:arrow)
+    end
     excluded = DataFrame(eligible_samples=[total],assigned_samples=[used],
         excluded_samples=[total-used],unknown_samples=[unknown],
         other_excluded_samples=[total-used-unknown],
@@ -351,9 +450,13 @@ function experimentpredictions(nn, index::DataFrame, stores::NamedTuple,
     return result
 end
 
-"""Build metric rows from compact sample-source batches without loading per-coin feature stores."""
+"""
+Build metric rows from compact sample-source batches without loading per-coin feature stores.
+Optional `onprogress(completed,total)` reports completed prediction samples after each batch.
+"""
 function experimentpredictions(nn, index::DataFrame,
-        source::Classify.AbstractSampleSource)::DataFrame
+        source::Classify.AbstractSampleSource;
+        onprogress::Union{Nothing,Function}=nothing)::DataFrame
     @assert nrow(index) == Classify.nsamples(source) "prediction index rows=$(nrow(index)) differ from compact source samples=$(Classify.nsamples(source))"
     result = select(index,:coin,:opentime,:set,:regime,:foldid,:blockid)
     scores = Vector{Float32}(undef,nrow(index))
@@ -365,6 +468,7 @@ function experimentpredictions(nn, index::DataFrame,
         chunkscores,chunklabels = Classify.maxpredict(nn,features)
         scores[ordered] .= chunkscores
         labels[ordered] .= chunklabels
+        isnothing(onprogress) || onprogress(last(chunk),nrow(index))
     end
     result[!,:label] = labels
     result[!,:score] = scores

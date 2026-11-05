@@ -9,6 +9,7 @@ using CategoricalArrays
 using CategoricalDistributions
 using Distributions
 import SimpleChains
+import SHA
 using EnvConfig, Ohlcv, Features, Targets, TestOhlcv
 
 const PREDICTIONLISTFILE = "predictionlist.csv"

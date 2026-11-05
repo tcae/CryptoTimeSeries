@@ -1,6 +1,6 @@
 module EnvConfigTest
 using EnvConfig
-using Test, DataFrames, CategoricalArrays, Arrow
+using Test, DataFrames, CategoricalArrays, Arrow, Dates
 
 # greet2()
 # x = Authentication(production)
@@ -151,6 +151,40 @@ function testtableio()
         finally
             EnvConfig.setdfformat!(oldformat)
         end
+    end
+end
+
+@testset "Native Arrow batches preserve schema and coin values" begin
+    mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+        firstbatch = DataFrame(row=Int[1,2],coin=["SINE","SINE"],labelix=Int[1,1])
+        secondbatch = DataFrame(row=Int[70000],coin=["DOUBLESINE"],labelix=Int[5])
+        emptybatch = firstbatch[1:0,:]
+        EnvConfig.writetable(emptybatch,"batches";folderpath=folder,format=:arrow,preserveschema=true)
+        for batch in (firstbatch,secondbatch,emptybatch)
+            EnvConfig.writetable(batch,"batches";folderpath=folder,format=:arrow,
+                append=true,preserveschema=true)
+        end
+        actual = EnvConfig.readtable("batches";folderpath=folder,format=:arrow,copycols=false)
+        @test isequal(actual,vcat(firstbatch,secondbatch))
+        @test eltype(actual.row)==Int
+        @test eltype(actual.labelix)==Int
+        @test !(actual.coin isa Arrow.DictEncoded)
+        @test !(actual.row isa Vector)
+        native = DataFrame(value=Float32[1,2],coin=["SINE","DOUBLESINE"],row=Int[1,70000],
+            opentime=[DateTime(2025),DateTime(2025)+Minute(1)])
+        original = copy(native)
+        safe = EnvConfig._arrow_safe_table(native)
+        @test safe.value === native.value
+        @test isequal(native,original)
+        EnvConfig.writetable(native,"categorical";folderpath=folder,format=:arrow)
+        mapped = EnvConfig.readtable("categorical";folderpath=folder,format=:arrow,copycols=false)
+        EnvConfig.writetable(mapped,"rewritten";folderpath=folder,format=:arrow)
+        rewritten = EnvConfig.readtable("rewritten";folderpath=folder,format=:arrow)
+        @test isequal(rewritten,mapped)
+        @test read(joinpath(folder,"rewritten.arrow"))==read(joinpath(folder,"categorical.arrow"))
+        @test EnvConfig._arrow_safe_table(mapped).coin isa CategoricalArray
+        @test_throws AssertionError EnvConfig.writetable(firstbatch,"invalid";
+            folderpath=folder,format=:jdf,preserveschema=true)
     end
 end
 

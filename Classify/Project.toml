@@ -1,6 +1,6 @@
 name = "Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.39.1"
+version = "0.43.0"
 authors = ["tcae <tcae@posteo.nl>"]
 
 [deps]
@@ -31,6 +31,7 @@ Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
 ProfileView = "c46f51b8-102a-5cf2-8d2c-8597cb0e0da7"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 SimpleChains = "de6bee2f-e2f4-4ec7-b6ed-219cc6f6e9e5"
 StatisticalMeasures = "a19d573c-0a75-4610-95b3-7071388c7541"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"

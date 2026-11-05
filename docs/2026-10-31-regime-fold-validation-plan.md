@@ -30,8 +30,13 @@ Implemented surfaces:
 - Full-content dataset identities and private rebuilt feature/target stores.
 - Shared regime/fold/block calendars, balanced complete-block assignments,
   explicit unknown exclusions, fold/regime selection and optional train weights.
-- Fixed held-out eval-loss stopping, natural/weighted/cell histories and
+- Fixed held-out eval-loss stopping, pooled natural/weighted histories and
   identity-checked best/last checkpoints with resumable optimizer/RNG state.
+- Regime/fold-balanced eval weights are computed once. Epoch evaluation retains
+  only weights, not membership arrays; full indices are released before adaptation
+  and eval metadata is reloaded for final reports. Per-epoch cell-loss diagnostics
+  are no longer produced. See the current
+  [folds, files and memory-lifetime documentation](2026-11-05-regime-folds-manifests-indices-and-memory.md).
 - Train-only soft reinforcement via `reinforce=N`, matching TrendDetector's
   refresh interval and class-normalized 2x hard-example emphasis. Reinforcement
   state/history resumes exactly; eval weighting, patience and total cap remain
@@ -71,8 +76,9 @@ threshold was selected and no reserved test predictions were evaluated.
 Pending: full real-market history completion, broader real-store audit/rebuild
 runs, detector calibration on a declared development period, and full-budget
 real-data quality assessment. Market RG01/RF01 defaults are illustrative, not calibrated choices.
-The phase descriptions below retain the agreed design and acceptance criteria;
-they are not claims that real-market acceptance has already passed.
+The phase descriptions below retain the original design and acceptance criteria;
+they are not claims that real-market acceptance has already passed. The current
+implementation status above supersedes original per-epoch cell-loss requirements.
 
 The runner is now named `RegimeTraining.jl` and follows TrendDetector's
 `test`/`train`, `ts`, `coinset`, `daterange`, `coins`, `retrain`, `runid` and
