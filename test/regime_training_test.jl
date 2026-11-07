@@ -2,6 +2,36 @@ using Test, Dates, DataFrames
 import EnvConfig, TradingStrategy, Classify, Targets
 include("../scripts/RegimeTraining.jl")
 
+@testset "Readable gain reports separate predicted and reference trades" begin
+    gains = DataFrame(set=fill("test<&",3),predicted=[true,true,false],
+        opentime=fill(DateTime(2025),3),closetime=fill(DateTime(2025)+Minute(10),3),
+        gain=Float32[0.01,0.03,-0.02],closereason=fill("trendchange",3))
+    original = copy(gains)
+    mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+        @test RegimeTraining.gainreadablereport!(gains,folder) === nothing
+        text = read(joinpath(folder,"gain-report.txt"),String)
+        svg = read(joinpath(folder,"gain-report.svg"),String)
+        @test occursin("predicted=true: classifier predictions",text)
+        @test occursin("predicted=false: target-label reference",text)
+        @test occursin("test&lt;&amp;: Predicted: 2.0%; completed trades=2",svg)
+        @test occursin("test&lt;&amp;: Target reference: -2.0%; completed trades=1",svg)
+        @test occursin("Not portfolio return",svg)
+        @test !occursin("NaN",svg) && !occursin("Inf",svg)
+        @test isequal(gains,original)
+        gains.gain .= 0f0
+        @test RegimeTraining.gainreadablereport!(gains,folder) === nothing
+        svg = read(joinpath(folder,"gain-report.svg"),String)
+        @test occursin("0.0%",svg)
+        @test !occursin("NaN",svg) && !occursin("Inf",svg)
+        @test RegimeTraining.gainreadablereport!(gains[1:0,:],folder) === nothing
+        @test occursin("No completed trades.",read(joinpath(folder,"gain-report.txt"),String))
+        @test occursin("No completed trades.",read(joinpath(folder,"gain-report.svg"),String))
+        @test !occursin("Target reference:",read(joinpath(folder,"gain-report.svg"),String))
+        gains.gain[1] = NaN32
+        @test_throws AssertionError RegimeTraining.gainreadablereport!(gains,folder)
+    end
+end
+
 @testset "Timestamped progress and mode-specific artifact roots" begin
     io = IOBuffer()
     started = time_ns()
@@ -294,6 +324,87 @@ end
             end
         end
         gainfolder = joinpath(prepared.folder,"gain",input.rc.folder)
+        @testset "Sealed snapshot replay matches the guarded baseline" begin
+            strategy = TradingStrategy.strategytemplate(input.rc.tscfg.strategy)
+            snapshotinput = RegimeTraining.snapshotprepared(
+                Dict("mode"=>"synthetic","ts"=>"068"),input.rc,folder)
+            snapshotsource = RegimeTraining.snapshotsources(snapshotinput;
+                trainweights="balanced",folder=sources.folder)
+            @test snapshotsource.identity == sources.identity
+            @test_throws AssertionError RegimeTraining.loadsnapshot(snapshotinput,snapshotsource)
+            golden = Dict((coin,pass)=>EnvConfig.readtable("$coin-$pass";
+                folderpath=joinpath(gainfolder,"trades-regime"),format=:arrow)
+                for coin in input.coins for pass in ("predicted","truth"))
+            goldengains = EnvConfig.readtable("tsmgains-regime";folderpath=gainfolder,format=:arrow)
+            predictionsbefore = EnvConfig.readtable("test-predictions";folderpath=sources.folder,format=:arrow)
+            trainpath = joinpath(sources.folder,"train",Classify.TRAINFEATURES_FILE)
+            trainmodified = mtime(trainpath)
+            @test RegimeTraining.sealsnapshot!(snapshotinput,snapshotsource) === nothing
+            @test_throws AssertionError RegimeTraining.sealsnapshot!(snapshotinput,snapshotsource)
+            snapshot = RegimeTraining.loadsnapshot(snapshotinput,snapshotsource)
+            @test sum(snapshot.records.rows) == nrow(predictionsbefore)
+            @test RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource) === nothing
+            predicted = EnvConfig.readtable("test-predictions";folderpath=sources.folder,format=:arrow)
+            @test predicted.label == predictionsbefore.label
+            @test predicted.score ≈ predictionsbefore.score
+            @test (predicted.score .>= strategy.algorithmconfig.gainlimit.openthreshold) ==
+                (predictionsbefore.score .>= strategy.algorithmconfig.gainlimit.openthreshold)
+            @test predicted.target == predictionsbefore.target
+            for ((coin,pass),expected) in golden
+                actual = EnvConfig.readtable("$coin-$pass";
+                    folderpath=joinpath(gainfolder,"trades-regime"),format=:arrow)
+                @test isequal(actual,expected)
+            end
+            @test isequal(EnvConfig.readtable("tsmgains-regime";
+                folderpath=gainfolder,format=:arrow),goldengains)
+            historybefore = nrow(EnvConfig.readtable("test-strategy-history";
+                folderpath=sources.folder,format=:arrow))
+            rm(joinpath(gainfolder,"gain-report.txt"))
+            rm(joinpath(gainfolder,"gain-report.svg"))
+            @test RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource) === nothing
+            @test isfile(joinpath(gainfolder,"gain-report.txt"))
+            @test occursin("Predicted",read(joinpath(gainfolder,"gain-report.svg"),String))
+            @test mtime(trainpath) == trainmodified
+            @test nrow(EnvConfig.readtable("test-strategy-history";
+                folderpath=sources.folder,format=:arrow)) == historybefore+1
+            TradingStrategy.STRATEGY_CONFIGS["SGAINEMPTY"] = ()->TradingStrategy.StrategyConfig(
+                algorithm=TradingStrategy.gain_limit_reversal_below_regression!,
+                algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(triggerdist=100f0))
+            try
+                emptyrc = merge(snapshotinput.input.rc,
+                    (tscfg=merge(snapshotinput.input.rc.tscfg,(strategy="SGAINEMPTY",)),))
+                emptyinput = merge(snapshotinput,(input=merge(snapshotinput.input,(rc=emptyrc,)),))
+                @test RegimeTraining.snapshotgainreport!(emptyinput,snapshotsource) === nothing
+                @test only(EnvConfig.readtable("gain-summary";
+                    folderpath=gainfolder,format=:arrow).completed_trades) == 0
+                @test isempty(EnvConfig.readtable("tsmgains-regime";folderpath=gainfolder,format=:arrow))
+                @test isempty(EnvConfig.readtable("xchgainsreport-regime";folderpath=gainfolder,format=:arrow))
+                @test occursin("No completed trades.",read(joinpath(gainfolder,"gain-report.txt"),String))
+                @test occursin("No completed trades.",read(joinpath(gainfolder,"gain-report.svg"),String))
+            finally
+                delete!(TradingStrategy.STRATEGY_CONFIGS,"SGAINEMPTY")
+            end
+            @test RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource) === nothing
+            coinpath = joinpath(snapshot.folder,first(snapshot.records.coin)*".arrow")
+            backup = coinpath*".backup"
+            cp(coinpath,backup)
+            try
+                open(coinpath,"a") do io
+                    write(io,"changed")
+                end
+                @test_throws AssertionError RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource)
+            finally
+                mv(backup,coinpath;force=true)
+            end
+            cache = joinpath(folder,"cache-test")
+            @test !RegimeTraining.verifiedcache(cache,"prediction","identity")
+            @test RegimeTraining.commitcache(DataFrame(value=[1]),cache,"prediction","identity") === nothing
+            @test RegimeTraining.verifiedcache(cache,"prediction","identity")
+            @test_throws AssertionError RegimeTraining.verifiedcache(cache,"prediction","other")
+            RegimeTraining.atomictable(DataFrame(value=[2]),"prediction",cache)
+            @test_throws AssertionError RegimeTraining.verifiedcache(cache,"prediction","identity")
+            @test_throws AssertionError RegimeTraining.filedigest(joinpath(cache,"missing.arrow"))
+        end
         gainidentity = EnvConfig.readtable("gain-identity";folderpath=gainfolder,format=:arrow)
         @test only(gainidentity.population)=="test"
         gainpredictions = EnvConfig.readtable("test-predictions";folderpath=sources.folder,format=:arrow)
@@ -301,6 +412,8 @@ end
         @test Set(zip(gainpredictions.coin,gainpredictions.opentime))==testkeys
         strategy = TradingStrategy.strategytemplate(input.rc.tscfg.strategy)
         index = EnvConfig.readtable("test-index";folderpath=sources.folder,format=:arrow)
+        priorreplays = nrow(EnvConfig.readtable("test-strategy-history";
+            folderpath=sources.folder,format=:arrow))
         @test RegimeTraining.recordteststrategy!(sources,index,strategy)===nothing
         fields = NamedTuple{fieldnames(TradingStrategy.StrategyConfig)}(
             map(field->getfield(strategy,field),fieldnames(TradingStrategy.StrategyConfig)))
@@ -309,7 +422,7 @@ end
         recorded = EnvConfig.readtable("test-strategy";folderpath=sources.folder,format=:arrow)
         @test only(recorded.strategy)==repr(changedstrategy)
         history = EnvConfig.readtable("test-strategy-history";folderpath=sources.folder,format=:arrow)
-        @test nrow(history)==3
+        @test nrow(history)==priorreplays+2
         @test history.strategy[1]==repr(strategy)
         @test history.strategy[end]==repr(changedstrategy)
         @test RegimeTraining.recordteststrategy!(sources,index,changedstrategy)===nothing
@@ -353,13 +466,16 @@ end
             @test reinforced.runid==rc.runid
             @test reinforced.description==rc.description
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","reinforce"=>"-1"))
-            @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>"gain","reinforce"=>"3"))
+            for stage in ("snapshot","gain")
+                @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>stage,"reinforce"=>"3"))
+                @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>stage,"retrain"=>"true"))
+                @test_throws AssertionError RegimeTraining.main(["test","ts=066","stage=$stage","threshold=0.5"])
+            end
             @test_throws AssertionError RegimeTraining.options(["test","train"])
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"060"))
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","startdt"=>"2025-01-01"))
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","coins"=>"SINE,SINE"))
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","mincoins"=>"5"))
-            @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>"gain","retrain"=>"true"))
             TradingStrategy.TS_CONFIGS["regime-test-context"] = merge(rc.tscfg,
                 (configname="regime-test-context",strategy="S07"))
             try

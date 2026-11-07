@@ -39,6 +39,58 @@ using Dates, Ohlcv, TestOhlcv, Xch
         @test TradingStrategy._regression_slope_gain_per_hour(cfg, cl, cols, 1) ≈ Features.relativegain(regr.regry, regr.grad, 60)
         @test f6.fdfno[end, "nrg+240"] ≈ regr.grad / Features.regressionmeanpivot(regr.regry, regr.grad, 240)
     end
+
+    @testset "nonpositive regression endpoint downgrades open labels" begin
+        EnvConfig.init(EnvConfig.test)
+        startdt = DateTime("2025-02-17T13:30:00")
+        ohlcv = TestOhlcv.testohlcv("SINE", startdt, startdt + Hour(8))
+        odf = Ohlcv.dataframe(ohlcv)
+        # crash shape (high plateau then low plateau, both slightly sloped): the raw-price
+        # least-squares line over the final 240 minutes extrapolates to a negative endpoint,
+        # replicating the OM 2025-04-13 flash-crash regime
+        crashprices = Float32.(vcat(range(6.1f0, 6f0, length=nrow(odf) - 120), range(0.42f0, 0.4f0, length=120)))
+        for col in (:open, :high, :low, :close, :pivot)
+            odf[!, col] = crashprices
+        end
+        f6 = TradingStrategy.featureconfig("F16")
+        Features.setbase!(f6, ohlcv; usecache=false)
+        dt = odf[end, :opentime]
+        regr = Features.regressionat(f6, 240, dt)
+        @test regr.regry < 0f0
+        labels = TradingStrategy.classifierlabels(TradingStrategy.classifierconfig(TradingStrategy.tsconfig("056").classifier))
+        nn = Classify.model008(Features.featurecount(f6), labels, "crash-regression-gates")
+        cl = Classify.TrendClassifier001(nn; featconfig=TradingStrategy.trendf6config16)
+        cl.bc[ohlcv.base] = (ohlcv=ohlcv, featcfg=f6)
+        pair = Xch.tradingpairkey(ohlcv.base, ohlcv.quotecoin)
+        df = DataFrame(opentime=[dt], close=[odf[end, :close]], pair=[pair])
+        for contributor in TSM.tradesdf_all_contributors()
+            contributor(df)
+        end
+        df[1, :opentime] = dt
+        df[1, :close] = odf[end, :close]
+        TSM.setcategorical!(df[!, :pair], 1, pair)
+        cols = TSM.TradesColumns(df)
+        cfg = TradingStrategy.GainLimitReversalConfig(maxwindow=240)
+        # unevaluable regression gate values are signalled as nothing instead of asserting
+        @test isnothing(TradingStrategy._relative_to_regression(cfg, cl, cols, 1))
+        @test isnothing(TradingStrategy._regression_slope_gain_per_hour(cfg, cl, cols, 1))
+
+        # unevaluable distance gate downgrades open labels to hold
+        triggercfg = TradingStrategy.GainLimitReversalBelowRegressionConfig(gainlimit=cfg, triggerregrwindow=240, trendregrwindow=0)
+        df[1, :score] = 0.9f0
+        df[1, :label] = Targets.shortopen
+        TradingStrategy.gain_limit_reversal_below_regression!(triggercfg, cl, cols, 1)
+        @test cols.label[1] == Targets.shorthold
+        df[1, :label] = Targets.longopen
+        TradingStrategy.gain_limit_reversal_below_regression!(triggercfg, cl, cols, 1)
+        @test cols.label[1] == Targets.longhold
+
+        # unevaluable trend gate downgrades open labels to hold
+        trendcfg = TradingStrategy.GainLimitReversalBelowRegressionConfig(gainlimit=cfg, triggerregrwindow=0, trendregrwindow=240)
+        df[1, :label] = Targets.shortopen
+        TradingStrategy.gain_limit_reversal_below_regression!(trendcfg, cl, cols, 1)
+        @test cols.label[1] == Targets.shorthold
+    end
     for (basename, clcfg) in TradingStrategy.CLASSIFIER_CONFIGS
         @test TradingStrategy.classifierbasename(clcfg) == basename
         @test TradingStrategy.featureconfig(clcfg.features) isa Features.Features006

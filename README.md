@@ -351,17 +351,46 @@ and targets; `mode=synthetic` is the explicit small smoke fixture.
 
 ```sh
 julia --project=. scripts/RegimeTraining.jl test ts=063 stage=evaluate
+julia --project=. scripts/RegimeTraining.jl test ts=063 stage=snapshot
 julia --project=. scripts/RegimeTraining.jl test ts=063 stage=gain
 julia --project=. scripts/RegimeTraining.jl train ts=063 coinset=CS01 daterange=D01 stage=train
 ```
 
-Stages are `stores`, `train`, `predict`, `evaluate`, `gain`, plus explicit
+Stages are `stores`, `train`, `predict`, `evaluate`, `snapshot`, `gain`, plus explicit
 `test` and `walkforward`. Adaptation ends with eval reports and `next-steps.txt`:
 inspect diagrams, select thresholds and update the trading strategy before
 starting a subsequent `stage=gain` run. Gain requires an existing adapted
 checkpoint and never trains a missing model. `retrain` resumes adaptation only.
-Gain replay uses the runtime strategy wired to that checkpoint's classifier for
-both predicted and target-reference passes, including active strategy regression gates.
+Before the first gain run, `stage=snapshot` verifies each original input-history
+digest and reserved test membership, then seals coin-sized test features, prices
+and enabled regression windows in `balanced/gain-snapshot`. This is an explicit
+one-time operation for existing runs; it does not rebuild train/eval numeric
+sources or adapt the classifier. Changed histories fail sealing instead of
+substituting current data. A sealed snapshot is immutable.
+
+`stage=gain` reads that snapshot, not mutable market histories or current default
+coin-set membership. Explicit universe/configuration overrides must still match
+the original experiment. It verifies snapshot digests, loads the checkpoint,
+infers bounded batches and replays both predicted and target-reference signals.
+No train/eval source compaction or full classifier feature initialization occurs.
+Regression columns are aligned once per range, equal windows share their arrays,
+and invalid numerical guidance still downgrades opens to hold while managing
+existing positions. Missing guidance remains an explicit error.
+
+Predictions and coin/pass replay files have digest-verified completion markers
+under `balanced/gain-cache`, keyed by snapshot/checkpoint and strategy/replay
+semantics respectively. Retries reuse only complete matching artifacts. Strategy
+changes create separate replay caches; they do not invalidate predictions.
+Partial files are recomputed, and changed committed files fail verification.
+Canonical prediction/trades/gain reports are still published in their usual
+locations. Gain also writes `gain-report.txt` and `gain-report.svg` in the gain
+output folder, including on verified cache reruns. These reports separate
+classifier predictions from the target-label reference; the SVG shows average
+completed-trade gain in percent, not compounded portfolio return. Runs with no
+completed trades replace these reports with an explicit empty-result message.
+Progress includes coin/pass counts, timings, allocations, GC time,
+throughput and peak RSS. See the
+[gain performance proposal](docs/2026-11-07-regime-gain-performance-proposal.md).
 
 Market preparation follows refresh's coin-scoped lifecycle: validate and hash
 one history at a time, ensure shared stores from **full** OHLCV history, then

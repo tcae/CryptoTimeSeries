@@ -1,7 +1,20 @@
-testcoins() = ["SINE", "DOUBLESINE"]
+artificialpatterns = ["SINE", "DOUBLESINE"]
+stablecoins = stablecoins = [
+    "USDT",
+    "USDC",
+    "DAI",
+    "FDUSD",
+    "PYUSD",
+    "TUSD",
+    "EURS",
+    "EUROC",
+    "PAXG",
+    "XAUT"
+]
+testcoins() = artificialpatterns
 traincoins() = ["1INCH", "AAVE", "ACH", "ADA", "AI16Z", "ALGO", "ANKR", "APEX", "APE", "APT", "ARB", "AR", "ATOM", "AVAX", "AXS", "BCH", "BNB", "BONK", "BRETT", "BTC", "C98", "CAKE", "CARV", "CELO", "CHILLGUY", "CHZ", "COMP", "CRV", "CTC", "DEEP", "DEGEN", "DGB", "DOGE", "DOGS", "DOT", "DRIFT", "DYDX", "EGLD", "ELX", "ENA", "ENJ", "ENS", "EOS", "ETC", "ETH", "FET", "FIL", "FIRE", "FLOCK", "FLOKI", "FLOW", "FTM", "FTT", "FXS", "GALA", "GAL", "GLMR", "GMT", "GOAT", "GPS", "GRASS", "GRT", "HBAR", "HFT", "HNT", "HOOK", "HOT", "H", "ICP", "ID", "IMX", "INIT", "INJ", "IP", "JASMY", "JUP", "KAS", "KAVA", "KLAY", "KSM", "LDO", "LINK", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MANA", "MASK", "MATIC", "MAVIA", "MBOX", "MERL", "MINA", "MKR", "MNT", "MOVE", "MYRO", "NAKA", "NEAR", "NOT", "NXPC", "OMG", "ONDO", "ONE", "OP", "PENGU", "PEOPLE", "PEPE", "PLANET", "PLUME", "POL", "POPCAT", "PUFFER", "PUMP", "PYTH", "QNT", "QTUM", "RDNT", "RENDER", "RNDR", "ROSE", "RUNE", "RVN", "SAND", "SC", "SEI", "SERAPH", "SHIB", "SNX", "SOL", "SPX", "STETH", "STG", "STRK", "STX", "SUI", "SUNDOG", "SUSHI", "TAI", "THETA", "TIA", "TON", "TRUMP", "TRX", "TWT", "UNI", "UXLINK", "VIRTUAL", "WAVES", "WAXP", "WIF", "WLD", "XLM", "XRP", "XTER", "XTZ", "XWG", "X", "YFI", "ZEN", "ZIL", "ZRX"]
-traincoins_v2() = ["0G", "1INCH", "2Z", "AAVE", "ACH", "ADA", "AERO", "AEVO", "AGI", "AGLA", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "ANIME", "ANKR", "APE", "APEX", "APRS", "APT", "AR", "ARB", "ARKM", "ASTER", "ATH", "ATOM", "AVA", "AVAX", "AVL", "AVNT", "AXL", "AXS", "AZTEC", "B3", "BABYDOGE", "BAN", "BARD", "BASED", "BB", "BBQ", "BCH", "BEAM", "BERA", "BICO", "BLAST", "BLUR", "BMT", "BNB", "BOBA", "BOME", "BONK", "BR", "BRETT", "BSB", "BTC", "C98", "CAKE", "CAMP", "CARV", "CATI", "CC", "CELO", "CFG", "CGPT", "CHILLGUY", "CHZ", "COMP", "COOK", "COOKIE", "COQ", "CORE", "CPOOL", "CRV", "CTC", "CYBER", "DATA", "DEEP", "DEGEN", "DGB", "DIAM", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DOUBLESINE", "DRIFT", "DYDX", "DYM", "EDGE", "EGLD", "EIGEN", "ELX", "ENA", "ENJ", "ENS", "ENSO", "EOS", "EPT", "ERA", "ETC", "ETH", "ETHFI", "ETHW", "F", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FON", "FOXY", "FTM", "FTT", "FUEL", "FXS", "G7", "GAL", "GALA", "GALAXIS", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAM", "GRASS", "GRT", "H", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOLO", "HOME", "HOOK", "HOT", "HUMA", "HYPE", "HYPER", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "IO", "IP", "JASMY", "JTO", "JUP", "KAIA", "KAS", "KAVA", "KDA", "KLAY", "KMNO", "KSM", "LA", "LADYS", "LAYER", "LDO", "LEVER", "LFT", "LGX", "LINEA", "LINK", "LIT", "LMWR", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "ME", "MEME", "MEMEFI", "MERL", "MET", "METH", "MEW", "MILK", "MINA", "MKR", "MLK", "MNT", "MOCA", "MOG", "MON", "MORPHO", "MOVE", "MOVR", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NGL", "NIBI", "NLK", "NOT", "NS", "NXPC", "OL", "OM", "OMG", "OMNI", "ONDO", "ONE", "OP", "ORDER", "ORDI", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PLANET", "PLUME", "PNUT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PROVE", "PUFFER", "PUMP", "PURSE", "PYTH", "QNT", "QTUM", "RATS", "RDNT", "RECALL", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RSS3", "RUNE", "RVN", "S", "SAFE", "SAND", "SATS", "SC", "SCR", "SCRT", "SEI", "SEOR", "SERAPH", "SFUND", "SHIB", "SHRAP", "SIGN", "SINE", "SIS", "SNX", "SOL", "SOLV", "SOMI", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQR", "SSV", "STETH", "STG", "STOP", "STRK", "STX", "SUI", "SUN", "SUNDOG", "SUPRA", "SUSHI", "SWELL", "SXT", "TA", "TAC", "TAI", "TAIKO", "THETA", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TRUMP", "TRX", "TWT", "UMA", "UNI", "USDC", "USDE", "USTC", "UXLINK", "VELO", "VENOM", "VET", "VIRTUAL", "VRA", "W", "WAL", "WAVES", "WAXP", "WCT", "WEN", "WIF", "WLD", "WLFI", "WOO", "X", "XAI", "XAN", "XAUT", "XCAD", "XDC", "XEC", "XION", "XLM", "XPL", "XRP", "XTER", "XTZ", "XWG", "YB", "YFI", "ZAMA", "ZBT", "ZEN", "ZETA", "ZIG", "ZIL", "ZK", "ZKC", "ZKJ", "ZKL", "ZORA", "ZRC", "ZRO", "ZRX"]
-
+traincoins_v2_vec = ["0G", "1INCH", "2Z", "AAVE", "ACH", "ADA", "AERO", "AEVO", "AGI", "AGLA", "AI16Z", "AIOZ", "AIXBT", "AKI", "ALCH", "ALGO", "ALT", "ANIME", "ANKR", "APE", "APEX", "APRS", "APT", "AR", "ARB", "ARKM", "ASTER", "ATH", "ATOM", "AVA", "AVAX", "AVL", "AVNT", "AXL", "AXS", "AZTEC", "B3", "BABYDOGE", "BAN", "BARD", "BASED", "BB", "BBQ", "BCH", "BEAM", "BERA", "BICO", "BLAST", "BLUR", "BMT", "BNB", "BOBA", "BOME", "BONK", "BR", "BRETT", "BSB", "BTC", "C98", "CAKE", "CAMP", "CARV", "CATI", "CC", "CELO", "CFG", "CGPT", "CHILLGUY", "CHZ", "COMP", "COOK", "COOKIE", "COQ", "CORE", "CPOOL", "CRV", "CTC", "CYBER", "DATA", "DEEP", "DEGEN", "DGB", "DIAM", "DOGE", "DOGS", "DOLO", "DOP1", "DOT", "DRIFT", "DYDX", "DYM", "EDGE", "EGLD", "EIGEN", "ELX", "ENA", "ENJ", "ENS", "ENSO", "EOS", "EPT", "ERA", "ETC", "ETH", "ETHFI", "ETHW", "F", "FAR", "FB", "FET", "FHE", "FIDA", "FIL", "FIRE", "FITFI", "FLOCK", "FLOKI", "FLOW", "FLR", "FLT", "FON", "FOXY", "FTM", "FTT", "FUEL", "FXS", "G7", "GAL", "GALA", "GALAXIS", "GLMR", "GMT", "GMX", "GOAT", "GPS", "GPT", "GRAM", "GRASS", "GRT", "H", "HAEDAL", "HBAR", "HFT", "HLG", "HMSTR", "HNT", "HOLO", "HOME", "HOOK", "HOT", "HUMA", "HYPE", "HYPER", "ICNT", "ICP", "ID", "IMX", "INIT", "INJ", "IO", "IP", "JASMY", "JTO", "JUP", "KAIA", "KAS", "KAVA", "KDA", "KLAY", "KMNO", "KSM", "LA", "LADYS", "LAYER", "LDO", "LEVER", "LFT", "LGX", "LINEA", "LINK", "LIT", "LMWR", "LRC", "LTC", "LUNA", "LUNC", "MAGIC", "MAJOR", "MANA", "MANTA", "MASA", "MASK", "MATIC", "MAVIA", "MBOX", "ME", "MEME", "MEMEFI", "MERL", "MET", "METH", "MEW", "MILK", "MINA", "MKR", "MLK", "MNT", "MOCA", "MOG", "MON", "MORPHO", "MOVE", "MOVR", "MYRO", "NAKA", "NEAR", "NEIRO", "NEON", "NGL", "NIBI", "NLK", "NOT", "NS", "NXPC", "OL", "OM", "OMG", "OMNI", "ONDO", "ONE", "OP", "ORDER", "ORDI", "PAAL", "PARTI", "PENDLE", "PENGU", "PEOPLE", "PEPE", "PERP", "PLANET", "PLUME", "PNUT", "POL", "PONKE", "POPCAT", "PORT3", "PORTAL", "PPT", "PRCL", "PRIME", "PROVE", "PUFFER", "PUMP", "PURSE", "PYTH", "QNT", "QTUM", "RATS", "RDNT", "RECALL", "RENDER", "RESOLV", "RNDR", "ROAM", "ROOT", "ROSE", "RSS3", "RUNE", "RVN", "S", "SAFE", "SAND", "SATS", "SC", "SCR", "SCRT", "SEI", "SEOR", "SERAPH", "SFUND", "SHIB", "SHRAP", "SIGN", "SIS", "SNX", "SOL", "SOLV", "SOMI", "SONIC", "SOSO", "SPEC", "SPELL", "SPK", "SPX", "SQR", "SSV", "STETH", "STG", "STOP", "STRK", "STX", "SUI", "SUN", "SUNDOG", "SUPRA", "SUSHI", "SWELL", "SXT", "TA", "TAC", "TAI", "TAIKO", "THETA", "TIA", "TNSR", "TOKEN", "TOMI", "TON", "TOSHI", "TOWNS", "TRUMP", "TRX", "TWT", "UMA", "UNI", "USDC", "USDE", "USTC", "UXLINK", "VELO", "VENOM", "VET", "VIRTUAL", "VRA", "W", "WAL", "WAVES", "WAXP", "WCT", "WEN", "WIF", "WLD", "WLFI", "WOO", "X", "XAI", "XAN", "XAUT", "XCAD", "XDC", "XEC", "XION", "XLM", "XPL", "XRP", "XTER", "XTZ", "XWG", "YB", "YFI", "ZAMA", "ZBT", "ZEN", "ZETA", "ZIG", "ZIL", "ZK", "ZKC", "ZKJ", "ZKL", "ZORA", "ZRC", "ZRO", "ZRX"]
+traincoins_v2() = setdiff(traincoins_v2_vec, artificialpatterns, stablecoins)
 settypes() = ["train", "test", "eval"]
 
 partitionconfig02() = (samplesets = ["train", "test", "train", "train", "eval", "train"], partitionsize=24*60, gapsize=8*60, minpartitionsize=12*60, maxpartitionsize=2*24*60)
@@ -52,17 +65,19 @@ tradingstrategy08() = TradingStrategy.StrategyConfig(
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)
-tradingstrategy09() = TradingStrategy.StrategyConfig(
+gainlimitreversal_belowregression_config(;buygain, sellgain, triggerdist, incrementgain) = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal_below_regression!, 
     algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
-        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.2, buygain=0.001f0, incrementgain=0f0, makerfee=0.0025), 
-        triggerdist=0.005f0, 
+        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.2, buygain=buygain, sellgain=sellgain, incrementgain=incrementgain, makerfee=0.0025), 
+        triggerdist=triggerdist, 
         triggerregrwindow=4*60, # zero disables the trigger regression window, previously 12*60, 
         trendregrwindow=4*60, # zero disables the trend regression window, previously 24*60, 
         trendgainthreshold=0.01f0 / 4f0), 
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)
+tradingstrategy09() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.01f0, triggerdist=0.005f0, incrementgain=0f0)
+tradingstrategy10() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.015f0, triggerdist=0.01f0, incrementgain=0f0)
 #endregion TradingStrategies
 
 #region FeaturesConfig
@@ -388,7 +403,7 @@ const MODEL_CONFIGS = Dict{String, Function}(
 const STRATEGY_CONFIGS = Dict{String, Function}(
     "S01" => tradingstrategy01, "S02" => tradingstrategy02, "S03" => tradingstrategy03, "S04" => tradingstrategy04,
     "S05" => tradingstrategy05, "S06" => tradingstrategy06, "S07" => tradingstrategy07, "S08" => tradingstrategy08,
-    "S09" => tradingstrategy09,
+    "S09" => tradingstrategy09, "S10" => tradingstrategy10,
 )
 
 "Return a classifier config that is independent of the coin set and date range it is trained on."
@@ -518,6 +533,7 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("066", "F20-T25-P02-M011-B1", "S09"),  # modified 063 concerning trading strategy parameters
     tsentry("067", "F21-T26-P02-M011-B1", "S09"),  # modified 064 concerning trading strategy parameters
     tsentry("068", "F09-T09-P02-M011-B1", "S09"),  # modified 032 with model 011 SimpleChains and S09 strategy
+    tsentry("069", "F09-T09-P02-M011-B1", "S10"),  # modified 068 with S10 strategy
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),

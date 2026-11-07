@@ -947,25 +947,144 @@ function _rowfeatconfig(cfg::GainLimitReversalConfig, classifier, cols::TSM.Trad
     return Classify.featconfig(classifier, String(Xch.basequote(String(pair)).basecoin))
 end
 
-"Relative distance of the row close to the cfg.maxwindow regression line; negative means below."
-function _relative_to_regression(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+"""Typed regression columns resolved once, retaining their source timestamp alignment."""
+struct RegressionColumns{T<:AbstractVector{DateTime},P<:AbstractVector{Float32},G<:AbstractVector{Float32}}
+    opentime::T
+    price::P
+    gradient::G
+end
+
+"""Resolve a configured regression window without per-row DataFrame cell access."""
+function _regressioncolumns(featcfg::Features.Features006, window::Integer)
+    table = featcfg.fdfno
+    @assert !isnothing(table) "regression table unavailable for window=$window"
+    price = "ry+$window"
+    gradient = "rg+$window"
+    @assert hasproperty(table, Symbol(price)) && hasproperty(table, Symbol(gradient)) "regression window=$window unavailable; columns=$(names(table))"
+    return RegressionColumns(table[!, :opentime], table[!, price], table[!, gradient])
+end
+
+"""Read an exact regression timestamp using typed columns."""
+function _regressionvalue(columns::RegressionColumns, dt::DateTime)
+    ix = searchsortedfirst(columns.opentime, dt)
+    @assert ix <= length(columns.opentime) && columns.opentime[ix] == dt "regression timestamp=$dt unavailable; insertion index=$ix rows=$(length(columns.opentime))"
+    return (price=columns.price[ix], gradient=columns.gradient[ix])
+end
+
+"""Return undefined guidance as `nothing`, never divide by an invalid endpoint."""
+function _regressiondistance(price::Float32, close::Float32)::Union{Float32,Nothing}
+    return isfinite(price) && price > 0f0 ? (close - price) / price : nothing
+end
+
+"""Return hourly regression gain, rejecting invalid endpoints and gradients."""
+function _regressionslope(price::Float32, gradient::Float32)::Union{Float32,Nothing}
+    return isfinite(price) && price > 0f0 && isfinite(gradient) ?
+        Features.relativegain(price, gradient, 60) : nothing
+end
+
+"""Relative distance of the row close to the cfg.maxwindow regression line; negative means below.
+
+Returns `nothing` when the regression endpoint is nonpositive or non-finite. A linear fit
+over raw prices legitimately extrapolates below zero during extreme crashes (e.g. OM on
+2025-04-13), making the relative distance undefined; callers must treat `nothing` as an
+unevaluable gate. Unavailable regressions (base not attached or window not covered) still
+assert because they indicate a configuration error."""
+function _relative_to_regression(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Union{Float32, Nothing}
     featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
     @assert !isnothing(featcfg) "strategy regression base=$(cols.pair[ix]) unavailable at $(cols.opentime[ix]); window=$(window)"
-    regprice = Features.regryat(featcfg, window, cols.opentime[ix])
-    @assert !isnothing(regprice) && isfinite(regprice) && regprice > 0f0 "strategy regression price=$(regprice) invalid for base=$(cols.pair[ix]), datetime=$(cols.opentime[ix]), window=$(window)"
-    return (cols.close[ix] - regprice) / regprice
+    @assert featcfg isa Features.Features006 "regression configuration=$(typeof(featcfg)) requires Features006"
+    regr = _regressionvalue(_regressioncolumns(featcfg, window), cols.opentime[ix])
+    return _regressiondistance(regr.price, cols.close[ix])
 end
 
 """Slope of the `window` regression at the row sample in gain per hour.
 
 Derived from the regression gradient rather than from two prices, so it is the trend of the
-fitted line and not a point-to-point difference. Assert regression availability and validity."""
-function _regression_slope_gain_per_hour(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Float32
+fitted line and not a point-to-point difference. Returns `nothing` when the regression
+endpoint is nonpositive or the endpoint/gradient is non-finite. Relative gain uses the
+fitted start value for normalization; nonpositive endpoints are rejected as unusable
+price guidance (extreme crash regimes). Callers must treat
+`nothing` as an unevaluable gate. Unavailable regressions still assert because they
+indicate a configuration error."""
+function _regression_slope_gain_per_hour(cfg::GainLimitReversalConfig, classifier, cols::TSM.TradesColumns, ix::Integer, window::Integer=cfg.maxwindow)::Union{Float32, Nothing}
     featcfg = _rowfeatconfig(cfg, classifier, cols, ix)
     @assert !isnothing(featcfg) "strategy regression base=$(cols.pair[ix]) unavailable at $(cols.opentime[ix]); window=$(window)"
-    regr = Features.regressionat(featcfg, window, cols.opentime[ix])
-    @assert !isnothing(regr) && isfinite(regr.regry) && regr.regry > 0f0 && isfinite(regr.grad) "strategy regression=$(regr) invalid for base=$(cols.pair[ix]), datetime=$(cols.opentime[ix]), window=$(window)"
-    return Float32(Features.relativegain(regr.regry, regr.grad, 60))
+    @assert featcfg isa Features.Features006 "regression configuration=$(typeof(featcfg)) requires Features006"
+    regr = _regressionvalue(_regressioncolumns(featcfg, window), cols.opentime[ix])
+    return _regressionslope(regr.price, regr.gradient)
+end
+
+"""Prealigned replay guidance; equal windows share the same price and gradient arrays."""
+struct ReplayRegressionContext{T,U}
+    trigger::T
+    trend::U
+end
+
+"""Align exact regression timestamps once using a forward cursor, without nearest-row fallback."""
+function _alignregression(columns::RegressionColumns, times::AbstractVector{DateTime})
+    @assert length(columns.opentime) == length(columns.price) == length(columns.gradient) "regression column lengths differ: timestamps=$(length(columns.opentime)) prices=$(length(columns.price)) gradients=$(length(columns.gradient))"
+    @assert _strictregimetimes(columns.opentime) "regression timestamps must be sorted and unique; rows=$(length(columns.opentime))"
+    @assert issorted(times) "replay timestamps must be sorted; rows=$(length(times))"
+    prices = Vector{Float32}(undef, length(times))
+    gradients = similar(prices)
+    sourceix = isempty(times) ? 1 : searchsortedfirst(columns.opentime, first(times))
+    for ix in eachindex(times)
+        while sourceix <= length(columns.opentime) && columns.opentime[sourceix] < times[ix]
+            sourceix += 1
+        end
+        @assert sourceix <= length(columns.opentime) && columns.opentime[sourceix] == times[ix] "regression timestamp=$(times[ix]) unavailable; insertion index=$sourceix rows=$(length(columns.opentime))"
+        prices[ix] = columns.price[sourceix]
+        gradients[ix] = columns.gradient[sourceix]
+    end
+    return (price=prices, gradient=gradients)
+end
+
+"""Resolve enabled replay windows from private guidance tables or the attached classifier."""
+function _replayregressions(cfg::GainLimitReversalBelowRegressionConfig, classifier,
+        cols::TSM.TradesColumns, lastix::Integer, regressions)
+    @assert all(ix -> cols.pair[ix] == cols.pair[1],1:lastix) "replay guidance requires one pair; first pair=$(cols.pair[1]) rows=$lastix"
+    aligned = Dict{Int,NamedTuple{(:price,:gradient),Tuple{Vector{Float32},Vector{Float32}}}}()
+    for window in _strategyregressionwindows(cfg)
+        if isnothing(regressions)
+            featcfg = _rowfeatconfig(cfg.gainlimit, classifier, cols, 1)
+            @assert featcfg isa Features.Features006 "replay regression configuration=$(typeof(featcfg)) requires Features006; pair=$(cols.pair[1]) window=$window"
+            columns = _regressioncolumns(featcfg, window)
+        else
+            @assert haskey(regressions, window) "private replay regression window=$window missing; available=$(keys(regressions))"
+            table = regressions[window]
+            columns = RegressionColumns(table[!, :opentime], table[!, :regry], table[!, :grad])
+        end
+        aligned[window] = _alignregression(columns, view(cols.opentime, 1:lastix))
+    end
+    return ReplayRegressionContext(get(aligned, cfg.triggerregrwindow, nothing),
+        get(aligned, cfg.trendregrwindow, nothing))
+end
+
+"""Apply the same long/short gates in live and replay paths, then manage existing positions."""
+function _applyregressiongates!(cfg::GainLimitReversalBelowRegressionConfig, classifier,
+        cols::TSM.TradesColumns, ix::Integer, distance, slope)
+    if cols.label[ix] in (longopen, longstrongopen)
+        distance_triggered = cfg.triggerregrwindow == 0 || (!isnothing(distance) && distance <= -cfg.triggerdist)
+        trend_triggered = cfg.trendregrwindow == 0 || (!isnothing(slope) && slope > -cfg.trendgainthreshold)
+        distance_triggered && trend_triggered || (cols.label[ix] = longhold)
+    elseif cols.label[ix] in (shortopen, shortstrongopen)
+        distance_triggered = cfg.triggerregrwindow == 0 || (!isnothing(distance) && distance >= cfg.triggerdist)
+        trend_triggered = cfg.trendregrwindow == 0 || (!isnothing(slope) && slope < cfg.trendgainthreshold)
+        distance_triggered && trend_triggered || (cols.label[ix] = shorthold)
+    end
+    return gain_limit_reversal!(cfg.gainlimit, classifier, cols, ix)
+end
+
+"""Read prealigned replay guidance only for open signals; configuration/coverage was checked at setup."""
+function gain_limit_reversal_below_regression!(cfg::GainLimitReversalBelowRegressionConfig,
+        context::ReplayRegressionContext, cols::TSM.TradesColumns, ix::Integer)
+    @assert cols.score[ix] > 0f0 "preclassified replay score=$(cols.score[ix]) must be positive at ix=$ix"
+    distance = slope = nothing
+    if cols.label[ix] in (longopen, longstrongopen, shortopen, shortstrongopen)
+        distance = isnothing(context.trigger) ? nothing : _regressiondistance(context.trigger.price[ix], cols.close[ix])
+        slope = isnothing(context.trend) ? nothing : _regressionslope(context.trend.price[ix], context.trend.gradient[ix])
+    end
+    return _applyregressiongates!(cfg, nothing, cols, ix, distance, slope)
 end
 
 """
@@ -983,6 +1102,12 @@ regression-line distance is `(close - regression_price) / regression_price`; the
 value is returned by `Features.relativegain` and is a relative gain, not a regression-line
 price. A zero trigger or trend window disables its corresponding gate.
 
+When a regression endpoint is nonpositive or non-finite (possible for a raw-price linear
+fit during an extreme crash), the affected gate cannot be evaluated and is treated as not
+triggered, so the open label is downgraded to hold: no new positions are opened while the
+regression line is nonsensical, and existing positions remain managed by
+`gain_limit_reversal!`.
+
 If an open signal fails either gate, it is downgraded to the matching hold label. The
 underlying gain-limit reversal algorithm then performs classification when `score == 0f0`,
 carries order and stop-limit state from row `ix-1`, updates close brackets, and applies
@@ -998,20 +1123,24 @@ function gain_limit_reversal_below_regression!(cfg::GainLimitReversalBelowRegres
     if cols.score[ix] == 0f0
         _get_classifier_result!(classifier, cols, ix)
     end
-    close_relative_to_regression = cfg.triggerregrwindow == 0 ? 0f0 : _relative_to_regression(cfg.gainlimit, classifier, cols, ix, cfg.triggerregrwindow)
-    slope_gain_per_hour = cfg.trendregrwindow == 0 ? 0f0 : _regression_slope_gain_per_hour(cfg.gainlimit, classifier, cols, ix, cfg.trendregrwindow)
-    if cols.label[ix] in (longopen, longstrongopen)
-        distance_triggered = cfg.triggerregrwindow == 0 || (close_relative_to_regression <= -cfg.triggerdist)
-        trend_triggered = cfg.trendregrwindow == 0 || (slope_gain_per_hour > -cfg.trendgainthreshold)
-        long_triggered = distance_triggered && trend_triggered
-        long_triggered || (cols.label[ix] = longhold)
-    elseif cols.label[ix] in (shortopen, shortstrongopen)
-        distance_triggered = cfg.triggerregrwindow == 0 || (close_relative_to_regression >= cfg.triggerdist)
-        trend_triggered = cfg.trendregrwindow == 0 || (slope_gain_per_hour < cfg.trendgainthreshold)
-        short_triggered = distance_triggered && trend_triggered
-        short_triggered || (cols.label[ix] = shorthold)
+    trigger = trend = nothing
+    if cfg.triggerregrwindow > 0 || cfg.trendregrwindow > 0
+        featcfg = _rowfeatconfig(cfg.gainlimit, classifier, cols, ix)
+        @assert featcfg isa Features.Features006 "regression configuration=$(typeof(featcfg)) unavailable for pair=$(cols.pair[ix]) windows=$(cfg.triggerregrwindow),$(cfg.trendregrwindow)"
+        if cfg.triggerregrwindow > 0
+            trigger = _regressionvalue(_regressioncolumns(featcfg,cfg.triggerregrwindow),cols.opentime[ix])
+        end
+        if cfg.trendregrwindow > 0
+            trend = cfg.trendregrwindow == cfg.triggerregrwindow ? trigger :
+                _regressionvalue(_regressioncolumns(featcfg,cfg.trendregrwindow),cols.opentime[ix])
+        end
     end
-    return gain_limit_reversal!(cfg.gainlimit, classifier, cols, ix)
+    distance = slope = nothing
+    if cols.label[ix] in (longopen, longstrongopen, shortopen, shortstrongopen)
+        isnothing(trigger) || (distance = _regressiondistance(trigger.price, cols.close[ix]))
+        isnothing(trend) || (slope = _regressionslope(trend.price, trend.gradient))
+    end
+    return _applyregressiongates!(cfg, classifier, cols, ix, distance, slope)
 end
 
 
@@ -1160,8 +1289,13 @@ function _rowtakeover!(cols::TSM.TradesColumns, ix::Integer)
     return nothing
 end
 
-"""Execute per-sample strategy updates and gain materialization outside the algorithm implementation."""
-function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf::DataFrame=emptygaindf())
+"""Execute per-sample strategy updates and gain materialization outside the algorithm implementation.
+
+Optional `regressions` supplies private tables keyed by window with exact `opentime`,
+`regry` and `grad` columns. Otherwise guidance is resolved from the attached classifier.
+Regression configuration and coverage are validated before entering the row loop.
+"""
+function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf::DataFrame=emptygaindf(); regressions::Union{Nothing,AbstractDict}=nothing)
     lastix <= 0 && return tp
     @assert !isnothing(gaindf) "expeting gaindf to be a DataFrame when gain materialization is requested"
 
@@ -1170,7 +1304,9 @@ function simulate_gains!(cfg::StrategyConfig, tp::TsTp, lastix::Integer, gaindf:
     cols = TSM.TradesColumns(tp.tradesdf)
     # Function barrier: `StrategyConfig.algorithm` is typed `Function`, so calling it per row
     # would dispatch dynamically and box every argument - 544 bytes per row for `cols` alone.
-    _simulate_gains_rows!(cfg.algorithm, cfg.algorithmconfig, cfg.classifier, cfg, tp, cols, lastix, gaindf)
+    classifier = cfg.algorithm === gain_limit_reversal_below_regression! ?
+        _replayregressions(cfg.algorithmconfig, cfg.classifier, cols, lastix, regressions) : cfg.classifier
+    _simulate_gains_rows!(cfg.algorithm, cfg.algorithmconfig, classifier, cfg, tp, cols, lastix, gaindf)
 
     tp.last_update_dt = cols.opentime[lastix]
     return tp
@@ -1463,17 +1599,20 @@ end
 
 The strategy configuration is used for the replay algorithm and execution sizing.
 A gain segment still open at lastix is dropped, matching `TSM.compilegains` with `setpartitions=true`.
+Optional `regressions` supplies private, timestamp-aligned regression tables keyed by window,
+avoiding classifier feature initialization for preclassified replay inputs.
 """
 function processreplaygains!(tp::TsTp;
     strategy::StrategyConfig,
     lastix::Integer=nrow(tp.tradesdf),
+    regressions::Union{Nothing,AbstractDict}=nothing,
 )::DataFrame
     _validatereplayprepared!(tp, lastix)
     gaindf = emptygaindf()
 
     if lastix > 0
         try
-            simulate_gains!(strategy, tp, lastix, gaindf)
+            simulate_gains!(strategy, tp, lastix, gaindf; regressions)
         catch err
             if (err isa MethodError) && (getfield(err, :f) === strategy.algorithm)
                 throw(ArgumentError("strategy algorithm $(strategy.algorithm) does not support required signature in replay gain processing. Expected call shape: algorithm(algorithmconfig, classifier, cols::TSM.TradesColumns, ix::Integer)."))

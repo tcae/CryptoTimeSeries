@@ -35,7 +35,7 @@ function helptext()::String
       startdt=<ISO> enddt=<ISO>   together override experiment dates, not just replay
       runid=<immutable-id>        optional; deterministic configuration-derived default
       folder=<name>              gain replay log subfolder
-      stage=stores|train|predict|evaluate|gain|test|walkforward  default evaluate
+      stage=stores|train|predict|evaluate|snapshot|gain|test|walkforward  default evaluate
       epochs=<1..200>             default coin-set budget, total including resume
       retrain                    resume last checkpoint; warns after test exposure
       reinforce=<Int>            refresh train misclassification flags every N epochs; 0 off
@@ -45,6 +45,92 @@ function helptext()::String
       trainweights=class|balanced default class; balanced adds regime/fold weighting
       threshold=<0..1>            required for test/walkforward; fixed across regimes
       mincoins=<Int> weightcap=<0..1>  explicit detector overrides, both required
+
+    Stage explanations and artifacts:
+      Output roots:
+        Experiment: ~/crypto/logs/regime-training/<runid> in train/market mode;
+                    ~/crypto/debug/regime-training/<runid> in test/synthetic mode.
+        Model artifacts: <experiment>/balanced (also with trainweights=class).
+        Gain outputs: ~/crypto/logs/<folder> in market mode;
+                      <experiment>/gain/<folder> otherwise.
+        Default folder: RegimeTraining-<runid>. Use separate folders for strategy comparisons.
+        Arrow files are data tables; TXT and SVG files are directly readable.
+
+      stores
+        Prepare/verify histories, features, targets, shared regime calendar and memberships.
+        Writes <experiment>/manifest.arrow, input-identities.arrow, market.arrow,
+        calendar.arrow, sample-coverage.arrow, exclusions.arrow, and
+        stores/<coin>/{features,targets,sets}.arrow. Market mode also refreshes/reuses
+        shared full-history feature/target stores. Does not train or infer.
+        Preparation is also performed by train/predict/evaluate/test/walkforward.
+
+      train
+        Adapt a missing classifier, or resume with retrain; otherwise reuse its checkpoint.
+        Creates/verifies model manifest and train/eval/test-index.arrow, plus compact
+        numeric sources in train/ and eval/. Adaptation writes eval-best.bson,
+        eval-last.bson, eval-manifest.bson, epoch-losses.arrow,
+        reinforcement-refreshes.arrow and training-report.txt.
+        Adaptation also generates the eval report family below; next-steps.txt
+        explains the handoff to snapshot/gain. Reusing a checkpoint does not
+        regenerate eval reports in this stage. Non-synthetic runs publish the
+        best classifier to its configured classifier folder.
+
+      predict
+        Infer eval samples from the saved best checkpoint; writes eval-predictions.arrow.
+        If no checkpoint exists (or retrain is given), first performs adaptation
+        and produces the full training/eval artifacts described above.
+
+      evaluate (default)
+        Infer and assess eval signal opportunities over a threshold sweep.
+        Uses the best checkpoint, adapting first if missing or retrain is given.
+        Eval report family in the model folder:
+          eval-predictions.arrow, eval-signals.arrow, eval-events.arrow,
+          eval-macro.arrow, eval-candidates.arrow, eval-report.txt,
+          eval-curves.svg and coin-reports/eval-coin-<coin>.arrow.
+        These assess signals, not economic gains; use eval to choose thresholds.
+
+      snapshot
+        One-time seal of the original reserved test inputs; requires saved preparation
+        and training-selection artifacts. Verifies original history digests and exact
+        test membership, then freezes test features, prices and regression guidance.
+        Writes model/gain-snapshot/<coin>.arrow, coins.arrow and manifest.arrow
+        (completion seal), plus model/test-identity/ provenance.
+        Does not adapt or rebuild train/eval numeric sources. Changed histories fail;
+        existing seals cannot be overwritten. Later strategies may only request
+        regression windows included in the seal.
+
+      gain
+        Requires eval-best.bson and a sealed snapshot. Never adapts; infers/reuses
+        predictions and replays predicted and target-reference test signals separately.
+        Writes model/test-predictions.arrow, test-strategy.arrow and
+        test-strategy-history.arrow. Verified prediction and coin/pass replay caches
+        live under model/gain-cache/, with digest completion markers.
+        Gain output folder contains trades-regime/<coin>-{predicted,truth}.arrow,
+        tsmgains-regime.arrow (completed trades), xchgainsreport-regime.arrow
+        (combined aggregate), gain-summary.arrow and gain-identity.arrow.
+        gain-report.txt and gain-report.svg separate predicted/reference results;
+        SVG shows average completed-trade gain (%), not portfolio return.
+        Cache reruns regenerate reports; empty results explicitly say no completed trades.
+
+      test
+        Requires a saved best checkpoint and threshold=<eval-selected value>.
+        Assesses reserved test signals without adaptation. Writes fixed-threshold.arrow,
+        test-threshold-history.arrow, test-identity/ provenance, test-index.arrow
+        and compact test/ sources in the model folder.
+        Generates the same report family as evaluate with the test- prefix and only
+        the supplied threshold: test-predictions/signals/events/macro/candidates.arrow,
+        test-report.txt, test-curves.svg and coin-reports/test-coin-<coin>.arrow.
+        Does not simulate economic gains or create a gain snapshot.
+
+      walkforward
+        Train and assess successive chronological train/eval/test windows using
+        threshold=<fixed value>; diagnostic folds/regimes subsets are not supported.
+        Writes <experiment>/walkforward-schedule.arrow and per-window training,
+        checkpoint, eval and test artifacts under walkforward-<id>/.
+        Combined test reports use the walkforward-test- prefix at the experiment root,
+        including predictions/signals/events/macro/candidates.arrow, report.txt,
+        curves.svg and per-coin reports. Does not perform gain replay.
+
     Training outputs eval threshold curves without using test for selection.
     Curve columns: precision/PPV, recall, NPV (= TN / (TN + FN)), all versus coverage.
     Run test only after choosing a fixed threshold from eval reports.
@@ -54,6 +140,9 @@ function helptext()::String
     Detector RF01/RG01 settings are recorded in the immutable manifest; no automatic calibration.
     Adaptation ends with eval diagrams and next-step guidance.
     Gain requires an existing checkpoint; it never trains and replays reserved test only.
+    Run stage=snapshot once to seal existing test inputs against the original experiment.
+    Gain reads the sealed snapshot only, not current market histories, and verifies digests.
+    Completed predictions and coin/pass replays are reused only with matching identities.
     Keep the same runid/data options; ts may change if its classifier configuration is identical.
     Ctrl+C stops; completed checkpoints remain. Use retrain to continue.
     """
@@ -99,7 +188,7 @@ function buildrunconfig(opts::Dict{String,String})::NamedTuple
     @assert mode in ("test","market","synthetic") "invalid mode=$mode"
     @assert haskey(opts,"mincoins")==haskey(opts,"weightcap") "mincoins and weightcap must be given together, options=$opts"
     stage = get(opts,"stage","evaluate")
-    @assert stage in ("stores","train","predict","evaluate","gain","test","walkforward") "invalid stage=$stage"
+    @assert stage in ("stores","train","predict","evaluate","snapshot","gain","test","walkforward") "invalid stage=$stage"
     epochs = parse(Int,get(opts,"epochs",string(cs.maxepochs)))
     @assert 0<epochs<=200 "invalid epoch budget=$epochs"
     reinforce = parse(Int,get(opts,"reinforce","0"))
@@ -110,8 +199,8 @@ function buildrunconfig(opts::Dict{String,String})::NamedTuple
     runid = get(opts,"runid","$(tscfg.classifier)-$coinset-$daterange-"*TradingStrategy.confighash(description)[1:12])
     folder = get(opts,"folder","RegimeTraining-$runid")
     @assert occursin(r"^[A-Za-z0-9_-]+$",folder) "invalid folder=$folder"
-    @assert stage!="gain" || !haskey(opts,"retrain") "gain only loads an adapted checkpoint; retrain is not permitted"
-    @assert stage!="gain" || reinforce==0 "gain does not train; reinforce=$reinforce belongs to an adaptation run"
+    @assert !(stage in ("gain","snapshot")) || !haskey(opts,"retrain") "$stage does not adapt a checkpoint; retrain is not permitted"
+    @assert !(stage in ("gain","snapshot")) || reinforce==0 "$stage does not train; reinforce=$reinforce belongs to an adaptation run"
     return (;tscfg,clcfg,coinset,daterange,coins,startdt,enddt,mode,stage,epochs,reinforce,runid,folder,description,
         resume=haskey(opts,"retrain"))
 end
@@ -161,8 +250,8 @@ function loadinputhistory(input::NamedTuple,coin::AbstractString)::DataFrame
     return df
 end
 
-"""Prepare SINE and DOUBLESINE OHLCV, or read an explicitly selected market universe."""
-function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts))::NamedTuple
+"""Prepare artificial OHLCV or inspect the market universe; `saved=true` skips market reads."""
+function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts); saved::Bool=false)::NamedTuple
     mode = rc.mode
     histories = Dict{String,DataFrame}()
     if mode == "synthetic"
@@ -198,6 +287,11 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts)):
     targetfactory = ()->TradingStrategy.targetconfig(rc.clcfg.targets)
     warmup = TradingStrategy.regimewarmup(featurefactory,targetfactory,regime)
     contextstart = startdt-Minute(warmup+1)
+    if saved
+        return (;histories,coins=sort(rc.coins),startdt,enddt,regime,folds=TradingStrategy.FoldConfig(),
+            featurefactory,targetfactory,mode,modelid=rc.clcfg.model,
+            classbalancing=rc.clcfg.classbalancing,context=rc.description,sharedstores,rc)
+    end
     started = time_ns()
     progressmessage("checking history: coins=$(length(rc.coins)) range=$startdt to $enddt")
     for (coinix,coin) in enumerate(rc.coins)
@@ -787,7 +881,8 @@ function nextsteps!(prepared::NamedTuple,sources::NamedTuple)::Nothing
     1. Inspect $(joinpath(sources.folder,"eval-curves.svg")) and eval opportunity reports.
     2. Set the selected entry thresholds in the registered trading strategy.
        Use the same or a different ts with identical features, targets and classifier configuration.
-    3. Run RegimeTraining again with stage=gain, runid=$(rc.runid), and the same
+    3. Seal the original reserved test inputs once with stage=snapshot, runid=$(rc.runid).
+       Then run RegimeTraining again with stage=gain, runid=$(rc.runid), and the same
        mode/coinset/daterange/coins/date/detector/weight options. Do not use retrain.
        It loads eval-best.bson and replays only reserved test blocks, never adapts.
     Replay settings are recorded; changed strategy/checkpoint settings warn but do not block replay.
@@ -843,6 +938,12 @@ Warn on changed settings without restricting strategy experiments; retain replay
 function recordteststrategy!(sources::NamedTuple,index::DataFrame,strategy::TradingStrategy.StrategyConfig)::Nothing
     identity = TradingStrategy.experimentmanifest!(joinpath(sources.folder,"test-identity"),
         Dict("test"=>index),sources.identity)
+    return recordteststrategyidentity!(sources,identity,strategy)
+end
+
+"""Record replay exposure using an already verified immutable test-population identity."""
+function recordteststrategyidentity!(sources::NamedTuple,identity::AbstractString,
+        strategy::TradingStrategy.StrategyConfig)::Nothing
     checkpoint = bytes2hex(open(SHA.sha256,joinpath(sources.folder,"eval-best.bson")))
     description = repr(strategy)
     current = DataFrame(identity=[identity],checkpoint=[checkpoint],strategy=[description])
@@ -945,6 +1046,7 @@ function gainreport!(prepared::NamedTuple,sources::NamedTuple,best;
         EnvConfig.writetable(DataFrame(completed_trades=[nrow(gains)]),"gain-summary";
             folderpath=gainfolder,format=:arrow)
     end
+    gainreadablereport!(isempty(gainparts) ? DataFrame() : gains,gainfolder)
     EnvConfig.writetable(DataFrame(identity=[sources.identity],ts=[rc.tscfg.configname],
         strategy=[rc.tscfg.strategy],population=["test"],checkpoint=["eval-best.bson"]),
         "gain-identity";folderpath=gainfolder,format=:arrow)
@@ -955,16 +1057,18 @@ end
 function execute!(prepared::NamedTuple;stage::String,epochs::Int,resume::Bool,
         threshold::Union{Nothing,Float64},folds::AbstractVector{Int}=Int[],
         regimes::AbstractVector{<:AbstractString}=String[],trainweights::String="class",reinforce::Int=0)::Nothing
+    if stage == "gain"
+        @assert !resume "gain cannot resume adaptation"
+        snapshotgainreport!(prepared,snapshotsources(prepared;
+            folds=join(folds,","),regimes=join(regimes,","),trainweights))
+        return nothing
+    end
     if stage != "walkforward"
         sources = trainingsources(prepared,prepared.sets,joinpath(prepared.folder,"balanced");
             folds,regimes,trainweights,streaming=true)
         if stage == "test"
             best = Classify.loadtraincheckpoint(sources.folder;identity=sources.identity)
             testreport!(prepared,sources,prepared.sets,best,threshold;folds,regimes)
-        elseif stage=="gain"
-            @assert !resume "gain cannot resume adaptation"
-            best = Classify.loadtraincheckpoint(sources.folder;identity=sources.identity)
-            gainreport!(prepared,sources,best;folds,regimes)
         else
             @assert reinforce==0 || resume || !isfile(joinpath(sources.folder,"eval-best.bson")) "reinforce=$reinforce requires retrain to adapt an existing checkpoint"
             adapted = resume || !isfile(joinpath(sources.folder,"eval-best.bson"))
@@ -1033,6 +1137,19 @@ function main(args::Vector{String}=ARGS)::Nothing
     ENV["CTS_RUN_ID"] = rc.runid
     folder = experimentfolder(rc)
     progressmessage("starting run=$(rc.runid) ts=$(rc.tscfg.configname) stage=$(rc.stage) output=$folder")
+    @assert !haskey(opts,"threshold") || rc.stage in ("test","walkforward") "threshold is only supported for test/walkforward, stage=$(rc.stage); gain uses registered strategy thresholds"
+    if rc.stage in ("snapshot","gain")
+        prepared = snapshotprepared(opts,rc,folder)
+        sources = snapshotsources(prepared;folds=get(opts,"folds",""),
+            regimes=get(opts,"regimes",""),trainweights=get(opts,"trainweights","class"))
+        if rc.stage == "snapshot"
+            sealsnapshot!(prepared,sources)
+        else
+            snapshotgainreport!(prepared,sources)
+        end
+        progressmessage("run complete: artifacts=$folder")
+        return nothing
+    end
     input = inputs(opts,rc)
     prepared = prepare!(input,folder)
     stage,epochs = rc.stage,rc.epochs
@@ -1055,6 +1172,8 @@ function main(args::Vector{String}=ARGS)::Nothing
     progressmessage("run complete: artifacts=$folder")
     return nothing
 end
+
+include("regimegain.jl")
 
 end
 
