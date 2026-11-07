@@ -1,5 +1,10 @@
 # Regime, fold, validation and signal-report implementation plan
 
+**Identity update:** The original content-hash requirements below have been
+superseded by coverage-based validation: OHLCV and sample indices are checked by
+row count and timestamp bounds, not interior contents. Regenerate artifacts after
+interior data changes. See the [current manifest description](2026-11-05-regime-folds-manifests-indices-and-memory.md#manifests).
+
 ## Objective and agreed boundaries
 
 Build a reproducible SimpleChains-based training pipeline with:

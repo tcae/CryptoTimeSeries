@@ -4,6 +4,22 @@ This describes the implementation as of November 5, 2026, including lazy epoch
 batches, weights-only epoch evaluation, index release/reload and compact
 checkpoint references.
 
+Update: input and index identities now use row counts and timestamp bounds rather
+than content hashes. Interior changes with unchanged coverage are not detected;
+regenerate run artifacts after such changes. Older identities require regeneration.
+
+November 7 market-path update: eligibility and observations are prepared in one
+coin pass using complete shared stores; no private feature/target copies or
+per-sample `sets` files are persisted. After market detection, a timestamp-only
+pass counts samples per block and global balancing assigns whole blocks. One
+final coin pass writes train/eval/test compact files and sample metadata directly
+from shared stores and eligible timestamps. Sample coordinates now refer to
+shared-store rows. Coverage summaries come from pooled block counts. Synthetic/test
+and cutoff-safe walk-forward selection retain their existing membership algorithms.
+New default market run IDs isolate this layout from older artifacts.
+The detailed lifecycle discussion below describes the earlier separate-compaction
+path where it refers to private stores or per-set compaction.
+
 ## Folds, regimes and population assignment
 
 A fold is a fixed calendar interval shared across the evaluated coin universe.
@@ -82,8 +98,8 @@ The training folder contains `train-index.arrow`, `eval-index.arrow` and
 | `set` | Train, eval or test assignment |
 | `regime`, `foldid`, `blockid` | Historical grouping and shared block assignment |
 
-Indices establish membership, source coordinates and provenance. Their contents
-also participate in experiment identity checks.
+Indices establish membership, source coordinates and provenance. Their row counts
+and timestamp bounds participate in experiment identity checks, not their full contents.
 
 See [experimentindex and experimentindices](../TradingStrategy/src/RegimePipeline.jl).
 
@@ -111,14 +127,14 @@ See [CompactMmapSource](../Classify/src/SampleSource.jl).
 | File | Purpose |
 |---|---|
 | Experiment-root `manifest.arrow` | Dataset/preparation identity and configuration description |
-| Experiment-root `input-identities.arrow` | Per-coin input-content hashes |
-| Training-folder `manifest.arrow` | Identity of selected train/eval index contents and training-selection configuration |
-| Training-folder `input-identities.arrow` | Content hashes for the train/eval index inputs to that identity |
+| Experiment-root `input-identities.arrow` | Per-coin row counts and timestamp bounds |
+| Training-folder `manifest.arrow` | Identity of train/eval index coverage and training-selection configuration |
+| Training-folder `input-identities.arrow` | Row counts and timestamp bounds for the train/eval indices |
 | `eval-manifest.bson` | Frozen training contract: identity, sample counts, fixed eval weights, labels, architecture, description, batch size and seed |
 
-The manifests reject mismatched data, membership or configuration when reusing a
-run. They describe/identify the experiment; they do not contain the numeric
-feature matrix.
+The manifests reject mismatched coverage or configuration when reusing a run.
+They do not detect changed interior data or membership with identical counts and
+timestamp bounds, and do not contain the numeric feature matrix.
 
 Best/last checkpoints now store a SHA-256 reference to the separately persisted
 `eval-manifest.bson`, rather than serializing its large population metadata in
@@ -217,16 +233,16 @@ loss needs only predictions, targets and those weights.
 
 Membership is used at two separate stages:
 
-- **Preparation:** construct balanced sample weights and establish the immutable
-  train/eval membership identity.
+- **Preparation:** construct balanced sample weights and record train/eval index
+  coverage and configuration.
 - **Final reporting:** reload the index to group predictions by regime, fold,
   block and coin.
 
 The current implementation does not calculate per-regime/fold losses each epoch
 and does not retain membership arrays in the active training manifest.
 Checkpoint selection and early stopping use only fixed weighted eval loss.
-Resume validation checks the frozen membership identity and exact weights,
-without requiring the full index in the epoch loop.
+Resume validation checks index coverage, configuration and exact weights, without
+requiring the full index in the epoch loop. Coverage cannot detect every membership change.
 
 Final diagrams and regime/fold reports remain available after the index reload.
 This separates useful final diagnostics from the memory required throughout
@@ -285,14 +301,14 @@ pages and allocator retention rather than treating them as one quantity.
 
 For a **market-mode** run, RegimeTraining’s run folder is `~/crypto/logs/regime-training/<runid>/`; test runs use `~/crypto/debug/regime-training/<runid>/` (`experimentfolder`).
 
-**If you still plan to run `stage=gain`, `stage=test`, or resume adaptation, keep the run data for now.** Gain loads `eval-best.bson`, and the run’s indices and per-coin stores are needed to prepare the replay (`execute!`, `trainingsources`).
+**If you still plan to run `stage=gain`, `stage=test`, or resume adaptation, keep the run data for now.** Keep the checkpoint, manifests, calendar, eligible timestamps and indices, plus the shared feature/target stores until snapshot sealing. A sealed gain snapshot freezes the required test inputs independently of those shared stores.
 
 | Artifact | Cleanup guidance |
 |---|---|
-| `balanced/train/` and `balanced/eval/` compact files (`trainfeatures.f32`, `trainlabels.u8`) | Usually the first run artifacts to remove. They can be rebuilt for later stages **if** you keep the run’s `train-index.arrow`, `eval-index.arrow`, `stores/`, and manifests. |
+| `balanced/{train,eval,test}/` compact files (`trainfeatures.f32`, `trainlabels.u8`) | Rebuildable if calendar, `eligible/`, shared stores, configuration and manifests are retained. Synthetic/test modes instead require their private `stores/`. |
 | `balanced/eval-last.bson` | Remove if you’re sure you won’t resume training; it holds the resume state. Keep `eval-best.bson` for test/gain replay and the best checkpoint (`EvalTraining.jl`). |
 | Eval reports and predictions (`eval-predictions.arrow`, metrics, plots, `coin-reports/`, `epoch-losses.arrow`) | Optional if you no longer need the reports. You may need to rerun reporting to recover them. |
-| `balanced/eval-best.bson`, run indices, `stores/`, manifests | Keep until any desired test/gain replay is complete. These preserve the checkpoint and the data/provenance needed for that workflow. |
+| `balanced/eval-best.bson`, run indices, calendar, `eligible/`, manifests and sealed snapshots | Keep until any desired test/gain replay is complete. Synthetic/test modes also retain private `stores/`. |
 | Shared per-coin feature/target stores under `~/crypto/Bybit/` | Avoid deleting casually: they’re reusable across runs, and rebuilding them requires the full OHLCV history (`ensurefeaturetargetstores!`). |
 
 Keep the **published classifier** in `~/crypto/classifiers/<classifier-name>/` for normal use; test-mode classifiers are under `~/crypto/debug/classifiers/` (`classifierfolder`). If you’ve finished all replay/reporting and only need that published classifier, you can remove the run folder—but its saved metadata points to the run’s best checkpoint, so you’ll lose that checkpoint and its run-level provenance.

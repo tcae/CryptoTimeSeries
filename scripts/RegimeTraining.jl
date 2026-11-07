@@ -8,6 +8,16 @@ using Dates, DataFrames
 import SHA
 import EnvConfig, TradingStrategy, Features, Targets, Ohlcv, TestOhlcv, Classify, Xch, Bybit, TSM
 
+"""
+verbosity =
+- 0: suppress all output if not an error
+- 1: log warnings
+- 2: load and save messages are reported
+- 3: print debug info
+"""
+verbosity = 1
+
+
 """Print and flush a timestamped phase message, including monotonic elapsed time when supplied."""
 function progressmessage(message::AbstractString; started::Union{Nothing,UInt64}=nothing,
         io::IO=stdout)::Nothing
@@ -57,17 +67,21 @@ function helptext()::String
         Arrow files are data tables; TXT and SVG files are directly readable.
 
       stores
-        Prepare/verify histories, features, targets, shared regime calendar and memberships.
+        Prepare/verify histories, shared stores, eligible timestamps and assigned blocks.
         Writes <experiment>/manifest.arrow, input-identities.arrow, market.arrow,
-        calendar.arrow, sample-coverage.arrow, exclusions.arrow, and
-        stores/<coin>/{features,targets,sets}.arrow. Market mode also refreshes/reuses
-        shared full-history feature/target stores. Does not train or infer.
+        calendar.arrow, sample-coverage.arrow and exclusions.arrow.
+        Market mode writes eligible/<coin>.arrow and refreshes/reuses shared full-history
+        feature/target stores, without private copies or per-sample membership files.
+        Synthetic/test mode writes stores/<coin>/{features,targets,sets}.arrow.
+        Does not train or infer.
         Preparation is also performed by train/predict/evaluate/test/walkforward.
 
       train
         Adapt a missing classifier, or resume with retrain; otherwise reuse its checkpoint.
         Creates/verifies model manifest and train/eval/test-index.arrow, plus compact
-        numeric sources in train/ and eval/. Adaptation writes eval-best.bson,
+        numeric sources in train/ and eval/ (also test/ in market mode).
+        Market mode compiles all three directly from shared stores in one coin pass.
+        Adaptation writes eval-best.bson,
         eval-last.bson, eval-manifest.bson, epoch-losses.arrow,
         reinforcement-refreshes.arrow and training-report.txt.
         Adaptation also generates the eval report family below; next-steps.txt
@@ -91,11 +105,11 @@ function helptext()::String
 
       snapshot
         One-time seal of the original reserved test inputs; requires saved preparation
-        and training-selection artifacts. Verifies original history digests and exact
-        test membership, then freezes test features, prices and regression guidance.
+        and training-selection artifacts. Verifies original history and test coverage,
+        then freezes test features, prices and regression guidance.
         Writes model/gain-snapshot/<coin>.arrow, coins.arrow and manifest.arrow
         (completion seal), plus model/test-identity/ provenance.
-        Does not adapt or rebuild train/eval numeric sources. Changed histories fail;
+        Does not adapt or rebuild train/eval numeric sources. Changed history coverage fails;
         existing seals cannot be overwritten. Later strategies may only request
         regression windows included in the seal.
 
@@ -135,6 +149,8 @@ function helptext()::String
     Curve columns: precision/PPV, recall, NPV (= TN / (TN + FN)), all versus coverage.
     Run test only after choosing a fixed threshold from eval reports.
     Market mode refreshes/reuses shared full-history feature and target stores, then selects the experiment window.
+    Input and index identity checks cover configuration, row counts and timestamp bounds,
+    not interior data changes. Regenerate artifacts after changing data within those bounds.
     Coins with insufficient window/context history are warned about and skipped.
     No usable histories or shared training blocks still cause an explicit failure.
     Detector RF01/RG01 settings are recorded in the immutable manifest; no automatic calibration.
@@ -196,7 +212,8 @@ function buildrunconfig(opts::Dict{String,String})::NamedTuple
     identityopts = sort([key*"="*value for (key,value) in opts
         if !(key in ("test","train","ts","runid","folder","stage","epochs","retrain","threshold","reinforce"))])
     description = "classifier=$(tscfg.classifier);coinset=$coinset;daterange=$daterange;mode=$mode;coins=$(join(coins,","));start=$startdt;end=$enddt;$(join(identityopts,";"))"
-    runid = get(opts,"runid","$(tscfg.classifier)-$coinset-$daterange-"*TradingStrategy.confighash(description)[1:12])
+    scheme = mode=="market" ? "shared-blocks-v1;" : "coverage-v1;"
+    runid = get(opts,"runid","$(tscfg.classifier)-$coinset-$daterange-"*TradingStrategy.confighash(scheme*description)[1:12])
     folder = get(opts,"folder","RegimeTraining-$runid")
     @assert occursin(r"^[A-Za-z0-9_-]+$",folder) "invalid folder=$folder"
     @assert !(stage in ("gain","snapshot")) || !haskey(opts,"retrain") "$stage does not adapt a checkpoint; retrain is not permitted"
@@ -250,16 +267,20 @@ function loadinputhistory(input::NamedTuple,coin::AbstractString)::DataFrame
     return df
 end
 
-"""Prepare artificial OHLCV or inspect the market universe; `saved=true` skips market reads."""
+"""Prepare artificial OHLCV or market configuration; market histories are loaded during preparation."""
 function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts); saved::Bool=false)::NamedTuple
     mode = rc.mode
     histories = Dict{String,DataFrame}()
+    coverage = DataFrame(coin=String[],rows=Int[],start=DateTime[],stop=DateTime[])
     if mode == "synthetic"
         startdt = DateTime(2025,1,1)
         # Lower frequency than the live simulation fixture makes sustained regimes
         # observable while still using TestOhlcv's SINE/DOUBLESINE generator.
         histories["SINE"] = TestOhlcv.sinedata(2400,24000,0,1;firstutc=startdt)
         histories["DOUBLESINE"] = TestOhlcv.sinedata(2400,24000,0,10.5;firstutc=startdt)
+        for coin in sort!(collect(keys(histories)))
+            push!(coverage,TradingStrategy.experimentcoverage(coin,histories[coin]))
+        end
         enddt = last(histories["SINE"].opentime)
         liquidity = (minquotevol=5000f0,accumulate=15,checkperiod=60,startthreshold=0.05,
             stopthreshold=0.25,minliquidminutes=120,startdistance=120)
@@ -268,7 +289,7 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts); 
             strength=0.0,confirmation=2,liquidity=liquidity)
         folds = TradingStrategy.FoldConfig(anchor=startdt,foldminutes=6000,
             blockminutes=360,gapminutes=60,minminutes=120)
-        return (;histories,coins=sort!(collect(keys(histories))),startdt,enddt,regime,folds,
+        return (;histories,coverage,coins=sort!(collect(keys(histories))),startdt,enddt,regime,folds,
             featurefactory=syntheticfeatures,targetfactory=synthetictarget,mode,
             modelid=rc.clcfg.model,classbalancing=rc.clcfg.classbalancing,context=rc.description,
             sharedstores=nothing,rc)
@@ -287,8 +308,8 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts); 
     targetfactory = ()->TradingStrategy.targetconfig(rc.clcfg.targets)
     warmup = TradingStrategy.regimewarmup(featurefactory,targetfactory,regime)
     contextstart = startdt-Minute(warmup+1)
-    if saved
-        return (;histories,coins=sort(rc.coins),startdt,enddt,regime,folds=TradingStrategy.FoldConfig(),
+    if saved || mode=="market"
+        return (;histories,coverage,coins=sort(rc.coins),startdt,enddt,regime,folds=TradingStrategy.FoldConfig(),
             featurefactory,targetfactory,mode,modelid=rc.clcfg.model,
             classbalancing=rc.clcfg.classbalancing,context=rc.description,sharedstores,rc)
     end
@@ -305,6 +326,7 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts); 
             isnothing(df) && continue
         end
         push!(acceptedcoins,coin)
+        push!(coverage,TradingStrategy.experimentcoverage(coin,df))
         if mode=="test"
             Ohlcv.addpivot!(df)
             histories[coin] = df
@@ -318,49 +340,68 @@ function inputs(opts::Dict{String,String}, rc::NamedTuple=buildrunconfig(opts); 
     if mode == "market"
         println("RegimeTraining accepted history: ",repr(acceptedcoins))
     end
-    return (;histories,coins=acceptedcoins,startdt,enddt,regime,folds=TradingStrategy.FoldConfig(),
+    return (;histories,coverage,coins=acceptedcoins,startdt,enddt,regime,folds=TradingStrategy.FoldConfig(),
         featurefactory,targetfactory,mode,modelid=rc.clcfg.model,classbalancing=rc.clcfg.classbalancing,
         context=rc.description,sharedstores,rc)
 end
 
 """Describe the immutable regime experiment independently of its storage lifecycle."""
 function preparationdescription(input::NamedTuple)::String
-    return "regime-experiment-v3;RG01=$(input.regime);RF01=$(input.folds);start=$(input.startdt);end=$(input.enddt);features=$(Features.configdescription(input.featurefactory()));targets=$(Targets.configdescription(input.targetfactory()));model=$(input.modelid);classbalancing=$(input.classbalancing);mode=$(input.mode);$(input.context)"
+    scheme = input.mode=="market" ? "regime-experiment-v5-shared-blocks" : "regime-experiment-v4-coverage"
+    return "$scheme;RG01=$(input.regime);RF01=$(input.folds);start=$(input.startdt);end=$(input.enddt);features=$(Features.configdescription(input.featurefactory()));targets=$(Targets.configdescription(input.targetfactory()));model=$(input.modelid);classbalancing=$(input.classbalancing);mode=$(input.mode);$(input.context)"
 end
 
-"""Read aligned shared windows without letting full-history store mappings escape."""
-@noinline function inputsharedstores(input::NamedTuple, coin::AbstractString,
-        history::DataFrame)::Tuple{DataFrame,DataFrame}
+"""Map a coin's complete shared stores with the configured feature and target identities."""
+function inputfullstores(input::NamedTuple, coin::AbstractString)::NamedTuple
     clcfg = input.rc.clcfg
     features = Features.readfeatures(coin,"USDT",clcfg.features;
         confighash=TradingStrategy.featureshash(clcfg.features))
     targets = Targets.readtargets(coin,"USDT",clcfg.targets;
         confighash=TradingStrategy.targetshash(clcfg.targets))
-    @assert !isnothing(features) && !isnothing(targets) "missing shared feature/target stores for $coin after ensuring full OHLCV coverage"
+    @assert !isnothing(features) && !isnothing(targets) "missing shared stores for $coin features=$(clcfg.features) targets=$(clcfg.targets)"
+    return (;features,targets)
+end
+
+"""Read aligned shared windows without letting full-history store mappings escape."""
+@noinline function inputsharedstores(input::NamedTuple, coin::AbstractString,
+        history::DataFrame)::Tuple{DataFrame,DataFrame}
+    (;features,targets) = inputfullstores(input,coin)
     return TradingStrategy.sharedstorewindow(history,features,targets,
         input.featurefactory,input.targetfactory,coin)
 end
 
-"""Scope one coin's sources, persist its stores/times and return only hourly observations."""
+"""Load, accept and prepare one coin, retaining only coverage and hourly observations."""
 @noinline function prepareinputcoin!(input::NamedTuple, coin::AbstractString, historyloader::Function,
         folder::AbstractString, scratch::AbstractString, times::AbstractVector{DateTime};
-        coinix::Int, ncoins::Int)::DataFrame
+        coinix::Int, ncoins::Int)::Union{Nothing,NamedTuple}
     history = historyloader(coin)
+    isnothing(history) && return nothing
+    actual = TradingStrategy.experimentcoverage(coin,history)
     GC.gc()
     sharedstores = nothing
     if input.mode=="market"
         TradingStrategy.ensurefeaturetargetstores!(input.rc.clcfg,[coin];
             progressoffset=coinix-1,progresstotal=ncoins)
         GC.gc()
+    end
+    progressmessage("checking liquidity $coin ($coinix/$ncoins)")
+    liquid = TradingStrategy.regimeliquidity(history,input.regime)
+    if input.mode=="market"
         sharedstores = Dict(coin=>inputsharedstores(input,coin,history))
         GC.gc()
     end
     histories = Dict(coin=>history)
-    progressmessage("preparing private stores $coin ($coinix/$ncoins): history rows=$(nrow(history))")
-    stores = TradingStrategy.experimentstores!(histories,input.featurefactory,
-        input.targetfactory,folder;sharedstores)
+    if input.mode=="market"
+        features,targets = sharedstores[coin]
+        stores = (coins=[coin],featurestores=[features],targetstores=[targets])
+    else
+        progressmessage("preparing private stores $coin ($coinix/$ncoins): history rows=$(nrow(history))")
+        stores = TradingStrategy.experimentstores!(histories,input.featurefactory,
+            input.targetfactory,folder;sharedstores)
+    end
     progressmessage("calculating eligible minutes $coin ($coinix/$ncoins)")
-    eligible = TradingStrategy.experimenttimes(histories,stores,input.regime)
+    eligible = TradingStrategy.experimenttimes(histories,stores,input.regime;
+        liquidity=Dict(coin=>liquid))
     EnvConfig.writetable(DataFrame(opentime=eligible[coin]),coin;folderpath=scratch,format=:arrow)
     progressmessage("persisted eligible minutes $coin: rows=$(length(eligible[coin]))")
     stores = nothing
@@ -368,7 +409,7 @@ end
     eligible = nothing
     GC.gc()
     progressmessage("calculating hourly observations $coin ($coinix/$ncoins)")
-    return TradingStrategy.regimeobservations(history,times,input.regime)
+    return (coverage=actual,observation=TradingStrategy.regimeobservations(history,times,input.regime;liquid))
 end
 
 """Read a required persisted experiment table; missing preparation data is an error."""
@@ -397,23 +438,22 @@ end
 end
 
 """
-Stream private stores, eligibility and projected sets per coin. Shared hourly observations
+Accept and prepare histories in one coin loop, staging private stores before coverage verification.
+Shared hourly observations
 and eligible minutes are disk-backed until the full-universe calendar and coverage are built.
 Only coin metadata and the small market/calendar tables survive preparation.
 """
 function preparestreamed!(input::NamedTuple, folder::AbstractString;
-        historyloader::Function=coin -> loadinputhistory(input,coin))::NamedTuple
+        historyloader::Function=coin -> input.mode=="market" ?
+            marketinputhistory(coin,input.startdt,input.enddt,
+                TradingStrategy.regimewarmup(input.featurefactory,input.targetfactory,input.regime)) :
+            loadinputhistory(input,coin))::NamedTuple
     coins = input.coins
     started = time_ns()
-    progressmessage("hashing input histories: coins=$(length(coins)) output=$folder")
-    identityloader = coin -> begin
-        progressmessage("hashing input history $coin ($(searchsortedfirst(coins,coin))/$(length(coins)))";started)
-        historyloader(coin)
-    end
-    identity = TradingStrategy.experimentmanifest!(folder,coins,
-        identityloader,preparationdescription(input))
-    progressmessage("input identity verified: $identity";started)
     return mktempdir(mkpath(folder)) do scratch
+        stagedfolder = mkpath(joinpath(scratch,"prepared"))
+        coverage = DataFrame(coin=String[],rows=Int[],start=DateTime[],stop=DateTime[])
+        acceptedcoins = String[]
         progressmessage("preparing per-coin stores and observations: scratch=$scratch")
         times = collect(ceil(input.startdt,Minute(input.regime.stepminutes)):
             Minute(input.regime.stepminutes):input.enddt)
@@ -422,22 +462,56 @@ function preparestreamed!(input::NamedTuple, folder::AbstractString;
         for (coinix,coin) in enumerate(coins)
             coinstarted = time_ns()
             progressmessage("loading preparation history $coin ($coinix/$(length(coins)))")
-            observation = prepareinputcoin!(input,coin,historyloader,folder,scratch,times;
+            result = prepareinputcoin!(input,coin,historyloader,stagedfolder,scratch,times;
                 coinix,ncoins=length(coins))
-            EnvConfig.appenddf(observation,"observations";folderpath=scratch)
-            push!(ranges,(rows+1):(rows+nrow(observation)))
-            rows += nrow(observation)
-            observation = nothing
+            if isnothing(result)
+                GC.gc()
+                continue
+            end
+            push!(acceptedcoins,coin)
+            push!(coverage,result.coverage)
+            EnvConfig.appenddf(result.observation,"observations";folderpath=scratch)
+            push!(ranges,(rows+1):(rows+nrow(result.observation)))
+            rows += nrow(result.observation)
+            result = nothing
             GC.gc()
             progressmessage("prepared $coin ($coinix/$(length(coins))): cumulative hourly rows=$rows";started=coinstarted)
         end
+        @assert !isempty(acceptedcoins) "no coins have sufficient history for $(input.startdt) to $(input.enddt); requested=$coins"
+        coins = acceptedcoins
+        input = merge(input,(coins=coins,coverage=coverage))
+        identity = TradingStrategy.experimentmanifest!(folder,coverage,preparationdescription(input))
+        for coin in coins
+            if input.mode=="market"
+                destination = mkpath(joinpath(folder,"eligible"))
+                mv(joinpath(scratch,coin*".arrow"),joinpath(destination,coin*".arrow");force=true)
+            else
+                destination = mkpath(joinpath(folder,"stores",coin))
+                for stem in ("features","targets")
+                    mv(joinpath(stagedfolder,"stores",coin,stem*".arrow"),
+                        joinpath(destination,stem*".arrow");force=true)
+                end
+            end
+        end
+        progressmessage("history preparation complete: accepted=$(length(coins)) input identity=$identity";started)
+        input.mode=="market" && println("RegimeTraining accepted history: ",repr(coins))
         progressmessage("building full-universe market calendar: coins=$(length(coins)) hourly rows=$rows";started)
         market = preparedmarket(scratch,ranges,input)
         progressmessage("market calendar complete: rows=$(nrow(market))";started)
         GC.gc()
+        total = unknown = 0
+        timesfolder = input.mode=="market" ? joinpath(folder,"eligible") : scratch
+        @assert nrow(market)>1 "insufficient market observations=$(nrow(market))"
+        step = market.opentime[2]-market.opentime[1]
         timesloader = coin -> begin
             progressmessage("loading eligible minutes for shared folds: $coin")
-            readpreparedtable(scratch,coin).opentime
+            timestamps = readpreparedtable(timesfolder,coin).opentime
+            total += length(timestamps)
+            unknown += count(timestamps) do timestamp
+                ix = searchsortedlast(market.opentime,timestamp)
+                ix>0 && timestamp<last(market.opentime)+step && market.regime[ix]=="unknown"
+            end
+            timestamps
         end
         horizon = Targets.lookaheadminutes(input.targetfactory())
         progressmessage("balancing shared folds";started)
@@ -446,15 +520,29 @@ function preparestreamed!(input::NamedTuple, folder::AbstractString;
         EnvConfig.writetable(market,"market";folderpath=folder,format=:arrow)
         EnvConfig.writetable(calendar,"calendar";folderpath=folder,format=:arrow)
         progressmessage("persisted market and calendar: blocks=$(nrow(calendar)) output=$folder";started)
-        for (coinix,coin) in enumerate(coins)
-            progressmessage("persisting memberships $coin ($coinix/$(length(coins)))")
-            persistinputsets!(coin,folder,coin -> readpreparedtable(scratch,coin).opentime,calendar)
-            GC.gc()
+        if input.mode=="market"
+            counts = combine(groupby(calendar,[:set,:regime,:foldid]),:samples=>sum=>:samples)
+            counts = counts[counts.samples .> 0,:]
+            if nrow(counts)>0
+                EnvConfig.writetable(counts,"sample-coverage";folderpath=folder,format=:arrow)
+            end
+            used = sum(calendar.samples)
+            excluded = DataFrame(eligible_samples=[total],assigned_samples=[used],
+                excluded_samples=[total-used],unknown_samples=[unknown],
+                other_excluded_samples=[total-used-unknown],
+                unknown_market_observations=[count(==("unknown"),market.regime)])
+            EnvConfig.writetable(excluded,"exclusions";folderpath=folder,format=:arrow)
+        else
+            for (coinix,coin) in enumerate(coins)
+                progressmessage("persisting memberships $coin ($coinix/$(length(coins)))")
+                persistinputsets!(coin,folder,coin -> readpreparedtable(scratch,coin).opentime,calendar)
+                GC.gc()
+            end
+            assignmentloader = coin -> (sets=readpreparedtable(joinpath(folder,"stores",coin),"sets"),
+                eligible=readpreparedtable(scratch,coin).opentime)
+            progressmessage("summarizing calendar coverage";started)
+            TradingStrategy.writecalendarcoverage!(folder,coins,assignmentloader,market)
         end
-        assignmentloader = coin -> (sets=readpreparedtable(joinpath(folder,"stores",coin),"sets"),
-            eligible=timesloader(coin))
-        progressmessage("summarizing calendar coverage";started)
-        TradingStrategy.writecalendarcoverage!(folder,coins,assignmentloader,market)
         progressmessage("preparation complete: output=$folder";started)
         @assert nrow(calendar)>0 "no shared blocks meet regime/liquidity/length constraints; inspect market.arrow and exclusions.arrow in $folder"
         stores = (coins=coins,featurestores=DataFrame[],targetstores=DataFrame[])
@@ -485,14 +573,73 @@ function prepare!(input::NamedTuple, folder::AbstractString;
     return (;input,identity,stores,eligible,market,calendar,sets,folder)
 end
 
+"""Compile all three compact populations and their metadata in one shared-store coin pass."""
+function compileblocks!(prepared::NamedTuple, folder::AbstractString,
+        labels::AbstractVector, cols::AbstractVector{<:AbstractString},
+        description::AbstractString; folds::AbstractVector{Int},
+        regimes::AbstractVector{<:AbstractString},
+        storeloader::Function=coin -> inputfullstores(prepared.input,coin))::NamedTuple
+    prepared = merge(prepared,(calendar=readpreparedtable(prepared.folder,"calendar"),))
+    return mktempdir(mkpath(folder)) do scratch
+        for (coinix,coin) in enumerate(prepared.stores.coins)
+            progressmessage("compiling train/eval/test from shared stores $coin ($coinix/$(length(prepared.stores.coins)))")
+            compileblockcoin!(prepared,scratch,labels,cols,coin,coinix,storeloader;folds,regimes)
+            GC.gc()
+        end
+        indices = (
+            trainindex=readpreparedtable(scratch,"train-index"),
+            evalindex=readpreparedtable(scratch,"eval-index"),
+            testindex=readpreparedtable(scratch,"test-index"))
+        for (settype,index) in zip(("train","eval","test"),values(indices))
+            @assert nrow(index)>0 "empty compiled source set=$settype folds=$folds regimes=$regimes"
+        end
+        train = Classify.readcompactsource(joinpath(scratch,"train"),length(cols),nrow(indices.trainindex);
+            nlabels=length(labels),classbalancing=prepared.input.classbalancing)
+        eval = Classify.readcompactsource(joinpath(scratch,"eval"),length(cols),nrow(indices.evalindex);
+            nlabels=length(labels),classbalancing=false)
+        test = Classify.readcompactsource(joinpath(scratch,"test"),length(cols),nrow(indices.testindex);
+            nlabels=length(labels),classbalancing=false)
+        identity = TradingStrategy.experimentmanifest!(folder,
+            Dict("train"=>indices.trainindex,"eval"=>indices.evalindex),description)
+        for settype in ("train","eval","test")
+            mv(joinpath(scratch,settype*"-index.arrow"),joinpath(folder,settype*"-index.arrow");force=true)
+            destination = mkpath(joinpath(folder,settype))
+            for filename in (Classify.TRAINFEATURES_FILE,Classify.TRAINLABELS_FILE)
+                mv(joinpath(scratch,settype,filename),joinpath(destination,filename);force=true)
+            end
+        end
+        return (;indices...,identity,train,eval,test)
+    end
+end
+
+"""Scope one coin's shared inputs and write all selected sets before releasing them."""
+@noinline function compileblockcoin!(prepared::NamedTuple, folder::AbstractString,
+        labels::AbstractVector, cols::AbstractVector{<:AbstractString},
+        coin::AbstractString, coinix::Int, storeloader::Function;
+        folds::AbstractVector{Int}, regimes::AbstractVector{<:AbstractString})::Nothing
+    stores = storeloader(coin)
+    times = readpreparedtable(joinpath(prepared.folder,"eligible"),coin).opentime
+    indices = TradingStrategy.blockexperimentindices(stores.features,stores.targets,
+        times,prepared.calendar,labels,coin,coinix;folds,regimes)
+    for (settype,index) in zip(("train","eval","test"),values(indices))
+        EnvConfig.writetable(index,settype*"-index";folderpath=folder,format=:arrow,
+            append=coinix>1,preserveschema=true)
+        Classify.writecompactbatch!(joinpath(folder,settype),stores.features,cols,index;
+            append=coinix>1,nlabels=length(labels))
+    end
+    return nothing
+end
+
 """Stage coin-batched indices, verify their immutable identity, then publish mapped tables."""
 function persistedtrainingindices!(prepared::NamedTuple, sets::AbstractDict,
         labels::AbstractVector, folder::AbstractString, description::AbstractString;
         folds::AbstractVector{Int}, regimes::AbstractVector{<:AbstractString})::NamedTuple
     storeloader = coin -> begin
         progressmessage("building train/eval/test indices: $coin ($(searchsortedfirst(prepared.stores.coins,coin))/$(length(prepared.stores.coins)))")
-        (features=readpreparedtable(joinpath(prepared.folder,"stores",coin),"features"),
-            targets=readpreparedtable(joinpath(prepared.folder,"stores",coin),"targets"),
+        tables = prepared.input.mode=="market" ? inputfullstores(prepared.input,coin) :
+            (features=readpreparedtable(joinpath(prepared.folder,"stores",coin),"features"),
+                targets=readpreparedtable(joinpath(prepared.folder,"stores",coin),"targets"))
+        (features=tables.features,targets=tables.targets,
             sets=isempty(sets) ? readpreparedtable(joinpath(prepared.folder,"stores",coin),"sets") :
                 sets[coin])
     end
@@ -518,8 +665,13 @@ function trainingsources(prepared::NamedTuple, sets::AbstractDict, folder::Abstr
         trainweights::String="class",streaming::Bool=false,
         keephistories::Bool=false)::NamedTuple
     labels = Targets.uniquelabels(prepared.input.targetfactory())
+    cols = Features.requestedcolumns(prepared.input.featurefactory())
+    compiled = prepared.input.mode=="market" && isempty(sets)
     description = "$(prepared.identity);training=$trainweights;folds=$folds;regimes=$regimes;eval=equal-cells-within-regimes-v1"
-    if streaming
+    if compiled
+        (;trainindex,evalindex,testindex,identity,train,eval,test) = compileblocks!(prepared,folder,
+            labels,cols,description;folds,regimes)
+    elseif streaming
         (;trainindex,evalindex,testindex,identity) = persistedtrainingindices!(
             prepared,sets,labels,folder,description;folds,regimes)
     else
@@ -536,7 +688,6 @@ function trainingsources(prepared::NamedTuple, sets::AbstractDict, folder::Abstr
             EnvConfig.writetable(index,name;folderpath=folder,format=:arrow)
         end
     end
-    cols = Features.requestedcolumns(prepared.input.featurefactory())
     testindexloader = () -> EnvConfig.readtable("test-index";folderpath=folder,format=:arrow)
     evalindexloader = () -> EnvConfig.readtable("eval-index";folderpath=folder,format=:arrow)
     evalweights = Classify.fixedevalweights(evalindex.regime,evalindex.foldid)
@@ -545,32 +696,44 @@ function trainingsources(prepared::NamedTuple, sets::AbstractDict, folder::Abstr
         TradingStrategy.balancedcellweights(trainindex) : nothing
     featurestoreloader = coinix -> begin
         coin = prepared.stores.coins[coinix]
+        prepared.input.mode=="market" && return inputfullstores(prepared.input,coin).features
         progressmessage("loading compact-source features $coin ($coinix/$(length(prepared.stores.coins)))")
         store = EnvConfig.readtable("features";folderpath=joinpath(prepared.folder,"stores",coin),format=:arrow)
         @assert !isnothing(store) "missing persisted feature store for $coin in $(prepared.folder)"
         store
     end
     streaming && releasepreparedmemory!(prepared;keephistories)
-    progressmessage("compacting train source: samples=$(nrow(trainindex)) features=$(length(cols)) output=$(joinpath(folder,"train"))")
-    train = Classify.CompactMmapSource(featurestoreloader,length(prepared.stores.coins),cols,trainindex;
-        folderpath=mkpath(joinpath(folder,"train")),nlabels=length(labels),classbalancing=prepared.input.classbalancing)
+    if !compiled
+        progressmessage("compacting train source: samples=$(nrow(trainindex)) features=$(length(cols)) output=$(joinpath(folder,"train"))")
+        train = Classify.CompactMmapSource(featurestoreloader,length(prepared.stores.coins),cols,trainindex;
+            folderpath=mkpath(joinpath(folder,"train")),nlabels=length(labels),classbalancing=prepared.input.classbalancing)
+    end
     streaming && select!(trainindex,Symbol[])
-    progressmessage("compacting eval source: samples=$(nrow(evalindex)) output=$(joinpath(folder,"eval"))")
-    eval = Classify.CompactMmapSource(featurestoreloader,length(prepared.stores.coins),cols,evalindex;
-        folderpath=mkpath(joinpath(folder,"eval")),nlabels=length(labels),classbalancing=false)
+    if !compiled
+        progressmessage("compacting eval source: samples=$(nrow(evalindex)) output=$(joinpath(folder,"eval"))")
+        eval = Classify.CompactMmapSource(featurestoreloader,length(prepared.stores.coins),cols,evalindex;
+            folderpath=mkpath(joinpath(folder,"eval")),nlabels=length(labels),classbalancing=false)
+        test = nothing
+    end
     streaming && select!(evalindex,Symbol[])
     if trainweights == "balanced"
         train = TradingStrategy.WeightedExperimentSource(train,traincellweights)
     end
     progressmessage("compact sources ready: train=$(Classify.nsamples(train)) eval=$(Classify.nsamples(eval))")
     return (;train,eval,trainindex,evalindex,evalweights,evalindexloader,testindex,testindexloader,identity,labels,cols,folder,
-        featurestoreloader,coins=prepared.stores.coins)
+        featurestoreloader,coins=prepared.stores.coins,compiled,test)
 end
 
-"""Reload persisted experiment-local feature and target tables after releasing them between windows."""
+"""Reload shared market windows or private artificial stores for chronological calculations."""
 function reloadtrainingstores!(prepared::NamedTuple)::Nothing
     @assert isempty(prepared.stores.featurestores) && isempty(prepared.stores.targetstores) "experiment stores must be released before reload"
     for coin in prepared.stores.coins
+        if prepared.input.mode=="market"
+            features,targets = inputsharedstores(prepared.input,coin,prepared.input.histories[coin])
+            push!(prepared.stores.featurestores,features)
+            push!(prepared.stores.targetstores,targets)
+            continue
+        end
         folder = joinpath(prepared.folder,"stores",coin)
         features = EnvConfig.readtable("features";folderpath=folder,format=:arrow)
         targets = EnvConfig.readtable("targets";folderpath=folder,format=:arrow)
@@ -923,7 +1086,8 @@ function testreport!(prepared::NamedTuple, sources::NamedTuple, sets::AbstractDi
     EnvConfig.writetable(history,"test-threshold-history";folderpath=sources.folder,format=:arrow)
     EnvConfig.writetable(current,"fixed-threshold";folderpath=sources.folder,format=:arrow)
     EnvConfig.writetable(index,"test-index";folderpath=sources.folder,format=:arrow)
-    testsource = Classify.CompactMmapSource(sources.featurestoreloader,length(sources.coins),sources.cols,index;
+    testsource = sources.compiled ? sources.test :
+        Classify.CompactMmapSource(sources.featurestoreloader,length(sources.coins),sources.cols,index;
         folderpath=mkpath(joinpath(sources.folder,"test")),nlabels=length(sources.labels),
         classbalancing=false)
     prediction = TradingStrategy.experimentpredictions(best,index,testsource)
@@ -989,7 +1153,8 @@ function gainreport!(prepared::NamedTuple,sources::NamedTuple,best;
     ts = TradingStrategy.TsCache(;classifier,strategy,source=TradingStrategy.tsconfigsource(rc.tscfg))
     xc = Xch.XchCache(Bybit.BybitCache();startdt=prepared.input.startdt,enddt=prepared.input.enddt)
     TSM.ensuretradesschema!(xc.tsm,TSM.tradesdf_all_contributors())
-    testsource = Classify.CompactMmapSource(sources.featurestoreloader,length(sources.coins),
+    testsource = sources.compiled ? sources.test :
+        Classify.CompactMmapSource(sources.featurestoreloader,length(sources.coins),
         sources.cols,index;folderpath=mkpath(joinpath(sources.folder,"test")),
         nlabels=length(sources.labels),classbalancing=false)
     predictions = TradingStrategy.experimentpredictions(best,index,testsource)

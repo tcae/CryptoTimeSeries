@@ -78,6 +78,21 @@ end
     start = DateTime(2025,1,1)
     sine = TestOhlcv.sinedata(2400,24000,0,1; firstutc=start)
     double = TestOhlcv.sinedata(2400,24000,0,10.5; firstutc=start)
+    Ohlcv.addpivot!(sine)
+    observationtimes = collect(start:Minute(config.stepminutes):last(sine.opentime))
+    for cutoff in (nothing,start+Minute(12000))
+        mask = TradingStrategy.regimeliquidity(sine,config;cutoff)
+        @test isequal(TradingStrategy.regimeobservations(sine,observationtimes,config;cutoff),
+            TradingStrategy.regimeobservations(sine,observationtimes,config;cutoff,liquid=mask))
+    end
+    @test_throws AssertionError TradingStrategy.regimeobservations(sine,observationtimes,config;
+        cutoff=start,liquid=TradingStrategy.regimeliquidity(sine,config))
+    @test_throws AssertionError TradingStrategy.regimeobservations(sine,observationtimes,config;
+        liquid=falses(1))
+    inconsistent = copy(sine)
+    inconsistent.pivot[1] += 1f0
+    @test_throws AssertionError TradingStrategy.regimeobservations(inconsistent,observationtimes,config;
+        liquid=TradingStrategy.regimeliquidity(inconsistent,config))
     histories = Dict("SINE"=>sine,"DOUBLESINE"=>double)
     market = TradingStrategy.marketcalendar(histories,config;
         startdt=start,enddt=last(sine.opentime))

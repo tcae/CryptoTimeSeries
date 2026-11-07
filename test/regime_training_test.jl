@@ -186,7 +186,9 @@ end
         pooled = RegimeTraining.prepare!(input,pooledfolder)
         lazyinput = merge(input,(histories=Dict{String,DataFrame}(),))
         references = WeakRef[]
+        loadedcoins = String[]
         loader = coin -> begin
+            push!(loadedcoins,coin)
             GC.gc()
             @test all(ref -> isnothing(ref.value),references)
             history = RegimeTraining.loadinputhistory(lazyinput,coin)
@@ -194,6 +196,7 @@ end
             history
         end
         streamed = RegimeTraining.preparestreamed!(lazyinput,streamedfolder;historyloader=loader)
+        @test loadedcoins==input.coins
         GC.gc()
         @test all(ref -> isnothing(ref.value),references)
         @test streamed.identity==pooled.identity
@@ -241,6 +244,19 @@ end
             end
         end
         @test RegimeTraining.prepare!(lazyinput,streamedfolder;streaming=true).identity==pooled.identity
+        requested = merge(lazyinput,(coins=vcat(input.coins,["ZZMISSING"]),))
+        skipped = RegimeTraining.preparestreamed!(requested,joinpath(root,"skipped");
+            historyloader=coin -> coin=="ZZMISSING" ? nothing : RegimeTraining.loadinputhistory(lazyinput,coin))
+        @test skipped.input.coins==input.coins
+        @test skipped.identity==pooled.identity
+        @test !isdir(joinpath(skipped.folder,"stores","ZZMISSING"))
+        featurepath = joinpath(streamedfolder,"stores",first(input.coins),"features.arrow")
+        featurebytes = read(featurepath)
+        mismatch = merge(lazyinput,(context=lazyinput.context*";changed=true",))
+        @test_throws AssertionError RegimeTraining.preparestreamed!(mismatch,streamedfolder)
+        @test read(featurepath)==featurebytes
+        @test_throws AssertionError RegimeTraining.preparestreamed!(requested,joinpath(root,"empty");
+            historyloader=coin -> nothing)
         @test_throws AssertionError RegimeTraining.readpreparedtable(root,"missing")
     end
 end
@@ -339,6 +355,19 @@ end
             predictionsbefore = EnvConfig.readtable("test-predictions";folderpath=sources.folder,format=:arrow)
             trainpath = joinpath(sources.folder,"train",Classify.TRAINFEATURES_FILE)
             trainmodified = mtime(trainpath)
+            index = RegimeTraining.loadtestindex(sources)
+            group = first(groupby(index,:coin;sort=false))
+            coinix = first(group.coinix)
+            coin = snapshotinput.stores.coins[coinix]
+            history = RegimeTraining.loadinputhistory(snapshotinput.input,coin)
+            coverage = TradingStrategy.experimentcoverage(coin,history)
+            changedcoverage = merge(coverage,(rows=coverage.rows+1,))
+            @test_throws AssertionError RegimeTraining.sealcoin!(snapshotinput,snapshotsource,
+                coin,coinix,group,changedcoverage,Int[],folder)
+            changedindex = DataFrame(group)
+            changedindex.opentime[end] += Minute(1)
+            @test_throws AssertionError RegimeTraining.sealcoin!(snapshotinput,snapshotsource,
+                coin,coinix,changedindex,coverage,Int[],folder)
             @test RegimeTraining.sealsnapshot!(snapshotinput,snapshotsource) === nothing
             @test_throws AssertionError RegimeTraining.sealsnapshot!(snapshotinput,snapshotsource)
             snapshot = RegimeTraining.loadsnapshot(snapshotinput,snapshotsource)

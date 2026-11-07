@@ -351,7 +351,7 @@ weakdeps = ["SparseArrays"]
 deps = ["BSON", "CSV", "CategoricalArrays", "CategoricalDistributions", "Colors", "Combinatorics", "DataFrames", "Dates", "Distributions", "EnvConfig", "Features", "Flux", "JDF", "JLSO", "JSON3", "Logging", "MLUtils", "Mmap", "NNlib", "Ohlcv", "PlotlyJS", "PrettyPrinting", "PrettyTables", "Profile", "ProfileView", "ProgressMeter", "Random", "SHA", "SimpleChains", "StatisticalMeasures", "Statistics", "Tables", "Targets", "Test", "TestOhlcv"]
 path = "/Users/torsten/github/CryptoTimeSeries/Classify"
 uuid = "5be3f58f-dbf1-4eef-89a2-ae5daa818ba0"
-version = "0.43.0"
+version = "0.44.0"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]
@@ -2472,7 +2472,7 @@ version = "0.21.0"
 deps = ["Bybit", "CategoricalArrays", "Classify", "DataFrames", "Dates", "EnvConfig", "Features", "JDF", "Logging", "Ohlcv", "SHA", "TSM", "Targets", "Test", "TestOhlcv", "Xch"]
 path = "/Users/torsten/github/CryptoTimeSeries/TradingStrategy"
 uuid = "a0f5f61d-220c-45e5-8bba-8d196e6bcbef"
-version = "0.24.1"
+version = "0.27.0"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"

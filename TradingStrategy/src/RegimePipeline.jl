@@ -56,38 +56,39 @@ function regimeassignments(histories::AbstractDict, stores::NamedTuple,
     return (;eligible,market,calendar,sets)
 end
 
-"""
-Persist an input/config identity and fail on reuse of a different dataset.
-Hashes contain full OHLCV content, not just coverage endpoints.
-"""
+"""Return a table's row count and timestamp bounds for inexpensive coverage validation."""
+function experimentcoverage(name::AbstractString, table::AbstractDataFrame)::NamedTuple
+    @assert nrow(table)>0 "empty experiment input=$name rows=$(nrow(table))"
+    firsttime,lasttime = extrema(table.opentime)
+    return (coin=name,rows=nrow(table),start=firsttime,stop=lasttime)
+end
+
+"""Persist a configuration and coverage identity; interior data changes are not detected."""
 function experimentmanifest!(folder::AbstractString, histories::AbstractDict,
         description::AbstractString)::String
     return experimentmanifest!(folder,sort!(collect(keys(histories))),
         coin -> histories[coin],description)
 end
 
-"""Load and hash one history inside a non-inlined scope so the caller retains no source roots."""
-@noinline function _experimentdigest!(folder::AbstractString, historyloader::Function,
-        coin::AbstractString)::String
-    history = historyloader(coin)
-    staged = EnvConfig.writetable(history,"identity-input";folderpath=folder,format=:arrow)
-    try
-        return bytes2hex(open(sha256,staged))
-    finally
-        rm(staged)
-    end
-end
-
-"""Persist the same immutable input identity while loading and releasing one coin at a time."""
+"""Collect coverage while loading and releasing one input table at a time."""
 function experimentmanifest!(folder::AbstractString, coins::AbstractVector{<:AbstractString},
         historyloader::Function, description::AbstractString)::String
-    mkpath(folder)
-    rows = DataFrame(coin=String[], digest=String[])
+    rows = DataFrame(coin=String[],rows=Int[],start=DateTime[],stop=DateTime[])
     for coin in sort(coins)
-        push!(rows,(coin,_experimentdigest!(folder,historyloader,coin)))
+        push!(rows,experimentcoverage(coin,historyloader(coin)))
         GC.gc()
     end
-    identity = confighash(description * join(["$(row.coin):$(row.digest)" for row in eachrow(rows)],";"))
+    return experimentmanifest!(folder,rows,description)
+end
+
+"""Persist or verify per-input coverage and configuration without hashing table contents."""
+function experimentmanifest!(folder::AbstractString, coverage::AbstractDataFrame,
+        description::AbstractString)::String
+    mkpath(folder)
+    rows = sort(DataFrame(coverage),:coin)
+    @assert nrow(rows)>0 && allunique(rows.coin) "invalid experiment coverage names=$(rows.coin)"
+    identity = confighash("coverage-v1;" * description *
+        join(["$(row.coin):$(row.rows):$(row.start):$(row.stop)" for row in eachrow(rows)],";"))
     path = joinpath(folder,"manifest.arrow")
     if isfile(path)
         previous = EnvConfig.readtable("manifest";folderpath=folder,format=:arrow)
@@ -101,7 +102,7 @@ function experimentmanifest!(folder::AbstractString, coins::AbstractVector{<:Abs
 end
 
 """
-Rebuild or reuse experiment-private features and targets by full input identity.
+Rebuild or reuse experiment-private features and targets by input coverage identity.
 When full-history shared stores are supplied, select and validate the experiment window from
 them; otherwise calculate the window locally. Persisted rows must cover the complete experiment
 history, accounting for feature warm-up and incomplete target look-ahead.
@@ -171,14 +172,24 @@ function experimentstores!(histories::AbstractDict, featurefactory::Function,
     return (; coins,featurestores,targetstores)
 end
 
+"""Validate one feature column only at selected liquid sample positions."""
+function _validateexperimentfeatures(column::AbstractVector, rows::Vector{Int},
+        times::Vector{DateTime}, coin::AbstractString)::Nothing
+    for (sampleix,row) in enumerate(rows)
+        @assert isfinite(column[row]) "invalid feature row for $coin at $(times[sampleix])"
+    end
+    return nothing
+end
+
 """Join sorted timestamp vectors without per-row DataFrame access or timestamp dictionaries."""
 function _sortedexperimenttimes(historytimes::AbstractVector{DateTime},
         featuretimes::AbstractVector{DateTime}, targettimes::AbstractVector{DateTime},
-        targetlabels::AbstractVector, finitefeatures::AbstractVector{Bool},
+        targetlabels::AbstractVector, featurecolumns::AbstractVector,
         liquid::AbstractVector{Bool}, coin::AbstractString)::Vector{DateTime}
     ignorecode = Targets.tradelabelcode(Targets.ignore)
     featureix = targetix = 1
     times = DateTime[]
+    featurerows = Int[]
     for ix in eachindex(liquid)
         liquid[ix] || continue
         time = historytimes[ix]
@@ -191,20 +202,26 @@ function _sortedexperimenttimes(historytimes::AbstractVector{DateTime},
         featureix <= length(featuretimes) && featuretimes[featureix] == time || continue
         targetix <= length(targettimes) && targettimes[targetix] == time || continue
         targetlabels[targetix] != ignorecode || continue
-        @assert finitefeatures[featureix] "invalid feature row for $coin at $time"
         push!(times,time)
+        push!(featurerows,featureix)
+    end
+    for column in featurecolumns
+        _validateexperimentfeatures(column,featurerows,times,coin)
     end
     return times
 end
 
 """
+    experimenttimes(histories, stores, config; cutoff=nothing, liquidity=nothing)
+
 Find valid, liquid, nonignored samples through an exact sorted timestamp walk.
-All input timestamps must be sorted and unique. Feature validity is calculated column-wise
-and checked only for joined, liquid, nonignored samples.
-A chronological cutoff recomputes training liquidity from only that prefix.
+All input timestamps must be sorted and unique. Feature validity is checked only
+for joined, liquid, nonignored samples. Optional per-coin liquidity masks must use
+the same history and cutoff; otherwise liquidity is calculated from that prefix.
 """
 function experimenttimes(histories::AbstractDict, stores::NamedTuple, config::RegimeConfig;
-        cutoff::Union{Nothing, DateTime}=nothing)::Dict{String,Vector{DateTime}}
+        cutoff::Union{Nothing, DateTime}=nothing,
+        liquidity::Union{Nothing,AbstractDict}=nothing)::Dict{String,Vector{DateTime}}
     result = Dict{String,Vector{DateTime}}()
     for (coinix,coin) in enumerate(stores.coins)
         history = histories[coin]
@@ -217,18 +234,12 @@ function experimenttimes(histories::AbstractDict, stores::NamedTuple, config::Re
             @assert _strictregimetimes(timestamps) "$(kind) timestamps for $(coin) must be sorted and unique: rows=$(length(timestamps))"
         end
         lastix = isnothing(cutoff) ? nrow(history) : searchsortedlast(historytimes,cutoff)
-        liquid = falses(lastix)
-        if lastix > 0
-            for range in Ohlcv.liquiditycheck(view(history,1:lastix,:);config.liquidity...)
-                liquid[range] .= true
-            end
-        end
-        finitefeatures = trues(nrow(fdf))
-        for column in names(fdf,Not(:opentime))
-            finitefeatures .&= isfinite.(fdf[!,column])
-        end
+        liquid = isnothing(liquidity) ? regimeliquidity(history,config;cutoff) : liquidity[coin]
+        @assert length(liquid)==nrow(history) "liquidity mask for $coin has length=$(length(liquid)), expected=$(nrow(history))"
+        @assert !any(view(liquid,(lastix+1):length(liquid))) "liquidity mask for $coin includes rows after cutoff=$cutoff"
+        featurecolumns = [fdf[!,column] for column in names(fdf,Not(:opentime))]
         result[coin] = _sortedexperimenttimes(historytimes,featuretimes,targettimes,
-            tdf[!, :label],finitefeatures,liquid,coin)
+            tdf[!, :label],featurecolumns,liquid,coin)
     end
     return result
 end
@@ -326,6 +337,55 @@ end
             append=coinix>1,preserveschema=true)
     end
     return nothing
+end
+
+"""
+Select eligible samples directly from assigned blocks using shared-store row coordinates.
+No per-sample membership table is constructed. Fold/regime filters preserve coin/time order.
+"""
+function blockexperimentindices(features::AbstractDataFrame, targets::AbstractDataFrame,
+        times::AbstractVector{DateTime}, calendar::AbstractDataFrame, labels::AbstractVector,
+        coin::AbstractString, coinix::Int; folds::AbstractVector{Int}=Int[],
+        regimes::AbstractVector{<:AbstractString}=String[])::NamedTuple
+    for (kind,timestamps) in (("features",features.opentime),("targets",targets.opentime),
+            ("eligible",times))
+        @assert _strictregimetimes(timestamps) "$kind timestamps for $coin are not sorted/unique: rows=$(length(timestamps))"
+    end
+    @assert _strictregimetimes(calendar.start) "block starts are not sorted/unique: rows=$(nrow(calendar))"
+    indices = (trainindex=_experimentindex(),evalindex=_experimentindex(),testindex=_experimentindex())
+    codes = Dict(Targets.tradelabelcode(label)=>ix for (ix,label) in enumerate(labels))
+    featuretimes,targettimes,targetlabels = features.opentime,targets.opentime,targets.label
+    previousstop = nothing
+    for block in eachrow(calendar)
+        @assert isnothing(previousstop) || previousstop<block.start "overlapping block start=$(block.start) previousstop=$previousstop"
+        previousstop = block.stop
+        @assert block.start<=block.stop && block.regime in ("up","flat","down") "invalid block=$(block.blockid) start=$(block.start) stop=$(block.stop) regime=$(block.regime)"
+        isempty(folds) || block.foldid in folds || continue
+        isempty(regimes) || block.regime in regimes || continue
+        @assert block.set in ("train","eval","test") "unassigned block=$(block.blockid) set=$(block.set)"
+        index = block.set=="train" ? indices.trainindex :
+            block.set=="eval" ? indices.evalindex : indices.testindex
+        firstix = searchsortedfirst(times,block.start)
+        lastix = searchsortedlast(times,block.stop)
+        featurerow = searchsortedfirst(featuretimes,block.start)
+        targetrow = searchsortedfirst(targettimes,block.start)
+        for ix in firstix:lastix
+            time = times[ix]
+            while featurerow<=length(featuretimes) && featuretimes[featurerow]<time
+                featurerow += 1
+            end
+            while targetrow<=length(targettimes) && targettimes[targetrow]<time
+                targetrow += 1
+            end
+            @assert featurerow<=length(featuretimes) && featuretimes[featurerow]==time &&
+                targetrow<=length(targettimes) && targettimes[targetrow]==time "shared stores misaligned for $coin at $time"
+            code = targetlabels[targetrow]
+            @assert haskey(codes,code) "unsupported target=$code for $coin at $time"
+            push!(index,(coinix,featurerow,codes[code],coin,time,block.set,
+                block.regime,block.foldid,block.blockid))
+        end
+    end
+    return indices
 end
 
 """Freeze sample weights: equal cell means within regimes, equal represented regimes."""

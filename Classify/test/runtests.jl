@@ -16,6 +16,7 @@ include("nnconverged_test.jl")
 include("simplechains_test.jl")
 include("simplechains_batchnorm_test.jl")
 include("evaltraining_test.jl")
+include("compactbatch_test.jl")
 include("signalmetrics_test.jl")
 include("classifierstore_test.jl")
 

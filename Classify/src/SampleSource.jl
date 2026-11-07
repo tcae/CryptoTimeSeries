@@ -262,6 +262,59 @@ function CompactMmapSource(featurestoreloader::Function, ncoins::Integer,
     return CompactMmapSource(X, labels, classweight, Int(nlabels), classbalancing)
 end
 
+"""
+Append a coin's selected feature rows and labels to compact files in bounded batches.
+The first batch replaces files; subsequent coins append in index order.
+"""
+function writecompactbatch!(folder::AbstractString, features::AbstractDataFrame,
+        featurecols::AbstractVector{<:AbstractString}, index::AbstractDataFrame;
+        append::Bool, nlabels::Int)::Nothing
+    @assert !isempty(featurecols) "empty compact feature columns=$featurecols"
+    @assert 0 < nlabels <= typemax(UInt8) "invalid compact nlabels=$nlabels"
+    columns = [features[!,column] for column in featurecols]
+    @assert all(column -> eltype(column)==Float32,columns) "compact feature types=$(eltype.(columns)) must be Float32"
+    @assert all(label -> 1 <= label <= nlabels,index.labelix) "invalid compact labels for nlabels=$nlabels"
+    rows = index.row
+    labelindices = index.labelix
+    mkpath(folder)
+    mode = append ? "a" : "w"
+    open(joinpath(folder,TRAINFEATURES_FILE),mode) do featureio
+        open(joinpath(folder,TRAINLABELS_FILE),mode) do labelio
+            for samples in Iterators.partition(1:nrow(index),4096)
+                matrix = Matrix{Float32}(undef,length(columns),length(samples))
+                labels = Vector{UInt8}(undef,length(samples))
+                for (localix,sampleix) in enumerate(samples)
+                    row = rows[sampleix]
+                    for featureix in eachindex(columns)
+                        matrix[featureix,localix] = columns[featureix][row]
+                    end
+                    labels[localix] = labelindices[sampleix]
+                end
+                Base.write(featureio,matrix)
+                Base.write(labelio,labels)
+            end
+        end
+    end
+    return nothing
+end
+
+"""Validate and map already compiled compact files without rereading feature stores."""
+function readcompactsource(folder::AbstractString, nfeatures::Int, nsamples::Int;
+        nlabels::Int, classbalancing::Bool)::CompactMmapSource
+    @assert nfeatures>0 && nsamples>0 && 0<nlabels<=typemax(UInt8) "invalid compact dimensions=$((nfeatures,nsamples,nlabels))"
+    featurepath = joinpath(folder,TRAINFEATURES_FILE)
+    labelpath = joinpath(folder,TRAINLABELS_FILE)
+    expectedbytes = sizeof(Float32)*nfeatures*nsamples
+    @assert filesize(featurepath)==expectedbytes "compact feature bytes=$(filesize(featurepath)) expected=$expectedbytes"
+    @assert filesize(labelpath)==nsamples "compact label bytes=$(filesize(labelpath)) expected=$nsamples"
+    matrix = open(io -> Mmap.mmap(io,Matrix{Float32},(nfeatures,nsamples)),featurepath,"r")
+    labels = open(io -> Mmap.mmap(io,Vector{UInt8},nsamples),labelpath,"r")
+    @assert all(label -> 1<=label<=nlabels,labels) "invalid compact labels for nlabels=$nlabels"
+    weights = classbalancing ? classweights([count(==(ix),labels) for ix in 1:nlabels]) :
+        ones(Float32,nlabels)
+    return CompactMmapSource(matrix,labels,weights,nlabels,classbalancing)
+end
+
 "Return the number of samples in the compact memory-mapped source."
 nsamples(src::CompactMmapSource) = size(src.X, 2)
 

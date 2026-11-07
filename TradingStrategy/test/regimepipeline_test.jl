@@ -9,6 +9,45 @@ function regimepipelinefeatures()
     return f6
 end
 
+@testset "Block selection equals timestamp membership joins" begin
+    start = DateTime(2025,1,1)
+    timestamps = collect(start:Minute(1):start+Minute(10))
+    labels = Targets.uniquelabels(Targets.Trend05())
+    features = DataFrame(opentime=timestamps,value=ones(Float32,11))
+    targets = DataFrame(opentime=timestamps,label=fill(Targets.tradelabelcode(first(labels)),11))
+    eligible = timestamps[[1,3,5,8,11]]
+    calendar = DataFrame(blockid=[1,2,3],foldid=[1,1,2],regime=["up","flat","down"],
+        start=timestamps[[1,5,11]],stop=timestamps[[3,8,11]],
+        set=["train","eval","test"])
+    stores = (coins=["SINE"],featurestores=[features],targetstores=[targets])
+    sets = Dict("SINE"=>TradingStrategy.calendarsets(eligible,calendar))
+    for (folds,regimes) in ((Int[],String[]),([1],String[]),(Int[],["up","down"]))
+        direct = TradingStrategy.blockexperimentindices(features,targets,eligible,
+            calendar,labels,"SINE",1;folds,regimes)
+        for (settype,index) in zip(("train","eval","test"),values(direct))
+            expected = TradingStrategy._experimentindex()
+            TradingStrategy._appendexperimentindex!(expected,features,targets,sets["SINE"],
+                labels,"SINE",1;settype,folds,regimes)
+            @test isequal(index,expected)
+        end
+    end
+    empty = TradingStrategy.blockexperimentindices(features,targets,DateTime[],
+        calendar,labels,"SINE",1)
+    @test all(isempty,values(empty))
+    @test_throws AssertionError TradingStrategy.blockexperimentindices(features[2:end,:],
+        targets,eligible,calendar,labels,"SINE",1)
+    @test_throws AssertionError TradingStrategy.blockexperimentindices(features,targets,
+        reverse(eligible),calendar,labels,"SINE",1)
+    overlapping = copy(calendar)
+    overlapping.stop[1] = overlapping.start[2]
+    @test_throws AssertionError TradingStrategy.blockexperimentindices(features,targets,
+        eligible,overlapping,labels,"SINE",1)
+    invalid = copy(targets)
+    invalid.label[1] = Targets.tradelabelcode(Targets.ignore)
+    @test_throws AssertionError TradingStrategy.blockexperimentindices(features,invalid,
+        eligible,calendar,labels,"SINE",1)
+end
+
 """Construct bounded Trend05 targets for store integration."""
 regimepipelinetarget() = Targets.Trend05(leadregr=5,supportregr=15,
     trendregr=60,triggerdist=0.001f0,targetgain=0.005f0,targetminutes=60)
@@ -122,10 +161,19 @@ end
     expected = dictionaryexperimenttimes(histories,stores,config)
     @test !isempty(expected["SINE"])
     @test TradingStrategy.experimenttimes(histories,stores,config)==expected
+    liquid = TradingStrategy.regimeliquidity(history,config)
+    @test TradingStrategy.experimenttimes(histories,stores,config;liquidity=Dict("SINE"=>liquid))==expected
+    @test isempty(TradingStrategy.experimenttimes(histories,stores,config;
+        liquidity=Dict("SINE"=>falses(nrow(history))))["SINE"])
     for cutoff in (start-Minute(1),start+Minute(900),last(history.opentime)+Minute(1))
         @test TradingStrategy.experimenttimes(histories,stores,config;cutoff)==
             dictionaryexperimenttimes(histories,stores,config;cutoff)
+        mask = TradingStrategy.regimeliquidity(history,config;cutoff)
+        @test TradingStrategy.experimenttimes(histories,stores,config;cutoff,
+            liquidity=Dict("SINE"=>mask))==dictionaryexperimenttimes(histories,stores,config;cutoff)
     end
+    @test_throws AssertionError TradingStrategy.experimenttimes(histories,stores,config;
+        cutoff=start,liquidity=Dict("SINE"=>liquid))
     for (fdf,tdf) in ((features[1:0,:],targets),(features,targets[1:0,:]),
             (features[1:3,:],targets),(features,targets[end-2:end,:]))
         partial = (coins=["SINE"],featurestores=[fdf],targetstores=[tdf])
@@ -190,7 +238,7 @@ end
     end
 end
 
-@testset "Immutable synthetic experiment data" begin
+@testset "Synthetic experiment coverage and configuration" begin
     EnvConfig.init(EnvConfig.test)
     start = DateTime(2025,1,1)
     histories = Dict("SINE"=>TestOhlcv.sinedata(1200,6000,0,1;firstutc=start),
@@ -201,7 +249,15 @@ end
         @test_throws AssertionError TradingStrategy.experimentmanifest!(folder,histories,"fixture-v2")
         changed = deepcopy(histories)
         changed["SINE"].close[200] += 0.01f0
-        @test_throws AssertionError TradingStrategy.experimentmanifest!(folder,changed,"fixture-v1")
+        @test identity == TradingStrategy.experimentmanifest!(folder,changed,"fixture-v1")
+        shortened = copy(histories)
+        shortened["SINE"] = histories["SINE"][1:end-1,:]
+        @test_throws AssertionError TradingStrategy.experimentmanifest!(folder,shortened,"fixture-v1")
+        shifted = deepcopy(histories)
+        shifted["SINE"].opentime .+= Minute(1)
+        @test_throws AssertionError TradingStrategy.experimentmanifest!(folder,shifted,"fixture-v1")
+        coverage = EnvConfig.readtable("input-identities";folderpath=folder,format=:arrow)
+        @test names(coverage)==["coin","rows","start","stop"]
         stores = TradingStrategy.experimentstores!(histories,regimepipelinefeatures,regimepipelinetarget,folder)
         @test stores.coins == ["DOUBLESINE","SINE"]
         @test all(df->nrow(df)>0,stores.featurestores)
@@ -235,6 +291,7 @@ end
             @test nrow(targets)==6000
             @test all(==(Targets.tradelabelcode(Targets.ignore)),targets.label[end-59:end])
         end
+
         labels = Targets.uniquelabels(regimepipelinetarget())
         index = TradingStrategy.experimentindex(stores,sets,labels;settype="train")
         @test isequal(index,dictionaryexperimentindex(stores,sets,labels;settype="train"))
@@ -303,5 +360,22 @@ end
             GC.gc()
             @test all(ref -> isnothing(ref.value),references)
         end
+    end
+end
+
+@testset "Index coverage does not hash membership contents" begin
+    EnvConfig.init(EnvConfig.test)
+    start = DateTime(2025,1,1)
+    index = DataFrame(opentime=start .+ Minute.([10,20,0,30]),labelix=[1,2,1,2])
+    @test TradingStrategy.experimentcoverage("train",index)==
+        (coin="train",rows=4,start=start,stop=start+Minute(30))
+    mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+        identity = TradingStrategy.experimentmanifest!(folder,Dict("train"=>index),"selection")
+        changed = copy(index)
+        changed.labelix[2] = 1
+        @test TradingStrategy.experimentmanifest!(folder,Dict("train"=>changed),"selection")==identity
+        changed.opentime[4] += Minute(1)
+        @test_throws AssertionError TradingStrategy.experimentmanifest!(folder,Dict("train"=>changed),"selection")
+        @test_throws AssertionError TradingStrategy.experimentcoverage("empty",index[1:0,:])
     end
 end

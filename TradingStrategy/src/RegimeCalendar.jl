@@ -57,24 +57,46 @@ function regimeweights(volumes::AbstractVector; cap::Float64)::Vector{Float64}
 end
 
 """
+    regimeliquidity(df, config; cutoff=nothing)
+
+Calculate a history-aligned liquidity mask from sorted `opentime`, `pivot` and
+`basevolume` columns, using only data through the optional cutoff.
+"""
+function regimeliquidity(df::AbstractDataFrame, config::RegimeConfig;
+        cutoff::Union{Nothing,DateTime}=nothing)::BitVector
+    lastix = isnothing(cutoff) ? nrow(df) : searchsortedlast(df.opentime,cutoff)
+    liquid = falses(nrow(df))
+    if lastix > 0
+        for range in Ohlcv.liquiditycheck(view(df,1:lastix,:);config.liquidity...)
+            liquid[range] .= true
+        end
+    end
+    return liquid
+end
+
+"""
+    regimeobservations(df, times, config; cutoff=nothing, liquid=nothing)
+
 Compute complete-window price slopes and volatility at shared observation cutoffs.
 Only completed, contiguous minute history with a liquid endpoint is eligible.
+An optional precomputed liquidity mask must use the same history and cutoff.
 """
 function regimeobservations(df::AbstractDataFrame, times::AbstractVector{DateTime},
-        config::RegimeConfig; cutoff::Union{Nothing, DateTime}=nothing)::DataFrame
+        config::RegimeConfig; cutoff::Union{Nothing, DateTime}=nothing,
+        liquid::Union{Nothing,AbstractVector{Bool}}=nothing)::DataFrame
     checkregimeconfig(config)
     @assert issorted(df.opentime) && allunique(df.opentime) "malformed OHLCV timestamps, rows=$(nrow(df))"
     prices = Ohlcv.pivot(df)
     @assert all(p -> isfinite(p) && p > 0, prices) "nonpositive/nonfinite prices, rows=$(length(prices))"
     @assert all(v -> isfinite(v) && v >= 0, df.basevolume) "invalid base volumes, rows=$(nrow(df))"
-    liquid = falses(nrow(df))
-    # At a chronological training cutoff, range confirmation cannot use later rows.
-    lastix = isnothing(cutoff) ? nrow(df) : searchsortedlast(df.opentime, cutoff)
-    if lastix > 0
-        for range in Ohlcv.liquiditycheck(DataFrame(pivot=prices[1:lastix],
-                basevolume=df.basevolume[1:lastix]); config.liquidity...)
-            liquid[range] .= true
-        end
+    if isnothing(liquid)
+        liquiddata = DataFrame(opentime=df.opentime,pivot=prices,basevolume=df.basevolume;copycols=false)
+        liquid = regimeliquidity(liquiddata,config;cutoff)
+    else
+        @assert length(liquid)==nrow(df) "liquidity mask length=$(length(liquid)) != history rows=$(nrow(df))"
+        @assert df.pivot == prices "liquidity pivot differs from computed OHLCV pivot, rows=$(nrow(df))"
+        lastix = isnothing(cutoff) ? nrow(df) : searchsortedlast(df.opentime,cutoff)
+        @assert !any(view(liquid,(lastix+1):length(liquid))) "liquidity mask includes rows after cutoff=$cutoff"
     end
     sums = zeros(nrow(df)+1)
     moments = zeros(nrow(df)+1)

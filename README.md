@@ -225,9 +225,11 @@ julia --project=. scripts/RegimeTraining.jl test mode=synthetic runid=synthetic-
 
 Shared consecutive calendar folds and complete blocks are balanced toward
 train/eval/test 4:1:1 within each represented regime/fold. Unknown regimes are
-excluded from all three populations and explicitly counted. Experiment-private
-features/targets are rebuilt from OHLCV; full input hashes reject changed data
-or configuration under an existing run ID.
+excluded from all three populations and explicitly counted. Experiment inputs and
+indices are checked using their row counts and timestamp bounds, together with the
+configuration. Interior data changes with unchanged coverage are not detected:
+regenerate the run's artifacts after such changes. This coverage-based scheme uses
+new default run IDs; older artifacts must be regenerated rather than resumed.
 
 Stopping and best-checkpoint selection use **held-out, fixed regime/fold-weighted
 eval loss**, with 50-epoch patience, 0.05% meaningful relative improvement and
@@ -362,11 +364,11 @@ inspect diagrams, select thresholds and update the trading strategy before
 starting a subsequent `stage=gain` run. Gain requires an existing adapted
 checkpoint and never trains a missing model. `retrain` resumes adaptation only.
 Before the first gain run, `stage=snapshot` verifies each original input-history
-digest and reserved test membership, then seals coin-sized test features, prices
+and reserved test coverage, then seals coin-sized test features, prices
 and enabled regression windows in `balanced/gain-snapshot`. This is an explicit
 one-time operation for existing runs; it does not rebuild train/eval numeric
-sources or adapt the classifier. Changed histories fail sealing instead of
-substituting current data. A sealed snapshot is immutable.
+sources or adapt the classifier. Changed history coverage fails sealing, but
+interior changes with unchanged coverage are not detected. A sealed snapshot is immutable.
 
 `stage=gain` reads that snapshot, not mutable market histories or current default
 coin-set membership. Explicit universe/configuration overrides must still match
@@ -392,21 +394,38 @@ Progress includes coin/pass counts, timings, allocations, GC time,
 throughput and peak RSS. See the
 [gain performance proposal](docs/2026-11-07-regime-gain-performance-proposal.md).
 
-Market preparation follows refresh's coin-scoped lifecycle: validate and hash
-one history at a time, ensure shared stores from **full** OHLCV history, then
-persist that coin's experiment windows and eligible timestamps before releasing
+Market preparation accepts and prepares each coin in one traversal: it loads the
+experiment history once, checks its coverage, ensures shared stores from **full**
+OHLCV history and computes liquidity once per coin before selecting valid samples.
+The same liquidity mask is used for hourly observations. Market mode persists
+`eligible/<coin>.arrow`, but does not write experiment-local feature/target copies
+or per-sample membership files. Eligibility is staged until the accepted universe
+and coverage manifest have been verified.
+Shared full-history stores can still be refreshed during staging.
+It processes one coin at a time before releasing
 the source tables. Hourly observations are appended to a temporary Arrow file
 and mapped for the **complete-universe** market calendar; eligible timestamps
-remain disk-backed through fold balancing, projected-set persistence and coverage
-counting. Scratch files are removed on completion or failure.
+remain disk-backed. A subsequent timestamp-only coin pass counts samples within
+the known blocks; final pooled counts determine whole-block train/eval/test assignments.
+Coverage summaries use these counts without another membership pass.
+Scratch files are removed on completion or failure.
 
 Training indices use sorted timestamp cursor joins, not minute-sized dictionaries.
-Train/eval/test indices are written in coin-sized Arrow batches and read without
-copying columns; only one coin's feature/target/set tables and index batch are
-loaded at a time. Train and test metadata mappings are released before/after
+Market training then uses one final coin pass to select eligible timestamps within
+assigned blocks from the complete shared feature/target stores. It writes all three
+compact feature/label sources (`train/`, `eval/`, `test/`) and their index metadata
+together, in bounded batches. Indices retain shared-store row coordinates, labels,
+timestamps and regime/fold/block metadata for weighting, diagnostics and snapshot sealing.
+No separate membership, index-building or per-set feature-loading pass is needed.
+Publication occurs only after output sizes and the training identity have been verified.
+Shared stores must remain unchanged until a reserved-test snapshot has been sealed.
+This layout uses new default market run IDs; old runs require regeneration with a new
+explicit run ID rather than compatibility loading.
+Synthetic/test modes retain private stores and the existing separate compaction path.
+Train/eval/test indices are read without copying columns. Train and test metadata mappings are released before/after
 compaction as appropriate; eval metadata remains necessary for reporting, and
-test metadata is reloaded on demand. Dataset and training identities and sample
-ordering are unchanged. Index batches preserve a fixed native Arrow schema rather
+test metadata is reloaded on demand. Sample ordering and weighting are unchanged.
+Index batches preserve a fixed native Arrow schema rather
 than compacting integer types or independently encoding each coin's dictionary.
 Timestamp uniqueness checks walk sorted vectors without allocating minute-sized
 sets, and window selection copies each column only once. Walk-forward still

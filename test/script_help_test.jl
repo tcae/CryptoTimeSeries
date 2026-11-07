@@ -275,13 +275,16 @@ end
                 @test streamed==expected
                 @test all(counts -> all(>(0),values(counts)),values(streamed))
                 @test all(counts -> counts isa NamedTuple{(:train,:eval,:test)},values(streamed))
-                rc = RegimeTraining.buildrunconfig(Dict("ts"=>"066","mode"=>"market",
+                opts = Dict("ts"=>"066","mode"=>"market",
                     "coins"=>join(stores.coins,","),"startdt"=>string(dr.startdt),
-                    "enddt"=>string(dr.enddt)))
-                input = (histories=Dict{String,DataFrame}(),coins=stores.coins,
-                    startdt=dr.startdt,enddt=dr.enddt,regime,folds,featurefactory,targetfactory,
-                    mode="market",modelid=clcfg.model,classbalancing=clcfg.classbalancing,
-                    context=rc.description,sharedstores=nothing,rc)
+                    "enddt"=>string(dr.enddt))
+                input = RegimeTraining.inputs(opts)
+                @test isempty(input.histories)
+                @test isempty(input.coverage)
+                @test input.coins==stores.coins
+                EnvConfig.setcoinspath!(folder)
+                input = merge(input,(regime=regime,folds=folds,featurefactory=featurefactory,
+                    targetfactory=targetfactory))
                 mktempdir(folder) do trainingfolder
                     prepared = RegimeTraining.prepare!(input,trainingfolder)
                     @test isempty(prepared.input.histories)
@@ -291,16 +294,94 @@ end
                     @test isempty(prepared.sets)
                     @test isequal(prepared.market,assignments.market)
                     @test isequal(prepared.calendar,assignments.calendar)
-                    for (coinix,coin) in enumerate(stores.coins)
-                        localfolder = joinpath(trainingfolder,"stores",coin)
-                        @test isequal(RegimeTraining.readpreparedtable(localfolder,"sets"),assignments.sets[coin])
-                        @test isequal(RegimeTraining.readpreparedtable(localfolder,"features"),stores.featurestores[coinix])
-                        _,sharedtargets = TradingStrategy.sharedstorewindow(selected[coin],
-                            Features.readfeatures(coin,"USDT",clcfg.features;confighash=TradingStrategy.featureshash(clcfg.features)),
-                            Targets.readtargets(coin,"USDT",clcfg.targets;confighash=TradingStrategy.targetshash(clcfg.targets)),
-                            featurefactory,targetfactory,coin)
-                        @test isequal(RegimeTraining.readpreparedtable(localfolder,"targets"),sharedtargets)
+                    @test !isdir(joinpath(trainingfolder,"stores"))
+                    full = [RegimeTraining.inputfullstores(input,coin) for coin in stores.coins]
+                    shared = (coins=stores.coins,featurestores=[s.features for s in full],
+                        targetstores=[s.targets for s in full])
+                    labels = Targets.uniquelabels(targetfactory())
+                    cols = Features.requestedcolumns(featurefactory())
+                    for coin in stores.coins
+                        windowfeatures,windowtargets = RegimeTraining.inputsharedstores(input,coin,selected[coin])
+                        windoweligible = TradingStrategy.experimenttimes(Dict(coin=>selected[coin]),
+                            (coins=[coin],featurestores=[windowfeatures],targetstores=[windowtargets]),regime)
+                        @test RegimeTraining.readpreparedtable(joinpath(trainingfolder,"eligible"),coin).opentime ==
+                            windoweligible[coin]
                     end
+                    sources = RegimeTraining.trainingsources(prepared,prepared.sets,
+                        joinpath(trainingfolder,"balanced");streaming=true)
+                    @test sources.compiled
+                    @test sources.evalweights==Classify.fixedevalweights(
+                        RegimeTraining.loadevalindex(sources).regime,
+                        RegimeTraining.loadevalindex(sources).foldid)
+                    for (settype,source) in (("train",sources.train),("eval",sources.eval),("test",sources.test))
+                        expectedindex = TradingStrategy.experimentindex(shared,assignments.sets,labels;settype)
+                        actualindex = RegimeTraining.readpreparedtable(sources.folder,settype*"-index")
+                        @test isequal(actualindex,expectedindex)
+                        oracle = Classify.CompactMmapSource(shared.featurestores,cols,expectedindex;
+                            folderpath=joinpath(trainingfolder,"oracle",settype),nlabels=length(labels),
+                            classbalancing=settype=="train" && input.classbalancing)
+                        @test source.X==oracle.X
+                        @test source.labelix==oracle.labelix
+                        @test source.classweight==oracle.classweight
+                    end
+                    identities = RegimeTraining.readpreparedtable(trainingfolder,"input-identities")
+                    group = first(groupby(RegimeTraining.loadtestindex(sources),:coin))
+                    coinix = first(group.coinix)
+                    coin = prepared.stores.coins[coinix]
+                    expectedhistory = NamedTuple(only(eachrow(identities[identities.coin .== coin,:])))
+                    selection = RegimeTraining.snapshotsources(prepared)
+                    record = RegimeTraining.sealcoin!(prepared,selection,coin,coinix,group,
+                        expectedhistory,Int[],joinpath(trainingfolder,"seal"))
+                    @test record.rows==nrow(group)
+                    sealed = RegimeTraining.readpreparedtable(joinpath(trainingfolder,"seal"),coin)
+                    @test Matrix(sealed[:,cols])==permutedims(sources.test.X[:,findall(==(coinix),
+                        RegimeTraining.loadtestindex(sources).coinix)])
+                    shifted = DataFrame(group)
+                    shifted.row .+= 1
+                    @test_throws AssertionError RegimeTraining.sealcoin!(prepared,selection,
+                        coin,coinix,shifted,expectedhistory,Int[],joinpath(trainingfolder,"shifted-seal"))
+                    counts = RegimeTraining.readpreparedtable(trainingfolder,"sample-coverage")
+                    expectedcounts = combine(groupby(vcat(values(assignments.sets)...),
+                        [:set,:regime,:foldid]),nrow=>:samples)
+                    @test isequal(sort(counts,[:set,:regime,:foldid]),
+                        sort(expectedcounts,[:set,:regime,:foldid]))
+                    loaded = String[]
+                    references = WeakRef[]
+                    loader = coin -> begin
+                        GC.gc()
+                        @test all(ref -> isnothing(ref.value),references)
+                        push!(loaded,coin)
+                        tables = RegimeTraining.inputfullstores(input,coin)
+                        push!(references,WeakRef(tables.features),WeakRef(tables.targets))
+                        tables
+                    end
+                    RegimeTraining.compileblocks!(prepared,joinpath(trainingfolder,"direct"),
+                        labels,cols,"direct-test";folds=Int[],regimes=String[],storeloader=loader)
+                    @test loaded==stores.coins
+                    bytes = read(joinpath(sources.folder,"train",Classify.TRAINFEATURES_FILE))
+                    @test_throws AssertionError RegimeTraining.compileblocks!(prepared,sources.folder,
+                        labels,cols,"changed";folds=Int[],regimes=String[])
+                    @test read(joinpath(sources.folder,"train",Classify.TRAINFEATURES_FILE))==bytes
+                    weighted = RegimeTraining.trainingsources(prepared,prepared.sets,
+                        joinpath(trainingfolder,"weighted");streaming=true,trainweights="balanced")
+                    @test weighted.train.weights==TradingStrategy.balancedcellweights(
+                        RegimeTraining.readpreparedtable(weighted.folder,"train-index"))
+                    @test weighted.train.source.X==sources.train.X
+                    for coin in stores.coins
+                        prepared.input.histories[coin] = RegimeTraining.loadinputhistory(input,coin)
+                    end
+                    RegimeTraining.reloadtrainingstores!(prepared)
+                    for (coinix,coin) in enumerate(stores.coins)
+                        expectedfeatures,expectedtargets = RegimeTraining.inputsharedstores(
+                            input,coin,prepared.input.histories[coin])
+                        @test isequal(prepared.stores.featurestores[coinix],expectedfeatures)
+                        @test isequal(prepared.stores.targetstores[coinix],expectedtargets)
+                    end
+                    chronological = RegimeTraining.trainingsources(prepared,assignments.sets,
+                        joinpath(trainingfolder,"chronological");streaming=true,keephistories=true)
+                    @test !chronological.compiled
+                    @test chronological.train.X==sources.train.X
+                    @test chronological.eval.X==sources.eval.X
                 end
             end
         finally

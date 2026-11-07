@@ -64,25 +64,35 @@ function snapshotsources(prepared::NamedTuple;folds::String="",regimes::String="
         cols=Features.requestedcolumns(prepared.input.featurefactory()),folds=foldids,regimes=regimetypes)
 end
 
-"""Verify and freeze one coin's reserved rows, without retaining full histories in the snapshot."""
+"""Verify coverage and freeze one coin's reserved rows without retaining its full history."""
 @noinline function sealcoin!(prepared::NamedTuple,sources::NamedTuple,coin::AbstractString,
-        coinix::Integer,index::AbstractDataFrame,expectedhistory::AbstractString,
+        coinix::Integer,index::AbstractDataFrame,expectedhistory::NamedTuple,
         windows::AbstractVector{Int},folder::AbstractString)::NamedTuple
     history = loadinputhistory(prepared.input,coin)
-    mktempdir(folder) do scratch
-        digest = TradingStrategy._experimentdigest!(scratch, _ -> history, coin)
-        @assert digest == expectedhistory "history for $coin changed since adaptation: stored=$expectedhistory current=$digest; cannot seal original experiment"
+    coverage = TradingStrategy.experimentcoverage(coin,history)
+    @assert coverage == expectedhistory "history coverage for $coin changed since adaptation: stored=$expectedhistory current=$coverage; cannot seal original experiment"
+    if prepared.input.mode=="market"
+        (;features,targets) = inputfullstores(prepared.input,coin)
+        times = readpreparedtable(joinpath(prepared.folder,"eligible"),coin).opentime
+        calendar = readpreparedtable(prepared.folder,"calendar")
+        expected = TradingStrategy.blockexperimentindices(features,targets,times,
+            calendar,sources.labels,coin,coinix;folds=sources.folds,regimes=sources.regimes).testindex
+    else
+        storesfolder = joinpath(prepared.folder,"stores",coin)
+        features = readpreparedtable(storesfolder,"features")
+        targets = readpreparedtable(storesfolder,"targets")
+        sets = readpreparedtable(storesfolder,"sets")
+        expected = TradingStrategy.experimentindex((coins=[coin],featurestores=[features],
+            targetstores=[targets]),Dict(coin=>sets),sources.labels;settype="test",
+            folds=sources.folds,regimes=sources.regimes)
     end
-    storesfolder = joinpath(prepared.folder,"stores",coin)
-    features = readpreparedtable(storesfolder,"features")
-    targets = readpreparedtable(storesfolder,"targets")
-    sets = readpreparedtable(storesfolder,"sets")
-    expected = TradingStrategy.experimentindex((coins=[coin],featurestores=[features],
-        targetstores=[targets]),Dict(coin=>sets),sources.labels;settype="test",
-        folds=sources.folds,regimes=sources.regimes)
-    expected.coinix .= coinix
-    @assert isequal(expected,DataFrame(index)) "reserved test membership for $coin changed since preparation"
+    expectedcoverage = TradingStrategy.experimentcoverage(coin,expected)
+    indexcoverage = TradingStrategy.experimentcoverage(coin,index)
+    @assert expectedcoverage == indexcoverage "reserved test coverage for $coin changed: expected=$expectedcoverage actual=$indexcoverage"
+    @assert all(==(coinix),index.coinix) "reserved test coin index mismatch for $coin: expected=$coinix"
     rows = index[!, :row]
+    @assert all(ix -> 1<=rows[ix]<=nrow(features) && features.opentime[rows[ix]]==index.opentime[ix],
+        eachindex(rows)) "snapshot feature coordinates no longer match reserved timestamps for $coin"
     table = DataFrame(index)
     for column in sources.cols
         table[!,column] = features[rows,column]
@@ -120,7 +130,8 @@ function sealsnapshot!(prepared::NamedTuple,sources::NamedTuple)::Nothing
     @assert issorted(index.coinix) "saved test index must be grouped by coin; rows=$(nrow(index))"
     groups = groupby(index,:coin;sort=false)
     histories = readpreparedtable(prepared.folder,"input-identities")
-    historydigests = Dict(zip(histories.coin,histories.digest))
+    historycoverage = Dict(row.coin => (coin=row.coin,rows=row.rows,start=row.start,stop=row.stop)
+        for row in eachrow(histories))
     strategy = TradingStrategy.strategytemplate(prepared.input.rc.tscfg.strategy)
     windows = TradingStrategy._strategyregressionwindows(strategy.algorithmconfig)
     records = DataFrame(coin=String[],rows=Int[],digest=String[])
@@ -130,7 +141,7 @@ function sealsnapshot!(prepared::NamedTuple,sources::NamedTuple)::Nothing
         coin = prepared.stores.coins[coinix]
         @assert prepared.stores.coins[coinix] == coin "saved coin coordinate=$coinix does not identify $coin"
         progressmessage("sealing test snapshot $coin ($groupix/$(length(groups))) rows=$(nrow(group))";started)
-        push!(records,sealcoin!(prepared,sources,coin,coinix,group,historydigests[coin],windows,folder))
+        push!(records,sealcoin!(prepared,sources,coin,coinix,group,historycoverage[coin],windows,folder))
         GC.gc()
     end
     @assert sum(records.rows) == nrow(index) "snapshot rows=$(sum(records.rows)) differ from test rows=$(nrow(index))"
