@@ -221,7 +221,7 @@ end
     @test_throws AssertionError RegimeTraining.options(["runid=../invalid"])
     @test_throws AssertionError RegimeTraining.options(["runid=x","unknown=y"])
     EnvConfig.init(EnvConfig.test)
-    input = RegimeTraining.inputs(Dict("mode"=>"synthetic","ts"=>"062"))
+    input = RegimeTraining.inputs(Dict("mode"=>"synthetic","ts"=>"068"))
     mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
         prepared = RegimeTraining.prepare!(input,folder)
         sources = RegimeTraining.trainingsources(prepared,prepared.sets,
@@ -277,7 +277,22 @@ end
         @test unique(frozen.threshold)==[0.6]
         thresholdhistory = EnvConfig.readtable("test-threshold-history";folderpath=sources.folder,format=:arrow)
         @test thresholdhistory.threshold==[0.5,0.6]
-        RegimeTraining.gainreport!(prepared,sources,best)
+        @testset "Gain replay uses the configured classifier for active regressions" begin
+            strategy = TradingStrategy.strategytemplate(input.rc.tscfg.strategy)
+            @test strategy.classifier===nothing
+            @test strategy.algorithmconfig.triggerregrwindow==240
+            @test strategy.algorithmconfig.trendregrwindow==240
+            @test RegimeTraining.gainreport!(prepared,sources,best)===nothing
+            gainfolder = joinpath(prepared.folder,"gain",input.rc.folder)
+            for coin in input.coins, pass in ("predicted","truth")
+                trades = EnvConfig.readtable("$coin-$pass";
+                    folderpath=joinpath(gainfolder,"trades-regime"),format=:arrow)
+                @test nrow(trades)>0
+                @test all(==("test"),trades.set)
+                @test all(isfinite,trades.lo_limit)
+                @test all(isfinite,trades.so_limit)
+            end
+        end
         gainfolder = joinpath(prepared.folder,"gain",input.rc.folder)
         gainidentity = EnvConfig.readtable("gain-identity";folderpath=gainfolder,format=:arrow)
         @test only(gainidentity.population)=="test"

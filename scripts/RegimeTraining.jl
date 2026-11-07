@@ -869,7 +869,7 @@ function recordteststrategy!(sources::NamedTuple,index::DataFrame,strategy::Trad
     return nothing
 end
 
-"""Replay reserved test predictions and target references using the selected strategy."""
+"""Replay reserved test predictions and target references using the selected strategy wired to the checkpoint classifier."""
 function gainreport!(prepared::NamedTuple,sources::NamedTuple,best;
         folds::AbstractVector{Int}=Int[],regimes::AbstractVector{<:AbstractString}=String[])::Nothing
     rc = prepared.input.rc
@@ -918,7 +918,7 @@ function gainreport!(prepared::NamedTuple,sources::NamedTuple,best;
                 labels = predicted ? group.label : group.target
                 tp = TradingStrategy.preparereplaytrades!(ts,xc,coin,group,scores,collect(labels);
                     metadata,datetime=last(group.opentime))
-                TradingStrategy.processreplaygains!(tp;strategy)
+                TradingStrategy.processreplaygains!(tp;strategy=ts.cfg)
                 push!(parts,select(tp.tradesdf,snapshots))
                 TradingStrategy.droppair!(ts,tp.pair)
                 TSM.droppair!(xc.tsm,tp.pair)

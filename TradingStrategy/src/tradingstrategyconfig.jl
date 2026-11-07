@@ -55,7 +55,7 @@ tradingstrategy08() = TradingStrategy.StrategyConfig(
 tradingstrategy09() = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal_below_regression!, 
     algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
-        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.4, buygain=0.001f0, incrementgain=0f0, makerfee=0.0025), 
+        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.2, buygain=0.001f0, incrementgain=0f0, makerfee=0.0025), 
         triggerdist=0.005f0, 
         triggerregrwindow=4*60, # zero disables the trigger regression window, previously 12*60, 
         trendregrwindow=4*60, # zero disables the trend regression window, previously 24*60, 

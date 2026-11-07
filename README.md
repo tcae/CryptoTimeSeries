@@ -360,6 +360,8 @@ Stages are `stores`, `train`, `predict`, `evaluate`, `gain`, plus explicit
 inspect diagrams, select thresholds and update the trading strategy before
 starting a subsequent `stage=gain` run. Gain requires an existing adapted
 checkpoint and never trains a missing model. `retrain` resumes adaptation only.
+Gain replay uses the runtime strategy wired to that checkpoint's classifier for
+both predicted and target-reference passes, including active strategy regression gates.
 
 Market preparation follows refresh's coin-scoped lifecycle: validate and hash
 one history at a time, ensure shared stores from **full** OHLCV history, then

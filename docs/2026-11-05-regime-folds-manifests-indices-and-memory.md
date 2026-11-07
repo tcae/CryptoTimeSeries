@@ -281,6 +281,22 @@ The compact mmap file sizes therefore do not bound total process memory.
 Memory claims should distinguish live arrays, allocation peaks, mapped resident
 pages and allocator retention rather than treating them as one quantity.
 
+## what files can be deleted after classifier adaptation?
+
+For a **market-mode** run, RegimeTraining’s run folder is `~/crypto/logs/regime-training/<runid>/`; test runs use `~/crypto/debug/regime-training/<runid>/` (`experimentfolder`).
+
+**If you still plan to run `stage=gain`, `stage=test`, or resume adaptation, keep the run data for now.** Gain loads `eval-best.bson`, and the run’s indices and per-coin stores are needed to prepare the replay (`execute!`, `trainingsources`).
+
+| Artifact | Cleanup guidance |
+|---|---|
+| `balanced/train/` and `balanced/eval/` compact files (`trainfeatures.f32`, `trainlabels.u8`) | Usually the first run artifacts to remove. They can be rebuilt for later stages **if** you keep the run’s `train-index.arrow`, `eval-index.arrow`, `stores/`, and manifests. |
+| `balanced/eval-last.bson` | Remove if you’re sure you won’t resume training; it holds the resume state. Keep `eval-best.bson` for test/gain replay and the best checkpoint (`EvalTraining.jl`). |
+| Eval reports and predictions (`eval-predictions.arrow`, metrics, plots, `coin-reports/`, `epoch-losses.arrow`) | Optional if you no longer need the reports. You may need to rerun reporting to recover them. |
+| `balanced/eval-best.bson`, run indices, `stores/`, manifests | Keep until any desired test/gain replay is complete. These preserve the checkpoint and the data/provenance needed for that workflow. |
+| Shared per-coin feature/target stores under `~/crypto/Bybit/` | Avoid deleting casually: they’re reusable across runs, and rebuilding them requires the full OHLCV history (`ensurefeaturetargetstores!`). |
+
+Keep the **published classifier** in `~/crypto/classifiers/<classifier-name>/` for normal use; test-mode classifiers are under `~/crypto/debug/classifiers/` (`classifierfolder`). If you’ve finished all replay/reporting and only need that published classifier, you can remove the run folder—but its saved metadata points to the run’s best checkpoint, so you’ll lose that checkpoint and its run-level provenance.
+
 ## Summary
 
 ```text
