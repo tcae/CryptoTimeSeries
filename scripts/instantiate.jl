@@ -18,7 +18,7 @@ Pkg.activate(rootpath)
 cd(rootpath)
 
 println("load path: $LOAD_PATH   depot path: $DEPOT_PATH")
-mypackages = ["Trade", "Classify", "Xch", "Bybit", "EnvConfig", "Ohlcv", "Features", "Targets", "TestOhlcv"]
+mypackages = ["EnvConfig", "Ohlcv", "TestOhlcv", "Features", "XchAdapter", "Targets", "Bybit", "IbkrSpot", "KrakenSpot", "KrakenFutures", "Xch", "Classify", "TSM", "TradingStrategy", "Trade"]
 rootpath = "."
 
 # Develop all packages first without resolving individually

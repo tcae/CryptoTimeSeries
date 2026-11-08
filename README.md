@@ -353,36 +353,34 @@ and targets; `mode=synthetic` is the explicit small smoke fixture.
 
 ```sh
 julia --project=. scripts/RegimeTraining.jl test ts=063 stage=evaluate
-julia --project=. scripts/RegimeTraining.jl test ts=063 stage=snapshot
 julia --project=. scripts/RegimeTraining.jl test ts=063 stage=gain
 julia --project=. scripts/RegimeTraining.jl train ts=063 coinset=CS01 daterange=D01 stage=train
 ```
 
-Stages are `stores`, `train`, `predict`, `evaluate`, `snapshot`, `gain`, plus explicit
+Stages are `stores`, `train`, `predict`, `evaluate`, `gain`, plus explicit
 `test` and `walkforward`. Adaptation ends with eval reports and `next-steps.txt`:
 inspect diagrams, select thresholds and update the trading strategy before
 starting a subsequent `stage=gain` run. Gain requires an existing adapted
 checkpoint and never trains a missing model. `retrain` resumes adaptation only.
-Before the first gain run, `stage=snapshot` verifies each original input-history
-and reserved test coverage, then seals coin-sized test features, prices
-and enabled regression windows in `balanced/gain-snapshot`. This is an explicit
-one-time operation for existing runs; it does not rebuild train/eval numeric
-sources or adapt the classifier. Changed history coverage fails sealing, but
-interior changes with unchanged coverage are not detected. A sealed snapshot is immutable.
-
-`stage=gain` reads that snapshot, not mutable market histories or current default
-coin-set membership. Explicit universe/configuration overrides must still match
-the original experiment. It verifies snapshot digests, loads the checkpoint,
-infers bounded batches and replays both predicted and target-reference signals.
+`stage=gain` uses the saved test index and original universe, loading matching
+features, OHLCV prices and precalculated regression stores one coin at a time.
+Required market regression windows must already exist in the per-coin regression
+store; missing or misaligned data fails explicitly. Strategy-only windows do not
+change classifier features. Explicit universe/configuration overrides must match
+the original experiment. Gain loads the checkpoint, infers bounded batches and
+replays both predicted and target-reference signals. Reference labels come from
+the saved test index, which records their target-label indices at preparation.
 No train/eval source compaction or full classifier feature initialization occurs.
 Regression columns are aligned once per range, equal windows share their arrays,
 and invalid numerical guidance still downgrades opens to hold while managing
 existing positions. Missing guidance remains an explicit error.
 
 Predictions and coin/pass replay files have digest-verified completion markers
-under `balanced/gain-cache`, keyed by snapshot/checkpoint and strategy/replay
-semantics respectively. Retries reuse only complete matching artifacts. Strategy
-changes create separate replay caches; they do not invalidate predictions.
+under `balanced/gain-cache`, keyed by test index/checkpoint and strategy/replay
+semantics respectively. Store values are assumed stable; regenerate the experiment
+and its gain caches after changing historical values. Retries reuse only complete
+matching artifacts. Strategy changes create separate replay caches; they do not
+invalidate predictions.
 Partial files are recomputed, and changed committed files fail verification.
 Canonical prediction/trades/gain reports are still published in their usual
 locations. Gain also writes `gain-report.txt` and `gain-report.svg` in the gain
@@ -415,10 +413,10 @@ Market training then uses one final coin pass to select eligible timestamps with
 assigned blocks from the complete shared feature/target stores. It writes all three
 compact feature/label sources (`train/`, `eval/`, `test/`) and their index metadata
 together, in bounded batches. Indices retain shared-store row coordinates, labels,
-timestamps and regime/fold/block metadata for weighting, diagnostics and snapshot sealing.
+timestamps and regime/fold/block metadata for weighting, diagnostics and gain replay.
 No separate membership, index-building or per-set feature-loading pass is needed.
 Publication occurs only after output sizes and the training identity have been verified.
-Shared stores must remain unchanged until a reserved-test snapshot has been sealed.
+Shared stores are assumed stable for the lifetime of an experiment and its gain caches.
 This layout uses new default market run IDs; old runs require regeneration with a new
 explicit run ID rather than compatibility loading.
 Synthetic/test modes retain private stores and the existing separate compaction path.

@@ -1,6 +1,6 @@
 """SHA-256 of a required file; missing inputs are never treated as a reusable cache."""
 function filedigest(path::AbstractString)::String
-    @assert isfile(path) "required snapshot artifact missing: $path"
+    @assert isfile(path) "required gain artifact missing: $path"
     return bytes2hex(open(SHA.sha256,path))
 end
 
@@ -28,7 +28,7 @@ function nativegaintable(table::AbstractDataFrame)::DataFrame
 end
 
 """Reconstruct configuration metadata without reading mutable market inputs."""
-function snapshotprepared(opts::Dict{String,String}, rc::NamedTuple, folder::AbstractString)::NamedTuple
+function gainprepared(opts::Dict{String,String}, rc::NamedTuple, folder::AbstractString)::NamedTuple
     input = inputs(opts,rc;saved=true)
     manifest = readpreparedtable(folder,"manifest")
     if !haskey(opts,"coins")
@@ -50,7 +50,7 @@ function snapshotprepared(opts::Dict{String,String}, rc::NamedTuple, folder::Abs
 end
 
 """Verify the original training selection without rebuilding training/evaluation numeric sources."""
-function snapshotsources(prepared::NamedTuple;folds::String="",regimes::String="",
+function gainsources(prepared::NamedTuple;folds::String="",regimes::String="",
         trainweights::String="class",folder::AbstractString=joinpath(prepared.folder,"balanced"))::NamedTuple
     foldids = isempty(folds) ? Int[] : parse.(Int,split(folds,","))
     regimetypes = isempty(regimes) ? String[] : collect(split(regimes,","))
@@ -64,117 +64,61 @@ function snapshotsources(prepared::NamedTuple;folds::String="",regimes::String="
         cols=Features.requestedcolumns(prepared.input.featurefactory()),folds=foldids,regimes=regimetypes)
 end
 
-"""Verify coverage and freeze one coin's reserved rows without retaining its full history."""
-@noinline function sealcoin!(prepared::NamedTuple,sources::NamedTuple,coin::AbstractString,
-        coinix::Integer,index::AbstractDataFrame,expectedhistory::NamedTuple,
-        windows::AbstractVector{Int},folder::AbstractString)::NamedTuple
-    history = loadinputhistory(prepared.input,coin)
-    coverage = TradingStrategy.experimentcoverage(coin,history)
-    @assert coverage == expectedhistory "history coverage for $coin changed since adaptation: stored=$expectedhistory current=$coverage; cannot seal original experiment"
+"""Load and align one coin's reserved test rows from the experiment and shared stores."""
+@noinline function gaincoin(prepared::NamedTuple,sources::NamedTuple,coin::AbstractString,
+        coinix::Integer,index::AbstractDataFrame,windows::AbstractVector{Int})::DataFrame
+    @assert nrow(index)>0 && all(==(coinix),index.coinix) && all(==(coin),index.coin) &&
+        all(==("test"),index.set) "invalid test index for coin=$coin coinix=$coinix rows=$(nrow(index))"
+    @assert issorted(index.opentime) && allunique(index.opentime) "test timestamps for $coin must be sorted and unique: rows=$(nrow(index))"
+    @assert all(ix -> 1<=ix<=length(sources.labels),index.labelix) "invalid test labels for $coin: labels=$(length(sources.labels))"
     if prepared.input.mode=="market"
-        (;features,targets) = inputfullstores(prepared.input,coin)
-        times = readpreparedtable(joinpath(prepared.folder,"eligible"),coin).opentime
-        calendar = readpreparedtable(prepared.folder,"calendar")
-        expected = TradingStrategy.blockexperimentindices(features,targets,times,
-            calendar,sources.labels,coin,coinix;folds=sources.folds,regimes=sources.regimes).testindex
+        clcfg = prepared.input.rc.clcfg
+        features = Features.readfeatures(coin,"USDT",clcfg.features;
+            confighash=TradingStrategy.featureshash(clcfg.features))
+        @assert !isnothing(features) "missing shared features for $coin features=$(clcfg.features)"
     else
         storesfolder = joinpath(prepared.folder,"stores",coin)
         features = readpreparedtable(storesfolder,"features")
-        targets = readpreparedtable(storesfolder,"targets")
-        sets = readpreparedtable(storesfolder,"sets")
-        expected = TradingStrategy.experimentindex((coins=[coin],featurestores=[features],
-            targetstores=[targets]),Dict(coin=>sets),sources.labels;settype="test",
-            folds=sources.folds,regimes=sources.regimes)
     end
-    expectedcoverage = TradingStrategy.experimentcoverage(coin,expected)
-    indexcoverage = TradingStrategy.experimentcoverage(coin,index)
-    @assert expectedcoverage == indexcoverage "reserved test coverage for $coin changed: expected=$expectedcoverage actual=$indexcoverage"
-    @assert all(==(coinix),index.coinix) "reserved test coin index mismatch for $coin: expected=$coinix"
     rows = index[!, :row]
     @assert all(ix -> 1<=rows[ix]<=nrow(features) && features.opentime[rows[ix]]==index.opentime[ix],
-        eachindex(rows)) "snapshot feature coordinates no longer match reserved timestamps for $coin"
-    table = DataFrame(index)
+        eachindex(rows)) "test feature coordinates no longer match reserved timestamps for $coin"
+    table = nativegaintable(DataFrame(index))
     for column in sources.cols
         table[!,column] = features[rows,column]
     end
+    history = loadinputhistory(prepared.input,coin)
     historyrows = searchsortedfirst.(Ref(history.opentime),index.opentime)
     @assert all(ix -> historyrows[ix] <= nrow(history) && history.opentime[historyrows[ix]] == index.opentime[ix],
-        eachindex(historyrows)) "snapshot price timestamps missing for $coin"
+        eachindex(historyrows)) "test price timestamps missing for $coin"
     for column in (:high,:low,:close)
         table[!,column] = history[historyrows,column]
     end
-    if !isempty(windows)
+    if !isempty(windows) && prepared.input.mode!="market"
         ohlcv = Ohlcv.defaultohlcv(coin)
         Ohlcv.setdataframe!(ohlcv,history)
         guidance = Features.Features006()
         for window in windows
             Features.addgrad!(guidance;window)
         end
-        Features.setbase!(guidance,ohlcv;usecache=true)
+        Features.setbase!(guidance,ohlcv;usecache=false)
         for window in windows
             aligned = TradingStrategy._alignregression(
                 TradingStrategy._regressioncolumns(guidance,window),index.opentime)
             table[!,"regry$window"] = aligned.price
             table[!,"grad$window"] = aligned.gradient
         end
+    elseif !isempty(windows)
+        for window in windows
+            regression = Features.readregression(coin,"USDT",window)
+            @assert !isnothing(regression) "missing precalculated regression for coin=$coin window=$window"
+            columns = TradingStrategy.RegressionColumns(regression.opentime,regression.regry,regression.grad)
+            aligned = TradingStrategy._alignregression(columns,index.opentime)
+            table[!,"regry$window"] = aligned.price
+            table[!,"grad$window"] = aligned.gradient
+        end
     end
-    path = atomictable(table,coin,folder)
-    return (coin=String(coin),rows=nrow(table),digest=filedigest(path))
-end
-
-"""Seal persisted test inputs once; existing seals must match instead of being silently replaced."""
-function sealsnapshot!(prepared::NamedTuple,sources::NamedTuple)::Nothing
-    folder = mkpath(joinpath(sources.folder,"gain-snapshot"))
-    @assert !isfile(joinpath(folder,"manifest.arrow")) "snapshot already sealed in $folder; gain verifies/reuses it; do not overwrite an immutable snapshot"
-    index = readpreparedtable(sources.folder,"test-index")
-    @assert issorted(index.coinix) "saved test index must be grouped by coin; rows=$(nrow(index))"
-    groups = groupby(index,:coin;sort=false)
-    histories = readpreparedtable(prepared.folder,"input-identities")
-    historycoverage = Dict(row.coin => (coin=row.coin,rows=row.rows,start=row.start,stop=row.stop)
-        for row in eachrow(histories))
-    strategy = TradingStrategy.strategytemplate(prepared.input.rc.tscfg.strategy)
-    windows = TradingStrategy._strategyregressionwindows(strategy.algorithmconfig)
-    records = DataFrame(coin=String[],rows=Int[],digest=String[])
-    started = time_ns()
-    for (groupix,group) in enumerate(groups)
-        coinix = first(group.coinix)
-        coin = prepared.stores.coins[coinix]
-        @assert prepared.stores.coins[coinix] == coin "saved coin coordinate=$coinix does not identify $coin"
-        progressmessage("sealing test snapshot $coin ($groupix/$(length(groups))) rows=$(nrow(group))";started)
-        push!(records,sealcoin!(prepared,sources,coin,coinix,group,historycoverage[coin],windows,folder))
-        GC.gc()
-    end
-    @assert sum(records.rows) == nrow(index) "snapshot rows=$(sum(records.rows)) differ from test rows=$(nrow(index))"
-    testidentity = TradingStrategy.experimentmanifest!(joinpath(sources.folder,"test-identity"),
-        Dict("test"=>index),sources.identity)
-    atomictable(records,"coins",folder)
-    manifest = DataFrame(identity=[sources.identity],preparation=[prepared.identity],
-        description=[preparationdescription(prepared.input)],windows=[join(windows,",")],
-        features=[join(sources.cols,",")],labels=[join(Targets.tradelabelcode.(sources.labels),",")],
-        coinsdigest=[filedigest(joinpath(folder,"coins.arrow"))],testidentity=[testidentity])
-    atomictable(manifest,"manifest",folder)
-    progressmessage("sealed snapshot: coins=$(nrow(records)) samples=$(sum(records.rows)) output=$folder";started)
-    return nothing
-end
-
-"""Verify the snapshot contract; per-coin content digests are checked immediately before use."""
-function loadsnapshot(prepared::NamedTuple,sources::NamedTuple)::NamedTuple
-    folder = joinpath(sources.folder,"gain-snapshot")
-    @assert isfile(joinpath(folder,"manifest.arrow")) "no sealed gain snapshot in $folder; run the same command with stage=snapshot once (verifies original histories)"
-    manifest = readpreparedtable(folder,"manifest")
-    @assert only(manifest.identity) == sources.identity && only(manifest.preparation) == prepared.identity "snapshot identity does not match saved experiment=$(sources.identity)"
-    @assert only(manifest.description) == preparationdescription(prepared.input) "snapshot configuration changed: $(only(manifest.description))"
-    @assert only(manifest.features) == join(sources.cols,",") && only(manifest.labels) == join(Targets.tradelabelcode.(sources.labels),",") "snapshot feature/label order differs from requested model"
-    @assert filedigest(joinpath(folder,"coins.arrow")) == only(manifest.coinsdigest) "snapshot coin manifest changed in $folder"
-    records = readpreparedtable(folder,"coins")
-    @assert nrow(records)>0 && allunique(records.coin) && issorted(records.coin) && all(>(0),records.rows) "invalid snapshot coin records: rows=$(nrow(records))"
-    @assert all(in(prepared.stores.coins),records.coin) "snapshot coins outside the original universe=$(prepared.stores.coins)"
-    required = TradingStrategy._strategyregressionwindows(
-        TradingStrategy.strategytemplate(prepared.input.rc.tscfg.strategy).algorithmconfig)
-    windows = isempty(only(manifest.windows)) ? Int[] : parse.(Int,split(only(manifest.windows),","))
-    @assert all(in(windows),required) "strategy regression windows=$required unavailable in sealed snapshot windows=$windows"
-    return (;folder,records,windows=required,testidentity=only(manifest.testidentity),
-        digest=filedigest(joinpath(folder,"manifest.arrow")))
+    return table
 end
 
 """Load a complete cache only if its committed content and execution identity match."""
@@ -197,8 +141,8 @@ function commitcache(table::AbstractDataFrame,folder::AbstractString,stem::Abstr
     return nothing
 end
 
-"""Infer one frozen coin in bounded batches, without creating training/evaluation/test mmap sources."""
-function snapshotpredictions(best,table::DataFrame,cols::AbstractVector{<:AbstractString};
+"""Infer one coin's test rows in bounded batches, without compacting training sources."""
+function gainpredictions(best,table::DataFrame,cols::AbstractVector{<:AbstractString};
         onprogress::Function)::DataFrame
     result = select(table,:coin,:opentime,:set,:regime,:foldid,:blockid)
     scores = Vector{Float32}(undef,nrow(table))
@@ -218,9 +162,9 @@ function snapshotpredictions(best,table::DataFrame,cols::AbstractVector{<:Abstra
 end
 
 """Replay one coin/pass with canonical Trades schemas and append independent range snapshots."""
-function snapshotreplay!(rows::DataFrame,strategy::TradingStrategy.StrategyConfig,
+function gainreplay!(rows::DataFrame,strategy::TradingStrategy.StrategyConfig,
         windows::AbstractVector{Int},predicted::Bool,folder::AbstractString,stem::AbstractString)::DataFrame
-    @assert nrow(rows)>0 "snapshot replay requires rows; stem=$stem rows=$(nrow(rows))"
+    @assert nrow(rows)>0 "gain replay requires rows; stem=$stem rows=$(nrow(rows))"
     ranges = cumsum(vcat(1,[rows.blockid[ix]!=rows.blockid[ix-1] ||
         rows.opentime[ix]-rows.opentime[ix-1]!=Minute(1) for ix in 2:nrow(rows)]))
     rows[!,:rangeid] = ranges
@@ -305,15 +249,21 @@ function gainreadablereport!(gains::AbstractDataFrame,folder::AbstractString)::N
     return nothing
 end
 
-"""Stream a verified saved test snapshot; reuse predictions and replays only with committed identities."""
-function snapshotgainreport!(prepared::NamedTuple,sources::NamedTuple)::Nothing
-    snapshot = loadsnapshot(prepared,sources)
+"""Stream saved test selections from the stores; reuse committed predictions and replays."""
+function directgainreport!(prepared::NamedTuple,sources::NamedTuple)::Nothing
+    index = readpreparedtable(sources.folder,"test-index")
+    @assert nrow(index)>0 && issorted(index.coinix) "saved test index must be nonempty and grouped by coin; rows=$(nrow(index))"
+    groups = groupby(index,:coin;sort=false)
+    testidentity = TradingStrategy.experimentmanifest!(joinpath(sources.folder,"test-identity"),
+        Dict("test"=>index),sources.identity)
+    indexdigest = filedigest(joinpath(sources.folder,"test-index.arrow"))
     best = Classify.loadtraincheckpoint(sources.folder;identity=sources.identity)
-    @assert best.labels == sources.labels "checkpoint labels=$(best.labels) differ from snapshot labels=$(sources.labels)"
+    @assert best.labels == sources.labels "checkpoint labels=$(best.labels) differ from test labels=$(sources.labels)"
     checkpoint = filedigest(joinpath(sources.folder,"eval-best.bson"))
     strategy = TradingStrategy.strategytemplate(prepared.input.rc.tscfg.strategy)
-    predictionidentity = TradingStrategy.confighash("gain-prediction-v1;$(snapshot.digest);$checkpoint")
-    replayidentity = TradingStrategy.confighash("gain-replay-v1;$predictionidentity;$(repr(strategy))")
+    windows = TradingStrategy._strategyregressionwindows(strategy.algorithmconfig)
+    predictionidentity = TradingStrategy.confighash("gain-prediction-v2;$(sources.identity);$indexdigest;$checkpoint")
+    replayidentity = TradingStrategy.confighash("gain-replay-v2;$predictionidentity;$(repr(strategy))")
     rc = prepared.input.rc
     if rc.mode == "market"
         EnvConfig.setlogpath(rc.folder)
@@ -324,33 +274,33 @@ function snapshotgainreport!(prepared::NamedTuple,sources::NamedTuple)::Nothing
     tradesfolder = mkpath(joinpath(gainfolder,"trades-regime"))
     cachefolder = mkpath(joinpath(sources.folder,"gain-cache",predictionidentity))
     replayfolder = mkpath(joinpath(cachefolder,replayidentity))
-    recordteststrategyidentity!(sources,snapshot.testidentity,strategy)
+    recordteststrategyidentity!(sources,testidentity,strategy)
     predictionpending = "test-predictions-pending"
     gainparts = DataFrame[]
+    emptygains = DataFrame()
     started = time_ns()
     completedrows = 0
-    totalrows = sum(snapshot.records.rows)
-    for (coinix,record) in enumerate(eachrow(snapshot.records))
-        coin = record.coin
-        progressmessage("gain coin=$coin ($coinix/$(nrow(snapshot.records))) samples=$completedrows/$totalrows rss=$(Sys.maxrss())";started)
-        path = joinpath(snapshot.folder,coin*".arrow")
-        @assert filedigest(path) == record.digest "sealed snapshot content changed for coin=$coin"
-        table = readpreparedtable(snapshot.folder,coin)
-        @assert nrow(table) == record.rows && all(==(coin),table.coin) && all(==("test"),table.set) "invalid frozen population for $coin rows=$(nrow(table))"
+    totalrows = nrow(index)
+    for (groupix,group) in enumerate(groups)
+        coinix = first(group.coinix)
+        @assert 1<=coinix<=length(prepared.stores.coins) "invalid test coin coordinate=$coinix coins=$(length(prepared.stores.coins))"
+        coin = prepared.stores.coins[coinix]
+        progressmessage("gain coin=$coin ($groupix/$(length(groups))) samples=$completedrows/$totalrows rss=$(Sys.maxrss())";started)
+        table = gaincoin(prepared,sources,coin,coinix,group,windows)
         if verifiedcache(cachefolder,coin,predictionidentity)
             progressmessage("reusing verified predictions: $coin";started)
             predictions = readpreparedtable(cachefolder,coin)
         else
-            progressmessage("inferring frozen test rows: $coin";started)
-            predictions = snapshotpredictions(best,table,sources.cols;
+            progressmessage("inferring test rows: $coin";started)
+            predictions = gainpredictions(best,table,sources.cols;
                 onprogress=(done,total)->(done==total && progressmessage("inferred $coin samples=$done/$total";started)))
             commitcache(predictions,cachefolder,coin,predictionidentity)
         end
         EnvConfig.writetable(nativegaintable(predictions),predictionpending;folderpath=sources.folder,
-            format=:arrow,append=coinix>1,preserveschema=true)
+            format=:arrow,append=groupix>1,preserveschema=true)
         rows = select(table,:coin,:opentime,:set,:regime,:foldid,:blockid,:high,:low,:close,
-            [Symbol("regry$w") for w in snapshot.windows]...,
-            [Symbol("grad$w") for w in snapshot.windows]...)
+            [Symbol("regry$w") for w in windows]...,
+            [Symbol("grad$w") for w in windows]...)
         rows[!,:label] = predictions.label
         rows[!,:score] = predictions.score
         rows[!,:target] = predictions.target
@@ -362,7 +312,7 @@ function snapshotgainreport!(prepared::NamedTuple,sources::NamedTuple)::Nothing
                 gains = readpreparedtable(replayfolder,stem*"-gains")
             else
                 progressmessage("replaying $stem rows=$(nrow(rows))";started)
-                measured = @timed snapshotreplay!(rows,strategy,snapshot.windows,predicted,replayfolder,stem)
+                measured = @timed gainreplay!(rows,strategy,windows,predicted,replayfolder,stem)
                 gains = measured.value
                 progressmessage("replayed $stem seconds=$(round(measured.time;digits=2)) allocated_bytes=$(measured.bytes) gc_seconds=$(round(measured.gctime;digits=2)) rows_per_second=$(round(nrow(rows)/measured.time))";started)
                 gains[!,:predicted] = fill(predicted,nrow(gains))
@@ -371,14 +321,17 @@ function snapshotgainreport!(prepared::NamedTuple,sources::NamedTuple)::Nothing
                     digest=[filedigest(joinpath(replayfolder,stem*".arrow"))]),stem*"-complete",replayfolder)
             end
             cp(joinpath(replayfolder,stem*".arrow"),joinpath(tradesfolder,stem*".arrow");force=true)
+            emptygains = gains
             nrow(gains)>0 && push!(gainparts,gains)
         end
         completedrows += nrow(table)
+        GC.gc()
     end
     mv(joinpath(sources.folder,predictionpending*".arrow"),
         joinpath(sources.folder,"test-predictions.arrow");force=true)
     if isempty(gainparts)
         @warn "gain replay produced no completed trades" tradesfolder
+        gains = emptygains
         EnvConfig.savedf(gains,"tsmgains-regime";folderpath=gainfolder)
         TSM.gainsreport(instem="tsmgains-regime",stem="xchgainsreport-regime",folderpath=gainfolder)
         atomictable(DataFrame(completed_trades=[0]),"gain-summary",gainfolder)
@@ -391,7 +344,7 @@ function snapshotgainreport!(prepared::NamedTuple,sources::NamedTuple)::Nothing
     gainreadablereport!(gains,gainfolder)
     atomictable(DataFrame(identity=[sources.identity],ts=[rc.tscfg.configname],
         strategy=[rc.tscfg.strategy],population=["test"],checkpoint=["eval-best.bson"],
-        snapshot=[snapshot.digest],replay=[replayidentity]),"gain-identity",gainfolder)
+        testindex=[indexdigest],replay=[replayidentity]),"gain-identity",gainfolder)
     progressmessage("gain complete: samples=$completedrows peak_rss=$(Sys.maxrss()) reports=$(joinpath(gainfolder,"gain-report.txt")), $(joinpath(gainfolder,"gain-report.svg"))";started)
     return nothing
 end

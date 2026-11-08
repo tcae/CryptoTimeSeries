@@ -380,6 +380,9 @@ const TARGET_CONFIGS = Dict{String, Function}(
     "T26" => () -> Targets.Trend05(leadregr=60, supportregr=4*60, trendregr=3*24*60, triggerdist=0.05f0, targetgain=0.05f0, targetminutes=480),
 )
 
+"""
+Partitions are used by TrendDetector but RegimeTraining only uses the derived ratio of train:eval:test splits and the gap information.
+"""
 const PARTITION_CONFIGS = Dict{String, Function}("P02" => partitionconfig02)
 
 "Coin sets with the epoch budget of their training, which scales with the data volume of the coin set."

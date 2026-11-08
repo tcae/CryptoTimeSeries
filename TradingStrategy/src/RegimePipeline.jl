@@ -59,7 +59,13 @@ end
 """Return a table's row count and timestamp bounds for inexpensive coverage validation."""
 function experimentcoverage(name::AbstractString, table::AbstractDataFrame)::NamedTuple
     @assert nrow(table)>0 "empty experiment input=$name rows=$(nrow(table))"
-    firsttime,lasttime = extrema(table.opentime)
+    timestamps = table.opentime
+    firsttime = first(timestamps)
+    lasttime = firsttime
+    for timestamp in Iterators.drop(timestamps,1)
+        firsttime = min(firsttime,timestamp)
+        lasttime = max(lasttime,timestamp)
+    end
     return (coin=name,rows=nrow(table),start=firsttime,stop=lasttime)
 end
 

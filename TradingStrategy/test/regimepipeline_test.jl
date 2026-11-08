@@ -370,6 +370,13 @@ end
     @test TradingStrategy.experimentcoverage("train",index)==
         (coin="train",rows=4,start=start,stop=start+Minute(30))
     mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+        EnvConfig.writetable(index,"empty-arrow-tail";folderpath=folder,format=:arrow,
+            preserveschema=true)
+        EnvConfig.writetable(index[1:0,:],"empty-arrow-tail";folderpath=folder,
+            format=:arrow,append=true,preserveschema=true)
+        arrowindex = EnvConfig.readtable("empty-arrow-tail";folderpath=folder,format=:arrow)
+        @test TradingStrategy.experimentcoverage("train",arrowindex)==
+            (coin="train",rows=4,start=start,stop=start+Minute(30))
         identity = TradingStrategy.experimentmanifest!(folder,Dict("train"=>index),"selection")
         changed = copy(index)
         changed.labelix[2] = 1

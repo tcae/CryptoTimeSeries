@@ -324,22 +324,30 @@ end
                         @test source.labelix==oracle.labelix
                         @test source.classweight==oracle.classweight
                     end
-                    identities = RegimeTraining.readpreparedtable(trainingfolder,"input-identities")
                     group = first(groupby(RegimeTraining.loadtestindex(sources),:coin))
                     coinix = first(group.coinix)
                     coin = prepared.stores.coins[coinix]
-                    expectedhistory = NamedTuple(only(eachrow(identities[identities.coin .== coin,:])))
-                    selection = RegimeTraining.snapshotsources(prepared)
-                    record = RegimeTraining.sealcoin!(prepared,selection,coin,coinix,group,
-                        expectedhistory,Int[],joinpath(trainingfolder,"seal"))
-                    @test record.rows==nrow(group)
-                    sealed = RegimeTraining.readpreparedtable(joinpath(trainingfolder,"seal"),coin)
-                    @test Matrix(sealed[:,cols])==permutedims(sources.test.X[:,findall(==(coinix),
+                    selection = RegimeTraining.gainsources(prepared)
+                    testrows = RegimeTraining.gaincoin(prepared,selection,coin,coinix,group,[240])
+                    @test nrow(testrows)==nrow(group)
+                    @test Matrix(testrows[:,cols])==permutedims(sources.test.X[:,findall(==(coinix),
                         RegimeTraining.loadtestindex(sources).coinix)])
+                    regression = Features.readregression(coin,"USDT",240)
+                    positions = searchsortedfirst.(Ref(regression.opentime),group.opentime)
+                    @test testrows.regry240==regression.regry[positions]
+                    @test testrows.grad240==regression.grad[positions]
                     shifted = DataFrame(group)
                     shifted.row .+= 1
-                    @test_throws AssertionError RegimeTraining.sealcoin!(prepared,selection,
-                        coin,coinix,shifted,expectedhistory,Int[],joinpath(trainingfolder,"shifted-seal"))
+                    @test_throws AssertionError RegimeTraining.gaincoin(prepared,selection,
+                        coin,coinix,shifted,Int[])
+                    @test_throws AssertionError RegimeTraining.gaincoin(prepared,selection,
+                        coin,coinix,group,[9999])
+                    misaligned = DataFrame(regression;copycols=true)
+                    misaligned.opentime .+= Second(30)
+                    EnvConfig.writetable(misaligned,"regr9998";
+                        folderpath=Features.regressionfolder(coin,"USDT"),format=:arrow)
+                    @test_throws AssertionError RegimeTraining.gaincoin(prepared,selection,
+                        coin,coinix,group,[9998])
                     counts = RegimeTraining.readpreparedtable(trainingfolder,"sample-coverage")
                     expectedcounts = combine(groupby(vcat(values(assignments.sets)...),
                         [:set,:regime,:foldid]),nrow=>:samples)

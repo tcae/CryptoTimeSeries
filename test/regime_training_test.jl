@@ -268,7 +268,10 @@ end
     @test_throws AssertionError RegimeTraining.options(["runid=x","unknown=y"])
     EnvConfig.init(EnvConfig.test)
     input = RegimeTraining.inputs(Dict("mode"=>"synthetic","ts"=>"068"))
+    oldcoinspath = EnvConfig.activecoinspath
     mktempdir(mkpath(EnvConfig.defaultdebugfilespath)) do folder
+        try
+        EnvConfig.setcoinspath!(joinpath(folder,"coins"))
         prepared = RegimeTraining.prepare!(input,folder)
         sources = RegimeTraining.trainingsources(prepared,prepared.sets,
             joinpath(folder,"model");trainweights="balanced")
@@ -340,39 +343,49 @@ end
             end
         end
         gainfolder = joinpath(prepared.folder,"gain",input.rc.folder)
-        @testset "Sealed snapshot replay matches the guarded baseline" begin
-            strategy = TradingStrategy.strategytemplate(input.rc.tscfg.strategy)
-            snapshotinput = RegimeTraining.snapshotprepared(
-                Dict("mode"=>"synthetic","ts"=>"068"),input.rc,folder)
-            snapshotsource = RegimeTraining.snapshotsources(snapshotinput;
+        TradingStrategy.STRATEGY_CONFIGS["SGAINPARITY"] = ()->TradingStrategy.StrategyConfig(
+            algorithm=TradingStrategy.gain_limit_reversal_below_regression!,
+            algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
+                gainlimit=TradingStrategy.GainLimitReversalConfig(openthreshold=0f0),
+                triggerregrwindow=60,trendregrwindow=240,trendgainthreshold=1f0))
+        try
+        @testset "Direct test replay matches the guarded baseline" begin
+            parityrc = merge(input.rc,(tscfg=merge(input.rc.tscfg,(strategy="SGAINPARITY",)),))
+            parityinput = merge(input,(rc=parityrc,))
+            parityprepared = merge(prepared,(input=parityinput,))
+            strategy = TradingStrategy.strategytemplate(parityrc.tscfg.strategy)
+            @test RegimeTraining.gainreport!(parityprepared,sources,best) === nothing
+            gaininput = RegimeTraining.gainprepared(
+                Dict("mode"=>"synthetic","ts"=>"068"),parityrc,folder)
+            gainsource = RegimeTraining.gainsources(gaininput;
                 trainweights="balanced",folder=sources.folder)
-            @test snapshotsource.identity == sources.identity
-            @test_throws AssertionError RegimeTraining.loadsnapshot(snapshotinput,snapshotsource)
+            @test gainsource.identity == sources.identity
             golden = Dict((coin,pass)=>EnvConfig.readtable("$coin-$pass";
                 folderpath=joinpath(gainfolder,"trades-regime"),format=:arrow)
                 for coin in input.coins for pass in ("predicted","truth"))
             goldengains = EnvConfig.readtable("tsmgains-regime";folderpath=gainfolder,format=:arrow)
+            @test !isempty(goldengains)
             predictionsbefore = EnvConfig.readtable("test-predictions";folderpath=sources.folder,format=:arrow)
             trainpath = joinpath(sources.folder,"train",Classify.TRAINFEATURES_FILE)
             trainmodified = mtime(trainpath)
             index = RegimeTraining.loadtestindex(sources)
             group = first(groupby(index,:coin;sort=false))
             coinix = first(group.coinix)
-            coin = snapshotinput.stores.coins[coinix]
-            history = RegimeTraining.loadinputhistory(snapshotinput.input,coin)
-            coverage = TradingStrategy.experimentcoverage(coin,history)
-            changedcoverage = merge(coverage,(rows=coverage.rows+1,))
-            @test_throws AssertionError RegimeTraining.sealcoin!(snapshotinput,snapshotsource,
-                coin,coinix,group,changedcoverage,Int[],folder)
+            coin = gaininput.stores.coins[coinix]
+            direct = RegimeTraining.gaincoin(gaininput,gainsource,coin,coinix,group,[60,240])
+            @test nrow(direct)==nrow(group)
+            @test all(isfinite,direct.regry60)
+            @test all(isfinite,direct.grad240)
             changedindex = DataFrame(group)
             changedindex.opentime[end] += Minute(1)
-            @test_throws AssertionError RegimeTraining.sealcoin!(snapshotinput,snapshotsource,
-                coin,coinix,changedindex,coverage,Int[],folder)
-            @test RegimeTraining.sealsnapshot!(snapshotinput,snapshotsource) === nothing
-            @test_throws AssertionError RegimeTraining.sealsnapshot!(snapshotinput,snapshotsource)
-            snapshot = RegimeTraining.loadsnapshot(snapshotinput,snapshotsource)
-            @test sum(snapshot.records.rows) == nrow(predictionsbefore)
-            @test RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource) === nothing
+            @test_throws AssertionError RegimeTraining.gaincoin(gaininput,gainsource,
+                coin,coinix,changedindex,Int[])
+            @test !isdir(joinpath(sources.folder,"gain-snapshot"))
+            @test RegimeTraining.directgainreport!(gaininput,gainsource) === nothing
+            cachefolders = readdir(joinpath(sources.folder,"gain-cache");join=true)
+            @test length(cachefolders)==1
+            predictioncache = joinpath(only(cachefolders),coin*".arrow")
+            predictionmodified = mtime(predictioncache)
             predicted = EnvConfig.readtable("test-predictions";folderpath=sources.folder,format=:arrow)
             @test predicted.label == predictionsbefore.label
             @test predicted.score ≈ predictionsbefore.score
@@ -390,41 +403,45 @@ end
                 folderpath=sources.folder,format=:arrow))
             rm(joinpath(gainfolder,"gain-report.txt"))
             rm(joinpath(gainfolder,"gain-report.svg"))
-            @test RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource) === nothing
+            @test RegimeTraining.directgainreport!(gaininput,gainsource) === nothing
             @test isfile(joinpath(gainfolder,"gain-report.txt"))
-            @test occursin("Predicted",read(joinpath(gainfolder,"gain-report.svg"),String))
+            @test occursin("Predicted",read(joinpath(gainfolder,"gain-report.svg"),String)) ==
+                any(goldengains.predicted)
             @test mtime(trainpath) == trainmodified
             @test nrow(EnvConfig.readtable("test-strategy-history";
                 folderpath=sources.folder,format=:arrow)) == historybefore+1
             TradingStrategy.STRATEGY_CONFIGS["SGAINEMPTY"] = ()->TradingStrategy.StrategyConfig(
                 algorithm=TradingStrategy.gain_limit_reversal_below_regression!,
-                algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(triggerdist=100f0))
+                algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
+                    triggerdist=100f0,triggerregrwindow=120,trendregrwindow=240))
             try
-                emptyrc = merge(snapshotinput.input.rc,
-                    (tscfg=merge(snapshotinput.input.rc.tscfg,(strategy="SGAINEMPTY",)),))
-                emptyinput = merge(snapshotinput,(input=merge(snapshotinput.input,(rc=emptyrc,)),))
-                @test RegimeTraining.snapshotgainreport!(emptyinput,snapshotsource) === nothing
+                emptyrc = merge(gaininput.input.rc,
+                    (tscfg=merge(gaininput.input.rc.tscfg,(strategy="SGAINEMPTY",)),))
+                emptyinput = merge(gaininput,(input=merge(gaininput.input,(rc=emptyrc,)),))
+                @test RegimeTraining.directgainreport!(emptyinput,gainsource) === nothing
                 @test only(EnvConfig.readtable("gain-summary";
                     folderpath=gainfolder,format=:arrow).completed_trades) == 0
                 @test isempty(EnvConfig.readtable("tsmgains-regime";folderpath=gainfolder,format=:arrow))
                 @test isempty(EnvConfig.readtable("xchgainsreport-regime";folderpath=gainfolder,format=:arrow))
                 @test occursin("No completed trades.",read(joinpath(gainfolder,"gain-report.txt"),String))
                 @test occursin("No completed trades.",read(joinpath(gainfolder,"gain-report.svg"),String))
+                @test mtime(predictioncache)==predictionmodified
+                @test length(filter(isdir,readdir(only(cachefolders);join=true)))==2
             finally
                 delete!(TradingStrategy.STRATEGY_CONFIGS,"SGAINEMPTY")
             end
-            @test RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource) === nothing
-            coinpath = joinpath(snapshot.folder,first(snapshot.records.coin)*".arrow")
-            backup = coinpath*".backup"
-            cp(coinpath,backup)
+            indexpath = joinpath(sources.folder,"test-index.arrow")
+            originalindex = read(indexpath)
+            changedlabels = DataFrame(index;copycols=true)
+            changedlabels.labelix[1] = changedlabels.labelix[1]==1 ? 2 : 1
             try
-                open(coinpath,"a") do io
-                    write(io,"changed")
-                end
-                @test_throws AssertionError RegimeTraining.snapshotgainreport!(snapshotinput,snapshotsource)
+                RegimeTraining.atomictable(changedlabels,"test-index",sources.folder)
+                @test RegimeTraining.directgainreport!(gaininput,gainsource) === nothing
+                @test length(readdir(joinpath(sources.folder,"gain-cache")))==2
             finally
-                mv(backup,coinpath;force=true)
+                write(indexpath,originalindex)
             end
+            @test RegimeTraining.directgainreport!(gaininput,gainsource) === nothing
             cache = joinpath(folder,"cache-test")
             @test !RegimeTraining.verifiedcache(cache,"prediction","identity")
             @test RegimeTraining.commitcache(DataFrame(value=[1]),cache,"prediction","identity") === nothing
@@ -433,6 +450,9 @@ end
             RegimeTraining.atomictable(DataFrame(value=[2]),"prediction",cache)
             @test_throws AssertionError RegimeTraining.verifiedcache(cache,"prediction","identity")
             @test_throws AssertionError RegimeTraining.filedigest(joinpath(cache,"missing.arrow"))
+        end
+        finally
+            delete!(TradingStrategy.STRATEGY_CONFIGS,"SGAINPARITY")
         end
         gainidentity = EnvConfig.readtable("gain-identity";folderpath=gainfolder,format=:arrow)
         @test only(gainidentity.population)=="test"
@@ -460,6 +480,13 @@ end
         end
         losses = EnvConfig.readtable("epoch-losses";folderpath=sources.folder,format=:arrow)
         @test losses.epoch==[1,2]
+        cachecount = length(readdir(joinpath(sources.folder,"gain-cache")))
+        updatedinput = RegimeTraining.gainprepared(
+            Dict("mode"=>"synthetic","ts"=>"068"),input.rc,folder)
+        updatedsources = RegimeTraining.gainsources(updatedinput;
+            trainweights="balanced",folder=sources.folder)
+        @test RegimeTraining.directgainreport!(updatedinput,updatedsources) === nothing
+        @test length(readdir(joinpath(sources.folder,"gain-cache")))==cachecount+1
         refreshes = EnvConfig.readtable("reinforcement-refreshes";folderpath=sources.folder,format=:arrow)
         @test refreshes.epoch==[1,2]
         @test all(==(1),refreshes.interval)
@@ -495,11 +522,12 @@ end
             @test reinforced.runid==rc.runid
             @test reinforced.description==rc.description
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","reinforce"=>"-1"))
-            for stage in ("snapshot","gain")
+            for stage in ("gain",)
                 @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>stage,"reinforce"=>"3"))
                 @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>stage,"retrain"=>"true"))
                 @test_throws AssertionError RegimeTraining.main(["test","ts=066","stage=$stage","threshold=0.5"])
             end
+            @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","stage"=>"snapshot"))
             @test_throws AssertionError RegimeTraining.options(["test","train"])
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"060"))
             @test_throws AssertionError RegimeTraining.buildrunconfig(Dict("ts"=>"066","startdt"=>"2025-01-01"))
@@ -570,5 +598,8 @@ end
         @test isempty(sources.testindex)
         @test nrow(TradingStrategy.experimentpredictions(best,RegimeTraining.loadevalindex(sources),sources.eval))==
             Classify.nsamples(sources.eval)
+        finally
+            EnvConfig.setcoinspath!(relpath(oldcoinspath,dirname(EnvConfig.defaultlogfilespath)))
+        end
     end
 end

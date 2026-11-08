@@ -45,7 +45,7 @@ function helptext()::String
       startdt=<ISO> enddt=<ISO>   together override experiment dates, not just replay
       runid=<immutable-id>        optional; deterministic configuration-derived default
       folder=<name>              gain replay log subfolder
-      stage=stores|train|predict|evaluate|snapshot|gain|test|walkforward  default evaluate
+      stage=stores|train|predict|evaluate|gain|test|walkforward  default evaluate
       epochs=<1..200>             default coin-set budget, total including resume
       retrain                    resume last checkpoint; warns after test exposure
       reinforce=<Int>            refresh train misclassification flags every N epochs; 0 off
@@ -85,7 +85,7 @@ function helptext()::String
         eval-last.bson, eval-manifest.bson, epoch-losses.arrow,
         reinforcement-refreshes.arrow and training-report.txt.
         Adaptation also generates the eval report family below; next-steps.txt
-        explains the handoff to snapshot/gain. Reusing a checkpoint does not
+        explains the handoff to gain. Reusing a checkpoint does not
         regenerate eval reports in this stage. Non-synthetic runs publish the
         best classifier to its configured classifier folder.
 
@@ -103,18 +103,9 @@ function helptext()::String
           eval-curves.svg and coin-reports/eval-coin-<coin>.arrow.
         These assess signals, not economic gains; use eval to choose thresholds.
 
-      snapshot
-        One-time seal of the original reserved test inputs; requires saved preparation
-        and training-selection artifacts. Verifies original history and test coverage,
-        then freezes test features, prices and regression guidance.
-        Writes model/gain-snapshot/<coin>.arrow, coins.arrow and manifest.arrow
-        (completion seal), plus model/test-identity/ provenance.
-        Does not adapt or rebuild train/eval numeric sources. Changed history coverage fails;
-        existing seals cannot be overwritten. Later strategies may only request
-        regression windows included in the seal.
-
       gain
-        Requires eval-best.bson and a sealed snapshot. Never adapts; infers/reuses
+        Requires eval-best.bson and the saved test index. Reads matching features,
+        prices and precalculated market regressions directly; never adapts. Infers/reuses
         predictions and replays predicted and target-reference test signals separately.
         Writes model/test-predictions.arrow, test-strategy.arrow and
         test-strategy-history.arrow. Verified prediction and coin/pass replay caches
@@ -156,8 +147,8 @@ function helptext()::String
     Detector RF01/RG01 settings are recorded in the immutable manifest; no automatic calibration.
     Adaptation ends with eval diagrams and next-step guidance.
     Gain requires an existing checkpoint; it never trains and replays reserved test only.
-    Run stage=snapshot once to seal existing test inputs against the original experiment.
-    Gain reads the sealed snapshot only, not current market histories, and verifies digests.
+    Gain reads the saved test index and shared stores without a separate snapshot.
+    Gain cache reuse assumes historical store values remain stable.
     Completed predictions and coin/pass replays are reused only with matching identities.
     Keep the same runid/data options; ts may change if its classifier configuration is identical.
     Ctrl+C stops; completed checkpoints remain. Use retrain to continue.
@@ -204,7 +195,7 @@ function buildrunconfig(opts::Dict{String,String})::NamedTuple
     @assert mode in ("test","market","synthetic") "invalid mode=$mode"
     @assert haskey(opts,"mincoins")==haskey(opts,"weightcap") "mincoins and weightcap must be given together, options=$opts"
     stage = get(opts,"stage","evaluate")
-    @assert stage in ("stores","train","predict","evaluate","snapshot","gain","test","walkforward") "invalid stage=$stage"
+    @assert stage in ("stores","train","predict","evaluate","gain","test","walkforward") "invalid stage=$stage"
     epochs = parse(Int,get(opts,"epochs",string(cs.maxepochs)))
     @assert 0<epochs<=200 "invalid epoch budget=$epochs"
     reinforce = parse(Int,get(opts,"reinforce","0"))
@@ -216,8 +207,8 @@ function buildrunconfig(opts::Dict{String,String})::NamedTuple
     runid = get(opts,"runid","$(tscfg.classifier)-$coinset-$daterange-"*TradingStrategy.confighash(scheme*description)[1:12])
     folder = get(opts,"folder","RegimeTraining-$runid")
     @assert occursin(r"^[A-Za-z0-9_-]+$",folder) "invalid folder=$folder"
-    @assert !(stage in ("gain","snapshot")) || !haskey(opts,"retrain") "$stage does not adapt a checkpoint; retrain is not permitted"
-    @assert !(stage in ("gain","snapshot")) || reinforce==0 "$stage does not train; reinforce=$reinforce belongs to an adaptation run"
+    @assert stage!="gain" || !haskey(opts,"retrain") "$stage does not adapt a checkpoint; retrain is not permitted"
+    @assert stage!="gain" || reinforce==0 "$stage does not train; reinforce=$reinforce belongs to an adaptation run"
     return (;tscfg,clcfg,coinset,daterange,coins,startdt,enddt,mode,stage,epochs,reinforce,runid,folder,description,
         resume=haskey(opts,"retrain"))
 end
@@ -1044,8 +1035,7 @@ function nextsteps!(prepared::NamedTuple,sources::NamedTuple)::Nothing
     1. Inspect $(joinpath(sources.folder,"eval-curves.svg")) and eval opportunity reports.
     2. Set the selected entry thresholds in the registered trading strategy.
        Use the same or a different ts with identical features, targets and classifier configuration.
-    3. Seal the original reserved test inputs once with stage=snapshot, runid=$(rc.runid).
-       Then run RegimeTraining again with stage=gain, runid=$(rc.runid), and the same
+    3. Run RegimeTraining again with stage=gain, runid=$(rc.runid), and the same
        mode/coinset/daterange/coins/date/detector/weight options. Do not use retrain.
        It loads eval-best.bson and replays only reserved test blocks, never adapts.
     Replay settings are recorded; changed strategy/checkpoint settings warn but do not block replay.
@@ -1151,7 +1141,9 @@ function gainreport!(prepared::NamedTuple,sources::NamedTuple,best;
     classifier = Classify.TrendClassifier001(best;featconfig=prepared.input.featurefactory,
         targetconfig=prepared.input.targetfactory)
     ts = TradingStrategy.TsCache(;classifier,strategy,source=TradingStrategy.tsconfigsource(rc.tscfg))
+    coinspath = EnvConfig.coinspath()
     xc = Xch.XchCache(Bybit.BybitCache();startdt=prepared.input.startdt,enddt=prepared.input.enddt)
+    EnvConfig.setcoinspath!(coinspath)
     TSM.ensuretradesschema!(xc.tsm,TSM.tradesdf_all_contributors())
     testsource = sources.compiled ? sources.test :
         Classify.CompactMmapSource(sources.featurestoreloader,length(sources.coins),
@@ -1224,7 +1216,7 @@ function execute!(prepared::NamedTuple;stage::String,epochs::Int,resume::Bool,
         regimes::AbstractVector{<:AbstractString}=String[],trainweights::String="class",reinforce::Int=0)::Nothing
     if stage == "gain"
         @assert !resume "gain cannot resume adaptation"
-        snapshotgainreport!(prepared,snapshotsources(prepared;
+        directgainreport!(prepared,gainsources(prepared;
             folds=join(folds,","),regimes=join(regimes,","),trainweights))
         return nothing
     end
@@ -1303,15 +1295,11 @@ function main(args::Vector{String}=ARGS)::Nothing
     folder = experimentfolder(rc)
     progressmessage("starting run=$(rc.runid) ts=$(rc.tscfg.configname) stage=$(rc.stage) output=$folder")
     @assert !haskey(opts,"threshold") || rc.stage in ("test","walkforward") "threshold is only supported for test/walkforward, stage=$(rc.stage); gain uses registered strategy thresholds"
-    if rc.stage in ("snapshot","gain")
-        prepared = snapshotprepared(opts,rc,folder)
-        sources = snapshotsources(prepared;folds=get(opts,"folds",""),
+    if rc.stage == "gain"
+        prepared = gainprepared(opts,rc,folder)
+        sources = gainsources(prepared;folds=get(opts,"folds",""),
             regimes=get(opts,"regimes",""),trainweights=get(opts,"trainweights","class"))
-        if rc.stage == "snapshot"
-            sealsnapshot!(prepared,sources)
-        else
-            snapshotgainreport!(prepared,sources)
-        end
+        directgainreport!(prepared,sources)
         progressmessage("run complete: artifacts=$folder")
         return nothing
     end
