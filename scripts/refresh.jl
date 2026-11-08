@@ -359,7 +359,7 @@ function regimecounts(config::AbstractString, dr::NamedTuple,
         loader = coin -> readregimetimes(coin,folder)
         calendar = TradingStrategy.foldcalendar(market,loader,acceptedcoins,
             folds;enddt=dr.enddt,
-            horizonminutes=Targets.lookaheadminutes(TradingStrategy.targetconfig(clcfg.targets)))
+            horizonminutes=TradingStrategy.regimepurge(TradingStrategy.targetconfig(clcfg.targets)))
         market = nothing
         GC.gc()
         for coin in acceptedcoins

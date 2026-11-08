@@ -116,6 +116,7 @@ function helptext()::String
         gain-report.txt and gain-report.svg separate predicted/reference results;
         SVG shows average completed-trade gain (%), not portfolio return.
         Cache reruns regenerate reports; empty results explicitly say no completed trades.
+        Completion prints absolute TXT/SVG report paths separately from experiment artifacts.
 
       test
         Requires a saved best checkpoint and threshold=<eval-selected value>.
@@ -504,7 +505,7 @@ function preparestreamed!(input::NamedTuple, folder::AbstractString;
             end
             timestamps
         end
-        horizon = Targets.lookaheadminutes(input.targetfactory())
+        horizon = TradingStrategy.regimepurge(input.targetfactory())
         progressmessage("balancing shared folds";started)
         calendar = TradingStrategy.foldcalendar(market,timesloader,coins,input.folds;
             horizonminutes=horizon,enddt=input.enddt)
@@ -550,7 +551,7 @@ function prepare!(input::NamedTuple, folder::AbstractString;
     identity = TradingStrategy.experimentmanifest!(folder,input.histories,description)
     stores = TradingStrategy.experimentstores!(input.histories,input.featurefactory,input.targetfactory,folder;
         sharedstores=input.sharedstores)
-    horizon = Targets.lookaheadminutes(input.targetfactory())
+    horizon = TradingStrategy.regimepurge(input.targetfactory())
     assignments = TradingStrategy.regimeassignments(input.histories,stores,input.regime,
         input.folds,input.startdt,input.enddt,horizon)
     (;eligible,market,calendar,sets) = assignments
@@ -1300,6 +1301,9 @@ function main(args::Vector{String}=ARGS)::Nothing
         sources = gainsources(prepared;folds=get(opts,"folds",""),
             regimes=get(opts,"regimes",""),trainweights=get(opts,"trainweights","class"))
         directgainreport!(prepared,sources)
+        gainfolder = rc.mode == "market" ? EnvConfig.logfolder() :
+            joinpath(prepared.folder,"gain",rc.folder)
+        progressmessage("gain reports: txt=$(joinpath(gainfolder,"gain-report.txt")) svg=$(joinpath(gainfolder,"gain-report.svg"))")
         progressmessage("run complete: artifacts=$folder")
         return nothing
     end

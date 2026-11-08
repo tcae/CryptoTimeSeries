@@ -2010,25 +2010,27 @@ function supplement!(trd::Trend05)
     return nothing
 end
 
-uniquelabels(::Trend05) = [longopen, longhold, shortopen, shorthold, allclose]
-firstrowix(trd::Trend05)::Int = isnothing(trd.df) ? 1 : (nrow(trd.df) > 0 ? firstindex(trd.df[!, :label]) : 1)
-lastrowix(trd::Trend05)::Int = isnothing(trd.df) ? 0 : (nrow(trd.df) > 0 ? lastindex(trd.df[!, :label]) : 0)
+include("trend07.jl")
 
-function df(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame
+uniquelabels(::Trend05) = [longopen, longhold, shortopen, shorthold, allclose]
+firstrowix(trd::Union{Trend05, Trend07})::Int = isnothing(trd.df) ? 1 : (nrow(trd.df) > 0 ? firstindex(trd.df[!, :label]) : 1)
+lastrowix(trd::Union{Trend05, Trend07})::Int = isnothing(trd.df) ? 0 : (nrow(trd.df) > 0 ? lastindex(trd.df[!, :label]) : 0)
+
+function df(trd::Union{Trend05, Trend07}, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame
     return isnothing(trd.df) ? DataFrame(opentime=DateTime[], label=TradeLabel[], relgain=Float32[]) : view(trd.df, firstix:lastix, :)
 end
 
-df(trd::Trend05, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-labels(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = isnothing(trd.df) ? TradeLabel[] : view(trd.df, firstix:lastix, :label)
-labels(trd::Trend05, startdt::DateTime, enddt::DateTime) = labels(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-relativegain(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = isnothing(trd.df) ? Float32[] : view(trd.df, firstix:lastix, :relgain)
-relativegain(trd::Trend05, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-labelbinarytargets(trd::Trend05, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labels(trd, firstix, lastix) .== label
-labelbinarytargets(trd::Trend05, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-labelrelativegain(trd::Trend05, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labelbinarytargets(trd, label, firstix, lastix) .* relativegain(trd, firstix, lastix)
-labelrelativegain(trd::Trend05, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelrelativegain(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
-labelvalues(trd::Trend05, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame = df(trd, firstix, lastix)
-labelvalues(trd::Trend05, startdt::DateTime, enddt::DateTime)::AbstractDataFrame = df(trd, startdt, enddt)
+df(trd::Union{Trend05, Trend07}, startdt::DateTime, enddt::DateTime) = df(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labels(trd::Union{Trend05, Trend07}, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = isnothing(trd.df) ? TradeLabel[] : view(trd.df, firstix:lastix, :label)
+labels(trd::Union{Trend05, Trend07}, startdt::DateTime, enddt::DateTime) = labels(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+relativegain(trd::Union{Trend05, Trend07}, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = isnothing(trd.df) ? Float32[] : view(trd.df, firstix:lastix, :relgain)
+relativegain(trd::Union{Trend05, Trend07}, startdt::DateTime, enddt::DateTime) = relativegain(trd, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labelbinarytargets(trd::Union{Trend05, Trend07}, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labels(trd, firstix, lastix) .== label
+labelbinarytargets(trd::Union{Trend05, Trend07}, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelbinarytargets(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labelrelativegain(trd::Union{Trend05, Trend07}, label::TradeLabel, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd)) = labelbinarytargets(trd, label, firstix, lastix) .* relativegain(trd, firstix, lastix)
+labelrelativegain(trd::Union{Trend05, Trend07}, label::TradeLabel, startdt::DateTime, enddt::DateTime) = labelrelativegain(trd, label, Ohlcv.rowix(trd.df[!, :opentime], startdt), Ohlcv.rowix(trd.df[!, :opentime], enddt))
+labelvalues(trd::Union{Trend05, Trend07}, firstix::Integer=firstrowix(trd), lastix::Integer=lastrowix(trd))::AbstractDataFrame = df(trd, firstix, lastix)
+labelvalues(trd::Union{Trend05, Trend07}, startdt::DateTime, enddt::DateTime)::AbstractDataFrame = df(trd, startdt, enddt)
 
 "Return a description of Trend05 including its base, regressions, gain and target deadline."
 function describe(trd::Trend05)

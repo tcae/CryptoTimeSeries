@@ -1,3 +1,6 @@
+"""Return the finite target lookahead used to purge calendar boundaries."""
+regimepurge(target::Targets.AbstractTargets)::Int = Targets.lookaheadminutes(target)
+
 """Return the context length required by regime, liquidity, feature and target calculations."""
 function regimewarmup(featurefactory::Function, targetfactory::Function,
         config::RegimeConfig)::Int
@@ -40,7 +43,7 @@ function sharedstorewindow(history::DataFrame, featurestore::AbstractDataFrame,
     targets = DataFrame(view(targetstore,firstrow:lastrow,:);copycols=true)
     @assert nrow(targets)==nrow(history) && first(targets.opentime)==first(history.opentime) &&
         last(targets.opentime)==last(history.opentime) "shared targets misaligned for $coin: rows=$(nrow(targets)) expected=$(nrow(history))"
-    finalcount = max(0,nrow(targets)-Targets.lookaheadminutes(targetfactory()))
+    finalcount = max(0,nrow(targets)-regimepurge(targetfactory()))
     targets[(finalcount+1):end,:label] .= Targets.tradelabelcode(Targets.ignore)
     return features,targets
 end
@@ -460,7 +463,7 @@ Do not reuse hindsight-balanced diagnostic assignments for walk-forward training
 """
 function chronologicalmemberships(prepared::NamedTuple, window)::Dict{String,DataFrame}
     input = prepared.input
-    horizon = Targets.lookaheadminutes(input.targetfactory())
+    horizon = regimepurge(input.targetfactory())
     @assert input.folds.gapminutes >= horizon "walk-forward gap=$(input.folds.gapminutes) < horizon=$horizon"
     populations = Dict(coin=>DataFrame(opentime=DateTime[],set=String[],regime=String[],
         foldid=Int[],blockid=Int[],rangeid=Int[]) for coin in prepared.stores.coins)

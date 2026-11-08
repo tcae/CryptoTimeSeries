@@ -331,6 +331,20 @@ trendf6config19() = trendf6configlst(5, 15, 60, 4*60)
 trendf6config20() = trendf6configlst(15, 60, 4*60, 12*60)
 trendf6config21() = trendf6configlst(60, 4*60, 24*60, 3*24*60)
 
+"""Extend F09 with four pivot extreme-development inputs at a 1% band and four-hour window."""
+function trend6config22()
+    featcfg = Features.Features006()
+    Features.addnormgrad!(featcfg, window=5, offset=0)
+    Features.addnormgrad!(featcfg, window=15, offset=0)
+    Features.addnormgrad!(featcfg, window=60, offset=0)
+    Features.addnormgrad!(featcfg, window=60*4, offset=0)
+    Features.addmaxdist!(featcfg, window=60, offset=0)
+    Features.addmindist!(featcfg, window=60, offset=0)
+    Features.addrelvol!(featcfg, short=5, long=60*6, offset=0)
+    Features.addextremes!(featcfg; bandratio=0.01, maxwindow=4*60)
+    return featcfg
+end
+
 #endregion FeaturesConfig
 
 #region Registries
@@ -350,7 +364,8 @@ const FEATURE_CONFIGS = Dict{String, Function}(
     "F10" => trendf6config10, "F11" => trendf6config11, "F12" => trendf6config12, "F13" => trendf6config13,
     "F14" => trendf6config14, "F15" => trendf6config15,
     "F16" => trendf6config16, "F17" => trendf6config17, "F18" => trendf6config18,
-    "F19" => trendf6config19, "F20" => trendf6config20, "F21" => trendf6config21
+    "F19" => trendf6config19, "F20" => trendf6config20, "F21" => trendf6config21,
+    "F22" => trend6config22
 )
 
 const TARGET_CONFIGS = Dict{String, Function}(
@@ -378,6 +393,7 @@ const TARGET_CONFIGS = Dict{String, Function}(
     "T24" => () -> Targets.Trend05(leadregr=5, supportregr=15, trendregr=4*60, triggerdist=0.01f0, targetgain=0.01f0, targetminutes=480),
     "T25" => () -> Targets.Trend05(leadregr=15, supportregr=60, trendregr=12*60, triggerdist=0.02f0, targetgain=0.02f0, targetminutes=480),
     "T26" => () -> Targets.Trend05(leadregr=60, supportregr=4*60, trendregr=3*24*60, triggerdist=0.05f0, targetgain=0.05f0, targetminutes=480),
+    "T28" => () -> Targets.Trend07(bandratio=0.01, openwindow=2*60, maxwindow=4*60),
 )
 
 """
@@ -469,6 +485,7 @@ const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c f
     clconfig("F20", "T25", "M011"),
     clconfig("F21", "T26", "M008"),
     clconfig("F21", "T26", "M011"),
+    clconfig("F22", "T28", "M011"),
 ])
 
 "Return a trading strategy context of a classifier (base name) and a strategy id."
@@ -537,6 +554,7 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("067", "F21-T26-P02-M011-B1", "S09"),  # modified 064 concerning trading strategy parameters
     tsentry("068", "F09-T09-P02-M011-B1", "S09"),  # modified 032 with model 011 SimpleChains and S09 strategy
     tsentry("069", "F09-T09-P02-M011-B1", "S10"),  # modified 068 with S10 strategy
+    tsentry("071", "F22-T28-P02-M011-B1", "S09"),
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),

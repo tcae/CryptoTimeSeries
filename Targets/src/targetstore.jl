@@ -11,6 +11,11 @@ configdescription(trd::AbstractTargets)::String = error("configdescription not i
 configdescription(trd::Trend04)::String = "Trend04(minwindow=$(trd.minwindow),maxwindow=$(trd.maxwindow),holdanchormode=$(trd.holdanchormode),holdbehaviormode=$(trd.holdbehaviormode),longopen=$(trd.thres.longopen),longhold=$(trd.thres.longhold),shorthold=$(trd.thres.shorthold),shortopen=$(trd.thres.shortopen))"
 configdescription(trd::TrendRegression)::String = "TrendRegression(window=$(trd.window),longthreshold=$(trd.longthreshold),shortthreshold=$(trd.shortthreshold))"
 configdescription(trd::Trend05)::String = "Trend05(leadregr=$(trd.leadregr),supportregr=$(trd.supportregr),trendregr=$(trd.trendregr),triggerdist=$(trd.triggerdist),targetgain=$(trd.targetgain),targetminutes=$(trd.targetminutes),distance=(pivot-regry)/pivot)"
+"""Identify bounded first-passage semantics independently of the OHLCV base."""
+configdescription(trd::Trend07)::String = "Trend07(bandratio=$(repr(trd.bandratio)),openwindow=$(trd.openwindow),maxwindow=$(trd.maxwindow),windows=elapsed-inclusive,anchor=inclusive-invalidation,recent=rolling-5-full,priority=open-then-first-hit,extremes=preserve-established-opposite,split-minute-gaps)"
+
+"""Return Trend07's maximum future dependency in elapsed minutes."""
+lookaheadminutes(trd::Trend07)::Int = trd.maxwindow
 
 "Return the look-ahead horizon in minutes of a target config with a bounded look-ahead."
 lookaheadminutes(trd::AbstractTargets)::Int = error("lookaheadminutes not implemented for $(typeof(trd))")
@@ -21,8 +26,8 @@ lookaheadminutes(trd::Trend05)::Int = trd.targetminutes
 "Return the number of leading labels of a based target config with `nrows` labels that do not depend on OHLCV data beyond its base."
 finallabelcount(trd::AbstractTargets, nrows::Integer)::Int = error("finallabelcount not implemented for $(typeof(trd))")
 finallabelcount(trd::Union{Trend04, TrendRegression}, nrows::Integer)::Int = max(0, nrows - lookaheadminutes(trd))
-function finallabelcount(trd::Trend05, nrows::Integer)::Int
-    @assert size(trd.df, 1) == nrows "Trend05 df rows=$(size(trd.df, 1)) != label rows=$(nrows)"
+function finallabelcount(trd::Union{Trend05, Trend07}, nrows::Integer)::Int
+    @assert size(trd.df, 1) == nrows "target df rows=$(size(trd.df, 1)) != label rows=$(nrows); target=$(typeof(trd))"
     return trd.lastfinalix
 end
 
@@ -38,6 +43,14 @@ function regressionfeatures(trd::Trend05)
     for window in unique((trd.leadregr, trd.supportregr, trd.trendregr))
         Features.addgrad!(f6, window=window, offset=0)
     end
+
+    return f6
+end
+
+"""Prepare Trend07's bounded causal extremes; the recent slope is calculated internally."""
+function regressionfeatures(trd::Trend07)
+    f6 = Features.Features006()
+    Features.addextremes!(f6;bandratio=trd.bandratio,maxwindow=trd.maxwindow)
     return f6
 end
 
@@ -67,7 +80,11 @@ function _targetcodes(trd::AbstractTargets, ohlcv::Ohlcv.OhlcvData)::Vector{Int8
         for window in windows
             Features.updateregression!(ohlcv, window; std=(window in stdwindows))
         end
-        Features.setbase!(f6, ohlcv, usecache=true)
+        featureohlcv = trd isa Trend07 ? deepcopy(ohlcv) : ohlcv
+        if trd isa Trend07
+            Ohlcv.setdataframe!(featureohlcv, DataFrame(Ohlcv.dataframe(ohlcv); copycols=true))
+        end
+        Features.setbase!(f6, featureohlcv, usecache=true)
         setbase!(trd, f6)
     end
     ot = Ohlcv.dataframe(ohlcv)[!, :opentime]
@@ -112,6 +129,18 @@ function _extendedtargetcodes(trd::Trend05, ohlcv::Ohlcv.OhlcvData, storedcodes:
     lastix = lastindex(Ohlcv.dataframe(ohlcv)[!, :opentime])
     tail = _targetcodes(trd, Ohlcv.ohlcvview(ohlcv, (lastcomplete + 1):lastix))
     return vcat(Int8[code for code in view(storedcodes, firstindex(storedcodes):lastcomplete)], tail)
+end
+
+"""Recalculate unresolved Trend07 labels with exactly the bounded backward context."""
+function _extendedtargetcodes(trd::Trend07, ohlcv::Ohlcv.OhlcvData,
+        storedcodes::AbstractVector{<:Integer})::Vector{Int8}
+    lastcomplete = findlast(!=(tradelabelcode(ignore)),storedcodes)
+    isnothing(lastcomplete) && return _targetcodes(trd,ohlcv)
+    firstrecalculate = lastcomplete+1
+    anchor = max(1,firstrecalculate-max(trd.maxwindow-1,4))
+    tail = _targetcodes(trd,Ohlcv.ohlcvview(ohlcv,anchor:nrow(Ohlcv.dataframe(ohlcv))))
+    return vcat(Int8[code for code in view(storedcodes,1:lastcomplete)],
+        tail[(firstrecalculate-anchor+1):end])
 end
 
 """

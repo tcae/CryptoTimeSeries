@@ -13,6 +13,7 @@ _regressionstem(window::Integer; std::Bool=false) = std ? "regrstd$(window)" : "
 function configdescription(f6::Features006)::String
     semantics = any(f -> f.f == "rv", f6requested(f6)) ? ";rv=positive-median-if-zero,cap60" : ""
     semantics *= any(f -> f.f == "nrg", f6requested(f6)) ? ";nrg=rg/meanpivot" : ""
+    semantics *= any(f -> hasproperty(f, :b), f6requested(f6)) ? ";extremes=preserve-established-opposite,split-minute-gaps" : ""
     return "Features006(" * join(requestedcolumns(f6), ",") * semantics * ")"
 end
 

@@ -7,6 +7,7 @@ using LinearRegression
 using EnvConfig, Ohlcv, Features, TestOhlcv
 
 include("featureutilities_test.jl")
+include("extremefeatures_test.jl")
 include("featurestabilization_test.jl")
 include("features006_test.jl")
 include("featurestore_test.jl")

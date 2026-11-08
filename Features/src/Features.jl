@@ -56,6 +56,8 @@ function timerangecut!(features::AbstractFeatures) error("not implemented") end
 
 #region FeatureUtilities
 
+include("regressionmoments.jl")
+
 """
 verbosity =
 - 0: suppress all output if not an error
@@ -452,13 +454,13 @@ end
  y is a one dimensional array.
 
  - Regression Equation(y) = a + bx
- - Gradient(b) = (NΣXY - (ΣX)(ΣY)) / (NΣ(X^2) - (ΣX)^2) (y increase per x unit)
- - Intercept(a) = (ΣY - b(ΣX)) / N
- - used from https://www.easycalculation.com/statistics/learn-regression.php
+ - Uses centered Float64 regression statistics, updated in constant time per minute.
+ - Periodically rebuilds statistics to bound accumulated sliding-window roundoff.
 
- returns 2 one dimensioinal arrays: gradient and regression_y that start at max(1, startindex-windowsize)
- gradient are the gradients per minute (= x equidistant)
- regression_y are the regression line last points
+ Returns `(regression_y, gradient)` with one entry for each input index from
+ `startindex` through the end. Each fit uses up to `windowsize` trailing samples;
+ initial partial windows are included. Floating input element types are preserved.
+ `gradient` is the price slope per minute; `regression_y` is the fitted endpoint.
 
  k(x) = 0.310714 * x + 2.54286 is the linear regression of [2.9, 3.1, 3.6, 3.8, 4, 4.1, 5]
  """
@@ -466,41 +468,25 @@ end
     @assert windowsize > 1 "false: windowsize=$windowsize > 1"
     @assert length(y) >= 1 "false: length(y)=$(length(y)) >= 1"
     @assert 1 <= startindex <= length(y) "false: 1 <= startindex=$startindex <= length(y)=$(length(y))"
-    if windowsize <= length(y)
-        suby = y[max(1, startindex-windowsize+1):end]
-        sum_x = sum(1:windowsize)
-        sum_x_squared = sum((1:windowsize).^2)
-        sum_xy = rolling(sum, suby, windowsize,collect(1:windowsize)) # rolling returns a vector of length(suby) - windowsize + 1
-        sum_y = rolling(sum, suby, windowsize)
-        gradient = ((windowsize * sum_xy) - (sum_x * sum_y))/(windowsize * sum_x_squared - sum_x^2)
-        intercept = (sum_y - gradient*(sum_x)) / windowsize
-        regression_y = intercept + (gradient .* windowsize)
-        # (verbosity >= 4) && println("suby=$suby, max(1, startindex-windowsize+1)=$(max(1, startindex-windowsize+1)):end=$(lastindex(y)), gradient=$gradient, intercept=$intercept, regression_y=$regression_y")
-    else
-        gradient = similar(y, 0)
-        intercept = similar(y, 0)
-        regression_y = similar(y, 0)
-    end
-    (verbosity >= 4) && println("A) length(y)=$(length(y)), startindex=$startindex, windowsize=$windowsize, length(regression_y)=$(length(regression_y)), length(gradient))]=$(length(gradient))")
-
-    if startindex < windowsize
-        endy = min(windowsize-1, length(y))
-        l = endy - startindex + 1
-        regression_y = vcat(zeros(eltype(y), l), regression_y)
-        gradient = vcat(zeros(eltype(y), l), gradient)
-        (verbosity >= 4) && println("A1) endy=$(endy), l=$(l), new length(regression_y)=$(length(regression_y)), new length(gradient))]=$(length(gradient))")
-        for si in startindex:endy
-            if si > 1
-                r, g = rollingregression(view(y, 1:si), si, si)  # why? TODO to be adapted to multi vector
-                regression_y[si - startindex + 1] = r[1]
-                gradient[si - startindex + 1] = g[1]
+    outputtype = eltype(y) <: AbstractFloat ? eltype(y) : Float64
+    regression_y = Vector{outputtype}(undef, length(y) - startindex + 1)
+    gradient = similar(regression_y)
+    stats = regressionmoments(y, max(1, startindex - windowsize + 1), startindex)
+    for ix in startindex:length(y)
+        if ix > startindex
+            if ix >= startindex + windowsize && (ix - startindex) % windowsize == 0
+                stats = regressionmoments(y, ix - windowsize + 1, ix)
             else
-                regression_y[1] = y[1] 
-                gradient[1] = 0
+                if stats.count == windowsize
+                    stats = removeprice(stats, y[ix - windowsize])
+                end
+                stats = appendprice(stats, y[ix])
             end
         end
+        result = regressionresult(stats)
+        regression_y[ix - startindex + 1] = result.regry
+        gradient[ix - startindex + 1] = result.grad
     end
-    (verbosity >= 4) && println("B) length(y)=$(length(y)), startindex=$startindex, windowsize=$windowsize, length(regression_y)=$(length(regression_y)), length(gradient))]=$(length(gradient))")
     return regression_y, gradient
 end
 
@@ -976,6 +962,7 @@ Features006 provides a configurable feature set. The following features can be a
     - relative distance of pivot to maximum of range (maxdist) characterized by window [minutes] and offset [minutes]
     - relative distance of pivot to minimum of range (mindist) characterized by window [minutes] and offset [minutes]
     - relative volume of median (relvol) over a short time range [minutes] relative to a longer time range [minutes] and common offset [minutes]
+    - minimum/maximum relative regression slopes and ages, configured together by `addextremes!`
 
 The offset [minutes] is in the past relative to the sample under consideration, e.g. window=5 offset=3 means that the window starts -7 minutes and ends -3 minutes.
 
@@ -1010,8 +997,36 @@ _mind(f6::Features006; window, offset) = (f="mind", w=window, o=offset)
 _maxd(f6::Features006; window, offset) = (f="maxd", w=window, o=offset)
 _rv(f6::Features006; short, long, offset) = (f="rv", s=short, l=long, o=offset)
 
-fdfnocol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l], "+") : join([feature.f, feature.w], "+")
-fdfcol(f6::Features006, feature) = feature.f == "rv" ? join([feature.f, feature.s, feature.l, feature.o], "+") : join([feature.f, feature.w, feature.o], "+")
+fdfnocol(f6::Features006, feature) = hasproperty(feature, :b) ?
+    join([feature.f, repr(feature.b), feature.w], "+") :
+    feature.f == "rv" ? join([feature.f, feature.s, feature.l], "+") : join([feature.f, feature.w], "+")
+fdfcol(f6::Features006, feature) = hasproperty(feature, :b) ? fdfnocol(f6, feature) :
+    feature.f == "rv" ? join([feature.f, feature.s, feature.l, feature.o], "+") : join([feature.f, feature.w, feature.o], "+")
+
+"""
+    addextremes!(f6::Features006; bandratio::Real=0.01, maxwindow::Integer=14400)
+
+Request `minnrg`, `minage`, `maxnrg`, `maxage`, in that order, without offsets.
+Slopes are ordinary least-squares pivot slopes per minute divided by segment mean pivot;
+ages are elapsed minutes (`segment sample count - 1`). Single-sample slopes are zero.
+Each row replays at most `maxwindow` trailing samples, seeded at the first pivot.
+An opposite move must strictly exceed `bandratio` relative to the active extreme price.
+Continuation reestablishes only the active extreme, preserving its opposite anchor.
+A qualifying reversal starts the new active extreme at the crossing sample.
+Equal prices retain the earliest anchor. Configuration parameters identify column names,
+not additional classifier inputs. Register before initializing the OHLCV base.
+"""
+function addextremes!(f6::Features006; bandratio::Real=0.01, maxwindow::Integer=14400)
+    @assert isnothing(f6.ohlcv) "register extremes before initializing base=$(isnothing(f6.ohlcv) ? nothing : f6.ohlcv.base)"
+    @assert isfinite(bandratio) && 0 < bandratio < 1 "require 0 < bandratio < 1; bandratio=$bandratio"
+    _check!(f6, maxwindow, 0)
+    for code in ("minnrg", "minage", "maxnrg", "maxage")
+        feature = (f=code, b=bandratio, w=maxwindow, o=0)
+        @assert !(feature in f6.requested) "duplicate extreme feature configuration=$feature"
+        push!(f6.requested, feature)
+    end
+    return f6
+end
 
 f6requested(f6::Features006) = f6.requested
 f6all(f6::Features006) = union(f6.required, f6.requested)
@@ -1544,6 +1559,7 @@ function _supplementfdfno!(f6::Features006, odf)
         elseif f.f == "mind" fdfno = _mindist!(fdfno, f6, f, odf, odfendix, odfstartix)
         elseif f.f == "maxd" fdfno = _maxdist!(fdfno, f6, f, odf, odfendix, odfstartix)
         elseif f.f == "rv" fdfno = _relvol!(fdfno, f6, f, odf, odfendix, odfstartix)
+        elseif hasproperty(f, :b) fdfno = _extremes!(fdfno, f6, f, odf)
         else error("unknown Feature006 feature type")
         end
     end
@@ -1578,7 +1594,7 @@ function supplement!(f6::Features006)
     for f in f6requested(f6)
         fdfc = fdfcol(f6, f)
         fdfnoc = fdfnocol(f6, f)
-        if f.f in ["rg", "nrg", "rs", "rv"]
+        if f.f in ["rg", "nrg", "rs", "rv"] || hasproperty(f, :b)
             fdf[:, fdfc] = view(f6.fdfno[!, fdfnoc], startix-f.o:endix-f.o)
         elseif f.f in ["ry", "mind", "maxd"] 
             # take difference to pivot and normalize by pivot to get relative distance
@@ -1649,6 +1665,7 @@ end
 
 #endregion Features006
 
+include("extremefeatures.jl")
 include("featurestore.jl")
 
 #region Features005
