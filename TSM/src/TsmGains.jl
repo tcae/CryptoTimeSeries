@@ -1,10 +1,13 @@
 """
-    collecttradesdf(tsm)
+    collecttradesdf(tsm; processedonly=false)
 
 Collect per-pair Trades tables from one `TsmCache` into one DataFrame suitable
 for cross-script comparison and aggregation.
+With `processedonly=true`, retain only rows whose `tsmstate` is not `TSM_NO_STATE`.
+This includes processed minutes absent from replay seeds while excluding unreached,
+preallocated rows. Every nonempty pair table must then have a `tsmstate` column.
 """
-function collecttradesdf(tsm::TsmCache)::DataFrame
+function collecttradesdf(tsm::TsmCache; processedonly::Bool=false)::DataFrame
     pairkeys = tradingpairs(tsm)
     if isempty(pairkeys)
         return DataFrame()
@@ -14,7 +17,12 @@ function collecttradesdf(tsm::TsmCache)::DataFrame
     for pair in pairkeys
         tdf = trades(tsm, pair)
         size(tdf, 1) > 0 || continue
-        push!(parts, tdf)
+        if processedonly
+            @assert :tsmstate in propertynames(tdf) "processed trades require :tsmstate for pair=$(pair); columns=$(names(tdf))"
+            push!(parts, tdf[tdf[!, :tsmstate] .!= TSM_NO_STATE, :])
+        else
+            push!(parts, tdf)
+        end
     end
     if isempty(parts)
         return DataFrame()
@@ -60,14 +68,13 @@ end
 
 """Return the grouping columns used to compile gains from concatenated Trades rows.
 
-Continuous replay isolates each pair and range, while partitioned replay additionally
-isolates each set. A position open at a group boundary is therefore intentionally dropped
-instead of being carried into the next range or set."""
+Continuous replay isolates only pairs, carrying positions across set and range boundaries.
+Partitioned replay isolates each pair, set and range to match independent portfolio resets."""
 function _compilegains_groupcols(tradesdf::AbstractDataFrame; setpartitions::Bool=false)::Vector{Symbol}
     @assert :pair in propertynames(tradesdf) "tradesdf must contain :pair to compile gains; names=$(names(tradesdf))"
     cols = Symbol[:pair]
-    (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
     if setpartitions
+        (:rangeid in propertynames(tradesdf)) && push!(cols, :rangeid)
         (:set in propertynames(tradesdf)) && push!(cols, :set)
     end
     return cols
@@ -312,10 +319,9 @@ end
 
 Compile open/close gain pairs from one Trades DataFrame without persisting them, scoping
 matching by `pair` plus optional `set` and `rangeid`. `setpartitions=false` (default) is
-for continuous replay data where one position can span set/rangeid subrange boundaries;
-matching then scopes to `(pair, liquidityrangeid)` instead, so a position still cannot
-span two distinct liquidity ranges. `gainsreport` still aggregates across all liquidity
-ranges per set, i.e. reports out for the whole coin rather than per liquidity range. Set
+for continuous replay data where one position can span set/rangeid boundaries;
+matching then scopes only to `pair`, including across liquidity ranges. Output set/range
+metadata comes from the position-change row that records the close. Set
 `setpartitions=true` to instead scope matching exactly to `(pair, set, rangeid)`.
 
 `gain` and `gainquote` include the opening maker fee and the closing maker fee, except

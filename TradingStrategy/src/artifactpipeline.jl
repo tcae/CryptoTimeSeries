@@ -178,18 +178,61 @@ function evaluateclassifier(clcfg::NamedTuple, coins::AbstractVector{<:AbstractS
     return cmdf, xcmdf
 end
 
+"""Build zero-score replay rows from OHLCV, optionally retaining the configured set partitions."""
+function _seedreplayinput(clcfg::NamedTuple, coin::AbstractString; daterange::AbstractString,
+        usepartitions::Bool, startdt::Union{Nothing, DateTime}, enddt::Union{Nothing, DateTime})::DataFrame
+    ohlcv = Ohlcv.read(coin)
+    odf = Ohlcv.dataframe(ohlcv)
+    @assert nrow(odf) > 0 "missing OHLCV history for replay coin=$(coin)"
+    readydt = odf[begin, :opentime] + Minute(Features.requiredminutes(featureconfig(clcfg.features)))
+    readyix = searchsortedfirst(odf[!, :opentime], readydt)
+    prices = DataFrame(view(odf, readyix:nrow(odf), [:opentime, :high, :low, :close]))
+    if usepartitions && isnothing(startdt)
+        dr = daterangeconfig(daterange)
+        sdf = Classify.updatesets!(ohlcv, setsid(clcfg.partition, daterange),
+            partitionconfig(clcfg.partition), dr.startdt, dr.enddt;
+            confighash=setshash(clcfg.partition, daterange))
+        rows = innerjoin(prices, sdf; on=:opentime)
+        sort!(rows, :opentime)
+    else
+        indices = isnothing(startdt) ? axes(prices, 1) :
+            searchsortedfirst(prices[!, :opentime], startdt):searchsortedlast(prices[!, :opentime], enddt)
+        rows = prices[indices, :]
+        rows[!, :rangeid] = fill(Classify.RANGEID_SUBRANGE_SPAN, nrow(rows))
+        rows[!, :set] = fill("all", nrow(rows))
+    end
+    return DataFrame(
+        opentime=rows[!, :opentime], high=rows[!, :high], low=rows[!, :low], close=rows[!, :close],
+        coin=fill(String(coin), nrow(rows)), rangeid=rows[!, :rangeid], set=rows[!, :set],
+        target=fill(Targets.ignore, nrow(rows)), score=zeros(Float32, nrow(rows)),
+        label=fill(Targets.ignore, nrow(rows)),
+    )
+end
+
 """
-    replayinput(clcfg, coin; coinset, daterange, startdt=nothing, enddt=nothing)
+    replayinput(clcfg, coin; coinset, daterange, startdt=nothing, enddt=nothing,
+                seedmissing=false, usepartitions=true)
 
 Return the gain replay input of `coin` with columns `opentime, high, low, close, coin, rangeid, set, target, score, label`.
 Without `startdt`/`enddt` the rows of the sets store are used; with both the predicted rows within
 `startdt..enddt` form one range of set `all`. Rows with incomplete targets are skipped.
+If `seedmissing=true` and predictions are absent, seed OHLCV rows with `ignore` labels and
+zero scores for classification by the trade loop, without requiring features or targets.
+The initial feature warm-up history is excluded from seeded evaluation rows.
+Seeded rows use the configured set partitions (created if missing) unless `usepartitions=false`
+or an explicit window is given. Existing predictions retain the normal artifact replay behavior.
 """
-function replayinput(clcfg::NamedTuple, coin::AbstractString; coinset::AbstractString, daterange::AbstractString, startdt::Union{Nothing, DateTime}=nothing, enddt::Union{Nothing, DateTime}=nothing)::DataFrame
+function replayinput(clcfg::NamedTuple, coin::AbstractString; coinset::AbstractString, daterange::AbstractString,
+        startdt::Union{Nothing, DateTime}=nothing, enddt::Union{Nothing, DateTime}=nothing,
+        seedmissing::Bool=false, usepartitions::Bool=true)::DataFrame
     @assert isnothing(startdt) == isnothing(enddt) "startdt=$(startdt) and enddt=$(enddt) must be both given or both nothing"
     name = classifiername(clcfg; coinset=coinset, daterange=daterange)
-    _, tdf, sdf = coinstores(clcfg, coin; daterange=daterange)
     preddf = Classify.readpredictions(name, coin)
+    if isnothing(preddf) && seedmissing
+        @info "predictions missing; seeding replay for per-tick classification" coin classifier=name usepartitions
+        return _seedreplayinput(clcfg, coin; daterange, usepartitions, startdt, enddt)
+    end
+    _, tdf, sdf = coinstores(clcfg, coin; daterange=daterange)
     @assert !isnothing(preddf) && !isnothing(tdf) "missing predictions or targets of $(coin) for $(name)"
     if isnothing(startdt)
         @assert !isnothing(sdf) "missing sets store of $(coin) for $(name)"

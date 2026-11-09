@@ -46,6 +46,22 @@ Each module is located in the src folder and has a corresponding '_test' unti te
 
 Scripts for investigations as well as the GUI ([cryptocockpit](scripts/cryptocockpit.jl)) are located in the scripts folder without a unit test
 
+### Trading simulation
+
+[tradesim.jl](scripts/tradesim.jl) reuses stored per-coin classifier predictions
+when present. If a coin has no prediction file, it seeds OHLCV rows after feature
+warm-up with `ignore` labels and zero scores so the trade loop calls the loaded
+classifier per minute. This does not retrain the classifier or persist a prediction
+file. Continuous seeded replay (`usepartitions=false`) needs no target or set
+stores; partitioned seeded replay creates/reuses the configured set store and
+retains its partition boundaries. Both paths attach classifier/strategy regression
+history before replay.
+Continuous gain compilation matches opens/closes per pair across all set and range
+boundaries; partitioned replay keeps matching isolated to its independent portfolios.
+Continuous replay output retains every processed minute, including minutes between
+stored prediction partitions, so gain compilation preserves actual execution times
+and prices. Unprocessed preallocated rows are excluded using their `tsmstate`.
+
 ### Small-network runtime comparison
 
 [SimpleChains versus configuration 059](docs/2026-10-26-simplechains-model008-benchmark.md)

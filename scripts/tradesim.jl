@@ -83,14 +83,14 @@ Flag parameters:
       Default: true
 
   train
-      Use `EnvConfig.init(training)`; the classifier defaults to coin set `CS01` and date range `D01`.
+      Use `EnvConfig.init(training)`; the classifier defaults to coin set `CS02` and date range `D01`.
       Default: false
 
 Key=value parameters:
   ts=<configname>
       Trading strategy context from `TS_CONFIGS` in `TradingStrategy/src/tradingstrategyconfig.jl`
-      (classifier + strategy). Replays the stored per-coin predictions of its classifier, which
-      `scripts/TrendDetector.jl ts=<configname> stage=predict` creates.
+      (classifier + strategy). Uses stored per-coin predictions when available; otherwise
+      seeds OHLCV rows with zero scores and classifies them during the trade loop.
       Default: `046`, or `TRADESIM_TS_REF` env var when set
 
   coinset=<CSxx> daterange=<Dxx>
@@ -297,9 +297,11 @@ end
 """
 Load the replay source of `coins`: per-coin predictions of the classifier of `TS_CONFIG` joined
 with targets, set partitions and OHLCV prices (see `TradingStrategy.replayinput`).
+Missing predictions are replaced by zero-score OHLCV seeds for per-tick classification.
 """
 function _load_replay_source(coins::AbstractVector{<:AbstractString})::DataFrame
-    parts = [TradingStrategy.replayinput(CL_CONFIG, uppercase(String(coin)); coinset=COINSET, daterange=DATERANGE) for coin in coins]
+    parts = [TradingStrategy.replayinput(CL_CONFIG, uppercase(String(coin));
+        coinset=COINSET, daterange=DATERANGE, seedmissing=true, usepartitions=USE_PARTITIONS) for coin in coins]
     return reduce(vcat, parts)
 end
 
@@ -754,6 +756,7 @@ function _prepare_replay_group!(cache::Trade.TradeCache, groupdf::DataFrame, quo
     # and be advanced only by the Xch iterator.
     Xch.removeallbases(cache.xc)
     Xch.addbase!(cache.xc, base, cache.xc.startdt, cache.xc.enddt)
+    TradingStrategy.addclassifierbase!(cache.ts, Ohlcv.read(base); datetime=cache.xc.startdt)
 
     cache.cfg = DataFrame(
         basecoin=[base],
@@ -867,10 +870,11 @@ function _prepare_replay_continuous!(cache::Trade.TradeCache, replaydf::DataFram
         base = uppercase(String(bq.basecoin))
 
         Xch.addbase!(cache.xc, base, overall_startdt, overall_enddt)
+        TradingStrategy.addclassifierbase!(cache.ts, Ohlcv.read(base); datetime=gdf[1, :opentime])
         seeddf = select(gdf, :opentime, :pair, :set, :rangeid, :high, :low, :close, :label, :score)
         TSM.settrades!(cache.xc.tsm, pair, seeddf)
-        # The replay source only carries liquid minutes; allocating the rest of the epoch
-        # up front keeps the frame structurally fixed, so no tick has to grow it.
+        # Allocating the rest of the epoch up front keeps the frame structurally fixed,
+        # so no tick has to grow it.
         TSM.preparetradesepoch!(cache.xc.tsm, base, quotecoin, overall_enddt; startdt=overall_startdt)
 
         checkpoint = resume ? _load_pair_checkpoint(base, quotecoin) : nothing
@@ -984,7 +988,7 @@ function run_replay_continuous!(cache::Trade.TradeCache;
     end
     finaldt = cache.xc.currentdt
 
-    alltrades = _stringify_categorical_columns!(TSM.collecttradesdf(cache.xc.tsm))
+    alltrades = _stringify_categorical_columns!(TSM.collecttradesdf(cache.xc.tsm; processedonly=true))
     allfills = _stringify_categorical_columns!(filled_orders_df(cache.xc))
     (nrow(allfills) > 0) && (allfills[!, :pair] = allfills[!, :symbol])
 
@@ -994,10 +998,8 @@ function run_replay_continuous!(cache::Trade.TradeCache;
     # spurious flat position with no close price and breaks gains compilation.
     !isnothing(finaldt) && filter!(:opentime => <=(finaldt), alltrades)
 
-    # Keep only rows that correspond to replay source keys (drops framework-introduced
-    # placeholder rows, e.g. minutes without a seeded replay row for that pair).
-    replay_keys = unique(select(replaydf, [:pair, :opentime]))
-    alltrades = innerjoin(alltrades, replay_keys; on=[:pair, :opentime])
+    # Processed gap minutes contain real executions and must remain in continuous gains.
+    sort!(alltrades, [:pair, :opentime])
 
     return alltrades, allfills
 end
@@ -1250,7 +1252,7 @@ saved_trades = EnvConfig.savedf(alltrades, "trades-replay"; folderpath=replay_ou
 saved_fills = EnvConfig.savedf(allfills, "fills-replay"; folderpath=replay_out_folder)
 replay_gains_stem = "xchgains-replay"
 replay_report_stem = "xchgainsreport-replay"
-# Gain evaluation is isolated at the same pair/range(/set) boundaries as the selected replay mode.
+# Continuous gains match per pair; partitioned gains match each independent pair/set/range.
 replay_gainsdf = TSM.compilegainsdf(alltrades; stem=replay_gains_stem, folderpath=replay_out_folder, setpartitions=USE_PARTITIONS, makerfee=cache.ts.cfg.makerfee, takerfee=cache.ts.cfg.takerfee)
 report_groupcols = USE_PARTITIONS ? [:pair, :set] : [:pair]
 report_totalcols = USE_PARTITIONS ? [:set] : Symbol[]

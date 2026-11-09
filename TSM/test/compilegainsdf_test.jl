@@ -6,6 +6,41 @@ using CategoricalArrays
 
 using EnvConfig, TSM
 
+@testset "Continuous output retains processed gap executions, not unused seeds" begin
+    tsm = TSM.TsmCache()
+    times = collect(DateTime(2025, 3, 7, 11, 29):Minute(1):DateTime(2025, 3, 7, 19, 35))
+    rows = DataFrame(
+        pair=fill("SOLUSDT", length(times)), opentime=times,
+        set=fill("none", length(times)), rangeid=zeros(Int32, length(times)),
+        lp_amount=zeros(Float32, length(times)), sp_amount=zeros(Float32, length(times)),
+        lol_pavg=zeros(Float32, length(times)), lcl_pavg=zeros(Float32, length(times)),
+        sol_pavg=zeros(Float32, length(times)), scl_pavg=zeros(Float32, length(times)),
+        tsmstate=fill("xch", length(times)),
+    )
+    rows[1, :set] = "train"
+    rows[1, :rangeid] = 60258
+    nextseed = findfirst(==(DateTime(2025, 3, 7, 19, 30)), times)
+    rows[nextseed:end, :set] .= "eval"
+    rows[nextseed:end, :rangeid] .= 60259
+    rows[3:(end - 2), :sp_amount] .= 2f0
+    rows[3, :sol_pavg] = 100f0
+    rows[end - 1, :scl_pavg] = 90f0
+    rows[end, :tsmstate] = TSM.TSM_NO_STATE
+    TSM.settrades!(tsm, "SOLUSDT", rows)
+    @test nrow(TSM.collecttradesdf(tsm)) == length(times)
+    processed = TSM.collecttradesdf(tsm; processedonly=true)
+    @test nrow(processed) == length(times) - 1
+    @test times[3] in processed.opentime
+    @test !(times[end] in processed.opentime)
+    gains = TSM.compilegains(processed; setpartitions=false)
+    @test nrow(gains) == 1
+    @test gains[1, :opentime] == times[2]
+    @test gains[1, :closetime] == times[end - 2]
+    @test gains[1, :openprice] == 100f0
+    @test gains[1, :closeprice] == 90f0
+    @test gains[1, :gainquote] == 20f0
+end
+
 @testset "TSM compilegainsdf matches FIFO within pair set and range" begin
     oldformat = EnvConfig.dfformat()
     tmpdir = mktempdir()
@@ -169,24 +204,35 @@ end
         @test report[testix, :q75minutes] == 2
         @test report[testix, :maxminutes] == 2
 
-        pairreport = TSM.gainsreport(TSM.compilegains(tradesdf; setpartitions=false); groupcols=[:pair], totalcols=Symbol[])
+        pairreport = TSM.gainsreport(TSM.compilegains(tradesdf; setpartitions=true); groupcols=[:pair], totalcols=Symbol[])
         @test String.(pairreport[!, :pair]) == ["BTCUSDT", "ETHUSDT", "total"]
         @test pairreport[end, :segments] == 6
 
-        crossrange = DataFrame(
-            pair=["BTCUSDT", "BTCUSDT"],
-            rangeid=[1, 2],
-            opentime=[DateTime(2024, 1, 1, 0, 0), DateTime(2024, 1, 1, 0, 1)],
-            lp_amount=Float32[1f0, 0f0],
-            sp_amount=Float32[0f0, 0f0],
-            lol_pavg=Float32[100f0, 0f0],
-            lcl_pavg=Float32[0f0, 100f0],
-            sol_pavg=Float32[0f0, 0f0],
-            scl_pavg=Float32[0f0, 0f0],
-            close=Float32[100f0, 100f0],
-        )
-        continuous = TSM.compilegains(crossrange; setpartitions=false)
-        @test nrow(continuous) == 0
+        @testset "Continuous FIFO spans sets, subranges and liquidity ranges" begin
+            for side in (:long, :short), nextid in (2, TSM.RANGEID_SUBRANGE_SPAN * 2)
+                crossrange = DataFrame(
+                    pair=fill("SOLUSDT", 4),
+                    set=["train", "train", "eval", "eval"],
+                    rangeid=[1, 1, nextid, nextid],
+                    opentime=collect(DateTime(2025, 3, 7):Minute(1):DateTime(2025, 3, 7, 0, 3)),
+                    lp_amount=side == :long ? Float32[0, 2, 2, 0] : zeros(Float32, 4),
+                    sp_amount=side == :short ? Float32[0, 2, 2, 0] : zeros(Float32, 4),
+                    lol_pavg=fill(100f0, 4), lcl_pavg=fill(110f0, 4),
+                    sol_pavg=fill(100f0, 4), scl_pavg=fill(90f0, 4),
+                )
+                @test TSM._compilegains_groupcols(crossrange) == [:pair]
+                continuous = TSM.compilegains(crossrange; setpartitions=false)
+                @test nrow(continuous) == 1
+                @test continuous[1, :volume] == 2f0
+                @test continuous[1, :gainquote] == 20f0
+                @test continuous[1, :side] == String(side)
+                @test continuous[1, :set] == "eval"
+                @test continuous[1, :rangeid] == nextid
+                @test continuous[1, :opentime] == crossrange[1, :opentime]
+                @test continuous[1, :closetime] == crossrange[3, :opentime]
+                @test_throws "unmatched" TSM.compilegains(crossrange; setpartitions=true)
+            end
+        end
 
         fee_gains = TSM.compilegains(tradesdf; setpartitions=true, makerfee=0.01f0, takerfee=0.02f0)
         @test isapprox(fee_gains[1, :gain], 0.079f0; atol=1f-6)

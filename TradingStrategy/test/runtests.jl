@@ -22,6 +22,7 @@ include("tradesdf_limit_reversal_test.jl")
 include("tsconfig_test.jl")
 include("targetpartition_test.jl")
 include("artifactpipeline_test.jl")
+include("replay_seed_test.jl")
 
 include("regimecalendar_test.jl")
 include("regimepipeline_test.jl")

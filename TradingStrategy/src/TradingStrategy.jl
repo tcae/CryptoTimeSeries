@@ -491,10 +491,10 @@ end
 
 `datetime` is the first replay evaluation time (defaults to the last visible sample).
 Active regressions require full source history before that time.
-The live path does this implicitly in `acceptbase!`, but the replay path feeds prepopulated
-label/score rows and never calls the classifier - so a strategy algorithm that reads
-classifier-derived features (e.g. the `maxwindow` regression) would find no base. Replay
-drivers call this per pair and release it again with `dropbase!`."""
+The live path does this implicitly in `acceptbase!`, but replay drivers must attach
+the base explicitly for zero-score classification and strategy regression guidance,
+including when labels/scores are already populated. Replay drivers call this per pair
+and release it again with `dropbase!`."""
 function addclassifierbase!(rt::TsCache, ohlcv::Ohlcv.OhlcvData; datetime::DateTime=Ohlcv.dataframe(ohlcv)[end, :opentime])::Nothing
     _checkreplayregressionhistory(rt, ohlcv, datetime)
     _attachclassifierbase!(rt, ohlcv)

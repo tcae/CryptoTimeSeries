@@ -486,6 +486,7 @@ const CLASSIFIER_CONFIGS = Dict{String, NamedTuple}(classifierbasename(c) => c f
     clconfig("F21", "T26", "M008"),
     clconfig("F21", "T26", "M011"),
     clconfig("F22", "T28", "M011"),
+    clconfig("F22", "T09", "M011"),
 ])
 
 "Return a trading strategy context of a classifier (base name) and a strategy id."
@@ -554,7 +555,8 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("067", "F21-T26-P02-M011-B1", "S09"),  # modified 064 concerning trading strategy parameters
     tsentry("068", "F09-T09-P02-M011-B1", "S09"),  # modified 032 with model 011 SimpleChains and S09 strategy
     tsentry("069", "F09-T09-P02-M011-B1", "S10"),  # modified 068 with S10 strategy
-    tsentry("071", "F22-T28-P02-M011-B1", "S09"),
+    tsentry("071", "F22-T28-P02-M011-B1", "S09"),  # Trend07 targets using extremes regressions
+    tsentry("072", "F22-T09-P02-M011-B1", "S09"),  # F09 but with normalized gradients and additionalextremes regressions as features
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),
