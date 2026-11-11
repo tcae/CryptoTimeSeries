@@ -63,7 +63,8 @@ function helptext()::String
         Model artifacts: <experiment>/balanced (also with trainweights=class).
         Gain outputs: ~/crypto/logs/<folder> in market mode;
                       <experiment>/gain/<folder> otherwise.
-        Default folder: RegimeTraining-<runid>. Use separate folders for strategy comparisons.
+        Default folder: RegimeTraining-<runid>-TS<id> (for example, TS071).
+        Strategy configurations share classifier artifacts but use separate gain folders.
         Arrow files are data tables; TXT and SVG files are directly readable.
 
       stores
@@ -206,7 +207,7 @@ function buildrunconfig(opts::Dict{String,String})::NamedTuple
     description = "classifier=$(tscfg.classifier);coinset=$coinset;daterange=$daterange;mode=$mode;coins=$(join(coins,","));start=$startdt;end=$enddt;$(join(identityopts,";"))"
     scheme = mode=="market" ? "shared-blocks-v1;" : "coverage-v1;"
     runid = get(opts,"runid","$(tscfg.classifier)-$coinset-$daterange-"*TradingStrategy.confighash(scheme*description)[1:12])
-    folder = get(opts,"folder","RegimeTraining-$runid")
+    folder = get(opts,"folder","RegimeTraining-$runid-TS$(tscfg.configname)")
     @assert occursin(r"^[A-Za-z0-9_-]+$",folder) "invalid folder=$folder"
     @assert stage!="gain" || !haskey(opts,"retrain") "$stage does not adapt a checkpoint; retrain is not permitted"
     @assert stage!="gain" || reinforce==0 "$stage does not train; reinforce=$reinforce belongs to an adaptation run"

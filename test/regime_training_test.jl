@@ -2,6 +2,21 @@ using Test, Dates, DataFrames
 import EnvConfig, TradingStrategy, Classify, Targets
 include("../scripts/RegimeTraining.jl")
 
+@testset "Default gain folders distinguish trading strategy configurations" begin
+    EnvConfig.init(EnvConfig.test)
+    first = RegimeTraining.buildrunconfig(Dict("ts"=>"068","stage"=>"gain"))
+    second = RegimeTraining.buildrunconfig(Dict("ts"=>"069","stage"=>"gain"))
+    @test first.tscfg.classifier == second.tscfg.classifier
+    @test first.runid == second.runid
+    @test first.folder == "RegimeTraining-$(first.runid)-TS068"
+    @test second.folder == "RegimeTraining-$(second.runid)-TS069"
+    @test first.folder != second.folder
+    alias = RegimeTraining.buildrunconfig(Dict("ts"=>"TS071","stage"=>"gain","runid"=>"shared"))
+    @test alias.folder == "RegimeTraining-shared-TS071"
+    explicit = RegimeTraining.buildrunconfig(Dict("ts"=>"071","stage"=>"gain","folder"=>"custom"))
+    @test explicit.folder == "custom"
+end
+
 @testset "Readable gain reports separate predicted and reference trades" begin
     gains = DataFrame(set=fill("test<&",3),predicted=[true,true,false],
         opentime=fill(DateTime(2025),3),closetime=fill(DateTime(2025)+Minute(10),3),

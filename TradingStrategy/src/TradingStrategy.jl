@@ -748,11 +748,12 @@ past whole multiples of `cfg.makerfee` away from `pavg`: to `pavg*(1±makerfee)`
 `pavg*(1±3*makerfee)`. Long uses the bar low as the conservative confirmation that price
 stayed above the threshold for the whole bar; short mirrors this with the bar high staying
 below it. `priorstop` (the stop already carried over from the previous row) keeps a stage
-locked in even on a later bar that no longer clears its threshold."""
+locked in even on a later bar that no longer clears its threshold. A nonpositive configured
+`stoploss` disables the stop leg and its ratchet."""
 function _ratchet_stoploss(cfg::GainLimitReversalConfig, low::Float32, high::Float32, updown::Targets.TrendPhase, pavg::Float32, stoplimit::Float32, priorstop::Float32)::Float32
+    cfg.stoploss <= 0f0 && return 0f0
     ((cfg.makerfee > 0f0) && (pavg > 0f0)) || return stoplimit
     tightened = stoplimit
-    return stoplimit # diasble ratchet stop loss
     if updown == up
         if low > pavg * (1f0 + 3f0 * cfg.makerfee)
             tightened = max(tightened, pavg * (1f0 + 2f0 * cfg.makerfee))

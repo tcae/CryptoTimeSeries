@@ -65,19 +65,20 @@ tradingstrategy08() = TradingStrategy.StrategyConfig(
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)
-gainlimitreversal_belowregression_config(;buygain, sellgain, triggerdist, incrementgain) = TradingStrategy.StrategyConfig(
+gainlimitreversal_belowregression_config(;buygain, sellgain, triggerdist, incrementgain, commonwindow) = TradingStrategy.StrategyConfig(
     algorithm=TradingStrategy.gain_limit_reversal_below_regression!, 
     algorithmconfig=TradingStrategy.GainLimitReversalBelowRegressionConfig(
-        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=4*60, openthreshold=0.2, buygain=buygain, sellgain=sellgain, incrementgain=incrementgain, makerfee=0.0025), 
+        gainlimit=TradingStrategy.GainLimitReversalConfig(maxwindow=commonwindow, openthreshold=0.2, buygain=buygain, sellgain=sellgain, incrementgain=incrementgain, makerfee=0.0025), 
         triggerdist=triggerdist, 
-        triggerregrwindow=4*60, # zero disables the trigger regression window, previously 12*60, 
-        trendregrwindow=4*60, # zero disables the trend regression window, previously 24*60, 
+        triggerregrwindow=commonwindow, # zero disables the trigger regression window, previously 12*60, 
+        trendregrwindow=commonwindow, # zero disables the trend regression window, previously 24*60, 
         trendgainthreshold=0.01f0 / 4f0), 
     makerfee=0.0025, 
     takerfee=0.004, 
     enforcemakerlimits=true)
-tradingstrategy09() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.01f0, triggerdist=0.005f0, incrementgain=0f0)
-tradingstrategy10() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.015f0, triggerdist=0.01f0, incrementgain=0f0)
+tradingstrategy09() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.01f0, triggerdist=0.005f0, incrementgain=0f0, commonwindow=4*60)
+tradingstrategy10() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.015f0, triggerdist=0.01f0, incrementgain=0f0, commonwindow=4*60)
+tradingstrategy11() = gainlimitreversal_belowregression_config(buygain=0.001f0, sellgain=0.015f0, triggerdist=0.01f0, incrementgain=0f0, commonwindow=24*60)
 #endregion TradingStrategies
 
 #region FeaturesConfig
@@ -422,7 +423,7 @@ const MODEL_CONFIGS = Dict{String, Function}(
 const STRATEGY_CONFIGS = Dict{String, Function}(
     "S01" => tradingstrategy01, "S02" => tradingstrategy02, "S03" => tradingstrategy03, "S04" => tradingstrategy04,
     "S05" => tradingstrategy05, "S06" => tradingstrategy06, "S07" => tradingstrategy07, "S08" => tradingstrategy08,
-    "S09" => tradingstrategy09, "S10" => tradingstrategy10,
+    "S09" => tradingstrategy09, "S10" => tradingstrategy10, "S11" => tradingstrategy11,
 )
 
 "Return a classifier config that is independent of the coin set and date range it is trained on."
@@ -557,6 +558,7 @@ const TS_CONFIGS = Dict{String, NamedTuple}(cfg.configname => cfg for cfg in [
     tsentry("069", "F09-T09-P02-M011-B1", "S10"),  # modified 068 with S10 strategy
     tsentry("071", "F22-T28-P02-M011-B1", "S09"),  # Trend07 targets using extremes regressions
     tsentry("072", "F22-T09-P02-M011-B1", "S09"),  # F09 but with normalized gradients and additionalextremes regressions as features
+    tsentry("073", "F22-T28-P02-M011-B1", "S11"),  # == TS071 but S11 strategy with 24h commonwindow
 
     tsentry("101", "F09-T16-P02-M002-B1", "S03"),
     tsentry("102", "F09-T16-P02-M002-B1", "S07"),

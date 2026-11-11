@@ -378,6 +378,9 @@ Stages are `stores`, `train`, `predict`, `evaluate`, `gain`, plus explicit
 inspect diagrams, select thresholds and update the trading strategy before
 starting a subsequent `stage=gain` run. Gain requires an existing adapted
 checkpoint and never trains a missing model. `retrain` resumes adaptation only.
+Default gain folders are `RegimeTraining-<runid>-TS<id>` (for example, `TS071`),
+so different trading strategy configurations can reuse the same classifier without
+overwriting each other's gain reports. An explicit `folder=<name>` overrides this name.
 `stage=gain` uses the saved test index and original universe, loading matching
 features, OHLCV prices and precalculated regression stores one coin at a time.
 Required market regression windows must already exist in the per-coin regression

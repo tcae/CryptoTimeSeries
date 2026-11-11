@@ -28,10 +28,10 @@ function init_limit_reversal_columns!(tdf::DataFrame)
     return tdf
 end
 
-function limit_reversal_strategy(; maxwindow=4 * 60, minpricedelta=0f0)
+function limit_reversal_strategy(; maxwindow=4 * 60, minpricedelta=0f0, stoploss=0.05f0, makerfee=0f0)
     return TradingStrategy.StrategyConfig(algorithmconfig=TradingStrategy.GainLimitReversalConfig(
         openthreshold=0.6f0, buygain=0.001f0, sellgain=0.01f0,
-        maxwindow=maxwindow, minpricedelta=minpricedelta,
+        maxwindow=maxwindow, minpricedelta=minpricedelta, stoploss=stoploss, makerfee=makerfee,
     ))
 end
 
@@ -508,6 +508,57 @@ end
         # existing target (79.2) already exceeds the fresh sellgain target (99), so it is kept
         @test isapprox(probe[2, :sc_limit], 79.2f0; atol=1f-4)
         @test isapprox(probe[2, :scsl_limit], 105f0; atol=1f-4)
+    end
+
+    @testset "nonpositive stoploss disables both stop legs and ratchets" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[104f0],
+            low=Float32[96f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :lp_amount] = 100f0
+        probe[1, :lol_pavg] = 100f0
+        probe[1, :lcsl_limit] = 98f0
+        probe[1, :sp_amount] = 100f0
+        probe[1, :sol_pavg] = 100f0
+        probe[1, :scsl_limit] = 102f0
+        cfg = limit_reversal_strategy(stoploss=0f0, makerfee=0.01f0).algorithmconfig
+
+        TradingStrategy._setclosebracket!(cfg, tcols(probe), 1, longclose, 100f0, 101f0)
+        TradingStrategy._setclosebracket!(cfg, tcols(probe), 1, shortclose, 100f0, 99f0)
+        @test probe[1, :lcsl_limit] == 0f0
+        @test probe[1, :scsl_limit] == 0f0
+    end
+
+    @testset "active stop ratchets symmetrically for long and short" begin
+        probe = DataFrame(
+            opentime=[dt],
+            high=Float32[104f0],
+            low=Float32[96f0],
+            close=Float32[100f0],
+            score=Float32[0.9f0],
+            label=TradeLabel[longopen],
+        )
+        init_limit_reversal_columns!(probe)
+        probe[1, :lp_amount] = 100f0
+        probe[1, :lol_pavg] = 100f0
+        probe[1, :sp_amount] = 100f0
+        probe[1, :sol_pavg] = 100f0
+        cfg = limit_reversal_strategy(makerfee=0.01f0).algorithmconfig
+
+        probe[1, :low] = 103.1f0
+        probe[1, :high] = 105f0
+        TradingStrategy._setclosebracket!(cfg, tcols(probe), 1, longclose, 104f0, 110f0)
+        @test isapprox(probe[1, :lcsl_limit], 102f0; atol=1f-4)
+
+        probe[1, :low] = 95f0
+        probe[1, :high] = 96.9f0
+        TradingStrategy._setclosebracket!(cfg, tcols(probe), 1, shortclose, 96f0, 90f0)
+        @test isapprox(probe[1, :scsl_limit], 98f0; atol=1f-4)
     end
 
     @testset "zero close limit keeps the stop leg" begin
